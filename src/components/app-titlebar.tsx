@@ -15,7 +15,8 @@ import { toast } from "sonner";
 
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
-const AUTO_DOWNLOAD_DELAY_MS = 5000;
+const AUTO_UPDATE_DEBUG = false;
+const AUTO_DOWNLOAD_DELAY_MS = AUTO_UPDATE_DEBUG ? 50000 : 5000; // 5s normal, 50s in debug mode
 const CHECK_FOR_UPDATES_EVENT = "adaq-check-for-updates";
 
 type UpdateStatus =
@@ -85,11 +86,11 @@ function getUpdateButtonLabel(
 ) {
 	switch (status) {
 		case "available":
-			return version ? `Update to ${version}` : "Update";
+			return version ? `Update to v${version}` : "Update";
 		case "downloading":
 			return progress.percent === null
 				? "Downloading"
-				: `Downloading ${progress.percent}%`;
+				: `${progress.percent}% Downloading...`;
 		case "ready":
 			return "Relaunch";
 		case "error":
@@ -245,7 +246,7 @@ export function AppTitlebar() {
 	);
 
 	useEffect(() => {
-		if (!isTauriRuntime()) {
+		if (!isTauriRuntime() || AUTO_UPDATE_DEBUG) {
 			return;
 		}
 
@@ -331,6 +332,15 @@ export function AppTitlebar() {
 			return;
 		}
 
+		if (updateStatus === "idle") {
+			void checkForUpdates({
+				autoDownload: false,
+				notifyNoUpdate: true,
+				notifyError: true,
+			});
+			return;
+		}
+
 		void startUpdateDownload();
 	};
 
@@ -382,11 +392,11 @@ export function AppTitlebar() {
 					</h1>
 				</div>
 				<div className="ml-auto flex items-center gap-2 bg-sidebar">
-					{updateButtonLabel ? (
+					{updateButtonLabel || AUTO_UPDATE_DEBUG ? (
 						<button
 							type="button"
-							aria-label={updateButtonLabel}
-							title={updateButtonLabel}
+							aria-label={updateButtonLabel ?? "Check for Updates"}
+							title={updateButtonLabel ?? "Check for Updates"}
 							disabled={isDownloadingUpdate}
 							className="relative flex h-8 max-w-[190px] shrink-0 items-center justify-center overflow-hidden rounded-md border border-black/10 bg-white/70 px-2.5 text-xs font-medium text-[#242629] shadow-sm transition-colors hover:bg-white disabled:cursor-default disabled:opacity-85"
 							onClick={(event) => {
@@ -408,7 +418,9 @@ export function AppTitlebar() {
 								) : (
 									<DownloadIcon className="size-3.5 shrink-0" />
 								)}
-								<span className="truncate">{updateButtonLabel}</span>
+								<span className="truncate">
+									{updateButtonLabel ?? "Check for Updates"}
+								</span>
 							</span>
 						</button>
 					) : null}

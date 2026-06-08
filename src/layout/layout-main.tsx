@@ -11,7 +11,7 @@ import { Toaster } from "@/components/ui/sonner";
 export default function LayoutMain() {
 	return (
 		<SidebarProvider
-			className="h-svh overflow-hidden bg-sidebar pt-[(--header-height)]"
+			className="h-svh overflow-hidden bg-sidebar pt-(--header-height)"
 			style={
 				{
 					"--sidebar-width": "calc(var(--spacing) * 72)",
