@@ -15,6 +15,12 @@ if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z.-]+)?$/.test(version)) {
 const repo = process.env.GITHUB_REPOSITORY || 'tonywxx/adaq'
 const bundleDir = 'src-tauri/target/release/bundle'
 const latestPath = 'release/latest.json'
+const archMap = new Map([
+  ['x64', 'x86_64'],
+  ['ia32', 'i686'],
+  ['arm64', 'aarch64'],
+  ['arm', 'armv7'],
+])
 
 updateJson('package.json', version, 2)
 updateJson('src-tauri/tauri.conf.json', version, '\t')
@@ -118,10 +124,3 @@ function currentPlatformKey(file) {
 
   return null
 }
-
-const archMap = new Map([
-  ['x64', 'x86_64'],
-  ['ia32', 'i686'],
-  ['arm64', 'aarch64'],
-  ['arm', 'armv7'],
-])
