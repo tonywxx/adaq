@@ -26,6 +26,7 @@ github_release.sh
 
 # AI related files
 .codegraph/
+.playwright-mcp/
 .cursor/
 .claude/
 .agent/

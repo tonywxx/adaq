@@ -7,12 +7,23 @@ import {
 	ArrowLeftIcon,
 	ArrowRightIcon,
 	DownloadIcon,
+	LaptopIcon,
 	MoreHorizontalIcon,
+	MoonIcon,
 	RefreshCwIcon,
+	SunIcon,
 } from "lucide-react";
+import { useTheme } from "next-themes";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuRadioGroup,
+	DropdownMenuRadioItem,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
 const AUTO_UPDATE_DEBUG = false;
@@ -32,6 +43,18 @@ type DownloadProgress = {
 	contentLength: number | null;
 	percent: number | null;
 };
+
+type ThemeMode = "light" | "dark" | "system";
+
+const themeOptions: {
+	value: ThemeMode;
+	label: string;
+	icon: typeof SunIcon;
+}[] = [
+	{ value: "light", label: "Light", icon: SunIcon },
+	{ value: "dark", label: "Dark", icon: MoonIcon },
+	{ value: "system", label: "System", icon: LaptopIcon },
+];
 
 const initialDownloadProgress: DownloadProgress = {
 	downloaded: 0,
@@ -101,6 +124,7 @@ function getUpdateButtonLabel(
 }
 
 export function AppTitlebar() {
+	const { setTheme, theme = "system" } = useTheme();
 	const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
 	const [updateVersion, setUpdateVersion] = useState<string | null>(null);
 	const [downloadProgress, setDownloadProgress] = useState<DownloadProgress>(
@@ -325,6 +349,12 @@ export function AppTitlebar() {
 	);
 	const isDownloadingUpdate = updateStatus === "downloading";
 	const isRelaunchReady = updateStatus === "ready";
+	const activeTheme = themeOptions.some((option) => option.value === theme)
+		? (theme as ThemeMode)
+		: "system";
+	const ActiveThemeIcon =
+		themeOptions.find((option) => option.value === activeTheme)?.icon ??
+		LaptopIcon;
 
 	const handleUpdateButtonClick = () => {
 		if (isRelaunchReady) {
@@ -358,7 +388,7 @@ export function AppTitlebar() {
 			<div className="flex h-full shrink-0 items-center gap-3 overflow-hidden bg-sidebar pl-22 pr-4 transition-[width,border-color] duration-200 ease-linear w-(--titlebar-sidebar-collapsed-width) border-b">
 				<div className="flex items-center gap-3 bg-sidebar">
 					<SidebarTrigger
-						className="size-5 bg-transparent text-black/45 hover:bg-black/5 hover:text-black/60 [&_svg]:size-3.5"
+						className="size-5 bg-transparent text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground/70 [&_svg]:size-3.5"
 						onPointerDown={(event) => event.stopPropagation()}
 					/>
 					<button
@@ -366,7 +396,7 @@ export function AppTitlebar() {
 						aria-label="Back"
 						title="Back"
 						disabled
-						className="flex size-4 items-center justify-center text-black/35 disabled:cursor-default"
+						className="flex size-4 items-center justify-center text-sidebar-foreground/35 disabled:cursor-default"
 						onPointerDown={(event) => event.stopPropagation()}
 					>
 						<ArrowLeftIcon className="size-4 stroke-[1.6]" />
@@ -376,7 +406,7 @@ export function AppTitlebar() {
 						aria-label="Forward"
 						title="Forward"
 						disabled
-						className="flex size-4 items-center justify-center text-black/25 disabled:cursor-default"
+						className="flex size-4 items-center justify-center text-sidebar-foreground/25 disabled:cursor-default"
 						onPointerDown={(event) => event.stopPropagation()}
 					>
 						<ArrowRightIcon className="size-4 stroke-[1.6]" />
@@ -384,21 +414,64 @@ export function AppTitlebar() {
 				</div>
 			</div>
 
-			<div className="flex h-full min-w-0 flex-1 items-center rounded-tl-[12px] border-b border-black/10 px-2 bg-sidebar">
+			<div className="flex h-full min-w-0 flex-1 items-center rounded-tl-[12px] border-b border-sidebar-border px-2 bg-sidebar">
 				<div className="flex items-center gap-3 bg-sidebar">
 					{/* <img src="/adaq.svg" alt="AdaQ" className="size-8" /> */}
-					<h1 className="min-w-0 flex-1 truncate text-[22px] font-semibold leading-none tracking-normal text-[#242629]">
+					<h1 className="min-w-0 flex-1 truncate text-[22px] font-semibold leading-none tracking-normal text-sidebar-foreground">
 						AdaQ
 					</h1>
 				</div>
 				<div className="ml-auto flex items-center gap-2 bg-sidebar">
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild>
+							<button
+								type="button"
+								aria-label={`Theme: ${
+									themeOptions.find((option) => option.value === activeTheme)
+										?.label ?? "System"
+								}`}
+								title="Theme"
+								className="flex size-8 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+								onClick={(event) => event.stopPropagation()}
+								onPointerDown={(event) => event.stopPropagation()}
+							>
+								<ActiveThemeIcon className="size-4" />
+							</button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent
+							align="end"
+							className="w-36"
+							onPointerDown={(event) => event.stopPropagation()}
+							onClick={(event) => event.stopPropagation()}
+						>
+							<DropdownMenuRadioGroup
+								value={activeTheme}
+								onValueChange={(value) => setTheme(value as ThemeMode)}
+							>
+								{themeOptions.map((option) => {
+									const Icon = option.icon;
+
+									return (
+										<DropdownMenuRadioItem
+											key={option.value}
+											value={option.value}
+											className="gap-2"
+										>
+											<Icon className="size-4" />
+											<span>{option.label}</span>
+										</DropdownMenuRadioItem>
+									);
+								})}
+							</DropdownMenuRadioGroup>
+						</DropdownMenuContent>
+					</DropdownMenu>
 					{updateButtonLabel || AUTO_UPDATE_DEBUG ? (
 						<button
 							type="button"
 							aria-label={updateButtonLabel ?? "Check for Updates"}
 							title={updateButtonLabel ?? "Check for Updates"}
 							disabled={isDownloadingUpdate}
-							className="relative flex h-8 max-w-[190px] shrink-0 items-center justify-center overflow-hidden rounded-md border border-black/10 bg-white/70 px-2.5 text-xs font-medium text-[#242629] shadow-sm transition-colors hover:bg-white disabled:cursor-default disabled:opacity-85"
+							className="relative flex h-8 max-w-[190px] shrink-0 items-center justify-center overflow-hidden rounded-md border border-sidebar-border bg-background/70 px-2.5 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-background disabled:cursor-default disabled:opacity-85"
 							onClick={(event) => {
 								event.stopPropagation();
 								handleUpdateButtonClick();
@@ -428,7 +501,7 @@ export function AppTitlebar() {
 						type="button"
 						aria-label="More"
 						title="More"
-						className="flex size-8 shrink-0 items-center justify-center rounded-md text-black/35 hover:bg-black/5 hover:text-black/55"
+						className="flex size-8 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/35 hover:bg-sidebar-accent hover:text-sidebar-foreground/60"
 						onClick={(event) => event.stopPropagation()}
 						onPointerDown={(event) => event.stopPropagation()}
 					>
