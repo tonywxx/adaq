@@ -4,6 +4,7 @@ import { ChartAreaInteractive } from "@/components/chart-area-interactive";
 import { DataTable } from "@/components/data-table";
 import { SectionCards } from "@/components/section-cards";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { Toaster } from "@/components/ui/sonner";
 
 // import data from "./data.json";
 
@@ -20,6 +21,7 @@ export default function LayoutMain() {
 			}
 		>
 			<AppTitlebar />
+			<Toaster />
 
 			<AppSidebar className="top-14 h-[calc(100svh-3.5rem)]" variant="inset" />
 			<SidebarInset className="m-0! rounded-tl-none! rounded-bl-[12px] min-h-0 overflow-y-auto border-l border-border shadow-none!">

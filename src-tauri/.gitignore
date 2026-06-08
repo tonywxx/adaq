@@ -12,3 +12,5 @@
 .claude/
 .agent/
 .env
+# scripts
+github_release.sh

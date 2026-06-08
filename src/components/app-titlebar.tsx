@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
 	ArrowLeftIcon,
 	ArrowRightIcon,
@@ -9,10 +10,13 @@ import {
 	MoreHorizontalIcon,
 	RefreshCwIcon,
 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
 const AUTO_DOWNLOAD_DELAY_MS = 5000;
+const CHECK_FOR_UPDATES_EVENT = "adaq-check-for-updates";
 
 type UpdateStatus =
 	| "idle"
@@ -39,6 +43,20 @@ function isTauriRuntime() {
 }
 
 const appWindow = isTauriRuntime() ? getCurrentWindow() : null;
+
+async function alertLatestVersion() {
+	try {
+		const appVersion = await getVersion();
+		toast.success(`You are using the latest version v${appVersion}.`);
+	} catch (error) {
+		console.error("Failed to read app version", error);
+		toast.success("You are using the latest version.");
+	}
+}
+
+function alertUpdateCheckFailed() {
+	toast.error("Unable to check for updates. Please try again later.");
+}
 
 async function runWindowAction(action: () => Promise<void>) {
 	if (!isTauriRuntime()) {
@@ -90,6 +108,7 @@ export function AppTitlebar() {
 	const pendingUpdateRef = useRef<Update | null>(null);
 	const downloadStartedRef = useRef(false);
 	const autoDownloadTimerRef = useRef<number | null>(null);
+	const updateCheckRequestRef = useRef(0);
 
 	const clearAutoDownloadTimer = useCallback(() => {
 		if (autoDownloadTimerRef.current === null) {
@@ -159,49 +178,121 @@ export function AppTitlebar() {
 		}
 	}, [clearAutoDownloadTimer]);
 
-	useEffect(() => {
-		if (!isTauriRuntime()) {
-			return;
-		}
+	const checkForUpdates = useCallback(
+		async ({
+			autoDownload,
+			notifyNoUpdate,
+			notifyError,
+		}: {
+			autoDownload: boolean;
+			notifyNoUpdate: boolean;
+			notifyError: boolean;
+		}) => {
+			if (!isTauriRuntime()) {
+				return;
+			}
 
-		let cancelled = false;
+			const requestId = updateCheckRequestRef.current + 1;
+			updateCheckRequestRef.current = requestId;
 
-		async function checkForUpdates() {
+			clearAutoDownloadTimer();
+			downloadStartedRef.current = false;
+			pendingUpdateRef.current = null;
+			setUpdateVersion(null);
+			setDownloadProgress(initialDownloadProgress);
 			setUpdateStatus("checking");
 
 			try {
 				const update = await check({ timeout: 30000 });
 
-				if (cancelled) {
+				if (updateCheckRequestRef.current !== requestId) {
 					return;
 				}
 
 				if (!update) {
 					setUpdateStatus("idle");
+
+					if (notifyNoUpdate) {
+						void alertLatestVersion();
+					}
+
 					return;
 				}
 
 				pendingUpdateRef.current = update;
 				setUpdateVersion(update.version);
 				setUpdateStatus("available");
-				autoDownloadTimerRef.current = window.setTimeout(() => {
-					void startUpdateDownload();
-				}, AUTO_DOWNLOAD_DELAY_MS);
+
+				if (autoDownload) {
+					autoDownloadTimerRef.current = window.setTimeout(() => {
+						void startUpdateDownload();
+					}, AUTO_DOWNLOAD_DELAY_MS);
+				}
 			} catch (error) {
-				if (!cancelled) {
-					console.error("Update check failed", error);
-					setUpdateStatus("idle");
+				if (updateCheckRequestRef.current !== requestId) {
+					return;
+				}
+
+				console.error("Update check failed", error);
+				setUpdateStatus("idle");
+
+				if (notifyError) {
+					alertUpdateCheckFailed();
 				}
 			}
+		},
+		[clearAutoDownloadTimer, startUpdateDownload],
+	);
+
+	useEffect(() => {
+		if (!isTauriRuntime()) {
+			return;
 		}
 
-		void checkForUpdates();
+		void checkForUpdates({
+			autoDownload: true,
+			notifyNoUpdate: false,
+			notifyError: false,
+		});
 
 		return () => {
-			cancelled = true;
+			updateCheckRequestRef.current += 1;
 			clearAutoDownloadTimer();
 		};
-	}, [clearAutoDownloadTimer, startUpdateDownload]);
+	}, [checkForUpdates, clearAutoDownloadTimer]);
+
+	useEffect(() => {
+		if (!isTauriRuntime()) {
+			return;
+		}
+
+		let disposed = false;
+		let unlisten: (() => void) | null = null;
+
+		listen(CHECK_FOR_UPDATES_EVENT, () => {
+			void checkForUpdates({
+				autoDownload: true,
+				notifyNoUpdate: true,
+				notifyError: true,
+			});
+		})
+			.then((cleanup) => {
+				if (disposed) {
+					cleanup();
+					return;
+				}
+
+				unlisten = cleanup;
+			})
+			.catch((error) => {
+				console.error("Failed to listen for update menu event", error);
+			});
+
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
+	}, [checkForUpdates]);
 
 	const startDrag = () => {
 		if (!appWindow) {
@@ -285,7 +376,7 @@ export function AppTitlebar() {
 
 			<div className="flex h-full min-w-0 flex-1 items-center rounded-tl-[12px] border-b border-black/10 px-2 bg-sidebar">
 				<div className="flex items-center gap-3 bg-sidebar">
-					<img src="/adaq.svg" alt="AdaQ" className="size-8" />
+					{/* <img src="/adaq.svg" alt="AdaQ" className="size-8" /> */}
 					<h1 className="min-w-0 flex-1 truncate text-[22px] font-semibold leading-none tracking-normal text-[#242629]">
 						AdaQ
 					</h1>
