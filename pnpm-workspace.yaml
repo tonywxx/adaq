@@ -1,0 +1,5 @@
+allowBuilds:
+  esbuild: true
+  msw: false
+overrides:
+  zod: 3.25.76
