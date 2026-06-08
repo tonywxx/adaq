@@ -1,0 +1,11 @@
+{
+	"version": "0.1.2",
+	"notes": "Adds GitHub-backed in-app auto update support.",
+	"pub_date": "2026-06-08T03:23:38Z",
+	"platforms": {
+		"darwin-aarch64": {
+			"signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeEhnaFhnWnpiMWRPcWlRODVqQUJCUzczWEFCdndXNXJiZVdHMkNoMkFTeDFYT09iZE5GZDJITFRjOWQrRE01Q3pGV241Y3l4OWZtb0xudWZKMUpwWUpPQzdjUW1GS1EwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgwODg5MDg1CWZpbGU6YWRhcS5hcHAudGFyLmd6CmlEd3BZaDRZRnpuOWtJeDV5VWNFMW9FUGJSWnQwSk5lTlZDOGNaUlV6MDRqcldxRjFZaFZ4cUtNS0dtdXRkZ0lydjhjOVh3NncxTXVIVzM1clJCT0JRPT0K",
+			"url": "https://github.com/tonywxx/adaq/releases/download/v0.1.2/adaq.app.tar.gz"
+		}
+	}
+}
