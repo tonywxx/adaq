@@ -243,8 +243,8 @@ echo "Committing release changes"
 git add package.json pnpm-lock.yaml src-tauri/Cargo.lock src-tauri/Cargo.toml src-tauri/tauri.conf.json "${LATEST_JSON}"
 git commit -m "Release ${TAG}"
 
-echo "Pushing master and tag ${TAG}"
-git push origin master
+echo "Pushing main and tag ${TAG}"
+git push origin main
 git tag "${TAG}"
 git push origin "${TAG}"
 

@@ -12,6 +12,7 @@ dist
 dist-ssr
 *.local
 .env.*
+github_release.sh
 
 # Editor directories and files
 .vscode/*
