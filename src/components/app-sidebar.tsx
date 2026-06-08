@@ -32,7 +32,7 @@ import {
 const data = {
 	user: {
 		name: "adaq",
-		email: "m@adaq.bid",
+		email: "x@email.com",
 		avatar: "/avatars/shadcn.jpg",
 	},
 	navMain: [
