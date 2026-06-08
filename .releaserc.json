@@ -36,6 +36,9 @@
             "path": "src-tauri/target/release/bundle/**/*.sig"
           },
           {
+            "path": "src-tauri/target/release/bundle/**/*.{tar.gz,zip}"
+          },
+          {
             "path": "src-tauri/target/release/bundle/**/*.{dmg,AppImage,deb,rpm,msi,exe}"
           }
         ]
