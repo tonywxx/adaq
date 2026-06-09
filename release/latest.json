@@ -1,11 +1,11 @@
 {
-	"version": "0.3.0",
-	"notes": "Release v0.3.0",
-	"pub_date": "2026-06-08T23:31:48.497Z",
+	"version": "0.4.0",
+	"notes": "Release v0.4.0",
+	"pub_date": "2026-06-09T01:03:54.601Z",
 	"platforms": {
 		"darwin-aarch64": {
-			"signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeEhnaFhnWnpiMVhmaVJBcDhzOXg5dXAxaGtOQS9KWHFBWm1sMThUVGNrVStYV1Nyb0JTZnF0RWJXSjdvVDNYWjJjWUJtVDk0THJVNUd0Um1obFZvUUYvTVlnV3FQOHdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgwOTYxNTA4CWZpbGU6YWRhcS5hcHAudGFyLmd6CmZUUFJhdWdkRnp1RWtqNENaeVFFcHQyVkcvWVk5VG5UaTZuM0xXTnNvZU5kblpTcHdEa1hhQ29ST3RHV1dUUSttZ0NUNmtOOTdPdm4vMzZOaXhsT0JnPT0K",
-			"url": "https://github.com/tonywxx/adaq/releases/download/v0.3.0/adaq.app.tar.gz"
+			"signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSeEhnaFhnWnpiMVZWTlhDLzByWmgzQm5vUzMrTFZvQUJiaE9Xc2pOMWczdHBsNktHVy93RFZQMmtQSXF3K044MkxKNDVXUGM5dFdkMkVEV1BQVFQ4cXpEV0MwZ2ppT2dnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgwOTY3MDM0CWZpbGU6YWRhcS5hcHAudGFyLmd6CkFLQVk3VnY3WkE1cnk2RGhMTnNoOGNxd01iMzFZWTQ3TjU5UERnM1NRSlZQSmxUcHQ1akVmUHdNWkRiMlhyOE5QRUhGa2l0anFjZFFsSmZieXNBY0RnPT0K",
+			"url": "https://github.com/tonywxx/adaq/releases/download/v0.4.0/adaq.app.tar.gz"
 		}
 	}
 }

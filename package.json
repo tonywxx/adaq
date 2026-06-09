@@ -1,7 +1,7 @@
 {
   "name": "adaq",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "packageManager": "pnpm@11.5.1",
   "type": "module",
   "scripts": {
