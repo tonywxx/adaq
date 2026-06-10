@@ -20,6 +20,7 @@
     "@fontsource-variable/geist": "^5.2.9",
     "@tanstack/react-table": "^8.21.3",
     "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-log": "~2.8.0",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
