@@ -7,6 +7,8 @@ import { SectionCards } from "@/components/section-cards";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/sonner";
 
+debug("Debug");
+warn("warn");
 trace("Trace");
 info("Info");
 error("Error");

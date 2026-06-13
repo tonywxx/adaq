@@ -8,8 +8,8 @@ import {
 	ArrowRightIcon,
 	DownloadIcon,
 	LaptopIcon,
-	MoreHorizontalIcon,
 	MoonIcon,
+	MoreHorizontalIcon,
 	RefreshCwIcon,
 	SunIcon,
 } from "lucide-react";
@@ -115,7 +115,7 @@ function getUpdateButtonLabel(
 				? "Downloading"
 				: `${progress.percent}% Downloading...`;
 		case "ready":
-			return "Relaunch";
+			return "Restart to update";
 		case "error":
 			return "Retry update";
 		default:
@@ -348,7 +348,7 @@ export function AppTitlebar() {
 		downloadProgress,
 	);
 	const isDownloadingUpdate = updateStatus === "downloading";
-	const isRelaunchReady = updateStatus === "ready";
+	const isRestartReady = updateStatus === "ready";
 	const activeTheme = themeOptions.some((option) => option.value === theme)
 		? (theme as ThemeMode)
 		: "system";
@@ -357,7 +357,7 @@ export function AppTitlebar() {
 		LaptopIcon;
 
 	const handleUpdateButtonClick = () => {
-		if (isRelaunchReady) {
+		if (isRestartReady) {
 			void runWindowAction(() => relaunch());
 			return;
 		}
@@ -486,7 +486,7 @@ export function AppTitlebar() {
 								/>
 							) : null}
 							<span className="relative z-10 flex min-w-0 items-center gap-1.5">
-								{isRelaunchReady ? (
+								{isRestartReady ? (
 									<RefreshCwIcon className="size-3.5 shrink-0" />
 								) : (
 									<DownloadIcon className="size-3.5 shrink-0" />
