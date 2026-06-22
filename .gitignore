@@ -13,6 +13,8 @@ dist-ssr
 *.local
 .env.*
 github_release.sh
+docs/
+.pnpm-store/
 
 # Editor directories and files
 .vscode/*
