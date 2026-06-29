@@ -11,10 +11,12 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
 .env.*
 github_release.sh
 docs/
 .pnpm-store/
+.npm-cache/
 
 # Editor directories and files
 .vscode/*

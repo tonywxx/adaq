@@ -3,7 +3,8 @@ import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
 import { AutoUpdateButton } from "@/components/ui/autoupdate-button";
 import { DarkModeDropDownMenu } from "@/components/ui/dark-mode-dropdown-menu";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { Button } from "./ui/button";
+
+// import { Button } from "./ui/button";
 
 function isTauriRuntime() {
 	return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -95,7 +96,7 @@ export function AppTitlebar() {
 					</h1>
 				</div>
 				<div className="ml-auto flex items-center gap-2 bg-sidebar">
-					<Button
+					{/* <Button
 						icon={ArrowRightIcon}
 						iconPlacement="right"
 						effect="shineHover"
@@ -109,7 +110,7 @@ export function AppTitlebar() {
 						loadingIconPlacement="right"
 					>
 						Loader
-					</Button>
+					</Button> */}
 					<AutoUpdateButton />
 					<DarkModeDropDownMenu />
 					{/* <button
