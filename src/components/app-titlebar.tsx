@@ -95,6 +95,21 @@ export function AppTitlebar() {
 					</h1>
 				</div>
 				<div className="ml-auto flex items-center gap-2 bg-sidebar">
+					<Button
+						icon={ArrowRightIcon}
+						iconPlacement="right"
+						effect="shineHover"
+					>
+						Icon right
+					</Button>
+
+					<Button
+						loading={true}
+						loadingText="Loading..."
+						loadingIconPlacement="right"
+					>
+						Loader
+					</Button>
 					<AutoUpdateButton />
 					<DarkModeDropDownMenu />
 					{/* <button

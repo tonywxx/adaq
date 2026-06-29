@@ -1,10 +1,11 @@
 import { Slot, Slottable } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
+import { Loader2 } from "lucide-react";
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-	"group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+	"group inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
 	{
 		variants: {
 			variant: {
@@ -73,6 +74,9 @@ export interface ButtonProps
 	extends React.ButtonHTMLAttributes<HTMLButtonElement>,
 		VariantProps<typeof buttonVariants> {
 	asChild?: boolean;
+	loading?: boolean;
+	loadingText?: string;
+	loadingIconPlacement?: "left" | "right";
 }
 
 export type ButtonIconProps = IconProps | IconRefProps;
@@ -90,6 +94,11 @@ const Button = React.forwardRef<
 			icon: Icon,
 			iconPlacement,
 			asChild = false,
+			loading = false,
+			loadingText,
+			loadingIconPlacement = "left",
+			children,
+			disabled,
 			...props
 		},
 		ref,
@@ -99,9 +108,14 @@ const Button = React.forwardRef<
 			<Comp
 				className={cn(buttonVariants({ variant, effect, size, className }))}
 				ref={ref}
+				disabled={disabled || loading}
 				{...props}
 			>
-				{Icon &&
+				{loading && loadingIconPlacement === "left" && (
+					<Loader2 className="animate-spin" />
+				)}
+				{!loading &&
+					Icon &&
 					iconPlacement === "left" &&
 					(effect === "expandIcon" ? (
 						<div className="w-0 translate-x-[0%] pr-0 opacity-0 transition-all duration-200 group-hover:w-5 group-hover:translate-x-100 group-hover:pr-2 group-hover:opacity-100">
@@ -110,8 +124,12 @@ const Button = React.forwardRef<
 					) : (
 						<Icon />
 					))}
-				<Slottable>{props.children}</Slottable>
-				{Icon &&
+				<Slottable>{loading && loadingText ? loadingText : children}</Slottable>
+				{loading && loadingIconPlacement === "right" && (
+					<Loader2 className="animate-spin" />
+				)}
+				{!loading &&
+					Icon &&
 					iconPlacement === "right" &&
 					(effect === "expandIcon" ? (
 						<div className="w-0 translate-x-full pl-0 opacity-0 transition-all duration-200 group-hover:w-5 group-hover:translate-x-0 group-hover:pl-2 group-hover:opacity-100">
