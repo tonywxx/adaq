@@ -1,86 +1,15 @@
-import { getVersion } from "@tauri-apps/api/app";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import {
-	ArrowLeftIcon,
-	ArrowRightIcon,
-	DownloadIcon,
-	LaptopIcon,
-	MoonIcon,
-	MoreHorizontalIcon,
-	RefreshCwIcon,
-	SunIcon,
-} from "lucide-react";
-import { useTheme } from "next-themes";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
-
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuRadioGroup,
-	DropdownMenuRadioItem,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
+import { AutoUpdateButton } from "@/components/ui/autoupdate-button";
+import { DarkModeDropDownMenu } from "@/components/ui/dark-mode-dropdown-menu";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-
-const AUTO_UPDATE_DEBUG = false;
-const AUTO_DOWNLOAD_DELAY_MS = AUTO_UPDATE_DEBUG ? 50000 : 5000; // 5s normal, 50s in debug mode
-const CHECK_FOR_UPDATES_EVENT = "adaq-check-for-updates";
-
-type UpdateStatus =
-	| "idle"
-	| "checking"
-	| "available"
-	| "downloading"
-	| "ready"
-	| "error";
-
-type DownloadProgress = {
-	downloaded: number;
-	contentLength: number | null;
-	percent: number | null;
-};
-
-type ThemeMode = "light" | "dark" | "system";
-
-const themeOptions: {
-	value: ThemeMode;
-	label: string;
-	icon: typeof SunIcon;
-}[] = [
-	{ value: "light", label: "Light", icon: SunIcon },
-	{ value: "dark", label: "Dark", icon: MoonIcon },
-	{ value: "system", label: "System", icon: LaptopIcon },
-];
-
-const initialDownloadProgress: DownloadProgress = {
-	downloaded: 0,
-	contentLength: null,
-	percent: null,
-};
+import { Button } from "./ui/button";
 
 function isTauriRuntime() {
 	return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 const appWindow = isTauriRuntime() ? getCurrentWindow() : null;
-
-async function alertLatestVersion() {
-	try {
-		const appVersion = await getVersion();
-		toast.success(`You are using the latest version v${appVersion}.`);
-	} catch (error) {
-		console.error("Failed to read app version", error);
-		toast.success("You are using the latest version.");
-	}
-}
-
-function alertUpdateCheckFailed() {
-	toast.error("Unable to check for updates. Please try again later.");
-}
 
 async function runWindowAction(action: () => Promise<void>) {
 	if (!isTauriRuntime()) {
@@ -94,231 +23,7 @@ async function runWindowAction(action: () => Promise<void>) {
 	}
 }
 
-function getProgressPercent(downloaded: number, contentLength: number | null) {
-	if (!contentLength || contentLength <= 0) {
-		return null;
-	}
-
-	return Math.min(100, Math.round((downloaded / contentLength) * 100));
-}
-
-function getUpdateButtonLabel(
-	status: UpdateStatus,
-	version: string | null,
-	progress: DownloadProgress,
-) {
-	switch (status) {
-		case "available":
-			return version ? `Update to v${version}` : "Update";
-		case "downloading":
-			return progress.percent === null
-				? "Downloading"
-				: `${progress.percent}% Downloading...`;
-		case "ready":
-			return "Restart to update";
-		case "error":
-			return "Retry update";
-		default:
-			return null;
-	}
-}
-
 export function AppTitlebar() {
-	const { setTheme, theme = "system" } = useTheme();
-	const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
-	const [updateVersion, setUpdateVersion] = useState<string | null>(null);
-	const [downloadProgress, setDownloadProgress] = useState<DownloadProgress>(
-		initialDownloadProgress,
-	);
-	const pendingUpdateRef = useRef<Update | null>(null);
-	const downloadStartedRef = useRef(false);
-	const autoDownloadTimerRef = useRef<number | null>(null);
-	const updateCheckRequestRef = useRef(0);
-
-	const clearAutoDownloadTimer = useCallback(() => {
-		if (autoDownloadTimerRef.current === null) {
-			return;
-		}
-
-		window.clearTimeout(autoDownloadTimerRef.current);
-		autoDownloadTimerRef.current = null;
-	}, []);
-
-	const startUpdateDownload = useCallback(async () => {
-		if (!isTauriRuntime() || downloadStartedRef.current) {
-			return;
-		}
-
-		const pendingUpdate = pendingUpdateRef.current;
-
-		if (!pendingUpdate) {
-			return;
-		}
-
-		clearAutoDownloadTimer();
-		downloadStartedRef.current = true;
-		setUpdateStatus("downloading");
-		setDownloadProgress(initialDownloadProgress);
-
-		let downloaded = 0;
-		let contentLength: number | null = null;
-
-		try {
-			await pendingUpdate.downloadAndInstall((event) => {
-				switch (event.event) {
-					case "Started":
-						contentLength = event.data.contentLength ?? null;
-						setDownloadProgress({
-							downloaded: 0,
-							contentLength,
-							percent: getProgressPercent(0, contentLength),
-						});
-						break;
-					case "Progress":
-						downloaded += event.data.chunkLength;
-						setDownloadProgress({
-							downloaded,
-							contentLength,
-							percent: getProgressPercent(downloaded, contentLength),
-						});
-						break;
-					case "Finished":
-						setDownloadProgress({
-							downloaded: contentLength ?? downloaded,
-							contentLength,
-							percent: contentLength ? 100 : null,
-						});
-						break;
-					default:
-						break;
-				}
-			});
-
-			pendingUpdateRef.current = null;
-			setUpdateStatus("ready");
-		} catch (error) {
-			console.error("Update download failed", error);
-			downloadStartedRef.current = false;
-			setUpdateStatus("error");
-		}
-	}, [clearAutoDownloadTimer]);
-
-	const checkForUpdates = useCallback(
-		async ({
-			autoDownload,
-			notifyNoUpdate,
-			notifyError,
-		}: {
-			autoDownload: boolean;
-			notifyNoUpdate: boolean;
-			notifyError: boolean;
-		}) => {
-			if (!isTauriRuntime()) {
-				return;
-			}
-
-			const requestId = updateCheckRequestRef.current + 1;
-			updateCheckRequestRef.current = requestId;
-
-			clearAutoDownloadTimer();
-			downloadStartedRef.current = false;
-			pendingUpdateRef.current = null;
-			setUpdateVersion(null);
-			setDownloadProgress(initialDownloadProgress);
-			setUpdateStatus("checking");
-
-			try {
-				const update = await check({ timeout: 30000 });
-
-				if (updateCheckRequestRef.current !== requestId) {
-					return;
-				}
-
-				if (!update) {
-					setUpdateStatus("idle");
-
-					if (notifyNoUpdate) {
-						void alertLatestVersion();
-					}
-
-					return;
-				}
-
-				pendingUpdateRef.current = update;
-				setUpdateVersion(update.version);
-				setUpdateStatus("available");
-
-				if (autoDownload) {
-					autoDownloadTimerRef.current = window.setTimeout(() => {
-						void startUpdateDownload();
-					}, AUTO_DOWNLOAD_DELAY_MS);
-				}
-			} catch (error) {
-				if (updateCheckRequestRef.current !== requestId) {
-					return;
-				}
-
-				console.error("Update check failed", error);
-				setUpdateStatus("idle");
-
-				if (notifyError) {
-					alertUpdateCheckFailed();
-				}
-			}
-		},
-		[clearAutoDownloadTimer, startUpdateDownload],
-	);
-
-	useEffect(() => {
-		if (!isTauriRuntime() || AUTO_UPDATE_DEBUG) {
-			return;
-		}
-
-		void checkForUpdates({
-			autoDownload: true,
-			notifyNoUpdate: false,
-			notifyError: false,
-		});
-
-		return () => {
-			updateCheckRequestRef.current += 1;
-			clearAutoDownloadTimer();
-		};
-	}, [checkForUpdates, clearAutoDownloadTimer]);
-
-	useEffect(() => {
-		if (!isTauriRuntime()) {
-			return;
-		}
-
-		let disposed = false;
-		let unlisten: (() => void) | null = null;
-
-		listen(CHECK_FOR_UPDATES_EVENT, () => {
-			void checkForUpdates({
-				autoDownload: true,
-				notifyNoUpdate: true,
-				notifyError: true,
-			});
-		})
-			.then((cleanup) => {
-				if (disposed) {
-					cleanup();
-					return;
-				}
-
-				unlisten = cleanup;
-			})
-			.catch((error) => {
-				console.error("Failed to listen for update menu event", error);
-			});
-
-		return () => {
-			disposed = true;
-			unlisten?.();
-		};
-	}, [checkForUpdates]);
-
 	const startDrag = () => {
 		if (!appWindow) {
 			return;
@@ -340,38 +45,6 @@ export function AppTitlebar() {
 
 			await appWindow.maximize();
 		});
-	};
-
-	const updateButtonLabel = getUpdateButtonLabel(
-		updateStatus,
-		updateVersion,
-		downloadProgress,
-	);
-	const isDownloadingUpdate = updateStatus === "downloading";
-	const isRestartReady = updateStatus === "ready";
-	const activeTheme = themeOptions.some((option) => option.value === theme)
-		? (theme as ThemeMode)
-		: "system";
-	const ActiveThemeIcon =
-		themeOptions.find((option) => option.value === activeTheme)?.icon ??
-		LaptopIcon;
-
-	const handleUpdateButtonClick = () => {
-		if (isRestartReady) {
-			void runWindowAction(() => relaunch());
-			return;
-		}
-
-		if (updateStatus === "idle") {
-			void checkForUpdates({
-				autoDownload: false,
-				notifyNoUpdate: true,
-				notifyError: true,
-			});
-			return;
-		}
-
-		void startUpdateDownload();
 	};
 
 	return (
@@ -418,86 +91,16 @@ export function AppTitlebar() {
 				<div className="flex items-center gap-3 bg-sidebar">
 					{/* <img src="/adaq.svg" alt="AdaQ" className="size-8" /> */}
 					<h1 className="min-w-0 flex-1 truncate text-[22px] font-semibold leading-none tracking-normal text-sidebar-foreground">
-						AdaQ
+						{/* AdaQ */}
 					</h1>
 				</div>
 				<div className="ml-auto flex items-center gap-2 bg-sidebar">
-					<DropdownMenu>
-						<DropdownMenuTrigger asChild>
-							<button
-								type="button"
-								aria-label={`Theme: ${
-									themeOptions.find((option) => option.value === activeTheme)
-										?.label ?? "System"
-								}`}
-								title="Theme"
-								className="flex size-8 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
-								onClick={(event) => event.stopPropagation()}
-								onPointerDown={(event) => event.stopPropagation()}
-							>
-								<ActiveThemeIcon className="size-4" />
-							</button>
-						</DropdownMenuTrigger>
-						<DropdownMenuContent
-							align="end"
-							className="w-36"
-							onPointerDown={(event) => event.stopPropagation()}
-							onClick={(event) => event.stopPropagation()}
-						>
-							<DropdownMenuRadioGroup
-								value={activeTheme}
-								onValueChange={(value) => setTheme(value as ThemeMode)}
-							>
-								{themeOptions.map((option) => {
-									const Icon = option.icon;
-
-									return (
-										<DropdownMenuRadioItem
-											key={option.value}
-											value={option.value}
-											className="gap-2"
-										>
-											<Icon className="size-4" />
-											<span>{option.label}</span>
-										</DropdownMenuRadioItem>
-									);
-								})}
-							</DropdownMenuRadioGroup>
-						</DropdownMenuContent>
-					</DropdownMenu>
-					{updateButtonLabel || AUTO_UPDATE_DEBUG ? (
-						<button
-							type="button"
-							aria-label={updateButtonLabel ?? "Check for Updates"}
-							title={updateButtonLabel ?? "Check for Updates"}
-							disabled={isDownloadingUpdate}
-							className="relative flex h-8 max-w-[190px] shrink-0 items-center justify-center overflow-hidden rounded-md border border-sidebar-border bg-background/70 px-2.5 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-background disabled:cursor-default disabled:opacity-85"
-							onClick={(event) => {
-								event.stopPropagation();
-								handleUpdateButtonClick();
-							}}
-							onPointerDown={(event) => event.stopPropagation()}
-						>
-							{isDownloadingUpdate && downloadProgress.percent !== null ? (
-								<span
-									aria-hidden="true"
-									className="absolute inset-y-0 left-0 bg-black/10 transition-[width]"
-									style={{ width: `${downloadProgress.percent}%` }}
-								/>
-							) : null}
-							<span className="relative z-10 flex min-w-0 items-center gap-1.5">
-								{isRestartReady ? (
-									<RefreshCwIcon className="size-3.5 shrink-0" />
-								) : (
-									<DownloadIcon className="size-3.5 shrink-0" />
-								)}
-								<span className="truncate">
-									{updateButtonLabel ?? "Check for Updates"}
-								</span>
-							</span>
-						</button>
-					) : null}
-					<button
+					<Button variant="outline" effect="shine">
+						&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; AdaQ&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;
+					</Button>
+					<AutoUpdateButton />
+					<DarkModeDropDownMenu />
+					{/* <button
 						type="button"
 						aria-label="More"
 						title="More"
@@ -506,7 +109,7 @@ export function AppTitlebar() {
 						onPointerDown={(event) => event.stopPropagation()}
 					>
 						<MoreHorizontalIcon className="size-4" />
-					</button>
+					</button> */}
 				</div>
 			</div>
 		</div>

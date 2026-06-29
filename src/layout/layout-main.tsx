@@ -30,7 +30,7 @@ export default function LayoutMain() {
 			<Toaster />
 
 			<AppSidebar className="top-14 h-[calc(100svh-3.5rem)]" variant="inset" />
-			<SidebarInset className="m-0! rounded-tl-none! rounded-bl-[12px] min-h-0 overflow-y-auto border-l border-border shadow-none!">
+			<SidebarInset className="m-0! rounded-none! min-h-0 overflow-y-auto border-l border-border shadow-none!">
 				<div className="flex flex-1 flex-col">
 					<div className="@container/main flex flex-1 flex-col gap-2">
 						<div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
