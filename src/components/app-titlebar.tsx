@@ -95,9 +95,6 @@ export function AppTitlebar() {
 					</h1>
 				</div>
 				<div className="ml-auto flex items-center gap-2 bg-sidebar">
-					<Button variant="outline" effect="shine">
-						&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; AdaQ&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;
-					</Button>
 					<AutoUpdateButton />
 					<DarkModeDropDownMenu />
 					{/* <button

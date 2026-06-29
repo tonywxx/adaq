@@ -5,6 +5,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { DownloadIcon, RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { Button } from "./button";
 
 const AUTO_UPDATE_DEBUG = false;
 const AUTO_DOWNLOAD_DELAY_MS = AUTO_UPDATE_DEBUG ? 50000 : 5000;
@@ -315,8 +316,9 @@ export function AutoUpdateButton() {
 	}
 
 	return (
-		<button
+		<Button
 			type="button"
+			effect="shine"
 			aria-label={updateButtonLabel ?? "Check for Updates"}
 			title={updateButtonLabel ?? "Check for Updates"}
 			disabled={isDownloadingUpdate}
@@ -344,6 +346,6 @@ export function AutoUpdateButton() {
 					{updateButtonLabel ?? "Check for Updates"}
 				</span>
 			</span>
-		</button>
+		</Button>
 	);
 }
