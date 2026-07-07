@@ -1,0 +1,7 @@
+{
+	"searchInstrument": {
+		"base": "https://search-codetable.eastmoney.com",
+		"uri": "/codetable/search/web",
+		"ie": "https://search-codetable.eastmoney.com/codetable/search/web?client=web&clientType=webSuggest&clientVersion=lastest&pageIndex=1&pageSize=5&_=1710760574221&type=1,2,25,27&keyword=%s"
+	}
+}

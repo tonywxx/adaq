@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
+import { InstSearchBar } from "@/components/inst-search-bar";
 import { AutoUpdateButton } from "@/components/ui/autoupdate-button";
 import { DarkModeDropDownMenu } from "@/components/ui/dark-mode-dropdown-menu";
 import { SidebarTrigger } from "@/components/ui/sidebar";
@@ -111,6 +112,7 @@ export function AppTitlebar() {
 					>
 						Loader
 					</Button> */}
+					<InstSearchBar />
 					<AutoUpdateButton />
 					<DarkModeDropDownMenu />
 					{/* <button

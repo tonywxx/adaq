@@ -1,4 +1,3 @@
-import { debug, error, info, trace, warn } from "@tauri-apps/plugin-log";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AppTitlebar } from "@/components/app-titlebar";
 import { ChartAreaInteractive } from "@/components/chart-area-interactive";
@@ -7,11 +6,6 @@ import { SectionCards } from "@/components/section-cards";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/sonner";
 
-debug("Debug");
-warn("warn");
-trace("Trace");
-info("Info");
-error("Error");
 // import data from "./data.json";
 
 export default function LayoutMain() {

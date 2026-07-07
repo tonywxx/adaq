@@ -22,6 +22,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_http::init())
         .setup(|app| {
             let handle = app.handle();
             let app_menu = SubmenuBuilder::new(handle, "adaq")
