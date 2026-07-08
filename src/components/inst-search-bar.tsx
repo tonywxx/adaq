@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { LoaderCircleIcon, SearchIcon } from "lucide-react";
 import * as React from "react";
 import { Input } from "@/components/ui/input";
+import { useActiveInstStore } from "@/lib/active-inst-store";
 import {
 	type InstrumentSearchResult,
 	searchEastmoneyInstruments,
@@ -13,6 +14,7 @@ export function InstSearchBar() {
 	const [query, setQuery] = React.useState("");
 	const [isOpen, setIsOpen] = React.useState(false);
 	const inputRef = React.useRef<HTMLInputElement>(null);
+	const setActiveInst = useActiveInstStore((state) => state.setActiveInst);
 	const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
 	const hasQuery = query.trim().length > 0;
 	const shouldSearch = debouncedQuery.length > 0;
@@ -76,6 +78,12 @@ export function InstSearchBar() {
 					isError={isError}
 					isFetching={isFetching}
 					hasSearch={shouldSearch}
+					onSelect={(instrument) => {
+						setActiveInst(instrument);
+						setQuery(`${instrument.symbol} ${instrument.name}`);
+						setIsOpen(false);
+						inputRef.current?.blur();
+					}}
 				/>
 			) : null}
 		</div>
@@ -87,11 +95,13 @@ function SearchPanel({
 	isError,
 	isFetching,
 	hasSearch,
+	onSelect,
 }: {
 	results: InstrumentSearchResult[];
 	isError: boolean;
 	isFetching: boolean;
 	hasSearch: boolean;
+	onSelect: (instrument: InstrumentSearchResult) => void;
 }) {
 	return (
 		<div className="absolute top-[calc(100%+0.5rem)] right-0 z-60 w-[min(92vw,440px)] overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10">
@@ -108,17 +118,19 @@ function SearchPanel({
 					</div>
 				) : results.length > 0 ? (
 					results.map((result) => (
-						<div
-							className="grid grid-cols-[4rem_5.5rem_1fr_5rem] items-center gap-3 px-3 py-2 text-sm hover:bg-muted/60"
+						<button
+							type="button"
+							className="grid w-full grid-cols-[4rem_5.5rem_1fr_5rem] items-center gap-3 px-3 py-2 text-left text-sm hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none"
 							key={result.id}
+							onClick={() => onSelect(result)}
 						>
 							<span className="text-muted-foreground">{result.market}</span>
-							<span className="font-medium tabular-nums">{result.code}</span>
+							<span className="font-medium tabular-nums">{result.symbol}</span>
 							<span className="truncate font-medium">{result.name}</span>
 							<span className="truncate text-right font-semibold text-primary">
 								{result.pinyin}
 							</span>
-						</div>
+						</button>
 					))
 				) : hasSearch && !isFetching ? (
 					<div className="px-3 py-3 text-sm text-muted-foreground">

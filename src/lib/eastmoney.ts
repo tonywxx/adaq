@@ -31,6 +31,7 @@ interface EastmoneyCodetableResponse {
 
 export interface InstrumentSearchResult {
 	market: string;
+	symbol: string;
 	code: string;
 	name: string;
 	pinyin: string;
@@ -83,6 +84,7 @@ function normalizeCodetableItem(
 
 	return {
 		market: item.securityTypeName?.trim() || "证券",
+		symbol: code,
 		code,
 		name,
 		pinyin: (item.pinyin ?? "").toUpperCase(),
