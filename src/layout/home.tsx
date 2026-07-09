@@ -3,19 +3,14 @@ import { AppTitlebar } from "@/components/app-titlebar";
 import { ChartAreaInteractive } from "@/components/chart-area-interactive";
 import { DataTable } from "@/components/data-table";
 import { SectionCards } from "@/components/section-cards";
-import {
-	Card,
-	CardContent,
-	CardHeader,
-	CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/sonner";
 import { useActiveInstStore } from "@/lib/active-inst-store";
 
 // import data from "./data.json";
 
-export default function LayoutMain() {
+export default function Home() {
 	return (
 		<SidebarProvider
 			className="h-svh overflow-hidden bg-sidebar pt-(--header-height)"
@@ -36,6 +31,7 @@ export default function LayoutMain() {
 					<div className="@container/main flex flex-1 flex-col gap-2">
 						<div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
 							<SectionCards />
+							11
 							<ActiveInstrumentCard />
 							<div className="px-4 lg:px-6">
 								<ChartAreaInteractive />
@@ -64,7 +60,10 @@ function ActiveInstrumentCard() {
 							<InstrumentField label="Code" value={activeInst.code} />
 							<InstrumentField label="Name" value={activeInst.name} />
 							<InstrumentField label="Market" value={activeInst.market} />
-							<InstrumentField label="Pinyin" value={activeInst.pinyin || "-"} />
+							<InstrumentField
+								label="Pinyin"
+								value={activeInst.pinyin || "-"}
+							/>
 						</dl>
 					) : (
 						<div className="text-sm text-muted-foreground">

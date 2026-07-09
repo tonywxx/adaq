@@ -5,7 +5,7 @@ import {
 	Outlet,
 } from "@tanstack/react-router";
 import { AuthGate } from "@/components/auth-gate";
-import LayoutMain from "@/layout/layout-main";
+import Home from "@/layout/home";
 
 const rootRoute = createRootRoute({
 	component: Outlet,
@@ -20,7 +20,7 @@ const appRoute = createRoute({
 function AppRoute() {
 	return (
 		<AuthGate>
-			<LayoutMain />
+			<Home />
 		</AuthGate>
 	);
 }

@@ -34,10 +34,10 @@ export default defineConfig(async () => ({
 			ignored: ["**/src-tauri/**"],
 		},
 		proxy: {
-			"/eastmoney": {
+			"/em.searchInstrument": {
 				target: "https://search-codetable.eastmoney.com",
 				changeOrigin: true,
-				rewrite: (path) => path.replace(/^\/eastmoney/, ""),
+				rewrite: (path: any) => path.replace(/^\/em.searchInstrument/, ""),
 			},
 		},
 	},

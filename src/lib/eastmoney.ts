@@ -2,7 +2,7 @@ import em from "@/eastmoney/eastmoney-url.json";
 import { createHttpClient, isTauriRuntime } from "@/lib/http";
 
 const EASTMONEY_BASE = em.searchInstrument.base;
-const EASTMONEY_WEB_PROXY = "/eastmoney";
+const EASTMONEY_WEB_PROXY = "/em.searchInstrument";
 const eastmoneyClient = createHttpClient(
 	{
 		baseURL: isTauriRuntime() ? EASTMONEY_BASE : EASTMONEY_WEB_PROXY,
