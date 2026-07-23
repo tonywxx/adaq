@@ -1,31 +1,89 @@
 {
+	"$schema": "https://biomejs.dev/schemas/2.5.3/schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"files": {
+		"includes": [
+			"src/**/*.ts",
+			"src/**/*.tsx",
+			"!src/components/ui",
+			"!src/components/ai-elements"
+		]
+	},
 	"css": {
 		"parser": {
 			"tailwindDirectives": true
 		}
 	},
+	"formatter": {
+		"enabled": true,
+		"indentWidth": 1,
+		"lineWidth": 80
+	},
 	"assist": {
+		"enabled": true,
 		"actions": {
 			"source": {
-				"organizeImports": "on"
+				"organizeImports": {
+					"level": "on",
+					"options": {
+						"groups": [":NODE:", ["@/**"], ":PACKAGE:", ":ALIAS:", ":PATH:"]
+					}
+				}
 			}
 		}
 	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "double",
+			"semicolons": "always",
+			"trailingCommas": "all"
+		}
+	},
+
 	"linter": {
 		"rules": {
 			"a11y": {
 				"useButtonType": "off",
-				"noSvgWithoutTitle": "off",
-				"noLabelWithoutControl": "off",
-				"noStaticElementInteractions": "off"
+				"useSemanticElements": "warn",
+				"useKeyWithClickEvents": "warn",
+				"useFocusableInteractive": "warn",
+				"noStaticElementInteractions": "warn",
+				"useAriaPropsSupportedByRole": "warn",
+				"noSvgWithoutTitle": "warn",
+				"noNoninteractiveTabindex": "warn",
+				"noLabelWithoutControl": "warn"
 			},
 			"suspicious": {
 				"noExplicitAny": "off",
-				"noAssignInExpressions": "off",
-				"useIterableCallbackReturn": "off"
+				"noControlCharactersInRegex": "off",
+				"noArrayIndexKey": "warn",
+				"noAssignInExpressions": "warn",
+				"useIterableCallbackReturn": "warn",
+				"noTsIgnore": "error"
 			},
 			"correctness": {
-				"useExhaustiveDependencies": "off"
+				"useExhaustiveDependencies": "warn",
+				"useHookAtTopLevel": "warn",
+				"useParseIntRadix": "warn",
+				"noUnusedVariables": "warn"
+			},
+			"complexity": {
+				"useOptionalChain": "warn",
+				"useIndexOf": "warn",
+				"noBannedTypes": "warn"
+			},
+			"style": {
+				"useImportType": "error",
+				"noNonNullAssertion": "warn",
+				"useTemplate": "warn",
+				"useExportType": "error"
+			},
+			"performance": {
+				"noAccumulatingSpread": "warn"
 			}
 		}
 	}

@@ -1,5 +1,7 @@
 allowBuilds:
+  core-js: set this to true or false
   esbuild: true
   msw: false
+  unrs-resolver: true
 overrides:
   zod: 3.25.76
