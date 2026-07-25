@@ -20,6 +20,10 @@ _Avoid_: Symbol, ticker
 The normalized lifecycle status of an Instrument: Live, Suspended, Pre-Open, Test, or Unknown. Unknown status is never treated as live or tradable.
 _Avoid_: State, provider status
 
+**Ticker Snapshot**:
+A Venue-published current market summary for one Instrument, containing the last trade, best bid and ask, rolling 24-hour statistics, volumes, and Venue timestamp. It may update without representing a new trade.
+_Avoid_: Ticker when referring to Instrument identity, live price
+
 **Listing Time**:
 The UTC instant when an Instrument enters a Venue's listing or pre-open process; it may precede continuous trading.
 _Avoid_: Trading start time
@@ -67,6 +71,10 @@ _Avoid_: Timestamp-only identity
 **Closed Bar**:
 An OHLCV Bar whose time interval has ended and is eligible for reproducible historical queries.
 _Avoid_: Finished candle, confirmed candle
+
+**Open Bar**:
+An OHLCV Bar for the current Bar Interval that may change until the Venue confirms it as a Closed Bar. It is suitable for live display but not reproducible historical queries.
+_Avoid_: Live candle, unfinished K-line
 
 **Historical Bar Range**:
 A UTC half-open interval `[start, end)` whose Closed Bars are returned in ascending Bar Open Time order.

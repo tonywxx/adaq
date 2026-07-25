@@ -10,35 +10,120 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
+import {
+	BAR_INTERVALS,
+	type BarInterval,
 	type BarSeries,
 	type OhlcvBar,
+	subtractBarIntervals,
 	toMarketChartData,
 } from "@/lib/market-chart-adapter";
 import WChart from "@/w/lightweight-charts/WChart";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { LoaderCircleIcon } from "lucide-react";
 import { useTheme } from "next-themes";
-import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 
-const REQUEST = {
+const BASE_REQUEST = {
 	src: "okx",
 	code: "BTC-USDT",
-	interval: "1d",
 } as const;
-const DAY_MS = 86_400_000;
-const HISTORY_PAGE_MS = 120 * DAY_MS;
-const LEFT_EDGE_THRESHOLD_SECONDS = (5 * DAY_MS) / 1_000;
+const HISTORY_PAGE_BARS = 300;
+const LEFT_EDGE_THRESHOLD_BARS = 5;
 
 type BarRange = {
 	startTimeMs: number;
 	endTimeMs: number;
 };
 
+type BarStreamEvent =
+	| { event: "connected" }
+	| { event: "snapshot"; data: { bar: OhlcvBar; closed: boolean } }
+	| { event: "error"; data: { message: string } }
+	| { event: "reconnecting"; data: { delayMs: number } }
+	| { event: "closed" };
+
+type ConnectionStatus = "connecting" | "live" | "reconnecting";
+
 export function CryptoKlineCard() {
 	const { resolvedTheme } = useTheme();
-	const [initialEndTimeMs] = useState(Date.now);
+	const [{ interval, endTimeMs }, setSelection] = useState<{
+		interval: BarInterval;
+		endTimeMs: number;
+	}>(() => ({ interval: "15m", endTimeMs: Date.now() }));
+	const [liveBar, setLiveBar] = useState<{
+		interval: BarInterval;
+		bar: OhlcvBar;
+	}>();
+	const [connectionStatus, setConnectionStatus] =
+		useState<ConnectionStatus>("connecting");
+	const [streamError, setStreamError] = useState<string>();
 	const [crosshairBar, setCrosshairBar] = useState<OhlcvBar>();
+
+	useEffect(() => {
+		let disposed = false;
+		const subscriptionId = crypto.randomUUID();
+		const onEvent = new Channel<BarStreamEvent>();
+
+		setConnectionStatus("connecting");
+		setStreamError(undefined);
+		onEvent.onmessage = (event) => {
+			if (disposed) return;
+			switch (event.event) {
+				case "connected":
+					setConnectionStatus("live");
+					setStreamError(undefined);
+					break;
+				case "snapshot":
+					setLiveBar({ interval, bar: event.data.bar });
+					setConnectionStatus("live");
+					setStreamError(undefined);
+					break;
+				case "error":
+					setConnectionStatus("reconnecting");
+					setStreamError(event.data.message);
+					break;
+				case "reconnecting":
+					setConnectionStatus("reconnecting");
+					break;
+				case "closed":
+					setConnectionStatus("reconnecting");
+					break;
+			}
+		};
+
+		void invoke("market_subscribe_bar", {
+			request: { ...BASE_REQUEST, interval, subscriptionId },
+			onEvent,
+		}).catch((reason) => {
+			if (!disposed) {
+				setConnectionStatus("reconnecting");
+				setStreamError(getErrorMessage(reason));
+			}
+		});
+
+		return () => {
+			disposed = true;
+			void invoke("market_unsubscribe_bar", {
+				request: { subscriptionId },
+			});
+		};
+	}, [interval]);
+
 	const {
 		data,
 		error,
@@ -50,14 +135,24 @@ export function CryptoKlineCard() {
 		isPending,
 		refetch,
 	} = useInfiniteQuery({
-		queryKey: ["market-bar-series", REQUEST],
+		queryKey: [
+			"market-bar-series",
+			BASE_REQUEST.src,
+			BASE_REQUEST.code,
+			interval,
+			endTimeMs,
+		],
 		initialPageParam: {
-			startTimeMs: initialEndTimeMs - HISTORY_PAGE_MS,
-			endTimeMs: initialEndTimeMs,
+			startTimeMs: subtractBarIntervals(
+				endTimeMs,
+				interval,
+				HISTORY_PAGE_BARS,
+			),
+			endTimeMs,
 		} satisfies BarRange,
 		queryFn: ({ pageParam }) =>
 			invoke<BarSeries>("market_get_bar_series", {
-				request: { ...REQUEST, ...pageParam },
+				request: { ...BASE_REQUEST, interval, ...pageParam },
 			}),
 		getNextPageParam: (lastPage, _pages, lastPageParam) => {
 			const earliest = lastPage.bars[0]?.openTimeMs;
@@ -65,26 +160,40 @@ export function CryptoKlineCard() {
 				return undefined;
 			}
 			return {
-				startTimeMs: Math.max(0, earliest - HISTORY_PAGE_MS),
-				endTimeMs: earliest + 1,
+				startTimeMs: subtractBarIntervals(
+					earliest,
+					interval,
+					HISTORY_PAGE_BARS,
+				),
+				endTimeMs: earliest,
 			};
 		},
 		staleTime: 60_000,
 	});
 	const bars = useMemo(
-		() =>
-			(data?.pages.flatMap((page) => page.bars) ?? []).sort(
+		() => {
+			const byTime = new Map(
+				(data?.pages.flatMap((page) => page.bars) ?? []).map((bar) => [
+					bar.openTimeMs,
+					bar,
+				]),
+			);
+			if (liveBar?.interval === interval) {
+				byTime.set(liveBar.bar.openTimeMs, liveBar.bar);
+			}
+			return [...byTime.values()].sort(
 				(left, right) => left.openTimeMs - right.openTimeMs,
-			),
-		[data],
+			);
+		},
+		[data, interval, liveBar],
 	);
 	const gaps = useMemo(
 		() => data?.pages.flatMap((page) => page.gaps) ?? [],
 		[data],
 	);
 	const chartData = useMemo(
-		() => toMarketChartData(bars, gaps, REQUEST.interval),
-		[bars, gaps],
+		() => toMarketChartData(bars, gaps, interval),
+		[bars, gaps, interval],
 	);
 	const barsByTime = useMemo(
 		() => new Map(bars.map((bar) => [bar.openTimeMs / 1_000, bar])),
@@ -94,12 +203,24 @@ export function CryptoKlineCard() {
 	const detailBar = crosshairBar ?? latestBar;
 	const historyRef = useRef({
 		earliestTime: bars[0]?.openTimeMs,
+		thresholdSeconds: 0,
 		fetchNextPage,
 		hasNextPage,
 		isFetchingNextPage,
 	});
+	const earliestTime = bars[0]?.openTimeMs;
 	historyRef.current = {
-		earliestTime: bars[0]?.openTimeMs,
+		earliestTime,
+		thresholdSeconds:
+			earliestTime === undefined
+				? 0
+				: (earliestTime -
+						subtractBarIntervals(
+							earliestTime,
+							interval,
+							LEFT_EDGE_THRESHOLD_BARS,
+						)) /
+					1_000,
 		fetchNextPage,
 		hasNextPage,
 		isFetchingNextPage,
@@ -115,7 +236,7 @@ export function CryptoKlineCard() {
 			state.earliestTime === undefined ||
 			!state.hasNextPage ||
 			state.isFetchingNextPage ||
-			from > state.earliestTime / 1_000 + LEFT_EDGE_THRESHOLD_SECONDS
+			from > state.earliestTime / 1_000 + state.thresholdSeconds
 		) {
 			return;
 		}
@@ -127,6 +248,13 @@ export function CryptoKlineCard() {
 		setCrosshairBar(
 			time === undefined ? undefined : barsByTimeRef.current.get(time),
 		);
+	}, []);
+	const handleIntervalChange = useCallback((value: string) => {
+		if (!BAR_INTERVALS.includes(value as BarInterval)) return;
+		setCrosshairBar(undefined);
+		setLiveBar(undefined);
+		setConnectionStatus("connecting");
+		setSelection({ interval: value as BarInterval, endTimeMs: Date.now() });
 	}, []);
 	const isDark = resolvedTheme === "dark";
 	const chartColors = isDark

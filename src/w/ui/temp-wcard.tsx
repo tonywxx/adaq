@@ -12,7 +12,7 @@ import {
 export function TempWCard() {
 	return (
 		<div className="*:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card dark:*:data-[slot=card]:bg-card *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:shadow-xs">
-			<Card className="@container/card rounded-none py-4">
+			<Card className="@container/card rounded-md py-4">
 				<CardHeader>
 					<CardDescription>Total Revenue</CardDescription>
 					<CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">

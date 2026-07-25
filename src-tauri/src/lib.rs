@@ -1,9 +1,11 @@
 use ada_data_core::{
-    BarInterval, BarSeries, DataError, HistoricalBarRange, OkxClient, SpotInstrument,
+    BarInterval, BarSeries, BarStreamEvent, DataError, HistoricalBarRange, OkxClient,
+    SpotInstrument, TickerSnapshot, TickerStreamEvent,
 };
 use std::sync::Mutex;
 use tauri::{
     Emitter, Manager, State,
+    ipc::Channel,
     menu::{AboutMetadata, MenuBuilder, SubmenuBuilder},
 };
 use wasmtime::{
@@ -141,6 +143,62 @@ struct MarketGetBarSeriesRequest {
     end_time_ms: i64,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarketTickerRequest {
+    src: String,
+    code: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarketSubscribeTickerRequest {
+    src: String,
+    code: String,
+    subscription_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarketUnsubscribeTickerRequest {
+    subscription_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarketSubscribeBarRequest {
+    src: String,
+    code: String,
+    interval: BarInterval,
+    subscription_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarketUnsubscribeBarRequest {
+    subscription_id: String,
+}
+
+struct ActiveTickerStream {
+    subscription_id: String,
+    task: tauri::async_runtime::JoinHandle<()>,
+    on_event: Channel<TickerStreamEvent>,
+}
+
+// ponytail: one dashboard ticker stream; use a keyed map when concurrent ticker cards are needed.
+#[derive(Default)]
+struct TickerStreamState(Mutex<Option<ActiveTickerStream>>);
+
+struct ActiveBarStream {
+    subscription_id: String,
+    task: tauri::async_runtime::JoinHandle<()>,
+    on_event: Channel<BarStreamEvent>,
+}
+
+// ponytail: one dashboard bar stream; use a keyed map when concurrent charts are needed.
+#[derive(Default)]
+struct BarStreamState(Mutex<Option<ActiveBarStream>>);
+
 fn require_okx(src: &str) -> Result<(), DataError> {
     if src == "okx" {
         Ok(())
@@ -180,6 +238,142 @@ async fn market_get_bar_series(
         .await
 }
 
+#[tauri::command]
+async fn market_get_ticker(
+    request: MarketTickerRequest,
+    client: State<'_, OkxClient>,
+) -> Result<TickerSnapshot, DataError> {
+    require_okx(&request.src)?;
+    client.get_ticker(&request.code).await
+}
+
+#[tauri::command]
+fn market_subscribe_ticker(
+    request: MarketSubscribeTickerRequest,
+    on_event: Channel<TickerStreamEvent>,
+    client: State<'_, OkxClient>,
+    streams: State<'_, TickerStreamState>,
+) -> Result<(), DataError> {
+    require_okx(&request.src)?;
+    if request.subscription_id.trim().is_empty() {
+        return Err(DataError::new(
+            request.src,
+            "invalid_request",
+            "subscription ID must be non-empty",
+        ));
+    }
+
+    let mut active = streams
+        .0
+        .lock()
+        .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
+    let task_client = client.inner().clone();
+    let task_channel = on_event.clone();
+    let code = request.code;
+    let task = tauri::async_runtime::spawn(async move {
+        if let Err(error) = task_client
+            .stream_ticker(&code, |event| task_channel.send(event).is_ok())
+            .await
+        {
+            let _ = task_channel.send(TickerStreamEvent::Error(error));
+        }
+    });
+
+    if let Some(previous) = active.replace(ActiveTickerStream {
+        subscription_id: request.subscription_id,
+        task,
+        on_event,
+    }) {
+        let _ = previous.on_event.send(TickerStreamEvent::Closed);
+        previous.task.abort();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn market_unsubscribe_ticker(
+    request: MarketUnsubscribeTickerRequest,
+    streams: State<'_, TickerStreamState>,
+) -> Result<(), DataError> {
+    let mut active = streams
+        .0
+        .lock()
+        .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
+    if active
+        .as_ref()
+        .is_some_and(|stream| stream.subscription_id == request.subscription_id)
+    {
+        let stream = active.take().expect("active ticker stream disappeared");
+        let _ = stream.on_event.send(TickerStreamEvent::Closed);
+        stream.task.abort();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn market_subscribe_bar(
+    request: MarketSubscribeBarRequest,
+    on_event: Channel<BarStreamEvent>,
+    client: State<'_, OkxClient>,
+    streams: State<'_, BarStreamState>,
+) -> Result<(), DataError> {
+    require_okx(&request.src)?;
+    if request.subscription_id.trim().is_empty() {
+        return Err(DataError::new(
+            request.src,
+            "invalid_request",
+            "subscription ID must be non-empty",
+        ));
+    }
+
+    let mut active = streams
+        .0
+        .lock()
+        .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
+    let task_client = client.inner().clone();
+    let task_channel = on_event.clone();
+    let code = request.code;
+    let interval = request.interval;
+    let task = tauri::async_runtime::spawn(async move {
+        if let Err(error) = task_client
+            .stream_bar(&code, interval, |event| task_channel.send(event).is_ok())
+            .await
+        {
+            let _ = task_channel.send(BarStreamEvent::Error(error));
+        }
+    });
+
+    if let Some(previous) = active.replace(ActiveBarStream {
+        subscription_id: request.subscription_id,
+        task,
+        on_event,
+    }) {
+        let _ = previous.on_event.send(BarStreamEvent::Closed);
+        previous.task.abort();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn market_unsubscribe_bar(
+    request: MarketUnsubscribeBarRequest,
+    streams: State<'_, BarStreamState>,
+) -> Result<(), DataError> {
+    let mut active = streams
+        .0
+        .lock()
+        .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
+    if active
+        .as_ref()
+        .is_some_and(|stream| stream.subscription_id == request.subscription_id)
+    {
+        let stream = active.take().expect("active bar stream disappeared");
+        let _ = stream.on_event.send(BarStreamEvent::Closed);
+        stream.task.abort();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -194,6 +388,8 @@ pub fn run() {
         .setup(|app| {
             app.manage(WasmLoader::load(FACTOR_COMPONENT_PATH).map_err(std::io::Error::other)?);
             app.manage(OkxClient::default());
+            app.manage(TickerStreamState::default());
+            app.manage(BarStreamState::default());
             let handle = app.handle();
             let app_menu = SubmenuBuilder::new(handle, "adaq")
                 .about(Some(AboutMetadata {
@@ -253,7 +449,12 @@ pub fn run() {
             greet,
             get_factor_meta_info,
             market_list_spot_instruments,
-            market_get_bar_series
+            market_get_bar_series,
+            market_get_ticker,
+            market_subscribe_ticker,
+            market_unsubscribe_ticker,
+            market_subscribe_bar,
+            market_unsubscribe_bar
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

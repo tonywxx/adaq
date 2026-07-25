@@ -97,6 +97,22 @@ export function toMarketChartData(
 	return chartData.sort((left, right) => left.time - right.time);
 }
 
+export function subtractBarIntervals(
+	timeMs: number,
+	interval: BarInterval,
+	count: number,
+) {
+	const fixed = FIXED_INTERVAL_MS[interval];
+	if (fixed) return Math.max(0, timeMs - fixed * count);
+
+	const date = new Date(timeMs);
+	const months = interval === "1mo" ? count : count * 3;
+	return Math.max(
+		0,
+		Date.UTC(date.getUTCFullYear(), date.getUTCMonth() - months, 1),
+	);
+}
+
 function nextOpenTimeMs(openTimeMs: number, interval: BarInterval) {
 	const fixed = FIXED_INTERVAL_MS[interval];
 	if (fixed) return openTimeMs + fixed;
