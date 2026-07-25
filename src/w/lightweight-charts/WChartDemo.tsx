@@ -1,6 +1,6 @@
+import WChart from "@/w/lightweight-charts/WChart";
 import { LineStyle } from "lightweight-charts";
 import { useState } from "react";
-import WChart from "@/w/coms/lightweight-charts/WChart";
 
 // ========== 示例使用 Demo ==========
 const WChartDemo = () => {
@@ -11,7 +11,7 @@ const WChartDemo = () => {
 
 	// 生成示例数据
 	const generateSampleData = () => {
-		const data = [];
+		const data = [] as any[];
 		const basePrice = 100;
 		let currentPrice = basePrice;
 		const now = new Date();
@@ -153,7 +153,7 @@ const WChartDemo = () => {
 					theme === "dark" ? "rgba(255, 255, 255, 0.05)" : "rgba(0, 0, 0, 0.05)"
 				}
 				onCrosshairMove={(param) => {
-					if (param.time) {
+					if (param) {
 						console.log("Crosshair moved:", param);
 					}
 				}}

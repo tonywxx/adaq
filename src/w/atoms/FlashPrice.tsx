@@ -36,7 +36,7 @@ export const FlashPrice: React.FC<FlashPriceProps> = ({
   const [prevPrice, setPrevPrice] = useState<number | string>(price)
   const [changeIndex, setChangeIndex] = useState<number>(-1)
   const [isUp, setIsUp] = useState<boolean>(true)
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const currentFormatted = useMemo(() => formatPrice(price), [price])
   // We need to track the PREVIOUS formatted string to carry over the comparison state

@@ -24,7 +24,7 @@ import {
 	type WhitespaceData,
 } from "lightweight-charts";
 import type React from "react";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 type ChartType =
 	| "candlestick"
@@ -206,21 +206,52 @@ const WChart: React.FC<WChartProps> = ({
 		SeriesApi["createPriceLine"]
 	> | null>(null);
 	const prevDataRef = useRef<ChartDataItem[]>([]);
+	const dataRef = useRef<ChartDataItem[]>(data);
+	dataRef.current = data;
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
 	const fitContentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const ema1SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
 	const ema2SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
 
+	const fitDataWithRightOffset = useCallback(
+		(dataLength: number) => {
+			const chart = chartRef.current;
+			if (!chart) return;
+
+			if (dataLength <= 0) {
+				chart.timeScale().fitContent();
+				return;
+			}
+
+			chart.timeScale().setVisibleLogicalRange({
+				from: 0,
+				to: dataLength - 1 + Math.max(timeScaleRightOffset, 0),
+			});
+		},
+		[timeScaleRightOffset],
+	);
+
+	const debouncedFitContent = useCallback(
+		(dataLength: number) => {
+			if (fitContentTimerRef.current) clearTimeout(fitContentTimerRef.current);
+			fitContentTimerRef.current = setTimeout(() => {
+				fitDataWithRightOffset(dataLength);
+				fitContentTimerRef.current = null;
+			}, 200);
+		},
+		[fitDataWithRightOffset],
+	);
+
 	useEffect(() => {
 		const container = containerRef.current;
 		if (!container) return;
-		const safeData = normalizeChartData(data);
+		const safeData = normalizeChartData(dataRef.current);
 
 		const chartOptions: any = {
 			width: autoSize ? container.clientWidth : width,
 			height,
 			layout: {
-				attributionLogo: true,
+				attributionLogo: false,
 				background: {
 					type: ColorType.Solid,
 					color: backgroundColor,
@@ -300,7 +331,7 @@ const WChart: React.FC<WChartProps> = ({
 		let volumeSeries: ISeriesApi<"Histogram"> | null = null;
 		if (showVolume) {
 			volumeSeries = chart.addSeries(HistogramSeries, {
-				color: "#26a69a",
+				color: volumeUpColor,
 				priceFormat: { type: "volume", precision: 0 },
 				lastValueVisible: showVolumeLabel,
 				priceScaleId: "volume",
@@ -336,7 +367,9 @@ const WChart: React.FC<WChartProps> = ({
 		if (safeData.length > 0) {
 			series.setData(safeData as any);
 			if (volumeSeries) {
-				volumeSeries.setData(safeData.map(toVolumeData));
+				volumeSeries.setData(
+					safeData.map((item) => toVolumeData(item, volumeUpColor, volumeDownColor)),
+				);
 			}
 			if (shouldShowEma && ema1 && ema2) {
 				const ema1Data = calcEMA(safeData, emaPeriod1);
@@ -474,6 +507,13 @@ const WChart: React.FC<WChartProps> = ({
 		emaPeriod2,
 		emaColor1,
 		emaColor2,
+		width,
+		isMiniChart,
+		lineWidth,
+		onClick,
+		onCrosshairMove,
+		onVisibleRangeChange,
+		fitDataWithRightOffset,
 		emaLineWidth,
 	]);
 
@@ -568,7 +608,9 @@ const WChart: React.FC<WChartProps> = ({
 		}
 
 		if (volumeSeriesRef.current && showVolume) {
-			const volData = safeData.map(toVolumeData);
+			const volData = safeData.map((item) =>
+				toVolumeData(item, volumeUpColor, volumeDownColor),
+			);
 			if (isNewData) {
 				volumeSeriesRef.current.setData(volData);
 			} else {
@@ -624,6 +666,7 @@ const WChart: React.FC<WChartProps> = ({
 	}, [
 		data,
 		chartType,
+		isMiniChart,
 		showVolume,
 		volumeUpColor,
 		volumeDownColor,
@@ -640,31 +683,8 @@ const WChart: React.FC<WChartProps> = ({
 		showEma,
 		emaPeriod1,
 		emaPeriod2,
-		timeScaleRightOffset,
+		debouncedFitContent,
 	]);
-
-	function debouncedFitContent(dataLength: number) {
-		if (fitContentTimerRef.current) clearTimeout(fitContentTimerRef.current);
-		fitContentTimerRef.current = setTimeout(() => {
-			fitDataWithRightOffset(dataLength);
-			fitContentTimerRef.current = null;
-		}, 200);
-	}
-
-	function fitDataWithRightOffset(dataLength: number) {
-		const chart = chartRef.current;
-		if (!chart) return;
-
-		if (dataLength <= 0) {
-			chart.timeScale().fitContent();
-			return;
-		}
-
-		chart.timeScale().setVisibleLogicalRange({
-			from: 0,
-			to: dataLength - 1 + Math.max(timeScaleRightOffset, 0),
-		});
-	}
 
 	return (
 		<div
@@ -747,6 +767,8 @@ function createSeries(chart: IChartApi, type: ChartType, opts: any): SeriesApi {
 
 function toVolumeData(
 	item: ChartDataItem,
+	upColor = UP_COLOR,
+	downColor = DOWN_COLOR,
 ): (HistogramData & { color: string }) | WhitespaceData {
 	const close = item.close ?? item.value;
 	const open = item.open ?? item.value;
@@ -756,7 +778,7 @@ function toVolumeData(
 	return {
 		time: item.time as Time,
 		value: item.volume ?? 0,
-		color: close >= open ? "#26a69a" : "#ef5350",
+		color: close >= open ? upColor : downColor,
 	};
 }
 
