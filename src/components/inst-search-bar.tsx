@@ -107,15 +107,11 @@ function SearchPanel({
 		<div className="absolute top-[calc(100%+0.5rem)] right-0 z-60 w-[min(92vw,440px)] overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10">
 			<div className="flex items-center justify-between border-b border-border px-3 py-2 text-xs text-muted-foreground">
 				<span>Related instruments</span>
-				{isFetching ? (
-					<LoaderCircleIcon className="size-3.5 animate-spin" />
-				) : null}
+				{isFetching ? <LoaderCircleIcon className="size-3.5 animate-spin" /> : null}
 			</div>
 			<div className="max-h-80 overflow-y-auto py-1">
 				{isError ? (
-					<div className="px-3 py-3 text-sm text-destructive">
-						Search failed.
-					</div>
+					<div className="px-3 py-3 text-sm text-destructive">Search failed.</div>
 				) : results.length > 0 ? (
 					results.map((result) => (
 						<button
@@ -133,9 +129,7 @@ function SearchPanel({
 						</button>
 					))
 				) : hasSearch && !isFetching ? (
-					<div className="px-3 py-3 text-sm text-muted-foreground">
-						No matches.
-					</div>
+					<div className="px-3 py-3 text-sm text-muted-foreground">No matches.</div>
 				) : null}
 			</div>
 		</div>

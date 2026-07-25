@@ -146,71 +146,77 @@ export function CryptoKlineCard() {
 			};
 
 	return (
-		<Card className="@container/card rounded-none bg-linear-to-t from-primary/5 to-card py-4 shadow-xs dark:bg-card">
-			<CardHeader>
-				<CardDescription>BTC / USDT · OKX Spot</CardDescription>
-				<CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
-					{detailBar ? `${detailBar.close} USDT` : "—"}
-				</CardTitle>
-				<CardAction>
-					<Badge variant="outline">
-						{isFetchingNextPage
-							? "Loading history…"
-							: isFetching && !isPending
-								? "Updating…"
-								: "1D UTC"}
-					</Badge>
-				</CardAction>
-			</CardHeader>
-			<CardContent className="px-2 sm:px-4">
-				{isPending ? (
-					<ChartMessage>
-						<LoaderCircleIcon className="size-4 animate-spin" />
-						Loading OKX bars…
-					</ChartMessage>
-				) : isError ? (
-					<ChartMessage>
-						<span>{getErrorMessage(error)}</span>
-						<Button size="sm" variant="outline" onClick={() => refetch()}>
-							Retry
-						</Button>
-					</ChartMessage>
-				) : chartData.length === 0 ? (
-					<ChartMessage>No closed bars returned by OKX.</ChartMessage>
-				) : (
-					<div role="img" aria-label="BTC USDT daily candlestick chart from OKX">
-						<WChart
-							data={chartData}
-							chartType="candlestick"
-							height={360}
-							autoSize
-							backgroundColor={chartColors.background}
-							textColor={chartColors.text}
-							fontFamily="Geist Variable, sans-serif"
-							vertGridColor={chartColors.grid}
-							horzGridColor={chartColors.grid}
-							timeVisible
-							timeScaleBorderColor={chartColors.border}
-							priceScaleBorderColor={chartColors.border}
-							showVolume
-							showEma
-							emaPeriod1={10}
-							emaPeriod2={20}
-							emaColor1="#f59e0b"
-							emaColor2="#8b5cf6"
-							watermarkVisible
-							watermarkText="BTC / USDT · OKX"
-							watermarkColor={chartColors.watermark}
-							onCrosshairMove={handleCrosshairMove}
-							onVisibleRangeChange={handleVisibleRangeChange}
-						/>
-					</div>
-				)}
-			</CardContent>
-			<CardFooter className="w-full">
-				{detailBar ? <BarDetails bar={detailBar} /> : "Public market data from OKX"}
-			</CardFooter>
-		</Card>
+		<div className="*:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card dark:*:data-[slot=card]:bg-card *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:shadow-xs">
+			<Card className="@container/card rounded-md py-4">
+				<CardHeader>
+					<CardDescription>BTC / USDT · OKX Spot</CardDescription>
+					<CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
+						{detailBar ? `${detailBar.close} USDT` : "—"}
+					</CardTitle>
+					<CardAction>
+						<Badge variant="outline">
+							{isFetchingNextPage
+								? "Loading history…"
+								: isFetching && !isPending
+									? "Updating…"
+									: "1D UTC"}
+						</Badge>
+					</CardAction>
+				</CardHeader>
+				<CardContent className="px-2 sm:px-4">
+					{isPending ? (
+						<ChartMessage>
+							<LoaderCircleIcon className="size-4 animate-spin" />
+							Loading OKX bars…
+						</ChartMessage>
+					) : isError ? (
+						<ChartMessage>
+							<span>{getErrorMessage(error)}</span>
+							<Button size="sm" variant="outline" onClick={() => refetch()}>
+								Retry
+							</Button>
+						</ChartMessage>
+					) : chartData.length === 0 ? (
+						<ChartMessage>No closed bars returned by OKX.</ChartMessage>
+					) : (
+						<div role="img" aria-label="BTC USDT daily candlestick chart from OKX">
+							<WChart
+								data={chartData}
+								chartType="candlestick"
+								height={360}
+								autoSize
+								backgroundColor={chartColors.background}
+								textColor={chartColors.text}
+								fontFamily="Geist Variable, sans-serif"
+								vertGridColor={chartColors.grid}
+								horzGridColor={chartColors.grid}
+								timeVisible
+								timeScaleBorderColor={chartColors.border}
+								priceScaleBorderColor={chartColors.border}
+								showVolume
+								showEma
+								emaPeriod1={10}
+								emaPeriod2={20}
+								emaColor1="#f59e0b"
+								emaColor2="#8b5cf6"
+								watermarkVisible
+								watermarkText="BTC / USDT · OKX"
+								watermarkColor={chartColors.watermark}
+								onCrosshairMove={handleCrosshairMove}
+								onVisibleRangeChange={handleVisibleRangeChange}
+							/>
+						</div>
+					)}
+				</CardContent>
+				<CardFooter className="w-full">
+					{detailBar ? (
+						<BarDetails bar={detailBar} />
+					) : (
+						"Public market data from OKX"
+					)}
+				</CardFooter>
+			</Card>
+		</div>
 	);
 }
 

@@ -1,5 +1,5 @@
 {
-	"$schema": "https://biomejs.dev/schemas/2.5.3/schema.json",
+	"$schema": "https://biomejs.dev/schemas/2.5.4/schema.json",
 	"vcs": {
 		"enabled": true,
 		"clientKind": "git",
@@ -19,6 +19,8 @@
 		}
 	},
 	"formatter": {
+		"indentStyle": "tab",
+		"attributePosition": "auto",
 		"enabled": true,
 		"indentWidth": 1,
 		"lineWidth": 80
@@ -38,7 +40,6 @@
 	},
 	"javascript": {
 		"formatter": {
-			"quoteStyle": "double",
 			"semicolons": "always",
 			"trailingCommas": "all"
 		}

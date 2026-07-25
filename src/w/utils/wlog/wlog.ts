@@ -141,11 +141,15 @@ const DEFAULT_COLORS: Record<string, LogColorScheme> = {
 
 const isDevMode = (() => {
 	try {
-		return (Function("return import.meta.env")() as { DEV?: boolean })?.DEV !== false;
+		return (
+			(Function("return import.meta.env")() as { DEV?: boolean })?.DEV !== false
+		);
 	} catch {
 		return (
-			typeof (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process === "undefined" ||
-			(globalThis as { process?: { env?: { NODE_ENV?: string } } }).process?.env?.NODE_ENV !== "production"
+			typeof (globalThis as { process?: { env?: { NODE_ENV?: string } } })
+				.process === "undefined" ||
+			(globalThis as { process?: { env?: { NODE_ENV?: string } } }).process?.env
+				?.NODE_ENV !== "production"
 		);
 	}
 })();
@@ -570,7 +574,8 @@ wlogFn.section = (title: string) => {
 wlogFn.time = (label?: string) => config.logSwitch && console.time(label);
 wlogFn.timeEnd = (label?: string) => config.logSwitch && console.timeEnd(label);
 wlogFn.count = (label?: string) => config.logSwitch && console.count(label);
-wlogFn.countReset = (label?: string) => config.logSwitch && console.countReset(label);
+wlogFn.countReset = (label?: string) =>
+	config.logSwitch && console.countReset(label);
 wlogFn.clear = () => config.logSwitch && console.clear();
 wlogFn.assert = (condition?: boolean, ...args: unknown[]) =>
 	config.logSwitch && console.assert(condition, ...args);

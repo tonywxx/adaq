@@ -12,7 +12,9 @@ describe("wlog", () => {
 		time: jest.spyOn(console, "time").mockImplementation(() => {}),
 		timeEnd: jest.spyOn(console, "timeEnd").mockImplementation(() => {}),
 		table: jest.spyOn(console, "table").mockImplementation(() => {}),
-		groupCollapsed: jest.spyOn(console, "groupCollapsed").mockImplementation(() => {}),
+		groupCollapsed: jest
+			.spyOn(console, "groupCollapsed")
+			.mockImplementation(() => {}),
 		groupEnd: jest.spyOn(console, "groupEnd").mockImplementation(() => {}),
 		clear: jest.spyOn(console, "clear").mockImplementation(() => {}),
 		count: jest.spyOn(console, "count").mockImplementation(() => {}),
@@ -153,6 +155,9 @@ describe("wlog", () => {
 		wlog.assert(true, "Should pass");
 		wlog.assert(false, "Should fail assertion");
 
-		expect(mockConsole.assert).toHaveBeenCalledWith(false, "Should fail assertion");
+		expect(mockConsole.assert).toHaveBeenCalledWith(
+			false,
+			"Should fail assertion",
+		);
 	});
 });

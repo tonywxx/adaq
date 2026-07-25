@@ -260,8 +260,7 @@ class HttpClient {
 			) {
 				return Promise.reject(
 					new Error(
-						response.data.message ||
-							`Business error (code: ${response.data.code})`,
+						response.data.message || `Business error (code: ${response.data.code})`,
 					),
 				);
 			}
@@ -287,13 +286,8 @@ class HttpClient {
 			}
 
 			if (!error.response) {
-				if (
-					error.code === "ECONNABORTED" ||
-					error.message?.includes("timeout")
-				) {
-					return Promise.reject(
-						new Error("Request timed out, please try again"),
-					);
+				if (error.code === "ECONNABORTED" || error.message?.includes("timeout")) {
+					return Promise.reject(new Error("Request timed out, please try again"));
 				}
 				return Promise.reject(
 					new Error("Network error, please check your connection"),
@@ -302,8 +296,7 @@ class HttpClient {
 
 			const status = error.response.status;
 			const message =
-				this.options.errorMessages[status] ||
-				`Request failed (status: ${status})`;
+				this.options.errorMessages[status] || `Request failed (status: ${status})`;
 
 			if (!silent && this.options.enableLogging) {
 				console.error(`[HttpClient] ${status} ${error.config?.url}:`, message);
@@ -456,8 +449,7 @@ class HttpClient {
 			...retry,
 		};
 
-		const key =
-			requestKey || this.getRequestKey({ ...restConfig, method, url });
+		const key = requestKey || this.getRequestKey({ ...restConfig, method, url });
 		let lastError: any;
 
 		this.adjustPendingCount(1);

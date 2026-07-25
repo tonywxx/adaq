@@ -344,10 +344,7 @@ function PasswordSetupForm({
 	const [confirmPassword, setConfirmPassword] = useState("");
 	const [error, setError] = useState("");
 	const [loading, setLoading] = useState(false);
-	const passwordCheck = useMemo(
-		() => checkStrongPassword(password),
-		[password],
-	);
+	const passwordCheck = useMemo(() => checkStrongPassword(password), [password]);
 	const passwordsMatch =
 		password === confirmPassword && confirmPassword.length > 0;
 
@@ -381,9 +378,7 @@ function PasswordSetupForm({
 			<NavTitlebarTransparent />
 			<AuthShell
 				title="Create a strong password"
-				description={
-					session.user.email ?? "Secure your account before continuing."
-				}
+				description={session.user.email ?? "Secure your account before continuing."}
 			>
 				<form className="grid gap-4" onSubmit={createPassword}>
 					<div className="grid gap-2">
@@ -411,18 +406,14 @@ function PasswordSetupForm({
 					<ul className="grid gap-1 text-sm">
 						{passwordCheck.items.map((item) => (
 							<li
-								className={
-									item.met ? "text-emerald-600" : "text-muted-foreground"
-								}
+								className={item.met ? "text-emerald-600" : "text-muted-foreground"}
 								key={item.label}
 							>
 								{item.met ? "✓" : "•"} {item.label}
 							</li>
 						))}
 						<li
-							className={
-								passwordsMatch ? "text-emerald-600" : "text-muted-foreground"
-							}
+							className={passwordsMatch ? "text-emerald-600" : "text-muted-foreground"}
 						>
 							{passwordsMatch ? "✓" : "•"} Passwords match
 						</li>

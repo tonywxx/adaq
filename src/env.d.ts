@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import 'react'
+import "react";
 
 interface ImportMetaEnv {
 	readonly VITE_SUPABASE_URL?: string;
@@ -12,8 +12,8 @@ interface ImportMeta {
 	readonly env: ImportMetaEnv;
 }
 
-declare module 'react' {
-  interface CSSProperties {
-    WebkitAppRegion?: 'drag' | 'no-drag'
-  }
+declare module "react" {
+	interface CSSProperties {
+		WebkitAppRegion?: "drag" | "no-drag";
+	}
 }

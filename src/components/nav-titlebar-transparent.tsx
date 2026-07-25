@@ -53,10 +53,7 @@ export function NavTitlebarTransparent({
 	return (
 		<div
 			data-tauri-drag-region
-			className={cn(
-				"fixed top-0 left-0 right-0 z-50 flex h-12 w-full",
-				className,
-			)}
+			className={cn("fixed top-0 left-0 right-0 z-50 flex h-12 w-full", className)}
 			style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
 			onPointerDown={(event) => {
 				if (event.button === 0) {
