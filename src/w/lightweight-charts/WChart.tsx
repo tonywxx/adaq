@@ -24,7 +24,7 @@ import {
 	type WhitespaceData,
 } from "lightweight-charts";
 import type React from "react";
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 
 type ChartType =
 	| "candlestick"
@@ -64,6 +64,7 @@ interface WChartProps {
 	timeScaleBorderVisible?: boolean;
 	timeScaleBorderColor?: string;
 	timeScaleRightOffset?: number;
+	timeScaleBarSpacing?: number;
 	priceScaleMode?: "normal" | "logarithmic" | "percentage" | "indexedTo100";
 	autoScale?: boolean;
 	priceScaleBorderVisible?: boolean;
@@ -140,6 +141,7 @@ const WChart: React.FC<WChartProps> = ({
 	timeScaleBorderVisible = true,
 	timeScaleBorderColor = "#2B2B43",
 	timeScaleRightOffset = 6,
+	timeScaleBarSpacing,
 	priceScaleMode = "normal",
 	autoScale = true,
 	priceScaleBorderVisible = true,
@@ -209,38 +211,8 @@ const WChart: React.FC<WChartProps> = ({
 	const dataRef = useRef<ChartDataItem[]>(data);
 	dataRef.current = data;
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
-	const fitContentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const ema1SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
 	const ema2SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
-
-	const fitDataWithRightOffset = useCallback(
-		(dataLength: number) => {
-			const chart = chartRef.current;
-			if (!chart) return;
-
-			if (dataLength <= 0) {
-				chart.timeScale().fitContent();
-				return;
-			}
-
-			chart.timeScale().setVisibleLogicalRange({
-				from: 0,
-				to: dataLength - 1 + Math.max(timeScaleRightOffset, 0),
-			});
-		},
-		[timeScaleRightOffset],
-	);
-
-	const debouncedFitContent = useCallback(
-		(dataLength: number) => {
-			if (fitContentTimerRef.current) clearTimeout(fitContentTimerRef.current);
-			fitContentTimerRef.current = setTimeout(() => {
-				fitDataWithRightOffset(dataLength);
-				fitContentTimerRef.current = null;
-			}, 200);
-		},
-		[fitDataWithRightOffset],
-	);
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -418,20 +390,19 @@ const WChart: React.FC<WChartProps> = ({
 
 		prevDataRef.current = safeData;
 
-		chart
-			.timeScale()
-			.applyOptions({ fixLeftEdge: true, rightOffset: timeScaleRightOffset });
-		fitDataWithRightOffset(safeData.length);
 		chart.timeScale().fitContent();
+		chart.timeScale().applyOptions({
+			fixLeftEdge: true,
+			rightOffset: timeScaleRightOffset,
+			...(timeScaleBarSpacing === undefined
+				? {}
+				: { barSpacing: timeScaleBarSpacing }),
+		});
 
 		return () => {
 			if (resizeObserverRef.current) {
 				resizeObserverRef.current.disconnect();
 				resizeObserverRef.current = null;
-			}
-			if (fitContentTimerRef.current) {
-				clearTimeout(fitContentTimerRef.current);
-				fitContentTimerRef.current = null;
 			}
 			chart.remove();
 			chartRef.current = null;
@@ -461,6 +432,7 @@ const WChart: React.FC<WChartProps> = ({
 		timeScaleBorderVisible,
 		timeScaleBorderColor,
 		timeScaleRightOffset,
+		timeScaleBarSpacing,
 		priceScaleMode,
 		autoScale,
 		priceScaleBorderVisible,
@@ -513,7 +485,6 @@ const WChart: React.FC<WChartProps> = ({
 		onClick,
 		onCrosshairMove,
 		onVisibleRangeChange,
-		fitDataWithRightOffset,
 		emaLineWidth,
 	]);
 
@@ -660,8 +631,6 @@ const WChart: React.FC<WChartProps> = ({
 				from: previousVisibleRange.from + prependedCount,
 				to: previousVisibleRange.to + prependedCount,
 			});
-		} else {
-			debouncedFitContent(safeData.length);
 		}
 	}, [
 		data,
@@ -683,7 +652,6 @@ const WChart: React.FC<WChartProps> = ({
 		showEma,
 		emaPeriod1,
 		emaPeriod2,
-		debouncedFitContent,
 	]);
 
 	return (

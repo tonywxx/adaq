@@ -1,6 +1,8 @@
+mod watchlist;
+
 use ada_data_core::{
-    BarInterval, BarSeries, BarStreamEvent, DataError, HistoricalBarRange, OkxClient,
-    SpotInstrument, TickerSnapshot, TickerStreamEvent,
+    BarInterval, BarSeries, BarStreamEvent, BarSubscription, DataError, HistoricalBarRange,
+    InstrumentStatus, OkxClient, SpotInstrument, TickerSnapshot, TickerStreamEvent,
 };
 use std::sync::Mutex;
 use tauri::{
@@ -13,6 +15,7 @@ use wasmtime::{
     component::{Component, Linker, ResourceTable},
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use watchlist::{InstrumentRef, WatchlistDb, WatchlistState};
 
 const FACTOR_COMPONENT_PATH: &str = "/Users/tony/Downloads/factor-ema5-10.adaq";
 
@@ -152,9 +155,9 @@ struct MarketTickerRequest {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MarketSubscribeTickerRequest {
+struct MarketSubscribeTickersRequest {
     src: String,
-    code: String,
+    codes: Vec<String>,
     subscription_id: String,
 }
 
@@ -166,10 +169,9 @@ struct MarketUnsubscribeTickerRequest {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MarketSubscribeBarRequest {
+struct MarketSubscribeBarsRequest {
     src: String,
-    code: String,
-    interval: BarInterval,
+    subscriptions: Vec<BarSubscription>,
     subscription_id: String,
 }
 
@@ -179,13 +181,32 @@ struct MarketUnsubscribeBarRequest {
     subscription_id: String,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WatchlistUserRequest {
+    user_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WatchlistInstrumentRequest {
+    user_id: String,
+    instrument: InstrumentRef,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WatchlistIntervalRequest {
+    user_id: String,
+    interval: BarInterval,
+}
+
 struct ActiveTickerStream {
     subscription_id: String,
     task: tauri::async_runtime::JoinHandle<()>,
     on_event: Channel<TickerStreamEvent>,
 }
 
-// ponytail: one dashboard ticker stream; use a keyed map when concurrent ticker cards are needed.
 #[derive(Default)]
 struct TickerStreamState(Mutex<Option<ActiveTickerStream>>);
 
@@ -195,7 +216,6 @@ struct ActiveBarStream {
     on_event: Channel<BarStreamEvent>,
 }
 
-// ponytail: one dashboard bar stream; use a keyed map when concurrent charts are needed.
 #[derive(Default)]
 struct BarStreamState(Mutex<Option<ActiveBarStream>>);
 
@@ -248,18 +268,69 @@ async fn market_get_ticker(
 }
 
 #[tauri::command]
-fn market_subscribe_ticker(
-    request: MarketSubscribeTickerRequest,
+fn watchlist_get(
+    request: WatchlistUserRequest,
+    database: State<'_, WatchlistDb>,
+) -> Result<WatchlistState, String> {
+    database.get(&request.user_id)
+}
+
+#[tauri::command]
+async fn watchlist_add(
+    request: WatchlistInstrumentRequest,
+    database: State<'_, WatchlistDb>,
+    client: State<'_, OkxClient>,
+) -> Result<WatchlistState, String> {
+    require_okx(&request.instrument.src).map_err(|error| error.to_string())?;
+    let instruments = client
+        .list_spot_instruments()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !instruments.iter().any(|instrument| {
+        instrument.code == request.instrument.code && instrument.status == InstrumentStatus::Live
+    }) {
+        return Err("only Live OKX Spot Instruments can be added".to_owned());
+    }
+    database.add(&request.user_id, &request.instrument)
+}
+
+#[tauri::command]
+fn watchlist_remove(
+    request: WatchlistInstrumentRequest,
+    database: State<'_, WatchlistDb>,
+) -> Result<WatchlistState, String> {
+    database.remove(&request.user_id, &request.instrument)
+}
+
+#[tauri::command]
+fn watchlist_set_active(
+    request: WatchlistInstrumentRequest,
+    database: State<'_, WatchlistDb>,
+) -> Result<WatchlistState, String> {
+    database.set_active(&request.user_id, &request.instrument)
+}
+
+#[tauri::command]
+fn watchlist_set_interval(
+    request: WatchlistIntervalRequest,
+    database: State<'_, WatchlistDb>,
+) -> Result<WatchlistState, String> {
+    database.set_interval(&request.user_id, request.interval)
+}
+
+#[tauri::command]
+fn market_subscribe_tickers(
+    request: MarketSubscribeTickersRequest,
     on_event: Channel<TickerStreamEvent>,
     client: State<'_, OkxClient>,
     streams: State<'_, TickerStreamState>,
 ) -> Result<(), DataError> {
     require_okx(&request.src)?;
-    if request.subscription_id.trim().is_empty() {
+    if request.subscription_id.trim().is_empty() || !(1..=32).contains(&request.codes.len()) {
         return Err(DataError::new(
             request.src,
             "invalid_request",
-            "subscription ID must be non-empty",
+            "subscription ID must be non-empty and ticker codes must contain 1 to 32 items",
         ));
     }
 
@@ -267,12 +338,14 @@ fn market_subscribe_ticker(
         .0
         .lock()
         .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
+    // ponytail: infrequent subscription-set changes restart the one multiplexed socket;
+    // move subscribe/unsubscribe messages into a long-lived actor if churn becomes measurable.
     let task_client = client.inner().clone();
     let task_channel = on_event.clone();
-    let code = request.code;
+    let codes = request.codes;
     let task = tauri::async_runtime::spawn(async move {
         if let Err(error) = task_client
-            .stream_ticker(&code, |event| task_channel.send(event).is_ok())
+            .stream_tickers(&codes, |event| task_channel.send(event).is_ok())
             .await
         {
             let _ = task_channel.send(TickerStreamEvent::Error(error));
@@ -311,18 +384,19 @@ fn market_unsubscribe_ticker(
 }
 
 #[tauri::command]
-fn market_subscribe_bar(
-    request: MarketSubscribeBarRequest,
+fn market_subscribe_bars(
+    request: MarketSubscribeBarsRequest,
     on_event: Channel<BarStreamEvent>,
     client: State<'_, OkxClient>,
     streams: State<'_, BarStreamState>,
 ) -> Result<(), DataError> {
     require_okx(&request.src)?;
-    if request.subscription_id.trim().is_empty() {
+    if request.subscription_id.trim().is_empty() || !(1..=32).contains(&request.subscriptions.len())
+    {
         return Err(DataError::new(
             request.src,
             "invalid_request",
-            "subscription ID must be non-empty",
+            "subscription ID must be non-empty and bar subscriptions must contain 1 to 32 items",
         ));
     }
 
@@ -332,11 +406,10 @@ fn market_subscribe_bar(
         .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
     let task_client = client.inner().clone();
     let task_channel = on_event.clone();
-    let code = request.code;
-    let interval = request.interval;
+    let subscriptions = request.subscriptions;
     let task = tauri::async_runtime::spawn(async move {
         if let Err(error) = task_client
-            .stream_bar(&code, interval, |event| task_channel.send(event).is_ok())
+            .stream_bars(&subscriptions, |event| task_channel.send(event).is_ok())
             .await
         {
             let _ = task_channel.send(BarStreamEvent::Error(error));
@@ -390,6 +463,12 @@ pub fn run() {
             app.manage(OkxClient::default());
             app.manage(TickerStreamState::default());
             app.manage(BarStreamState::default());
+            let app_data_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&app_data_dir)?;
+            app.manage(
+                WatchlistDb::open(&app_data_dir.join("adaq.sqlite3"))
+                    .map_err(std::io::Error::other)?,
+            );
             let handle = app.handle();
             let app_menu = SubmenuBuilder::new(handle, "adaq")
                 .about(Some(AboutMetadata {
@@ -451,9 +530,14 @@ pub fn run() {
             market_list_spot_instruments,
             market_get_bar_series,
             market_get_ticker,
-            market_subscribe_ticker,
+            watchlist_get,
+            watchlist_add,
+            watchlist_remove,
+            watchlist_set_active,
+            watchlist_set_interval,
+            market_subscribe_tickers,
             market_unsubscribe_ticker,
-            market_subscribe_bar,
+            market_subscribe_bars,
             market_unsubscribe_bar
         ])
         .run(tauri::generate_context!())

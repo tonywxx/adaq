@@ -1,12 +1,12 @@
-import { useQuery } from "@tanstack/react-query";
-import { LoaderCircleIcon, SearchIcon } from "lucide-react";
-import * as React from "react";
 import { Input } from "@/components/ui/input";
 import { useActiveInstStore } from "@/lib/active-inst-store";
 import {
 	type InstrumentSearchResult,
 	searchEastmoneyInstruments,
 } from "@/lib/eastmoney";
+import { useQuery } from "@tanstack/react-query";
+import { LoaderCircleIcon, SearchIcon } from "lucide-react";
+import * as React from "react";
 
 const SEARCH_DEBOUNCE_MS = 250;
 

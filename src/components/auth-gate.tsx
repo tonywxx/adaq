@@ -1,12 +1,3 @@
-import type { Session } from "@supabase/supabase-js";
-import { KeyRound, Mail, ShieldCheck } from "lucide-react";
-import {
-	type FormEvent,
-	type ReactNode,
-	useEffect,
-	useMemo,
-	useState,
-} from "react";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
@@ -17,8 +8,18 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MarketSessionProvider } from "@/lib/market-session";
 import { checkStrongPassword } from "@/lib/password";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import type { Session } from "@supabase/supabase-js";
+import { KeyRound, Mail, ShieldCheck } from "lucide-react";
+import {
+	type FormEvent,
+	type ReactNode,
+	useEffect,
+	useMemo,
+	useState,
+} from "react";
 import { NavTitlebarTransparent } from "./nav-titlebar-transparent";
 
 type AuthStep = "email" | "password" | "otp";
@@ -79,7 +80,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
 		return <PasswordSetupForm session={session} onSession={setSession} />;
 	}
 
-	return children;
+	return (
+		<MarketSessionProvider userId={session.user.id}>
+			{children}
+		</MarketSessionProvider>
+	);
 }
 
 function EmailOtpForm({

@@ -16,6 +16,14 @@ _Avoid_: Provider, data source
 The ADAQ-wide identity composed of a Venue and that venue's native Instrument code.
 _Avoid_: Symbol, ticker
 
+**Watchlist**:
+A user's ordered collection of venue-specific Instruments selected for monitoring.
+_Avoid_: Symbol list, favorites
+
+**Active Instrument**:
+The single Instrument currently in focus across market-data views. It is always present and need not belong to the Watchlist.
+_Avoid_: Selected symbol, current ticker
+
 **Instrument Status**:
 The normalized lifecycle status of an Instrument: Live, Suspended, Pre-Open, Test, or Unknown. Unknown status is never treated as live or tradable.
 _Avoid_: State, provider status

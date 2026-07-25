@@ -24,10 +24,16 @@ import {
 	subtractBarIntervals,
 	toMarketChartData,
 } from "@/lib/market-chart-adapter";
+import {
+	barKey,
+	getErrorMessage,
+	instrumentKey,
+	useMarketSessionStore,
+} from "@/lib/market-session";
 import WChart from "@/w/lightweight-charts/WChart";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { Channel, invoke } from "@tauri-apps/api/core";
-import { LoaderCircleIcon } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { LoaderCircleIcon, RotateCcwIcon } from "lucide-react";
 import { useTheme } from "next-themes";
 import {
 	type ReactNode,
@@ -38,10 +44,6 @@ import {
 	useState,
 } from "react";
 
-const BASE_REQUEST = {
-	src: "okx",
-	code: "BTC-USDT",
-} as const;
 const HISTORY_PAGE_BARS = 300;
 const LEFT_EDGE_THRESHOLD_BARS = 5;
 
@@ -50,79 +52,31 @@ type BarRange = {
 	endTimeMs: number;
 };
 
-type BarStreamEvent =
-	| { event: "connected" }
-	| { event: "snapshot"; data: { bar: OhlcvBar; closed: boolean } }
-	| { event: "error"; data: { message: string } }
-	| { event: "reconnecting"; data: { delayMs: number } }
-	| { event: "closed" };
-
-type ConnectionStatus = "connecting" | "live" | "reconnecting";
-
 export function CryptoKlineCard() {
 	const { resolvedTheme } = useTheme();
+	const activeInstrument = useMarketSessionStore(
+		(state) => state.activeInstrument,
+	);
+	const connectionStatus = useMarketSessionStore((state) => state.barStatus);
+	const streamError = useMarketSessionStore((state) => state.streamError);
+	const setMainChartInterval = useMarketSessionStore(
+		(state) => state.setMainChartInterval,
+	);
 	const [{ interval, endTimeMs }, setSelection] = useState<{
 		interval: BarInterval;
 		endTimeMs: number;
 	}>(() => ({ interval: "15m", endTimeMs: Date.now() }));
-	const [liveBar, setLiveBar] = useState<{
-		interval: BarInterval;
-		bar: OhlcvBar;
-	}>();
-	const [connectionStatus, setConnectionStatus] =
-		useState<ConnectionStatus>("connecting");
-	const [streamError, setStreamError] = useState<string>();
+	const liveBar = useMarketSessionStore(
+		(state) => state.liveBars[barKey(activeInstrument, interval)],
+	);
 	const [crosshairBar, setCrosshairBar] = useState<OhlcvBar>();
+	const [chartResetKey, setChartResetKey] = useState(0);
 
 	useEffect(() => {
-		let disposed = false;
-		const subscriptionId = crypto.randomUUID();
-		const onEvent = new Channel<BarStreamEvent>();
-
-		setConnectionStatus("connecting");
-		setStreamError(undefined);
-		onEvent.onmessage = (event) => {
-			if (disposed) return;
-			switch (event.event) {
-				case "connected":
-					setConnectionStatus("live");
-					setStreamError(undefined);
-					break;
-				case "snapshot":
-					setLiveBar({ interval, bar: event.data.bar });
-					setConnectionStatus("live");
-					setStreamError(undefined);
-					break;
-				case "error":
-					setConnectionStatus("reconnecting");
-					setStreamError(event.data.message);
-					break;
-				case "reconnecting":
-					setConnectionStatus("reconnecting");
-					break;
-				case "closed":
-					setConnectionStatus("reconnecting");
-					break;
-			}
-		};
-
-		void invoke("market_subscribe_bar", {
-			request: { ...BASE_REQUEST, interval, subscriptionId },
-			onEvent,
-		}).catch((reason) => {
-			if (!disposed) {
-				setConnectionStatus("reconnecting");
-				setStreamError(getErrorMessage(reason));
-			}
-		});
-
-		return () => {
-			disposed = true;
-			void invoke("market_unsubscribe_bar", {
-				request: { subscriptionId },
-			});
-		};
-	}, [interval]);
+		if (!activeInstrument.src || !activeInstrument.code) return;
+		setCrosshairBar(undefined);
+		setSelection((current) => ({ ...current, endTimeMs: Date.now() }));
+	}, [activeInstrument.code, activeInstrument.src]);
 
 	const {
 		data,
@@ -137,22 +91,18 @@ export function CryptoKlineCard() {
 	} = useInfiniteQuery({
 		queryKey: [
 			"market-bar-series",
-			BASE_REQUEST.src,
-			BASE_REQUEST.code,
+			activeInstrument.src,
+			activeInstrument.code,
 			interval,
 			endTimeMs,
 		],
 		initialPageParam: {
-			startTimeMs: subtractBarIntervals(
-				endTimeMs,
-				interval,
-				HISTORY_PAGE_BARS,
-			),
+			startTimeMs: subtractBarIntervals(endTimeMs, interval, HISTORY_PAGE_BARS),
 			endTimeMs,
 		} satisfies BarRange,
 		queryFn: ({ pageParam }) =>
 			invoke<BarSeries>("market_get_bar_series", {
-				request: { ...BASE_REQUEST, interval, ...pageParam },
+				request: { ...activeInstrument, interval, ...pageParam },
 			}),
 		getNextPageParam: (lastPage, _pages, lastPageParam) => {
 			const earliest = lastPage.bars[0]?.openTimeMs;
@@ -160,33 +110,26 @@ export function CryptoKlineCard() {
 				return undefined;
 			}
 			return {
-				startTimeMs: subtractBarIntervals(
-					earliest,
-					interval,
-					HISTORY_PAGE_BARS,
-				),
+				startTimeMs: subtractBarIntervals(earliest, interval, HISTORY_PAGE_BARS),
 				endTimeMs: earliest,
 			};
 		},
 		staleTime: 60_000,
 	});
-	const bars = useMemo(
-		() => {
-			const byTime = new Map(
-				(data?.pages.flatMap((page) => page.bars) ?? []).map((bar) => [
-					bar.openTimeMs,
-					bar,
-				]),
-			);
-			if (liveBar?.interval === interval) {
-				byTime.set(liveBar.bar.openTimeMs, liveBar.bar);
-			}
-			return [...byTime.values()].sort(
-				(left, right) => left.openTimeMs - right.openTimeMs,
-			);
-		},
-		[data, interval, liveBar],
-	);
+	const bars = useMemo(() => {
+		const byTime = new Map(
+			(data?.pages.flatMap((page) => page.bars) ?? []).map((bar) => [
+				bar.openTimeMs,
+				bar,
+			]),
+		);
+		if (liveBar) {
+			byTime.set(liveBar.openTimeMs, liveBar);
+		}
+		return [...byTime.values()].sort(
+			(left, right) => left.openTimeMs - right.openTimeMs,
+		);
+	}, [data, liveBar]);
 	const gaps = useMemo(
 		() => data?.pages.flatMap((page) => page.gaps) ?? [],
 		[data],
@@ -215,11 +158,7 @@ export function CryptoKlineCard() {
 			earliestTime === undefined
 				? 0
 				: (earliestTime -
-						subtractBarIntervals(
-							earliestTime,
-							interval,
-							LEFT_EDGE_THRESHOLD_BARS,
-						)) /
+						subtractBarIntervals(earliestTime, interval, LEFT_EDGE_THRESHOLD_BARS)) /
 					1_000,
 		fetchNextPage,
 		hasNextPage,
@@ -249,13 +188,17 @@ export function CryptoKlineCard() {
 			time === undefined ? undefined : barsByTimeRef.current.get(time),
 		);
 	}, []);
-	const handleIntervalChange = useCallback((value: string) => {
-		if (!BAR_INTERVALS.includes(value as BarInterval)) return;
-		setCrosshairBar(undefined);
-		setLiveBar(undefined);
-		setConnectionStatus("connecting");
-		setSelection({ interval: value as BarInterval, endTimeMs: Date.now() });
-	}, []);
+	const handleIntervalChange = useCallback(
+		(value: string) => {
+			if (!BAR_INTERVALS.includes(value as BarInterval)) return;
+			setCrosshairBar(undefined);
+			setMainChartInterval(value as BarInterval);
+			setSelection({ interval: value as BarInterval, endTimeMs: Date.now() });
+		},
+		[setMainChartInterval],
+	);
+	const [baseAsset = activeInstrument.code, quoteAsset = ""] =
+		activeInstrument.code.split("-");
 	const isDark = resolvedTheme === "dark";
 	const chartColors = isDark
 		? {
@@ -277,18 +220,46 @@ export function CryptoKlineCard() {
 		<div className="*:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card dark:*:data-[slot=card]:bg-card *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:shadow-xs">
 			<Card className="@container/card rounded-md py-4">
 				<CardHeader>
-					<CardDescription>BTC / USDT · OKX Spot</CardDescription>
-					<CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
-						{detailBar ? `${detailBar.close} USDT` : "—"}
-					</CardTitle>
-					<CardAction>
-						<Badge variant="outline">
-							{isFetchingNextPage
-								? "Loading history…"
-								: isFetching && !isPending
-									? "Updating…"
-									: "1D UTC"}
+					<CardDescription>
+						{baseAsset} / {quoteAsset} · OKX Spot{" "}
+						<Badge
+							variant="outline"
+							title={streamError}
+							aria-live="polite"
+							className={
+								connectionStatus === "live"
+									? "text-emerald-600 dark:text-emerald-400"
+									: "text-amber-600 dark:text-amber-400"
+							}
+						>
+							<span className="size-2 rounded-full bg-current" aria-hidden="true" />
+							{connectionStatusLabel(connectionStatus)}
 						</Badge>
+					</CardDescription>
+					<CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
+						{detailBar ? `${detailBar.close} ${quoteAsset}` : "—"}
+					</CardTitle>
+					<CardAction className="flex items-center gap-2">
+						<Select value={interval} onValueChange={handleIntervalChange}>
+							<SelectTrigger size="sm" aria-label="Bar interval">
+								<SelectValue>{formatInterval(interval)}</SelectValue>
+							</SelectTrigger>
+							<SelectContent align="end">
+								{BAR_INTERVALS.map((value) => (
+									<SelectItem key={value} value={value}>
+										{formatInterval(value)}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+						<Button
+							size="sm"
+							variant="outline"
+							onClick={() => setChartResetKey((value) => value + 1)}
+						>
+							<RotateCcwIcon />
+							Reset
+						</Button>
 					</CardAction>
 				</CardHeader>
 				<CardContent className="px-2 sm:px-4">
@@ -307,32 +278,51 @@ export function CryptoKlineCard() {
 					) : chartData.length === 0 ? (
 						<ChartMessage>No closed bars returned by OKX.</ChartMessage>
 					) : (
-						<div role="img" aria-label="BTC USDT daily candlestick chart from OKX">
-							<WChart
-								data={chartData}
-								chartType="candlestick"
-								height={360}
-								autoSize
-								backgroundColor={chartColors.background}
-								textColor={chartColors.text}
-								fontFamily="Geist Variable, sans-serif"
-								vertGridColor={chartColors.grid}
-								horzGridColor={chartColors.grid}
-								timeVisible
-								timeScaleBorderColor={chartColors.border}
-								priceScaleBorderColor={chartColors.border}
-								showVolume
-								showEma
-								emaPeriod1={10}
-								emaPeriod2={20}
-								emaColor1="#f59e0b"
-								emaColor2="#8b5cf6"
-								watermarkVisible
-								watermarkText="BTC / USDT · OKX"
-								watermarkColor={chartColors.watermark}
-								onCrosshairMove={handleCrosshairMove}
-								onVisibleRangeChange={handleVisibleRangeChange}
-							/>
+						<div className="relative">
+							{isFetching && !isPending && (
+								<Badge
+									variant="secondary"
+									className="absolute top-2 left-2 z-10"
+									aria-live="polite"
+								>
+									<LoaderCircleIcon className="size-3 animate-spin" />
+									{isFetchingNextPage ? "Loading history…" : "Updating…"}
+								</Badge>
+							)}
+							<div
+								role="img"
+								aria-label={`${activeInstrument.code} ${formatInterval(interval)} candlestick chart from OKX`}
+							>
+								<WChart
+									key={`${instrumentKey(activeInstrument)}-${interval}-${chartResetKey}`}
+									data={chartData}
+									chartType="candlestick"
+									height={360}
+									autoSize
+									backgroundColor={chartColors.background}
+									textColor={chartColors.text}
+									fontFamily="Geist Variable, sans-serif"
+									vertGridColor={chartColors.grid}
+									horzGridColor={chartColors.grid}
+									timeVisible
+									timeSecondsVisible={interval === "1s"}
+									timeScaleBorderColor={chartColors.border}
+									timeScaleRightOffset={5}
+									timeScaleBarSpacing={8}
+									priceScaleBorderColor={chartColors.border}
+									showVolume
+									showEma
+									emaPeriod1={10}
+									emaPeriod2={20}
+									emaColor1="#f59e0b"
+									emaColor2="#8b5cf6"
+									watermarkVisible
+									watermarkText={`${baseAsset} / ${quoteAsset} · OKX`}
+									watermarkColor={chartColors.watermark}
+									onCrosshairMove={handleCrosshairMove}
+									onVisibleRangeChange={handleVisibleRangeChange}
+								/>
+							</div>
 						</div>
 					)}
 				</CardContent>
@@ -399,14 +389,17 @@ function getCrosshairTime(param: unknown) {
 	return typeof param.time === "number" ? param.time : undefined;
 }
 
-function getErrorMessage(error: unknown) {
-	if (
-		typeof error === "object" &&
-		error !== null &&
-		"message" in error &&
-		typeof error.message === "string"
-	) {
-		return error.message;
+function connectionStatusLabel(status: "connecting" | "live" | "reconnecting") {
+	switch (status) {
+		case "connecting":
+			return "Connecting";
+		case "live":
+			return "Live";
+		case "reconnecting":
+			return "Reconnecting";
 	}
-	return String(error);
+}
+
+function formatInterval(interval: BarInterval) {
+	return `${interval} UTC`;
 }

@@ -12,7 +12,7 @@ const OKX_BUSINESS_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/business";
 const OKX_WS_HEARTBEAT_SECONDS: u64 = 25;
 const OKX_WS_MAX_RETRY_SECONDS: u64 = 15;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BarInterval {
     #[serde(rename = "1s")]
     OneSecond,
@@ -152,8 +152,18 @@ pub struct BarSeries {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BarSnapshot {
+    pub src: String,
+    pub code: String,
+    pub interval: BarInterval,
     pub bar: OhlcvBar,
     pub closed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BarSubscription {
+    pub code: String,
+    pub interval: BarInterval,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -358,13 +368,25 @@ impl OkxClient {
     where
         F: FnMut(TickerStreamEvent) -> bool,
     {
-        validate_ticker_code(code)?;
+        self.stream_tickers(&[code.to_owned()], |event| on_event(event))
+            .await
+    }
+
+    pub async fn stream_tickers<F>(
+        &self,
+        codes: &[String],
+        mut on_event: F,
+    ) -> Result<(), DataError>
+    where
+        F: FnMut(TickerStreamEvent) -> bool,
+    {
+        validate_ticker_codes(codes)?;
         let mut retry_seconds = 1;
 
         loop {
             let mut received_snapshot = false;
             let result = self
-                .stream_ticker_once(code, |event| {
+                .stream_tickers_once(codes, |event| {
                     if matches!(&event, TickerStreamEvent::Snapshot(_)) {
                         received_snapshot = true;
                     }
@@ -393,18 +415,36 @@ impl OkxClient {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn stream_ticker_once<F>(&self, code: &str, mut on_event: F) -> Result<(), DataError>
     where
         F: FnMut(TickerStreamEvent) -> bool,
     {
+        self.stream_tickers_once(&[code.to_owned()], |event| on_event(event))
+            .await
+    }
+
+    async fn stream_tickers_once<F>(
+        &self,
+        codes: &[String],
+        mut on_event: F,
+    ) -> Result<(), DataError>
+    where
+        F: FnMut(TickerStreamEvent) -> bool,
+    {
+        validate_ticker_codes(codes)?;
         let (mut socket, _) = connect_async(&self.ws_url)
             .await
             .map_err(|error| DataError::okx("transport", error.to_string()))?;
+        let args = codes
+            .iter()
+            .map(|code| serde_json::json!({ "channel": "tickers", "instId": code }))
+            .collect::<Vec<_>>();
         socket
             .send(Message::Text(
                 serde_json::json!({
                     "op": "subscribe",
-                    "args": [{ "channel": "tickers", "instId": code }]
+                    "args": args
                 })
                 .to_string()
                 .into(),
@@ -447,7 +487,7 @@ impl OkxClient {
                 Message::Text(text) if text == "pong" => awaiting_pong = false,
                 Message::Text(text) => {
                     awaiting_pong = false;
-                    if let Some(snapshot) = parse_okx_ticker_message(&text, code)? {
+                    for snapshot in parse_okx_ticker_message(&text, codes)? {
                         if !announced_connected {
                             if !on_event(TickerStreamEvent::Connected) {
                                 return Ok(());
@@ -486,13 +526,31 @@ impl OkxClient {
     where
         F: FnMut(BarStreamEvent) -> bool,
     {
-        validate_ticker_code(code)?;
+        self.stream_bars(
+            &[BarSubscription {
+                code: code.to_owned(),
+                interval,
+            }],
+            |event| on_event(event),
+        )
+        .await
+    }
+
+    pub async fn stream_bars<F>(
+        &self,
+        subscriptions: &[BarSubscription],
+        mut on_event: F,
+    ) -> Result<(), DataError>
+    where
+        F: FnMut(BarStreamEvent) -> bool,
+    {
+        validate_bar_subscriptions(subscriptions)?;
         let mut retry_seconds = 1;
 
         loop {
             let mut received_snapshot = false;
             let result = self
-                .stream_bar_once(code, interval, |event| {
+                .stream_bars_once(subscriptions, |event| {
                     if matches!(&event, BarStreamEvent::Snapshot(_)) {
                         received_snapshot = true;
                     }
@@ -521,6 +579,7 @@ impl OkxClient {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn stream_bar_once<F>(
         &self,
         code: &str,
@@ -530,15 +589,42 @@ impl OkxClient {
     where
         F: FnMut(BarStreamEvent) -> bool,
     {
-        let channel = format!("candle{}", interval.okx_bar());
+        self.stream_bars_once(
+            &[BarSubscription {
+                code: code.to_owned(),
+                interval,
+            }],
+            |event| on_event(event),
+        )
+        .await
+    }
+
+    async fn stream_bars_once<F>(
+        &self,
+        subscriptions: &[BarSubscription],
+        mut on_event: F,
+    ) -> Result<(), DataError>
+    where
+        F: FnMut(BarStreamEvent) -> bool,
+    {
+        validate_bar_subscriptions(subscriptions)?;
         let (mut socket, _) = connect_async(&self.business_ws_url)
             .await
             .map_err(|error| DataError::okx("transport", error.to_string()))?;
+        let args = subscriptions
+            .iter()
+            .map(|subscription| {
+                serde_json::json!({
+                    "channel": format!("candle{}", subscription.interval.okx_bar()),
+                    "instId": subscription.code
+                })
+            })
+            .collect::<Vec<_>>();
         socket
             .send(Message::Text(
                 serde_json::json!({
                     "op": "subscribe",
-                    "args": [{ "channel": channel, "instId": code }]
+                    "args": args
                 })
                 .to_string()
                 .into(),
@@ -581,7 +667,7 @@ impl OkxClient {
                 Message::Text(text) if text == "pong" => awaiting_pong = false,
                 Message::Text(text) => {
                     awaiting_pong = false;
-                    let snapshots = parse_okx_bar_message(&text, code, &channel)?;
+                    let snapshots = parse_okx_bar_message(&text, subscriptions)?;
                     if !snapshots.is_empty() && !announced_connected {
                         if !on_event(BarStreamEvent::Connected) {
                             return Ok(());
@@ -940,10 +1026,36 @@ fn validate_ticker_code(code: &str) -> Result<(), DataError> {
     }
 }
 
+fn validate_ticker_codes(codes: &[String]) -> Result<(), DataError> {
+    if codes.is_empty() {
+        return Err(DataError::okx(
+            "invalid_request",
+            "at least one ticker code is required",
+        ));
+    }
+    for code in codes {
+        validate_ticker_code(code)?;
+    }
+    Ok(())
+}
+
+fn validate_bar_subscriptions(subscriptions: &[BarSubscription]) -> Result<(), DataError> {
+    if subscriptions.is_empty() {
+        return Err(DataError::okx(
+            "invalid_request",
+            "at least one bar subscription is required",
+        ));
+    }
+    for subscription in subscriptions {
+        validate_ticker_code(&subscription.code)?;
+    }
+    Ok(())
+}
+
 fn parse_okx_ticker_message(
     message: &str,
-    expected_code: &str,
-) -> Result<Option<TickerSnapshot>, DataError> {
+    expected_codes: &[String],
+) -> Result<Vec<TickerSnapshot>, DataError> {
     let payload: OkxWsEnvelope = serde_json::from_str(message)
         .map_err(|error| DataError::okx("invalid_response", error.to_string()))?;
     if payload.event.as_deref() == Some("error") {
@@ -957,9 +1069,17 @@ fn parse_okx_ticker_message(
     payload
         .data
         .into_iter()
-        .next()
-        .map(|ticker| normalize_okx_ticker(ticker, expected_code))
-        .transpose()
+        .map(|ticker| {
+            let code = ticker.inst_id.clone();
+            if !expected_codes.iter().any(|expected| expected == &code) {
+                return Err(DataError::okx(
+                    "invalid_response",
+                    format!("received unexpected OKX ticker for {code}"),
+                ));
+            }
+            normalize_okx_ticker(ticker, &code)
+        })
+        .collect()
 }
 
 fn normalize_okx_ticker(
@@ -1020,8 +1140,7 @@ fn normalize_okx_ticker(
 
 fn parse_okx_bar_message(
     message: &str,
-    expected_code: &str,
-    expected_channel: &str,
+    subscriptions: &[BarSubscription],
 ) -> Result<Vec<BarSnapshot>, DataError> {
     let payload: OkxBarWsEnvelope = serde_json::from_str(message)
         .map_err(|error| DataError::okx("invalid_response", error.to_string()))?;
@@ -1033,21 +1152,34 @@ fn parse_okx_bar_message(
                 .unwrap_or_else(|| "OKX rejected bar subscription".to_owned()),
         ));
     }
-    if let Some(arg) = payload.arg
-        && (arg.inst_id != expected_code || arg.channel != expected_channel)
-    {
+    let Some(arg) = payload.arg else {
+        return Ok(Vec::new());
+    };
+    let Some(subscription) = subscriptions.iter().find(|subscription| {
+        subscription.code == arg.inst_id
+            && format!("candle{}", subscription.interval.okx_bar()) == arg.channel
+    }) else {
         return Err(DataError::okx(
             "invalid_response",
             format!(
-                "expected OKX {expected_channel} bars for {expected_code}, received {} for {}",
+                "received unexpected OKX {} bars for {}",
                 arg.channel, arg.inst_id
             ),
         ));
-    }
+    };
     payload
         .data
         .into_iter()
-        .map(parse_okx_bar_snapshot)
+        .map(|values| {
+            let snapshot = parse_okx_bar_snapshot(values)?;
+            Ok(BarSnapshot {
+                src: OKX_SRC.to_owned(),
+                code: subscription.code.clone(),
+                interval: subscription.interval,
+                bar: snapshot.bar,
+                closed: snapshot.closed,
+            })
+        })
         .collect()
 }
 
@@ -1113,7 +1245,12 @@ fn parse_okx_bar(values: Vec<String>) -> Result<Option<OhlcvBar>, DataError> {
     Ok(snapshot.closed.then_some(snapshot.bar))
 }
 
-fn parse_okx_bar_snapshot(values: Vec<String>) -> Result<BarSnapshot, DataError> {
+struct ParsedBarSnapshot {
+    bar: OhlcvBar,
+    closed: bool,
+}
+
+fn parse_okx_bar_snapshot(values: Vec<String>) -> Result<ParsedBarSnapshot, DataError> {
     if values.len() < 9 {
         return Err(DataError::okx(
             "invalid_response",
@@ -1137,7 +1274,7 @@ fn parse_okx_bar_snapshot(values: Vec<String>) -> Result<BarSnapshot, DataError>
         })
     };
 
-    Ok(BarSnapshot {
+    Ok(ParsedBarSnapshot {
         bar: OhlcvBar {
             open_time_ms: values[0].parse().map_err(|error| {
                 DataError::okx(
@@ -1170,7 +1307,8 @@ mod tests {
     use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     use super::{
-        BarInterval, BarStreamEvent, HistoricalBarRange, OkxClient, TickerStreamEvent,
+        BarInterval, BarStreamEvent, BarSubscription, HistoricalBarRange, OkxClient,
+        TickerStreamEvent,
     };
 
     #[test]
@@ -1305,6 +1443,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn okx_client_multiplexes_tickers_over_one_subscription() {
+        let (ws_url, subscription) = serve_ticker_ws().await;
+        let client = OkxClient::new_with_urls("http://unused", ws_url);
+
+        client
+            .stream_tickers_once(&["BTC-USDT".to_owned(), "ETH-USDT".to_owned()], |event| {
+                !matches!(event, TickerStreamEvent::Snapshot(_))
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&subscription.await.unwrap()).unwrap(),
+            serde_json::json!({
+                "op": "subscribe",
+                "args": [
+                    { "channel": "tickers", "instId": "BTC-USDT" },
+                    { "channel": "tickers", "instId": "ETH-USDT" }
+                ]
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn okx_client_subscribes_and_streams_open_bars() {
         let (ws_url, subscription) = serve_bar_ws().await;
         let client = OkxClient::new_with_all_urls("http://unused", "ws://unused", ws_url);
@@ -1336,6 +1498,40 @@ mod tests {
         assert!(!snapshots[0].closed);
         assert_eq!(snapshots[0].bar.close.to_string(), "67433.25");
         assert_eq!(snapshots[0].bar.quote_volume.to_string(), "123456.78");
+    }
+
+    #[tokio::test]
+    async fn okx_client_multiplexes_bars_over_one_subscription() {
+        let (ws_url, subscription) = serve_bar_ws().await;
+        let client = OkxClient::new_with_all_urls("http://unused", "ws://unused", ws_url);
+
+        client
+            .stream_bars_once(
+                &[
+                    BarSubscription {
+                        code: "BTC-USDT".to_owned(),
+                        interval: BarInterval::FifteenMinutes,
+                    },
+                    BarSubscription {
+                        code: "ETH-USDT".to_owned(),
+                        interval: BarInterval::OneHour,
+                    },
+                ],
+                |event| !matches!(event, BarStreamEvent::Snapshot(_)),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&subscription.await.unwrap()).unwrap(),
+            serde_json::json!({
+                "op": "subscribe",
+                "args": [
+                    { "channel": "candle15m", "instId": "BTC-USDT" },
+                    { "channel": "candle1H", "instId": "ETH-USDT" }
+                ]
+            })
+        );
     }
 
     #[tokio::test]

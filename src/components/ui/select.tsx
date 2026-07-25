@@ -86,6 +86,7 @@ function SelectContent({
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Positioner
+        className="z-50"
         align={align}
         side={side}
         sideOffset={sideOffset}
