@@ -81,7 +81,7 @@ jobs:
           - name: macOS ARM64
             platform: macos-latest
             target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
           - name: Windows x86_64
             platform: windows-latest
             target: x86_64-pc-windows-msvc
@@ -144,12 +144,13 @@ jobs:
       - validate
       - build
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: v${{ needs.validate.outputs.version }}
 
     steps:
       - name: Validate updater manifest
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: v${{ needs.validate.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -168,7 +169,4 @@ jobs:
           NODE
 
       - name: Publish draft release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: v${{ needs.validate.outputs.version }}
         run: gh release edit "${TAG}" --draft=false --latest
