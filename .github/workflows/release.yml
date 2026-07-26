@@ -1,31 +1,100 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release (X.Y.Z)
+        required: true
+        type: string
 
 permissions:
   contents: write
-  issues: write
-  pull-requests: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Semantic release
-    runs-on: macos-latest
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
+
+      - name: Validate version and tag
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "Releases must run from main, got ${GITHUB_REF}." >&2
+            exit 1
+          fi
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs'
+
+          const version = process.env.VERSION
+          if (!/^\d+\.\d+\.\d+$/.test(version)) {
+            throw new Error(`Invalid stable release version: ${version}`)
+          }
+
+          const packageVersion = JSON.parse(fs.readFileSync('package.json', 'utf8')).version
+          const tauriVersion = JSON.parse(
+            fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'),
+          ).version
+          const cargo = fs.readFileSync('src-tauri/Cargo.toml', 'utf8')
+          const cargoVersion = cargo.match(/^version = "([^"]+)"/m)?.[1]
+          const versions = { packageVersion, tauriVersion, cargoVersion }
+
+          for (const [file, actual] of Object.entries(versions)) {
+            if (actual !== version) {
+              throw new Error(`${file} is ${actual}; expected ${version}`)
+            }
+          }
+          NODE
+
+          if git rev-parse --verify --quiet "refs/tags/v${VERSION}"; then
+            echo "Tag v${VERSION} already exists." >&2
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            platform: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - name: Windows x86_64
+            platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - name: Linux x86_64
+            platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -40,17 +109,66 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build frontend
-        run: pnpm exec vite build
-
-      - name: Release
+      - name: Build and upload draft release
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm release
+          APPLE_SIGNING_IDENTITY: ${{ matrix.platform == 'macos-latest' && '-' || '' }}
+        with:
+          tagName: v${{ needs.validate.outputs.version }}
+          releaseName: v${{ needs.validate.outputs.version }}
+          releaseDraft: true
+          prerelease: false
+          generateReleaseNotes: true
+          updaterJsonPreferNsis: true
+          retryAttempts: 2
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+  publish:
+    name: Publish release
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/release"
+          gh release download "${TAG}" --pattern latest.json --dir "${RUNNER_TEMP}/release"
+          node --input-type=module - "${RUNNER_TEMP}/release/latest.json" <<'NODE'
+          import fs from 'node:fs'
+
+          const latest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+          const platforms = Object.keys(latest.platforms ?? {})
+          for (const expected of ['darwin-aarch64', 'windows-x86_64', 'linux-x86_64']) {
+            if (!platforms.some((platform) => platform === expected || platform.startsWith(`${expected}-`))) {
+              throw new Error(`latest.json is missing ${expected}`)
+            }
+          }
+          NODE
+
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.validate.outputs.version }}
+        run: gh release edit "${TAG}" --draft=false --latest
