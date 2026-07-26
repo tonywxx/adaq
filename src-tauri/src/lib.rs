@@ -4,7 +4,7 @@ use ada_data_core::{
     BarInterval, BarSeries, BarStreamEvent, BarSubscription, DataError, HistoricalBarRange,
     InstrumentStatus, OkxClient, SpotInstrument, TickerSnapshot, TickerStreamEvent,
 };
-use std::sync::Mutex;
+use std::{path::Path, sync::Mutex};
 use tauri::{
     Emitter, Manager, State,
     ipc::Channel,
@@ -17,10 +17,8 @@ use wasmtime::{
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use watchlist::{InstrumentRef, WatchlistDb, WatchlistState};
 
-const FACTOR_COMPONENT_PATH: &str = "/Users/tony/Downloads/factor-ema5-10.adaq";
-
 wasmtime::component::bindgen!({
-    path: "/Users/tony/private/adaq-factor-ema5-10/wit",
+    path: "wit/factor-ema5-10.wit",
     world: "ema-5-10",
 });
 
@@ -69,12 +67,17 @@ impl WasiView for WasiState {
     }
 }
 
+#[derive(Default)]
 struct WasmLoader {
-    factor: Mutex<LoadedFactor>,
+    factor: Mutex<Option<LoadedFactor>>,
 }
 
 impl WasmLoader {
-    fn load(path: &str) -> Result<Self, String> {
+    fn load(&self, path: &str) -> Result<(), String> {
+        if !Path::new(path).is_file() {
+            return Err(format!("Factor component does not exist: {path}"));
+        }
+
         let mut config = Config::new();
         config.wasm_component_model(true);
         let engine = Engine::new(&config).map_err(|error| error.to_string())?;
@@ -91,14 +94,17 @@ impl WasmLoader {
         let bindings = Ema510::instantiate(&mut store, &component, &linker)
             .map_err(|error| error.to_string())?;
 
-        Ok(Self {
-            factor: Mutex::new(LoadedFactor { store, bindings }),
-        })
+        *self.factor.lock().map_err(|error| error.to_string())? =
+            Some(LoadedFactor { store, bindings });
+
+        Ok(())
     }
 
     fn get_meta_info(&self) -> Result<FactorMetaInfo, String> {
         let mut factor = self.factor.lock().map_err(|error| error.to_string())?;
-        let LoadedFactor { store, bindings } = &mut *factor;
+        let LoadedFactor { store, bindings } = factor
+            .as_mut()
+            .ok_or_else(|| "Factor component is not loaded".to_owned())?;
         let meta = bindings
             .adaq_factor_api()
             .call_get_meta_info(store)
@@ -123,6 +129,15 @@ impl WasmLoader {
             minimum_closes: meta.minimum_closes,
         })
     }
+}
+
+#[tauri::command]
+fn load_factor_component(
+    path: String,
+    loader: State<'_, WasmLoader>,
+) -> Result<FactorMetaInfo, String> {
+    loader.load(&path)?;
+    loader.get_meta_info()
 }
 
 #[tauri::command]
@@ -459,7 +474,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
-            app.manage(WasmLoader::load(FACTOR_COMPONENT_PATH).map_err(std::io::Error::other)?);
+            app.manage(WasmLoader::default());
             app.manage(OkxClient::default());
             app.manage(TickerStreamState::default());
             app.manage(BarStreamState::default());
@@ -526,6 +541,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            load_factor_component,
             get_factor_meta_info,
             market_list_spot_instruments,
             market_get_bar_series,
@@ -546,15 +562,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{FACTOR_COMPONENT_PATH, WasmLoader};
+    use super::WasmLoader;
 
     #[test]
-    fn loads_and_reuses_factor_component() {
-        let loader = WasmLoader::load(FACTOR_COMPONENT_PATH).unwrap();
-        let first = loader.get_meta_info().unwrap();
-        let second = loader.get_meta_info().unwrap();
-
-        assert_eq!(first.name, "EMA 5/10 Crossover");
-        assert_eq!(first.uuid, second.uuid);
+    fn factor_loader_starts_empty() {
+        let error = WasmLoader::default().get_meta_info().err().unwrap();
+        assert_eq!(error, "Factor component is not loaded");
     }
 }
