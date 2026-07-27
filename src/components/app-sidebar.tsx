@@ -1,21 +1,4 @@
-import {
-	CameraIcon,
-	ChartBarIcon,
-	CircleHelpIcon,
-	CommandIcon,
-	DatabaseIcon,
-	FileChartColumnIcon,
-	FileIcon,
-	FileTextIcon,
-	FolderIcon,
-	LayoutDashboardIcon,
-	ListIcon,
-	SearchIcon,
-	Settings2Icon,
-	UsersIcon,
-} from "lucide-react";
-import type * as React from "react";
-import { NavDocuments } from "@/components/nav-documents";
+import { Link } from "@tanstack/react-router";
 import { NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
 import { NavUser } from "@/components/nav-user";
@@ -28,33 +11,35 @@ import {
 	SidebarMenuButton,
 	SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import {
+	CameraIcon,
+	ChartBarIcon,
+	CircleHelpIcon,
+	CommandIcon,
+	FileTextIcon,
+	LayoutDashboardIcon,
+	ListIcon,
+	SearchIcon,
+	Settings2Icon,
+} from "lucide-react";
+import type * as React from "react";
 
 const data = {
 	navMain: [
 		{
 			title: "Dashboard",
-			url: "#",
+			url: "/",
 			icon: <LayoutDashboardIcon />,
 		},
 		{
-			title: "Lifecycle",
-			url: "#",
-			icon: <ListIcon />,
-		},
-		{
-			title: "Analytics",
-			url: "#",
+			title: "Backtest",
+			url: "/backtest",
 			icon: <ChartBarIcon />,
 		},
 		{
-			title: "Projects",
-			url: "#",
-			icon: <FolderIcon />,
-		},
-		{
-			title: "Team",
-			url: "#",
-			icon: <UsersIcon />,
+			title: "Components",
+			url: "/components",
+			icon: <ListIcon />,
 		},
 	],
 	navClouds: [
@@ -122,23 +107,6 @@ const data = {
 			icon: <SearchIcon />,
 		},
 	],
-	documents: [
-		{
-			name: "Data Library",
-			url: "#",
-			icon: <DatabaseIcon />,
-		},
-		{
-			name: "Reports",
-			url: "#",
-			icon: <FileChartColumnIcon />,
-		},
-		{
-			name: "Word Assistant",
-			url: "#",
-			icon: <FileIcon />,
-		},
-	],
 };
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
@@ -151,17 +119,17 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 							asChild
 							className="data-[slot=sidebar-menu-button]:p-1.5!"
 						>
-							<a href="/">
+							<Link to="/">
 								<CommandIcon className="size-5!" />
 								<span className="text-base font-semibold">AdaQ</span>
-							</a>
+							</Link>
 						</SidebarMenuButton>
 					</SidebarMenuItem>
 				</SidebarMenu>
 			</SidebarHeader>
 			<SidebarContent>
 				<NavMain items={data.navMain} />
-				<NavDocuments items={data.documents} />
+				{/* <NavDocuments items={data.documents} /> */}
 				<NavSecondary items={data.navSecondary} className="mt-auto" />
 			</SidebarContent>
 			<SidebarFooter>

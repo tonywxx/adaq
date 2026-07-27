@@ -3,11 +3,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use ada_data_core::{BarGap, OhlcvBar};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 
-use crate::{WasmLoader, factor_abi, strategy_abi};
+use crate::{ComponentParameterValue, WasmLoader, factor_abi, strategy_abi};
 
 const DEFAULT_FUEL_PER_CALL: u64 = 10_000_000;
 const DEFAULT_MEMORY_BYTES: usize = 64 * 1024 * 1024;
-const DEFAULT_MAX_BARS: usize = 10_000;
+const DEFAULT_MAX_BARS: usize = 1_000_000;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RunLimits {
@@ -35,7 +35,14 @@ pub(crate) enum PositionMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FeatureSource {
     BuiltInSma { period: usize },
-    FactorOutput { name: String },
+    FactorOutput { factor_alias: String, name: String },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FactorRunComponent<'a> {
+    pub alias: &'a str,
+    pub path: &'a str,
+    pub parameters: &'a [ComponentParameterValue],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,8 +53,9 @@ pub(crate) struct FeatureBinding {
 
 #[derive(Clone, Copy)]
 pub(crate) struct RunRequest<'a> {
-    pub factor_path: &'a str,
+    pub factors: &'a [FactorRunComponent<'a>],
     pub strategy_path: &'a str,
+    pub strategy_parameters: &'a [ComponentParameterValue],
     pub bars: &'a [OhlcvBar],
     pub gaps: &'a [BarGap],
     pub feature_bindings: &'a [FeatureBinding],
@@ -87,8 +95,9 @@ impl RunEngine {
         validate_request(request)?;
 
         let mut segment = SegmentRuntime::new(
-            request.factor_path,
+            request.factors,
             request.strategy_path,
+            request.strategy_parameters,
             request.feature_bindings,
             request.limits,
         )?;
@@ -108,8 +117,9 @@ impl RunEngine {
                 }
                 if segment_bars > 0 {
                     segment = SegmentRuntime::new(
-                        request.factor_path,
+                        request.factors,
                         request.strategy_path,
+                        request.strategy_parameters,
                         request.feature_bindings,
                         request.limits,
                     )?;
@@ -129,8 +139,8 @@ impl RunEngine {
                         Some(value) => values.push(value),
                         None => missing = true,
                     },
-                    IndicatorState::FactorOutput(name) => {
-                        match factor_values.as_ref().and_then(|values| values.get(name)) {
+                    IndicatorState::FactorOutput { factor_alias, name } => {
+                        match factor_values.get(&(factor_alias.clone(), name.clone())) {
                             Some(value) => values.push(*value),
                             None => missing = true,
                         }
@@ -202,6 +212,14 @@ fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
     if request.feature_bindings.is_empty() {
         return Err("Indicator Plan must contain at least one Feature Slot".to_owned());
     }
+    let mut aliases = HashSet::new();
+    if request.factors.iter().any(|factor| {
+        factor.alias.trim().is_empty()
+            || factor.path.trim().is_empty()
+            || !aliases.insert(factor.alias)
+    }) {
+        return Err("Factor Instance aliases and paths must be non-empty and unique".to_owned());
+    }
 
     let mut slots = HashSet::new();
     for binding in request.feature_bindings {
@@ -212,7 +230,9 @@ fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
             FeatureSource::BuiltInSma { period } if *period == 0 => {
                 return Err("SMA period must be greater than zero".to_owned());
             }
-            FeatureSource::FactorOutput { name } if name.trim().is_empty() => {
+            FeatureSource::FactorOutput { factor_alias, name }
+                if factor_alias.trim().is_empty() || name.trim().is_empty() =>
+            {
                 return Err("Factor output name must be non-empty".to_owned());
             }
             _ => {}
@@ -222,34 +242,55 @@ fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
 }
 
 struct SegmentRuntime {
+    factors: Vec<FactorRuntime>,
+    strategy: WasmLoader,
+    warmup_bars: usize,
+}
+
+struct FactorRuntime {
+    alias: String,
     loader: WasmLoader,
     output_names: HashSet<String>,
-    warmup_bars: usize,
 }
 
 impl SegmentRuntime {
     fn new(
-        factor_path: &str,
+        factors: &[FactorRunComponent<'_>],
         strategy_path: &str,
+        strategy_parameters: &[ComponentParameterValue],
         feature_bindings: &[FeatureBinding],
         limits: RunLimits,
     ) -> Result<Self, String> {
-        let loader = WasmLoader::with_limits(limits);
-        loader.load(factor_path)?;
-        let schema = loader.describe_factor()?;
-        let output_count = schema.output_names.len();
-        let output_names = schema.output_names.into_iter().collect::<HashSet<_>>();
-        if output_names.iter().any(|name| name.trim().is_empty()) || output_names.is_empty() {
-            return Err("Factor schema must declare non-empty output names".to_owned());
-        }
-        if output_names.len() != output_count {
-            return Err("Factor output names must be unique".to_owned());
+        let mut factor_runtimes = Vec::with_capacity(factors.len());
+        let mut factor_warmup = 0usize;
+        for factor in factors {
+            let loader = WasmLoader::with_limits(limits);
+            loader.load_with_parameters(factor.path, factor.parameters)?;
+            let schema = loader.describe_factor()?;
+            let output_count = schema.output_names.len();
+            let output_names = schema.output_names.into_iter().collect::<HashSet<_>>();
+            if output_names.iter().any(|name| name.trim().is_empty()) || output_names.is_empty() {
+                return Err("Factor schema must declare non-empty output names".to_owned());
+            }
+            if output_names.len() != output_count {
+                return Err("Factor output names must be unique".to_owned());
+            }
+            factor_warmup = factor_warmup.max(schema.warmup_bars as usize);
+            factor_runtimes.push(FactorRuntime {
+                alias: factor.alias.to_owned(),
+                loader,
+                output_names,
+            });
         }
         for binding in feature_bindings {
-            if let FeatureSource::FactorOutput { name } = &binding.source
-                && !output_names.contains(name)
-            {
-                return Err(format!("Unknown Factor output: {name}"));
+            if let FeatureSource::FactorOutput { factor_alias, name } = &binding.source {
+                let factor = factor_runtimes
+                    .iter()
+                    .find(|factor| factor.alias == *factor_alias)
+                    .ok_or_else(|| format!("Unknown Factor Instance: {factor_alias}"))?;
+                if !factor.output_names.contains(name) {
+                    return Err(format!("Unknown Factor output: {factor_alias}.{name}"));
+                }
             }
         }
         let indicator_warmup = feature_bindings
@@ -260,7 +301,8 @@ impl SegmentRuntime {
             })
             .max()
             .unwrap_or(0);
-        loader.load_strategy(
+        let strategy = WasmLoader::with_limits(limits);
+        strategy.load_strategy_with_parameters(
             strategy_path,
             feature_bindings
                 .iter()
@@ -270,49 +312,58 @@ impl SegmentRuntime {
                     },
                 )
                 .collect(),
+            strategy_parameters,
         )?;
         Ok(Self {
-            loader,
-            output_names,
-            warmup_bars: (schema.warmup_bars as usize).max(indicator_warmup),
+            factors: factor_runtimes,
+            strategy,
+            warmup_bars: factor_warmup.max(indicator_warmup),
         })
     }
 
-    fn process_factor(&mut self, bar: &OhlcvBar) -> Result<Option<HashMap<String, f64>>, String> {
-        let mut rows = self.loader.process_factor(vec![
-            factor_abi::exports::adaq::factor::api::ClosedBar {
-                open_time_ms: bar.open_time_ms,
-                open: bar.open.to_string(),
-                high: bar.high.to_string(),
-                low: bar.low.to_string(),
-                close: bar.close.to_string(),
-                base_volume: bar.base_volume.to_string(),
-                quote_volume: bar.quote_volume.to_string(),
-            },
-        ])?;
-        if rows.len() != 1 {
-            return Err("Factor must return exactly one row per input bar".to_owned());
-        }
-        let Some(values) = rows.pop().expect("Factor result length was checked") else {
-            return Ok(None);
-        };
-        let mut by_name = HashMap::with_capacity(values.len());
-        for value in values {
-            if !value.value.is_finite()
-                || !self.output_names.contains(&value.name)
-                || by_name.insert(value.name, value.value).is_some()
-            {
-                return Err("Factor returned an invalid, unknown, or duplicate output".to_owned());
+    fn process_factor(&mut self, bar: &OhlcvBar) -> Result<HashMap<(String, String), f64>, String> {
+        let mut outputs = HashMap::new();
+        for factor in &self.factors {
+            let mut rows = factor.loader.process_factor(vec![
+                factor_abi::exports::adaq::factor::api::ClosedBar {
+                    open_time_ms: bar.open_time_ms,
+                    open: bar.open.to_string(),
+                    high: bar.high.to_string(),
+                    low: bar.low.to_string(),
+                    close: bar.close.to_string(),
+                    base_volume: bar.base_volume.to_string(),
+                    quote_volume: bar.quote_volume.to_string(),
+                },
+            ])?;
+            if rows.len() != 1 {
+                return Err("Factor must return exactly one row per input bar".to_owned());
+            }
+            let Some(values) = rows.pop().expect("Factor result length was checked") else {
+                continue;
+            };
+            let mut count = 0;
+            for value in values {
+                if !value.value.is_finite()
+                    || !factor.output_names.contains(&value.name)
+                    || outputs
+                        .insert((factor.alias.clone(), value.name), value.value)
+                        .is_some()
+                {
+                    return Err(
+                        "Factor returned an invalid, unknown, or duplicate output".to_owned()
+                    );
+                }
+                count += 1;
+            }
+            if count != factor.output_names.len() {
+                return Err("Factor did not return every declared output".to_owned());
             }
         }
-        if by_name.len() != self.output_names.len() {
-            return Err("Factor did not return every declared output".to_owned());
-        }
-        Ok(Some(by_name))
+        Ok(outputs)
     }
 
     fn process_strategy(&mut self, open_time_ms: i64, values: Vec<f64>) -> Result<String, String> {
-        let targets = self.loader.process_strategy(vec![
+        let targets = self.strategy.process_strategy(vec![
             strategy_abi::exports::adaq::strategy::api::FeatureFrame {
                 open_time_ms,
                 values,
@@ -330,7 +381,7 @@ impl SegmentRuntime {
 
 enum IndicatorState {
     BuiltInSma(Sma),
-    FactorOutput(String),
+    FactorOutput { factor_alias: String, name: String },
 }
 
 fn indicator_states(bindings: &[FeatureBinding]) -> Vec<IndicatorState> {
@@ -338,7 +389,10 @@ fn indicator_states(bindings: &[FeatureBinding]) -> Vec<IndicatorState> {
         .iter()
         .map(|binding| match &binding.source {
             FeatureSource::BuiltInSma { period } => IndicatorState::BuiltInSma(Sma::new(*period)),
-            FeatureSource::FactorOutput { name } => IndicatorState::FactorOutput(name.clone()),
+            FeatureSource::FactorOutput { factor_alias, name } => IndicatorState::FactorOutput {
+                factor_alias: factor_alias.clone(),
+                name: name.clone(),
+            },
         })
         .collect()
 }
@@ -429,6 +483,7 @@ mod tests {
             FeatureBinding {
                 slot_name: "change".to_owned(),
                 source: FeatureSource::FactorOutput {
+                    factor_alias: "factor".to_owned(),
                     name: "close-change".to_owned(),
                 },
             },
@@ -449,9 +504,15 @@ mod tests {
             end_time_ms: 4,
         }];
         let bindings = bindings();
+        let factors = [FactorRunComponent {
+            alias: "factor",
+            path: &factor,
+            parameters: &[],
+        }];
         let request = RunRequest {
-            factor_path: &factor,
+            factors: &factors,
             strategy_path: &strategy,
+            strategy_parameters: &[],
             bars: &bars,
             gaps: &gaps,
             feature_bindings: &bindings,
@@ -511,12 +572,19 @@ mod tests {
         let unknown = vec![FeatureBinding {
             slot_name: "unknown".to_owned(),
             source: FeatureSource::FactorOutput {
+                factor_alias: "factor".to_owned(),
                 name: "missing".to_owned(),
             },
         }];
+        let factors = [FactorRunComponent {
+            alias: "factor",
+            path: &factor,
+            parameters: &[],
+        }];
         let request = RunRequest {
-            factor_path: &factor,
+            factors: &factors,
             strategy_path: &strategy,
+            strategy_parameters: &[],
             bars: &bars,
             gaps: &[],
             feature_bindings: &unknown,

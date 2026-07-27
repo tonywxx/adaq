@@ -14,7 +14,10 @@ struct Instance {
 impl Guest for Component {
     type Instance = Instance;
 
-    fn create(feature_slots: Vec<FeatureSlot>) -> Result<StrategyInstance, String> {
+    fn create(
+        feature_slots: Vec<FeatureSlot>,
+        _parameters: Vec<bindings::exports::adaq::strategy::api::ParameterValue>,
+    ) -> Result<StrategyInstance, String> {
         Ok(StrategyInstance::new(Instance {
             slots: feature_slots.len(),
         }))

@@ -4,6 +4,16 @@ Domain language for market data, component-based quantitative research, reproduc
 
 ## Language
 
+### Identity and Access
+
+**User**:
+The registered ADAQ identity that owns private Run history, configuration, and Component Entitlements. Device-shared content does not make another User's private records or Components accessible.
+_Avoid_: Device, Venue account
+
+**Component Entitlement**:
+A User-scoped right to view and execute an exact Component product under its licence and registered-device rules. Component Package bytes may be deduplicated on a device without sharing the entitlement.
+_Avoid_: Component file, device ownership, global licence
+
 ### Market Data
 
 **Instrument**:
@@ -136,6 +146,10 @@ _Avoid_: Factor, paid factor
 An independently packaged Component that transforms declared host inputs into one or more named scalar analytical values.
 _Avoid_: Indicator, strategy, trading plugin
 
+**Factor Instance**:
+A Run-scoped binding of one Factor Component to a unique alias and one exact parameter set. The same Factor Component may have multiple Factor Instances in a Run.
+_Avoid_: Factor copy, Component alias
+
 **Strategy Component**:
 An independently packaged Component that consumes host-supplied values and emits a complete Target Decision for one Strategy Instance.
 _Avoid_: Order executor, broker plugin
@@ -174,6 +188,14 @@ _Avoid_: JSON feature map, dynamic lookup
 A configured binding of one Strategy Component to one Instrument, one Bar Interval, parameters, allocation, and position mode.
 _Avoid_: Strategy file, trading account
 
+**Strategy Allocation**:
+The exact Quote Asset capital assigned to a Strategy Instance at the start of a Run.
+_Avoid_: Current equity, account balance
+
+**Strategy Equity**:
+The current mark-to-market value of a Strategy Instance's cash and position within a Run; it changes with fills, fees, and market prices.
+_Avoid_: Initial allocation, Venue account equity
+
 **Position Mode**:
 The exposure constraint selected for a Strategy Instance: Long Only permits targets from zero through one, while Long–Short permits targets from negative one through one.
 _Avoid_: Trade direction, signal type
@@ -191,7 +213,7 @@ An immutable execution record binding a Market Data Snapshot, Component Lock, St
 _Avoid_: Editable backtest session
 
 **Target Exposure**:
-The desired signed notional fraction of a Strategy Instance's allocation: zero is flat, positive is long, and negative is short.
+The desired signed notional fraction of a Strategy Instance's current Strategy Equity: zero is flat, positive is long, and negative is short.
 _Avoid_: Signal strength, order quantity, confidence score
 
 **Target Decision**:
@@ -203,8 +225,16 @@ The recorded absence of a Target Decision while a Run is warming up or lacks a r
 _Avoid_: Zero signal, implicit skip
 
 **Execution Profile**:
-Host-owned rules that translate changes in Target Exposure into simulated or live order intentions, including thresholds, fees, slippage, precision, and fill policy.
+Host-owned rules that translate changes in Target Exposure into simulated or live order intentions, including thresholds, maker and taker fees, slippage, precision, and fill policy. Funding rates are outside the Spot execution model.
 _Avoid_: Strategy order settings
+
+**Simulated Order**:
+A Backtest record of one host-derived Spot order intention and its created, filled, replaced, or cancelled lifecycle under the Run's frozen Execution Profile; it is never sent to a Venue.
+_Avoid_: Target Decision, Fill, live order
+
+**Fill**:
+The completed execution of all or part of an order at an exact price and quantity, with its fee and maker or taker role. A Backtest Fill is simulated under the Run's frozen Execution Profile.
+_Avoid_: Buy signal, sell signal, chart marker
 
 **Recommended Context**:
 An evidence-backed Instrument, Bar Interval, and parameter configuration in which a Component was historically evaluated.

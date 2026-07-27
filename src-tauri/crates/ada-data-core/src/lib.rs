@@ -121,7 +121,7 @@ impl BarInterval {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OhlcvBar {
     pub open_time_ms: i64,
@@ -139,7 +139,7 @@ pub struct OhlcvBar {
     pub quote_volume: Decimal,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BarSeries {
     pub src: String,
@@ -181,7 +181,7 @@ pub enum BarStreamEvent {
     Closed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BarGap {
     pub start_time_ms: i64,
@@ -721,6 +721,17 @@ impl OkxClient {
         interval: BarInterval,
         range: HistoricalBarRange,
     ) -> Result<BarSeries, DataError> {
+        self.get_bar_series_range_with_progress(code, interval, range, |_, _| true)
+            .await
+    }
+
+    pub async fn get_bar_series_range_with_progress(
+        &self,
+        code: &str,
+        interval: BarInterval,
+        range: HistoricalBarRange,
+        mut on_progress: impl FnMut(usize, i64) -> bool,
+    ) -> Result<BarSeries, DataError> {
         if code.trim().is_empty() || range.start_time_ms >= range.end_time_ms {
             return Err(DataError::okx(
                 "invalid_request",
@@ -738,6 +749,12 @@ impl OkxClient {
                 break;
             };
             bars.extend(page.bars);
+            if !on_progress(bars.len(), oldest_open_time_ms) {
+                return Err(DataError::okx(
+                    "cancelled",
+                    "market data download cancelled",
+                ));
+            }
             if oldest_open_time_ms <= range.start_time_ms || page.row_count < 100 {
                 break;
             }
@@ -1764,6 +1781,29 @@ mod tests {
         assert_eq!(series.gaps.len(), 1);
         assert_eq!(series.gaps[0].start_time_ms, 1_704_153_600_000);
         assert_eq!(series.gaps[0].end_time_ms, 1_704_240_000_000);
+    }
+
+    #[tokio::test]
+    async fn okx_range_download_can_be_cancelled_after_progress() {
+        let (base_url, _request_line) = serve_json(
+            r#"{"code":"0","msg":"","data":[["1704067200000","1","2","0.5","1.5","1","1.5","1.5","1"]]}"#,
+        );
+        let error = OkxClient::new(base_url)
+            .get_bar_series_range_with_progress(
+                "BTC-USDT",
+                BarInterval::OneDay,
+                HistoricalBarRange {
+                    start_time_ms: 1_704_067_200_000,
+                    end_time_ms: 1_704_153_600_000,
+                },
+                |downloaded, _| {
+                    assert_eq!(downloaded, 1);
+                    false
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "cancelled");
     }
 
     fn serve_json(body: &str) -> (String, mpsc::Receiver<String>) {

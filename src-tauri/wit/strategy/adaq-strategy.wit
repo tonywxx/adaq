@@ -1,6 +1,15 @@
 package adaq:strategy@1.0.0;
 
 interface api {
+    type decimal = string;
+
+    variant parameter-value {
+        decimal(decimal),
+        integer(s64),
+        boolean(bool),
+        text(string),
+    }
+
     record feature-slot {
         /// List index is the dense, immutable host-bound slot position.
         name: string,
@@ -21,7 +30,7 @@ interface api {
             -> result<list<target-exposure>, string>;
     }
 
-    create: func(feature-slots: list<feature-slot>)
+    create: func(feature-slots: list<feature-slot>, parameters: list<parameter-value>)
         -> result<instance, string>;
 }
 

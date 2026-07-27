@@ -2,6 +2,7 @@ package adaq:factor@1.0.0;
 
 interface api {
     type decimal = string;
+    variant parameter-value { decimal(decimal), integer(s64), boolean(bool), text(string) }
 
     record closed-bar {
         open-time-ms: s64,
@@ -29,7 +30,7 @@ interface api {
     }
 
     describe: func() -> result<factor-schema, string>;
-    create: func() -> result<instance, string>;
+    create: func(parameters: list<parameter-value>) -> result<instance, string>;
 }
 
 world factor {

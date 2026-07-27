@@ -22,7 +22,7 @@ impl Guest for Component {
         })
     }
 
-    fn create() -> Result<FactorInstance, String> {
+    fn create(_parameters: Vec<bindings::exports::adaq::factor::api::ParameterValue>) -> Result<FactorInstance, String> {
         Ok(FactorInstance::new(Instance {
             previous_close: Cell::new(None),
         }))

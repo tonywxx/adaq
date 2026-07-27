@@ -1,3 +1,4 @@
+mod m3;
 #[allow(dead_code)] // M2 is host-only until Backtest orchestration consumes it.
 mod run_engine;
 mod watchlist;
@@ -18,6 +19,7 @@ use wasmtime::{
 };
 use watchlist::{InstrumentRef, WatchlistDb, WatchlistState};
 
+use m3::M3State;
 use run_engine::RunLimits;
 
 mod factor_abi {
@@ -62,6 +64,14 @@ struct LoadedStrategy {
     instance: ResourceAny,
 }
 
+#[derive(Debug, Clone)]
+enum ComponentParameterValue {
+    Decimal(String),
+    Integer(i64),
+    Boolean(bool),
+    String(String),
+}
+
 #[derive(Default)]
 struct WasmLoader {
     factor: Mutex<Option<LoadedFactor>>,
@@ -79,6 +89,14 @@ impl WasmLoader {
     }
 
     fn load(&self, path: &str) -> Result<(), String> {
+        self.load_with_parameters(path, &[])
+    }
+
+    fn load_with_parameters(
+        &self,
+        path: &str,
+        parameters: &[ComponentParameterValue],
+    ) -> Result<(), String> {
         if !Path::new(path).is_file() {
             return Err(format!("Factor component does not exist: {path}"));
         }
@@ -93,7 +111,10 @@ impl WasmLoader {
         reset_component_fuel(&mut store, self.limits)?;
         let instance = bindings
             .adaq_factor_api()
-            .call_create(&mut store)
+            .call_create(
+                &mut store,
+                &parameters.iter().map(factor_parameter).collect::<Vec<_>>(),
+            )
             .map_err(|error| error.to_string())?
             .map_err(|error| format!("Factor create failed: {error}"))?;
 
@@ -154,10 +175,20 @@ impl WasmLoader {
             .map_err(|error| format!("Factor process failed: {error}"))
     }
 
+    #[cfg(test)]
     fn load_strategy(
         &self,
         path: &str,
         feature_slots: Vec<strategy_abi::exports::adaq::strategy::api::FeatureSlot>,
+    ) -> Result<(), String> {
+        self.load_strategy_with_parameters(path, feature_slots, &[])
+    }
+
+    fn load_strategy_with_parameters(
+        &self,
+        path: &str,
+        feature_slots: Vec<strategy_abi::exports::adaq::strategy::api::FeatureSlot>,
+        parameters: &[ComponentParameterValue],
     ) -> Result<(), String> {
         if !Path::new(path).is_file() {
             return Err(format!("Strategy component does not exist: {path}"));
@@ -172,7 +203,14 @@ impl WasmLoader {
         reset_component_fuel(&mut store, self.limits)?;
         let instance = bindings
             .adaq_strategy_api()
-            .call_create(&mut store, &feature_slots)
+            .call_create(
+                &mut store,
+                &feature_slots,
+                &parameters
+                    .iter()
+                    .map(strategy_parameter)
+                    .collect::<Vec<_>>(),
+            )
             .map_err(|error| error.to_string())?
             .map_err(|error| format!("Strategy create failed: {error}"))?;
 
@@ -215,6 +253,30 @@ impl WasmLoader {
 
 struct ComponentStore {
     limits: StoreLimits,
+}
+
+fn factor_parameter(
+    value: &ComponentParameterValue,
+) -> factor_abi::exports::adaq::factor::api::ParameterValue {
+    use factor_abi::exports::adaq::factor::api::ParameterValue;
+    match value {
+        ComponentParameterValue::Decimal(value) => ParameterValue::Decimal(value.clone()),
+        ComponentParameterValue::Integer(value) => ParameterValue::Integer(*value),
+        ComponentParameterValue::Boolean(value) => ParameterValue::Boolean(*value),
+        ComponentParameterValue::String(value) => ParameterValue::Text(value.clone()),
+    }
+}
+
+fn strategy_parameter(
+    value: &ComponentParameterValue,
+) -> strategy_abi::exports::adaq::strategy::api::ParameterValue {
+    use strategy_abi::exports::adaq::strategy::api::ParameterValue;
+    match value {
+        ComponentParameterValue::Decimal(value) => ParameterValue::Decimal(value.clone()),
+        ComponentParameterValue::Integer(value) => ParameterValue::Integer(*value),
+        ComponentParameterValue::Boolean(value) => ParameterValue::Boolean(*value),
+        ComponentParameterValue::String(value) => ParameterValue::Text(value.clone()),
+    }
 }
 
 fn component_engine() -> Result<Engine, String> {
@@ -599,6 +661,7 @@ pub fn run() {
             app.manage(BarStreamState::default());
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
+            app.manage(M3State::open(&app_data_dir).map_err(std::io::Error::other)?);
             app.manage(
                 WatchlistDb::open(&app_data_dir.join("adaq.sqlite3"))
                     .map_err(std::io::Error::other)?,
@@ -673,7 +736,20 @@ pub fn run() {
             market_subscribe_tickers,
             market_unsubscribe_ticker,
             market_subscribe_bars,
-            market_unsubscribe_bar
+            market_unsubscribe_bar,
+            m3::component_import,
+            m3::component_list,
+            m3::component_delete,
+            m3::snapshot_create,
+            m3::snapshot_download,
+            m3::snapshot_list,
+            m3::snapshot_cancel,
+            m3::backtest_run,
+            m3::backtest_list,
+            m3::backtest_get,
+            m3::backtest_chart_data,
+            m3::backtest_execution_data,
+            m3::backtest_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
