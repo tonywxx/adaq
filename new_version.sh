@@ -2,14 +2,24 @@
 
 set -euo pipefail
 
-if [[ $# -ne 1 || ! $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Usage: $0 X.Y.Z" >&2
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+
+if [[ $# -eq 0 ]]; then
+  current=$(node -p "require('$script_dir/package.json').version")
+  if [[ ! $current =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Error: invalid version in package.json ($current)" >&2
+    exit 1
+  fi
+  IFS=. read -r major minor patch <<< "$current"
+  version="$major.$minor.$((patch + 1))"
+elif [[ $# -eq 1 && $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  version="$1"
+else
+  echo "Usage: $0 [X.Y.Z]" >&2
   exit 1
 fi
 
-script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
-
-node --input-type=module - "$1" "$script_dir" <<'NODE'
+node --input-type=module - "$version" "$script_dir" <<'NODE'
 import fs from 'node:fs'
 import path from 'node:path'
 

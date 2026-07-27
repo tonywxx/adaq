@@ -1,0 +1,3 @@
+# Use exact decimals for financial values
+
+`ada-data-core` represents prices, quantities, volumes, notionals, balances, fees, and order amounts with `rust_decimal::Decimal`; these values cross IPC boundaries as decimal strings, and `f64` is forbidden in domain and IPC types. Floating point is allowed only for non-authoritative analytics, whose results must be explicitly converted and quantized before entering any financial domain value. Provider values that exceed `Decimal`'s supported precision must fail instead of being silently rounded, while operations that change scale must use explicit instrument-aware tick-size, lot-size, and rounding rules.

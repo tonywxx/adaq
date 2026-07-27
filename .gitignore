@@ -14,7 +14,11 @@ dist-ssr
 .env
 .env.*
 github_release.sh
-docs/
+docs/*
+!docs/agents/
+!docs/agents/**
+!docs/adr/
+!docs/adr/**
 .pnpm-store/
 .npm-cache/
 

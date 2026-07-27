@@ -1,8 +1,10 @@
-# ADAQ Market Data
+# ADAQ Domain
 
-Domain language for identifying financial instruments consistently across supported asset classes.
+Domain language for market data, component-based quantitative research, reproducible strategy runs, and supervised local trading.
 
 ## Language
+
+### Market Data
 
 **Instrument**:
 A tradable product listed by a specific venue and identified by its venue-native code. The term is asset-class-neutral.
@@ -123,3 +125,101 @@ _Avoid_: Volume
 **Quote Volume**:
 The amount of an instrument's quote asset exchanged during an OHLCV Bar.
 _Avoid_: Turnover, volume
+
+### Components
+
+**Indicator**:
+A common market-series calculation provided free by the ADAQ host and referenced by name and parameters.
+_Avoid_: Factor, paid factor
+
+**Factor Component**:
+An independently packaged Component that transforms declared host inputs into one or more named scalar analytical values.
+_Avoid_: Indicator, strategy, trading plugin
+
+**Strategy Component**:
+An independently packaged Component that consumes host-supplied values and emits a complete Target Decision for one Strategy Instance.
+_Avoid_: Order executor, broker plugin
+
+**Composed Strategy**:
+A Strategy Component that embeds its own factor logic; it is a product label rather than a distinct Component contract.
+_Avoid_: Trading Combo Component, third component type
+
+**Component Package**:
+An installable bundle containing a Component binary, its authoritative Component Meta, optional Validation Reports, integrity hashes, and trust information.
+_Avoid_: Bare WASM file, plugin DLL
+
+**Component Meta**:
+Stable information describing a Component's identity, versions, parameters, inputs, outputs, dependencies, warmup, supported contexts, and licensing.
+_Avoid_: Backtest result, performance claim
+
+**Validation Report**:
+Historical evidence produced for an exact Component, data snapshot, configuration, period, and validation method; it does not guarantee future performance.
+_Avoid_: Component Meta, profitability guarantee
+
+**Component Dependency Mode**:
+The origin and lifecycle of a Strategy input: Built-in is free host functionality, Embedded is compiled into the Strategy Component, and External is a separately packaged Factor Component.
+_Avoid_: Component-to-component call, automatic runtime download
+
+**Component Lock**:
+The immutable record of the exact Component packages, hashes, contracts, and trust states selected for a Run.
+_Avoid_: Latest version, floating dependency
+
+**Feature Slot**:
+A pre-bound numeric position through which the host supplies one named Indicator or Factor value to a Component during a Run.
+_Avoid_: JSON feature map, dynamic lookup
+
+### Research and Execution
+
+**Strategy Instance**:
+A configured binding of one Strategy Component to one Instrument, one Bar Interval, parameters, allocation, and position mode.
+_Avoid_: Strategy file, trading account
+
+**Indicator Plan**:
+The immutable resolution of a Strategy Instance's declared Built-in Indicators, their parameters, warmup requirements, and Feature Slots.
+_Avoid_: Runtime indicator request
+
+**Market Data Snapshot**:
+An immutable identity for the exact Closed Bar dataset used by a reproducible Run.
+_Avoid_: Latest market data, mutable cache
+
+**Backtest Run**:
+An immutable execution record binding a Market Data Snapshot, Component Lock, Strategy parameters, Indicator Plan, Execution Profile, engine version, and seed.
+_Avoid_: Editable backtest session
+
+**Target Exposure**:
+The desired signed notional fraction of a Strategy Instance's allocation: zero is flat, positive is long, and negative is short.
+_Avoid_: Signal strength, order quantity, confidence score
+
+**Target Decision**:
+The complete Target Exposure emitted by a Strategy Instance for one Closed Bar; returning the current target represents hold and returning zero represents close.
+_Avoid_: Buy signal, sell signal, optional decision
+
+**Execution Profile**:
+Host-owned rules that translate changes in Target Exposure into simulated or live order intentions, including thresholds, fees, slippage, precision, and fill policy.
+_Avoid_: Strategy order settings
+
+**Recommended Context**:
+An evidence-backed Instrument, Bar Interval, and parameter configuration in which a Component was historically evaluated.
+_Avoid_: Best market, guaranteed configuration, highest future win rate
+
+### Supervised Live Trading
+
+**Supervised Local Execution**:
+A live-trading mode in which the desktop application remains running and a human operator is available; it is not cloud or unattended execution.
+_Avoid_: Cloud trading, autonomous 24/7 execution
+
+**Live Control Lease**:
+Exclusive permission for one ADAQ controller to manage one Venue account and Instrument at a time.
+_Avoid_: Shared strategy ownership
+
+**Unmanaged Position**:
+An open Venue position deliberately retained after its controlling Strategy Instance has stopped.
+_Avoid_: Active strategy position
+
+**Freeze All**:
+A host emergency action that pauses strategies, blocks new risk, and cancels open orders while retaining current positions.
+_Avoid_: Flatten, application exit
+
+**Flatten All**:
+A separately confirmed host emergency action that first freezes execution and then attempts to close every controlled position with reconciliation.
+_Avoid_: Freeze, blind market sell

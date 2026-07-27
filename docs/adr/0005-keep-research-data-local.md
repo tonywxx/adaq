@@ -1,0 +1,3 @@
+# Keep research data local and cloud data control-only
+
+ADAQ is local-first: Parquet is the authoritative historical market-data store, DuckDB is a rebuildable query and analytics layer over that data, and SQLite stores user configuration, operational metadata, Run records, and the local journal. Supabase stores registration identity in V1 and may later hold control-plane information such as entitlements, licences, and registered devices, but it does not own authoritative research data or exchange credentials. A future Axum service may distribute versioned datasets, packages, licences, and sync data without becoming the live Venue execution path.
