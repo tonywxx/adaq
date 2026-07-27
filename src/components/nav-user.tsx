@@ -100,7 +100,7 @@ export function NavUser() {
 							</DropdownMenuItem>
 						</DropdownMenuGroup>
 						<DropdownMenuSeparator />
-						<DropdownMenuItem onSelect={() => supabase?.auth.signOut()}>
+						<DropdownMenuItem onClick={() => supabase?.auth.signOut()}>
 							<LogOutIcon />
 							Log out
 						</DropdownMenuItem>
