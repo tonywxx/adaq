@@ -174,6 +174,10 @@ _Avoid_: JSON feature map, dynamic lookup
 A configured binding of one Strategy Component to one Instrument, one Bar Interval, parameters, allocation, and position mode.
 _Avoid_: Strategy file, trading account
 
+**Position Mode**:
+The exposure constraint selected for a Strategy Instance: Long Only permits targets from zero through one, while Long–Short permits targets from negative one through one.
+_Avoid_: Trade direction, signal type
+
 **Indicator Plan**:
 The immutable resolution of a Strategy Instance's declared Built-in Indicators, their parameters, warmup requirements, and Feature Slots.
 _Avoid_: Runtime indicator request
@@ -193,6 +197,10 @@ _Avoid_: Signal strength, order quantity, confidence score
 **Target Decision**:
 The complete Target Exposure emitted by a Strategy Instance for one Closed Bar; returning the current target represents hold and returning zero represents close.
 _Avoid_: Buy signal, sell signal, optional decision
+
+**Run Pause**:
+The recorded absence of a Target Decision while a Run is warming up or lacks a required input; missing data is never replaced with a synthetic analytical value.
+_Avoid_: Zero signal, implicit skip
 
 **Execution Profile**:
 Host-owned rules that translate changes in Target Exposure into simulated or live order intentions, including thresholds, fees, slippage, precision, and fill policy.

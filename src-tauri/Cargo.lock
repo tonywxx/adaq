@@ -23,6 +23,7 @@ version = "0.8.3"
 dependencies = [
  "ada-data-core",
  "rusqlite",
+ "rust_decimal",
  "serde",
  "serde_json",
  "tauri",

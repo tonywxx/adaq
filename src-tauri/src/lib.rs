@@ -1,3 +1,5 @@
+#[allow(dead_code)] // M2 is host-only until Backtest orchestration consumes it.
+mod run_engine;
 mod watchlist;
 
 use ada_data_core::{
@@ -11,10 +13,12 @@ use tauri::{
     menu::{AboutMetadata, MenuBuilder, SubmenuBuilder},
 };
 use wasmtime::{
-    Config, Engine, Store,
+    Config, Engine, Store, StoreLimits, StoreLimitsBuilder,
     component::{Component, Linker, ResourceAny},
 };
 use watchlist::{InstrumentRef, WatchlistDb, WatchlistState};
+
+use run_engine::RunLimits;
 
 mod factor_abi {
     wasmtime::component::bindgen!({
@@ -47,15 +51,13 @@ struct FactorSchema {
 }
 
 struct LoadedFactor {
-    store: Store<()>,
+    store: Store<ComponentStore>,
     bindings: factor_abi::Factor,
-    #[allow(dead_code)] // Retains the guest resource between host calls.
     instance: ResourceAny,
 }
 
-#[allow(dead_code)] // Strategy execution is host-only until the Run engine exists.
 struct LoadedStrategy {
-    store: Store<()>,
+    store: Store<ComponentStore>,
     bindings: strategy_abi::Strategy,
     instance: ResourceAny,
 }
@@ -63,25 +65,32 @@ struct LoadedStrategy {
 #[derive(Default)]
 struct WasmLoader {
     factor: Mutex<Option<LoadedFactor>>,
-    #[allow(dead_code)] // Strategy execution is host-only until the Run engine exists.
     strategy: Mutex<Option<LoadedStrategy>>,
+    limits: RunLimits,
 }
 
 impl WasmLoader {
+    fn with_limits(limits: RunLimits) -> Self {
+        Self {
+            factor: Mutex::default(),
+            strategy: Mutex::default(),
+            limits,
+        }
+    }
+
     fn load(&self, path: &str) -> Result<(), String> {
         if !Path::new(path).is_file() {
             return Err(format!("Factor component does not exist: {path}"));
         }
 
-        let mut config = Config::new();
-        config.wasm_component_model(true);
-        let engine = Engine::new(&config).map_err(|error| error.to_string())?;
+        let engine = component_engine()?;
         let component = Component::from_file(&engine, path).map_err(|error| error.to_string())?;
         let linker = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
+        let mut store = component_store(&engine, self.limits)?;
         let bindings = factor_abi::Factor::instantiate(&mut store, &component, &linker)
             .map_err(|error| error.to_string())?;
 
+        reset_component_fuel(&mut store, self.limits)?;
         let instance = bindings
             .adaq_factor_api()
             .call_create(&mut store)
@@ -94,6 +103,7 @@ impl WasmLoader {
             bindings,
             instance,
         }) {
+            reset_component_fuel(&mut previous.store, self.limits)?;
             previous
                 .instance
                 .resource_drop(&mut previous.store)
@@ -110,6 +120,7 @@ impl WasmLoader {
         } = factor
             .as_mut()
             .ok_or_else(|| "Factor component is not loaded".to_owned())?;
+        reset_component_fuel(store, self.limits)?;
         let schema = bindings
             .adaq_factor_api()
             .call_describe(store)
@@ -122,7 +133,6 @@ impl WasmLoader {
         })
     }
 
-    #[allow(dead_code)] // Called by the fixture integration test until the Run engine exists.
     fn process_factor(
         &self,
         bars: Vec<factor_abi::exports::adaq::factor::api::ClosedBar>,
@@ -135,6 +145,7 @@ impl WasmLoader {
         } = factor
             .as_mut()
             .ok_or_else(|| "Factor component is not loaded".to_owned())?;
+        reset_component_fuel(store, self.limits)?;
         bindings
             .adaq_factor_api()
             .instance()
@@ -143,7 +154,6 @@ impl WasmLoader {
             .map_err(|error| format!("Factor process failed: {error}"))
     }
 
-    #[allow(dead_code)] // Called by the fixture integration test until the Run engine exists.
     fn load_strategy(
         &self,
         path: &str,
@@ -153,14 +163,13 @@ impl WasmLoader {
             return Err(format!("Strategy component does not exist: {path}"));
         }
 
-        let mut config = Config::new();
-        config.wasm_component_model(true);
-        let engine = Engine::new(&config).map_err(|error| error.to_string())?;
+        let engine = component_engine()?;
         let component = Component::from_file(&engine, path).map_err(|error| error.to_string())?;
         let linker = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
+        let mut store = component_store(&engine, self.limits)?;
         let bindings = strategy_abi::Strategy::instantiate(&mut store, &component, &linker)
             .map_err(|error| error.to_string())?;
+        reset_component_fuel(&mut store, self.limits)?;
         let instance = bindings
             .adaq_strategy_api()
             .call_create(&mut store, &feature_slots)
@@ -173,6 +182,7 @@ impl WasmLoader {
             bindings,
             instance,
         }) {
+            reset_component_fuel(&mut previous.store, self.limits)?;
             previous
                 .instance
                 .resource_drop(&mut previous.store)
@@ -181,7 +191,6 @@ impl WasmLoader {
         Ok(())
     }
 
-    #[allow(dead_code)] // Called by the fixture integration test until the Run engine exists.
     fn process_strategy(
         &self,
         frames: Vec<strategy_abi::exports::adaq::strategy::api::FeatureFrame>,
@@ -194,6 +203,7 @@ impl WasmLoader {
         } = strategy
             .as_mut()
             .ok_or_else(|| "Strategy component is not loaded".to_owned())?;
+        reset_component_fuel(store, self.limits)?;
         bindings
             .adaq_strategy_api()
             .instance()
@@ -201,6 +211,43 @@ impl WasmLoader {
             .map_err(|error| error.to_string())?
             .map_err(|error| format!("Strategy process failed: {error}"))
     }
+}
+
+struct ComponentStore {
+    limits: StoreLimits,
+}
+
+fn component_engine() -> Result<Engine, String> {
+    let mut config = Config::new();
+    config.wasm_component_model(true).consume_fuel(true);
+    Engine::new(&config).map_err(|error| error.to_string())
+}
+
+fn component_store(engine: &Engine, limits: RunLimits) -> Result<Store<ComponentStore>, String> {
+    let mut store = Store::new(
+        engine,
+        ComponentStore {
+            limits: StoreLimitsBuilder::new()
+                .memory_size(limits.memory_bytes)
+                .instances(4)
+                .memories(4)
+                .tables(4)
+                .trap_on_grow_failure(true)
+                .build(),
+        },
+    );
+    store.limiter(|state| &mut state.limits);
+    reset_component_fuel(&mut store, limits)?;
+    Ok(store)
+}
+
+fn reset_component_fuel(
+    store: &mut Store<ComponentStore>,
+    limits: RunLimits,
+) -> Result<(), String> {
+    store
+        .set_fuel(limits.fuel_per_call)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
