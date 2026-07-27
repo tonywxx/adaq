@@ -121,6 +121,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Validate Supabase configuration
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${VITE_SUPABASE_URL:?Set repository variable VITE_SUPABASE_URL before releasing.}"
+          : "${VITE_SUPABASE_PUBLISHABLE_KEY:?Set repository variable VITE_SUPABASE_PUBLISHABLE_KEY before releasing.}"
+
       - name: Build and upload draft release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -128,6 +138,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ matrix.platform == 'macos-latest' && '-' || '' }}
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
         with:
           tagName: v${{ needs.validate.outputs.version }}
           releaseName: v${{ needs.validate.outputs.version }}
