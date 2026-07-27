@@ -46,7 +46,7 @@ export default function Home() {
 }
 
 function FactorComponentName() {
-	const [meta, setMeta] = useState<FactorMetaInfo>();
+	const [schema, setSchema] = useState<FactorSchema>();
 	const [error, setError] = useState<string>();
 	const [loading, setLoading] = useState(false);
 
@@ -55,7 +55,7 @@ function FactorComponentName() {
 		setError(undefined);
 
 		try {
-			setMeta(await invoke<FactorMetaInfo>("get_factor_meta_info"));
+			setSchema(await invoke<FactorSchema>("get_factor_schema"));
 		} catch (reason) {
 			setError(String(reason));
 		} finally {
@@ -68,37 +68,17 @@ function FactorComponentName() {
 			<Button type="button" onClick={readName} disabled={loading}>
 				{loading ? "读取中…" : "读取 WASM 控件"}
 			</Button>
-			{meta && <span className="text-sm font-medium">{meta.name}</span>}
-			{meta && <span className="text-sm font-medium">{meta.category}</span>}
-			{meta && <span className="text-sm font-medium">{meta.componentType}</span>}
-			{meta && <span className="text-sm font-medium">{meta.description}</span>}
-			{meta && <span className="text-sm font-medium">{meta.version}</span>}
-			{meta && <span className="text-sm font-medium">{meta.price}</span>}
-			{meta && <span className="text-sm font-medium">{meta.currency}</span>}
-			{meta && <span className="text-sm font-medium">{meta.usage}</span>}
-			{meta && (
-				<span className="text-sm font-medium">{meta.latestUpdateDate}</span>
+			{schema && (
+				<span className="text-sm font-medium">
+					{schema.outputNames.join(", ")} (warmup: {schema.warmupBars})
+				</span>
 			)}
-			{meta && (
-				<span className="text-sm font-medium">{meta.recommendedTimeframe}</span>
-			)}
-			{meta && <span className="text-sm font-medium">{meta.minimumCloses}</span>}
 			{error && <span className="text-sm text-destructive">{error}</span>}
 		</div>
 	);
 }
 
-type FactorMetaInfo = {
-	uuid: string;
-	name: string;
-	category: "factor" | "strategy";
-	componentType: string;
-	description: string;
-	version: string;
-	price: string;
-	currency: string;
-	usage: string;
-	latestUpdateDate: string;
-	recommendedTimeframe: string;
-	minimumCloses: number;
+type FactorSchema = {
+	outputNames: string[];
+	warmupBars: number;
 };

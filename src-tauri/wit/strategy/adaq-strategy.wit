@@ -1,0 +1,30 @@
+package adaq:strategy@1.0.0;
+
+interface api {
+    record feature-slot {
+        /// List index is the dense, immutable host-bound slot position.
+        name: string,
+    }
+
+    record feature-frame {
+        open-time-ms: s64,
+        /// Same length and order as `create(feature-slots)`.
+        values: list<f64>,
+    }
+
+    /// Exact base-10 text: -?(0|[1-9][0-9]*)(\.[0-9]+)?
+    type target-exposure = string;
+
+    resource instance {
+        /// Input and output are chronological. State continues across calls.
+        process: func(frames: list<feature-frame>)
+            -> result<list<target-exposure>, string>;
+    }
+
+    create: func(feature-slots: list<feature-slot>)
+        -> result<instance, string>;
+}
+
+world strategy {
+    export api;
+}

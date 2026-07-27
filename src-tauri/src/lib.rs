@@ -12,15 +12,23 @@ use tauri::{
 };
 use wasmtime::{
     Config, Engine, Store,
-    component::{Component, Linker, ResourceTable},
+    component::{Component, Linker, ResourceAny},
 };
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use watchlist::{InstrumentRef, WatchlistDb, WatchlistState};
 
-wasmtime::component::bindgen!({
-    path: "wit/factor-ema5-10.wit",
-    world: "ema-5-10",
-});
+mod factor_abi {
+    wasmtime::component::bindgen!({
+        path: "wit/factor",
+        world: "factor",
+    });
+}
+
+mod strategy_abi {
+    wasmtime::component::bindgen!({
+        path: "wit/strategy",
+        world: "strategy",
+    });
+}
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
 const CHECK_FOR_UPDATES_EVENT: &str = "adaq-check-for-updates";
@@ -33,43 +41,30 @@ fn greet(name: &str) -> String {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FactorMetaInfo {
-    uuid: String,
-    name: String,
-    category: String,
-    component_type: String,
-    description: String,
-    version: String,
-    price: String,
-    currency: String,
-    usage: String,
-    latest_update_date: String,
-    recommended_timeframe: String,
-    minimum_closes: u32,
+struct FactorSchema {
+    output_names: Vec<String>,
+    warmup_bars: u32,
 }
 
 struct LoadedFactor {
-    store: Store<WasiState>,
-    bindings: Ema510,
+    store: Store<()>,
+    bindings: factor_abi::Factor,
+    #[allow(dead_code)] // Retains the guest resource between host calls.
+    instance: ResourceAny,
 }
 
-struct WasiState {
-    ctx: WasiCtx,
-    table: ResourceTable,
-}
-
-impl WasiView for WasiState {
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.ctx,
-            table: &mut self.table,
-        }
-    }
+#[allow(dead_code)] // Strategy execution is host-only until the Run engine exists.
+struct LoadedStrategy {
+    store: Store<()>,
+    bindings: strategy_abi::Strategy,
+    instance: ResourceAny,
 }
 
 #[derive(Default)]
 struct WasmLoader {
     factor: Mutex<Option<LoadedFactor>>,
+    #[allow(dead_code)] // Strategy execution is host-only until the Run engine exists.
+    strategy: Mutex<Option<LoadedStrategy>>,
 }
 
 impl WasmLoader {
@@ -82,52 +77,129 @@ impl WasmLoader {
         config.wasm_component_model(true);
         let engine = Engine::new(&config).map_err(|error| error.to_string())?;
         let component = Component::from_file(&engine, path).map_err(|error| error.to_string())?;
-        let mut linker = Linker::new(&engine);
-        wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|error| error.to_string())?;
-        let mut store = Store::new(
-            &engine,
-            WasiState {
-                ctx: WasiCtxBuilder::new().build(),
-                table: ResourceTable::new(),
-            },
-        );
-        let bindings = Ema510::instantiate(&mut store, &component, &linker)
+        let linker = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let bindings = factor_abi::Factor::instantiate(&mut store, &component, &linker)
             .map_err(|error| error.to_string())?;
 
-        *self.factor.lock().map_err(|error| error.to_string())? =
-            Some(LoadedFactor { store, bindings });
+        let instance = bindings
+            .adaq_factor_api()
+            .call_create(&mut store)
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("Factor create failed: {error}"))?;
+
+        let mut factor = self.factor.lock().map_err(|error| error.to_string())?;
+        if let Some(mut previous) = factor.replace(LoadedFactor {
+            store,
+            bindings,
+            instance,
+        }) {
+            previous
+                .instance
+                .resource_drop(&mut previous.store)
+                .map_err(|error| error.to_string())?;
+        }
 
         Ok(())
     }
 
-    fn get_meta_info(&self) -> Result<FactorMetaInfo, String> {
+    fn describe_factor(&self) -> Result<FactorSchema, String> {
         let mut factor = self.factor.lock().map_err(|error| error.to_string())?;
-        let LoadedFactor { store, bindings } = factor
+        let LoadedFactor {
+            store, bindings, ..
+        } = factor
             .as_mut()
             .ok_or_else(|| "Factor component is not loaded".to_owned())?;
-        let meta = bindings
+        let schema = bindings
             .adaq_factor_api()
-            .call_get_meta_info(store)
-            .map_err(|error| error.to_string())?;
+            .call_describe(store)
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("Factor describe failed: {error}"))?;
 
-        Ok(FactorMetaInfo {
-            uuid: meta.uuid,
-            name: meta.name,
-            category: match meta.category {
-                exports::adaq::factor::api::ComponentCategory::Factor => "factor",
-                exports::adaq::factor::api::ComponentCategory::Strategy => "strategy",
-            }
-            .to_owned(),
-            component_type: meta.component_type,
-            description: meta.description,
-            version: meta.version,
-            price: meta.price,
-            currency: meta.currency,
-            usage: meta.usage,
-            latest_update_date: meta.latest_update_date,
-            recommended_timeframe: meta.recommended_timeframe,
-            minimum_closes: meta.minimum_closes,
+        Ok(FactorSchema {
+            output_names: schema.output_names,
+            warmup_bars: schema.warmup_bars,
         })
+    }
+
+    #[allow(dead_code)] // Called by the fixture integration test until the Run engine exists.
+    fn process_factor(
+        &self,
+        bars: Vec<factor_abi::exports::adaq::factor::api::ClosedBar>,
+    ) -> Result<Vec<Option<Vec<factor_abi::exports::adaq::factor::api::NamedScalar>>>, String> {
+        let mut factor = self.factor.lock().map_err(|error| error.to_string())?;
+        let LoadedFactor {
+            store,
+            bindings,
+            instance,
+        } = factor
+            .as_mut()
+            .ok_or_else(|| "Factor component is not loaded".to_owned())?;
+        bindings
+            .adaq_factor_api()
+            .instance()
+            .call_process(store, *instance, &bars)
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("Factor process failed: {error}"))
+    }
+
+    #[allow(dead_code)] // Called by the fixture integration test until the Run engine exists.
+    fn load_strategy(
+        &self,
+        path: &str,
+        feature_slots: Vec<strategy_abi::exports::adaq::strategy::api::FeatureSlot>,
+    ) -> Result<(), String> {
+        if !Path::new(path).is_file() {
+            return Err(format!("Strategy component does not exist: {path}"));
+        }
+
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        let engine = Engine::new(&config).map_err(|error| error.to_string())?;
+        let component = Component::from_file(&engine, path).map_err(|error| error.to_string())?;
+        let linker = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let bindings = strategy_abi::Strategy::instantiate(&mut store, &component, &linker)
+            .map_err(|error| error.to_string())?;
+        let instance = bindings
+            .adaq_strategy_api()
+            .call_create(&mut store, &feature_slots)
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("Strategy create failed: {error}"))?;
+
+        let mut strategy = self.strategy.lock().map_err(|error| error.to_string())?;
+        if let Some(mut previous) = strategy.replace(LoadedStrategy {
+            store,
+            bindings,
+            instance,
+        }) {
+            previous
+                .instance
+                .resource_drop(&mut previous.store)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)] // Called by the fixture integration test until the Run engine exists.
+    fn process_strategy(
+        &self,
+        frames: Vec<strategy_abi::exports::adaq::strategy::api::FeatureFrame>,
+    ) -> Result<Vec<String>, String> {
+        let mut strategy = self.strategy.lock().map_err(|error| error.to_string())?;
+        let LoadedStrategy {
+            store,
+            bindings,
+            instance,
+        } = strategy
+            .as_mut()
+            .ok_or_else(|| "Strategy component is not loaded".to_owned())?;
+        bindings
+            .adaq_strategy_api()
+            .instance()
+            .call_process(store, *instance, &frames)
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("Strategy process failed: {error}"))
     }
 }
 
@@ -135,14 +207,14 @@ impl WasmLoader {
 fn load_factor_component(
     path: String,
     loader: State<'_, WasmLoader>,
-) -> Result<FactorMetaInfo, String> {
+) -> Result<FactorSchema, String> {
     loader.load(&path)?;
-    loader.get_meta_info()
+    loader.describe_factor()
 }
 
 #[tauri::command]
-fn get_factor_meta_info(loader: State<'_, WasmLoader>) -> Result<FactorMetaInfo, String> {
-    loader.get_meta_info()
+fn get_factor_schema(loader: State<'_, WasmLoader>) -> Result<FactorSchema, String> {
+    loader.describe_factor()
 }
 
 #[derive(serde::Deserialize)]
@@ -542,7 +614,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             load_factor_component,
-            get_factor_meta_info,
+            get_factor_schema,
             market_list_spot_instruments,
             market_get_bar_series,
             market_get_ticker,
@@ -562,11 +634,111 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::WasmLoader;
+    use super::{WasmLoader, factor_abi, strategy_abi};
+    use std::path::PathBuf;
+
+    fn fixture(name: &str) -> String {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join(name)
+            .join("target/wasm32-unknown-unknown/debug")
+            .join(format!("m1_{name}_fixture.wasm"));
+        assert!(
+            path.is_file(),
+            "build the {name} fixture with cargo component build"
+        );
+        path.to_string_lossy().into_owned()
+    }
+
+    fn bar(open_time_ms: i64, close: &str) -> factor_abi::exports::adaq::factor::api::ClosedBar {
+        factor_abi::exports::adaq::factor::api::ClosedBar {
+            open_time_ms,
+            open: close.to_owned(),
+            high: close.to_owned(),
+            low: close.to_owned(),
+            close: close.to_owned(),
+            base_volume: "1".to_owned(),
+            quote_volume: close.to_owned(),
+        }
+    }
 
     #[test]
     fn factor_loader_starts_empty() {
-        let error = WasmLoader::default().get_meta_info().err().unwrap();
+        let error = WasmLoader::default().describe_factor().err().unwrap();
         assert_eq!(error, "Factor component is not loaded");
+    }
+
+    #[test]
+    fn factor_fixture_is_stateful_and_chunk_boundary_independent() {
+        let path = fixture("factor");
+        let bars = vec![
+            bar(1, "0.00000303"),
+            bar(2, "0.00000304"),
+            bar(3, "0.00000302"),
+        ];
+
+        let whole = WasmLoader::default();
+        whole.load(&path).unwrap();
+        assert_eq!(
+            whole.describe_factor().unwrap().output_names,
+            ["close-change"]
+        );
+        let one_chunk = whole.process_factor(bars.clone()).unwrap();
+
+        let chunked = WasmLoader::default();
+        chunked.load(&path).unwrap();
+        let mut two_chunks = chunked.process_factor(bars[..1].to_vec()).unwrap();
+        two_chunks.extend(chunked.process_factor(bars[1..].to_vec()).unwrap());
+
+        assert_eq!(one_chunk.len(), two_chunks.len());
+        for (whole, chunked) in one_chunk.iter().zip(two_chunks.iter()) {
+            match (whole, chunked) {
+                (None, None) => {}
+                (Some(whole), Some(chunked)) => {
+                    assert_eq!(whole.len(), chunked.len());
+                    for (whole, chunked) in whole.iter().zip(chunked.iter()) {
+                        assert_eq!(whole.name, chunked.name);
+                        assert_eq!(whole.value.to_bits(), chunked.value.to_bits());
+                    }
+                }
+                _ => panic!("chunk boundaries changed Factor warmup output"),
+            }
+        }
+        assert!(one_chunk[0].is_none());
+        assert_eq!(one_chunk[1].as_ref().unwrap()[0].name, "close-change");
+    }
+
+    #[test]
+    fn strategy_fixture_returns_complete_target_exposure_per_frame() {
+        let loader = WasmLoader::default();
+        loader
+            .load_strategy(
+                &fixture("strategy"),
+                vec![strategy_abi::exports::adaq::strategy::api::FeatureSlot {
+                    name: "close-change".to_owned(),
+                }],
+            )
+            .unwrap();
+        let targets = loader
+            .process_strategy(vec![
+                strategy_abi::exports::adaq::strategy::api::FeatureFrame {
+                    open_time_ms: 1,
+                    values: vec![-1.0],
+                },
+                strategy_abi::exports::adaq::strategy::api::FeatureFrame {
+                    open_time_ms: 2,
+                    values: vec![1.0],
+                },
+            ])
+            .unwrap();
+        assert_eq!(targets, ["0", "1"]);
+    }
+
+    #[test]
+    fn factor_loader_rejects_strategy_abi() {
+        let error = WasmLoader::default()
+            .load(&fixture("strategy"))
+            .unwrap_err();
+        assert!(error.contains("factor"), "unexpected error: {error}");
     }
 }

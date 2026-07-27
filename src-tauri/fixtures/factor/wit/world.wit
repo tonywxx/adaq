@@ -1,0 +1,37 @@
+package adaq:factor@1.0.0;
+
+interface api {
+    type decimal = string;
+
+    record closed-bar {
+        open-time-ms: s64,
+        open: decimal,
+        high: decimal,
+        low: decimal,
+        close: decimal,
+        base-volume: decimal,
+        quote-volume: decimal,
+    }
+
+    record named-scalar {
+        name: string,
+        value: f64,
+    }
+
+    record factor-schema {
+        output-names: list<string>,
+        warmup-bars: u32,
+    }
+
+    resource instance {
+        process: func(bars: list<closed-bar>)
+            -> result<list<option<list<named-scalar>>>, string>;
+    }
+
+    describe: func() -> result<factor-schema, string>;
+    create: func() -> result<instance, string>;
+}
+
+world factor {
+    export api;
+}

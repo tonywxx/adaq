@@ -1,0 +1,41 @@
+package adaq:factor@1.0.0;
+
+interface api {
+    /// Exact base-10 text: -?(0|[1-9][0-9]*)(\.[0-9]+)?
+    type decimal = string;
+
+    record closed-bar {
+        open-time-ms: s64,
+        open: decimal,
+        high: decimal,
+        low: decimal,
+        close: decimal,
+        base-volume: decimal,
+        quote-volume: decimal,
+    }
+
+    record named-scalar {
+        name: string,
+        value: f64,
+    }
+
+    record factor-schema {
+        /// Unique component-defined names in fixed order.
+        output-names: list<string>,
+        /// Number of initial Closed Bars that may produce `none`.
+        warmup-bars: u32,
+    }
+
+    resource instance {
+        /// Input and output are chronological. State continues across calls.
+        process: func(bars: list<closed-bar>)
+            -> result<list<option<list<named-scalar>>>, string>;
+    }
+
+    describe: func() -> result<factor-schema, string>;
+    create: func() -> result<instance, string>;
+}
+
+world factor {
+    export api;
+}

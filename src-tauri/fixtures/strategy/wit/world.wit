@@ -1,0 +1,16 @@
+package adaq:strategy@1.0.0;
+
+interface api {
+    record feature-slot { name: string }
+    record feature-frame { open-time-ms: s64, values: list<f64> }
+    type target-exposure = string;
+
+    resource instance {
+        process: func(frames: list<feature-frame>)
+            -> result<list<target-exposure>, string>;
+    }
+
+    create: func(feature-slots: list<feature-slot>) -> result<instance, string>;
+}
+
+world strategy { export api; }

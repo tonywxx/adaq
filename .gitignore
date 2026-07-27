@@ -38,3 +38,7 @@ docs/*
 .cursor/
 .claude/
 .agent/
+
+# Generated Component Model fixture outputs.
+src-tauri/fixtures/*/src/bindings.rs
+src-tauri/fixtures/*/target/

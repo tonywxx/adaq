@@ -38,6 +38,3 @@ wasmtime = { version = "46.0.1", default-features = false, features = [
     "component-model",
     "cranelift",
 ] }
-wasmtime-wasi = { version = "46.0.1", default-features = false, features = [
-    "p2",
-] }
