@@ -37,6 +37,9 @@ jobs:
         if: matrix.architecture == 'arm64'
         shell: bash
         run: test "$(uname -m)" = arm64
+      - name: Install Linux test dependencies
+        if: matrix.runner == 'ubuntu-22.04'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - name: Install cargo-component
         run: cargo install cargo-component --locked
       - name: Build component fixtures

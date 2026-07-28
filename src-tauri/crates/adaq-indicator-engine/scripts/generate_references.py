@@ -48,7 +48,7 @@ def main():
     }
     for path, text in rendered.items():
         if args.check:
-            assert path.read_text() == text, f"{path.relative_to(REPO)} is stale; run scripts/generate_references.py"
+            assert path.read_text().replace("\r\n", "\n") == text, f"{path.relative_to(REPO)} is stale; run scripts/generate_references.py"
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
