@@ -1,0 +1,11 @@
+{
+  "manifestSchemaVersion": "1.0.0",
+  "componentId": "33333333-3333-4333-8333-333333333333",
+  "version": "1.0.0",
+  "name": "External Factor Fixture",
+  "kind": "strategy",
+  "sdkVersion": "0.1.0",
+  "abiVersion": "1.0.0",
+  "featureSlots": [{"name": "close-change", "source": {"kind": "external", "dependencyAlias": "change", "output": "close-change"}}],
+  "dependencies": [{"componentId": "11111111-1111-4111-8111-111111111111", "version": "^1.0.0", "alias": "change"}]
+}

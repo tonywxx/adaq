@@ -81,7 +81,12 @@ pub struct FeatureSlotDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum FeatureSlotSource {
     Market {
         field: MarketField,
@@ -253,7 +258,12 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
         manifest.feature_slots.iter().map(|slot| slot.name.as_str()),
         "Feature Slot",
     )?;
-    unique_non_empty(manifest.output_names.iter().map(String::as_str), "output")?;
+    if manifest.output_names.len() > 64 {
+        return Err(PackageError(
+            "Factor Components may declare at most 64 outputs".into(),
+        ));
+    }
+    unique_identifiers(manifest.output_names.iter().map(String::as_str), "output")?;
     unique_non_empty(
         manifest
             .dependencies

@@ -30,7 +30,8 @@ pub struct FactorSchema {
     pub warmup_bars: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "kebab-case")]
 pub enum ComponentParameterValue {
     Decimal(String),
     Integer(i64),

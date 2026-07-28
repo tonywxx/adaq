@@ -14,14 +14,17 @@ use ada_backtest_core::{
 };
 use ada_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
 use adaq_component_tooling::{
-    ComponentDependency, ComponentKind, ComponentPackage, EngineIdentity, ParameterDefinition,
-    RunLimits, component_parameters, validate_and_freeze, verify_package,
+    ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage, EngineIdentity,
+    FactorInstancePlanInput, ParameterDefinition, RunLimits, component_parameters,
+    validate_and_freeze_with_factors, verify_package,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::run_engine::{PositionMode, RunEngine, RunRequest, market_engine_build_id};
+use crate::run_engine::{
+    FactorRunRequest, PositionMode, RunEngine, RunRequest, market_engine_build_id,
+};
 
 pub struct M3State {
     root: PathBuf,
@@ -552,7 +555,14 @@ pub struct FactorInstanceRequest {
     pub alias: String,
     pub archive_sha256: String,
     #[serde(default)]
-    pub parameters: HashMap<String, String>,
+    pub parameters: HashMap<String, FactorParameterBinding>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum FactorParameterBinding {
+    Literal(String),
+    StrategyParameter { strategy_parameter: String },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -564,6 +574,8 @@ pub struct BacktestRun {
     pub snapshot: MarketDataSnapshot,
     pub bars: Vec<OhlcvBar>,
     pub decisions: Vec<SimulationDecision>,
+    #[serde(default)]
+    pub pauses: Vec<RunPauseRecord>,
     pub result: ada_backtest_core::SimulationResult,
     pub component_lock: Vec<ComponentLockEntry>,
 }
@@ -575,8 +587,16 @@ pub struct BacktestRunView {
     pub plan_hash: String,
     pub snapshot: MarketDataSnapshot,
     pub bars: Vec<OhlcvBar>,
+    pub pauses: Vec<RunPauseRecord>,
     pub result: ada_backtest_core::SimulationResult,
     pub component_lock: Vec<ComponentLockEntry>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunPauseRecord {
+    pub open_time_ms: i64,
+    pub reason: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -776,19 +796,49 @@ fn execute_backtest(
     request: BacktestRunRequest,
     state: &M3State,
 ) -> Result<BacktestRunView, String> {
-    if !request.factor_instances.is_empty() {
-        return Err("External Feature Slots are unsupported until M5.5".into());
-    }
     let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
     if !matches!(strategy.manifest.kind, ComponentKind::Strategy) {
         return Err("Backtest requires a Strategy Component".into());
     }
-    let plan = validate_and_freeze(
+    let factor_packages = request
+        .factor_instances
+        .iter()
+        .map(|factor| {
+            let package = state.package_for_user(&request.user_id, &factor.archive_sha256)?;
+            if package.manifest.kind != ComponentKind::Factor {
+                return Err("External Feature Slots require Factor Components".into());
+            }
+            Ok((factor, package))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let factor_parameters = factor_packages
+        .iter()
+        .map(|(factor, package)| {
+            let parameters = resolve_factor_parameters(
+                &strategy.manifest,
+                &package.manifest,
+                &request.strategy_parameters,
+                &factor.parameters,
+            )?;
+            component_parameters(&package.manifest, Some(&parameters))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let factor_inputs = factor_packages
+        .iter()
+        .zip(&factor_parameters)
+        .map(|((factor, package), parameters)| FactorInstancePlanInput {
+            alias: &factor.alias,
+            manifest: &package.manifest,
+            parameters: parameters.clone(),
+        })
+        .collect::<Vec<_>>();
+    let plan = validate_and_freeze_with_factors(
         &strategy.manifest,
         &strategy.archive_sha256,
         &EngineIdentity {
             engine_build_id: market_engine_build_id(),
         },
+        &factor_inputs,
     )
     .map_err(|error| format!("Indicator Plan validation failed: {:?}", error.issues))?;
     let run_id = fingerprint(&request, plan.plan_hash())?;
@@ -797,6 +847,10 @@ fn execute_backtest(
     }
     let (snapshot, bars) = state.snapshot(&request.snapshot_id)?;
     let strategy_path = state.runtime_component(&strategy)?;
+    let factor_paths = factor_packages
+        .iter()
+        .map(|(_, package)| state.runtime_component(package))
+        .collect::<Result<Vec<_>, _>>()?;
     let gaps = snapshot
         .gaps
         .iter()
@@ -808,9 +862,23 @@ fn execute_backtest(
     let strategy_parameters =
         component_parameters(&strategy.manifest, Some(&request.strategy_parameters))?;
     let strategy_path = strategy_path.to_string_lossy();
+    let factor_paths = factor_paths
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let factors = request
+        .factor_instances
+        .iter()
+        .zip(&factor_paths)
+        .map(|(factor, path)| FactorRunRequest {
+            alias: &factor.alias,
+            path,
+        })
+        .collect::<Vec<_>>();
     let engine_result = RunEngine::execute(&RunRequest {
         strategy_path: &strategy_path,
         strategy_parameters: &strategy_parameters,
+        factors: &factors,
         bars: &bars,
         gaps: &gaps,
         plan: &plan,
@@ -839,8 +907,22 @@ fn execute_backtest(
         snapshot,
         bars,
         decisions,
+        pauses: engine_result
+            .pauses
+            .iter()
+            .map(|pause| RunPauseRecord {
+                open_time_ms: pause.open_time_ms,
+                reason: match &pause.reason {
+                    crate::run_engine::RunPauseReason::Warmup => "warmup".into(),
+                    crate::run_engine::RunPauseReason::MissingInput { slot, source } => {
+                        format!("missing-input:{slot}:{source}")
+                    }
+                },
+            })
+            .collect(),
         result,
         component_lock: std::iter::once(&strategy)
+            .chain(factor_packages.iter().map(|(_, package)| package))
             .map(|package| ComponentLockEntry {
                 component_id: package.manifest.component_id.to_string(),
                 version: package.manifest.version.to_string(),
@@ -942,6 +1024,54 @@ fn fingerprint(request: &BacktestRunRequest, plan_hash: &str) -> Result<String, 
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+fn resolve_factor_parameters(
+    strategy: &ComponentManifest,
+    factor: &ComponentManifest,
+    strategy_overrides: &HashMap<String, String>,
+    bindings: &HashMap<String, FactorParameterBinding>,
+) -> Result<HashMap<String, String>, String> {
+    if bindings.keys().any(|name| {
+        !factor
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == *name)
+    }) {
+        return Err("Unknown Factor Parameter binding".into());
+    }
+    bindings
+        .iter()
+        .map(|(name, binding)| match binding {
+            FactorParameterBinding::Literal(value) => Ok((name.clone(), value.clone())),
+            FactorParameterBinding::StrategyParameter { strategy_parameter } => {
+                let parameter = strategy
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == *strategy_parameter)
+                    .ok_or_else(|| {
+                        format!("Unknown Strategy Parameter reference: {strategy_parameter}")
+                    })?;
+                let target = factor
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == *name)
+                    .ok_or_else(|| format!("Unknown Factor Parameter binding: {name}"))?;
+                if parameter.parameter_type != target.parameter_type {
+                    return Err(format!(
+                        "Strategy Parameter reference type does not match Factor Parameter: {name}"
+                    ));
+                }
+                Ok((
+                    name.clone(),
+                    strategy_overrides
+                        .get(strategy_parameter)
+                        .unwrap_or(&parameter.default_value)
+                        .clone(),
+                ))
+            }
+        })
+        .collect()
+}
+
 fn run_view(run: &BacktestRun, start: i64, end: i64, max_points: usize) -> BacktestRunView {
     let mut result = run.result.clone();
     result.equity = aggregate_equity(&result.equity, start, end, max_points);
@@ -959,6 +1089,12 @@ fn run_view(run: &BacktestRun, start: i64, end: i64, max_points: usize) -> Backt
         plan_hash: run.plan_hash.clone(),
         snapshot: run.snapshot.clone(),
         bars: aggregate_bars(&run.bars, start, end, max_points),
+        pauses: run
+            .pauses
+            .iter()
+            .filter(|pause| pause.open_time_ms >= start && pause.open_time_ms < end)
+            .cloned()
+            .collect(),
         result,
         component_lock: run.component_lock.clone(),
     }

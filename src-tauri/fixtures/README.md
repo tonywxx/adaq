@@ -12,6 +12,8 @@ cd src-tauri/fixtures/factor
 rustup run stable cargo component build --target wasm32-unknown-unknown
 cd ../strategy
 rustup run stable cargo component build --target wasm32-unknown-unknown
+cd ../external-strategy
+rustup run stable cargo component build --target wasm32-unknown-unknown
 cd ../..
 cargo test
 ```
