@@ -1,0 +1,278 @@
+{
+  "$defs": {
+    "dependency": {
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "$ref": "#/$defs/identifier"
+        },
+        "componentId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "componentId",
+        "version",
+        "alias"
+      ],
+      "type": "object"
+    },
+    "identifier": {
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "parameter": {
+      "additionalProperties": false,
+      "properties": {
+        "allowedValues": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "defaultValue": {
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "parameterType": {
+          "enum": [
+            "decimal",
+            "integer",
+            "boolean",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "parameterType",
+        "defaultValue"
+      ],
+      "type": "object"
+    },
+    "slot": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "source": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "field": {
+                  "enum": [
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "base-volume",
+                    "quote-volume"
+                  ]
+                },
+                "kind": {
+                  "const": "market"
+                }
+              },
+              "required": [
+                "kind",
+                "field"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "indicator": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "inputs": {
+                  "type": "object"
+                },
+                "kind": {
+                  "const": "builtin"
+                },
+                "output": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "parameters": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "kind",
+                "indicator",
+                "output"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "dependencyAlias": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "kind": {
+                  "const": "external"
+                },
+                "output": {
+                  "$ref": "#/$defs/identifier"
+                }
+              },
+              "required": [
+                "kind",
+                "dependencyAlias",
+                "output"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "source"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://adaq.dev/schema/component-manifest-1.0.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "strategy"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "featureSlots": {
+            "minItems": 1
+          },
+          "outputNames": {
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "featureSlots"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "factor"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "featureSlots": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ],
+  "description": "The machine-readable Manifest 1.0.0 contract for ADAQ Factor and Strategy Components.",
+  "properties": {
+    "abiVersion": {
+      "const": "1.0.0",
+      "description": "Exact Component ABI version."
+    },
+    "componentId": {
+      "description": "Immutable Component identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "dependencies": {
+      "description": "External Factor dependencies with unique aliases.",
+      "items": {
+        "$ref": "#/$defs/dependency"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
+    "featureSlots": {
+      "description": "Ordered Strategy Feature Slots. Strategy requires one or more; Factor forbids them.",
+      "items": {
+        "$ref": "#/$defs/slot"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "kind": {
+      "description": "Component ABI kind.",
+      "enum": [
+        "factor",
+        "strategy"
+      ]
+    },
+    "manifestSchemaVersion": {
+      "const": "1.0.0",
+      "description": "Manifest contract version."
+    },
+    "name": {
+      "description": "Human-readable Component name.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "outputNames": {
+      "description": "Ordered Factor output identifiers. Factor permits at most 64.",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
+    "parameters": {
+      "description": "Declared Component parameters with typed defaults.",
+      "items": {
+        "$ref": "#/$defs/parameter"
+      },
+      "type": "array"
+    },
+    "sdkVersion": {
+      "const": "0.1.0",
+      "description": "Exact SDK version."
+    },
+    "version": {
+      "description": "Component SemVer version.",
+      "type": "string"
+    },
+    "warmupBars": {
+      "description": "Factor output availability Warmup; it is not convergence.",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "wasmSha256": {
+      "description": "SHA-256 of component.wasm; set during packaging.",
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "manifestSchemaVersion",
+    "componentId",
+    "version",
+    "name",
+    "kind",
+    "sdkVersion",
+    "abiVersion"
+  ],
+  "title": "ADAQ Component Manifest",
+  "type": "object"
+}

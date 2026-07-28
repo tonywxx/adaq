@@ -6,7 +6,7 @@ license = "Apache-2.0"
 description = "Package and conformance tooling for ADAQ Components"
 repository = "https://github.com/tonywxx/adaq"
 readme = "README.md"
-include = ["/src/**/*", "/templates/**/*", "/README.md"]
+include = ["/src/**/*", "/templates/**/*", "/component-manifest.contract.json", "/README.md"]
 
 [[bin]]
 name = "adaq-component"

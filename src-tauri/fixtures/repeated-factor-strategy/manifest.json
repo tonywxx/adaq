@@ -1,0 +1,11 @@
+{
+  "manifestSchemaVersion": "1.0.0", "componentId": "66666666-6666-4666-8666-666666666666", "version": "1.0.0", "name": "Repeated Factor Fixture", "kind": "strategy", "sdkVersion": "0.1.0", "abiVersion": "1.0.0",
+  "featureSlots": [
+    {"name":"fast-close","source":{"kind":"external","dependencyAlias":"fast","output":"close"}},
+    {"name":"slow-close","source":{"kind":"external","dependencyAlias":"slow","output":"close"}}
+  ],
+  "dependencies": [
+    {"componentId":"55555555-5555-4555-8555-555555555555","version":"^1.0.0","alias":"fast"},
+    {"componentId":"55555555-5555-4555-8555-555555555555","version":"^1.0.0","alias":"slow"}
+  ]
+}

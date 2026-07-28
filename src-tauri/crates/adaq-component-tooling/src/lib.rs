@@ -10,7 +10,7 @@ pub use conformance::{component_parameters, verify_package};
 pub use package::{
     ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotDefinition,
     FeatureSlotSource, MarketField, PackageError, ParameterDefinition, ParameterType,
-    pack_component,
+    check_manifest_compatibility, pack_component,
 };
 pub use plan::{
     EngineIdentity, FactorInstancePlanInput, FrozenBuiltInParameter, FrozenFactorView,

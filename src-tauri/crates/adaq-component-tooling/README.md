@@ -29,8 +29,11 @@ adaq-component new strategy my-strategy
 cd my-factor
 adaq-component build
 adaq-component verify dist/my-factor-0.1.0.adaq
+adaq-component verify dist/my-factor-0.1.0.adaq --previous ../my-factor-0.1.0/manifest.json
 ```
 
-`new` creates `Cargo.toml`, `src/lib.rs`, `manifest.json`, and a project README. `build` runs the project's tests, performs a release `cargo component build`, runs the same conformance checks as the host, and writes an immutable `.adaq` package. `verify` checks an existing package without changing it.
+`new` creates `Cargo.toml`, `src/lib.rs`, `manifest.json`, and a project README. `build` runs the project's tests, performs a release `cargo component build`, runs the same conformance checks as the host, and writes an immutable `.adaq` package. `verify` checks an existing package without changing it; `--previous` also reports the confirmed Manifest SemVer compatibility rules.
+
+Read the complete [Factor and Strategy development guide](../../../docs/components/developing-components.md) before publishing a Component.
 
 For repository development only, set `ADAQ_COMPONENT_SDK_PATH` before `new` to make the generated project use a local SDK checkout instead of the exact published SDK version.

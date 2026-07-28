@@ -205,6 +205,51 @@ pub fn pack_component(
     Ok(writer.finish().map_err(error)?.into_inner())
 }
 
+/// Checks the published Component contract rules from ADR 0019.
+pub fn check_manifest_compatibility(
+    previous: &ComponentManifest,
+    current: &ComponentManifest,
+) -> Result<(), PackageError> {
+    if previous.component_id != current.component_id || previous.kind != current.kind {
+        return Err(PackageError(
+            "Component identity and kind cannot change".into(),
+        ));
+    }
+    if current.version <= previous.version {
+        return Err(PackageError("Component version must increase".into()));
+    }
+    // 0.x Components are intentionally development-unstable (ADR 0019).
+    if previous.version.major == 0 || current.version.major == 0 {
+        return Ok(());
+    }
+
+    let breaking = previous.manifest_schema_version != current.manifest_schema_version
+        || previous.abi_version != current.abi_version
+        || previous.feature_slots != current.feature_slots
+        || previous.dependencies != current.dependencies
+        || previous.warmup_bars != current.warmup_bars
+        || !current.parameters.starts_with(&previous.parameters)
+        || !current.output_names.starts_with(&previous.output_names);
+    let additive = current.parameters.len() > previous.parameters.len()
+        || (current.kind == ComponentKind::Factor
+            && current.output_names.len() > previous.output_names.len());
+
+    if breaking && current.version.major == previous.version.major {
+        return Err(PackageError(
+            "Breaking Component contract changes require a major version".into(),
+        ));
+    }
+    if additive
+        && current.version.major == previous.version.major
+        && current.version.minor == previous.version.minor
+    {
+        return Err(PackageError(
+            "Added optional parameters or Factor outputs require a minor version".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), PackageError> {
     if manifest.name.trim().is_empty()
         || manifest.manifest_schema_version != Version::new(1, 0, 0)
@@ -255,6 +300,11 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
         ComponentKind::Strategy if manifest.feature_slots.is_empty() => {
             return Err(PackageError(
                 "Strategy manifests must declare Feature Slots".into(),
+            ));
+        }
+        ComponentKind::Strategy if !manifest.output_names.is_empty() => {
+            return Err(PackageError(
+                "Strategy manifests cannot declare Factor outputs".into(),
             ));
         }
         _ => {}
@@ -466,5 +516,42 @@ mod tests {
             manifest.wasm_sha256 = sha256(wasm);
             assert!(validate_manifest(&manifest, wasm).is_err());
         }
+    }
+
+    #[test]
+    fn stable_contract_changes_require_the_semver_bump_confirmed_by_adr_0019() {
+        let previous = ComponentManifest {
+            version: Version::new(1, 0, 0),
+            output_names: vec!["value".into()],
+            ..manifest()
+        };
+        let mut added_output = previous.clone();
+        added_output.version = Version::new(1, 0, 1);
+        added_output.output_names.push("signal".into());
+        assert!(check_manifest_compatibility(&previous, &added_output).is_err());
+        added_output.version = Version::new(1, 1, 0);
+        assert!(check_manifest_compatibility(&previous, &added_output).is_ok());
+
+        let mut reordered_output = previous.clone();
+        reordered_output.version = Version::new(1, 1, 0);
+        reordered_output.output_names = vec!["signal".into()];
+        assert!(check_manifest_compatibility(&previous, &reordered_output).is_err());
+        reordered_output.version = Version::new(2, 0, 0);
+        assert!(check_manifest_compatibility(&previous, &reordered_output).is_ok());
+    }
+
+    #[test]
+    fn strategy_manifests_cannot_treat_outputs_as_a_minor_capability() {
+        let wasm = b"\0asm\x0d\0\x01\0";
+        let mut strategy = manifest();
+        strategy.kind = ComponentKind::Strategy;
+        strategy.feature_slots = vec![FeatureSlotDefinition {
+            name: "close".into(),
+            source: FeatureSlotSource::Market {
+                field: MarketField::Close,
+            },
+        }];
+        strategy.wasm_sha256 = sha256(wasm);
+        assert!(validate_manifest(&strategy, wasm).is_err());
     }
 }

@@ -7,11 +7,11 @@ use std::{
 };
 
 use crate::{
-    ComponentManifest, ComponentPackage, ComponentTemplate, create_project, pack_component,
-    verify_package,
+    ComponentManifest, ComponentPackage, ComponentTemplate, check_manifest_compatibility,
+    create_project, pack_component, verify_package,
 };
 
-const USAGE: &str = "usage:\n  adaq-component new <factor|strategy> <name>\n  adaq-component build\n  adaq-component verify <package.adaq>";
+const USAGE: &str = "usage:\n  adaq-component new <factor|strategy> <name>\n  adaq-component build\n  adaq-component verify <package.adaq> [--previous <manifest.json>]";
 
 pub fn run_cli(arguments: &[String], cwd: &Path) -> Result<(), String> {
     match arguments {
@@ -31,18 +31,29 @@ pub fn run_cli(arguments: &[String], cwd: &Path) -> Result<(), String> {
             println!("built {}", path.display());
             Ok(())
         }
-        [command, package] if command == "verify" => {
-            let package = ComponentPackage::read(&fs::read(cwd.join(package)).map_err(string)?)
-                .map_err(string)?;
-            verify_package(&package)?;
-            println!(
-                "verified {} {} ({})",
-                package.manifest.name, package.manifest.version, package.archive_sha256
-            );
-            Ok(())
+        [command, package] if command == "verify" => verify(cwd, package, None),
+        [command, package, flag, previous] if command == "verify" && flag == "--previous" => {
+            verify(cwd, package, Some(previous))
         }
         _ => Err(USAGE.into()),
     }
+}
+
+fn verify(cwd: &Path, package_path: &str, previous_path: Option<&String>) -> Result<(), String> {
+    let package = ComponentPackage::read(&fs::read(cwd.join(package_path)).map_err(string)?)
+        .map_err(string)?;
+    verify_package(&package)?;
+    if let Some(previous_path) = previous_path {
+        let previous = serde_json::from_slice(&fs::read(cwd.join(previous_path)).map_err(string)?)
+            .map_err(string)?;
+        check_manifest_compatibility(&previous, &package.manifest).map_err(string)?;
+        println!("confirmed Component SemVer compatibility with {previous_path}");
+    }
+    println!(
+        "verified {} {} ({})",
+        package.manifest.name, package.manifest.version, package.archive_sha256
+    );
+    Ok(())
 }
 
 pub fn build_project(root: &Path) -> Result<PathBuf, String> {
