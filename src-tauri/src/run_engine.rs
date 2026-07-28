@@ -12,6 +12,8 @@ use adaq_indicator_engine::{
 use rust_decimal::Decimal;
 
 const MAX_INDICATOR_OUTPUT_CELLS: usize = 16_777_216;
+const MAX_CLOSED_BARS: usize = 1_000_000;
+const MAX_GUEST_CAUSE_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PositionMode {
@@ -85,6 +87,7 @@ pub(crate) struct RunError {
     pub ta_ret_code: Option<i32>,
     pub ta_ret_code_name: Option<String>,
     pub cause: String,
+    pub cause_truncated: bool,
 }
 
 impl std::fmt::Display for RunError {
@@ -101,6 +104,7 @@ impl std::error::Error for RunError {}
 
 impl RunError {
     fn host(code: &str, stage: RunStage, cause: impl Into<String>) -> Self {
+        let (cause, cause_truncated) = bounded_context(&cause.into());
         Self {
             code: code.into(),
             stage,
@@ -109,7 +113,8 @@ impl RunError {
             source: None,
             ta_ret_code: None,
             ta_ret_code_name: None,
-            cause: bounded_context(&cause.into()).into(),
+            cause,
+            cause_truncated,
         }
     }
 
@@ -129,6 +134,8 @@ pub(crate) struct RunEngine;
 
 impl RunEngine {
     pub fn execute(request: &RunRequest<'_>) -> Result<RunResult, RunError> {
+        validate_bar_count(request.bars.len(), request.limits.max_bars)
+            .map_err(|error| RunError::host("invalid-run-request", RunStage::Validation, error))?;
         let bars = normalize_closed_bars(request.bars)?;
         let request = RunRequest {
             bars: &bars,
@@ -363,11 +370,8 @@ fn evaluate_factors(
         for chunk in bars.chunks(4096) {
             let input = chunk.iter().map(factor_bar).collect::<Vec<_>>();
             let output = loader.process_factor(input).map_err(|error| {
-                format!(
-                    "factor-guest-error:{}:{}",
-                    factor.alias,
-                    bounded_context(&error)
-                )
+                let (cause, _) = bounded_context(&error);
+                format!("factor-guest-error:{}:{cause}", factor.alias)
             })?;
             if output.len() != chunk.len() {
                 return Err(format!(
@@ -399,8 +403,12 @@ fn evaluate_factors(
     Ok(evaluated)
 }
 
-fn bounded_context(value: &str) -> &str {
-    value.get(..value.floor_char_boundary(256)).unwrap_or(value)
+fn bounded_context(value: &str) -> (String, bool) {
+    if value.len() <= MAX_GUEST_CAUSE_BYTES {
+        return (value.into(), false);
+    }
+    let end = value.floor_char_boundary(MAX_GUEST_CAUSE_BYTES);
+    (value[..end].into(), true)
 }
 
 fn factor_bar(
@@ -656,6 +664,7 @@ fn builtin_engine_error(
         } => (Some(*ret_code), Some((*ret_code_name).into())),
         _ => (None, None),
     };
+    let (cause, cause_truncated) = bounded_context(&error.to_string());
     RunError {
         code: error.code().into(),
         stage,
@@ -664,7 +673,8 @@ fn builtin_engine_error(
         source: Some(source.into()),
         ta_ret_code,
         ta_ret_code_name,
-        cause: bounded_context(&error.to_string()).into(),
+        cause,
+        cause_truncated,
     }
 }
 
@@ -725,13 +735,7 @@ fn market_value(field: MarketField, bar: &OhlcvBar) -> Result<f64, String> {
 }
 
 fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
-    if request.bars.len() > request.limits.max_bars {
-        return Err(format!(
-            "Run contains {} bars, exceeding the limit of {}",
-            request.bars.len(),
-            request.limits.max_bars
-        ));
-    }
+    validate_bar_count(request.bars.len(), request.limits.max_bars)?;
     if request.limits.fuel_per_call == 0 || request.limits.memory_bytes == 0 {
         return Err("Run limits must be greater than zero".into());
     }
@@ -764,6 +768,17 @@ fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
     let mut slots = HashSet::new();
     if request.plan.slot_names().any(|name| !slots.insert(name)) {
         return Err("Frozen Indicator Plan contains duplicate Feature Slots".into());
+    }
+    Ok(())
+}
+
+fn validate_bar_count(bar_count: usize, requested_limit: usize) -> Result<(), String> {
+    let limit = requested_limit.min(MAX_CLOSED_BARS);
+    if bar_count > limit {
+        return Err(format!(
+            "Run contains {} bars, exceeding the limit of {}",
+            bar_count, limit
+        ));
     }
     Ok(())
 }
@@ -1560,5 +1575,19 @@ mod tests {
         let error = validate_builtin_output_cells(1_000_000, 17).unwrap_err();
         assert_eq!(error.code, "too-many-indicator-output-cells");
         assert_eq!(error.stage, RunStage::Validation);
+    }
+
+    #[test]
+    fn host_closed_bar_ceiling_cannot_be_raised_by_run_limits() {
+        assert!(validate_bar_count(MAX_CLOSED_BARS, usize::MAX).is_ok());
+        assert!(validate_bar_count(MAX_CLOSED_BARS + 1, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn guest_causes_are_bounded_at_four_kib_with_truncation_metadata() {
+        let error = RunError::host("guest-error", RunStage::Strategy, "é".repeat(3_000));
+        assert!(error.cause.len() <= MAX_GUEST_CAUSE_BYTES);
+        assert!(error.cause.is_char_boundary(error.cause.len()));
+        assert!(error.cause_truncated);
     }
 }

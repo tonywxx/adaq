@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt::Write as _};
+use std::{collections::BTreeMap, fmt::Write as _, io::Write};
 
 use adaq_indicator_engine::{
     EngineIdentity as NativeEngineIdentity, IndicatorEngine, IndicatorRequest,
@@ -22,6 +22,7 @@ const MAX_FACTOR_OUTPUTS: usize = 64;
 const MAX_FEATURE_SLOTS: usize = 256;
 const MAX_BUILTIN_REQUESTS: usize = 256;
 const MAX_EFFECTIVE_WARMUP_BARS: u32 = 100_000;
+const MAX_CANONICAL_PLAN_JSON_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct FactorInstancePlanInput<'a> {
@@ -237,7 +238,7 @@ impl FrozenIndicatorPlan {
     }
 
     pub fn to_json(&self) -> Vec<u8> {
-        canonical_json(&self.0).expect("a validated Indicator Plan is serializable")
+        canonical_json(&self.0).expect("a validated Indicator Plan fits the canonical size limit")
     }
 
     pub fn load(bytes: &[u8]) -> Result<Self, PlanLoadError> {
@@ -247,12 +248,17 @@ impl FrozenIndicatorPlan {
     }
 
     pub fn load_for_engine(bytes: &[u8], identity: &EngineIdentity) -> Result<Self, PlanLoadError> {
+        if bytes.len() > MAX_CANONICAL_PLAN_JSON_BYTES {
+            return Err(load_error("plan-json-too-large"));
+        }
         let document = serde_json::from_slice::<PlanDocument>(bytes)
             .map_err(|_| load_error("invalid-plan-json"))?;
+        let canonical = canonical_json(&document).map_err(plan_json_load_error)?;
+        if canonical != bytes {
+            return Err(load_error("non-canonical-plan-json"));
+        }
         if document.plan_hash
-            != hash(
-                &canonical_json(&document.content).map_err(|_| load_error("invalid-plan-json"))?,
-            )
+            != hash(&canonical_json(&document.content).map_err(plan_json_load_error)?)
         {
             return Err(load_error("plan-hash-mismatch"));
         }
@@ -651,9 +657,25 @@ pub fn validate_and_freeze_with_factors_and_parameters(
             frozen
         },
     };
-    let plan_hash =
-        hash(&canonical_json(&content).expect("validated Plan content is serializable"));
-    Ok(FrozenIndicatorPlan(PlanDocument { content, plan_hash }))
+    let content_json = match canonical_json(&content) {
+        Ok(bytes) => bytes,
+        Err(PlanJsonError::TooLarge) => {
+            return Err(PlanValidationError {
+                issues: vec![issue("plan-json-too-large", None, None, None)],
+            });
+        }
+        Err(PlanJsonError::Serialization) => {
+            unreachable!("validated Plan content is serializable")
+        }
+    };
+    let plan_hash = hash(&content_json);
+    let document = PlanDocument { content, plan_hash };
+    if matches!(canonical_json(&document), Err(PlanJsonError::TooLarge)) {
+        return Err(PlanValidationError {
+            issues: vec![issue("plan-json-too-large", None, None, None)],
+        });
+    }
+    Ok(FrozenIndicatorPlan(document))
 }
 
 fn valid_engine_identity(identity: &EngineIdentity) -> bool {
@@ -667,8 +689,53 @@ fn valid_engine_identity(identity: &EngineIdentity) -> bool {
         && !identity.target_triple.is_empty()
 }
 
-fn canonical_json(value: &impl Serialize) -> Result<Vec<u8>, serde_json::Error> {
-    serde_json::to_vec(&serde_json::to_value(value)?)
+#[derive(Debug)]
+enum PlanJsonError {
+    Serialization,
+    TooLarge,
+}
+
+struct PlanJsonWriter {
+    bytes: Vec<u8>,
+    too_large: bool,
+}
+
+impl Write for PlanJsonWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        if buffer.len() > MAX_CANONICAL_PLAN_JSON_BYTES.saturating_sub(self.bytes.len()) {
+            self.too_large = true;
+            return Err(std::io::Error::other(
+                "canonical Plan JSON exceeds the size limit",
+            ));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn canonical_json(value: &impl Serialize) -> Result<Vec<u8>, PlanJsonError> {
+    let mut writer = PlanJsonWriter {
+        bytes: Vec::new(),
+        too_large: false,
+    };
+    let result = serde_json::to_writer(&mut writer, value);
+    if writer.too_large {
+        Err(PlanJsonError::TooLarge)
+    } else {
+        result.map_err(|_| PlanJsonError::Serialization)?;
+        Ok(writer.bytes)
+    }
+}
+
+fn plan_json_load_error(error: PlanJsonError) -> PlanLoadError {
+    match error {
+        PlanJsonError::TooLarge => load_error("plan-json-too-large"),
+        PlanJsonError::Serialization => load_error("invalid-plan-json"),
+    }
 }
 
 fn hash(bytes: &[u8]) -> String {
@@ -1053,6 +1120,12 @@ mod tests {
         assert_eq!(first.effective_warmup_bars(), 0);
         assert_eq!(FrozenIndicatorPlan::load(&first.to_json()).unwrap(), first);
 
+        let padded = [b" ".as_slice(), first.to_json().as_slice()].concat();
+        assert_eq!(
+            FrozenIndicatorPlan::load(&padded).unwrap_err().code,
+            "non-canonical-plan-json"
+        );
+
         let mut tampered = String::from_utf8(first.to_json()).unwrap();
         tampered = tampered.replace("quote-volume", "base-volume");
         assert_eq!(
@@ -1060,6 +1133,16 @@ mod tests {
                 .unwrap_err()
                 .code,
             "plan-hash-mismatch"
+        );
+
+        let mut oversized: serde_json::Value = serde_json::from_slice(&first.to_json()).unwrap();
+        oversized["strategyPackageSha256"] =
+            serde_json::json!("a".repeat(MAX_CANONICAL_PLAN_JSON_BYTES));
+        assert_eq!(
+            FrozenIndicatorPlan::load(&serde_json::to_vec(&oversized).unwrap())
+                .unwrap_err()
+                .code,
+            "plan-json-too-large"
         );
     }
 
