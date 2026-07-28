@@ -3,6 +3,11 @@ use std::{env, fs, path::PathBuf, process::Command};
 use sha2::{Digest, Sha256};
 
 const SOURCE_SHA256: &str = "40e7a6978052fe5245771e430e6a4c4553b40038f8ac5a985a1540c4c1fa6ace";
+const XML_SHA256: &str = "70ed7629a577cb3803ed2882607070beb15592724ea4366735a9e0fc8413dec1";
+const ABSTRACT_HEADER_SHA256: &str =
+    "babd4a971b3f404937b77bafaef3a34d5ce92370b0f5cf7de8917a1716bb394a";
+const FUNCTION_HEADER_SHA256: &str =
+    "c4308ddbd0f17597051e3910ad59b84cc6fd4f1991bacb0680210cc310d35634";
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -23,6 +28,17 @@ fn main() {
             .unpack(&out_dir)
             .unwrap();
     }
+    for (path, expected) in [
+        ("ta_func_api.xml", XML_SHA256),
+        ("include/ta_abstract.h", ABSTRACT_HEADER_SHA256),
+        ("include/ta_func.h", FUNCTION_HEADER_SHA256),
+    ] {
+        assert_eq!(
+            hex(&Sha256::digest(fs::read(source_root.join(path)).unwrap())),
+            expected,
+            "TA-Lib metadata checksum changed: {path}"
+        );
+    }
 
     let destination = cmake::Config::new(&source_root)
         .define("BUILD_DEV_TOOLS", "OFF")
@@ -40,7 +56,7 @@ fn main() {
 
     let cache = fs::read_to_string(destination.join("build/CMakeCache.txt")).unwrap();
     let compiler = cmake_cache_value(&cache, "CMAKE_C_COMPILER").unwrap_or("cc");
-    let compiler_identity = Command::new(&compiler)
+    let compiler_identity = Command::new(compiler)
         .arg("--version")
         .output()
         .ok()

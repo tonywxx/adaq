@@ -1,11 +1,19 @@
 //! Tauri-independent, pinned TA-Lib RSI engine.
 
 mod bindings;
+mod catalog;
+
+pub use catalog::{
+    ARCHIVE_SHA256, Catalog, Definition as IndicatorDefinition, EnumValue as IndicatorEnumValue,
+    Input as IndicatorInput, Output as IndicatorOutput, Parameter as IndicatorParameter,
+    XML_SHA256, catalog,
+};
 
 use std::sync::OnceLock;
 
 const ENGINE_VERSION: &str = "adaq-indicator-engine@1.0.0";
 const TA_LIB_VERSION: &str = "0.7.1";
+pub const CATALOG_VERSION: &str = catalog::VERSION;
 
 static INITIALIZATION: OnceLock<Result<(), EngineError>> = OnceLock::new();
 
@@ -38,6 +46,97 @@ pub enum EngineError {
         code: &'static str,
         index: usize,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarketField {
+    Open,
+    High,
+    Low,
+    Close,
+    BaseVolume,
+    QuoteVolume,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OhlcvSegment {
+    pub open: Vec<f64>,
+    pub high: Vec<f64>,
+    pub low: Vec<f64>,
+    pub close: Vec<f64>,
+    pub base_volume: Vec<f64>,
+    pub quote_volume: Vec<f64>,
+}
+
+impl OhlcvSegment {
+    pub fn new(
+        open: Vec<f64>,
+        high: Vec<f64>,
+        low: Vec<f64>,
+        close: Vec<f64>,
+        base_volume: Vec<f64>,
+        quote_volume: Vec<f64>,
+    ) -> Result<Self, EngineError> {
+        let length = close.len();
+        let series = [&open, &high, &low, &close, &base_volume, &quote_volume];
+        if length == 0
+            || series.iter().any(|values| {
+                values.len() != length || values.iter().any(|value| !value.is_finite())
+            })
+        {
+            return Err(EngineError::InvalidSegment {
+                code: "invalid-continuous-bar-segment",
+            });
+        }
+        Ok(Self {
+            open,
+            high,
+            low,
+            close,
+            base_volume,
+            quote_volume,
+        })
+    }
+    fn field(&self, field: MarketField) -> &[f64] {
+        match field {
+            MarketField::Open => &self.open,
+            MarketField::High => &self.high,
+            MarketField::Low => &self.low,
+            MarketField::Close => &self.close,
+            MarketField::BaseVolume => &self.base_volume,
+            MarketField::QuoteVolume => &self.quote_volume,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParameterValue {
+    Integer(i32),
+    Real(f64),
+    Enum(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndicatorRequest {
+    pub indicator_id: String,
+    pub real_inputs: Vec<MarketField>,
+    pub parameters: std::collections::BTreeMap<String, ParameterValue>,
+    pub outputs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledIndicator {
+    definition: IndicatorDefinition,
+    real_inputs: Vec<MarketField>,
+    parameters: Vec<ParameterValue>,
+    outputs: Vec<usize>,
+    lookback: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IndicatorColumn {
+    Real(Vec<Option<f64>>),
+    Integer(Vec<Option<i32>>),
 }
 
 impl std::fmt::Display for EngineError {
@@ -111,6 +210,327 @@ impl IndicatorEngine {
 
     pub fn identity(&self) -> &EngineIdentity {
         &self.identity
+    }
+
+    pub fn catalog(&self) -> &'static Catalog {
+        catalog::catalog()
+    }
+
+    pub fn compile(&self, request: IndicatorRequest) -> Result<CompiledIndicator, EngineError> {
+        let definition = self
+            .catalog()
+            .indicators
+            .iter()
+            .find(|item| item.id == request.indicator_id)
+            .cloned()
+            .ok_or(EngineError::InvalidRequest {
+                code: "unknown-indicator",
+            })?;
+        let required_reals = definition
+            .inputs
+            .iter()
+            .filter(|input| input.kind == "Double Array" || input.kind == "Volume")
+            .count();
+        if request.real_inputs.len() != required_reals {
+            return Err(EngineError::InvalidRequest {
+                code: "invalid-indicator-inputs",
+            });
+        }
+        let mut selection_index = 0;
+        for input in &definition.inputs {
+            if input.kind == "Double Array" || input.kind == "Volume" {
+                if input.kind == "Volume"
+                    && !matches!(
+                        request.real_inputs[selection_index],
+                        MarketField::BaseVolume | MarketField::QuoteVolume
+                    )
+                {
+                    return Err(EngineError::InvalidRequest {
+                        code: "invalid-volume-input",
+                    });
+                }
+                if input.kind == "Double Array"
+                    && matches!(
+                        request.real_inputs[selection_index],
+                        MarketField::BaseVolume | MarketField::QuoteVolume
+                    )
+                {
+                    return Err(EngineError::InvalidRequest {
+                        code: "invalid-real-input",
+                    });
+                }
+                selection_index += 1;
+            }
+        }
+        let mut parameters = Vec::with_capacity(definition.parameters.len());
+        for parameter in &definition.parameters {
+            let value = request
+                .parameters
+                .get(&parameter.id)
+                .cloned()
+                .unwrap_or_else(|| match parameter.kind.as_str() {
+                    "Real" | "Double" => ParameterValue::Real(parameter.default.parse().unwrap()),
+                    "MA Type" => ParameterValue::Enum("sma".into()),
+                    _ => ParameterValue::Integer(parameter.default.parse().unwrap()),
+                });
+            let value = if parameter.kind == "MA Type" {
+                let ParameterValue::Enum(id) = value else {
+                    return Err(EngineError::InvalidRequest {
+                        code: "invalid-indicator-parameter",
+                    });
+                };
+                ParameterValue::Integer(
+                    parameter
+                        .enum_values
+                        .iter()
+                        .find(|item| item.id == id)
+                        .ok_or(EngineError::InvalidRequest {
+                            code: "invalid-indicator-parameter",
+                        })?
+                        .value,
+                )
+            } else {
+                value
+            };
+            let valid = match (&parameter.kind[..], &value) {
+                ("Real" | "Double", ParameterValue::Real(value)) => {
+                    value.is_finite() && in_range(*value, &parameter.minimum, &parameter.maximum)
+                }
+                ("Integer" | "MA Type", ParameterValue::Integer(value)) => {
+                    in_range(*value as f64, &parameter.minimum, &parameter.maximum)
+                }
+                _ => false,
+            };
+            if !valid {
+                return Err(EngineError::InvalidRequest {
+                    code: "invalid-indicator-parameter",
+                });
+            }
+            parameters.push(value);
+        }
+        if request.parameters.keys().any(|id| {
+            !definition
+                .parameters
+                .iter()
+                .any(|parameter| &parameter.id == id)
+        }) {
+            return Err(EngineError::InvalidRequest {
+                code: "unknown-indicator-parameter",
+            });
+        }
+        let outputs = if request.outputs.is_empty() {
+            (0..definition.outputs.len()).collect()
+        } else {
+            if request
+                .outputs
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != request.outputs.len()
+            {
+                return Err(EngineError::InvalidRequest {
+                    code: "duplicate-indicator-output",
+                });
+            }
+            request
+                .outputs
+                .iter()
+                .map(|id| {
+                    definition
+                        .outputs
+                        .iter()
+                        .position(|output| &output.id == id)
+                        .ok_or(EngineError::InvalidRequest {
+                            code: "unknown-indicator-output",
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let lookback = lookback(&definition, &parameters)?;
+        Ok(CompiledIndicator {
+            definition,
+            real_inputs: request.real_inputs,
+            parameters,
+            outputs,
+            lookback,
+        })
+    }
+
+    pub fn evaluate(
+        &self,
+        request: &CompiledIndicator,
+        segment: &OhlcvSegment,
+    ) -> Result<Vec<(String, IndicatorColumn)>, EngineError> {
+        if segment.close.len() <= request.lookback {
+            return Ok(request
+                .outputs
+                .iter()
+                .map(|index| {
+                    let output = &request.definition.outputs[*index];
+                    let column = if output.kind == "Integer Array" {
+                        IndicatorColumn::Integer(
+                            std::iter::repeat_n(None, segment.close.len()).collect(),
+                        )
+                    } else {
+                        IndicatorColumn::Real(
+                            std::iter::repeat_n(None, segment.close.len()).collect(),
+                        )
+                    };
+                    (output.id.clone(), column)
+                })
+                .collect());
+        }
+        let holder = holder(&request.definition.raw_name)?;
+        let result = (|| {
+            let mut real_index = 0;
+            let mut holder_index = 0;
+            let mut input_index = 0;
+            while input_index < request.definition.inputs.len() {
+                let input = &request.definition.inputs[input_index];
+                if input.kind == "Double Array" {
+                    check_ta(unsafe {
+                        bindings::TA_SetInputParamRealPtr(
+                            holder,
+                            holder_index,
+                            segment.field(request.real_inputs[real_index]).as_ptr(),
+                        )
+                    })?;
+                    real_index += 1;
+                    holder_index += 1;
+                    input_index += 1;
+                } else {
+                    let mut end = input_index;
+                    let mut volume = segment.base_volume.as_ptr();
+                    while end < request.definition.inputs.len()
+                        && request.definition.inputs[end].kind != "Double Array"
+                    {
+                        if request.definition.inputs[end].kind == "Volume" {
+                            volume = segment.field(request.real_inputs[real_index]).as_ptr();
+                            real_index += 1;
+                        }
+                        end += 1;
+                    }
+                    check_ta(unsafe {
+                        bindings::TA_SetInputParamPricePtr(
+                            holder,
+                            holder_index,
+                            segment.open.as_ptr(),
+                            segment.high.as_ptr(),
+                            segment.low.as_ptr(),
+                            segment.close.as_ptr(),
+                            volume,
+                            std::ptr::null(),
+                        )
+                    })?;
+                    holder_index += 1;
+                    input_index = end;
+                }
+            }
+            for (index, value) in request.parameters.iter().enumerate() {
+                check_ta(unsafe {
+                    match value {
+                        ParameterValue::Integer(value) => {
+                            bindings::TA_SetOptInputParamInteger(holder, index as u32, *value)
+                        }
+                        ParameterValue::Real(value) => {
+                            bindings::TA_SetOptInputParamReal(holder, index as u32, *value)
+                        }
+                        ParameterValue::Enum(_) => {
+                            return Err(EngineError::InvalidRequest {
+                                code: "invalid-indicator-parameter",
+                            });
+                        }
+                    }
+                })?;
+            }
+            let count = segment.close.len();
+            let mut real = vec![vec![0.0; count]; request.definition.outputs.len()];
+            let mut integer = vec![vec![0; count]; request.definition.outputs.len()];
+            for (index, output) in request.definition.outputs.iter().enumerate() {
+                check_ta(unsafe {
+                    if output.kind == "Integer Array" {
+                        bindings::TA_SetOutputParamIntegerPtr(
+                            holder,
+                            index as u32,
+                            integer[index].as_mut_ptr(),
+                        )
+                    } else {
+                        bindings::TA_SetOutputParamRealPtr(
+                            holder,
+                            index as u32,
+                            real[index].as_mut_ptr(),
+                        )
+                    }
+                })?;
+            }
+            let mut begin = 0;
+            let mut produced = 0;
+            check_ta(unsafe {
+                bindings::TA_CallFunc(
+                    holder,
+                    0,
+                    i32::try_from(count - 1).map_err(|_| EngineError::InvalidSegment {
+                        code: "continuous-bar-segment-too-large",
+                    })?,
+                    &mut begin,
+                    &mut produced,
+                )
+            })?;
+            let begin = usize::try_from(begin).map_err(|_| EngineError::TaLib {
+                code: "invalid-ta-lib-output",
+                ret_code: 0,
+                ret_code_name: "TA_SUCCESS",
+            })?;
+            let produced = usize::try_from(produced).map_err(|_| EngineError::TaLib {
+                code: "invalid-ta-lib-output",
+                ret_code: 0,
+                ret_code_name: "TA_SUCCESS",
+            })?;
+            if begin != request.lookback || begin + produced > count {
+                return Err(EngineError::TaLib {
+                    code: "invalid-ta-lib-output",
+                    ret_code: 0,
+                    ret_code_name: "TA_SUCCESS",
+                });
+            }
+            request
+                .outputs
+                .iter()
+                .map(|index| {
+                    let output = &request.definition.outputs[*index];
+                    let column = if output.kind == "Integer Array" {
+                        IndicatorColumn::Integer(
+                            std::iter::repeat_n(None, begin)
+                                .chain(integer[*index][..produced].iter().map(|value| Some(*value)))
+                                .collect(),
+                        )
+                    } else {
+                        let values = real[*index][..produced]
+                            .iter()
+                            .enumerate()
+                            .map(|(offset, value)| {
+                                if value.is_finite() {
+                                    Ok(Some(*value))
+                                } else {
+                                    Err(EngineError::NonFiniteOutput {
+                                        code: "non-finite-indicator-output",
+                                        index: begin + offset,
+                                    })
+                                }
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        IndicatorColumn::Real(
+                            std::iter::repeat_n(None, begin).chain(values).collect(),
+                        )
+                    };
+                    Ok((output.id.clone(), column))
+                })
+                .collect()
+        })();
+        unsafe {
+            bindings::TA_ParamHolderFree(holder);
+        }
+        result
     }
 
     pub fn compile_rsi(&self, request: RsiRequest) -> Result<CompiledRsi, EngineError> {
@@ -232,6 +652,57 @@ fn check_ta(ret_code: i32) -> Result<(), EngineError> {
     }
 }
 
+fn in_range(value: f64, minimum: &str, maximum: &str) -> bool {
+    (minimum.is_empty() || minimum.parse::<f64>().is_ok_and(|minimum| value >= minimum))
+        && (maximum.is_empty() || maximum.parse::<f64>().is_ok_and(|maximum| value <= maximum))
+}
+
+fn holder(name: &str) -> Result<*mut bindings::ParamHolder, EngineError> {
+    let name = std::ffi::CString::new(name).map_err(|_| EngineError::InvalidRequest {
+        code: "invalid-indicator-name",
+    })?;
+    let mut handle = std::ptr::null();
+    check_ta(unsafe { bindings::TA_GetFuncHandle(name.as_ptr(), &mut handle) })?;
+    let mut holder = std::ptr::null_mut();
+    check_ta(unsafe { bindings::TA_ParamHolderAlloc(handle, &mut holder) })?;
+    Ok(holder)
+}
+
+fn lookback(
+    definition: &IndicatorDefinition,
+    parameters: &[ParameterValue],
+) -> Result<usize, EngineError> {
+    let holder = holder(&definition.raw_name)?;
+    let result = (|| {
+        for (index, value) in parameters.iter().enumerate() {
+            check_ta(unsafe {
+                match value {
+                    ParameterValue::Integer(value) => {
+                        bindings::TA_SetOptInputParamInteger(holder, index as u32, *value)
+                    }
+                    ParameterValue::Real(value) => {
+                        bindings::TA_SetOptInputParamReal(holder, index as u32, *value)
+                    }
+                    ParameterValue::Enum(_) => {
+                        return Err(EngineError::InvalidRequest {
+                            code: "invalid-indicator-parameter",
+                        });
+                    }
+                }
+            })?;
+        }
+        let mut lookback = 0;
+        check_ta(unsafe { bindings::TA_GetLookback(holder, &mut lookback) })?;
+        usize::try_from(lookback).map_err(|_| EngineError::InvalidRequest {
+            code: "invalid-indicator-lookback",
+        })
+    })();
+    unsafe {
+        bindings::TA_ParamHolderFree(holder);
+    }
+    result
+}
+
 fn ret_code_name(ret_code: i32) -> &'static str {
     match ret_code {
         0 => "TA_SUCCESS",
@@ -248,7 +719,43 @@ fn ret_code_name(ret_code: i32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
     use std::thread;
+
+    #[derive(Deserialize)]
+    struct ReferenceVectors {
+        indicators: Vec<ReferenceIndicator>,
+    }
+
+    #[derive(Deserialize)]
+    struct ReferenceIndicator {
+        #[serde(rename = "rawName")]
+        raw_name: String,
+        outputs: Vec<ReferenceOutput>,
+    }
+
+    #[derive(Deserialize)]
+    struct ReferenceOutput {
+        #[serde(rename = "rawName")]
+        raw_name: String,
+        begin: usize,
+        values: Vec<Option<f64>>,
+    }
+
+    fn reference_segment() -> OhlcvSegment {
+        let values: Vec<f64> = (0..512)
+            .map(|index| 0.1 + (index % 50) as f64 / 100.0)
+            .collect();
+        OhlcvSegment::new(
+            values.iter().map(|value| value - 0.01).collect(),
+            values.iter().map(|value| value + 0.01).collect(),
+            values.iter().map(|value| value - 0.02).collect(),
+            values,
+            (0..512).map(|index| 10. + index as f64).collect(),
+            (0..512).map(|index| 1_000. + index as f64).collect(),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn initialization_failure_is_sticky() {
@@ -337,5 +844,383 @@ mod tests {
                     .unwrap()
             );
         }
+    }
+
+    #[test]
+    fn catalog_is_frozen_and_dispatches_rsi_through_the_abstract_api() {
+        let engine = IndicatorEngine::initialize().unwrap();
+        assert_eq!(engine.catalog().version, CATALOG_VERSION);
+        assert_eq!(
+            ARCHIVE_SHA256,
+            "40e7a6978052fe5245771e430e6a4c4553b40038f8ac5a985a1540c4c1fa6ace"
+        );
+        assert_eq!(
+            XML_SHA256,
+            "70ed7629a577cb3803ed2882607070beb15592724ea4366735a9e0fc8413dec1"
+        );
+        assert_eq!(engine.catalog().indicators.len(), 160);
+        assert_eq!(
+            engine
+                .catalog()
+                .indicators
+                .iter()
+                .map(|item| item.outputs.len())
+                .sum::<usize>(),
+            179
+        );
+        assert!(
+            engine
+                .catalog()
+                .indicators
+                .iter()
+                .all(|item| item.raw_name != "MAVP")
+        );
+        let request = engine
+            .compile(IndicatorRequest {
+                indicator_id: "rsi".into(),
+                real_inputs: vec![MarketField::Close],
+                parameters: [("time-period".into(), ParameterValue::Integer(2))].into(),
+                outputs: vec!["value".into()],
+            })
+            .unwrap();
+        let segment = OhlcvSegment::new(
+            vec![1.; 5],
+            vec![1.; 5],
+            vec![1.; 5],
+            vec![1., 2., 3., 2., 4.],
+            vec![1.; 5],
+            vec![1.; 5],
+        )
+        .unwrap();
+        let outputs = engine.evaluate(&request, &segment).unwrap();
+        assert!(
+            matches!(&outputs[0].1, IndicatorColumn::Real(values) if values[..2] == [None, None] && values[2..].iter().all(|value| value.is_some_and(f64::is_finite)))
+        );
+    }
+
+    #[test]
+    fn every_catalog_definition_compiles_and_evaluates() {
+        let engine = IndicatorEngine::initialize().unwrap();
+        let segment = reference_segment();
+        for definition in &engine.catalog().indicators {
+            let real_inputs = definition
+                .inputs
+                .iter()
+                .filter_map(|input| match input.kind.as_str() {
+                    "Double Array" => Some(MarketField::Close),
+                    "Volume" => Some(MarketField::BaseVolume),
+                    _ => None,
+                })
+                .collect();
+            let request = engine
+                .compile(IndicatorRequest {
+                    indicator_id: definition.id.clone(),
+                    real_inputs,
+                    parameters: Default::default(),
+                    outputs: vec![],
+                })
+                .unwrap_or_else(|error| panic!("{}: {error}", definition.id));
+            let output = engine
+                .evaluate(&request, &segment)
+                .unwrap_or_else(|error| panic!("{}: {error}", definition.id));
+            assert_eq!(output.len(), definition.outputs.len(), "{}", definition.id);
+        }
+    }
+
+    #[test]
+    fn catalog_outputs_match_independent_c_reference_vectors() {
+        let references: ReferenceVectors =
+            serde_json::from_str(include_str!("../reference_vectors.json")).unwrap();
+        assert_eq!(references.indicators.len(), 160);
+        assert_eq!(
+            references
+                .indicators
+                .iter()
+                .map(|item| item.outputs.len())
+                .sum::<usize>(),
+            179
+        );
+        let engine = IndicatorEngine::initialize().unwrap();
+        let segment = reference_segment();
+        for definition in &engine.catalog().indicators {
+            let reference = references
+                .indicators
+                .iter()
+                .find(|item| item.raw_name == definition.raw_name)
+                .unwrap();
+            let real_inputs = definition
+                .inputs
+                .iter()
+                .filter_map(|input| match input.kind.as_str() {
+                    "Double Array" => Some(MarketField::Close),
+                    "Volume" => Some(MarketField::BaseVolume),
+                    _ => None,
+                })
+                .collect();
+            let compiled = engine
+                .compile(IndicatorRequest {
+                    indicator_id: definition.id.clone(),
+                    real_inputs,
+                    parameters: Default::default(),
+                    outputs: vec![],
+                })
+                .unwrap();
+            let columns = engine.evaluate(&compiled, &segment).unwrap();
+            for ((_, column), output, expected) in columns
+                .iter()
+                .zip(&definition.outputs)
+                .zip(&reference.outputs)
+                .map(|((column, output), expected)| (column, output, expected))
+            {
+                let actual: Vec<Option<f64>> = match column {
+                    IndicatorColumn::Real(values) => values.clone(),
+                    IndicatorColumn::Integer(values) => values
+                        .iter()
+                        .map(|value| value.map(|value| value as f64))
+                        .collect(),
+                };
+                assert_eq!(expected.raw_name, output.raw_name, "{}", definition.id);
+                assert_eq!(actual.len(), segment.close.len(), "{}", definition.id);
+                assert!(
+                    actual[..expected.begin].iter().all(Option::is_none),
+                    "{} {}",
+                    definition.id,
+                    expected.raw_name
+                );
+                assert_eq!(
+                    actual.len() - expected.begin,
+                    expected.values.len(),
+                    "{} {}",
+                    definition.id,
+                    expected.raw_name
+                );
+                for (actual, expected_value) in
+                    actual[expected.begin..].iter().zip(&expected.values)
+                {
+                    match (actual, expected_value) {
+                        (Some(actual), Some(expected_value)) => assert!(
+                            (actual - expected_value).abs() <= 1e-12,
+                            "{} {}: {actual} != {expected_value}",
+                            definition.id,
+                            expected.raw_name
+                        ),
+                        (None, None) => {}
+                        (actual, expected_value) => panic!(
+                            "{} {}: {actual:?} != {expected_value:?}",
+                            definition.id, expected.raw_name
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_enum_and_preserves_short_segment_alignment() {
+        let engine = IndicatorEngine::initialize().unwrap();
+        assert_eq!(
+            engine
+                .compile(IndicatorRequest {
+                    indicator_id: "ma".into(),
+                    real_inputs: vec![MarketField::Close],
+                    parameters: [("ma-type".into(), ParameterValue::Enum("unknown".into()))].into(),
+                    outputs: vec![],
+                })
+                .unwrap_err()
+                .code(),
+            "invalid-indicator-parameter"
+        );
+        let request = engine
+            .compile(IndicatorRequest {
+                indicator_id: "rsi".into(),
+                real_inputs: vec![MarketField::Close],
+                parameters: [("time-period".into(), ParameterValue::Integer(14))].into(),
+                outputs: vec![],
+            })
+            .unwrap();
+        let segment = OhlcvSegment::new(
+            vec![1.; 3],
+            vec![1.; 3],
+            vec![1.; 3],
+            vec![1.; 3],
+            vec![1.; 3],
+            vec![1.; 3],
+        )
+        .unwrap();
+        assert!(
+            matches!(engine.evaluate(&request, &segment).unwrap()[0].1, IndicatorColumn::Real(ref values) if values == &vec![None; 3])
+        );
+    }
+
+    #[test]
+    fn every_definition_rejects_invalid_bindings() {
+        let engine = IndicatorEngine::initialize().unwrap();
+        for definition in &engine.catalog().indicators {
+            let expected_inputs = definition
+                .inputs
+                .iter()
+                .filter(|input| input.kind == "Double Array" || input.kind == "Volume")
+                .count();
+            let wrong_inputs = if expected_inputs == 0 {
+                vec![MarketField::Close]
+            } else {
+                vec![]
+            };
+            assert_eq!(
+                engine
+                    .compile(IndicatorRequest {
+                        indicator_id: definition.id.clone(),
+                        real_inputs: wrong_inputs,
+                        parameters: Default::default(),
+                        outputs: vec![]
+                    })
+                    .unwrap_err()
+                    .code(),
+                "invalid-indicator-inputs",
+                "{}",
+                definition.id
+            );
+            let valid_inputs: Vec<MarketField> = definition
+                .inputs
+                .iter()
+                .filter_map(|input| match input.kind.as_str() {
+                    "Double Array" => Some(MarketField::Close),
+                    "Volume" => Some(MarketField::BaseVolume),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                engine
+                    .compile(IndicatorRequest {
+                        indicator_id: definition.id.clone(),
+                        real_inputs: valid_inputs.clone(),
+                        parameters: [("unknown".into(), ParameterValue::Integer(1))].into(),
+                        outputs: vec![]
+                    })
+                    .unwrap_err()
+                    .code(),
+                "unknown-indicator-parameter",
+                "{}",
+                definition.id
+            );
+            assert_eq!(
+                engine
+                    .compile(IndicatorRequest {
+                        indicator_id: definition.id.clone(),
+                        real_inputs: valid_inputs.clone(),
+                        parameters: Default::default(),
+                        outputs: vec!["unknown".into()]
+                    })
+                    .unwrap_err()
+                    .code(),
+                "unknown-indicator-output",
+                "{}",
+                definition.id
+            );
+            assert_eq!(
+                engine
+                    .compile(IndicatorRequest {
+                        indicator_id: definition.id.clone(),
+                        real_inputs: valid_inputs.clone(),
+                        parameters: Default::default(),
+                        outputs: vec![
+                            definition.outputs[0].id.clone(),
+                            definition.outputs[0].id.clone()
+                        ],
+                    })
+                    .unwrap_err()
+                    .code(),
+                "duplicate-indicator-output",
+                "{}",
+                definition.id
+            );
+            for parameter in &definition.parameters {
+                let wrong_type = if matches!(parameter.kind.as_str(), "Real" | "Double") {
+                    ParameterValue::Integer(1)
+                } else {
+                    ParameterValue::Real(1.0)
+                };
+                assert_eq!(
+                    engine
+                        .compile(IndicatorRequest {
+                            indicator_id: definition.id.clone(),
+                            real_inputs: valid_inputs.clone(),
+                            parameters: [(parameter.id.clone(), wrong_type)].into(),
+                            outputs: vec![]
+                        })
+                        .unwrap_err()
+                        .code(),
+                    "invalid-indicator-parameter",
+                    "{} {}",
+                    definition.id,
+                    parameter.id
+                );
+                if parameter.kind != "MA Type" && !parameter.minimum.is_empty() {
+                    let below_minimum = if matches!(parameter.kind.as_str(), "Real" | "Double") {
+                        let minimum = parameter.minimum.parse::<f64>().unwrap();
+                        ParameterValue::Real(if minimum < 0.0 {
+                            minimum * 2.0
+                        } else {
+                            minimum - 1.0
+                        })
+                    } else {
+                        ParameterValue::Integer(parameter.minimum.parse::<i32>().unwrap() - 1)
+                    };
+                    assert_eq!(
+                        engine
+                            .compile(IndicatorRequest {
+                                indicator_id: definition.id.clone(),
+                                real_inputs: valid_inputs.clone(),
+                                parameters: [(parameter.id.clone(), below_minimum)].into(),
+                                outputs: vec![],
+                            })
+                            .unwrap_err()
+                            .code(),
+                        "invalid-indicator-parameter",
+                        "{} {}",
+                        definition.id,
+                        parameter.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generic_and_volume_bindings_select_the_declared_market_field() {
+        let engine = IndicatorEngine::initialize().unwrap();
+        let segment = reference_segment();
+        let ma = |field| {
+            engine
+                .compile(IndicatorRequest {
+                    indicator_id: "sma".into(),
+                    real_inputs: vec![field],
+                    parameters: Default::default(),
+                    outputs: vec![],
+                })
+                .unwrap()
+        };
+        assert_ne!(
+            engine.evaluate(&ma(MarketField::Open), &segment).unwrap(),
+            engine.evaluate(&ma(MarketField::Close), &segment).unwrap()
+        );
+        let ad = |field| {
+            engine
+                .compile(IndicatorRequest {
+                    indicator_id: "ad".into(),
+                    real_inputs: vec![field],
+                    parameters: Default::default(),
+                    outputs: vec![],
+                })
+                .unwrap()
+        };
+        assert_ne!(
+            engine
+                .evaluate(&ad(MarketField::BaseVolume), &segment)
+                .unwrap(),
+            engine
+                .evaluate(&ad(MarketField::QuoteVolume), &segment)
+                .unwrap()
+        );
     }
 }

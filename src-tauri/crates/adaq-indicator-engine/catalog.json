@@ -1,0 +1,6953 @@
+{
+  "indicators": [
+    {
+      "group": "Overlap Studies",
+      "id": "accbands",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "upper-band",
+          "rawName": "outRealUpperBand",
+          "type": "Double Array"
+        },
+        {
+          "id": "middle-band",
+          "rawName": "outRealMiddleBand",
+          "type": "Double Array"
+        },
+        {
+          "id": "lower-band",
+          "rawName": "outRealLowerBand",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "20",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "ACCBANDS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "acos",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "ACOS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Volume Indicators",
+      "id": "ad",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        },
+        {
+          "allowedFields": [
+            "base-volume",
+            "quote-volume"
+          ],
+          "id": "volume",
+          "name": "Volume",
+          "role": "explicit-volume",
+          "type": "Volume"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "AD",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Operators",
+      "id": "add",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal0",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        },
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-1",
+          "name": "inReal1",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "ADD",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Volume Indicators",
+      "id": "adosc",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        },
+        {
+          "allowedFields": [
+            "base-volume",
+            "quote-volume"
+          ],
+          "id": "volume",
+          "name": "Volume",
+          "role": "explicit-volume",
+          "type": "Volume"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "3",
+          "id": "fast-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Fast Period",
+          "type": "Integer"
+        },
+        {
+          "default": "10",
+          "id": "slow-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Slow Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "ADOSC",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "adx",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "ADX",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "adxr",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "ADXR",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "apo",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "12",
+          "id": "fast-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Fast Period",
+          "type": "Integer"
+        },
+        {
+          "default": "26",
+          "id": "slow-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Slow Period",
+          "type": "Integer"
+        },
+        {
+          "default": "0",
+          "enumValues": [
+            {
+              "id": "sma",
+              "value": 0
+            },
+            {
+              "id": "ema",
+              "value": 1
+            },
+            {
+              "id": "wma",
+              "value": 2
+            },
+            {
+              "id": "dema",
+              "value": 3
+            },
+            {
+              "id": "tema",
+              "value": 4
+            },
+            {
+              "id": "trima",
+              "value": 5
+            },
+            {
+              "id": "kama",
+              "value": 6
+            },
+            {
+              "id": "mama",
+              "value": 7
+            },
+            {
+              "id": "t3",
+              "value": 8
+            }
+          ],
+          "id": "ma-type",
+          "maximum": "",
+          "minimum": "",
+          "rawName": "MA Type",
+          "type": "MA Type"
+        }
+      ],
+      "rawName": "APO",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "aroon",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "aroon-down",
+          "rawName": "outAroonDown",
+          "type": "Double Array"
+        },
+        {
+          "id": "aroon-up",
+          "rawName": "outAroonUp",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "AROON",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "aroonosc",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "AROONOSC",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "asin",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "ASIN",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "atan",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "ATAN",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Volatility Indicators",
+      "id": "atr",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "ATR",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Price Transform",
+      "id": "avgdev",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "AVGDEV",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Price Transform",
+      "id": "avgprice",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "AVGPRICE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "bbands",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "upper-band",
+          "rawName": "outRealUpperBand",
+          "type": "Double Array"
+        },
+        {
+          "id": "middle-band",
+          "rawName": "outRealMiddleBand",
+          "type": "Double Array"
+        },
+        {
+          "id": "lower-band",
+          "rawName": "outRealLowerBand",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "5",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        },
+        {
+          "default": "2.000000e+0",
+          "id": "deviations-up",
+          "maximum": "3.000000e+37",
+          "minimum": "-3.000000e+37",
+          "rawName": "Deviations up",
+          "type": "Double"
+        },
+        {
+          "default": "2.000000e+0",
+          "id": "deviations-down",
+          "maximum": "3.000000e+37",
+          "minimum": "-3.000000e+37",
+          "rawName": "Deviations down",
+          "type": "Double"
+        },
+        {
+          "default": "0",
+          "enumValues": [
+            {
+              "id": "sma",
+              "value": 0
+            },
+            {
+              "id": "ema",
+              "value": 1
+            },
+            {
+              "id": "wma",
+              "value": 2
+            },
+            {
+              "id": "dema",
+              "value": 3
+            },
+            {
+              "id": "tema",
+              "value": 4
+            },
+            {
+              "id": "trima",
+              "value": 5
+            },
+            {
+              "id": "kama",
+              "value": 6
+            },
+            {
+              "id": "mama",
+              "value": 7
+            },
+            {
+              "id": "t3",
+              "value": 8
+            }
+          ],
+          "id": "ma-type",
+          "maximum": "",
+          "minimum": "",
+          "rawName": "MA Type",
+          "type": "MA Type"
+        }
+      ],
+      "rawName": "BBANDS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Statistic Functions",
+      "id": "beta",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal0",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        },
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-1",
+          "name": "inReal1",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "5",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "BETA",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "bop",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "BOP",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "cci",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "CCI",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdl2crows",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDL2CROWS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdl3blackcrows",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDL3BLACKCROWS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdl3inside",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDL3INSIDE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdl3linestrike",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDL3LINESTRIKE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdl3outside",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDL3OUTSIDE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdl3starsinsouth",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDL3STARSINSOUTH",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdl3whitesoldiers",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDL3WHITESOLDIERS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlabandonedbaby",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "3.000000e-1",
+          "id": "penetration",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "Penetration",
+          "type": "Double"
+        }
+      ],
+      "rawName": "CDLABANDONEDBABY",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdladvanceblock",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLADVANCEBLOCK",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlbelthold",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLBELTHOLD",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlbreakaway",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLBREAKAWAY",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlclosingmarubozu",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLCLOSINGMARUBOZU",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlconcealbabyswall",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLCONCEALBABYSWALL",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlcounterattack",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLCOUNTERATTACK",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdldarkcloudcover",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "5.000000e-1",
+          "id": "penetration",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "Penetration",
+          "type": "Double"
+        }
+      ],
+      "rawName": "CDLDARKCLOUDCOVER",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdldoji",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLDOJI",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdldojistar",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLDOJISTAR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdldragonflydoji",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLDRAGONFLYDOJI",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlengulfing",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLENGULFING",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdleveningdojistar",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "3.000000e-1",
+          "id": "penetration",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "Penetration",
+          "type": "Double"
+        }
+      ],
+      "rawName": "CDLEVENINGDOJISTAR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdleveningstar",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "3.000000e-1",
+          "id": "penetration",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "Penetration",
+          "type": "Double"
+        }
+      ],
+      "rawName": "CDLEVENINGSTAR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlgapsidesidewhite",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLGAPSIDESIDEWHITE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlgravestonedoji",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLGRAVESTONEDOJI",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlhammer",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLHAMMER",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlhangingman",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLHANGINGMAN",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlharami",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLHARAMI",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlharamicross",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLHARAMICROSS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlhighwave",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLHIGHWAVE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlhikkake",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLHIKKAKE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlhikkakemod",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLHIKKAKEMOD",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlhomingpigeon",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLHOMINGPIGEON",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlidentical3crows",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLIDENTICAL3CROWS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlinneck",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLINNECK",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlinvertedhammer",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLINVERTEDHAMMER",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlkicking",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLKICKING",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlkickingbylength",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLKICKINGBYLENGTH",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlladderbottom",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLLADDERBOTTOM",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdllongleggeddoji",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLLONGLEGGEDDOJI",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdllongline",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLLONGLINE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlmarubozu",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLMARUBOZU",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlmatchinglow",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLMATCHINGLOW",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlmathold",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "5.000000e-1",
+          "id": "penetration",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "Penetration",
+          "type": "Double"
+        }
+      ],
+      "rawName": "CDLMATHOLD",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlmorningdojistar",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "3.000000e-1",
+          "id": "penetration",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "Penetration",
+          "type": "Double"
+        }
+      ],
+      "rawName": "CDLMORNINGDOJISTAR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlmorningstar",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "3.000000e-1",
+          "id": "penetration",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "Penetration",
+          "type": "Double"
+        }
+      ],
+      "rawName": "CDLMORNINGSTAR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlonneck",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLONNECK",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlpiercing",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLPIERCING",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlrickshawman",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLRICKSHAWMAN",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlrisefall3methods",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLRISEFALL3METHODS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlseparatinglines",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLSEPARATINGLINES",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlshootingstar",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLSHOOTINGSTAR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlshortline",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLSHORTLINE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlspinningtop",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLSPINNINGTOP",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlstalledpattern",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLSTALLEDPATTERN",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlsticksandwich",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLSTICKSANDWICH",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdltakuri",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLTAKURI",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdltasukigap",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLTASUKIGAP",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlthrusting",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLTHRUSTING",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdltristar",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLTRISTAR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlunique3river",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLUNIQUE3RIVER",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlupsidegap2crows",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLUPSIDEGAP2CROWS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Pattern Recognition",
+      "id": "cdlxsidegap3methods",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CDLXSIDEGAP3METHODS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "ceil",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "CEIL",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "cmo",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "CMO",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Statistic Functions",
+      "id": "correl",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal0",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        },
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-1",
+          "name": "inReal1",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "CORREL",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "cos",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "COS",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "cosh",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "COSH",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "dema",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "DEMA",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Operators",
+      "id": "div",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal0",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        },
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-1",
+          "name": "inReal1",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "DIV",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "dx",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "DX",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "ema",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "EMA",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Math Transform",
+      "id": "exp",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "EXP",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "floor",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "FLOOR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Cycle Indicators",
+      "id": "ht-dcperiod",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "HT_DCPERIOD",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Cycle Indicators",
+      "id": "ht-dcphase",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "HT_DCPHASE",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Cycle Indicators",
+      "id": "ht-phasor",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "in-phase",
+          "rawName": "outInPhase",
+          "type": "Double Array"
+        },
+        {
+          "id": "quadrature",
+          "rawName": "outQuadrature",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "HT_PHASOR",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Cycle Indicators",
+      "id": "ht-sine",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "sine",
+          "rawName": "outSine",
+          "type": "Double Array"
+        },
+        {
+          "id": "lead-sine",
+          "rawName": "outLeadSine",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "HT_SINE",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "ht-trendline",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "HT_TRENDLINE",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Cycle Indicators",
+      "id": "ht-trendmode",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "HT_TRENDMODE",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "imi",
+      "inputs": [
+        {
+          "id": "open",
+          "name": "Open",
+          "role": "fixed-market",
+          "type": "Open"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "IMI",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "kama",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "KAMA",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Statistic Functions",
+      "id": "linearreg",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "LINEARREG",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Statistic Functions",
+      "id": "linearreg-angle",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "LINEARREG_ANGLE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Statistic Functions",
+      "id": "linearreg-intercept",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "LINEARREG_INTERCEPT",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Statistic Functions",
+      "id": "linearreg-slope",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "LINEARREG_SLOPE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "ln",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "LN",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "log10",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "LOG10",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "ma",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        },
+        {
+          "default": "0",
+          "enumValues": [
+            {
+              "id": "sma",
+              "value": 0
+            },
+            {
+              "id": "ema",
+              "value": 1
+            },
+            {
+              "id": "wma",
+              "value": 2
+            },
+            {
+              "id": "dema",
+              "value": 3
+            },
+            {
+              "id": "tema",
+              "value": 4
+            },
+            {
+              "id": "trima",
+              "value": 5
+            },
+            {
+              "id": "kama",
+              "value": 6
+            },
+            {
+              "id": "mama",
+              "value": 7
+            },
+            {
+              "id": "t3",
+              "value": 8
+            }
+          ],
+          "id": "ma-type",
+          "maximum": "",
+          "minimum": "",
+          "rawName": "MA Type",
+          "type": "MA Type"
+        }
+      ],
+      "rawName": "MA",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "macd",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "macd",
+          "rawName": "outMACD",
+          "type": "Double Array"
+        },
+        {
+          "id": "signal",
+          "rawName": "outMACDSignal",
+          "type": "Double Array"
+        },
+        {
+          "id": "histogram",
+          "rawName": "outMACDHist",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "12",
+          "id": "fast-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Fast Period",
+          "type": "Integer"
+        },
+        {
+          "default": "26",
+          "id": "slow-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Slow Period",
+          "type": "Integer"
+        },
+        {
+          "default": "9",
+          "id": "signal-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Signal Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MACD",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "macdext",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "macd",
+          "rawName": "outMACD",
+          "type": "Double Array"
+        },
+        {
+          "id": "signal",
+          "rawName": "outMACDSignal",
+          "type": "Double Array"
+        },
+        {
+          "id": "histogram",
+          "rawName": "outMACDHist",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "12",
+          "id": "fast-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Fast Period",
+          "type": "Integer"
+        },
+        {
+          "default": "0",
+          "enumValues": [
+            {
+              "id": "sma",
+              "value": 0
+            },
+            {
+              "id": "ema",
+              "value": 1
+            },
+            {
+              "id": "wma",
+              "value": 2
+            },
+            {
+              "id": "dema",
+              "value": 3
+            },
+            {
+              "id": "tema",
+              "value": 4
+            },
+            {
+              "id": "trima",
+              "value": 5
+            },
+            {
+              "id": "kama",
+              "value": 6
+            },
+            {
+              "id": "mama",
+              "value": 7
+            },
+            {
+              "id": "t3",
+              "value": 8
+            }
+          ],
+          "id": "fast-ma",
+          "maximum": "",
+          "minimum": "",
+          "rawName": "Fast MA",
+          "type": "MA Type"
+        },
+        {
+          "default": "26",
+          "id": "slow-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Slow Period",
+          "type": "Integer"
+        },
+        {
+          "default": "0",
+          "enumValues": [
+            {
+              "id": "sma",
+              "value": 0
+            },
+            {
+              "id": "ema",
+              "value": 1
+            },
+            {
+              "id": "wma",
+              "value": 2
+            },
+            {
+              "id": "dema",
+              "value": 3
+            },
+            {
+              "id": "tema",
+              "value": 4
+            },
+            {
+              "id": "trima",
+              "value": 5
+            },
+            {
+              "id": "kama",
+              "value": 6
+            },
+            {
+              "id": "mama",
+              "value": 7
+            },
+            {
+              "id": "t3",
+              "value": 8
+            }
+          ],
+          "id": "slow-ma",
+          "maximum": "",
+          "minimum": "",
+          "rawName": "Slow MA",
+          "type": "MA Type"
+        },
+        {
+          "default": "9",
+          "id": "signal-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Signal Period",
+          "type": "Integer"
+        },
+        {
+          "default": "0",
+          "enumValues": [
+            {
+              "id": "sma",
+              "value": 0
+            },
+            {
+              "id": "ema",
+              "value": 1
+            },
+            {
+              "id": "wma",
+              "value": 2
+            },
+            {
+              "id": "dema",
+              "value": 3
+            },
+            {
+              "id": "tema",
+              "value": 4
+            },
+            {
+              "id": "trima",
+              "value": 5
+            },
+            {
+              "id": "kama",
+              "value": 6
+            },
+            {
+              "id": "mama",
+              "value": 7
+            },
+            {
+              "id": "t3",
+              "value": 8
+            }
+          ],
+          "id": "signal-ma",
+          "maximum": "",
+          "minimum": "",
+          "rawName": "Signal MA",
+          "type": "MA Type"
+        }
+      ],
+      "rawName": "MACDEXT",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "macdfix",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "macd",
+          "rawName": "outMACD",
+          "type": "Double Array"
+        },
+        {
+          "id": "signal",
+          "rawName": "outMACDSignal",
+          "type": "Double Array"
+        },
+        {
+          "id": "histogram",
+          "rawName": "outMACDHist",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "9",
+          "id": "signal-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Signal Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MACDFIX",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "mama",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "mama",
+          "rawName": "outMAMA",
+          "type": "Double Array"
+        },
+        {
+          "id": "fama",
+          "rawName": "outFAMA",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "5.000000e-1",
+          "id": "fast-limit",
+          "maximum": "9.900000e-1",
+          "minimum": "1.000000e-2",
+          "rawName": "Fast Limit",
+          "type": "Double"
+        },
+        {
+          "default": "5.000000e-2",
+          "id": "slow-limit",
+          "maximum": "9.900000e-1",
+          "minimum": "1.000000e-2",
+          "rawName": "Slow Limit",
+          "type": "Double"
+        }
+      ],
+      "rawName": "MAMA",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Math Operators",
+      "id": "max",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MAX",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Operators",
+      "id": "maxindex",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MAXINDEX",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Price Transform",
+      "id": "medprice",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "MEDPRICE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "mfi",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        },
+        {
+          "allowedFields": [
+            "base-volume",
+            "quote-volume"
+          ],
+          "id": "volume",
+          "name": "Volume",
+          "role": "explicit-volume",
+          "type": "Volume"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MFI",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "midpoint",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MIDPOINT",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "midprice",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MIDPRICE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Operators",
+      "id": "min",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MIN",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Operators",
+      "id": "minindex",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outInteger",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MININDEX",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Operators",
+      "id": "minmax",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "min",
+          "rawName": "outMin",
+          "type": "Double Array"
+        },
+        {
+          "id": "max",
+          "rawName": "outMax",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MINMAX",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Operators",
+      "id": "minmaxindex",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "min-idx",
+          "rawName": "outMinIdx",
+          "type": "Integer Array"
+        },
+        {
+          "id": "max-idx",
+          "rawName": "outMaxIdx",
+          "type": "Integer Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MINMAXINDEX",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "minus-di",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MINUS_DI",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "minus-dm",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MINUS_DM",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "mom",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "10",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "MOM",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Operators",
+      "id": "mult",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal0",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        },
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-1",
+          "name": "inReal1",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "MULT",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Volatility Indicators",
+      "id": "natr",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "NATR",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Volume Indicators",
+      "id": "obv",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        },
+        {
+          "allowedFields": [
+            "base-volume",
+            "quote-volume"
+          ],
+          "id": "volume",
+          "name": "Volume",
+          "role": "explicit-volume",
+          "type": "Volume"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "OBV",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "plus-di",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "PLUS_DI",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "plus-dm",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "PLUS_DM",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "ppo",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "12",
+          "id": "fast-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Fast Period",
+          "type": "Integer"
+        },
+        {
+          "default": "26",
+          "id": "slow-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Slow Period",
+          "type": "Integer"
+        },
+        {
+          "default": "0",
+          "enumValues": [
+            {
+              "id": "sma",
+              "value": 0
+            },
+            {
+              "id": "ema",
+              "value": 1
+            },
+            {
+              "id": "wma",
+              "value": 2
+            },
+            {
+              "id": "dema",
+              "value": 3
+            },
+            {
+              "id": "tema",
+              "value": 4
+            },
+            {
+              "id": "trima",
+              "value": 5
+            },
+            {
+              "id": "kama",
+              "value": 6
+            },
+            {
+              "id": "mama",
+              "value": 7
+            },
+            {
+              "id": "t3",
+              "value": 8
+            }
+          ],
+          "id": "ma-type",
+          "maximum": "",
+          "minimum": "",
+          "rawName": "MA Type",
+          "type": "MA Type"
+        }
+      ],
+      "rawName": "PPO",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "roc",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "10",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "ROC",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "rocp",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "10",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "ROCP",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "rocr",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "10",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "ROCR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "rocr100",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "10",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "ROCR100",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "rsi",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "RSI",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "sar",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "2.000000e-2",
+          "id": "acceleration-factor",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "Acceleration Factor",
+          "type": "Double"
+        },
+        {
+          "default": "2.000000e-1",
+          "id": "af-maximum",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "AF Maximum",
+          "type": "Double"
+        }
+      ],
+      "rawName": "SAR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "sarext",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "0.000000e+0",
+          "id": "start-value",
+          "maximum": "3.000000e+37",
+          "minimum": "-3.000000e+37",
+          "rawName": "Start Value",
+          "type": "Double"
+        },
+        {
+          "default": "0.000000e+0",
+          "id": "offset-on-reverse",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "Offset on Reverse",
+          "type": "Double"
+        },
+        {
+          "default": "2.000000e-2",
+          "id": "af-init-long",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "AF Init Long",
+          "type": "Double"
+        },
+        {
+          "default": "2.000000e-2",
+          "id": "af-long",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "AF Long",
+          "type": "Double"
+        },
+        {
+          "default": "2.000000e-1",
+          "id": "af-max-long",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "AF Max Long",
+          "type": "Double"
+        },
+        {
+          "default": "2.000000e-2",
+          "id": "af-init-short",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "AF Init Short",
+          "type": "Double"
+        },
+        {
+          "default": "2.000000e-2",
+          "id": "af-short",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "AF Short",
+          "type": "Double"
+        },
+        {
+          "default": "2.000000e-1",
+          "id": "af-max-short",
+          "maximum": "3.000000e+37",
+          "minimum": "0.000000e+0",
+          "rawName": "AF Max Short",
+          "type": "Double"
+        }
+      ],
+      "rawName": "SAREXT",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "sin",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "SIN",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "sinh",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "SINH",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "sma",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "SMA",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "sqrt",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "SQRT",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Statistic Functions",
+      "id": "stddev",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "5",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        },
+        {
+          "default": "1.000000e+0",
+          "id": "deviations",
+          "maximum": "3.000000e+37",
+          "minimum": "-3.000000e+37",
+          "rawName": "Deviations",
+          "type": "Double"
+        }
+      ],
+      "rawName": "STDDEV",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "stoch",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "slow-k",
+          "rawName": "outSlowK",
+          "type": "Double Array"
+        },
+        {
+          "id": "slow-d",
+          "rawName": "outSlowD",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "5",
+          "id": "fast-k-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Fast-K Period",
+          "type": "Integer"
+        },
+        {
+          "default": "3",
+          "id": "slow-k-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Slow-K Period",
+          "type": "Integer"
+        },
+        {
+          "default": "0",
+          "enumValues": [
+            {
+              "id": "sma",
+              "value": 0
+            },
+            {
+              "id": "ema",
+              "value": 1
+            },
+            {
+              "id": "wma",
+              "value": 2
+            },
+            {
+              "id": "dema",
+              "value": 3
+            },
+            {
+              "id": "tema",
+              "value": 4
+            },
+            {
+              "id": "trima",
+              "value": 5
+            },
+            {
+              "id": "kama",
+              "value": 6
+            },
+            {
+              "id": "mama",
+              "value": 7
+            },
+            {
+              "id": "t3",
+              "value": 8
+            }
+          ],
+          "id": "slow-k-ma",
+          "maximum": "",
+          "minimum": "",
+          "rawName": "Slow-K MA",
+          "type": "MA Type"
+        },
+        {
+          "default": "3",
+          "id": "slow-d-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Slow-D Period",
+          "type": "Integer"
+        },
+        {
+          "default": "0",
+          "enumValues": [
+            {
+              "id": "sma",
+              "value": 0
+            },
+            {
+              "id": "ema",
+              "value": 1
+            },
+            {
+              "id": "wma",
+              "value": 2
+            },
+            {
+              "id": "dema",
+              "value": 3
+            },
+            {
+              "id": "tema",
+              "value": 4
+            },
+            {
+              "id": "trima",
+              "value": 5
+            },
+            {
+              "id": "kama",
+              "value": 6
+            },
+            {
+              "id": "mama",
+              "value": 7
+            },
+            {
+              "id": "t3",
+              "value": 8
+            }
+          ],
+          "id": "slow-d-ma",
+          "maximum": "",
+          "minimum": "",
+          "rawName": "Slow-D MA",
+          "type": "MA Type"
+        }
+      ],
+      "rawName": "STOCH",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "stochf",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "fast-k",
+          "rawName": "outFastK",
+          "type": "Double Array"
+        },
+        {
+          "id": "fast-d",
+          "rawName": "outFastD",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "5",
+          "id": "fast-k-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Fast-K Period",
+          "type": "Integer"
+        },
+        {
+          "default": "3",
+          "id": "fast-d-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Fast-D Period",
+          "type": "Integer"
+        },
+        {
+          "default": "0",
+          "enumValues": [
+            {
+              "id": "sma",
+              "value": 0
+            },
+            {
+              "id": "ema",
+              "value": 1
+            },
+            {
+              "id": "wma",
+              "value": 2
+            },
+            {
+              "id": "dema",
+              "value": 3
+            },
+            {
+              "id": "tema",
+              "value": 4
+            },
+            {
+              "id": "trima",
+              "value": 5
+            },
+            {
+              "id": "kama",
+              "value": 6
+            },
+            {
+              "id": "mama",
+              "value": 7
+            },
+            {
+              "id": "t3",
+              "value": 8
+            }
+          ],
+          "id": "fast-d-ma",
+          "maximum": "",
+          "minimum": "",
+          "rawName": "Fast-D MA",
+          "type": "MA Type"
+        }
+      ],
+      "rawName": "STOCHF",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "stochrsi",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "fast-k",
+          "rawName": "outFastK",
+          "type": "Double Array"
+        },
+        {
+          "id": "fast-d",
+          "rawName": "outFastD",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        },
+        {
+          "default": "5",
+          "id": "fast-k-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Fast-K Period",
+          "type": "Integer"
+        },
+        {
+          "default": "3",
+          "id": "fast-d-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Fast-D Period",
+          "type": "Integer"
+        },
+        {
+          "default": "0",
+          "enumValues": [
+            {
+              "id": "sma",
+              "value": 0
+            },
+            {
+              "id": "ema",
+              "value": 1
+            },
+            {
+              "id": "wma",
+              "value": 2
+            },
+            {
+              "id": "dema",
+              "value": 3
+            },
+            {
+              "id": "tema",
+              "value": 4
+            },
+            {
+              "id": "trima",
+              "value": 5
+            },
+            {
+              "id": "kama",
+              "value": 6
+            },
+            {
+              "id": "mama",
+              "value": 7
+            },
+            {
+              "id": "t3",
+              "value": 8
+            }
+          ],
+          "id": "fast-d-ma",
+          "maximum": "",
+          "minimum": "",
+          "rawName": "Fast-D MA",
+          "type": "MA Type"
+        }
+      ],
+      "rawName": "STOCHRSI",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Math Operators",
+      "id": "sub",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal0",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        },
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-1",
+          "name": "inReal1",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "SUB",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Operators",
+      "id": "sum",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "SUM",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "t3",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "5",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        },
+        {
+          "default": "7.000000e-1",
+          "id": "volume-factor",
+          "maximum": "1.000000e+0",
+          "minimum": "0.000000e+0",
+          "rawName": "Volume Factor",
+          "type": "Double"
+        }
+      ],
+      "rawName": "T3",
+      "unstablePeriod": true
+    },
+    {
+      "group": "Math Transform",
+      "id": "tan",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "TAN",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Math Transform",
+      "id": "tanh",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "TANH",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "tema",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "TEMA",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Volatility Indicators",
+      "id": "trange",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "TRANGE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "trima",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "TRIMA",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "trix",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "TRIX",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Statistic Functions",
+      "id": "tsf",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "TSF",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Price Transform",
+      "id": "typprice",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "TYPPRICE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "ultosc",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "7",
+          "id": "first-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "First Period",
+          "type": "Integer"
+        },
+        {
+          "default": "14",
+          "id": "second-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Second Period",
+          "type": "Integer"
+        },
+        {
+          "default": "28",
+          "id": "third-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Third Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "ULTOSC",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Statistic Functions",
+      "id": "var",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "5",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        },
+        {
+          "default": "1.000000e+0",
+          "id": "deviations",
+          "maximum": "3.000000e+37",
+          "minimum": "-3.000000e+37",
+          "rawName": "Deviations",
+          "type": "Double"
+        }
+      ],
+      "rawName": "VAR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Price Transform",
+      "id": "wclprice",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [],
+      "rawName": "WCLPRICE",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Momentum Indicators",
+      "id": "willr",
+      "inputs": [
+        {
+          "id": "high",
+          "name": "High",
+          "role": "fixed-market",
+          "type": "High"
+        },
+        {
+          "id": "low",
+          "name": "Low",
+          "role": "fixed-market",
+          "type": "Low"
+        },
+        {
+          "id": "close",
+          "name": "Close",
+          "role": "fixed-market",
+          "type": "Close"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "14",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "2",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "WILLR",
+      "unstablePeriod": false
+    },
+    {
+      "group": "Overlap Studies",
+      "id": "wma",
+      "inputs": [
+        {
+          "allowedFields": [
+            "open",
+            "high",
+            "low",
+            "close"
+          ],
+          "id": "real-0",
+          "name": "inReal",
+          "role": "generic-ohcl-real",
+          "type": "Double Array"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "rawName": "outReal",
+          "type": "Double Array"
+        }
+      ],
+      "parameters": [
+        {
+          "default": "30",
+          "id": "time-period",
+          "maximum": "100000",
+          "minimum": "1",
+          "rawName": "Time Period",
+          "type": "Integer"
+        }
+      ],
+      "rawName": "WMA",
+      "unstablePeriod": false
+    }
+  ],
+  "source": {
+    "archiveSha256": "40e7a6978052fe5245771e430e6a4c4553b40038f8ac5a985a1540c4c1fa6ace",
+    "xmlSha256": "70ed7629a577cb3803ed2882607070beb15592724ea4366735a9e0fc8413dec1"
+  },
+  "version": "adaq-indicator-catalog@1.0.0"
+}
