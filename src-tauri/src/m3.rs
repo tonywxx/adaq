@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -14,16 +14,14 @@ use ada_backtest_core::{
 };
 use ada_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
 use adaq_component_tooling::{
-    ComponentDependency, ComponentKind, ComponentPackage, ParameterDefinition, RunLimits,
-    component_parameters, verify_package,
+    ComponentDependency, ComponentKind, ComponentPackage, EngineIdentity, ParameterDefinition,
+    RunLimits, component_parameters, validate_and_freeze, verify_package,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::run_engine::{
-    FactorRunComponent, FeatureBinding, FeatureSource, PositionMode, RunEngine, RunRequest,
-};
+use crate::run_engine::{PositionMode, RunEngine, RunRequest, market_engine_build_id};
 
 pub struct M3State {
     root: PathBuf,
@@ -541,6 +539,8 @@ pub struct FactorInstanceRequest {
 #[serde(rename_all = "camelCase")]
 pub struct BacktestRun {
     pub run_id: String,
+    #[serde(default)]
+    pub plan_hash: String,
     pub snapshot: MarketDataSnapshot,
     pub bars: Vec<OhlcvBar>,
     pub decisions: Vec<SimulationDecision>,
@@ -552,6 +552,7 @@ pub struct BacktestRun {
 #[serde(rename_all = "camelCase")]
 pub struct BacktestRunView {
     pub run_id: String,
+    pub plan_hash: String,
     pub snapshot: MarketDataSnapshot,
     pub bars: Vec<OhlcvBar>,
     pub result: ada_backtest_core::SimulationResult,
@@ -755,87 +756,27 @@ fn execute_backtest(
     request: BacktestRunRequest,
     state: &M3State,
 ) -> Result<BacktestRunView, String> {
-    let run_id = fingerprint(&request)?;
+    if !request.factor_instances.is_empty() {
+        return Err("External Feature Slots are unsupported until M5.5".into());
+    }
+    let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
+    if !matches!(strategy.manifest.kind, ComponentKind::Strategy) {
+        return Err("Backtest requires a Strategy Component".into());
+    }
+    let plan = validate_and_freeze(
+        &strategy.manifest,
+        &strategy.archive_sha256,
+        &EngineIdentity {
+            engine_build_id: market_engine_build_id(),
+        },
+    )
+    .map_err(|error| format!("Indicator Plan validation failed: {:?}", error.issues))?;
+    let run_id = fingerprint(&request, plan.plan_hash())?;
     if let Ok(existing) = state.load_run(&request.user_id, &run_id) {
         return Ok(run_view(&existing, i64::MIN, i64::MAX, 2_000));
     }
-    let factors = request
-        .factor_instances
-        .iter()
-        .map(|instance| {
-            if instance.alias.trim().is_empty() {
-                return Err("Factor Instance alias is invalid".into());
-            }
-            state
-                .package_for_user(&request.user_id, &instance.archive_sha256)
-                .map(|package| (instance, package))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut aliases = HashSet::new();
-    if request
-        .factor_instances
-        .iter()
-        .any(|instance| !aliases.insert(&instance.alias))
-    {
-        return Err("Factor Instance aliases must be unique".into());
-    }
-    let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
-    if factors
-        .iter()
-        .any(|(_, factor)| !matches!(factor.manifest.kind, ComponentKind::Factor))
-        || !matches!(strategy.manifest.kind, ComponentKind::Strategy)
-    {
-        return Err("Backtest requires a Factor and Strategy Component".into());
-    }
-    for dependency in &strategy.manifest.dependencies {
-        if !factors.iter().any(|(instance, factor)| {
-            instance.alias == dependency.alias
-                && factor.manifest.component_id == dependency.component_id
-                && dependency.version.matches(&factor.manifest.version)
-        }) {
-            return Err(format!(
-                "Missing compatible Factor dependency: {}",
-                dependency.alias
-            ));
-        }
-    }
     let (snapshot, bars) = state.snapshot(&request.snapshot_id)?;
-    let factor_paths = factors
-        .iter()
-        .map(|(_, factor)| state.runtime_component(factor))
-        .collect::<Result<Vec<_>, _>>()?;
     let strategy_path = state.runtime_component(&strategy)?;
-    let bindings = strategy
-        .manifest
-        .input_names
-        .iter()
-        .map(|name| {
-            if let Some(period) = name
-                .strip_prefix("sma-")
-                .and_then(|value| value.parse().ok())
-            {
-                FeatureBinding {
-                    slot_name: name.clone(),
-                    source: FeatureSource::BuiltInSma { period },
-                }
-            } else {
-                let (factor_alias, output_name) = name.split_once('.').unwrap_or((
-                    factors
-                        .first()
-                        .map(|(instance, _)| instance.alias.as_str())
-                        .unwrap_or("factor"),
-                    name.as_str(),
-                ));
-                FeatureBinding {
-                    slot_name: name.clone(),
-                    source: FeatureSource::FactorOutput {
-                        factor_alias: factor_alias.to_owned(),
-                        name: output_name.to_owned(),
-                    },
-                }
-            }
-        })
-        .collect::<Vec<_>>();
     let gaps = snapshot
         .gaps
         .iter()
@@ -844,36 +785,15 @@ fn execute_backtest(
             end_time_ms: gap.end_time_ms,
         })
         .collect::<Vec<_>>();
-    let factor_path_strings = factor_paths
-        .iter()
-        .map(|path| path.to_string_lossy())
-        .collect::<Vec<_>>();
-    let factor_parameters = factors
-        .iter()
-        .map(|(instance, factor)| {
-            component_parameters(&factor.manifest, Some(&instance.parameters))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let factor_components = factors
-        .iter()
-        .zip(&factor_path_strings)
-        .zip(&factor_parameters)
-        .map(|(((instance, _), path), parameters)| FactorRunComponent {
-            alias: &instance.alias,
-            path,
-            parameters,
-        })
-        .collect::<Vec<_>>();
     let strategy_parameters =
         component_parameters(&strategy.manifest, Some(&request.strategy_parameters))?;
     let strategy_path = strategy_path.to_string_lossy();
     let engine_result = RunEngine::execute(&RunRequest {
-        factors: &factor_components,
         strategy_path: &strategy_path,
         strategy_parameters: &strategy_parameters,
         bars: &bars,
         gaps: &gaps,
-        feature_bindings: &bindings,
+        plan: &plan,
         position_mode: PositionMode::LongOnly,
         limits: RunLimits::default(),
     })?;
@@ -895,14 +815,12 @@ fn execute_backtest(
     .map_err(string)?;
     let run = BacktestRun {
         run_id: run_id.clone(),
+        plan_hash: engine_result.plan_hash,
         snapshot,
         bars,
         decisions,
         result,
-        component_lock: factors
-            .iter()
-            .map(|(_, package)| package)
-            .chain(std::iter::once(&strategy))
+        component_lock: std::iter::once(&strategy)
             .map(|package| ComponentLockEntry {
                 component_id: package.manifest.component_id.to_string(),
                 version: package.manifest.version.to_string(),
@@ -993,8 +911,14 @@ pub fn backtest_delete(
     state.delete_run(&request.user_id, &request.run_id)
 }
 
-fn fingerprint(request: &BacktestRunRequest) -> Result<String, String> {
-    let digest = Sha256::digest(serde_json::to_vec(request).map_err(string)?);
+fn fingerprint(request: &BacktestRunRequest, plan_hash: &str) -> Result<String, String> {
+    let digest = Sha256::digest(
+        [
+            serde_json::to_vec(request).map_err(string)?,
+            plan_hash.as_bytes().to_vec(),
+        ]
+        .concat(),
+    );
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -1012,6 +936,7 @@ fn run_view(run: &BacktestRun, start: i64, end: i64, max_points: usize) -> Backt
     result.orders.truncate(max_points);
     BacktestRunView {
         run_id: run.run_id.clone(),
+        plan_hash: run.plan_hash.clone(),
         snapshot: run.snapshot.clone(),
         bars: aggregate_bars(&run.bars, start, end, max_points),
         result,
@@ -1104,7 +1029,7 @@ mod tests {
         let state = M3State::open(&root).unwrap();
         let (factor, wasm) = fixture("factor");
         let bytes = pack_component(factor.clone(), &wasm).unwrap();
-        let factor_entry = state.import_component("alice", &bytes).unwrap();
+        state.import_component("alice", &bytes).unwrap();
         assert_eq!(state.list_components("alice").unwrap().len(), 1);
         assert!(state.list_components("bob").unwrap().is_empty());
 
@@ -1139,13 +1064,9 @@ mod tests {
         let request = || BacktestRunRequest {
             user_id: "alice".into(),
             snapshot_id: snapshot.snapshot_id.clone(),
-            factor_instances: vec![FactorInstanceRequest {
-                alias: "trend".into(),
-                archive_sha256: factor_entry.archive_sha256.clone(),
-                parameters: HashMap::from([("period".into(), "1".into())]),
-            }],
+            factor_instances: vec![],
             strategy_archive_sha256: strategy_entry.archive_sha256.clone(),
-            strategy_parameters: HashMap::from([("threshold".into(), "0".into())]),
+            strategy_parameters: HashMap::new(),
             initial_quote_allocation: 10_000.into(),
             execution_profile: ExecutionProfile {
                 maker_fee_rate: rust_decimal::Decimal::new(8, 4),
@@ -1161,6 +1082,11 @@ mod tests {
         };
         let first = execute_backtest(request(), &state).unwrap();
         let second = execute_backtest(request(), &state).unwrap();
+        assert!(!first.plan_hash.is_empty());
+        assert_ne!(
+            fingerprint(&request(), &"a".repeat(64)).unwrap(),
+            fingerprint(&request(), &"b".repeat(64)).unwrap()
+        );
         assert_eq!(
             serde_json::to_value(&first).unwrap(),
             serde_json::to_value(&second).unwrap()
@@ -1168,12 +1094,12 @@ mod tests {
         assert_eq!(state.list_runs("alice").unwrap().len(), 1);
         assert!(
             state
-                .delete_component("alice", &factor_entry.archive_sha256)
+                .delete_component("alice", &strategy_entry.archive_sha256)
                 .is_err()
         );
         state.delete_run("alice", &first.run_id).unwrap();
         state
-            .delete_component("alice", &factor_entry.archive_sha256)
+            .delete_component("alice", &strategy_entry.archive_sha256)
             .unwrap();
         drop(state);
         fs::remove_dir_all(root).unwrap();

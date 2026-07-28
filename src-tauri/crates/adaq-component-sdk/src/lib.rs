@@ -33,6 +33,48 @@ pub mod strategy {
     pub use bindings::exports::adaq::strategy::api::{
         FeatureFrame, FeatureSlot, Guest, GuestInstance, Instance, ParameterValue,
     };
+
+    pub struct SlotIndexes(std::collections::HashMap<String, usize>);
+
+    impl SlotIndexes {
+        pub fn bind(feature_slots: &[FeatureSlot]) -> Result<Self, String> {
+            let mut indexes = std::collections::HashMap::with_capacity(feature_slots.len());
+            for (index, slot) in feature_slots.iter().enumerate() {
+                if indexes.insert(slot.name.clone(), index).is_some() {
+                    return Err(format!("duplicate Feature Slot: {}", slot.name));
+                }
+            }
+            Ok(Self(indexes))
+        }
+
+        pub fn index(&self, name: &str) -> Result<usize, String> {
+            self.0
+                .get(name)
+                .copied()
+                .ok_or_else(|| format!("missing Feature Slot: {name}"))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn binds_exact_slot_names_to_dense_indexes_once() {
+            let slots = vec![
+                FeatureSlot {
+                    name: "quote-volume".into(),
+                },
+                FeatureSlot {
+                    name: "close".into(),
+                },
+            ];
+            let indexes = SlotIndexes::bind(&slots).unwrap();
+            assert_eq!(indexes.index("quote-volume"), Ok(0));
+            assert_eq!(indexes.index("close"), Ok(1));
+            assert!(indexes.index("missing").is_err());
+        }
+    }
 }
 
 #[cfg(feature = "host")]

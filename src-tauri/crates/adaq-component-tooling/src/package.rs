@@ -50,8 +50,9 @@ pub struct ComponentDependency {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComponentManifest {
+    pub manifest_schema_version: Version,
     pub component_id: Uuid,
     pub version: Version,
     pub name: String,
@@ -63,13 +64,48 @@ pub struct ComponentManifest {
     #[serde(default)]
     pub parameters: Vec<ParameterDefinition>,
     #[serde(default)]
-    pub input_names: Vec<String>,
+    pub feature_slots: Vec<FeatureSlotDefinition>,
     #[serde(default)]
     pub output_names: Vec<String>,
     #[serde(default)]
     pub dependencies: Vec<ComponentDependency>,
     #[serde(default)]
     pub warmup_bars: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FeatureSlotDefinition {
+    pub name: String,
+    pub source: FeatureSlotSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum FeatureSlotSource {
+    Market {
+        field: MarketField,
+    },
+    #[serde(rename = "builtin")]
+    BuiltIn {
+        indicator: String,
+        output: String,
+    },
+    External {
+        dependency_alias: String,
+        output: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MarketField {
+    Open,
+    High,
+    Low,
+    Close,
+    BaseVolume,
+    QuoteVolume,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,6 +197,7 @@ pub fn pack_component(
 
 fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), PackageError> {
     if manifest.name.trim().is_empty()
+        || manifest.manifest_schema_version != Version::new(1, 0, 0)
         || manifest.sdk_version != Version::parse(adaq_component_sdk::SDK_VERSION).unwrap()
         || manifest.abi_version != Version::parse(adaq_component_sdk::ABI_VERSION).unwrap()
         || manifest.wasm_sha256 != sha256(wasm)
@@ -199,7 +236,23 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
         manifest.parameters.iter().map(|value| value.name.as_str()),
         "parameter",
     )?;
-    unique_non_empty(manifest.input_names.iter().map(String::as_str), "input")?;
+    match manifest.kind {
+        ComponentKind::Factor if !manifest.feature_slots.is_empty() => {
+            return Err(PackageError(
+                "Factor manifests cannot declare Feature Slots".into(),
+            ));
+        }
+        ComponentKind::Strategy if manifest.feature_slots.is_empty() => {
+            return Err(PackageError(
+                "Strategy manifests must declare Feature Slots".into(),
+            ));
+        }
+        _ => {}
+    }
+    unique_identifiers(
+        manifest.feature_slots.iter().map(|slot| slot.name.as_str()),
+        "Feature Slot",
+    )?;
     unique_non_empty(manifest.output_names.iter().map(String::as_str), "output")?;
     unique_non_empty(
         manifest
@@ -244,6 +297,35 @@ fn unique_non_empty<'a>(
     Ok(())
 }
 
+fn unique_identifiers<'a>(
+    values: impl Iterator<Item = &'a str>,
+    label: &str,
+) -> Result<(), PackageError> {
+    let mut seen = std::collections::HashSet::new();
+    if values
+        .into_iter()
+        .any(|value| !is_lower_kebab(value) || !seen.insert(value))
+    {
+        return Err(PackageError(format!(
+            "Component {label} names must be unique lower-kebab-case ASCII identifiers of at most 64 bytes"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn is_lower_kebab(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.as_bytes()[0].is_ascii_lowercase()
+        && !value.ends_with('-')
+        && value.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
+}
+
 fn sha256(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(64);
@@ -263,6 +345,7 @@ mod tests {
 
     fn manifest() -> ComponentManifest {
         ComponentManifest {
+            manifest_schema_version: Version::new(1, 0, 0),
             component_id: Uuid::nil(),
             version: Version::new(1, 2, 3),
             name: "Fixture".into(),
@@ -271,7 +354,7 @@ mod tests {
             abi_version: Version::new(1, 0, 0),
             wasm_sha256: String::new(),
             parameters: vec![],
-            input_names: vec![],
+            feature_slots: vec![],
             output_names: vec!["value".into()],
             dependencies: vec![],
             warmup_bars: 0,
@@ -304,5 +387,69 @@ mod tests {
             allowed_values: vec![],
         });
         assert!(validate_manifest(&invalid, wasm).is_err());
+
+        let mut invalid = manifest();
+        invalid.manifest_schema_version = Version::new(2, 0, 0);
+        invalid.wasm_sha256 = sha256(wasm);
+        assert!(validate_manifest(&invalid, wasm).is_err());
+    }
+
+    #[test]
+    fn strategy_manifest_requires_ordered_feature_slots_and_rejects_input_names() {
+        let legacy = r#"{
+            "componentId":"22222222-2222-4222-8222-222222222222",
+            "version":"1.0.0",
+            "name":"Legacy",
+            "kind":"strategy",
+            "sdkVersion":"0.1.0",
+            "abiVersion":"1.0.0",
+            "inputNames":["close"]
+        }"#;
+        assert!(serde_json::from_str::<ComponentManifest>(legacy).is_err());
+
+        let current = r#"{
+            "manifestSchemaVersion":"1.0.0",
+            "componentId":"22222222-2222-4222-8222-222222222222",
+            "version":"1.0.0",
+            "name":"Market",
+            "kind":"strategy",
+            "sdkVersion":"0.1.0",
+            "abiVersion":"1.0.0",
+            "featureSlots":[
+                {"name":"quote-volume","source":{"kind":"market","field":"quote-volume"}},
+                {"name":"close","source":{"kind":"market","field":"close"}}
+            ]
+        }"#;
+        let manifest = serde_json::from_str::<ComponentManifest>(current).unwrap();
+        assert_eq!(manifest.feature_slots[0].name, "quote-volume");
+        assert_eq!(manifest.feature_slots[1].name, "close");
+    }
+
+    #[test]
+    fn feature_slot_names_enforce_the_frozen_identifier_contract() {
+        let wasm = b"\0asm\x0d\0\x01\0";
+        for names in [
+            vec!["Close"],
+            vec!["close_value"],
+            vec!["close-"],
+            vec!["close", "close"],
+            vec!["é"],
+            vec!["a2345678901234567890123456789012345678901234567890123456789012345"],
+        ] {
+            let mut manifest = manifest();
+            manifest.kind = ComponentKind::Strategy;
+            manifest.output_names.clear();
+            manifest.feature_slots = names
+                .into_iter()
+                .map(|name| FeatureSlotDefinition {
+                    name: name.into(),
+                    source: FeatureSlotSource::Market {
+                        field: MarketField::Close,
+                    },
+                })
+                .collect();
+            manifest.wasm_sha256 = sha256(wasm);
+            assert!(validate_manifest(&manifest, wasm).is_err());
+        }
     }
 }

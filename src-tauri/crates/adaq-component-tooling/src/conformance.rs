@@ -4,8 +4,8 @@ use adaq_component_sdk::host::{factor_abi, strategy_abi};
 use rust_decimal::Decimal;
 
 use crate::{
-    ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue, ParameterType,
-    WasmLoader,
+    ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue, EngineIdentity,
+    ParameterType, WasmLoader, validate_and_freeze,
 };
 
 pub fn verify_package(package: &ComponentPackage) -> Result<(), String> {
@@ -99,17 +99,27 @@ fn verify_strategy(
     package: &ComponentPackage,
     parameters: &[ComponentParameterValue],
 ) -> Result<(), String> {
-    let slots = package
-        .manifest
-        .input_names
-        .iter()
-        .map(|name| strategy_abi::exports::adaq::strategy::api::FeatureSlot { name: name.clone() })
+    let plan = validate_and_freeze(
+        &package.manifest,
+        &package.archive_sha256,
+        &EngineIdentity {
+            engine_build_id: "conformance-market-only".into(),
+        },
+    )
+    .map_err(|error| format!("Indicator Plan validation failed: {:?}", error.issues))?;
+    let slots = plan
+        .slot_names()
+        .map(
+            |name| strategy_abi::exports::adaq::strategy::api::FeatureSlot {
+                name: name.to_owned(),
+            },
+        )
         .collect::<Vec<_>>();
     let frames = (0..3)
         .map(
             |index| strategy_abi::exports::adaq::strategy::api::FeatureFrame {
                 open_time_ms: index,
-                values: vec![index as f64; package.manifest.input_names.len()],
+                values: vec![index as f64; slots.len()],
             },
         )
         .collect::<Vec<_>>();

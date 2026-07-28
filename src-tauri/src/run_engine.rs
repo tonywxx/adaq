@@ -1,9 +1,12 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
 
 use ada_data_core::{BarGap, OhlcvBar};
-use adaq_component_sdk::host::{factor_abi, strategy_abi};
-use adaq_component_tooling::{ComponentParameterValue, RunLimits, WasmLoader};
-use rust_decimal::{Decimal, prelude::ToPrimitive};
+use adaq_component_sdk::{decimal_to_f64, host::strategy_abi};
+use adaq_component_tooling::{
+    ComponentParameterValue, FrozenIndicatorPlan, MarketField, RunLimits, WasmLoader,
+};
+use rust_decimal::Decimal;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PositionMode {
@@ -11,33 +14,13 @@ pub(crate) enum PositionMode {
     LongShort,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FeatureSource {
-    BuiltInSma { period: usize },
-    FactorOutput { factor_alias: String, name: String },
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FactorRunComponent<'a> {
-    pub alias: &'a str,
-    pub path: &'a str,
-    pub parameters: &'a [ComponentParameterValue],
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FeatureBinding {
-    pub slot_name: String,
-    pub source: FeatureSource,
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct RunRequest<'a> {
-    pub factors: &'a [FactorRunComponent<'a>],
     pub strategy_path: &'a str,
     pub strategy_parameters: &'a [ComponentParameterValue],
     pub bars: &'a [OhlcvBar],
     pub gaps: &'a [BarGap],
-    pub feature_bindings: &'a [FeatureBinding],
+    pub plan: &'a FrozenIndicatorPlan,
     pub position_mode: PositionMode,
     pub limits: RunLimits,
 }
@@ -48,22 +31,10 @@ pub(crate) struct TargetDecision {
     pub target_exposure: Decimal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SkippedReason {
-    Warmup,
-    MissingInput,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SkippedBar {
-    pub open_time_ms: i64,
-    pub reason: SkippedReason,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RunResult {
+    pub plan_hash: String,
     pub decisions: Vec<TargetDecision>,
-    pub skipped_bars: Vec<SkippedBar>,
     pub gap_resets: Vec<BarGap>,
 }
 
@@ -72,83 +43,113 @@ pub(crate) struct RunEngine;
 impl RunEngine {
     pub fn execute(request: &RunRequest<'_>) -> Result<RunResult, String> {
         validate_request(request)?;
-
-        let mut segment = SegmentRuntime::new(
-            request.factors,
-            request.strategy_path,
-            request.strategy_parameters,
-            request.feature_bindings,
-            request.limits,
-        )?;
-        let mut indicators = indicator_states(request.feature_bindings);
+        let mut strategy = load_strategy(request)?;
+        let fields = request.plan.market_fields().collect::<Vec<_>>();
         let mut result = RunResult {
-            decisions: Vec::new(),
-            skipped_bars: Vec::new(),
+            plan_hash: request.plan.plan_hash().to_owned(),
+            decisions: Vec::with_capacity(request.bars.len()),
             gap_resets: Vec::new(),
         };
         let mut next_gap = 0;
-        let mut segment_bars = 0usize;
+        let mut segment_has_bars = false;
 
         for bar in request.bars {
             while let Some(gap) = request.gaps.get(next_gap).copied() {
                 if gap.end_time_ms > bar.open_time_ms {
                     break;
                 }
-                if segment_bars > 0 {
-                    segment = SegmentRuntime::new(
-                        request.factors,
-                        request.strategy_path,
-                        request.strategy_parameters,
-                        request.feature_bindings,
-                        request.limits,
-                    )?;
-                    indicators = indicator_states(request.feature_bindings);
-                    segment_bars = 0;
+                if segment_has_bars {
+                    strategy = load_strategy(request)?;
                     result.gap_resets.push(gap);
+                    segment_has_bars = false;
                 }
                 next_gap += 1;
             }
 
-            let factor_values = segment.process_factor(bar)?;
-            let mut values = Vec::with_capacity(request.feature_bindings.len());
-            let mut missing = false;
-            for state in &mut indicators {
-                match state {
-                    IndicatorState::BuiltInSma(sma) => match sma.push(bar.close)? {
-                        Some(value) => values.push(value),
-                        None => missing = true,
-                    },
-                    IndicatorState::FactorOutput { factor_alias, name } => {
-                        match factor_values.get(&(factor_alias.clone(), name.clone())) {
-                            Some(value) => values.push(*value),
-                            None => missing = true,
-                        }
-                    }
-                }
+            let values = fields
+                .iter()
+                .map(|field| market_value(*field, bar))
+                .collect::<Result<Vec<_>, _>>()?;
+            if values.iter().any(|value| !value.is_finite()) {
+                return Err(format!(
+                    "Market Feature Frame contains a non-finite value at Bar {}",
+                    bar.open_time_ms
+                ));
             }
-
-            if missing {
-                let reason = if segment_bars < segment.warmup_bars {
-                    SkippedReason::Warmup
-                } else {
-                    SkippedReason::MissingInput
-                };
-                result.skipped_bars.push(SkippedBar {
+            let targets = strategy.process_strategy(vec![
+                strategy_abi::exports::adaq::strategy::api::FeatureFrame {
                     open_time_ms: bar.open_time_ms,
-                    reason,
-                });
-            } else {
-                let raw_target = segment.process_strategy(bar.open_time_ms, values)?;
-                result.decisions.push(TargetDecision {
-                    open_time_ms: bar.open_time_ms,
-                    target_exposure: validate_target(&raw_target, request.position_mode)?,
-                });
+                    values,
+                },
+            ])?;
+            if targets.len() != 1 {
+                return Err("Strategy must return exactly one Target Exposure per frame".into());
             }
-            segment_bars += 1;
+            result.decisions.push(TargetDecision {
+                open_time_ms: bar.open_time_ms,
+                target_exposure: validate_target(&targets[0], request.position_mode)?,
+            });
+            segment_has_bars = true;
         }
-
         Ok(result)
     }
+}
+
+pub(crate) fn market_engine_build_id() -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(env!("CARGO_PKG_VERSION"));
+    hasher.update(std::env::consts::OS);
+    hasher.update(std::env::consts::ARCH);
+    hasher.update(include_bytes!("run_engine.rs"));
+    hasher.update(include_bytes!(
+        "../crates/adaq-component-tooling/src/plan.rs"
+    ));
+    hasher.update(include_bytes!("../crates/adaq-component-sdk/src/lib.rs"));
+    let source_hash = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!(
+        "market-only-{}-{}-{source_hash}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
+}
+
+fn load_strategy(request: &RunRequest<'_>) -> Result<WasmLoader, String> {
+    let strategy = WasmLoader::with_limits(request.limits);
+    strategy.load_strategy_with_parameters(
+        request.strategy_path,
+        request
+            .plan
+            .slot_names()
+            .map(
+                |name| strategy_abi::exports::adaq::strategy::api::FeatureSlot {
+                    name: name.to_owned(),
+                },
+            )
+            .collect(),
+        request.strategy_parameters,
+    )?;
+    Ok(strategy)
+}
+
+fn market_value(field: MarketField, bar: &OhlcvBar) -> Result<f64, String> {
+    let (name, value) = match field {
+        MarketField::Open => ("open", bar.open),
+        MarketField::High => ("high", bar.high),
+        MarketField::Low => ("low", bar.low),
+        MarketField::Close => ("close", bar.close),
+        MarketField::BaseVolume => ("base-volume", bar.base_volume),
+        MarketField::QuoteVolume => ("quote-volume", bar.quote_volume),
+    };
+    decimal_to_f64(value).map_err(|error| {
+        format!(
+            "Market field {} cannot be converted at Bar {}: {error}",
+            name, bar.open_time_ms
+        )
+    })
 }
 
 fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
@@ -160,14 +161,14 @@ fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
         ));
     }
     if request.limits.fuel_per_call == 0 || request.limits.memory_bytes == 0 {
-        return Err("Run limits must be greater than zero".to_owned());
+        return Err("Run limits must be greater than zero".into());
     }
     if request
         .bars
         .windows(2)
         .any(|bars| bars[0].open_time_ms >= bars[1].open_time_ms)
     {
-        return Err("Closed Bars must be strictly ascending".to_owned());
+        return Err("Closed Bars must be strictly ascending".into());
     }
     if request
         .gaps
@@ -178,7 +179,7 @@ fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
             .windows(2)
             .any(|gaps| gaps[0].end_time_ms > gaps[1].start_time_ms)
     {
-        return Err("Bar Gaps must be valid, ascending, and non-overlapping".to_owned());
+        return Err("Bar Gaps must be valid, ascending, and non-overlapping".into());
     }
     if request.gaps.iter().any(|gap| {
         request
@@ -186,233 +187,13 @@ fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
             .iter()
             .any(|bar| bar.open_time_ms >= gap.start_time_ms && bar.open_time_ms < gap.end_time_ms)
     }) {
-        return Err("Closed Bars cannot fall inside a Bar Gap".to_owned());
+        return Err("Closed Bars cannot fall inside a Bar Gap".into());
     }
-    if request.feature_bindings.is_empty() {
-        return Err("Indicator Plan must contain at least one Feature Slot".to_owned());
-    }
-    let mut aliases = HashSet::new();
-    if request.factors.iter().any(|factor| {
-        factor.alias.trim().is_empty()
-            || factor.path.trim().is_empty()
-            || !aliases.insert(factor.alias)
-    }) {
-        return Err("Factor Instance aliases and paths must be non-empty and unique".to_owned());
-    }
-
     let mut slots = HashSet::new();
-    for binding in request.feature_bindings {
-        if binding.slot_name.trim().is_empty() || !slots.insert(binding.slot_name.as_str()) {
-            return Err("Feature Slot names must be non-empty and unique".to_owned());
-        }
-        match &binding.source {
-            FeatureSource::BuiltInSma { period } if *period == 0 => {
-                return Err("SMA period must be greater than zero".to_owned());
-            }
-            FeatureSource::FactorOutput { factor_alias, name }
-                if factor_alias.trim().is_empty() || name.trim().is_empty() =>
-            {
-                return Err("Factor output name must be non-empty".to_owned());
-            }
-            _ => {}
-        }
+    if request.plan.slot_names().any(|name| !slots.insert(name)) {
+        return Err("Frozen Indicator Plan contains duplicate Feature Slots".into());
     }
     Ok(())
-}
-
-struct SegmentRuntime {
-    factors: Vec<FactorRuntime>,
-    strategy: WasmLoader,
-    warmup_bars: usize,
-}
-
-struct FactorRuntime {
-    alias: String,
-    loader: WasmLoader,
-    output_names: HashSet<String>,
-}
-
-impl SegmentRuntime {
-    fn new(
-        factors: &[FactorRunComponent<'_>],
-        strategy_path: &str,
-        strategy_parameters: &[ComponentParameterValue],
-        feature_bindings: &[FeatureBinding],
-        limits: RunLimits,
-    ) -> Result<Self, String> {
-        let mut factor_runtimes = Vec::with_capacity(factors.len());
-        let mut factor_warmup = 0usize;
-        for factor in factors {
-            let loader = WasmLoader::with_limits(limits);
-            loader.load_with_parameters(factor.path, factor.parameters)?;
-            let schema = loader.describe_factor()?;
-            let output_count = schema.output_names.len();
-            let output_names = schema.output_names.into_iter().collect::<HashSet<_>>();
-            if output_names.iter().any(|name| name.trim().is_empty()) || output_names.is_empty() {
-                return Err("Factor schema must declare non-empty output names".to_owned());
-            }
-            if output_names.len() != output_count {
-                return Err("Factor output names must be unique".to_owned());
-            }
-            factor_warmup = factor_warmup.max(schema.warmup_bars as usize);
-            factor_runtimes.push(FactorRuntime {
-                alias: factor.alias.to_owned(),
-                loader,
-                output_names,
-            });
-        }
-        for binding in feature_bindings {
-            if let FeatureSource::FactorOutput { factor_alias, name } = &binding.source {
-                let factor = factor_runtimes
-                    .iter()
-                    .find(|factor| factor.alias == *factor_alias)
-                    .ok_or_else(|| format!("Unknown Factor Instance: {factor_alias}"))?;
-                if !factor.output_names.contains(name) {
-                    return Err(format!("Unknown Factor output: {factor_alias}.{name}"));
-                }
-            }
-        }
-        let indicator_warmup = feature_bindings
-            .iter()
-            .filter_map(|binding| match binding.source {
-                FeatureSource::BuiltInSma { period } => Some(period - 1),
-                FeatureSource::FactorOutput { .. } => None,
-            })
-            .max()
-            .unwrap_or(0);
-        let strategy = WasmLoader::with_limits(limits);
-        strategy.load_strategy_with_parameters(
-            strategy_path,
-            feature_bindings
-                .iter()
-                .map(
-                    |binding| strategy_abi::exports::adaq::strategy::api::FeatureSlot {
-                        name: binding.slot_name.clone(),
-                    },
-                )
-                .collect(),
-            strategy_parameters,
-        )?;
-        Ok(Self {
-            factors: factor_runtimes,
-            strategy,
-            warmup_bars: factor_warmup.max(indicator_warmup),
-        })
-    }
-
-    fn process_factor(&mut self, bar: &OhlcvBar) -> Result<HashMap<(String, String), f64>, String> {
-        let mut outputs = HashMap::new();
-        for factor in &self.factors {
-            let mut rows = factor.loader.process_factor(vec![
-                factor_abi::exports::adaq::factor::api::ClosedBar {
-                    open_time_ms: bar.open_time_ms,
-                    open: bar.open.to_string(),
-                    high: bar.high.to_string(),
-                    low: bar.low.to_string(),
-                    close: bar.close.to_string(),
-                    base_volume: bar.base_volume.to_string(),
-                    quote_volume: bar.quote_volume.to_string(),
-                },
-            ])?;
-            if rows.len() != 1 {
-                return Err("Factor must return exactly one row per input bar".to_owned());
-            }
-            let Some(values) = rows.pop().expect("Factor result length was checked") else {
-                continue;
-            };
-            let mut count = 0;
-            for value in values {
-                if !value.value.is_finite()
-                    || !factor.output_names.contains(&value.name)
-                    || outputs
-                        .insert((factor.alias.clone(), value.name), value.value)
-                        .is_some()
-                {
-                    return Err(
-                        "Factor returned an invalid, unknown, or duplicate output".to_owned()
-                    );
-                }
-                count += 1;
-            }
-            if count != factor.output_names.len() {
-                return Err("Factor did not return every declared output".to_owned());
-            }
-        }
-        Ok(outputs)
-    }
-
-    fn process_strategy(&mut self, open_time_ms: i64, values: Vec<f64>) -> Result<String, String> {
-        let targets = self.strategy.process_strategy(vec![
-            strategy_abi::exports::adaq::strategy::api::FeatureFrame {
-                open_time_ms,
-                values,
-            },
-        ])?;
-        if targets.len() != 1 {
-            return Err("Strategy must return exactly one Target Exposure per frame".to_owned());
-        }
-        Ok(targets
-            .into_iter()
-            .next()
-            .expect("Strategy result length was checked"))
-    }
-}
-
-enum IndicatorState {
-    BuiltInSma(Sma),
-    FactorOutput { factor_alias: String, name: String },
-}
-
-fn indicator_states(bindings: &[FeatureBinding]) -> Vec<IndicatorState> {
-    bindings
-        .iter()
-        .map(|binding| match &binding.source {
-            FeatureSource::BuiltInSma { period } => IndicatorState::BuiltInSma(Sma::new(*period)),
-            FeatureSource::FactorOutput { factor_alias, name } => IndicatorState::FactorOutput {
-                factor_alias: factor_alias.clone(),
-                name: name.clone(),
-            },
-        })
-        .collect()
-}
-
-struct Sma {
-    period: usize,
-    values: VecDeque<Decimal>,
-    sum: Decimal,
-}
-
-impl Sma {
-    fn new(period: usize) -> Self {
-        Self {
-            period,
-            values: VecDeque::with_capacity(period),
-            sum: Decimal::ZERO,
-        }
-    }
-
-    fn push(&mut self, close: Decimal) -> Result<Option<f64>, String> {
-        self.sum = self
-            .sum
-            .checked_add(close)
-            .ok_or_else(|| "SMA overflowed Decimal".to_owned())?;
-        self.values.push_back(close);
-        if self.values.len() > self.period {
-            self.sum = self
-                .sum
-                .checked_sub(self.values.pop_front().expect("SMA window is non-empty"))
-                .ok_or_else(|| "SMA overflowed Decimal".to_owned())?;
-        }
-        if self.values.len() < self.period {
-            return Ok(None);
-        }
-        self.sum
-            .checked_div(Decimal::from(self.period as u64))
-            .and_then(|value| value.to_f64())
-            .filter(|value| value.is_finite())
-            .map(Some)
-            .ok_or_else(|| "SMA cannot be represented as a finite analytical value".to_owned())
-    }
 }
 
 fn validate_target(raw: &str, mode: PositionMode) -> Result<Decimal, String> {
@@ -432,19 +213,18 @@ fn validate_target(raw: &str, mode: PositionMode) -> Result<Decimal, String> {
 mod tests {
     use std::{path::PathBuf, str::FromStr};
 
+    use adaq_component_tooling::{ComponentManifest, EngineIdentity, validate_and_freeze};
+
     use super::*;
 
-    fn fixture(name: &str) -> String {
+    fn fixture() -> String {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("fixtures")
-            .join(name)
-            .join("target/wasm32-unknown-unknown/debug")
-            .join(format!("m1_{name}_fixture.wasm"))
+            .join("fixtures/strategy/target/wasm32-unknown-unknown/debug/m1_strategy_fixture.wasm")
             .to_string_lossy()
             .into_owned()
     }
 
-    fn bar(open_time_ms: i64, close: &str) -> OhlcvBar {
+    fn bar(open_time_ms: i64, close: &str, quote_volume: &str) -> OhlcvBar {
         let close = Decimal::from_str(close).unwrap();
         OhlcvBar {
             open_time_ms,
@@ -453,83 +233,80 @@ mod tests {
             low: close,
             close,
             base_volume: Decimal::ONE,
-            quote_volume: close,
+            quote_volume: Decimal::from_str(quote_volume).unwrap(),
         }
     }
 
-    fn bindings() -> Vec<FeatureBinding> {
-        vec![
-            FeatureBinding {
-                slot_name: "change".to_owned(),
-                source: FeatureSource::FactorOutput {
-                    factor_alias: "factor".to_owned(),
-                    name: "close-change".to_owned(),
-                },
+    fn plan() -> FrozenIndicatorPlan {
+        let manifest = serde_json::from_str::<ComponentManifest>(
+            r#"{
+            "manifestSchemaVersion":"1.0.0",
+            "componentId":"00000000-0000-0000-0000-000000000000",
+            "version":"1.0.0",
+            "name":"Market Fixture",
+            "kind":"strategy",
+            "sdkVersion":"0.1.0",
+            "abiVersion":"1.0.0",
+            "featureSlots":[
+                {"name":"quote-volume","source":{"kind":"market","field":"quote-volume"}},
+                {"name":"close","source":{"kind":"market","field":"close"}}
+            ]
+        }"#,
+        )
+        .unwrap();
+        validate_and_freeze(
+            &manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
             },
-            FeatureBinding {
-                slot_name: "sma-2".to_owned(),
-                source: FeatureSource::BuiltInSma { period: 2 },
-            },
-        ]
+        )
+        .unwrap()
     }
 
     #[test]
-    fn run_is_reproducible_and_rewarms_after_a_gap() {
-        let factor = fixture("factor");
-        let strategy = fixture("strategy");
-        let bars = vec![bar(1, "10"), bar(2, "11"), bar(4, "9"), bar(5, "8")];
-        let gaps = vec![BarGap {
-            start_time_ms: 3,
-            end_time_ms: 4,
-        }];
-        let bindings = bindings();
-        let factors = [FactorRunComponent {
-            alias: "factor",
-            path: &factor,
-            parameters: &[],
-        }];
+    fn market_plan_preserves_slot_order_and_target_alignment() {
+        let plan = plan();
+        let strategy = fixture();
+        let bars = vec![bar(1, "10", "5"), bar(2, "11", "20")];
         let request = RunRequest {
-            factors: &factors,
             strategy_path: &strategy,
             strategy_parameters: &[],
             bars: &bars,
-            gaps: &gaps,
-            feature_bindings: &bindings,
+            gaps: &[],
+            plan: &plan,
             position_mode: PositionMode::LongOnly,
             limits: RunLimits::default(),
         };
-
-        let first = RunEngine::execute(&request).unwrap();
+        let result = RunEngine::execute(&request).unwrap();
         let replay = RunEngine::execute(&request).unwrap();
-
-        assert_eq!(first, replay);
+        assert_eq!(result, replay);
+        assert_eq!(result.plan_hash, plan.plan_hash());
         assert_eq!(
-            first.decisions,
+            result.decisions,
             [
                 TargetDecision {
-                    open_time_ms: 2,
+                    open_time_ms: 1,
                     target_exposure: Decimal::ONE,
                 },
                 TargetDecision {
-                    open_time_ms: 5,
+                    open_time_ms: 2,
                     target_exposure: Decimal::ZERO,
                 },
             ]
         );
-        assert_eq!(
-            first.skipped_bars,
-            [
-                SkippedBar {
-                    open_time_ms: 1,
-                    reason: SkippedReason::Warmup,
-                },
-                SkippedBar {
-                    open_time_ms: 4,
-                    reason: SkippedReason::Warmup,
-                },
-            ]
-        );
-        assert_eq!(first.gap_resets, gaps);
+    }
+
+    #[test]
+    fn market_engine_build_identity_is_source_and_target_specific() {
+        let identity = market_engine_build_id();
+        assert_eq!(identity, market_engine_build_id());
+        assert!(identity.starts_with(&format!(
+            "market-only-{}-{}-",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )));
+        assert_eq!(identity.rsplit('-').next().unwrap().len(), 64);
     }
 
     #[test]
@@ -541,74 +318,5 @@ mod tests {
         assert!(validate_target("-0.5", PositionMode::LongOnly).is_err());
         assert!(validate_target("1.0000000001", PositionMode::LongShort).is_err());
         assert!(validate_target("NaN", PositionMode::LongShort).is_err());
-    }
-
-    #[test]
-    fn run_rejects_unknown_factor_outputs_and_limit_violations() {
-        let factor = fixture("factor");
-        let strategy = fixture("strategy");
-        let bars = vec![bar(1, "10"), bar(2, "11")];
-        let unknown = vec![FeatureBinding {
-            slot_name: "unknown".to_owned(),
-            source: FeatureSource::FactorOutput {
-                factor_alias: "factor".to_owned(),
-                name: "missing".to_owned(),
-            },
-        }];
-        let factors = [FactorRunComponent {
-            alias: "factor",
-            path: &factor,
-            parameters: &[],
-        }];
-        let request = RunRequest {
-            factors: &factors,
-            strategy_path: &strategy,
-            strategy_parameters: &[],
-            bars: &bars,
-            gaps: &[],
-            feature_bindings: &unknown,
-            position_mode: PositionMode::LongOnly,
-            limits: RunLimits::default(),
-        };
-        assert!(
-            RunEngine::execute(&request)
-                .unwrap_err()
-                .contains("Unknown Factor output")
-        );
-
-        let bindings = bindings();
-        let limited = RunRequest {
-            feature_bindings: &bindings,
-            limits: RunLimits {
-                max_bars: 1,
-                ..RunLimits::default()
-            },
-            ..request
-        };
-        assert!(
-            RunEngine::execute(&limited)
-                .unwrap_err()
-                .contains("exceeding")
-        );
-
-        let fuel_limited = RunRequest {
-            feature_bindings: &bindings,
-            limits: RunLimits {
-                fuel_per_call: 1,
-                ..RunLimits::default()
-            },
-            ..request
-        };
-        assert!(RunEngine::execute(&fuel_limited).is_err());
-
-        let memory_limited = RunRequest {
-            feature_bindings: &bindings,
-            limits: RunLimits {
-                memory_bytes: 1,
-                ..RunLimits::default()
-            },
-            ..request
-        };
-        assert!(RunEngine::execute(&memory_limited).is_err());
     }
 }

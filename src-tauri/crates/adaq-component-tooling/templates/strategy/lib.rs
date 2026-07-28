@@ -1,11 +1,13 @@
 use adaq_component_sdk::strategy::{
     FeatureFrame, FeatureSlot, Guest, GuestInstance, Instance as StrategyInstance, ParameterValue,
+    SlotIndexes,
 };
 
 struct Component;
 
 struct Instance {
-    slots: usize,
+    quote_volume: usize,
+    close: usize,
 }
 
 impl Guest for Component {
@@ -15,8 +17,10 @@ impl Guest for Component {
         feature_slots: Vec<FeatureSlot>,
         _parameters: Vec<ParameterValue>,
     ) -> Result<StrategyInstance, String> {
+        let slots = SlotIndexes::bind(&feature_slots)?;
         Ok(StrategyInstance::new(Instance {
-            slots: feature_slots.len(),
+            quote_volume: slots.index("quote-volume")?,
+            close: slots.index("close")?,
         }))
     }
 }
@@ -26,10 +30,15 @@ impl GuestInstance for Instance {
         frames
             .into_iter()
             .map(|frame| {
-                if frame.values.len() != self.slots {
+                if frame.values.len() <= self.close.max(self.quote_volume) {
                     return Err("feature slot count mismatch".to_owned());
                 }
-                Ok(if frame.values[0] >= 0.0 { "1" } else { "0" }.to_owned())
+                Ok(if frame.values[self.close] > frame.values[self.quote_volume] {
+                    "1"
+                } else {
+                    "0"
+                }
+                .to_owned())
             })
             .collect()
     }

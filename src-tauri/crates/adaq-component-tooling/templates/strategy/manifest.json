@@ -1,9 +1,13 @@
 {
+  "manifestSchemaVersion": "1.0.0",
   "componentId": "{{component_id}}",
   "version": "0.1.0",
   "name": "{{display_name}}",
   "kind": "strategy",
   "sdkVersion": "{{sdk_version}}",
   "abiVersion": "1.0.0",
-  "inputNames": ["signal"]
+  "featureSlots": [
+    {"name": "quote-volume", "source": {"kind": "market", "field": "quote-volume"}},
+    {"name": "close", "source": {"kind": "market", "field": "close"}}
+  ]
 }

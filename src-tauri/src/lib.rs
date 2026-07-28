@@ -554,20 +554,25 @@ mod tests {
         loader
             .load_strategy(
                 &fixture("strategy"),
-                vec![strategy_abi::exports::adaq::strategy::api::FeatureSlot {
-                    name: "close-change".to_owned(),
-                }],
+                ["quote-volume", "close"]
+                    .into_iter()
+                    .map(
+                        |name| strategy_abi::exports::adaq::strategy::api::FeatureSlot {
+                            name: name.to_owned(),
+                        },
+                    )
+                    .collect(),
             )
             .unwrap();
         let targets = loader
             .process_strategy(vec![
                 strategy_abi::exports::adaq::strategy::api::FeatureFrame {
                     open_time_ms: 1,
-                    values: vec![-1.0],
+                    values: vec![2.0, 1.0],
                 },
                 strategy_abi::exports::adaq::strategy::api::FeatureFrame {
                     open_time_ms: 2,
-                    values: vec![1.0],
+                    values: vec![1.0, 2.0],
                 },
             ])
             .unwrap();
