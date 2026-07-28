@@ -1,8 +1,8 @@
-use adaq_component_sdk::{decimal_to_f64, parse_decimal};
 use adaq_component_sdk::factor::{
     ClosedBar, FactorSchema, Guest, GuestInstance, Instance as FactorInstance, NamedScalar,
     ParameterValue,
 };
+use adaq_component_sdk::{decimal_to_f64, parse_decimal};
 use core::cell::Cell;
 
 struct Component;
@@ -29,13 +29,20 @@ impl Guest for Component {
 }
 
 impl GuestInstance for Instance {
-    fn process(
-        &self,
-        bars: Vec<ClosedBar>,
-    ) -> Result<Vec<Option<Vec<NamedScalar>>>, String> {
+    fn process(&self, bars: Vec<ClosedBar>) -> Result<Vec<Option<Vec<NamedScalar>>>, String> {
         bars.into_iter()
             .map(|bar| {
                 let close = parse_decimal(&bar.close)?;
+                if close.is_zero() {
+                    self.previous_close.set(Some(close));
+                    return Ok(None);
+                }
+                if parse_decimal(&bar.base_volume)?.is_zero() {
+                    return Ok(Some(vec![NamedScalar {
+                        name: "wrong-output".to_owned(),
+                        value: 0.0,
+                    }]));
+                }
                 let output = match self.previous_close.get() {
                     Some(previous_close) => Some(vec![NamedScalar {
                         name: "close-change".to_owned(),

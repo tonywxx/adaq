@@ -46,6 +46,7 @@ pub(crate) struct TargetDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RunResult {
     pub plan_hash: String,
+    pub bars: Vec<OhlcvBar>,
     pub decisions: Vec<TargetDecision>,
     pub gap_resets: Vec<BarGap>,
     pub pauses: Vec<RunPause>,
@@ -128,17 +129,23 @@ pub(crate) struct RunEngine;
 
 impl RunEngine {
     pub fn execute(request: &RunRequest<'_>) -> Result<RunResult, RunError> {
-        validate_request(request)
+        let bars = normalize_closed_bars(request.bars)?;
+        let request = RunRequest {
+            bars: &bars,
+            ..*request
+        };
+        validate_request(&request)
             .map_err(|error| RunError::host("invalid-run-request", RunStage::Validation, error))?;
         let mut result = RunResult {
             plan_hash: request.plan.plan_hash().to_owned(),
-            decisions: Vec::with_capacity(request.bars.len()),
+            bars: bars.clone(),
+            decisions: Vec::with_capacity(bars.len()),
             gap_resets: Vec::new(),
             pauses: Vec::new(),
         };
         let mut start = 0;
         let mut next_gap = 0;
-        while start < request.bars.len() {
+        while start < bars.len() {
             let end = request
                 .gaps
                 .get(next_gap)
@@ -148,16 +155,14 @@ impl RunEngine {
                         .iter()
                         .position(|bar| bar.open_time_ms >= gap.start_time_ms)
                 })
-                .unwrap_or(request.bars.len());
+                .unwrap_or(bars.len());
             if end > start {
-                execute_segment(request, &request.bars[start..end], &mut result)?;
+                execute_segment(&request, &bars[start..end], &mut result)?;
             }
             start = end;
             if let Some(gap) = request.gaps.get(next_gap).copied() {
                 result.gap_resets.push(gap);
-                while start < request.bars.len()
-                    && request.bars[start].open_time_ms < gap.end_time_ms
-                {
+                while start < bars.len() && bars[start].open_time_ms < gap.end_time_ms {
                     start += 1;
                 }
                 next_gap += 1;
@@ -177,6 +182,7 @@ fn execute_segment(
     let builtin_values = evaluate_builtins(request, bars)?;
     let factor_values = evaluate_factors(request, bars)
         .map_err(|error| RunError::host("factor-evaluation-failed", RunStage::Factor, error))?;
+    let mut frames = Vec::with_capacity(bars.len());
     for (index, bar) in bars.iter().enumerate() {
         if index < request.plan.effective_warmup_bars() as usize {
             result.pauses.push(RunPause {
@@ -246,36 +252,65 @@ fn execute_segment(
             });
             continue;
         }
+        frames.push(strategy_abi::exports::adaq::strategy::api::FeatureFrame {
+            open_time_ms: bar.open_time_ms,
+            values,
+        });
+    }
+    for frames in frames.chunks(4096) {
         let targets = strategy
-            .process_strategy(vec![
-                strategy_abi::exports::adaq::strategy::api::FeatureFrame {
-                    open_time_ms: bar.open_time_ms,
-                    values,
-                },
-            ])
+            .process_strategy(frames.to_vec())
             .map_err(|error| {
                 RunError::host("strategy-guest-error", RunStage::Strategy, error)
-                    .at_bar(bar.open_time_ms)
+                    .at_bar(frames[0].open_time_ms)
             })?;
-        if targets.len() != 1 {
+        if targets.len() != frames.len() {
             return Err(RunError::host(
                 "invalid-strategy-output-count",
                 RunStage::Strategy,
-                "Strategy must return exactly one Target Exposure per frame",
+                "Strategy must return exactly one Target Exposure per Feature Frame",
             )
-            .at_bar(bar.open_time_ms));
+            .at_bar(frames[0].open_time_ms));
         }
-        result.decisions.push(TargetDecision {
-            open_time_ms: bar.open_time_ms,
-            target_exposure: validate_target(&targets[0], request.position_mode).map_err(
-                |error| {
-                    RunError::host("invalid-target-exposure", RunStage::Strategy, error)
-                        .at_bar(bar.open_time_ms)
-                },
-            )?,
-        });
+        for (frame, target) in frames.iter().zip(targets) {
+            result.decisions.push(TargetDecision {
+                open_time_ms: frame.open_time_ms,
+                target_exposure: validate_target(&target, request.position_mode).map_err(
+                    |error| {
+                        RunError::host("invalid-target-exposure", RunStage::Strategy, error)
+                            .at_bar(frame.open_time_ms)
+                    },
+                )?,
+            });
+        }
     }
     Ok(())
+}
+
+fn normalize_closed_bars(bars: &[OhlcvBar]) -> Result<Vec<OhlcvBar>, RunError> {
+    let mut normalized: Vec<OhlcvBar> = Vec::with_capacity(bars.len());
+    for bar in bars {
+        match normalized.last() {
+            Some(previous) if bar.open_time_ms < previous.open_time_ms => {
+                return Err(RunError::host(
+                    "invalid-run-request",
+                    RunStage::Validation,
+                    "Closed Bars must be ascending",
+                ));
+            }
+            Some(previous) if bar.open_time_ms == previous.open_time_ms && bar != previous => {
+                return Err(RunError::host(
+                    "conflicting-closed-bars",
+                    RunStage::Validation,
+                    "Closed Bars with the same open time conflict",
+                )
+                .at_bar(bar.open_time_ms));
+            }
+            Some(previous) if bar.open_time_ms == previous.open_time_ms => {}
+            _ => normalized.push(bar.clone()),
+        }
+    }
+    Ok(normalized)
 }
 
 fn evaluate_factors(
@@ -777,6 +812,13 @@ mod tests {
             .into_owned()
     }
 
+    fn mixed_strategy_fixture() -> String {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/mixed-strategy/target/wasm32-unknown-unknown/debug/m5_mixed_strategy_fixture.wasm")
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn factor_fixture() -> String {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/factor/target/wasm32-unknown-unknown/debug/m1_factor_fixture.wasm")
@@ -856,6 +898,46 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn identical_closed_bars_are_collapsed_but_conflicts_fail() {
+        let plan = plan();
+        let strategy = fixture();
+        let first = bar(1, "10", "5");
+        let request = RunRequest {
+            strategy_path: &strategy,
+            strategy_parameters: &[],
+            factors: &[],
+            bars: &[first.clone(), first.clone(), bar(2, "11", "20")],
+            gaps: &[],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits::default(),
+        };
+        assert_eq!(
+            RunEngine::execute(&request).unwrap().decisions,
+            [
+                TargetDecision {
+                    open_time_ms: 1,
+                    target_exposure: Decimal::ONE,
+                },
+                TargetDecision {
+                    open_time_ms: 2,
+                    target_exposure: Decimal::ZERO,
+                },
+            ]
+        );
+        assert_eq!(RunEngine::execute(&request).unwrap().bars.len(), 2);
+
+        let conflicting = bar(1, "12", "5");
+        let error = RunEngine::execute(&RunRequest {
+            bars: &[first, conflicting],
+            ..request
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "conflicting-closed-bars");
+        assert_eq!(error.stage, RunStage::Validation);
     }
 
     #[test]
@@ -940,6 +1022,331 @@ mod tests {
                     target_exposure: Decimal::ZERO
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn post_warmup_missing_factor_input_pauses_without_advancing_strategy() {
+        let strategy_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/external-strategy/manifest.json"
+        ))
+        .unwrap();
+        let factor_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/factor/manifest.json"
+        ))
+        .unwrap();
+        let plan = validate_and_freeze_with_factors(
+            &strategy_manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+            &[FactorInstancePlanInput {
+                alias: "change",
+                manifest: &factor_manifest,
+                parameters: vec![ComponentParameterValue::Integer(1)],
+            }],
+        )
+        .unwrap();
+        let strategy = external_strategy_fixture();
+        let factor = factor_fixture();
+        let factors = [FactorRunRequest {
+            alias: "change",
+            path: &factor,
+        }];
+        let bars = vec![
+            bar(1, "10", "1"),
+            bar(2, "11", "1"),
+            bar(3, "0", "1"),
+            bar(4, "2", "1"),
+        ];
+        let result = RunEngine::execute(&RunRequest {
+            strategy_path: &strategy,
+            strategy_parameters: &[],
+            factors: &factors,
+            bars: &bars,
+            gaps: &[],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits::default(),
+        })
+        .unwrap();
+        assert_eq!(
+            result.pauses,
+            [
+                RunPause {
+                    open_time_ms: 1,
+                    reason: RunPauseReason::Warmup,
+                },
+                RunPause {
+                    open_time_ms: 3,
+                    reason: RunPauseReason::MissingInput {
+                        slot: "close-change".into(),
+                        source: "external:change:close-change".into(),
+                    },
+                },
+            ]
+        );
+        assert_eq!(
+            result
+                .decisions
+                .iter()
+                .map(|decision| decision.open_time_ms)
+                .collect::<Vec<_>>(),
+            [2, 4]
+        );
+    }
+
+    #[test]
+    fn fatal_factor_output_fails_without_a_partial_run_result() {
+        let strategy_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/external-strategy/manifest.json"
+        ))
+        .unwrap();
+        let factor_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/factor/manifest.json"
+        ))
+        .unwrap();
+        let plan = validate_and_freeze_with_factors(
+            &strategy_manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+            &[FactorInstancePlanInput {
+                alias: "change",
+                manifest: &factor_manifest,
+                parameters: vec![ComponentParameterValue::Integer(1)],
+            }],
+        )
+        .unwrap();
+        let strategy = external_strategy_fixture();
+        let factor = factor_fixture();
+        let factors = [FactorRunRequest {
+            alias: "change",
+            path: &factor,
+        }];
+        let mut fatal = bar(2, "11", "1");
+        fatal.base_volume = Decimal::ZERO;
+        let error = RunEngine::execute(&RunRequest {
+            strategy_path: &strategy,
+            strategy_parameters: &[],
+            factors: &factors,
+            bars: &[bar(1, "10", "1"), fatal],
+            gaps: &[],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits::default(),
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "factor-evaluation-failed");
+        assert_eq!(error.stage, RunStage::Factor);
+    }
+
+    #[test]
+    fn mixed_slots_restart_warmup_and_component_state_at_each_gap() {
+        let strategy_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/mixed-strategy/manifest.json"
+        ))
+        .unwrap();
+        let factor_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/factor/manifest.json"
+        ))
+        .unwrap();
+        let plan = validate_and_freeze_with_factors(
+            &strategy_manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+            &[FactorInstancePlanInput {
+                alias: "change",
+                manifest: &factor_manifest,
+                parameters: vec![ComponentParameterValue::Integer(1)],
+            }],
+        )
+        .unwrap();
+        assert_eq!(plan.effective_warmup_bars(), 1);
+        assert_eq!(
+            plan.slot_names().collect::<Vec<_>>(),
+            ["close-change", "ema", "quote-volume"]
+        );
+        let strategy = mixed_strategy_fixture();
+        let factor = factor_fixture();
+        let factors = [FactorRunRequest {
+            alias: "change",
+            path: &factor,
+        }];
+        let bars = vec![
+            bar(1, "10", "1"),
+            bar(2, "11", "1"),
+            bar(3, "12", "1"),
+            bar(6, "20", "1"),
+            bar(7, "21", "1"),
+            bar(8, "22", "1"),
+            bar(11, "30", "1"),
+            bar(12, "31", "1"),
+            bar(13, "32", "1"),
+        ];
+        let gap = BarGap {
+            start_time_ms: 4,
+            end_time_ms: 6,
+        };
+        let second_gap = BarGap {
+            start_time_ms: 9,
+            end_time_ms: 11,
+        };
+        let result = RunEngine::execute(&RunRequest {
+            strategy_path: &strategy,
+            strategy_parameters: &[],
+            factors: &factors,
+            bars: &bars,
+            gaps: &[gap, second_gap],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits::default(),
+        })
+        .unwrap();
+        assert_eq!(result.gap_resets, [gap, second_gap]);
+        assert_eq!(
+            result
+                .pauses
+                .iter()
+                .map(|pause| pause.open_time_ms)
+                .collect::<Vec<_>>(),
+            [1, 6, 11]
+        );
+        assert_eq!(
+            result.decisions,
+            [
+                TargetDecision {
+                    open_time_ms: 2,
+                    target_exposure: Decimal::ONE,
+                },
+                TargetDecision {
+                    open_time_ms: 3,
+                    target_exposure: Decimal::ZERO,
+                },
+                TargetDecision {
+                    open_time_ms: 7,
+                    target_exposure: Decimal::ONE,
+                },
+                TargetDecision {
+                    open_time_ms: 8,
+                    target_exposure: Decimal::ZERO,
+                },
+                TargetDecision {
+                    open_time_ms: 12,
+                    target_exposure: Decimal::ONE,
+                },
+                TargetDecision {
+                    open_time_ms: 13,
+                    target_exposure: Decimal::ZERO,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn fatal_strategy_failure_cannot_return_a_partial_run_result() {
+        let strategy_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/mixed-strategy/manifest.json"
+        ))
+        .unwrap();
+        let factor_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/factor/manifest.json"
+        ))
+        .unwrap();
+        let plan = validate_and_freeze_with_factors(
+            &strategy_manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+            &[FactorInstancePlanInput {
+                alias: "change",
+                manifest: &factor_manifest,
+                parameters: vec![ComponentParameterValue::Integer(1)],
+            }],
+        )
+        .unwrap();
+        let strategy = mixed_strategy_fixture();
+        let factor = factor_fixture();
+        let factors = [FactorRunRequest {
+            alias: "change",
+            path: &factor,
+        }];
+        let error = RunEngine::execute(&RunRequest {
+            strategy_path: &strategy,
+            strategy_parameters: &[],
+            factors: &factors,
+            bars: &[bar(1, "10", "1"), bar(2, "11", "0")],
+            gaps: &[],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits::default(),
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "strategy-guest-error");
+        assert_eq!(error.stage, RunStage::Strategy);
+    }
+
+    #[test]
+    fn factor_and_strategy_chunk_boundaries_preserve_closed_bar_alignment() {
+        let strategy_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/external-strategy/manifest.json"
+        ))
+        .unwrap();
+        let factor_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/factor/manifest.json"
+        ))
+        .unwrap();
+        let plan = validate_and_freeze_with_factors(
+            &strategy_manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+            &[FactorInstancePlanInput {
+                alias: "change",
+                manifest: &factor_manifest,
+                parameters: vec![ComponentParameterValue::Integer(1)],
+            }],
+        )
+        .unwrap();
+        let strategy = external_strategy_fixture();
+        let factor = factor_fixture();
+        let factors = [FactorRunRequest {
+            alias: "change",
+            path: &factor,
+        }];
+        let bars = (0..4098)
+            .map(|time| bar(time, &(time + 1).to_string(), "1"))
+            .collect::<Vec<_>>();
+        let result = RunEngine::execute(&RunRequest {
+            strategy_path: &strategy,
+            strategy_parameters: &[],
+            factors: &factors,
+            bars: &bars,
+            gaps: &[],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits {
+                fuel_per_call: 100_000_000,
+                memory_bytes: 256 * 1024 * 1024,
+                ..RunLimits::default()
+            },
+        })
+        .unwrap();
+        assert_eq!(result.pauses.len(), 1);
+        assert_eq!(result.decisions.len(), 4097);
+        assert_eq!(result.decisions.first().unwrap().open_time_ms, 1);
+        assert_eq!(result.decisions.last().unwrap().open_time_ms, 4097);
+        assert!(
+            result
+                .decisions
+                .iter()
+                .all(|decision| decision.target_exposure == Decimal::ONE)
         );
     }
 

@@ -910,6 +910,7 @@ fn execute_backtest(
         limits: RunLimits::default(),
     })
     .map_err(|error| error.to_string())?;
+    let bars = engine_result.bars;
     let decisions = engine_result
         .decisions
         .into_iter()
