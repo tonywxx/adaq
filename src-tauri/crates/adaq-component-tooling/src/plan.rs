@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, fmt::Write as _};
 
 use adaq_indicator_engine::{
-    IndicatorEngine, IndicatorRequest, MarketField as EngineMarketField, ParameterValue,
+    EngineIdentity as NativeEngineIdentity, IndicatorEngine, IndicatorRequest,
+    MarketField as EngineMarketField, ParameterValue,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -31,7 +32,33 @@ pub struct FactorInstancePlanInput<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineIdentity {
+    pub engine_version: String,
+    pub ta_lib_version: String,
+    pub ta_source_sha256: String,
+    pub catalog_version: String,
+    pub wrapper_sha256: String,
+    pub target_triple: String,
+    pub compiler_and_flags_sha256: String,
     pub engine_build_id: String,
+}
+
+impl From<&NativeEngineIdentity> for EngineIdentity {
+    fn from(identity: &NativeEngineIdentity) -> Self {
+        Self {
+            engine_version: identity.engine_version.into(),
+            ta_lib_version: identity.ta_lib_version.into(),
+            ta_source_sha256: identity.ta_source_sha256.into(),
+            catalog_version: identity.catalog_version.into(),
+            wrapper_sha256: identity.wrapper_sha256.into(),
+            target_triple: identity.target_triple.into(),
+            compiler_and_flags_sha256: identity.compiler_and_flags_sha256.into(),
+            engine_build_id: identity.build_id.into(),
+        }
+    }
+}
+
+pub fn native_engine_identity() -> Result<EngineIdentity, adaq_indicator_engine::EngineError> {
+    IndicatorEngine::initialize().map(|engine| engine.identity().into())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +115,10 @@ struct PlanContent {
     catalog_version: String,
     engine_version: String,
     ta_lib_version: String,
+    ta_source_sha256: String,
+    wrapper_sha256: String,
+    target_triple: String,
+    compiler_and_flags_sha256: String,
     engine_build_id: String,
     slots: Vec<FrozenSlot>,
     #[serde(default)]
@@ -210,6 +241,12 @@ impl FrozenIndicatorPlan {
     }
 
     pub fn load(bytes: &[u8]) -> Result<Self, PlanLoadError> {
+        let identity =
+            native_engine_identity().map_err(|_| load_error("unsupported-engine-identity"))?;
+        Self::load_for_engine(bytes, &identity)
+    }
+
+    pub fn load_for_engine(bytes: &[u8], identity: &EngineIdentity) -> Result<Self, PlanLoadError> {
         let document = serde_json::from_slice::<PlanDocument>(bytes)
             .map_err(|_| load_error("invalid-plan-json"))?;
         if document.plan_hash
@@ -224,13 +261,23 @@ impl FrozenIndicatorPlan {
             || document.content.engine_version != ENGINE_VERSION
             || document.content.ta_lib_version != TA_LIB_VERSION
             || !is_sha256(&document.content.strategy_package_sha256)
-            || document.content.engine_build_id.is_empty()
             || document.content.slots.is_empty()
             || document.content.slots.len() > MAX_FEATURE_SLOTS
             || document.content.factors.len() > MAX_FACTOR_INSTANCES
             || document.content.effective_warmup_bars > MAX_EFFECTIVE_WARMUP_BARS
         {
             return Err(load_error("invalid-plan-contract"));
+        }
+        if document.content.catalog_version != identity.catalog_version
+            || document.content.engine_version != identity.engine_version
+            || document.content.ta_lib_version != identity.ta_lib_version
+            || document.content.ta_source_sha256 != identity.ta_source_sha256
+            || document.content.wrapper_sha256 != identity.wrapper_sha256
+            || document.content.target_triple != identity.target_triple
+            || document.content.compiler_and_flags_sha256 != identity.compiler_and_flags_sha256
+            || document.content.engine_build_id != identity.engine_build_id
+        {
+            return Err(load_error("unsupported-engine-identity"));
         }
         let mut names = std::collections::HashSet::new();
         let mut factor_aliases = std::collections::HashSet::new();
@@ -382,9 +429,9 @@ pub fn validate_and_freeze_with_factors_and_parameters(
             Some("strategy-package-sha256"),
         ));
     }
-    if identity.engine_build_id.is_empty() {
+    if !valid_engine_identity(identity) {
         issues.push(issue(
-            "invalid-engine-build-id",
+            "invalid-engine-identity",
             None,
             None,
             Some("engine-build-id"),
@@ -581,6 +628,10 @@ pub fn validate_and_freeze_with_factors_and_parameters(
         catalog_version: CATALOG_VERSION.into(),
         engine_version: ENGINE_VERSION.into(),
         ta_lib_version: TA_LIB_VERSION.into(),
+        ta_source_sha256: identity.ta_source_sha256.clone(),
+        wrapper_sha256: identity.wrapper_sha256.clone(),
+        target_triple: identity.target_triple.clone(),
+        compiler_and_flags_sha256: identity.compiler_and_flags_sha256.clone(),
         engine_build_id: identity.engine_build_id.clone(),
         effective_warmup_bars: slots.iter().map(|slot| slot.warmup_bars).max().unwrap_or(0),
         slots,
@@ -603,6 +654,17 @@ pub fn validate_and_freeze_with_factors_and_parameters(
     let plan_hash =
         hash(&canonical_json(&content).expect("validated Plan content is serializable"));
     Ok(FrozenIndicatorPlan(PlanDocument { content, plan_hash }))
+}
+
+fn valid_engine_identity(identity: &EngineIdentity) -> bool {
+    identity.engine_version == ENGINE_VERSION
+        && identity.ta_lib_version == TA_LIB_VERSION
+        && identity.catalog_version == CATALOG_VERSION
+        && is_sha256(&identity.ta_source_sha256)
+        && is_sha256(&identity.wrapper_sha256)
+        && is_sha256(&identity.compiler_and_flags_sha256)
+        && is_sha256(&identity.engine_build_id)
+        && !identity.target_triple.is_empty()
 }
 
 fn canonical_json(value: &impl Serialize) -> Result<Vec<u8>, serde_json::Error> {
@@ -962,25 +1024,24 @@ mod tests {
         }
     }
 
+    fn identity() -> EngineIdentity {
+        native_engine_identity().unwrap()
+    }
+
     #[test]
     fn freezes_and_loads_a_canonical_market_plan_in_manifest_order() {
         let manifest = manifest(vec![
             market("quote-volume", MarketField::QuoteVolume),
             market("close", MarketField::Close),
         ]);
-        let identity = EngineIdentity {
-            engine_build_id: "test-build".into(),
-        };
+        let identity = identity();
         let package_hash = "a".repeat(64);
 
         let first = validate_and_freeze(&manifest, &package_hash, &identity).unwrap();
         let replay = validate_and_freeze(&manifest, &package_hash, &identity).unwrap();
 
         assert_eq!(first.plan_hash(), replay.plan_hash());
-        assert_eq!(
-            first.plan_hash(),
-            "249301d89bd5037ab89d2a92b66541088105849c0c09228fcd7b7fe46966682b"
-        );
+        assert!(is_sha256(first.plan_hash()));
         assert_eq!(
             first.slot_names().collect::<Vec<_>>(),
             ["quote-volume", "close"]
@@ -1022,14 +1083,7 @@ mod tests {
                 },
             },
         ]);
-        let error = validate_and_freeze(
-            &manifest,
-            &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
-        )
-        .unwrap_err();
+        let error = validate_and_freeze(&manifest, &"a".repeat(64), &identity()).unwrap_err();
         assert_eq!(
             error.issues,
             [issue(
@@ -1065,9 +1119,7 @@ mod tests {
         let plan = validate_and_freeze_with_factors_and_parameters(
             &manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &identity(),
             &[],
             &[("period".into(), "3".into())].into(),
         )
@@ -1087,14 +1139,7 @@ mod tests {
                 parameters: BTreeMap::new(),
             },
         }]);
-        let error = validate_and_freeze(
-            &manifest,
-            &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
-        )
-        .unwrap_err();
+        let error = validate_and_freeze(&manifest, &"a".repeat(64), &identity()).unwrap_err();
         assert_eq!(
             error.issues,
             [issue(
@@ -1117,14 +1162,7 @@ mod tests {
                 parameters: [("time-period".into(), serde_json::json!(2))].into(),
             },
         }]);
-        let plan = validate_and_freeze(
-            &manifest,
-            &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
-        )
-        .unwrap();
+        let plan = validate_and_freeze(&manifest, &"a".repeat(64), &identity()).unwrap();
         let mut document = plan.0;
         let FrozenSource::BuiltIn { indicator, .. } = &mut document.content.slots[0].source else {
             unreachable!()
@@ -1141,6 +1179,39 @@ mod tests {
     }
 
     #[test]
+    fn loading_rejects_a_plan_for_a_different_engine_build() {
+        let plan = validate_and_freeze(
+            &manifest(vec![market("close", MarketField::Close)]),
+            &"a".repeat(64),
+            &identity(),
+        )
+        .unwrap();
+        let mut other = identity();
+        other.engine_build_id = "b".repeat(64);
+        assert_eq!(
+            FrozenIndicatorPlan::load_for_engine(&plan.to_json(), &other)
+                .unwrap_err()
+                .code,
+            "unsupported-engine-identity"
+        );
+        for field in ["catalog", "engine", "ta-lib"] {
+            let mut other = identity();
+            match field {
+                "catalog" => other.catalog_version = "other-catalog".into(),
+                "engine" => other.engine_version = "other-engine".into(),
+                "ta-lib" => other.ta_lib_version = "other-ta-lib".into(),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                FrozenIndicatorPlan::load_for_engine(&plan.to_json(), &other)
+                    .unwrap_err()
+                    .code,
+                "unsupported-engine-identity"
+            );
+        }
+    }
+
+    #[test]
     fn builtin_defaults_and_equivalent_real_literals_freeze_identically() {
         let make = |parameters| {
             manifest(vec![FeatureSlotDefinition {
@@ -1153,9 +1224,7 @@ mod tests {
                 },
             }])
         };
-        let identity = EngineIdentity {
-            engine_build_id: "test-build".into(),
-        };
+        let identity = identity();
         let omitted =
             validate_and_freeze(&make(BTreeMap::new()), &"a".repeat(64), &identity).unwrap();
         let explicit_defaults = validate_and_freeze(
@@ -1301,16 +1370,7 @@ mod tests {
             ),
         ];
         let manifest = manifest(slots);
-        let freeze = || {
-            validate_and_freeze(
-                &manifest,
-                &"a".repeat(64),
-                &EngineIdentity {
-                    engine_build_id: "test-build".into(),
-                },
-            )
-            .unwrap_err()
-        };
+        let freeze = || validate_and_freeze(&manifest, &"a".repeat(64), &identity()).unwrap_err();
         let first = freeze();
         let replay = freeze();
         assert_eq!(first, replay);
@@ -1366,16 +1426,7 @@ mod tests {
                 },
             },
         ]);
-        assert!(
-            validate_and_freeze(
-                &valid,
-                &"a".repeat(64),
-                &EngineIdentity {
-                    engine_build_id: "test-build".into(),
-                }
-            )
-            .is_ok()
-        );
+        assert!(validate_and_freeze(&valid, &"a".repeat(64), &identity()).is_ok());
 
         let invalid = manifest(vec![FeatureSlotDefinition {
             name: "obv".into(),
@@ -1390,14 +1441,7 @@ mod tests {
                 parameters: BTreeMap::new(),
             },
         }]);
-        let error = validate_and_freeze(
-            &invalid,
-            &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
-        )
-        .unwrap_err();
+        let error = validate_and_freeze(&invalid, &"a".repeat(64), &identity()).unwrap_err();
         assert_eq!(error.issues[0].code, "invalid-indicator-input");
         assert_eq!(error.issues[0].field.as_deref(), Some("volume"));
     }
@@ -1423,14 +1467,7 @@ mod tests {
             default_value: "2.0".into(),
             allowed_values: vec![],
         }];
-        let error = validate_and_freeze(
-            &manifest,
-            &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
-        )
-        .unwrap_err();
+        let error = validate_and_freeze(&manifest, &"a".repeat(64), &identity()).unwrap_err();
         assert_eq!(error.issues[0].code, "mistyped-indicator-parameter");
         assert_eq!(error.issues[0].field.as_deref(), Some("deviations-up"));
     }
@@ -1440,14 +1477,8 @@ mod tests {
         let slots = (0..=MAX_FEATURE_SLOTS)
             .map(|index| market(&format!("slot-{index}"), MarketField::Close))
             .collect();
-        let error = validate_and_freeze(
-            &manifest(slots),
-            &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
-        )
-        .unwrap_err();
+        let error =
+            validate_and_freeze(&manifest(slots), &"a".repeat(64), &identity()).unwrap_err();
         assert!(
             error
                 .issues

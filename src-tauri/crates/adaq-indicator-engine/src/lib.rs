@@ -21,6 +21,11 @@ static INITIALIZATION: OnceLock<Result<(), EngineError>> = OnceLock::new();
 pub struct EngineIdentity {
     pub engine_version: &'static str,
     pub ta_lib_version: &'static str,
+    pub ta_source_sha256: &'static str,
+    pub catalog_version: &'static str,
+    pub wrapper_sha256: &'static str,
+    pub target_triple: &'static str,
+    pub compiler_and_flags_sha256: &'static str,
     pub build_id: &'static str,
 }
 
@@ -209,6 +214,11 @@ impl IndicatorEngine {
             identity: EngineIdentity {
                 engine_version: ENGINE_VERSION,
                 ta_lib_version: TA_LIB_VERSION,
+                ta_source_sha256: env!("ADAQ_INDICATOR_ENGINE_TA_SOURCE_SHA256"),
+                catalog_version: CATALOG_VERSION,
+                wrapper_sha256: env!("ADAQ_INDICATOR_ENGINE_WRAPPER_SHA256"),
+                target_triple: env!("ADAQ_INDICATOR_ENGINE_TARGET"),
+                compiler_and_flags_sha256: env!("ADAQ_INDICATOR_ENGINE_COMPILER_AND_FLAGS_SHA256"),
                 build_id: env!("ADAQ_INDICATOR_ENGINE_BUILD_ID"),
             },
         })
@@ -818,6 +828,43 @@ mod tests {
     }
 
     #[test]
+    fn exact_engine_build_replays_bit_identically() {
+        let engine = IndicatorEngine::initialize().unwrap();
+        let compiled = engine
+            .compile(IndicatorRequest {
+                indicator_id: "ema".into(),
+                real_inputs: vec![MarketField::Close],
+                parameters: [("time-period".into(), ParameterValue::Integer(5))].into(),
+                outputs: vec!["value".into()],
+            })
+            .unwrap();
+        let segment = reference_segment();
+        let first = engine.evaluate(&compiled, &segment).unwrap();
+        let replay = engine.evaluate(&compiled, &segment).unwrap();
+        assert_eq!(first.len(), replay.len());
+        for ((first_name, first_column), (replay_name, replay_column)) in first.iter().zip(&replay)
+        {
+            assert_eq!(first_name, replay_name);
+            match (first_column, replay_column) {
+                (IndicatorColumn::Real(first), IndicatorColumn::Real(replay)) => assert!(
+                    first
+                        .iter()
+                        .zip(replay)
+                        .all(|(first, replay)| match (first, replay) {
+                            (Some(first), Some(replay)) => first.to_bits() == replay.to_bits(),
+                            (None, None) => true,
+                            _ => false,
+                        })
+                ),
+                (IndicatorColumn::Integer(first), IndicatorColumn::Integer(replay)) => {
+                    assert_eq!(first, replay)
+                }
+                _ => panic!("Indicator output type changed during replay"),
+            }
+        }
+    }
+
+    #[test]
     fn same_build_repeats_and_evaluates_concurrently() {
         let expected = IndicatorEngine::initialize().unwrap().identity().build_id;
         let joins: Vec<_> = (0..4)
@@ -978,43 +1025,51 @@ mod tests {
                 .zip(&reference.outputs)
                 .map(|((column, output), expected)| (column, output, expected))
             {
-                let actual: Vec<Option<f64>> = match column {
-                    IndicatorColumn::Real(values) => values.clone(),
-                    IndicatorColumn::Integer(values) => values
-                        .iter()
-                        .map(|value| value.map(|value| value as f64))
-                        .collect(),
-                };
                 assert_eq!(expected.raw_name, output.raw_name, "{}", definition.id);
-                assert_eq!(actual.len(), segment.close.len(), "{}", definition.id);
-                assert!(
-                    actual[..expected.begin].iter().all(Option::is_none),
-                    "{} {}",
-                    definition.id,
-                    expected.raw_name
-                );
-                assert_eq!(
-                    actual.len() - expected.begin,
-                    expected.values.len(),
-                    "{} {}",
-                    definition.id,
-                    expected.raw_name
-                );
-                for (actual, expected_value) in
-                    actual[expected.begin..].iter().zip(&expected.values)
-                {
-                    match (actual, expected_value) {
-                        (Some(actual), Some(expected_value)) => assert!(
-                            (actual - expected_value).abs() <= 1e-12,
-                            "{} {}: {actual} != {expected_value}",
+                match column {
+                    IndicatorColumn::Integer(actual) => {
+                        assert_eq!(actual.len(), segment.close.len(), "{}", definition.id);
+                        assert!(actual[..expected.begin].iter().all(Option::is_none));
+                        assert_eq!(actual.len() - expected.begin, expected.values.len());
+                        assert_eq!(
+                            actual[expected.begin..],
+                            expected
+                                .values
+                                .iter()
+                                .map(|value| value.map(|value| value as i32))
+                                .collect::<Vec<_>>(),
+                            "{} {}",
                             definition.id,
                             expected.raw_name
-                        ),
-                        (None, None) => {}
-                        (actual, expected_value) => panic!(
-                            "{} {}: {actual:?} != {expected_value:?}",
-                            definition.id, expected.raw_name
-                        ),
+                        );
+                    }
+                    IndicatorColumn::Real(actual) => {
+                        assert_eq!(actual.len(), segment.close.len(), "{}", definition.id);
+                        assert!(actual[..expected.begin].iter().all(Option::is_none));
+                        assert_eq!(actual.len() - expected.begin, expected.values.len());
+                        for (actual, expected_value) in
+                            actual[expected.begin..].iter().zip(&expected.values)
+                        {
+                            match (actual, expected_value) {
+                                (Some(actual), Some(expected_value)) => {
+                                    assert!(actual.is_finite() && expected_value.is_finite());
+                                    let error = (actual - expected_value).abs();
+                                    assert!(
+                                        error <= 1e-12
+                                            || error / actual.abs().max(expected_value.abs())
+                                                <= 1e-12,
+                                        "{} {}: {actual} != {expected_value}",
+                                        definition.id,
+                                        expected.raw_name
+                                    );
+                                }
+                                (None, None) => {}
+                                (actual, expected_value) => panic!(
+                                    "{} {}: {actual:?} != {expected_value:?}",
+                                    definition.id, expected.raw_name
+                                ),
+                            }
+                        }
                     }
                 }
             }

@@ -3,6 +3,7 @@ use std::{env, fs, path::PathBuf, process::Command};
 use sha2::{Digest, Sha256};
 
 const SOURCE_SHA256: &str = "40e7a6978052fe5245771e430e6a4c4553b40038f8ac5a985a1540c4c1fa6ace";
+const CATALOG_VERSION: &str = "adaq-indicator-catalog@1.0.0";
 const XML_SHA256: &str = "70ed7629a577cb3803ed2882607070beb15592724ea4366735a9e0fc8413dec1";
 const ABSTRACT_HEADER_SHA256: &str =
     "babd4a971b3f404937b77bafaef3a34d5ce92370b0f5cf7de8917a1716bb394a";
@@ -20,6 +21,8 @@ fn main() {
     );
     println!("cargo:rerun-if-changed={}", archive.display());
     println!("cargo:rerun-if-changed=src/bindings.rs");
+    println!("cargo:rerun-if-env-changed=CC");
+    println!("cargo:rerun-if-env-changed=CFLAGS");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let source_root = out_dir.join("ta-lib-0.7.1");
@@ -59,9 +62,15 @@ fn main() {
     let compiler_identity = Command::new(compiler)
         .arg("--version")
         .output()
-        .ok()
-        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        .unwrap_or_else(|| compiler.into());
+        .map(|output| {
+            format!(
+                "{compiler}\n{}\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+                output.status
+            )
+        })
+        .unwrap_or_else(|_| compiler.into());
     let wrapper = fs::read(manifest_dir.join("src/bindings.rs")).unwrap();
     let build_flags = [
         cmake_cache_value(&cache, "CMAKE_C_FLAGS")
@@ -73,17 +82,28 @@ fn main() {
         env::var("CFLAGS").unwrap_or_default(),
     ]
     .join(";");
+    let compiler_and_flags_sha256 = hex(&Sha256::digest(
+        [compiler_identity.as_bytes(), build_flags.as_bytes()].concat(),
+    ));
+    let wrapper_sha256 = hex(&Sha256::digest(&wrapper));
+    let target = env::var("TARGET").unwrap();
     let build_id = hex(&Sha256::digest(
         [
             SOURCE_SHA256.as_bytes(),
-            &wrapper,
-            env::var("TARGET").unwrap().as_bytes(),
-            compiler_identity.as_bytes(),
-            build_flags.as_bytes(),
+            CATALOG_VERSION.as_bytes(),
+            wrapper_sha256.as_bytes(),
+            target.as_bytes(),
+            compiler_and_flags_sha256.as_bytes(),
             b"CMAKE_BUILD_TYPE=Release;BUILD_DEV_TOOLS=OFF",
         ]
         .concat(),
     ));
+    println!("cargo:rustc-env=ADAQ_INDICATOR_ENGINE_TA_SOURCE_SHA256={SOURCE_SHA256}");
+    println!("cargo:rustc-env=ADAQ_INDICATOR_ENGINE_WRAPPER_SHA256={wrapper_sha256}");
+    println!("cargo:rustc-env=ADAQ_INDICATOR_ENGINE_TARGET={target}");
+    println!(
+        "cargo:rustc-env=ADAQ_INDICATOR_ENGINE_COMPILER_AND_FLAGS_SHA256={compiler_and_flags_sha256}"
+    );
     println!("cargo:rustc-env=ADAQ_INDICATOR_ENGINE_BUILD_ID={build_id}");
 }
 

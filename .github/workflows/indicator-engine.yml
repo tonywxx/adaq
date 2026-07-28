@@ -1,0 +1,60 @@
+name: Indicator engine acceptance
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/indicator-engine.yml'
+      - 'src-tauri/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/indicator-engine.yml'
+      - 'src-tauri/**'
+
+jobs:
+  native-acceptance:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            runner: macos-14
+            architecture: arm64
+          - name: Windows x86_64
+            runner: windows-latest
+            architecture: x86_64
+          - name: Linux x86_64
+            runner: ubuntu-22.04
+            architecture: x86_64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Verify native architecture
+        if: matrix.architecture == 'arm64'
+        shell: bash
+        run: test "$(uname -m)" = arm64
+      - name: Install cargo-component
+        run: cargo install cargo-component --locked
+      - name: Build component fixtures
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          for fixture in strategy factor external-strategy mixed-strategy; do
+            cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
+          done
+      - name: Verify generated Catalog and independent vectors
+        working-directory: src-tauri
+        shell: bash
+        run: sh crates/adaq-indicator-engine/scripts/check_generated.sh
+      - name: Run official TA-Lib C regression suite
+        working-directory: src-tauri
+        shell: bash
+        run: sh crates/adaq-indicator-engine/scripts/verify_talib_regtest.sh
+      - name: Run Catalog and mixed-Run acceptance suites
+        working-directory: src-tauri
+        run: cargo test --workspace

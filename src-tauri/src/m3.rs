@@ -14,17 +14,15 @@ use ada_backtest_core::{
 };
 use ada_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
 use adaq_component_tooling::{
-    ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage, EngineIdentity,
+    ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
     FactorInstancePlanInput, ParameterDefinition, RunLimits, component_parameters,
-    validate_and_freeze_with_factors_and_parameters, verify_package,
+    native_engine_identity, validate_and_freeze_with_factors_and_parameters, verify_package,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::run_engine::{
-    FactorRunRequest, PositionMode, RunEngine, RunRequest, indicator_engine_build_id,
-};
+use crate::run_engine::{FactorRunRequest, PositionMode, RunEngine, RunRequest};
 
 pub struct M3State {
     root: PathBuf,
@@ -860,9 +858,7 @@ fn execute_backtest(
     let plan = validate_and_freeze_with_factors_and_parameters(
         &strategy.manifest,
         &strategy.archive_sha256,
-        &EngineIdentity {
-            engine_build_id: indicator_engine_build_id()?,
-        },
+        &native_engine_identity().map_err(|error| error.to_string())?,
         &factor_inputs,
         &frozen_strategy_parameters,
     )

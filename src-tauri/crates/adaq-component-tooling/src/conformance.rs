@@ -4,8 +4,8 @@ use adaq_component_sdk::host::{factor_abi, strategy_abi};
 use rust_decimal::Decimal;
 
 use crate::{
-    ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue, EngineIdentity,
-    ParameterType, WasmLoader, validate_and_freeze,
+    ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue, ParameterType,
+    WasmLoader, native_engine_identity, validate_and_freeze,
 };
 
 pub fn verify_package(package: &ComponentPackage) -> Result<(), String> {
@@ -102,9 +102,7 @@ fn verify_strategy(
     let plan = validate_and_freeze(
         &package.manifest,
         &package.archive_sha256,
-        &EngineIdentity {
-            engine_build_id: "conformance-market-only".into(),
-        },
+        &native_engine_identity().map_err(|error| error.to_string())?,
     )
     .map_err(|error| format!("Indicator Plan validation failed: {:?}", error.issues))?;
     let slots = plan

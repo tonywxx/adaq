@@ -442,12 +442,6 @@ fn validate_factor_row<'a>(
         .collect())
 }
 
-pub(crate) fn indicator_engine_build_id() -> Result<String, String> {
-    IndicatorEngine::initialize()
-        .map(|engine| engine.identity().build_id.into())
-        .map_err(|error| error.to_string())
-}
-
 fn load_strategy(request: &RunRequest<'_>) -> Result<WasmLoader, String> {
     let strategy = WasmLoader::with_limits(request.limits);
     strategy.load_strategy_with_parameters(
@@ -792,7 +786,7 @@ mod tests {
     use std::{path::PathBuf, str::FromStr};
 
     use adaq_component_tooling::{
-        ComponentManifest, EngineIdentity, FactorInstancePlanInput, validate_and_freeze,
+        ComponentManifest, FactorInstancePlanInput, native_engine_identity, validate_and_freeze,
         validate_and_freeze_with_factors,
     };
 
@@ -859,9 +853,7 @@ mod tests {
         validate_and_freeze(
             &manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &native_engine_identity().unwrap(),
         )
         .unwrap()
     }
@@ -942,12 +934,12 @@ mod tests {
 
     #[test]
     fn frozen_plan_uses_the_native_indicator_engine_build_identity() {
-        let identity = indicator_engine_build_id().unwrap();
-        assert_eq!(
-            identity,
-            IndicatorEngine::initialize().unwrap().identity().build_id
-        );
-        assert!(!identity.is_empty());
+        let identity = native_engine_identity().unwrap();
+        let engine = IndicatorEngine::initialize().unwrap();
+        let native = engine.identity();
+        assert_eq!(identity.engine_build_id, native.build_id);
+        assert_eq!(identity.ta_source_sha256, native.ta_source_sha256);
+        assert_eq!(identity.catalog_version, native.catalog_version);
     }
 
     #[test]
@@ -975,9 +967,7 @@ mod tests {
         let plan = validate_and_freeze_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &native_engine_identity().unwrap(),
             &[FactorInstancePlanInput {
                 alias: "change",
                 manifest: &factor_manifest,
@@ -1038,9 +1028,7 @@ mod tests {
         let plan = validate_and_freeze_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &native_engine_identity().unwrap(),
             &[FactorInstancePlanInput {
                 alias: "change",
                 manifest: &factor_manifest,
@@ -1110,9 +1098,7 @@ mod tests {
         let plan = validate_and_freeze_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &native_engine_identity().unwrap(),
             &[FactorInstancePlanInput {
                 alias: "change",
                 manifest: &factor_manifest,
@@ -1156,9 +1142,7 @@ mod tests {
         let plan = validate_and_freeze_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &native_engine_identity().unwrap(),
             &[FactorInstancePlanInput {
                 alias: "change",
                 manifest: &factor_manifest,
@@ -1260,9 +1244,7 @@ mod tests {
         let plan = validate_and_freeze_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &native_engine_identity().unwrap(),
             &[FactorInstancePlanInput {
                 alias: "change",
                 manifest: &factor_manifest,
@@ -1304,9 +1286,7 @@ mod tests {
         let plan = validate_and_freeze_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &native_engine_identity().unwrap(),
             &[FactorInstancePlanInput {
                 alias: "change",
                 manifest: &factor_manifest,
@@ -1363,9 +1343,7 @@ mod tests {
         let plan = validate_and_freeze(
             &manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &native_engine_identity().unwrap(),
         )
         .unwrap();
         assert_eq!(plan.effective_warmup_bars(), 0);
@@ -1406,9 +1384,7 @@ mod tests {
         let plan = validate_and_freeze(
             &manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &native_engine_identity().unwrap(),
         )
         .unwrap();
         let bars = (0..64)
@@ -1442,9 +1418,7 @@ mod tests {
         let plan = validate_and_freeze(
             &manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &native_engine_identity().unwrap(),
         )
         .unwrap();
         let bars = ["1", "2", "3", "2", "1"]
@@ -1504,9 +1478,7 @@ mod tests {
         let plan = validate_and_freeze(
             &manifest,
             &"a".repeat(64),
-            &EngineIdentity {
-                engine_build_id: "test-build".into(),
-            },
+            &native_engine_identity().unwrap(),
         )
         .unwrap();
         assert_eq!(
