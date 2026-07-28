@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt::Write as _,
     io::{Cursor, Read, Write},
 };
@@ -95,6 +96,10 @@ pub enum FeatureSlotSource {
     BuiltIn {
         indicator: String,
         output: String,
+        #[serde(default)]
+        inputs: BTreeMap<String, serde_json::Value>,
+        #[serde(default)]
+        parameters: BTreeMap<String, serde_json::Value>,
     },
     External {
         dependency_alias: String,

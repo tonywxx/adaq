@@ -1,13 +1,17 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use ada_data_core::{BarGap, OhlcvBar};
 use adaq_component_sdk::{decimal_to_f64, host::strategy_abi};
 use adaq_component_tooling::{
-    ComponentParameterValue, FrozenIndicatorPlan, FrozenSourceView, MarketField, RunLimits,
-    WasmLoader,
+    ComponentParameterValue, FrozenBuiltInParameter, FrozenIndicatorPlan, FrozenSourceView,
+    MarketField, RunLimits, WasmLoader, builtin_engine_market_field,
+};
+use adaq_indicator_engine::{
+    EngineError, IndicatorColumn, IndicatorEngine, IndicatorRequest, OhlcvSegment, ParameterValue,
 };
 use rust_decimal::Decimal;
-use sha2::{Digest, Sha256};
+
+const MAX_INDICATOR_OUTPUT_CELLS: usize = 16_777_216;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PositionMode {
@@ -59,11 +63,73 @@ pub(crate) enum RunPauseReason {
     MissingInput { slot: String, source: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunStage {
+    Validation,
+    BuiltInInput,
+    BuiltInCompile,
+    BuiltInEvaluate,
+    Factor,
+    FeatureFrame,
+    Strategy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RunError {
+    pub code: String,
+    pub stage: RunStage,
+    pub bar_open_time_ms: Option<i64>,
+    pub slot: Option<String>,
+    pub source: Option<String>,
+    pub ta_ret_code: Option<i32>,
+    pub ta_ret_code_name: Option<String>,
+    pub cause: String,
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} at {:?}: {}",
+            self.code, self.stage, self.cause
+        )
+    }
+}
+
+impl std::error::Error for RunError {}
+
+impl RunError {
+    fn host(code: &str, stage: RunStage, cause: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            stage,
+            bar_open_time_ms: None,
+            slot: None,
+            source: None,
+            ta_ret_code: None,
+            ta_ret_code_name: None,
+            cause: bounded_context(&cause.into()).into(),
+        }
+    }
+
+    fn at_bar(mut self, bar: i64) -> Self {
+        self.bar_open_time_ms = Some(bar);
+        self
+    }
+
+    fn for_slot(mut self, slot: &str, source: impl Into<String>) -> Self {
+        self.slot = Some(slot.into());
+        self.source = Some(source.into());
+        self
+    }
+}
+
 pub(crate) struct RunEngine;
 
 impl RunEngine {
-    pub fn execute(request: &RunRequest<'_>) -> Result<RunResult, String> {
-        validate_request(request)?;
+    pub fn execute(request: &RunRequest<'_>) -> Result<RunResult, RunError> {
+        validate_request(request)
+            .map_err(|error| RunError::host("invalid-run-request", RunStage::Validation, error))?;
         let mut result = RunResult {
             plan_hash: request.plan.plan_hash().to_owned(),
             decisions: Vec::with_capacity(request.bars.len()),
@@ -105,9 +171,12 @@ fn execute_segment(
     request: &RunRequest<'_>,
     bars: &[OhlcvBar],
     result: &mut RunResult,
-) -> Result<(), String> {
-    let strategy = load_strategy(request)?;
-    let factor_values = evaluate_factors(request, bars)?;
+) -> Result<(), RunError> {
+    let strategy = load_strategy(request)
+        .map_err(|error| RunError::host("strategy-load-failed", RunStage::Strategy, error))?;
+    let builtin_values = evaluate_builtins(request, bars)?;
+    let factor_values = evaluate_factors(request, bars)
+        .map_err(|error| RunError::host("factor-evaluation-failed", RunStage::Factor, error))?;
     for (index, bar) in bars.iter().enumerate() {
         if index < request.plan.effective_warmup_bars() as usize {
             result.pauses.push(RunPause {
@@ -120,7 +189,11 @@ fn execute_segment(
         let mut missing = None;
         for (slot, source) in request.plan.slot_names().zip(request.plan.sources()) {
             let value = match source {
-                FrozenSourceView::Market(field) => market_value(field, bar)?,
+                FrozenSourceView::Market(field) => market_value(field, bar).map_err(|error| {
+                    RunError::host("invalid-market-input", RunStage::FeatureFrame, error)
+                        .at_bar(bar.open_time_ms)
+                        .for_slot(slot, format!("market:{field:?}"))
+                })?,
                 FrozenSourceView::External {
                     dependency_alias,
                     output,
@@ -138,12 +211,31 @@ fn execute_segment(
                         break;
                     }
                 },
+                FrozenSourceView::BuiltIn {
+                    indicator,
+                    output,
+                    real_inputs,
+                    parameters,
+                } => {
+                    let key = builtin_key(indicator, output, real_inputs, parameters);
+                    match builtin_values.values.get(&key).and_then(|rows| rows[index]) {
+                        Some(value) => value,
+                        None => {
+                            missing =
+                                Some((slot.to_owned(), format!("builtin:{indicator}:{output}")));
+                            break;
+                        }
+                    }
+                }
             };
             if !value.is_finite() {
-                return Err(format!(
-                    "Feature Slot {slot} contains a non-finite value at Bar {}",
-                    bar.open_time_ms
-                ));
+                return Err(RunError::host(
+                    "non-finite-feature-slot",
+                    RunStage::FeatureFrame,
+                    "Feature Slot contains a non-finite value",
+                )
+                .at_bar(bar.open_time_ms)
+                .for_slot(slot, source_name(source)));
             }
             values.push(value);
         }
@@ -154,18 +246,33 @@ fn execute_segment(
             });
             continue;
         }
-        let targets = strategy.process_strategy(vec![
-            strategy_abi::exports::adaq::strategy::api::FeatureFrame {
-                open_time_ms: bar.open_time_ms,
-                values,
-            },
-        ])?;
+        let targets = strategy
+            .process_strategy(vec![
+                strategy_abi::exports::adaq::strategy::api::FeatureFrame {
+                    open_time_ms: bar.open_time_ms,
+                    values,
+                },
+            ])
+            .map_err(|error| {
+                RunError::host("strategy-guest-error", RunStage::Strategy, error)
+                    .at_bar(bar.open_time_ms)
+            })?;
         if targets.len() != 1 {
-            return Err("Strategy must return exactly one Target Exposure per frame".into());
+            return Err(RunError::host(
+                "invalid-strategy-output-count",
+                RunStage::Strategy,
+                "Strategy must return exactly one Target Exposure per frame",
+            )
+            .at_bar(bar.open_time_ms));
         }
         result.decisions.push(TargetDecision {
             open_time_ms: bar.open_time_ms,
-            target_exposure: validate_target(&targets[0], request.position_mode)?,
+            target_exposure: validate_target(&targets[0], request.position_mode).map_err(
+                |error| {
+                    RunError::host("invalid-target-exposure", RunStage::Strategy, error)
+                        .at_bar(bar.open_time_ms)
+                },
+            )?,
         });
     }
     Ok(())
@@ -204,7 +311,7 @@ fn evaluate_factors(
                 dependency_alias,
                 output,
             } => Some((dependency_alias, output)),
-            FrozenSourceView::Market(_) => None,
+            FrozenSourceView::Market(_) | FrozenSourceView::BuiltIn { .. } => None,
         })
         .fold(
             HashMap::<&str, HashSet<&str>>::new(),
@@ -300,26 +407,10 @@ fn validate_factor_row<'a>(
         .collect())
 }
 
-pub(crate) fn market_engine_build_id() -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(env!("CARGO_PKG_VERSION"));
-    hasher.update(std::env::consts::OS);
-    hasher.update(std::env::consts::ARCH);
-    hasher.update(include_bytes!("run_engine.rs"));
-    hasher.update(include_bytes!(
-        "../crates/adaq-component-tooling/src/plan.rs"
-    ));
-    hasher.update(include_bytes!("../crates/adaq-component-sdk/src/lib.rs"));
-    let source_hash = hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!(
-        "market-only-{}-{}-{source_hash}",
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    )
+pub(crate) fn indicator_engine_build_id() -> Result<String, String> {
+    IndicatorEngine::initialize()
+        .map(|engine| engine.identity().build_id.into())
+        .map_err(|error| error.to_string())
 }
 
 fn load_strategy(request: &RunRequest<'_>) -> Result<WasmLoader, String> {
@@ -338,6 +429,253 @@ fn load_strategy(request: &RunRequest<'_>) -> Result<WasmLoader, String> {
         request.strategy_parameters,
     )?;
     Ok(strategy)
+}
+
+fn evaluate_builtins(
+    request: &RunRequest<'_>,
+    bars: &[OhlcvBar],
+) -> Result<BuiltinEvaluation, RunError> {
+    let mut requests = BTreeMap::<
+        String,
+        (
+            String,
+            Vec<MarketField>,
+            BTreeMap<String, FrozenBuiltInParameter>,
+            Vec<String>,
+            String,
+        ),
+    >::new();
+    for (slot, source) in request.plan.slot_names().zip(request.plan.sources()) {
+        let FrozenSourceView::BuiltIn {
+            indicator,
+            output,
+            real_inputs,
+            parameters,
+        } = source
+        else {
+            continue;
+        };
+        let key = builtin_request_key(indicator, real_inputs, parameters);
+        let entry = requests.entry(key).or_insert_with(|| {
+            (
+                indicator.into(),
+                real_inputs.to_vec(),
+                parameters.clone(),
+                Vec::new(),
+                slot.into(),
+            )
+        });
+        if !entry.3.iter().any(|selected| selected == output) {
+            entry.3.push(output.into());
+        }
+    }
+    if requests.is_empty() {
+        return Ok(BuiltinEvaluation {
+            values: HashMap::new(),
+            request_count: 0,
+        });
+    }
+    let request_count = requests.len();
+    let output_count = requests
+        .values()
+        .map(|request| request.3.len())
+        .sum::<usize>();
+    validate_builtin_output_cells(bars.len(), output_count)?;
+    let first = requests
+        .values()
+        .next()
+        .expect("non-empty Built-in requests");
+    let first_source = format!("builtin:{}", first.0);
+    let first_slot = &first.4;
+    let engine = IndicatorEngine::initialize().map_err(|error| {
+        builtin_engine_error(
+            error,
+            RunStage::BuiltInCompile,
+            bars,
+            first_slot,
+            &first_source,
+        )
+    })?;
+    let segment = OhlcvSegment::new(
+        builtin_market_column(bars, MarketField::Open, first_slot, &first_source)?,
+        builtin_market_column(bars, MarketField::High, first_slot, &first_source)?,
+        builtin_market_column(bars, MarketField::Low, first_slot, &first_source)?,
+        builtin_market_column(bars, MarketField::Close, first_slot, &first_source)?,
+        builtin_market_column(bars, MarketField::BaseVolume, first_slot, &first_source)?,
+        builtin_market_column(bars, MarketField::QuoteVolume, first_slot, &first_source)?,
+    )
+    .map_err(|error| {
+        builtin_engine_error(
+            error,
+            RunStage::BuiltInInput,
+            bars,
+            first_slot,
+            &first_source,
+        )
+    })?;
+    let mut values = HashMap::new();
+    for (_, (indicator, real_inputs, parameters, outputs, slot)) in requests {
+        let source = format!("builtin:{indicator}");
+        let compiled = engine
+            .compile(IndicatorRequest {
+                indicator_id: indicator.clone(),
+                outputs: outputs.clone(),
+                real_inputs: real_inputs
+                    .iter()
+                    .map(|field| builtin_engine_market_field(*field))
+                    .collect(),
+                parameters: parameters
+                    .iter()
+                    .map(|(id, value)| {
+                        engine_parameter(value)
+                            .map(|value| (id.clone(), value))
+                            .map_err(|error| {
+                                RunError::host(
+                                    "invalid-frozen-indicator-parameter",
+                                    RunStage::BuiltInCompile,
+                                    error,
+                                )
+                                .at_bar(bars[0].open_time_ms)
+                                .for_slot(&slot, &source)
+                            })
+                    })
+                    .collect::<Result<_, RunError>>()?,
+            })
+            .map_err(|error| {
+                builtin_engine_error(error, RunStage::BuiltInCompile, bars, &slot, &source)
+            })?;
+        let columns = engine.evaluate(&compiled, &segment).map_err(|error| {
+            builtin_engine_error(error, RunStage::BuiltInEvaluate, bars, &slot, &source)
+        })?;
+        for (output, column) in columns {
+            let rows = match column {
+                IndicatorColumn::Real(rows) => rows,
+                IndicatorColumn::Integer(rows) => {
+                    rows.into_iter().map(|value| value.map(f64::from)).collect()
+                }
+            };
+            values.insert(
+                builtin_key(&indicator, &output, &real_inputs, &parameters),
+                rows,
+            );
+        }
+    }
+    Ok(BuiltinEvaluation {
+        values,
+        request_count,
+    })
+}
+
+struct BuiltinEvaluation {
+    values: HashMap<String, Vec<Option<f64>>>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    request_count: usize,
+}
+
+fn validate_builtin_output_cells(bar_count: usize, output_count: usize) -> Result<(), RunError> {
+    if bar_count
+        .checked_mul(output_count)
+        .is_none_or(|cells| cells > MAX_INDICATOR_OUTPUT_CELLS)
+    {
+        return Err(RunError::host(
+            "too-many-indicator-output-cells",
+            RunStage::Validation,
+            "Built-in Indicator outputs exceed the Run limit",
+        ));
+    }
+    Ok(())
+}
+
+fn builtin_market_column(
+    bars: &[OhlcvBar],
+    field: MarketField,
+    slot: &str,
+    source: &str,
+) -> Result<Vec<f64>, RunError> {
+    bars.iter()
+        .map(|bar| {
+            market_value(field, bar).map_err(|error| {
+                RunError::host("invalid-indicator-input", RunStage::BuiltInInput, error)
+                    .at_bar(bar.open_time_ms)
+                    .for_slot(slot, source)
+            })
+        })
+        .collect()
+}
+
+fn builtin_engine_error(
+    error: EngineError,
+    stage: RunStage,
+    bars: &[OhlcvBar],
+    slot: &str,
+    source: &str,
+) -> RunError {
+    let index = match &error {
+        EngineError::NonFiniteOutput { index, .. } => *index,
+        _ => 0,
+    };
+    let (ta_ret_code, ta_ret_code_name) = match &error {
+        EngineError::Initialization {
+            ret_code,
+            ret_code_name,
+            ..
+        }
+        | EngineError::TaLib {
+            ret_code,
+            ret_code_name,
+            ..
+        } => (Some(*ret_code), Some((*ret_code_name).into())),
+        _ => (None, None),
+    };
+    RunError {
+        code: error.code().into(),
+        stage,
+        bar_open_time_ms: bars.get(index).map(|bar| bar.open_time_ms),
+        slot: Some(slot.into()),
+        source: Some(source.into()),
+        ta_ret_code,
+        ta_ret_code_name,
+        cause: bounded_context(&error.to_string()).into(),
+    }
+}
+
+fn source_name(source: FrozenSourceView<'_>) -> String {
+    match source {
+        FrozenSourceView::Market(field) => format!("market:{field:?}"),
+        FrozenSourceView::External {
+            dependency_alias,
+            output,
+        } => format!("external:{dependency_alias}:{output}"),
+        FrozenSourceView::BuiltIn {
+            indicator, output, ..
+        } => format!("builtin:{indicator}:{output}"),
+    }
+}
+
+fn builtin_key(
+    indicator: &str,
+    output: &str,
+    real_inputs: &[MarketField],
+    parameters: &BTreeMap<String, FrozenBuiltInParameter>,
+) -> String {
+    format!("{indicator}:{output}:{real_inputs:?}:{parameters:?}")
+}
+fn builtin_request_key(
+    indicator: &str,
+    real_inputs: &[MarketField],
+    parameters: &BTreeMap<String, FrozenBuiltInParameter>,
+) -> String {
+    format!("{indicator}:{real_inputs:?}:{parameters:?}")
+}
+fn engine_parameter(value: &FrozenBuiltInParameter) -> Result<ParameterValue, String> {
+    match value {
+        FrozenBuiltInParameter::Integer(value) => Ok(ParameterValue::Integer(*value)),
+        FrozenBuiltInParameter::Real(value) => value
+            .parse()
+            .map(ParameterValue::Real)
+            .map_err(|_| "invalid-indicator-parameter".into()),
+        FrozenBuiltInParameter::Enum(value) => Ok(ParameterValue::Enum(value.clone())),
+    }
 }
 
 fn market_value(field: MarketField, bar: &OhlcvBar) -> Result<f64, String> {
@@ -521,15 +859,13 @@ mod tests {
     }
 
     #[test]
-    fn market_engine_build_identity_is_source_and_target_specific() {
-        let identity = market_engine_build_id();
-        assert_eq!(identity, market_engine_build_id());
-        assert!(identity.starts_with(&format!(
-            "market-only-{}-{}-",
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        )));
-        assert_eq!(identity.rsplit('-').next().unwrap().len(), 64);
+    fn frozen_plan_uses_the_native_indicator_engine_build_identity() {
+        let identity = indicator_engine_build_id().unwrap();
+        assert_eq!(
+            identity,
+            IndicatorEngine::initialize().unwrap().identity().build_id
+        );
+        assert!(!identity.is_empty());
     }
 
     #[test]
@@ -605,5 +941,245 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn builtin_ema_values_are_warmed_and_mapped_to_target_decisions() {
+        let manifest = serde_json::from_str::<ComponentManifest>(r#"{
+            "manifestSchemaVersion":"1.0.0","componentId":"00000000-0000-0000-0000-000000000000",
+            "version":"1.0.0","name":"Built-in Fixture","kind":"strategy","sdkVersion":"0.1.0","abiVersion":"1.0.0",
+            "featureSlots":[
+                {"name":"quote-volume","source":{"kind":"market","field":"quote-volume"}},
+                {"name":"close","source":{"kind":"builtin","indicator":"ema","output":"value","inputs":{"real-0":"close"},"parameters":{"time-period":1}}}
+            ]
+        }"#).unwrap();
+        let plan = validate_and_freeze(
+            &manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.effective_warmup_bars(), 0);
+        let bars = vec![bar(1, "10", "1"), bar(2, "11", "20")];
+        let strategy = fixture();
+        let result = RunEngine::execute(&RunRequest {
+            strategy_path: &strategy,
+            strategy_parameters: &[],
+            factors: &[],
+            bars: &bars,
+            gaps: &[],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits::default(),
+        })
+        .unwrap();
+        assert_eq!(
+            result
+                .decisions
+                .iter()
+                .map(|item| item.target_exposure)
+                .collect::<Vec<_>>(),
+            [Decimal::ONE, Decimal::ZERO]
+        );
+    }
+
+    #[test]
+    fn multi_output_builtin_request_reuses_one_evaluation_for_semantic_slots() {
+        let manifest = serde_json::from_str::<ComponentManifest>(r#"{
+            "manifestSchemaVersion":"1.0.0","componentId":"00000000-0000-0000-0000-000000000000",
+            "version":"1.0.0","name":"MACD Fixture","kind":"strategy","sdkVersion":"0.1.0","abiVersion":"1.0.0",
+            "featureSlots":[
+                {"name":"macd","source":{"kind":"builtin","indicator":"macd","output":"macd","inputs":{"real-0":"close"}}},
+                {"name":"signal","source":{"kind":"builtin","indicator":"macd","output":"signal","inputs":{"real-0":"close"}}},
+                {"name":"histogram","source":{"kind":"builtin","indicator":"macd","output":"histogram","inputs":{"real-0":"close"}}}
+            ]
+        }"#).unwrap();
+        let plan = validate_and_freeze(
+            &manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+        )
+        .unwrap();
+        let bars = (0..64)
+            .map(|index| bar(index, &(100 + index).to_string(), "1"))
+            .collect::<Vec<_>>();
+        let request = RunRequest {
+            strategy_path: &fixture(),
+            strategy_parameters: &[],
+            factors: &[],
+            bars: &bars,
+            gaps: &[],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits::default(),
+        };
+        let values = evaluate_builtins(&request, &bars).unwrap();
+        assert_eq!(values.values.len(), 3);
+        assert_eq!(values.request_count, 1);
+    }
+
+    #[test]
+    fn rsi_warmup_and_target_decisions_align_to_closed_bars() {
+        let manifest = serde_json::from_str::<ComponentManifest>(r#"{
+            "manifestSchemaVersion":"1.0.0","componentId":"00000000-0000-0000-0000-000000000000",
+            "version":"1.0.0","name":"RSI Fixture","kind":"strategy","sdkVersion":"0.1.0","abiVersion":"1.0.0",
+            "featureSlots":[
+                {"name":"quote-volume","source":{"kind":"market","field":"quote-volume"}},
+                {"name":"close","source":{"kind":"builtin","indicator":"rsi","output":"value","inputs":{"real-0":"close"},"parameters":{"time-period":2}}}
+            ]
+        }"#).unwrap();
+        let plan = validate_and_freeze(
+            &manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+        )
+        .unwrap();
+        let bars = ["1", "2", "3", "2", "1"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, close)| bar(index as i64, close, "50"))
+            .collect::<Vec<_>>();
+        let result = RunEngine::execute(&RunRequest {
+            strategy_path: &fixture(),
+            strategy_parameters: &[],
+            factors: &[],
+            bars: &bars,
+            gaps: &[],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits::default(),
+        })
+        .unwrap();
+        assert_eq!(
+            result
+                .pauses
+                .iter()
+                .map(|pause| pause.open_time_ms)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert_eq!(
+            result.decisions,
+            [
+                TargetDecision {
+                    open_time_ms: 2,
+                    target_exposure: Decimal::ONE
+                },
+                TargetDecision {
+                    open_time_ms: 3,
+                    target_exposure: Decimal::ZERO
+                },
+                TargetDecision {
+                    open_time_ms: 4,
+                    target_exposure: Decimal::ZERO
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn multi_output_slots_preserve_manifest_order_and_map_targets() {
+        let manifest = serde_json::from_str::<ComponentManifest>(r#"{
+            "manifestSchemaVersion":"1.0.0","componentId":"00000000-0000-0000-0000-000000000000",
+            "version":"1.0.0","name":"MACD Target Fixture","kind":"strategy","sdkVersion":"0.1.0","abiVersion":"1.0.0",
+            "featureSlots":[
+                {"name":"histogram","source":{"kind":"builtin","indicator":"macd","output":"histogram","inputs":{"real-0":"close"},"parameters":{"fast-period":2,"slow-period":3,"signal-period":2}}},
+                {"name":"quote-volume","source":{"kind":"builtin","indicator":"macd","output":"macd","inputs":{"real-0":"close"},"parameters":{"fast-period":2,"slow-period":3,"signal-period":2}}},
+                {"name":"close","source":{"kind":"builtin","indicator":"macd","output":"signal","inputs":{"real-0":"close"},"parameters":{"fast-period":2,"slow-period":3,"signal-period":2}}}
+            ]
+        }"#).unwrap();
+        let plan = validate_and_freeze(
+            &manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            plan.slot_names().collect::<Vec<_>>(),
+            ["histogram", "quote-volume", "close"]
+        );
+        let closes = ["1", "2", "3", "4", "5", "6", "5", "4", "3", "2", "1"];
+        let bars = closes
+            .into_iter()
+            .enumerate()
+            .map(|(index, close)| bar(index as i64, close, "1"))
+            .collect::<Vec<_>>();
+        let request = RunRequest {
+            strategy_path: &fixture(),
+            strategy_parameters: &[],
+            factors: &[],
+            bars: &bars,
+            gaps: &[],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits::default(),
+        };
+        let evaluation = evaluate_builtins(&request, &bars).unwrap();
+        assert_eq!(evaluation.request_count, 1);
+        let result = RunEngine::execute(&request).unwrap();
+        assert_eq!(
+            result.decisions.first().unwrap().target_exposure,
+            Decimal::ZERO
+        );
+        assert_eq!(
+            result.decisions.last().unwrap().target_exposure,
+            Decimal::ONE
+        );
+        assert!(
+            result
+                .decisions
+                .iter()
+                .any(|decision| decision.target_exposure == Decimal::ZERO)
+        );
+    }
+
+    #[test]
+    fn indicator_failures_preserve_typed_run_context() {
+        let bars = vec![bar(10, "1", "1"), bar(20, "2", "2")];
+        let ta = builtin_engine_error(
+            EngineError::TaLib {
+                code: "ta-lib-error",
+                ret_code: 2,
+                ret_code_name: "TA_BAD_PARAM",
+            },
+            RunStage::BuiltInEvaluate,
+            &bars,
+            "rsi",
+            "builtin:rsi",
+        );
+        assert_eq!(ta.stage, RunStage::BuiltInEvaluate);
+        assert_eq!(ta.bar_open_time_ms, Some(10));
+        assert_eq!(ta.slot.as_deref(), Some("rsi"));
+        assert_eq!(ta.source.as_deref(), Some("builtin:rsi"));
+        assert_eq!(ta.ta_ret_code, Some(2));
+        assert_eq!(ta.ta_ret_code_name.as_deref(), Some("TA_BAD_PARAM"));
+
+        let non_finite = builtin_engine_error(
+            EngineError::NonFiniteOutput {
+                code: "non-finite-indicator-output",
+                index: 1,
+            },
+            RunStage::BuiltInEvaluate,
+            &bars,
+            "rsi",
+            "builtin:rsi",
+        );
+        assert_eq!(non_finite.bar_open_time_ms, Some(20));
+    }
+
+    #[test]
+    fn indicator_output_cell_limit_is_checked_before_allocation() {
+        assert!(validate_builtin_output_cells(1_000_000, 16).is_ok());
+        let error = validate_builtin_output_cells(1_000_000, 17).unwrap_err();
+        assert_eq!(error.code, "too-many-indicator-output-cells");
+        assert_eq!(error.stage, RunStage::Validation);
     }
 }

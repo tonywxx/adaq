@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -16,14 +16,14 @@ use ada_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient
 use adaq_component_tooling::{
     ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage, EngineIdentity,
     FactorInstancePlanInput, ParameterDefinition, RunLimits, component_parameters,
-    validate_and_freeze_with_factors, verify_package,
+    validate_and_freeze_with_factors_and_parameters, verify_package,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::run_engine::{
-    FactorRunRequest, PositionMode, RunEngine, RunRequest, market_engine_build_id,
+    FactorRunRequest, PositionMode, RunEngine, RunRequest, indicator_engine_build_id,
 };
 
 pub struct M3State {
@@ -800,6 +800,31 @@ fn execute_backtest(
     if !matches!(strategy.manifest.kind, ComponentKind::Strategy) {
         return Err("Backtest requires a Strategy Component".into());
     }
+    let strategy_parameters =
+        component_parameters(&strategy.manifest, Some(&request.strategy_parameters))?;
+    let frozen_strategy_parameters = strategy
+        .manifest
+        .parameters
+        .iter()
+        .zip(&strategy_parameters)
+        .map(|(definition, value)| {
+            (
+                definition.name.clone(),
+                match value {
+                    adaq_component_tooling::ComponentParameterValue::Decimal(value)
+                    | adaq_component_tooling::ComponentParameterValue::String(value) => {
+                        value.clone()
+                    }
+                    adaq_component_tooling::ComponentParameterValue::Integer(value) => {
+                        value.to_string()
+                    }
+                    adaq_component_tooling::ComponentParameterValue::Boolean(value) => {
+                        value.to_string()
+                    }
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let factor_packages = request
         .factor_instances
         .iter()
@@ -832,13 +857,14 @@ fn execute_backtest(
             parameters: parameters.clone(),
         })
         .collect::<Vec<_>>();
-    let plan = validate_and_freeze_with_factors(
+    let plan = validate_and_freeze_with_factors_and_parameters(
         &strategy.manifest,
         &strategy.archive_sha256,
         &EngineIdentity {
-            engine_build_id: market_engine_build_id(),
+            engine_build_id: indicator_engine_build_id()?,
         },
         &factor_inputs,
+        &frozen_strategy_parameters,
     )
     .map_err(|error| format!("Indicator Plan validation failed: {:?}", error.issues))?;
     let run_id = fingerprint(&request, plan.plan_hash())?;
@@ -859,8 +885,6 @@ fn execute_backtest(
             end_time_ms: gap.end_time_ms,
         })
         .collect::<Vec<_>>();
-    let strategy_parameters =
-        component_parameters(&strategy.manifest, Some(&request.strategy_parameters))?;
     let strategy_path = strategy_path.to_string_lossy();
     let factor_paths = factor_paths
         .iter()
@@ -884,7 +908,8 @@ fn execute_backtest(
         plan: &plan,
         position_mode: PositionMode::LongOnly,
         limits: RunLimits::default(),
-    })?;
+    })
+    .map_err(|error| error.to_string())?;
     let decisions = engine_result
         .decisions
         .into_iter()

@@ -1,11 +1,15 @@
-use std::fmt::Write as _;
+use std::{collections::BTreeMap, fmt::Write as _};
 
+use adaq_indicator_engine::{
+    IndicatorEngine, IndicatorRequest, MarketField as EngineMarketField, ParameterValue,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::package::is_lower_kebab;
 use crate::{
     ComponentKind, ComponentManifest, ComponentParameterValue, FeatureSlotSource, MarketField,
+    ParameterType,
 };
 
 const PLAN_SCHEMA_VERSION: &str = "1.0.0";
@@ -14,6 +18,9 @@ const ENGINE_VERSION: &str = "adaq-indicator-engine@1.0.0";
 const TA_LIB_VERSION: &str = "0.7.1";
 const MAX_FACTOR_INSTANCES: usize = 64;
 const MAX_FACTOR_OUTPUTS: usize = 64;
+const MAX_FEATURE_SLOTS: usize = 256;
+const MAX_BUILTIN_REQUESTS: usize = 256;
+const MAX_EFFECTIVE_WARMUP_BARS: u32 = 100_000;
 
 #[derive(Debug, Clone)]
 pub struct FactorInstancePlanInput<'a> {
@@ -106,6 +113,20 @@ enum FrozenSource {
         dependency_alias: String,
         output: String,
     },
+    BuiltIn {
+        indicator: String,
+        output: String,
+        real_inputs: Vec<MarketField>,
+        parameters: BTreeMap<String, FrozenBuiltInParameter>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
+pub enum FrozenBuiltInParameter {
+    Integer(i32),
+    Real(String),
+    Enum(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +135,12 @@ struct FrozenFactor {
     alias: String,
     parameters: Vec<ComponentParameterValue>,
     output_names: Vec<String>,
+    warmup_bars: u32,
+}
+
+struct ResolvedBuiltIn {
+    real_inputs: Vec<MarketField>,
+    parameters: BTreeMap<String, FrozenBuiltInParameter>,
     warmup_bars: u32,
 }
 
@@ -133,6 +160,7 @@ impl FrozenIndicatorPlan {
         self.0.content.slots.iter().map(|slot| match slot.source {
             FrozenSource::Market { field } => field,
             FrozenSource::External { .. } => panic!("external Feature Slot is not a Market Field"),
+            FrozenSource::BuiltIn { .. } => panic!("builtin Feature Slot is not a Market Field"),
         })
     }
 
@@ -145,6 +173,17 @@ impl FrozenIndicatorPlan {
             } => FrozenSourceView::External {
                 dependency_alias,
                 output,
+            },
+            FrozenSource::BuiltIn {
+                indicator,
+                output,
+                real_inputs,
+                parameters,
+            } => FrozenSourceView::BuiltIn {
+                indicator,
+                output,
+                real_inputs,
+                parameters,
             },
         })
     }
@@ -187,7 +226,9 @@ impl FrozenIndicatorPlan {
             || !is_sha256(&document.content.strategy_package_sha256)
             || document.content.engine_build_id.is_empty()
             || document.content.slots.is_empty()
+            || document.content.slots.len() > MAX_FEATURE_SLOTS
             || document.content.factors.len() > MAX_FACTOR_INSTANCES
+            || document.content.effective_warmup_bars > MAX_EFFECTIVE_WARMUP_BARS
         {
             return Err(load_error("invalid-plan-contract"));
         }
@@ -213,6 +254,9 @@ impl FrozenIndicatorPlan {
         {
             return Err(load_error("invalid-plan-contract"));
         }
+        if unique_builtin_request_count(&document.content.slots) > MAX_BUILTIN_REQUESTS {
+            return Err(load_error("invalid-plan-contract"));
+        }
         if document
             .content
             .slots
@@ -231,6 +275,18 @@ impl FrozenIndicatorPlan {
                         factor.warmup_bars != slot.warmup_bars
                             || !factor.output_names.iter().any(|name| name == output)
                     }),
+                FrozenSource::BuiltIn {
+                    indicator,
+                    output,
+                    real_inputs,
+                    parameters,
+                } => !valid_frozen_builtin(
+                    indicator,
+                    output,
+                    real_inputs,
+                    parameters,
+                    slot.warmup_bars,
+                ),
             })
             || document.content.effective_warmup_bars
                 != document
@@ -254,6 +310,12 @@ pub enum FrozenSourceView<'a> {
         dependency_alias: &'a str,
         output: &'a str,
     },
+    BuiltIn {
+        indicator: &'a str,
+        output: &'a str,
+        real_inputs: &'a [MarketField],
+        parameters: &'a BTreeMap<String, FrozenBuiltInParameter>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -269,7 +331,13 @@ pub fn validate_and_freeze(
     strategy_package_sha256: &str,
     identity: &EngineIdentity,
 ) -> Result<FrozenIndicatorPlan, PlanValidationError> {
-    validate_and_freeze_with_factors(manifest, strategy_package_sha256, identity, &[])
+    validate_and_freeze_with_factors_and_parameters(
+        manifest,
+        strategy_package_sha256,
+        identity,
+        &[],
+        &BTreeMap::new(),
+    )
 }
 
 pub fn validate_and_freeze_with_factors(
@@ -277,6 +345,22 @@ pub fn validate_and_freeze_with_factors(
     strategy_package_sha256: &str,
     identity: &EngineIdentity,
     factor_inputs: &[FactorInstancePlanInput<'_>],
+) -> Result<FrozenIndicatorPlan, PlanValidationError> {
+    validate_and_freeze_with_factors_and_parameters(
+        manifest,
+        strategy_package_sha256,
+        identity,
+        factor_inputs,
+        &BTreeMap::new(),
+    )
+}
+
+pub fn validate_and_freeze_with_factors_and_parameters(
+    manifest: &ComponentManifest,
+    strategy_package_sha256: &str,
+    identity: &EngineIdentity,
+    factor_inputs: &[FactorInstancePlanInput<'_>],
+    strategy_parameters: &BTreeMap<String, String>,
 ) -> Result<FrozenIndicatorPlan, PlanValidationError> {
     let mut issues = Vec::new();
     if manifest.kind != ComponentKind::Strategy {
@@ -308,6 +392,9 @@ pub fn validate_and_freeze_with_factors(
     }
     if manifest.feature_slots.is_empty() {
         issues.push(issue("missing-feature-slots", None, None, None));
+    }
+    if manifest.feature_slots.len() > MAX_FEATURE_SLOTS {
+        issues.push(issue("too-many-feature-slots", None, None, None));
     }
 
     if factor_inputs.len() > MAX_FACTOR_INSTANCES {
@@ -376,8 +463,8 @@ pub fn validate_and_freeze_with_factors(
         }
     }
     let mut names = std::collections::HashSet::new();
-    let mut slots = Vec::with_capacity(manifest.feature_slots.len());
-    for slot in &manifest.feature_slots {
+    let mut slots = Vec::with_capacity(manifest.feature_slots.len().min(MAX_FEATURE_SLOTS));
+    for slot in manifest.feature_slots.iter().take(MAX_FEATURE_SLOTS) {
         if !is_lower_kebab(&slot.name) {
             issues.push(issue(
                 "invalid-slot-name",
@@ -399,12 +486,38 @@ pub fn validate_and_freeze_with_factors(
                 source: FrozenSource::Market { field: *field },
                 warmup_bars: 0,
             }),
-            FeatureSlotSource::BuiltIn { .. } => issues.push(issue(
-                "unsupported-source",
-                Some(&slot.name),
-                Some("builtin"),
-                None,
-            )),
+            FeatureSlotSource::BuiltIn {
+                indicator,
+                output,
+                inputs,
+                parameters,
+            } => {
+                match freeze_builtin(
+                    manifest,
+                    indicator,
+                    output,
+                    inputs,
+                    parameters,
+                    strategy_parameters,
+                ) {
+                    Ok(resolved) => slots.push(FrozenSlot {
+                        name: slot.name.clone(),
+                        source: FrozenSource::BuiltIn {
+                            indicator: indicator.clone(),
+                            output: output.clone(),
+                            real_inputs: resolved.real_inputs,
+                            parameters: resolved.parameters,
+                        },
+                        warmup_bars: resolved.warmup_bars,
+                    }),
+                    Err((code, field)) => issues.push(issue(
+                        code,
+                        Some(&slot.name),
+                        Some("builtin"),
+                        field.as_deref(),
+                    )),
+                }
+            }
             FeatureSlotSource::External {
                 dependency_alias,
                 output,
@@ -433,6 +546,22 @@ pub fn validate_and_freeze_with_factors(
                 )),
             },
         }
+    }
+    if unique_builtin_request_count(&slots) > MAX_BUILTIN_REQUESTS {
+        issues.push(issue(
+            "too-many-builtin-requests",
+            None,
+            Some("builtin"),
+            None,
+        ));
+    }
+    if slots.iter().map(|slot| slot.warmup_bars).max().unwrap_or(0) > MAX_EFFECTIVE_WARMUP_BARS {
+        issues.push(issue(
+            "effective-warmup-too-large",
+            None,
+            Some("builtin"),
+            None,
+        ));
     }
     issues.sort_by(|left, right| {
         (&left.code, &left.slot, &left.source, &left.field).cmp(&(
@@ -506,6 +635,298 @@ fn issue(code: &str, slot: Option<&str>, source: Option<&str>, field: Option<&st
 
 fn load_error(code: &str) -> PlanLoadError {
     PlanLoadError { code: code.into() }
+}
+
+fn unique_builtin_request_count(slots: &[FrozenSlot]) -> usize {
+    slots
+        .iter()
+        .filter_map(|slot| match &slot.source {
+            FrozenSource::BuiltIn {
+                indicator,
+                real_inputs,
+                parameters,
+                ..
+            } => Some(format!("{indicator}:{real_inputs:?}:{parameters:?}")),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+fn freeze_builtin(
+    manifest: &ComponentManifest,
+    indicator: &str,
+    output: &str,
+    inputs: &BTreeMap<String, serde_json::Value>,
+    bindings: &BTreeMap<String, serde_json::Value>,
+    strategy_parameters: &BTreeMap<String, String>,
+) -> Result<ResolvedBuiltIn, (&'static str, Option<String>)> {
+    let engine = IndicatorEngine::initialize().map_err(|error| (error.code(), None))?;
+    let definition = engine
+        .catalog()
+        .indicators
+        .iter()
+        .find(|item| item.id == indicator)
+        .ok_or(("unknown-indicator", Some(indicator.into())))?;
+    if !definition.outputs.iter().any(|item| item.id == output) {
+        return Err(("unknown-indicator-output", Some(output.into())));
+    }
+    let real_inputs = definition
+        .inputs
+        .iter()
+        .filter(|item| item.kind == "Double Array" || item.kind == "Volume")
+        .map(|input| {
+            let field = inputs
+                .get(&input.id)
+                .ok_or(("missing-indicator-input", Some(input.id.clone())))?
+                .as_str()
+                .and_then(parse_market_field)
+                .ok_or(("invalid-indicator-input", Some(input.id.clone())))?;
+            let allowed = input
+                .allowed_fields
+                .iter()
+                .any(|value| value == field_name(field));
+            if !allowed {
+                return Err(("invalid-indicator-input", Some(input.id.clone())));
+            }
+            Ok(field)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if inputs.len() != real_inputs.len()
+        || inputs
+            .keys()
+            .any(|id| !definition.inputs.iter().any(|input| &input.id == id))
+    {
+        return Err(("invalid-indicator-input", None));
+    }
+    let mut frozen = BTreeMap::new();
+    let mut engine_parameters = BTreeMap::new();
+    for parameter in &definition.parameters {
+        let binding = bindings.get(&parameter.id);
+        let (raw, is_default, is_reference) = match binding {
+            Some(value) if value.is_object() => {
+                let object = value.as_object().expect("checked object");
+                if object.len() != 1 {
+                    return Err(("invalid-indicator-parameter", Some(parameter.id.clone())));
+                }
+                let strategy_parameter = object
+                    .get("strategyParameter")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(("invalid-indicator-parameter", Some(parameter.id.clone())))?;
+                let declared = manifest
+                    .parameters
+                    .iter()
+                    .find(|item| item.name == strategy_parameter)
+                    .ok_or((
+                        "unknown-strategy-parameter",
+                        Some(strategy_parameter.into()),
+                    ))?;
+                let value = strategy_parameters
+                    .get(strategy_parameter)
+                    .unwrap_or(&declared.default_value);
+                (
+                    (declared.parameter_type.clone(), value.clone()),
+                    false,
+                    true,
+                )
+            }
+            Some(value) if value.is_i64() => {
+                ((ParameterType::Integer, value.to_string()), false, false)
+            }
+            Some(value) if value.is_string() => (
+                (ParameterType::String, value.as_str().unwrap().into()),
+                false,
+                false,
+            ),
+            Some(_) => return Err(("invalid-indicator-parameter", Some(parameter.id.clone()))),
+            None => (
+                (
+                    ParameterType::String,
+                    if parameter.kind == "MA Type" {
+                        parameter
+                            .default
+                            .parse::<i32>()
+                            .ok()
+                            .and_then(|value| {
+                                parameter
+                                    .enum_values
+                                    .iter()
+                                    .find(|item| item.value == value)
+                                    .map(|item| item.id.clone())
+                            })
+                            .ok_or(("invalid-indicator-parameter", Some(parameter.id.clone())))?
+                    } else {
+                        parameter.default.clone()
+                    },
+                ),
+                true,
+                false,
+            ),
+        };
+        let value = match parameter.kind.as_str() {
+            "Integer" => {
+                if !matches!(raw.0, ParameterType::Integer) && !is_default {
+                    return Err(("mistyped-indicator-parameter", Some(parameter.id.clone())));
+                }
+                let value = raw
+                    .1
+                    .parse::<i32>()
+                    .map_err(|_| ("invalid-indicator-parameter", Some(parameter.id.clone())))?;
+                FrozenBuiltInParameter::Integer(value)
+            }
+            "Real" | "Double" => {
+                if (is_reference && !matches!(raw.0, ParameterType::Decimal))
+                    || (!is_reference
+                        && !matches!(raw.0, ParameterType::Decimal | ParameterType::String)
+                        && !is_default)
+                {
+                    return Err(("mistyped-indicator-parameter", Some(parameter.id.clone())));
+                }
+                let decimal = if is_default {
+                    rust_decimal::Decimal::from_str_exact(&raw.1)
+                        .or_else(|_| rust_decimal::Decimal::from_scientific(&raw.1))
+                } else {
+                    rust_decimal::Decimal::from_str_exact(&raw.1)
+                }
+                .map_err(|_| ("invalid-indicator-parameter", Some(parameter.id.clone())))?;
+                let value: f64 = decimal
+                    .to_string()
+                    .parse()
+                    .map_err(|_| ("invalid-indicator-parameter", Some(parameter.id.clone())))?;
+                if !value.is_finite() {
+                    return Err(("invalid-indicator-parameter", Some(parameter.id.clone())));
+                }
+                FrozenBuiltInParameter::Real(decimal.normalize().to_string())
+            }
+            "MA Type" => {
+                if !matches!(raw.0, ParameterType::String) {
+                    return Err(("mistyped-indicator-parameter", Some(parameter.id.clone())));
+                }
+                FrozenBuiltInParameter::Enum(raw.1)
+            }
+            _ => return Err(("invalid-indicator-parameter", Some(parameter.id.clone()))),
+        };
+        engine_parameters.insert(parameter.id.clone(), frozen_parameter_value(&value)?);
+        frozen.insert(parameter.id.clone(), value);
+    }
+    if bindings.keys().any(|id| {
+        !definition
+            .parameters
+            .iter()
+            .any(|parameter| &parameter.id == id)
+    }) {
+        return Err(("unknown-indicator-parameter", None));
+    }
+    let compiled = engine
+        .compile(IndicatorRequest {
+            indicator_id: indicator.into(),
+            real_inputs: real_inputs
+                .iter()
+                .map(|field| builtin_engine_market_field(*field))
+                .collect(),
+            parameters: engine_parameters,
+            outputs: vec![output.into()],
+        })
+        .map_err(|error| (error.code(), None))?;
+    Ok(ResolvedBuiltIn {
+        real_inputs,
+        parameters: frozen,
+        warmup_bars: compiled
+            .lookback()
+            .try_into()
+            .map_err(|_| ("invalid-indicator-lookback", None))?,
+    })
+}
+
+fn frozen_parameter_value(
+    value: &FrozenBuiltInParameter,
+) -> Result<ParameterValue, (&'static str, Option<String>)> {
+    match value {
+        FrozenBuiltInParameter::Integer(value) => Ok(ParameterValue::Integer(*value)),
+        FrozenBuiltInParameter::Real(value) => value
+            .parse()
+            .map(ParameterValue::Real)
+            .map_err(|_| ("invalid-indicator-parameter", None)),
+        FrozenBuiltInParameter::Enum(value) => Ok(ParameterValue::Enum(value.clone())),
+    }
+}
+
+fn valid_frozen_builtin(
+    indicator: &str,
+    output: &str,
+    real_inputs: &[MarketField],
+    parameters: &BTreeMap<String, FrozenBuiltInParameter>,
+    warmup_bars: u32,
+) -> bool {
+    let Ok(engine) = IndicatorEngine::initialize() else {
+        return false;
+    };
+    let Some(definition) = engine
+        .catalog()
+        .indicators
+        .iter()
+        .find(|definition| definition.id == indicator)
+    else {
+        return false;
+    };
+    if parameters.len() != definition.parameters.len()
+        || definition
+            .parameters
+            .iter()
+            .any(|parameter| !parameters.contains_key(&parameter.id))
+    {
+        return false;
+    }
+    let Ok(parameters) = parameters
+        .iter()
+        .map(|(id, value)| frozen_parameter_value(value).map(|value| (id.clone(), value)))
+        .collect::<Result<BTreeMap<_, _>, _>>()
+    else {
+        return false;
+    };
+    engine
+        .compile(IndicatorRequest {
+            indicator_id: indicator.into(),
+            real_inputs: real_inputs
+                .iter()
+                .map(|field| builtin_engine_market_field(*field))
+                .collect(),
+            parameters,
+            outputs: vec![output.into()],
+        })
+        .is_ok_and(|compiled| compiled.lookback() == warmup_bars as usize)
+}
+
+fn field_name(field: MarketField) -> &'static str {
+    match field {
+        MarketField::Open => "open",
+        MarketField::High => "high",
+        MarketField::Low => "low",
+        MarketField::Close => "close",
+        MarketField::BaseVolume => "base-volume",
+        MarketField::QuoteVolume => "quote-volume",
+    }
+}
+fn parse_market_field(value: &str) -> Option<MarketField> {
+    Some(match value {
+        "open" => MarketField::Open,
+        "high" => MarketField::High,
+        "low" => MarketField::Low,
+        "close" => MarketField::Close,
+        "base-volume" => MarketField::BaseVolume,
+        "quote-volume" => MarketField::QuoteVolume,
+        _ => return None,
+    })
+}
+pub fn builtin_engine_market_field(field: MarketField) -> EngineMarketField {
+    match field {
+        MarketField::Open => EngineMarketField::Open,
+        MarketField::High => EngineMarketField::High,
+        MarketField::Low => EngineMarketField::Low,
+        MarketField::Close => EngineMarketField::Close,
+        MarketField::BaseVolume => EngineMarketField::BaseVolume,
+        MarketField::QuoteVolume => EngineMarketField::QuoteVolume,
+    }
 }
 
 #[cfg(test)]
@@ -596,6 +1017,8 @@ mod tests {
                 source: FeatureSlotSource::BuiltIn {
                     indicator: "rsi".into(),
                     output: "value".into(),
+                    inputs: [("real-0".into(), serde_json::json!("close"))].into(),
+                    parameters: [("time-period".into(), serde_json::json!(2))].into(),
                 },
             },
         ]);
@@ -609,15 +1032,427 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error.issues,
-            [
-                issue(
-                    "invalid-factor-output",
-                    Some("z-factor"),
-                    Some("external"),
-                    Some("value")
-                ),
-                issue("unsupported-source", Some("a-rsi"), Some("builtin"), None),
-            ]
+            [issue(
+                "invalid-factor-output",
+                Some("z-factor"),
+                Some("external"),
+                Some("value")
+            )]
+        );
+    }
+
+    #[test]
+    fn freezes_catalog_builtin_parameters_and_warmup() {
+        let mut manifest = manifest(vec![FeatureSlotDefinition {
+            name: "ema".into(),
+            source: FeatureSlotSource::BuiltIn {
+                indicator: "ema".into(),
+                output: "value".into(),
+                inputs: [("real-0".into(), serde_json::json!("close"))].into(),
+                parameters: [(
+                    "time-period".into(),
+                    serde_json::json!({"strategyParameter":"period"}),
+                )]
+                .into(),
+            },
+        }]);
+        manifest.parameters = vec![ParameterDefinition {
+            name: "period".into(),
+            parameter_type: ParameterType::Integer,
+            default_value: "2".into(),
+            allowed_values: vec![],
+        }];
+        let plan = validate_and_freeze_with_factors_and_parameters(
+            &manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+            &[],
+            &[("period".into(), "3".into())].into(),
+        )
+        .unwrap();
+        assert_eq!(plan.effective_warmup_bars(), 2);
+        assert_eq!(plan.slot_names().collect::<Vec<_>>(), ["ema"]);
+    }
+
+    #[test]
+    fn unknown_builtin_output_returns_a_typed_plan_issue() {
+        let manifest = manifest(vec![FeatureSlotDefinition {
+            name: "invalid".into(),
+            source: FeatureSlotSource::BuiltIn {
+                indicator: "rsi".into(),
+                output: "unknown".into(),
+                inputs: [("real-0".into(), serde_json::json!("close"))].into(),
+                parameters: BTreeMap::new(),
+            },
+        }]);
+        let error = validate_and_freeze(
+            &manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.issues,
+            [issue(
+                "unknown-indicator-output",
+                Some("invalid"),
+                Some("builtin"),
+                Some("unknown")
+            )]
+        );
+    }
+
+    #[test]
+    fn loading_revalidates_builtin_sources_against_the_catalog() {
+        let manifest = manifest(vec![FeatureSlotDefinition {
+            name: "rsi".into(),
+            source: FeatureSlotSource::BuiltIn {
+                indicator: "rsi".into(),
+                output: "value".into(),
+                inputs: [("real-0".into(), serde_json::json!("close"))].into(),
+                parameters: [("time-period".into(), serde_json::json!(2))].into(),
+            },
+        }]);
+        let plan = validate_and_freeze(
+            &manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+        )
+        .unwrap();
+        let mut document = plan.0;
+        let FrozenSource::BuiltIn { indicator, .. } = &mut document.content.slots[0].source else {
+            unreachable!()
+        };
+        *indicator = "not-in-catalog".into();
+        document.plan_hash = hash(&canonical_json(&document.content).unwrap());
+
+        assert_eq!(
+            FrozenIndicatorPlan::load(&canonical_json(&document).unwrap())
+                .unwrap_err()
+                .code,
+            "invalid-plan-contract"
+        );
+    }
+
+    #[test]
+    fn builtin_defaults_and_equivalent_real_literals_freeze_identically() {
+        let make = |parameters| {
+            manifest(vec![FeatureSlotDefinition {
+                name: "upper-band".into(),
+                source: FeatureSlotSource::BuiltIn {
+                    indicator: "bbands".into(),
+                    output: "upper-band".into(),
+                    inputs: [("real-0".into(), serde_json::json!("close"))].into(),
+                    parameters,
+                },
+            }])
+        };
+        let identity = EngineIdentity {
+            engine_build_id: "test-build".into(),
+        };
+        let omitted =
+            validate_and_freeze(&make(BTreeMap::new()), &"a".repeat(64), &identity).unwrap();
+        let explicit_defaults = validate_and_freeze(
+            &make(
+                [
+                    ("time-period".into(), serde_json::json!(5)),
+                    ("deviations-up".into(), serde_json::json!("2.0")),
+                    ("deviations-down".into(), serde_json::json!("2.00")),
+                    ("ma-type".into(), serde_json::json!("sma")),
+                ]
+                .into(),
+            ),
+            &"a".repeat(64),
+            &identity,
+        )
+        .unwrap();
+        let equivalent_spelling = validate_and_freeze(
+            &make(
+                [
+                    ("time-period".into(), serde_json::json!(5)),
+                    ("deviations-up".into(), serde_json::json!("2.00")),
+                    ("deviations-down".into(), serde_json::json!("2.0")),
+                    ("ma-type".into(), serde_json::json!("sma")),
+                ]
+                .into(),
+            ),
+            &"a".repeat(64),
+            &identity,
+        )
+        .unwrap();
+
+        assert_eq!(omitted.plan_hash(), explicit_defaults.plan_hash());
+        assert_eq!(
+            explicit_defaults.plan_hash(),
+            equivalent_spelling.plan_hash()
+        );
+    }
+
+    #[test]
+    fn every_invalid_builtin_binding_shape_reports_a_stable_plan_issue() {
+        let slot =
+            |name: &str,
+             indicator: &str,
+             output: &str,
+             inputs: BTreeMap<String, serde_json::Value>,
+             parameters: BTreeMap<String, serde_json::Value>| FeatureSlotDefinition {
+                name: name.into(),
+                source: FeatureSlotSource::BuiltIn {
+                    indicator: indicator.into(),
+                    output: output.into(),
+                    inputs,
+                    parameters,
+                },
+            };
+        let close = || [("real-0".into(), serde_json::json!("close"))].into();
+        let slots = vec![
+            slot(
+                "unknown-indicator",
+                "missing",
+                "value",
+                close(),
+                BTreeMap::new(),
+            ),
+            slot("unknown-output", "rsi", "missing", close(), BTreeMap::new()),
+            slot(
+                "array-input",
+                "rsi",
+                "value",
+                [("real-0".into(), serde_json::json!(["close"]))].into(),
+                BTreeMap::new(),
+            ),
+            slot(
+                "null-parameter",
+                "rsi",
+                "value",
+                close(),
+                [("time-period".into(), serde_json::Value::Null)].into(),
+            ),
+            slot(
+                "extra-parameter",
+                "rsi",
+                "value",
+                close(),
+                [
+                    ("time-period".into(), serde_json::json!(2)),
+                    ("extra".into(), serde_json::json!(1)),
+                ]
+                .into(),
+            ),
+            slot(
+                "mistyped-parameter",
+                "rsi",
+                "value",
+                close(),
+                [("time-period".into(), serde_json::json!("2"))].into(),
+            ),
+            slot(
+                "range-parameter",
+                "rsi",
+                "value",
+                close(),
+                [("time-period".into(), serde_json::json!(1))].into(),
+            ),
+            slot(
+                "conditional-parameter",
+                "rsi",
+                "value",
+                close(),
+                [(
+                    "time-period".into(),
+                    serde_json::json!({"if":true,"then":2}),
+                )]
+                .into(),
+            ),
+            slot(
+                "expression-parameter",
+                "rsi",
+                "value",
+                close(),
+                [(
+                    "time-period".into(),
+                    serde_json::json!({"expression":"1+1"}),
+                )]
+                .into(),
+            ),
+            slot(
+                "slot-parameter",
+                "rsi",
+                "value",
+                close(),
+                [("time-period".into(), serde_json::json!({"slot":"other"}))].into(),
+            ),
+            slot(
+                "unknown-reference",
+                "rsi",
+                "value",
+                close(),
+                [(
+                    "time-period".into(),
+                    serde_json::json!({"strategyParameter":"missing"}),
+                )]
+                .into(),
+            ),
+        ];
+        let manifest = manifest(slots);
+        let freeze = || {
+            validate_and_freeze(
+                &manifest,
+                &"a".repeat(64),
+                &EngineIdentity {
+                    engine_build_id: "test-build".into(),
+                },
+            )
+            .unwrap_err()
+        };
+        let first = freeze();
+        let replay = freeze();
+        assert_eq!(first, replay);
+        assert_eq!(first.issues.len(), 11);
+        let by_slot = first
+            .issues
+            .iter()
+            .map(|item| (item.slot.as_deref().unwrap(), item.code.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(by_slot["unknown-indicator"], "unknown-indicator");
+        assert_eq!(by_slot["unknown-output"], "unknown-indicator-output");
+        assert_eq!(by_slot["array-input"], "invalid-indicator-input");
+        assert_eq!(
+            by_slot["mistyped-parameter"],
+            "mistyped-indicator-parameter"
+        );
+        assert_eq!(by_slot["range-parameter"], "invalid-indicator-parameter");
+        assert_eq!(by_slot["extra-parameter"], "unknown-indicator-parameter");
+        assert_eq!(by_slot["unknown-reference"], "unknown-strategy-parameter");
+        for name in [
+            "null-parameter",
+            "conditional-parameter",
+            "expression-parameter",
+            "slot-parameter",
+        ] {
+            assert_eq!(by_slot[name], "invalid-indicator-parameter");
+        }
+    }
+
+    #[test]
+    fn fixed_generic_and_explicit_volume_inputs_freeze_only_catalog_roles() {
+        let valid = manifest(vec![
+            FeatureSlotDefinition {
+                name: "average-price".into(),
+                source: FeatureSlotSource::BuiltIn {
+                    indicator: "avgprice".into(),
+                    output: "value".into(),
+                    inputs: BTreeMap::new(),
+                    parameters: BTreeMap::new(),
+                },
+            },
+            FeatureSlotDefinition {
+                name: "obv".into(),
+                source: FeatureSlotSource::BuiltIn {
+                    indicator: "obv".into(),
+                    output: "value".into(),
+                    inputs: [
+                        ("real-0".into(), serde_json::json!("close")),
+                        ("volume".into(), serde_json::json!("quote-volume")),
+                    ]
+                    .into(),
+                    parameters: BTreeMap::new(),
+                },
+            },
+        ]);
+        assert!(
+            validate_and_freeze(
+                &valid,
+                &"a".repeat(64),
+                &EngineIdentity {
+                    engine_build_id: "test-build".into(),
+                }
+            )
+            .is_ok()
+        );
+
+        let invalid = manifest(vec![FeatureSlotDefinition {
+            name: "obv".into(),
+            source: FeatureSlotSource::BuiltIn {
+                indicator: "obv".into(),
+                output: "value".into(),
+                inputs: [
+                    ("real-0".into(), serde_json::json!("close")),
+                    ("volume".into(), serde_json::json!("close")),
+                ]
+                .into(),
+                parameters: BTreeMap::new(),
+            },
+        }]);
+        let error = validate_and_freeze(
+            &invalid,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.issues[0].code, "invalid-indicator-input");
+        assert_eq!(error.issues[0].field.as_deref(), Some("volume"));
+    }
+
+    #[test]
+    fn real_parameter_references_require_decimal_strategy_parameters() {
+        let mut manifest = manifest(vec![FeatureSlotDefinition {
+            name: "upper-band".into(),
+            source: FeatureSlotSource::BuiltIn {
+                indicator: "bbands".into(),
+                output: "upper-band".into(),
+                inputs: [("real-0".into(), serde_json::json!("close"))].into(),
+                parameters: [(
+                    "deviations-up".into(),
+                    serde_json::json!({"strategyParameter":"deviation"}),
+                )]
+                .into(),
+            },
+        }]);
+        manifest.parameters = vec![ParameterDefinition {
+            name: "deviation".into(),
+            parameter_type: ParameterType::String,
+            default_value: "2.0".into(),
+            allowed_values: vec![],
+        }];
+        let error = validate_and_freeze(
+            &manifest,
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.issues[0].code, "mistyped-indicator-parameter");
+        assert_eq!(error.issues[0].field.as_deref(), Some("deviations-up"));
+    }
+
+    #[test]
+    fn plan_limits_are_rejected_before_freezing_allocations() {
+        let slots = (0..=MAX_FEATURE_SLOTS)
+            .map(|index| market(&format!("slot-{index}"), MarketField::Close))
+            .collect();
+        let error = validate_and_freeze(
+            &manifest(slots),
+            &"a".repeat(64),
+            &EngineIdentity {
+                engine_build_id: "test-build".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .issues
+                .iter()
+                .any(|issue| issue.code == "too-many-feature-slots")
         );
     }
 }

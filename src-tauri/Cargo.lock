@@ -40,6 +40,7 @@ dependencies = [
  "ada-data-core",
  "adaq-component-sdk",
  "adaq-component-tooling",
+ "adaq-indicator-engine",
  "rusqlite",
  "rust_decimal",
  "serde",
@@ -69,6 +70,7 @@ name = "adaq-component-tooling"
 version = "0.1.0"
 dependencies = [
  "adaq-component-sdk",
+ "adaq-indicator-engine",
  "rust_decimal",
  "semver",
  "serde",

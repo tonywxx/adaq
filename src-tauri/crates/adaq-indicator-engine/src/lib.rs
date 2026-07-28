@@ -133,6 +133,12 @@ pub struct CompiledIndicator {
     lookback: usize,
 }
 
+impl CompiledIndicator {
+    pub fn lookback(&self) -> usize {
+        self.lookback
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndicatorColumn {
     Real(Vec<Option<f64>>),

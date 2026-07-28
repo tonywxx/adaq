@@ -13,9 +13,10 @@ pub use package::{
     pack_component,
 };
 pub use plan::{
-    EngineIdentity, FactorInstancePlanInput, FrozenFactorView, FrozenIndicatorPlan,
-    FrozenSourceView, PlanIssue, PlanLoadError, PlanValidationError, validate_and_freeze,
-    validate_and_freeze_with_factors,
+    EngineIdentity, FactorInstancePlanInput, FrozenBuiltInParameter, FrozenFactorView,
+    FrozenIndicatorPlan, FrozenSourceView, PlanIssue, PlanLoadError, PlanValidationError,
+    builtin_engine_market_field, validate_and_freeze, validate_and_freeze_with_factors,
+    validate_and_freeze_with_factors_and_parameters,
 };
 pub use runtime::{ComponentParameterValue, FactorSchema, RunLimits, WasmLoader};
 pub use templates::{ComponentTemplate, create_project};

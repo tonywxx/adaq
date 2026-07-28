@@ -32,6 +32,7 @@ ada-data-core = { path = "crates/ada-data-core" }
 ada-backtest-core = { path = "crates/ada-backtest-core" }
 adaq-component-sdk = { path = "crates/adaq-component-sdk", features = ["host"] }
 adaq-component-tooling = { path = "crates/adaq-component-tooling" }
+adaq-indicator-engine = { path = "crates/adaq-indicator-engine" }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
