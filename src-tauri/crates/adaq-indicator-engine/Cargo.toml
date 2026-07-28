@@ -1,0 +1,13 @@
+[package]
+name = "adaq-indicator-engine"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Pinned native TA-Lib indicator engine for ADAQ"
+build = "build.rs"
+
+[build-dependencies]
+cmake = "0.1"
+flate2 = "1"
+sha2 = "0.11"
+tar = "0.4"
