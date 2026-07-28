@@ -131,7 +131,13 @@ export function BacktestPage() {
 	useEffect(() => {
 		if (userId) {
 			void invoke<LibraryComponent[]>("component_list", { request: { userId } })
-				.then(setComponents)
+				.then((items) => {
+					setComponents(items);
+					if (items.some((item) => item.compatibilityError))
+						setMessage(
+							"Incompatible Components are hidden. Remove them from Component Library and import Manifest 1.0 packages.",
+						);
+				})
 				.catch((error) => setMessage(String(error)));
 			void invoke<RunSummary[]>("backtest_list", { request: { userId } })
 				.then(setHistory)
@@ -139,11 +145,17 @@ export function BacktestPage() {
 		}
 	}, [userId]);
 	const factors = useMemo(
-		() => components.filter((item) => item.kind === "factor"),
+		() =>
+			components.filter(
+				(item) => item.kind === "factor" && !item.compatibilityError,
+			),
 		[components],
 	);
 	const strategies = useMemo(
-		() => components.filter((item) => item.kind === "strategy"),
+		() =>
+			components.filter(
+				(item) => item.kind === "strategy" && !item.compatibilityError,
+			),
 		[components],
 	);
 	const selectedStrategy = strategies.find(

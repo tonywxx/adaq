@@ -42,6 +42,7 @@ pub struct LibraryComponent {
     wasm_sha256: String,
     parameters: Vec<ParameterDefinition>,
     dependencies: Vec<ComponentDependency>,
+    compatibility_error: Option<String>,
 }
 
 impl M3State {
@@ -165,6 +166,7 @@ impl M3State {
             wasm_sha256: package.manifest.wasm_sha256,
             parameters: package.manifest.parameters,
             dependencies: package.manifest.dependencies,
+            compatibility_error: None,
         })
     }
 
@@ -196,19 +198,37 @@ impl M3State {
             .into_iter()
             .map(
                 |(component_id, version, name, kind, archive_sha256, wasm_sha256, path)| {
-                    let package =
-                        ComponentPackage::read(&fs::read(path).map_err(string)?).map_err(string)?;
-                    Ok(LibraryComponent {
-                        component_id,
-                        version,
-                        sdk_version: package.manifest.sdk_version.to_string(),
-                        name,
-                        kind,
-                        archive_sha256,
-                        wasm_sha256,
-                        parameters: package.manifest.parameters,
-                        dependencies: package.manifest.dependencies,
-                    })
+                    match fs::read(path)
+                        .map_err(string)
+                        .and_then(|bytes| ComponentPackage::read(&bytes).map_err(string))
+                    {
+                        Ok(package) => Ok(LibraryComponent {
+                            component_id,
+                            version,
+                            sdk_version: package.manifest.sdk_version.to_string(),
+                            name,
+                            kind,
+                            archive_sha256,
+                            wasm_sha256,
+                            parameters: package.manifest.parameters,
+                            dependencies: package.manifest.dependencies,
+                            compatibility_error: None,
+                        }),
+                        Err(error) => Ok(LibraryComponent {
+                            component_id,
+                            version,
+                            sdk_version: String::new(),
+                            name,
+                            kind,
+                            archive_sha256,
+                            wasm_sha256,
+                            parameters: vec![],
+                            dependencies: vec![],
+                            compatibility_error: Some(format!(
+                                "Incompatible Component Package: {error}"
+                            )),
+                        }),
+                    }
                 },
             )
             .collect()
@@ -1001,7 +1021,11 @@ fn string(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use adaq_component_tooling::{ComponentManifest, pack_component};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        io::{Cursor, Write},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use zip::{ZipWriter, write::SimpleFileOptions};
 
     fn fixture(name: &str) -> (ComponentManifest, Vec<u8>) {
         let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1014,6 +1038,76 @@ mod tests {
         )))
         .unwrap();
         (manifest, wasm)
+    }
+
+    fn legacy_package() -> Vec<u8> {
+        let manifest = r#"{
+            "componentId":"22222222-2222-4222-8222-222222222222",
+            "version":"1.0.0",
+            "name":"Legacy Strategy",
+            "kind":"strategy",
+            "abiVersion":"1.0.0",
+            "inputNames":["trend.close-change"]
+        }"#;
+        let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default();
+        archive.start_file("manifest.json", options).unwrap();
+        archive.write_all(manifest.as_bytes()).unwrap();
+        archive.start_file("component.wasm", options).unwrap();
+        archive.write_all(b"\0asm\x0d\0\x01\0").unwrap();
+        archive.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn component_list_keeps_incompatible_packages_deletable() {
+        let root = std::env::temp_dir().join(format!(
+            "adaq-legacy-component-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = M3State::open(&root).unwrap();
+        let archive_hash = "a".repeat(64);
+        let path = root.join("legacy.adaq");
+        fs::write(&path, legacy_package()).unwrap();
+        let database = state.database.lock().unwrap();
+        database
+            .execute(
+                "INSERT INTO component_content VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    archive_hash,
+                    "22222222-2222-4222-8222-222222222222",
+                    "1.0.0",
+                    "Legacy Strategy",
+                    "strategy",
+                    "b".repeat(64),
+                    path.to_string_lossy()
+                ],
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO component_access VALUES ('alice', ?1)",
+                [&archive_hash],
+            )
+            .unwrap();
+        drop(database);
+
+        let components = state.list_components("alice").unwrap();
+        assert_eq!(components.len(), 1);
+        assert!(
+            components[0]
+                .compatibility_error
+                .as_deref()
+                .unwrap()
+                .contains("inputNames")
+        );
+        state
+            .delete_component("alice", &components[0].archive_sha256)
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

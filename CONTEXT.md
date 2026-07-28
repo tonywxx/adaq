@@ -108,6 +108,10 @@ _Avoid_: Filled bar, synthetic zero-volume bar
 Closed Bars for one Instrument and Bar Interval over a requested Historical Bar Range, accompanied by any contiguous Bar Gap ranges after continuous trading began. Bar Gaps do not make the query fail.
 _Avoid_: Bare bar array
 
+**Continuous Bar Segment**:
+A maximal uninterrupted sequence of Closed Bars for one Instrument and Bar Interval within a Bar Series. A Bar Gap separates adjacent Continuous Bar Segments.
+_Avoid_: Gap-filled series, synthetic continuity
+
 **Bar Open Time**:
 The UTC instant at which an OHLCV Bar interval begins, represented at boundaries as Unix milliseconds.
 _Avoid_: Local time, timestamp
@@ -141,6 +145,10 @@ _Avoid_: Turnover, volume
 **Indicator**:
 A common market-series calculation provided free by the ADAQ host and referenced by name and parameters.
 _Avoid_: Factor, paid factor
+
+**Indicator Catalog**:
+The versioned host-owned registry of Built-in Indicators that ADAQ supports, including their inputs, parameters, outputs, and Warmup rules. It is an explicit public contract rather than every function present in the underlying analytical library.
+_Avoid_: Raw TA-Lib function list, automatically discovered functions
 
 **Factor Component**:
 An independently packaged Component that transforms declared host inputs into one or more named scalar analytical values.
@@ -179,7 +187,7 @@ The immutable record of the exact Component packages, hashes, contracts, and tru
 _Avoid_: Latest version, floating dependency
 
 **Feature Slot**:
-A pre-bound numeric position through which the host supplies one named Indicator or Factor value to a Component during a Run.
+A stable, uniquely named, ordered input declared by a Strategy Component together with its exact Market Field, Indicator, or Factor source requirement and bound by the host to one finite analytical scalar before a Run. Users may configure only declared parameters and dependencies; they cannot add, rename, remove, reorder, or arbitrarily replace the Strategy Component's slots.
 _Avoid_: JSON feature map, dynamic lookup
 
 ### Research and Execution
@@ -201,8 +209,12 @@ The exposure constraint selected for a Strategy Instance: Long Only permits targ
 _Avoid_: Trade direction, signal type
 
 **Indicator Plan**:
-The immutable resolution of a Strategy Instance's declared Built-in Indicators, their parameters, warmup requirements, and Feature Slots.
+The fully validated, immutable pre-Run resolution of a Strategy Component's Feature Slots to their exact declared Market Fields, Indicator outputs, or Factor outputs for one Strategy Instance, including parameters and exact warmup requirements.
 _Avoid_: Runtime indicator request
+
+**Warmup**:
+The exact leading Closed Bars in each Continuous Bar Segment that prepare all bound analytical sources before a Strategy Instance may be invoked. It marks output availability rather than statistical convergence; a Bar Gap starts a new segment and therefore restarts Warmup.
+_Avoid_: Optional startup delay, approximate lookback
 
 **Market Data Snapshot**:
 An immutable identity for the exact Closed Bar dataset used by a reproducible Run.
@@ -221,7 +233,7 @@ The complete Target Exposure emitted by a Strategy Instance for one Closed Bar; 
 _Avoid_: Buy signal, sell signal, optional decision
 
 **Run Pause**:
-The recorded absence of a Target Decision while a Run is warming up or lacks a required input; missing data is never replaced with a synthetic analytical value.
+The recorded absence of a Target Decision while a Run is warming up or lacks a required input; missing data is never replaced with a synthetic analytical value. A Run Pause does not mean flat or close, produces no new order intention, and leaves the current exposure unchanged.
 _Avoid_: Zero signal, implicit skip
 
 **Execution Profile**:

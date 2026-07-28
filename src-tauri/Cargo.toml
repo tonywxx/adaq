@@ -42,3 +42,6 @@ tauri-plugin-http = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 rust_decimal = "1"
 sha2 = "0.11"
+
+[dev-dependencies]
+zip = { version = "7", default-features = false, features = ["deflate"] }

@@ -52,6 +52,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "zip 7.2.0",
 ]
 
 [[package]]

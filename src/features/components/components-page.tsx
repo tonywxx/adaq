@@ -24,6 +24,7 @@ export type LibraryComponent = {
 		allowedValues: string[];
 	}>;
 	dependencies: Array<{ componentId: string; version: string; alias: string }>;
+	compatibilityError?: string;
 };
 
 export function ComponentsPage() {
@@ -105,6 +106,11 @@ export function ComponentsPage() {
 							</CardDescription>
 						</CardHeader>
 						<CardContent className="space-y-3 font-mono text-xs text-muted-foreground">
+							{item.compatibilityError && (
+								<p className="font-sans text-destructive">
+									{item.compatibilityError}. Delete it and import a Manifest 1.0 package.
+								</p>
+							)}
 							{item.componentId}
 							<br />
 							{item.wasmSha256}
