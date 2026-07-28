@@ -39,8 +39,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    catalog = json.loads(CATALOG.read_text())
-    contract = json.loads(CONTRACT.read_text())
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
     rendered = {
         REPO / "docs/reference/indicator-catalog.md": catalog_reference(catalog),
         REPO / "docs/reference/component-manifest.schema.json": json.dumps(contract, indent=2, sort_keys=True) + "\n",
@@ -48,10 +48,10 @@ def main():
     }
     for path, text in rendered.items():
         if args.check:
-            assert path.read_text().replace("\r\n", "\n") == text, f"{path.relative_to(REPO)} is stale; run scripts/generate_references.py"
+            assert path.read_text(encoding="utf-8").replace("\r\n", "\n") == text, f"{path.relative_to(REPO)} is stale; run scripts/generate_references.py"
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
+            path.write_text(text, encoding="utf-8")
 
 if __name__ == "__main__":
     main()
