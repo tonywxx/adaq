@@ -1,0 +1,10 @@
+{
+  "componentId": "{{component_id}}",
+  "version": "0.1.0",
+  "name": "{{display_name}}",
+  "kind": "factor",
+  "sdkVersion": "{{sdk_version}}",
+  "abiVersion": "1.0.0",
+  "outputNames": ["close-change"],
+  "warmupBars": 1
+}

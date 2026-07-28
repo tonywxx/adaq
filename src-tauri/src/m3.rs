@@ -9,19 +9,21 @@ use std::{
 };
 
 use ada_backtest_core::{
-    ComponentPackage, ExecutionProfile, MarketDataSnapshot, SnapshotStore, SpotSimulator,
+    ExecutionProfile, MarketDataSnapshot, SnapshotStore, SpotSimulator,
     TargetDecision as SimulationDecision,
 };
 use ada_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
+use adaq_component_tooling::{
+    ComponentDependency, ComponentKind, ComponentPackage, ParameterDefinition, RunLimits,
+    component_parameters, verify_package,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::run_engine::{
-    FactorRunComponent, FeatureBinding, FeatureSource, PositionMode, RunEngine, RunLimits,
-    RunRequest,
+    FactorRunComponent, FeatureBinding, FeatureSource, PositionMode, RunEngine, RunRequest,
 };
-use crate::{ComponentParameterValue, WasmLoader, factor_abi, strategy_abi};
 
 pub struct M3State {
     root: PathBuf,
@@ -35,12 +37,13 @@ pub struct M3State {
 pub struct LibraryComponent {
     component_id: String,
     version: String,
+    sdk_version: String,
     name: String,
     kind: String,
     archive_sha256: String,
     wasm_sha256: String,
-    parameters: Vec<ada_backtest_core::ParameterDefinition>,
-    dependencies: Vec<ada_backtest_core::ComponentDependency>,
+    parameters: Vec<ParameterDefinition>,
+    dependencies: Vec<ComponentDependency>,
 }
 
 impl M3State {
@@ -108,10 +111,10 @@ impl M3State {
     ) -> Result<LibraryComponent, String> {
         validate_user(user_id)?;
         let package = ComponentPackage::read(bytes).map_err(string)?;
-        let runtime_path = self.runtime_component(&package)?;
-        validate_component_contract(&package, &runtime_path)?;
+        verify_package(&package)?;
         let component_id = package.manifest.component_id.to_string();
         let version = package.manifest.version.to_string();
+        let sdk_version = package.manifest.sdk_version.to_string();
         let kind = format!("{:?}", package.manifest.kind).to_lowercase();
         let mut database = self.database.lock().map_err(string)?;
         let existing: Option<(String, String)> = database.query_row(
@@ -157,6 +160,7 @@ impl M3State {
         Ok(LibraryComponent {
             component_id,
             version,
+            sdk_version,
             name: package.manifest.name,
             kind,
             archive_sha256: package.archive_sha256,
@@ -199,6 +203,7 @@ impl M3State {
                     Ok(LibraryComponent {
                         component_id,
                         version,
+                        sdk_version: package.manifest.sdk_version.to_string(),
                         name,
                         kind,
                         archive_sha256,
@@ -775,15 +780,11 @@ fn execute_backtest(
         return Err("Factor Instance aliases must be unique".into());
     }
     let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
-    if factors.iter().any(|(_, factor)| {
-        !matches!(
-            factor.manifest.kind,
-            ada_backtest_core::ComponentKind::Factor
-        )
-    }) || !matches!(
-        strategy.manifest.kind,
-        ada_backtest_core::ComponentKind::Strategy
-    ) {
+    if factors
+        .iter()
+        .any(|(_, factor)| !matches!(factor.manifest.kind, ComponentKind::Factor))
+        || !matches!(strategy.manifest.kind, ComponentKind::Strategy)
+    {
         return Err("Backtest requires a Factor and Strategy Component".into());
     }
     for dependency in &strategy.manifest.dependencies {
@@ -997,44 +998,6 @@ fn fingerprint(request: &BacktestRunRequest) -> Result<String, String> {
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn component_parameters(
-    manifest: &ada_backtest_core::ComponentManifest,
-    overrides: Option<&HashMap<String, String>>,
-) -> Result<Vec<ComponentParameterValue>, String> {
-    manifest
-        .parameters
-        .iter()
-        .map(|parameter| {
-            let value = overrides
-                .and_then(|values| values.get(&parameter.name))
-                .unwrap_or(&parameter.default_value);
-            if !parameter.allowed_values.is_empty() && !parameter.allowed_values.contains(value) {
-                return Err(format!(
-                    "Parameter {} is not an allowed value",
-                    parameter.name
-                ));
-            }
-            match parameter.parameter_type {
-                ada_backtest_core::ParameterType::Decimal => {
-                    rust_decimal::Decimal::from_str_exact(value).map_err(string)?;
-                    Ok(ComponentParameterValue::Decimal(value.clone()))
-                }
-                ada_backtest_core::ParameterType::Integer => value
-                    .parse()
-                    .map(ComponentParameterValue::Integer)
-                    .map_err(string),
-                ada_backtest_core::ParameterType::Boolean => value
-                    .parse()
-                    .map(ComponentParameterValue::Boolean)
-                    .map_err(string),
-                ada_backtest_core::ParameterType::String => {
-                    Ok(ComponentParameterValue::String(value.clone()))
-                }
-            }
-        })
-        .collect()
-}
-
 fn run_view(run: &BacktestRun, start: i64, end: i64, max_points: usize) -> BacktestRunView {
     let mut result = run.result.clone();
     result.equity = aggregate_equity(&result.equity, start, end, max_points);
@@ -1097,108 +1060,6 @@ fn aggregate_equity(
         .collect()
 }
 
-fn validate_component_contract(package: &ComponentPackage, path: &Path) -> Result<(), String> {
-    let path = path.to_string_lossy();
-    let parameters = component_parameters(&package.manifest, None)?;
-    match package.manifest.kind {
-        ada_backtest_core::ComponentKind::Factor => {
-            let loader = WasmLoader::default();
-            loader.load_with_parameters(&path, &parameters)?;
-            let schema = loader.describe_factor()?;
-            if schema.output_names != package.manifest.output_names
-                || schema.warmup_bars != package.manifest.warmup_bars
-            {
-                return Err("Factor runtime schema does not match manifest".into());
-            }
-            let bars = ["100", "101", "99"]
-                .into_iter()
-                .enumerate()
-                .map(
-                    |(index, close)| factor_abi::exports::adaq::factor::api::ClosedBar {
-                        open_time_ms: index as i64,
-                        open: close.into(),
-                        high: close.into(),
-                        low: close.into(),
-                        close: close.into(),
-                        base_volume: "1".into(),
-                        quote_volume: close.into(),
-                    },
-                )
-                .collect::<Vec<_>>();
-            let whole = loader.process_factor(bars.clone())?;
-            let chunked_loader = WasmLoader::default();
-            chunked_loader.load_with_parameters(&path, &parameters)?;
-            let mut chunked = chunked_loader.process_factor(bars[..1].to_vec())?;
-            chunked.extend(chunked_loader.process_factor(bars[1..].to_vec())?);
-            if !factor_results_equal(&whole, &chunked) {
-                return Err("Factor is not chunk-boundary independent".into());
-            }
-        }
-        ada_backtest_core::ComponentKind::Strategy => {
-            let loader = WasmLoader::default();
-            let slots = package
-                .manifest
-                .input_names
-                .iter()
-                .map(
-                    |name| strategy_abi::exports::adaq::strategy::api::FeatureSlot {
-                        name: name.clone(),
-                    },
-                )
-                .collect::<Vec<_>>();
-            loader.load_strategy_with_parameters(&path, slots.clone(), &parameters)?;
-            let frames = (0..3)
-                .map(
-                    |index| strategy_abi::exports::adaq::strategy::api::FeatureFrame {
-                        open_time_ms: index,
-                        values: vec![index as f64; package.manifest.input_names.len()],
-                    },
-                )
-                .collect::<Vec<_>>();
-            let targets = loader.process_strategy(frames.clone())?;
-            let chunked_loader = WasmLoader::default();
-            chunked_loader.load_strategy_with_parameters(&path, slots, &parameters)?;
-            let mut chunked = chunked_loader.process_strategy(frames[..1].to_vec())?;
-            chunked.extend(chunked_loader.process_strategy(frames[1..].to_vec())?);
-            if targets != chunked
-                || targets.len() != frames.len()
-                || targets.iter().any(|target| {
-                    match rust_decimal::Decimal::from_str_exact(target) {
-                        Ok(value) => {
-                            value < rust_decimal::Decimal::ZERO
-                                || value > rust_decimal::Decimal::ONE
-                        }
-                        Err(_) => true,
-                    }
-                })
-            {
-                return Err("Strategy conformance Target Exposure is invalid".into());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn factor_results_equal(
-    left: &[Option<Vec<factor_abi::exports::adaq::factor::api::NamedScalar>>],
-    right: &[Option<Vec<factor_abi::exports::adaq::factor::api::NamedScalar>>],
-) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .zip(right)
-            .all(|(left, right)| match (left, right) {
-                (None, None) => true,
-                (Some(left), Some(right)) => {
-                    left.len() == right.len()
-                        && left.iter().zip(right).all(|(left, right)| {
-                            left.name == right.name && left.value.to_bits() == right.value.to_bits()
-                        })
-                }
-                _ => false,
-            })
-}
-
 fn validate_user(user_id: &str) -> Result<(), String> {
     if user_id.trim().is_empty() || user_id.len() > 128 {
         Err("User ID is invalid".into())
@@ -1214,7 +1075,7 @@ fn string(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ada_backtest_core::{ComponentManifest, pack_component};
+    use adaq_component_tooling::{ComponentManifest, pack_component};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture(name: &str) -> (ComponentManifest, Vec<u8>) {

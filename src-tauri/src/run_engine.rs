@@ -1,30 +1,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use ada_data_core::{BarGap, OhlcvBar};
+use adaq_component_sdk::host::{factor_abi, strategy_abi};
+use adaq_component_tooling::{ComponentParameterValue, RunLimits, WasmLoader};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
-
-use crate::{ComponentParameterValue, WasmLoader, factor_abi, strategy_abi};
-
-const DEFAULT_FUEL_PER_CALL: u64 = 10_000_000;
-const DEFAULT_MEMORY_BYTES: usize = 64 * 1024 * 1024;
-const DEFAULT_MAX_BARS: usize = 1_000_000;
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RunLimits {
-    pub fuel_per_call: u64,
-    pub memory_bytes: usize,
-    pub max_bars: usize,
-}
-
-impl Default for RunLimits {
-    fn default() -> Self {
-        Self {
-            fuel_per_call: DEFAULT_FUEL_PER_CALL,
-            memory_bytes: DEFAULT_MEMORY_BYTES,
-            max_bars: DEFAULT_MAX_BARS,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PositionMode {

@@ -6,7 +6,12 @@ authors = ["TONy.W"]
 edition = "2024"
 
 [workspace]
-members = ["crates/ada-data-core", "crates/ada-backtest-core"]
+members = [
+    "crates/ada-data-core",
+    "crates/ada-backtest-core",
+    "crates/adaq-component-sdk",
+    "crates/adaq-component-tooling",
+]
 resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -24,6 +29,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 ada-data-core = { path = "crates/ada-data-core" }
 ada-backtest-core = { path = "crates/ada-backtest-core" }
+adaq-component-sdk = { path = "crates/adaq-component-sdk", features = ["host"] }
+adaq-component-tooling = { path = "crates/adaq-component-tooling" }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
@@ -35,9 +42,3 @@ tauri-plugin-http = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 rust_decimal = "1"
 sha2 = "0.11"
-wasmtime = { version = "46.0.1", default-features = false, features = [
-    "std",
-    "runtime",
-    "component-model",
-    "cranelift",
-] }

@@ -1,0 +1,24 @@
+[package]
+name = "adaq-component-sdk"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Rust guest SDK for ADAQ Factor and Strategy Components"
+repository = "https://github.com/tonywxx/adaq"
+readme = "README.md"
+
+[features]
+default = []
+factor = ["dep:wit-bindgen"]
+strategy = ["dep:wit-bindgen"]
+host = ["dep:wasmtime"]
+
+[dependencies]
+rust_decimal = "1"
+wit-bindgen = { version = "0.45.1", optional = true }
+wasmtime = { version = "46.0.1", default-features = false, features = [
+    "std",
+    "runtime",
+    "component-model",
+    "cranelift",
+], optional = true }

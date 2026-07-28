@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "name": "Close Change Fixture",
   "kind": "factor",
+  "sdkVersion": "0.1.0",
   "abiVersion": "1.0.0",
   "parameters": [
     {

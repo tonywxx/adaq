@@ -1,0 +1,12 @@
+[package]
+name = "{{name}}"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+{{sdk_dependency}}
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]

@@ -56,6 +56,7 @@ pub struct ComponentManifest {
     pub version: Version,
     pub name: String,
     pub kind: ComponentKind,
+    pub sdk_version: Version,
     pub abi_version: Version,
     #[serde(default)]
     pub wasm_sha256: String,
@@ -160,7 +161,8 @@ pub fn pack_component(
 
 fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), PackageError> {
     if manifest.name.trim().is_empty()
-        || manifest.abi_version.major != 1
+        || manifest.sdk_version != Version::parse(adaq_component_sdk::SDK_VERSION).unwrap()
+        || manifest.abi_version != Version::parse(adaq_component_sdk::ABI_VERSION).unwrap()
         || manifest.wasm_sha256 != sha256(wasm)
         || !wasm.starts_with(b"\0asm")
     {
@@ -265,6 +267,7 @@ mod tests {
             version: Version::new(1, 2, 3),
             name: "Fixture".into(),
             kind: ComponentKind::Factor,
+            sdk_version: Version::parse(adaq_component_sdk::SDK_VERSION).unwrap(),
             abi_version: Version::new(1, 0, 0),
             wasm_sha256: String::new(),
             parameters: vec![],
@@ -285,6 +288,11 @@ mod tests {
 
         let mut invalid = manifest();
         invalid.wasm_sha256 = "wrong".into();
+        assert!(validate_manifest(&invalid, wasm).is_err());
+
+        let mut invalid = manifest();
+        invalid.sdk_version = Version::new(0, 0, 0);
+        invalid.wasm_sha256 = sha256(wasm);
         assert!(validate_manifest(&invalid, wasm).is_err());
 
         let mut invalid = manifest();

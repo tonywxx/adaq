@@ -1,0 +1,136 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentTemplate {
+    Factor,
+    Strategy,
+}
+
+impl ComponentTemplate {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "factor" => Ok(Self::Factor),
+            "strategy" => Ok(Self::Strategy),
+            _ => Err("Component kind must be factor or strategy".into()),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Factor => "factor",
+            Self::Strategy => "strategy",
+        }
+    }
+}
+
+pub fn create_project(
+    kind: ComponentTemplate,
+    name: &str,
+    parent: &Path,
+    sdk_path: Option<&Path>,
+) -> Result<PathBuf, String> {
+    validate_name(name)?;
+    let root = parent.join(name);
+    if root.exists() {
+        return Err(format!("Project already exists: {}", root.display()));
+    }
+    fs::create_dir_all(root.join("src")).map_err(string)?;
+    let dependency = match sdk_path {
+        Some(path) => format!(
+            "adaq-component-sdk = {{ path = \"{}\", features = [\"{}\"] }}",
+            path.to_string_lossy()
+                .replace('\\', "/")
+                .replace('"', "\\\""),
+            kind.name()
+        ),
+        None => format!(
+            "adaq-component-sdk = {{ version = \"={}\", features = [\"{}\"] }}",
+            adaq_component_sdk::SDK_VERSION,
+            kind.name()
+        ),
+    };
+    let display_name = name
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let component_id = Uuid::new_v4().to_string();
+    let render = |template: &str| {
+        template
+            .replace("{{name}}", name)
+            .replace("{{display_name}}", &display_name)
+            .replace("{{component_id}}", &component_id)
+            .replace("{{sdk_dependency}}", &dependency)
+            .replace("{{sdk_version}}", adaq_component_sdk::SDK_VERSION)
+    };
+    let source = match kind {
+        ComponentTemplate::Factor => include_str!("../templates/factor/lib.rs"),
+        ComponentTemplate::Strategy => include_str!("../templates/strategy/lib.rs"),
+    };
+    let manifest = match kind {
+        ComponentTemplate::Factor => include_str!("../templates/factor/manifest.json"),
+        ComponentTemplate::Strategy => include_str!("../templates/strategy/manifest.json"),
+    };
+    fs::write(
+        root.join("Cargo.toml"),
+        render(include_str!("../templates/Cargo.toml.template")),
+    )
+    .map_err(string)?;
+    fs::write(root.join("src/lib.rs"), render(source)).map_err(string)?;
+    fs::write(root.join("manifest.json"), render(manifest)).map_err(string)?;
+    fs::write(
+        root.join("README.md"),
+        render(include_str!("../templates/README.md")),
+    )
+    .map_err(string)?;
+    Ok(root)
+}
+
+fn validate_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || name.starts_with('-')
+        || name.ends_with('-')
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        Err("Project name must use lowercase ASCII letters, digits, and interior hyphens".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn string(error: impl std::fmt::Display) -> String {
+    error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creates_both_project_kinds_without_overwriting() {
+        let root = tempfile::tempdir().unwrap();
+        let sdk = Path::new("/tmp/adaq-component-sdk");
+        for kind in [ComponentTemplate::Factor, ComponentTemplate::Strategy] {
+            let project = create_project(kind, kind.name(), root.path(), Some(sdk)).unwrap();
+            let cargo = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+            let manifest = fs::read_to_string(project.join("manifest.json")).unwrap();
+            assert!(cargo.contains("adaq-component-sdk"));
+            assert!(manifest.contains("\"sdkVersion\": \"0.1.0\""));
+            assert!(create_project(kind, kind.name(), root.path(), Some(sdk)).is_err());
+        }
+    }
+}

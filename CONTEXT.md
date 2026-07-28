@@ -159,15 +159,15 @@ A Strategy Component that embeds its own factor logic; it is a product label rat
 _Avoid_: Trading Combo Component, third component type
 
 **Component Package**:
-An installable bundle containing a Component binary, its authoritative Component Meta, optional Validation Reports, integrity hashes, and trust information.
+An immutable installable bundle containing a Component binary and its authoritative Component Meta. Validation Reports and trust records remain separate and reference the exact package hash.
 _Avoid_: Bare WASM file, plugin DLL
 
 **Component Meta**:
-Stable information describing a Component's identity, versions, parameters, inputs, outputs, dependencies, warmup, supported contexts, and licensing.
+Stable information describing a Component's identity, versions, parameters, inputs, outputs, dependencies, warmup, and licensing.
 _Avoid_: Backtest result, performance claim
 
 **Validation Report**:
-Historical evidence produced for an exact Component, data snapshot, configuration, period, and validation method; it does not guarantee future performance.
+Historical evidence associated with an exact Component Package hash, data snapshot, configuration, period, and validation method; it does not guarantee future performance.
 _Avoid_: Component Meta, profitability guarantee
 
 **Component Dependency Mode**:

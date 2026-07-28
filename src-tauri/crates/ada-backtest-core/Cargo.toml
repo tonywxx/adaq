@@ -10,13 +10,9 @@ arrow-array = "58.3"
 arrow-schema = "58.3"
 parquet = { version = "58.3", default-features = false, features = ["arrow", "snap"] }
 rust_decimal = { version = "1", features = ["serde-with-str"] }
-semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
-uuid = { version = "1", features = ["serde", "v4"] }
-wasmparser = { version = "0.251", features = ["component-model"] }
-zip = { version = "7", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3"

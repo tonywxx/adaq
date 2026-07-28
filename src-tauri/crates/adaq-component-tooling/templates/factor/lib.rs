@@ -29,17 +29,14 @@ impl Guest for Component {
 }
 
 impl GuestInstance for Instance {
-    fn process(
-        &self,
-        bars: Vec<ClosedBar>,
-    ) -> Result<Vec<Option<Vec<NamedScalar>>>, String> {
+    fn process(&self, bars: Vec<ClosedBar>) -> Result<Vec<Option<Vec<NamedScalar>>>, String> {
         bars.into_iter()
             .map(|bar| {
                 let close = parse_decimal(&bar.close)?;
                 let output = match self.previous_close.get() {
-                    Some(previous_close) => Some(vec![NamedScalar {
+                    Some(previous) => Some(vec![NamedScalar {
                         name: "close-change".to_owned(),
-                        value: decimal_to_f64(close - previous_close)?,
+                        value: decimal_to_f64(close - previous)?,
                     }]),
                     None => None,
                 };
