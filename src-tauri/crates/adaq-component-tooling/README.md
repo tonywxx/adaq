@@ -1,5 +1,7 @@
 # ADAQ Component Tooling
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 `adaq-component-tooling` provides the shared package/conformance library used by the Tauri host and the standalone `adaq-component` CLI. The CLI is distributed separately from the desktop app.
 
 ## Install

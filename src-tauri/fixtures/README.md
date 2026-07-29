@@ -1,5 +1,7 @@
 # Executable M5 component examples
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 The fixture crates intentionally build for `wasm32-unknown-unknown`: the
 default WASI Preview 1 adapter adds forbidden ambient imports.
 

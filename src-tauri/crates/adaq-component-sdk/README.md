@@ -1,5 +1,7 @@
 # ADAQ Component SDK
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 `adaq-component-sdk` is the Tauri-independent Rust SDK for implementing ADAQ Factor and Strategy Components. It owns the versioned WIT contracts, generated bindings, exact-decimal helpers, and export macros.
 
 Start from an `adaq-component new` template instead of wiring the SDK manually. A generated Factor enables the `factor` feature; a generated Strategy enables `strategy`.

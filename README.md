@@ -1,5 +1,7 @@
 # ADAQ
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 [![Release](https://github.com/tonywxx/adaq/actions/workflows/release.yml/badge.svg)](https://github.com/tonywxx/adaq/actions/workflows/release.yml)
 
 > **ADAQ** (Ada Quant) is an AI-powered quantitative trading platform for equities and digital crypto assets.
