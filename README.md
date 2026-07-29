@@ -6,11 +6,27 @@
 
 > **ADAQ** (Ada Quant) is an AI-powered quantitative trading platform for equities and digital crypto assets.
 
+ADAQ V1 is a local-first research, backtesting, and simulation desktop app. It does not execute real account orders; live trading is a separate future supervised, host-controlled milestone.
+
 ## Features
 
 - Reproducible local market-data research and backtesting
 - Sandboxed WebAssembly Factor and Strategy Components
 - Immutable, verifiable `.adaq` Component Packages
+- Host-owned TA-Lib Indicator Catalog and frozen Feature Slots
+- Deterministic Spot simulation with immutable Backtest Runs
+
+## Implemented Milestones
+
+| Milestone | Delivered capability |
+|-----------|----------------------|
+| M1 | Fixed WebAssembly Component ABI for `adaq:factor@1.0.0` and `adaq:strategy@1.0.0`. Factor Components transform Closed Bars into named scalar outputs; Strategy Components consume dense Feature Slots and emit complete Target Exposure decisions. |
+| M2 | Deterministic in-memory Run Engine. The host validates Closed Bars, enforces sandbox limits, binds ordered Feature Slots, records warmup or missing-input pauses, and fails closed on invalid data or invalid targets. |
+| M3 | Reproducible crypto Spot Backtest. A Backtest Run immutably binds a Market Data Snapshot, Component Lock, parameters, Indicator Plan, Execution Profile, engine version, and seed. Results persist locally with Target Decisions, simulated orders, fills, equity, fees, metrics, history, and charts. |
+| M4 | Component Developer Kit. The Rust SDK, `adaq-component` CLI, templates, conformance checks, and `.adaq` packaging flow support `new`, `build`, and `verify` for Factor and Strategy Components. |
+| M5 | TA-Lib Indicator Engine, Indicator Catalog, and Feature Slots. The host pins official C TA-Lib v0.7.1, exposes `adaq-indicator-catalog@1.0.0` with 160 Indicators and 179 outputs, freezes canonical Indicator Plans with `planHash`, supports Market, Built-in, and External Factor Slot sources, evaluates by Continuous Bar Segment, resets analytical state at Bar Gaps, and enforces typed Plan/Run errors plus fixed resource ceilings. |
+
+Together, M1-M5 provide the current closed loop: develop a Component, package and verify it, import it into the local Component Library, freeze exact market data and Indicator Plans, run a sandboxed Strategy Backtest, and inspect persisted decisions, fills, metrics, and charts.
 
 ## Develop a Component
 
@@ -31,7 +47,7 @@ adaq-component build
 adaq-component verify dist/my-factor-0.1.0.adaq
 ```
 
-Use `new strategy my-strategy` for a Strategy Component. Import the verified file from `dist/` into ADAQ's Component Library.
+Use `adaq-component new strategy my-strategy` for a Strategy Component. Import the verified file from `dist/` into ADAQ's Component Library.
 
 See the [SDK guide](src-tauri/crates/adaq-component-sdk/README.md), [CLI guide](src-tauri/crates/adaq-component-tooling/README.md), and [Component architecture](CONTEXT.md). The crates currently install from this repository; after publication, `cargo install adaq-component-tooling --locked` will install the same CLI independently of the desktop app.
 
