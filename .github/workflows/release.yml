@@ -2,11 +2,6 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: Version to release (X.Y.Z)
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -30,8 +25,6 @@ jobs:
 
       - name: Validate version and tag
         id: version
-        env:
-          VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -41,28 +34,23 @@ jobs:
             exit 1
           fi
 
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs'
-
-          const version = process.env.VERSION
-          if (!/^\d+\.\d+\.\d+$/.test(version)) {
-            throw new Error(`Invalid stable release version: ${version}`)
-          }
-
-          const packageVersion = JSON.parse(fs.readFileSync('package.json', 'utf8')).version
-          const tauriVersion = JSON.parse(
-            fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'),
-          ).version
-          const cargo = fs.readFileSync('src-tauri/Cargo.toml', 'utf8')
-          const cargoVersion = cargo.match(/^version = "([^"]+)"/m)?.[1]
-          const versions = { packageVersion, tauriVersion, cargoVersion }
-
-          for (const [file, actual] of Object.entries(versions)) {
-            if (actual !== version) {
-              throw new Error(`${file} is ${actual}; expected ${version}`)
+          VERSION=$(node --input-type=module -e '
+            import fs from "node:fs"
+            const version = JSON.parse(fs.readFileSync("package.json","utf8")).version
+            if (!/^\d+\.\d+\.\d+$/.test(version)) {
+              process.exitCode = 1; return
             }
-          }
-          NODE
+            const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json","utf8")).version
+            const cargo = fs.readFileSync("src-tauri/Cargo.toml","utf8")
+            const cargoVersion = cargo.match(/^version = "([^"]+)"/m)?.[1]
+            for (const [file, actual] of Object.entries({tauri, cargoVersion})) {
+              if (actual !== version) {
+                console.error(`${file} is ${actual}; expected ${version}`)
+                process.exitCode = 1; return
+              }
+            }
+            process.stdout.write(version)
+          ')
 
           if git rev-parse --verify --quiet "refs/tags/v${VERSION}"; then
             echo "Tag v${VERSION} already exists." >&2
