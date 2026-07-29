@@ -15,8 +15,8 @@ host = ["dep:wasmtime"]
 
 [dependencies]
 rust_decimal = "1"
-wit-bindgen = { version = "0.45.1", optional = true }
-wasmtime = { version = "46.0.1", default-features = false, features = [
+wit-bindgen = { version = "0.60.0", optional = true }
+wasmtime = { version = "47.0.2", default-features = false, features = [
     "std",
     "runtime",
     "component-model",

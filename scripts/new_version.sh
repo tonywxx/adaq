@@ -3,9 +3,10 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+root_dir=$(dirname "$script_dir")
 
 if [[ $# -eq 0 ]]; then
-  current=$(node -p "require('$script_dir/package.json').version")
+  current=$(node -p "require('$root_dir/package.json').version")
   if [[ ! $current =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "Error: invalid version in package.json ($current)" >&2
     exit 1
@@ -19,7 +20,7 @@ else
   exit 1
 fi
 
-node --input-type=module - "$version" "$script_dir" <<'NODE'
+node --input-type=module - "$version" "$root_dir" <<'NODE'
 import fs from 'node:fs'
 import path from 'node:path'
 
