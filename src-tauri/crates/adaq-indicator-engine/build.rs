@@ -52,8 +52,14 @@ fn main() {
         "cargo:rustc-link-search=native={}",
         destination.join("build").display()
     );
-    println!("cargo:rustc-link-lib=static=ta-lib");
-    if env::var("CARGO_CFG_TARGET_OS").unwrap() != "windows" {
+    if env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
+        println!(
+            "cargo:rustc-link-search=native={}",
+            destination.join("build/Release").display()
+        );
+        println!("cargo:rustc-link-lib=static=ta-lib-static");
+    } else {
+        println!("cargo:rustc-link-lib=static=ta-lib");
         println!("cargo:rustc-link-lib=m");
     }
 
