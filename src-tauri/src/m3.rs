@@ -1265,6 +1265,7 @@ mod tests {
         state
             .delete_component("alice", &components[0].archive_sha256)
             .unwrap();
+        drop(state);
         fs::remove_dir_all(root).unwrap();
     }
 
