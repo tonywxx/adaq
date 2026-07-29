@@ -10,18 +10,19 @@ work_dir=$(mktemp -d "${TMPDIR:-/tmp}/adaq-talib-vectors.XXXXXX")
 trap 'rm -rf "$work_dir"' EXIT
 tar -xzf "$archive" -C "$work_dir"
 source_dir="$work_dir/ta-lib-0.7.1"
+cp "$crate_dir/scripts/generate_reference_vectors.c" "$source_dir/adaq_reference_vectors.c"
+cat >> "$source_dir/CMakeLists.txt" <<'EOF'
+add_executable(adaq-reference-vectors adaq_reference_vectors.c)
+if(WIN32)
+  target_link_libraries(adaq-reference-vectors PRIVATE ta-lib-static)
+else()
+  target_link_libraries(adaq-reference-vectors PRIVATE ta-lib-static m)
+endif()
+EOF
 cmake -S "$source_dir" -B "$work_dir/build" -DBUILD_DEV_TOOLS=OFF -DCMAKE_BUILD_TYPE=Release
-cmake --build "$work_dir/build" --target ta-lib-static
-library=$(find "$work_dir/build" -name 'libta-lib.a' -o -name 'ta-lib-static.lib' | head -n 1)
-compiler=$(sed -n 's/^CMAKE_C_COMPILER:FILEPATH=//p' "$work_dir/build/CMakeCache.txt" | head -n 1)
+cmake --build "$work_dir/build" --target adaq-reference-vectors --config Release
+executable=$(find "$work_dir/build" -name 'adaq-reference-vectors' -o -name 'adaq-reference-vectors.exe' | head -n 1)
 generated="$work_dir/reference_vectors.json"
-if [ "${OS:-}" = Windows_NT ]; then
-  executable="$work_dir/generate-reference-vectors.exe"
-  "$compiler" /nologo /std:c11 /O2 "/I$source_dir/include" "$crate_dir/scripts/generate_reference_vectors.c" "$library" "/Fe$executable"
-else
-  executable="$work_dir/generate-reference-vectors"
-  "$compiler" -std=c11 -O2 -I"$source_dir/include" "$crate_dir/scripts/generate_reference_vectors.c" "$library" -lm -o "$executable"
-fi
 "$executable" > "$generated"
 test "$(jq '.indicators | length' "$generated")" = 160
 test "$(jq '[.indicators[].outputs[]] | length' "$generated")" = 179
