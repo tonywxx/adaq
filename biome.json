@@ -1,5 +1,5 @@
 {
-	"$schema": "https://biomejs.dev/schemas/2.5.4/schema.json",
+	"$schema": "https://biomejs.dev/schemas/2.5.5/schema.json",
 	"vcs": {
 		"enabled": true,
 		"clientKind": "git",
@@ -30,7 +30,7 @@
 		"actions": {
 			"source": {
 				"organizeImports": {
-					"level": "on",
+					"level": "off",
 					"options": {
 						"groups": [":NODE:", ["@/**"], ":PACKAGE:", ":ALIAS:", ":PATH:"]
 					}

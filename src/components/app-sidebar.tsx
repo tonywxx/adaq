@@ -1,4 +1,3 @@
-import { Link } from "@tanstack/react-router";
 import { NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
 import { NavUser } from "@/components/nav-user";
@@ -11,6 +10,7 @@ import {
 	SidebarMenuButton,
 	SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import { Link } from "@tanstack/react-router";
 import {
 	CameraIcon,
 	ChartBarIcon,

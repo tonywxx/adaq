@@ -86,10 +86,6 @@ jobs:
             platform: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: nsis
-          - name: Linux x86_64
-            platform: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            bundles: appimage
     runs-on: ${{ matrix.platform }}
 
     steps:
@@ -111,12 +107,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -173,7 +163,7 @@ jobs:
 
           const latest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
           const platforms = Object.keys(latest.platforms ?? {})
-          for (const expected of ['darwin-aarch64', 'windows-x86_64', 'linux-x86_64']) {
+          for (const expected of ['darwin-aarch64', 'windows-x86_64']) {
             if (!platforms.some((platform) => platform === expected || platform.startsWith(`${expected}-`))) {
               throw new Error(`latest.json is missing ${expected}`)
             }

@@ -2,7 +2,7 @@
 
 [![Release](https://github.com/tonywxx/adaq/actions/workflows/release.yml/badge.svg)](https://github.com/tonywxx/adaq/actions/workflows/release.yml)
 
-> **ADAQ** is a cross-platform Desktop AI Quant Trading Platform.
+> **ADAQ** (Ada Quant) is an AI-powered quantitative trading platform for equities and digital crypto assets.
 
 ## Features
 
