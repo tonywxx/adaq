@@ -29,16 +29,6 @@ export function matchingFactors(
 	);
 }
 
-export function parameterValues(
-	component: LibraryComponent,
-	overrides: Record<string, string>,
-) {
-	return component.parameters.map((parameter) => ({
-		name: parameter.name,
-		value: overrides[parameter.name] ?? parameter.defaultValue,
-	}));
-}
-
 export function runGate({
 	snapshotId,
 	strategy,

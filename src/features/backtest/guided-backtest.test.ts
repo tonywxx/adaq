@@ -2,7 +2,6 @@ import type { LibraryComponent } from "@/features/components/component-library";
 import {
 	defaultExecutionProfile,
 	matchingFactors,
-	parameterValues,
 	runGate,
 } from "./guided-backtest";
 
@@ -36,20 +35,6 @@ test("shows only usable Factor Components for a required dependency", () => {
 			component({ compatible: false, compatibilityError: "unsupported ABI" }),
 		], ["a".repeat(64)]),
 	).toHaveLength(1);
-});
-
-test("pre-Run parameters retain Manifest defaults until explicitly overridden", () => {
-	const strategy = component({
-		kind: "strategy",
-		parameters: [
-			{ name: "period", parameterType: "integer", defaultValue: "14", allowedValues: [] },
-			{ name: "mode", parameterType: "string", defaultValue: "close", allowedValues: ["close", "open"] },
-		],
-	});
-	expect(parameterValues(strategy, { period: "20" })).toEqual([
-		{ name: "period", value: "20" },
-		{ name: "mode", value: "close" },
-	]);
 });
 
 test("stage gates prevent incomplete and duplicate-ready submissions", () => {
