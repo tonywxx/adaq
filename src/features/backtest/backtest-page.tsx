@@ -601,7 +601,6 @@ export function BacktestPage() {
 									>
 										<option value="">Select {dependency.version}</option>
 										{matchingFactors(
-											dependency,
 											factors,
 											compatibleFactors[dependency.alias] ?? [],
 										).map((item) => (

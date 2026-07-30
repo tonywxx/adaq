@@ -8,6 +8,7 @@ import type { LibraryComponent } from "@/features/components/component-library";
 import { Workspace } from "@/features/components/components-page";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { invoke } from "@tauri-apps/api/core";
+import { LoaderCircleIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	crossMarketGate,
@@ -111,6 +112,9 @@ type Report = {
 };
 type Metrics = { totalReturn: string; maxDrawdown: string; sharpe: string };
 
+const waitForPaint = () =>
+	new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
 export function ValidationPage() {
 	const userId = useMarketSessionStore((state) => state.userId);
 	const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -130,6 +134,7 @@ export function ValidationPage() {
 	const [protocols, setProtocols] = useState<Protocol[]>([]);
 	const [reports, setReports] = useState<Report[]>([]);
 	const [selectedReportId, setSelectedReportId] = useState("");
+	const [freezing, setFreezing] = useState(false);
 	const [runningProtocolId, setRunningProtocolId] = useState<string>();
 	const [feedback, setFeedback] = useState<{
 		summary: string;
@@ -216,6 +221,7 @@ export function ValidationPage() {
 		}
 	};
 	const freeze = async () => {
+		if (freezing) return;
 		const boundary = Date.parse(sampleOutStart);
 		const gate =
 			method === "chronological-holdout"
@@ -232,6 +238,9 @@ export function ValidationPage() {
 			});
 			return;
 		}
+		setFreezing(true);
+		setFeedback({ summary: "Freezing Validation Protocol…" });
+		await waitForPaint();
 		try {
 			const protocol = await invoke<Protocol>("validation_protocol_create", {
 				request: {
@@ -271,12 +280,15 @@ export function ValidationPage() {
 			await refresh();
 		} catch (error) {
 			setFeedback(formatValidationError(error));
+		} finally {
+			setFreezing(false);
 		}
 	};
 	const run = async (protocolId: string) => {
 		if (!userId || runningProtocolId) return;
 		setRunningProtocolId(protocolId);
 		setFeedback({ summary: "Running Validation Protocol…" });
+		await waitForPaint();
 		try {
 			const report = await invoke<Report>("validation_report_run", {
 				request: { userId, protocolId },
@@ -477,7 +489,9 @@ export function ValidationPage() {
 						/>
 					)}
 					<Button
+						aria-busy={freezing}
 						disabled={
+							freezing ||
 							!source ||
 							(method === "chronological-holdout" && !sampleOutStart) ||
 							(method === "walk-forward" && Boolean(walkForwardError)) ||
@@ -485,7 +499,8 @@ export function ValidationPage() {
 						}
 						onClick={() => void freeze()}
 					>
-						Freeze Validation Protocol
+						{freezing && <LoaderCircleIcon className="animate-spin" />}
+						{freezing ? "Freezing…" : "Freeze Validation Protocol"}
 					</Button>
 					{feedback && <Feedback feedback={feedback} />}
 				</CardContent>
@@ -528,9 +543,13 @@ export function ValidationPage() {
 								</details>
 							</div>
 							<Button
+								aria-busy={runningProtocolId === protocol.protocolId}
 								disabled={Boolean(runningProtocolId)}
 								onClick={() => void run(protocol.protocolId)}
 							>
+								{runningProtocolId === protocol.protocolId && (
+									<LoaderCircleIcon className="animate-spin" />
+								)}
 								{runningProtocolId === protocol.protocolId
 									? "Running…"
 									: "Run / resume"}

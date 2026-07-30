@@ -26,7 +26,9 @@ export type NormalizedRunConfiguration = {
 	seed: number;
 };
 
-export function copyRunConfiguration(configuration: NormalizedRunConfiguration) {
+export function copyRunConfiguration(
+	configuration: NormalizedRunConfiguration,
+) {
 	return {
 		snapshotId: configuration.snapshotId,
 		strategy: configuration.strategyArchiveSha256,
@@ -54,16 +56,12 @@ export function copyRunConfiguration(configuration: NormalizedRunConfiguration) 
 type Dependency = LibraryComponent["dependencies"][number];
 
 export function matchingFactors(
-	dependency: Dependency,
 	components: readonly LibraryComponent[],
 	compatibleHashes: readonly string[],
 ) {
 	return components.filter(
 		(component) =>
 			component.kind === "factor" &&
-			component.compatible &&
-			!component.compatibilityError &&
-			component.componentId === dependency.componentId &&
 			compatibleHashes.includes(component.archiveSha256),
 	);
 }
@@ -83,7 +81,8 @@ export function runGate({
 }) {
 	if (running) return "A Backtest is already running.";
 	if (!snapshotId) return "Select a Market Data Snapshot before continuing.";
-	if (!strategy) return "Select a compatible Strategy Component before continuing.";
+	if (!strategy)
+		return "Select a compatible Strategy Component before continuing.";
 	if (dependencies.some((dependency) => !factorSelections[dependency.alias]))
 		return "Select a matching Factor Component for every required dependency.";
 	return undefined;

@@ -512,6 +512,27 @@ impl M3State {
         ComponentPackage::read(&fs::read(path).map_err(string)?).map_err(string)
     }
 
+    fn compatible_factors(
+        &self,
+        user_id: &str,
+        strategy_archive_sha256: &str,
+    ) -> Result<BTreeMap<String, Vec<String>>, String> {
+        let strategy = self.package_for_user(user_id, strategy_archive_sha256)?;
+        if strategy.manifest.kind != ComponentKind::Strategy {
+            return Err("Backtest requires a Strategy Component".into());
+        }
+        let components = self.list_components(user_id)?;
+        let packages = components
+            .iter()
+            .filter(|component| component.kind == "factor" && component.compatible)
+            .map(|component| {
+                self.package_for_user(user_id, &component.archive_sha256)
+                    .map(|package| (component, package))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(compatible_factor_hashes(&strategy.manifest, &packages))
+    }
+
     fn snapshot_for_user(
         &self,
         user_id: &str,
@@ -1192,20 +1213,7 @@ pub fn backtest_compatible_factors(
     request: BacktestDependencyRequest,
     state: tauri::State<'_, M3State>,
 ) -> Result<BTreeMap<String, Vec<String>>, String> {
-    let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
-    if strategy.manifest.kind != ComponentKind::Strategy {
-        return Err("Backtest requires a Strategy Component".into());
-    }
-    let components = state.list_components(&request.user_id)?;
-    let packages = components
-        .iter()
-        .map(|component| {
-            state
-                .package_for_user(&request.user_id, &component.archive_sha256)
-                .map(|package| (component, package))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(compatible_factor_hashes(&strategy.manifest, &packages))
+    state.compatible_factors(&request.user_id, &request.strategy_archive_sha256)
 }
 
 fn compatible_factor_hashes(
@@ -2663,7 +2671,7 @@ mod tests {
     }
 
     #[test]
-    fn component_list_keeps_incompatible_packages_deletable() {
+    fn incompatible_packages_do_not_block_factor_queries_or_deletion() {
         let root = std::env::temp_dir().join(format!(
             "adaq-legacy-component-{}-{}",
             std::process::id(),
@@ -2708,6 +2716,16 @@ mod tests {
                 .unwrap()
                 .contains("inputNames")
         );
+        let factor = state
+            .import_component("alice", &public_example_package("factor-close-momentum-5"))
+            .unwrap();
+        let strategy = state
+            .import_component("alice", &public_example_package("strategy-momentum-trend"))
+            .unwrap();
+        let matches = state
+            .compatible_factors("alice", &strategy.archive_sha256)
+            .unwrap();
+        assert_eq!(matches["momentum"], [factor.archive_sha256]);
         state
             .delete_component("alice", &components[0].archive_sha256)
             .unwrap();

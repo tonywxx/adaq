@@ -27,15 +27,30 @@ const component = (overrides: Partial<LibraryComponent>): LibraryComponent => ({
 });
 
 test("shows only usable Factor Components for a required dependency", () => {
-	const dependency = { componentId: "factor-id", version: "^1", alias: "signal" };
 	expect(
-		matchingFactors(dependency, [
-			component({}),
-			component({ componentId: "other" }),
-			component({ version: "2.0.0", archiveSha256: "c".repeat(64) }),
-			component({ compatible: false, compatibilityError: "unsupported ABI" }),
-		], ["a".repeat(64)]),
+		matchingFactors(
+			[
+				component({}),
+				component({ componentId: "other", archiveSha256: "d".repeat(64) }),
+				component({ version: "2.0.0", archiveSha256: "c".repeat(64) }),
+				component({
+					archiveSha256: "e".repeat(64),
+					compatible: false,
+					compatibilityError: "unsupported ABI",
+				}),
+			],
+			["a".repeat(64)],
+		),
 	).toHaveLength(1);
+});
+
+test("uses the host-compatible hashes as the Factor selection authority", () => {
+	const factor = component({
+		componentId: "stale-client-id",
+		compatible: false,
+		compatibilityError: "stale client metadata",
+	});
+	expect(matchingFactors([factor], [factor.archiveSha256])).toEqual([factor]);
 });
 
 test("stage gates prevent incomplete and duplicate-ready submissions", () => {
