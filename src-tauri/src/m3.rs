@@ -1162,27 +1162,36 @@ pub fn backtest_compatible_factors(
         return Err("Backtest requires a Strategy Component".into());
     }
     let components = state.list_components(&request.user_id)?;
+    let packages = components
+        .iter()
+        .map(|component| {
+            state
+                .package_for_user(&request.user_id, &component.archive_sha256)
+                .map(|package| (component, package))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(compatible_factor_hashes(&strategy.manifest, &packages))
+}
+
+fn compatible_factor_hashes(
+    strategy: &ComponentManifest,
+    packages: &[(&LibraryComponent, ComponentPackage)],
+) -> BTreeMap<String, Vec<String>> {
     strategy
-        .manifest
         .dependencies
         .iter()
         .map(|dependency| {
-            let hashes = components
+            let hashes = packages
                 .iter()
-                .filter(|component| {
+                .filter(|(component, package)| {
                     component.kind == "factor"
                         && component.compatible
-                        && component.component_id == dependency.component_id.to_string()
+                        && package.manifest.component_id == dependency.component_id
+                        && dependency.version.matches(&package.manifest.version)
                 })
-                .filter_map(|component| {
-                    state
-                        .package_for_user(&request.user_id, &component.archive_sha256)
-                        .ok()
-                        .filter(|package| dependency.version.matches(&package.manifest.version))
-                        .map(|_| component.archive_sha256.clone())
-                })
+                .map(|(component, _)| component.archive_sha256.clone())
                 .collect();
-            Ok((dependency.alias.clone(), hashes))
+            (dependency.alias.clone(), hashes)
         })
         .collect()
 }
@@ -2840,6 +2849,39 @@ mod tests {
         let strategy = state
             .import_component("alice", &public_example_package("strategy-momentum-trend"))
             .unwrap();
+        let strategy_package = state
+            .package_for_user("alice", &strategy.archive_sha256)
+            .unwrap();
+        let factor_package = state
+            .package_for_user("alice", &factor.archive_sha256)
+            .unwrap();
+        let factor_entry = state
+            .list_components("alice")
+            .unwrap()
+            .into_iter()
+            .find(|component| component.archive_sha256 == factor.archive_sha256)
+            .unwrap();
+        let mut mismatched_entry = factor_entry.clone();
+        mismatched_entry.archive_sha256 = "c".repeat(64);
+        let mut mismatched_package = factor_package.clone();
+        mismatched_package.manifest.version = serde_json::from_str("\"0.2.0\"").unwrap();
+        let mut incompatible_entry = factor_entry.clone();
+        incompatible_entry.archive_sha256 = "d".repeat(64);
+        incompatible_entry.compatible = false;
+        let matches = compatible_factor_hashes(
+            &strategy_package.manifest,
+            &[
+                (&factor_entry, factor_package),
+                (&mismatched_entry, mismatched_package),
+                (
+                    &incompatible_entry,
+                    state
+                        .package_for_user("alice", &factor.archive_sha256)
+                        .unwrap(),
+                ),
+            ],
+        );
+        assert_eq!(matches["momentum"], [factor.archive_sha256.clone()]);
         let bars = (0..50)
             .map(|index| {
                 let close = rust_decimal::Decimal::from(100 + index);
