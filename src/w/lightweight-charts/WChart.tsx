@@ -1,6 +1,7 @@
 import { DOWN_COLOR, UP_COLOR } from "@/config/trade-theme";
 import { getDecimalLength } from "@/w/number/getDecimalLength";
 import { getDecimalMinMove } from "@/w/number/getDecimalMinMove";
+import { scaleVolume, volumeScale } from "./volume-data";
 import {
 	AreaSeries,
 	BarSeries,
@@ -208,6 +209,7 @@ const WChart: React.FC<WChartProps> = ({
 		SeriesApi["createPriceLine"]
 	> | null>(null);
 	const prevDataRef = useRef<ChartDataItem[]>([]);
+	const volumeScaleRef = useRef(1);
 	const dataRef = useRef<ChartDataItem[]>(data);
 	dataRef.current = data;
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -218,6 +220,7 @@ const WChart: React.FC<WChartProps> = ({
 		const container = containerRef.current;
 		if (!container) return;
 		const safeData = normalizeChartData(dataRef.current);
+		const currentVolumeScale = volumeScale(safeData);
 
 		const chartOptions: any = {
 			width: autoSize ? container.clientWidth : width,
@@ -340,7 +343,9 @@ const WChart: React.FC<WChartProps> = ({
 			series.setData(safeData as any);
 			if (volumeSeries) {
 				volumeSeries.setData(
-					safeData.map((item) => toVolumeData(item, volumeUpColor, volumeDownColor)),
+					safeData.map((item) =>
+						toVolumeData(item, volumeUpColor, volumeDownColor, currentVolumeScale),
+					),
 				);
 			}
 			if (shouldShowEma && ema1 && ema2) {
@@ -389,6 +394,7 @@ const WChart: React.FC<WChartProps> = ({
 		}
 
 		prevDataRef.current = safeData;
+		volumeScaleRef.current = currentVolumeScale;
 
 		chart.timeScale().fitContent();
 		chart.timeScale().applyOptions({
@@ -414,6 +420,7 @@ const WChart: React.FC<WChartProps> = ({
 			lowPriceLineRef.current = null;
 			avgPriceLineRef.current = null;
 			prevDataRef.current = [];
+			volumeScaleRef.current = 1;
 		};
 	}, [
 		chartType,
@@ -493,6 +500,7 @@ const WChart: React.FC<WChartProps> = ({
 		if (!series) return;
 
 		const safeData = normalizeChartData(data);
+		const currentVolumeScale = volumeScale(safeData);
 		const prevData = prevDataRef.current;
 		const previousVisibleRange = chartRef.current
 			?.timeScale()
@@ -534,6 +542,7 @@ const WChart: React.FC<WChartProps> = ({
 				console.error("[WChart] Failed to clear series data", error);
 			}
 			prevDataRef.current = [];
+			volumeScaleRef.current = 1;
 			return;
 		}
 
@@ -541,7 +550,8 @@ const WChart: React.FC<WChartProps> = ({
 			prevData.length === 0 ||
 			safeData.length !== prevData.length ||
 			safeData[0]?.time !== prevData[0]?.time ||
-			safeData[safeData.length - 1]?.time !== prevData[prevData.length - 1]?.time;
+			safeData[safeData.length - 1]?.time !== prevData[prevData.length - 1]?.time ||
+			currentVolumeScale !== volumeScaleRef.current;
 
 		try {
 			if (isNewData) {
@@ -559,6 +569,7 @@ const WChart: React.FC<WChartProps> = ({
 			}
 		}
 		prevDataRef.current = safeData;
+		volumeScaleRef.current = currentVolumeScale;
 
 		series.applyOptions({
 			priceLineStyle,
@@ -580,7 +591,7 @@ const WChart: React.FC<WChartProps> = ({
 
 		if (volumeSeriesRef.current && showVolume) {
 			const volData = safeData.map((item) =>
-				toVolumeData(item, volumeUpColor, volumeDownColor),
+				toVolumeData(item, volumeUpColor, volumeDownColor, currentVolumeScale),
 			);
 			if (isNewData) {
 				volumeSeriesRef.current.setData(volData);
@@ -737,6 +748,7 @@ function toVolumeData(
 	item: ChartDataItem,
 	upColor = UP_COLOR,
 	downColor = DOWN_COLOR,
+	scale = 1,
 ): (HistogramData & { color: string }) | WhitespaceData {
 	const close = item.close ?? item.value;
 	const open = item.open ?? item.value;
@@ -745,7 +757,7 @@ function toVolumeData(
 	}
 	return {
 		time: item.time as Time,
-		value: item.volume ?? 0,
+		value: scaleVolume(item.volume, scale),
 		color: close >= open ? upColor : downColor,
 	};
 }

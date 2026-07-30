@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { BacktestRun } from "@/features/backtest/backtest-page";
 import { formatDecimal } from "@/features/backtest/format-decimal";
@@ -8,8 +9,10 @@ import type { LibraryComponent } from "@/features/components/component-library";
 import { Workspace } from "@/features/components/components-page";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { invoke } from "@tauri-apps/api/core";
-import { LoaderCircleIcon } from "lucide-react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-fs";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import {
 	crossMarketGate,
 	crossMarketProtocolFields,
@@ -134,8 +137,11 @@ export function ValidationPage() {
 	const [protocols, setProtocols] = useState<Protocol[]>([]);
 	const [reports, setReports] = useState<Report[]>([]);
 	const [selectedReportId, setSelectedReportId] = useState("");
+	const [loadingRunId, setLoadingRunId] = useState<string>();
 	const [freezing, setFreezing] = useState(false);
 	const [runningProtocolId, setRunningProtocolId] = useState<string>();
+	const [exportingReport, setExportingReport] = useState<string>();
+	const [pageLoading, setPageLoading] = useState(true);
 	const [feedback, setFeedback] = useState<{
 		summary: string;
 		details?: string;
@@ -163,16 +169,26 @@ export function ValidationPage() {
 		);
 	}, [userId]);
 	useEffect(() => {
+		if (!userId) return;
+		let active = true;
 		setSource(undefined);
 		setSampleOutStart("");
 		setFeedback(undefined);
-		void refresh().catch((error) =>
-			setFeedback({
-				summary: "Validation evidence could not load.",
-				details: String(error),
-			}),
-		);
-	}, [refresh]);
+		setPageLoading(true);
+		void refresh()
+			.catch(
+				(error) =>
+					active &&
+					setFeedback({
+						summary: "Validation evidence could not load.",
+						details: String(error),
+					}),
+			)
+			.finally(() => active && setPageLoading(false));
+		return () => {
+			active = false;
+		};
+	}, [refresh, userId]);
 	const labels = useMemo(
 		() =>
 			new Map(
@@ -208,6 +224,7 @@ export function ValidationPage() {
 	});
 	const selectRun = async (runId: string) => {
 		if (!userId) return;
+		setLoadingRunId(runId);
 		setFeedback(undefined);
 		try {
 			setSource(
@@ -218,6 +235,8 @@ export function ValidationPage() {
 				summary: "Backtest Run could not load.",
 				details: String(error),
 			});
+		} finally {
+			setLoadingRunId(undefined);
 		}
 	};
 	const freeze = async () => {
@@ -308,25 +327,39 @@ export function ValidationPage() {
 	};
 	const exportReport = async (reportId: string, format: "json" | "markdown") => {
 		if (!userId) return;
+		const exportKey = `${reportId}:${format}`;
+		setExportingReport(exportKey);
 		try {
 			const content = await invoke<string>("validation_report_export", {
 				request: { userId, protocolId: reportId },
 				format,
 			});
-			const url = URL.createObjectURL(
-				new Blob([content], {
-					type: format === "json" ? "application/json" : "text/markdown",
-				}),
-			);
-			const anchor = document.createElement("a");
-			anchor.href = url;
-			anchor.download = reportExportFilename(reportId, format);
-			anchor.click();
-			URL.revokeObjectURL(url);
+			const path = await save({
+				defaultPath: reportExportFilename(reportId, format),
+				filters: [
+					{
+						name: format === "json" ? "JSON" : "Markdown",
+						extensions: [format === "json" ? "json" : "md"],
+					},
+				],
+			});
+			if (!path) return;
+			const file = await open(path, { write: true, createNew: true });
+			try {
+				await file.write(new TextEncoder().encode(content));
+			} finally {
+				await file.close();
+			}
+			toast.success(`${format === "json" ? "JSON" : "Markdown"} report exported`, {
+				description: path,
+			});
 		} catch (error) {
 			setFeedback({ summary: "Report export failed.", details: String(error) });
+		} finally {
+			setExportingReport(undefined);
 		}
 	};
+	if (pageLoading) return <PageLoadingSkeleton />;
 	return (
 		<Workspace
 			title="Validation"
@@ -409,6 +442,9 @@ export function ValidationPage() {
 								variant={source?.runId === item.runId ? "default" : "outline"}
 								className="h-auto justify-start whitespace-normal p-3 text-left"
 								aria-pressed={source?.runId === item.runId}
+								loading={loadingRunId === item.runId}
+								loadingText="Loading Run…"
+								disabled={Boolean(loadingRunId)}
 								onClick={() => void selectRun(item.runId)}
 							>
 								<span>
@@ -489,7 +525,8 @@ export function ValidationPage() {
 						/>
 					)}
 					<Button
-						aria-busy={freezing}
+						loading={freezing}
+						loadingText="Freezing…"
 						disabled={
 							freezing ||
 							!source ||
@@ -499,8 +536,7 @@ export function ValidationPage() {
 						}
 						onClick={() => void freeze()}
 					>
-						{freezing && <LoaderCircleIcon className="animate-spin" />}
-						{freezing ? "Freezing…" : "Freeze Validation Protocol"}
+						Freeze Validation Protocol
 					</Button>
 					{feedback && <Feedback feedback={feedback} />}
 				</CardContent>
@@ -543,16 +579,12 @@ export function ValidationPage() {
 								</details>
 							</div>
 							<Button
-								aria-busy={runningProtocolId === protocol.protocolId}
+								loading={runningProtocolId === protocol.protocolId}
+								loadingText="Running…"
 								disabled={Boolean(runningProtocolId)}
 								onClick={() => void run(protocol.protocolId)}
 							>
-								{runningProtocolId === protocol.protocolId && (
-									<LoaderCircleIcon className="animate-spin" />
-								)}
-								{runningProtocolId === protocol.protocolId
-									? "Running…"
-									: "Run / resume"}
+								Run / resume
 							</Button>
 						</div>
 					))}
@@ -600,6 +632,7 @@ export function ValidationPage() {
 										(item) => item.protocolId === selectedReport.protocolId,
 									)}
 									onExport={exportReport}
+									exportingReport={exportingReport}
 								/>
 							</Tabs>
 						</>
@@ -935,10 +968,12 @@ function ReportViews({
 	report,
 	protocol,
 	onExport,
+	exportingReport,
 }: {
 	report: Report;
 	protocol?: Protocol;
 	onExport: (reportId: string, format: "json" | "markdown") => void;
+	exportingReport?: string;
 }) {
 	return (
 		<>
@@ -992,12 +1027,18 @@ function ReportViews({
 				<div className="flex gap-2">
 					<Button
 						variant="outline"
+						loading={exportingReport === `${report.reportId}:json`}
+						loadingText="Exporting JSON…"
+						disabled={Boolean(exportingReport)}
 						onClick={() => onExport(report.reportId, "json")}
 					>
 						Export JSON
 					</Button>
 					<Button
 						variant="outline"
+						loading={exportingReport === `${report.reportId}:markdown`}
+						loadingText="Exporting Markdown…"
+						disabled={Boolean(exportingReport)}
 						onClick={() => onExport(report.reportId, "markdown")}
 					>
 						Export Markdown

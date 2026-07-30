@@ -271,7 +271,13 @@ export function CryptoKlineCard() {
 					) : isError ? (
 						<ChartMessage>
 							<span>{getErrorMessage(error)}</span>
-							<Button size="sm" variant="outline" onClick={() => refetch()}>
+							<Button
+								size="sm"
+								variant="outline"
+								loading={isFetching}
+								loadingText="Retrying…"
+								onClick={() => refetch()}
+							>
 								Retry
 							</Button>
 						</ChartMessage>

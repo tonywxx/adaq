@@ -7,6 +7,7 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -34,6 +35,7 @@ export function ComponentsPage() {
 	const [importFeedback, setImportFeedback] = useState<Feedback>();
 	const [deleteFeedback, setDeleteFeedback] = useState<Feedback>();
 	const [loadFeedback, setLoadFeedback] = useState<Feedback>();
+	const [pageLoading, setPageLoading] = useState(true);
 	const activeUserId = useRef(userId);
 	const requestVersion = useRef(0);
 	activeUserId.current = userId;
@@ -79,9 +81,12 @@ export function ComponentsPage() {
 		setDeleteFeedback(undefined);
 		setLoadFeedback(undefined);
 		if (!userId) return;
-		void refresh().catch((error) => {
-			setLoadFeedback({ tone: "error", ...formatComponentError(error, "load") });
-		});
+		setPageLoading(true);
+		void refresh()
+			.catch((error) => {
+				setLoadFeedback({ tone: "error", ...formatComponentError(error, "load") });
+			})
+			.finally(() => setPageLoading(false));
 	}, [refresh, userId]);
 
 	const importPackage = async (file?: File) => {
@@ -149,6 +154,8 @@ export function ComponentsPage() {
 	};
 
 	const selected = items.find((item) => item.archiveSha256 === selectedHash);
+
+	if (pageLoading) return <PageLoadingSkeleton />;
 
 	return (
 		<Workspace

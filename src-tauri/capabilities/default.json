@@ -18,6 +18,10 @@
 			"identifier": "http:default",
 			"allow": [{ "url": "https://*.eastmoney.com/**" }]
 		},
-		"log:default"
+		"log:default",
+		"dialog:default",
+		"fs:default",
+		"fs:allow-open",
+		"fs:allow-write"
 	]
 }

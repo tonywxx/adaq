@@ -12,7 +12,7 @@ import { MarketSessionProvider } from "@/lib/market-session";
 import { checkStrongPassword } from "@/lib/password";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { Session } from "@supabase/supabase-js";
-import { KeyRound, Mail, ShieldCheck } from "lucide-react";
+import { KeyRound, LoaderCircleIcon, Mail, ShieldCheck } from "lucide-react";
 import {
 	type FormEvent,
 	type ReactNode,
@@ -64,10 +64,18 @@ export function AuthGate({ children }: { children: ReactNode }) {
 		return (
 			<>
 				<NavTitlebarTransparent />
-				<AuthShell
-					title="Checking session"
-					description="Loading your secure workspace."
-				/>
+				<main
+					className="grid min-h-svh place-content-center justify-items-center gap-3 bg-background"
+					role="status"
+					aria-label="AdaQ is initializing"
+				>
+					<LoaderCircleIcon
+						className="size-7 animate-spin text-primary"
+						aria-hidden="true"
+					/>
+					<p className="font-semibold">AdaQ</p>
+					<p className="text-sm text-muted-foreground">Initializing workspace…</p>
+				</main>
 			</>
 		);
 	}

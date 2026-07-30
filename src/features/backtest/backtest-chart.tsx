@@ -32,9 +32,9 @@ export function BacktestChart({
 			autoSize: true,
 			height: 680,
 			layout: {
+				attributionLogo: false,
 				background: { type: ColorType.Solid, color: "transparent" },
 				textColor: "#888",
-				attributionLogo: true,
 				panes: { enableResize: true },
 			},
 			grid: {
@@ -68,7 +68,7 @@ export function BacktestChart({
 			{ priceFormat: { type: "volume" }, priceScaleId: "volume" },
 			0,
 		);
-		volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+		volume.priceScale().applyOptions({ scaleMargins: { top: 0.55, bottom: 0 } });
 		volume.setData(
 			run.bars.map((bar) => ({
 				time: (bar.openTimeMs / 1000) as never,
@@ -144,7 +144,7 @@ export function BacktestChart({
 			setHoveredExecution(fills?.length ? { openTimeMs, fills } : undefined);
 		});
 		chart.panes()[0]?.setHeight(390);
-		chart.panes()[1]?.setHeight(160);
+		chart.panes()[1]?.setHeight(260);
 		chart.panes()[2]?.setHeight(110);
 		let rangeTimer: ReturnType<typeof setTimeout> | undefined;
 		chart.timeScale().subscribeVisibleTimeRangeChange((range) => {

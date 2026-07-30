@@ -5,61 +5,70 @@ import {
 	Outlet,
 } from "@tanstack/react-router";
 import { AuthGate } from "@/components/auth-gate";
-import Home from "@/layout/home";
-import { BacktestPage } from "@/features/backtest/backtest-page";
-import { ComponentsPage } from "@/features/components/components-page";
-import { ValidationPage } from "@/features/validation/validation-page";
+import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
+import Home, { Dashboard } from "@/layout/home";
+import { lazy, Suspense } from "react";
+
+const BacktestPage = lazy(() =>
+	import("@/features/backtest/backtest-page").then((module) => ({
+		default: module.BacktestPage,
+	})),
+);
+const ComponentsPage = lazy(() =>
+	import("@/features/components/components-page").then((module) => ({
+		default: module.ComponentsPage,
+	})),
+);
+const ValidationPage = lazy(() =>
+	import("@/features/validation/validation-page").then((module) => ({
+		default: module.ValidationPage,
+	})),
+);
 
 const rootRoute = createRootRoute({
-	component: Outlet,
+	component: AppShell,
 });
 
 const appRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/",
-	component: AppRoute,
+	component: Dashboard,
 });
 
 const backtestRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/backtest",
 	component: () => (
-		<AuthenticatedPage>
+		<Suspense fallback={<PageLoadingSkeleton />}>
 			<BacktestPage />
-		</AuthenticatedPage>
+		</Suspense>
 	),
 });
 const componentsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/components",
 	component: () => (
-		<AuthenticatedPage>
+		<Suspense fallback={<PageLoadingSkeleton />}>
 			<ComponentsPage />
-		</AuthenticatedPage>
+		</Suspense>
 	),
 });
 const validationRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/validation",
 	component: () => (
-		<AuthenticatedPage>
+		<Suspense fallback={<PageLoadingSkeleton />}>
 			<ValidationPage />
-		</AuthenticatedPage>
+		</Suspense>
 	),
 });
 
-function AppRoute() {
+function AppShell() {
 	return (
 		<AuthGate>
-			<Home />
-		</AuthGate>
-	);
-}
-
-function AuthenticatedPage({ children }: { children: React.ReactNode }) {
-	return (
-		<AuthGate>
-			<Home>{children}</Home>
+			<Home>
+				<Outlet />
+			</Home>
 		</AuthGate>
 	);
 }

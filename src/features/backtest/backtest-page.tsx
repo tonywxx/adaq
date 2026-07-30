@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -188,6 +189,7 @@ export function BacktestPage() {
 	const [runTechnicalError, setRunTechnicalError] = useState("");
 	const [snapshotTechnicalError, setSnapshotTechnicalError] = useState("");
 	const [downloadTaskId, setDownloadTaskId] = useState<string>();
+	const [pageLoading, setPageLoading] = useState(true);
 	const chartRequest = useRef(0);
 	const chartRange = useRef("");
 	const instruments = useMemo(
@@ -210,20 +212,27 @@ export function BacktestPage() {
 			}
 	};
 	useEffect(() => {
-		if (userId) {
-			void invoke<LibraryComponent[]>("component_list", { request: { userId } })
-				.then((items) => {
-					setComponents(items);
-					if (items.some((item) => item.compatibilityError))
-						setMessage(
-							"Incompatible Components are hidden. Remove them from Component Library and import Manifest 1.0 packages.",
-						);
-				})
-				.catch((error) => setMessage(String(error)));
-			void invoke<RunSummary[]>("backtest_list", { request: { userId } })
-				.then(setHistory)
-				.catch((error) => setMessage(String(error)));
-		}
+		if (!userId) return;
+		let active = true;
+		setPageLoading(true);
+		void Promise.all([
+			invoke<LibraryComponent[]>("component_list", { request: { userId } }),
+			invoke<RunSummary[]>("backtest_list", { request: { userId } }),
+		])
+			.then(([items, nextHistory]) => {
+				if (!active) return;
+				setComponents(items);
+				setHistory(nextHistory);
+				if (items.some((item) => item.compatibilityError))
+					setMessage(
+						"Incompatible Components are hidden. Remove them from Component Library and import Manifest 1.0 packages.",
+					);
+			})
+			.catch((error) => active && setMessage(String(error)))
+			.finally(() => active && setPageLoading(false));
+		return () => {
+			active = false;
+		};
 	}, [userId]);
 	useEffect(() => {
 		if (!userId) return;
@@ -487,6 +496,8 @@ export function BacktestPage() {
 			`Run ${source.runId.slice(0, 12)} copied into a new editable configuration.`,
 		);
 	};
+	if (pageLoading) return <PageLoadingSkeleton />;
+
 	return (
 		<Workspace
 			title="Backtest"
@@ -652,7 +663,8 @@ export function BacktestPage() {
 						<>
 							<div className="flex flex-wrap items-end gap-2">
 								<Button
-									disabled={Boolean(downloadTaskId)}
+									loading={Boolean(downloadTaskId)}
+									loadingText="Preparing Snapshot…"
 									onClick={() => void prepare()}
 								>
 									Prepare Snapshot
@@ -820,7 +832,7 @@ export function BacktestPage() {
 							</div>
 						)}
 						<Button
-							disabled={running}
+							loading={running}
 							onClick={() => void (preflight ? execute() : selectStage("execution"))}
 						>
 							{running

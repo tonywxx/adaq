@@ -1,6 +1,6 @@
 {
 	"name": "adaq",
-	"version": "0.8.4",
+	"version": "0.8.5",
 	"private": true,
 	"license": "Apache-2.0",
 	"packageManager": "pnpm@11.17.0",
@@ -29,6 +29,8 @@
 		"@tanstack/react-router": "^1.170.18",
 		"@tanstack/react-table": "^8.21.3",
 		"@tauri-apps/api": "^2.11.1",
+		"@tauri-apps/plugin-dialog": "~2.7.2",
+		"@tauri-apps/plugin-fs": "~2.5.1",
 		"@tauri-apps/plugin-http": "^2.5.9",
 		"@tauri-apps/plugin-log": "~2.9.0",
 		"@tauri-apps/plugin-opener": "^2.5.4",
