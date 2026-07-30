@@ -15,6 +15,8 @@ import { formatDecimal } from "./format-decimal";
 
 type Snapshot = {
 	snapshotId: string;
+	code: string;
+	interval: string;
 	barCount: number;
 	startTimeMs: number;
 	endTimeMs: number;
@@ -90,7 +92,7 @@ type RunSummary = {
 	totalReturn: string;
 };
 type WalkForward = { snapshotId: string; windowSizeBars: number; stepSizeBars: number; minimumHistoryBars: number };
-type ValidationProtocol = { protocolId: string; methodVersion: string; windows: { snapshotId: string; sampleOutStartTimeMs: number; sampleOutEndTimeMs?: number }[]; walkForward?: WalkForward };
+type ValidationProtocol = { protocolId: string; methodVersion: string; windows: { snapshotId: string; sampleOutStartTimeMs: number; sampleOutEndTimeMs?: number }[]; walkForward?: WalkForward; crossMarket?: { contexts: { snapshotId: string; runOverride?: unknown }[] } };
 type ValidationWindow = {
 	sampleOutStartTimeMs: number;
 	sampleOutEndTimeMs?: number;
@@ -103,6 +105,9 @@ type ValidationReport = {
 	protocolId: string;
 	methodVersion: string;
 	walkForward?: WalkForward;
+	crossMarket: { snapshot: Snapshot; runId?: string; metrics?: { totalReturn: string; maxDrawdown: string; sharpe: string }; pauses: unknown[]; failure?: string }[];
+	crossMarketEvidence?: { completedMarkets: number; totalReturnSpread: string };
+	recommendedContexts: unknown[];
 	windows: ValidationWindow[];
 	aggregate: { completedWindows: number; failedWindows: number; averageSampleOutReturn: string; worstSampleOutDrawdown: string; averageSampleOutSharpe: string; totalFees: string; totalTrades: number };
 };
@@ -143,6 +148,7 @@ export function BacktestPage() {
 	const [walkForwardWindowSize, setWalkForwardWindowSize] = useState("30");
 	const [walkForwardStepSize, setWalkForwardStepSize] = useState("30");
 	const [walkForwardMinimumHistory, setWalkForwardMinimumHistory] = useState("90");
+	const [crossMarketSnapshotIds, setCrossMarketSnapshotIds] = useState("");
 	const [protocols, setProtocols] = useState<ValidationProtocol[]>([]);
 	const [reports, setReports] = useState<ValidationReport[]>([]);
 	const [runningProtocolId, setRunningProtocolId] = useState<string>();
@@ -256,6 +262,17 @@ export function BacktestPage() {
 			await refreshValidation();
 		} catch (error) { setMessage(String(error)); }
 	};
+	const createCrossMarketValidation = async () => {
+		if (!userId || !snapshot) return;
+		const snapshotIds = [snapshot.snapshotId, ...crossMarketSnapshotIds.split(/\s+/)].filter(Boolean);
+		try {
+			const protocol = await invoke<ValidationProtocol>("validation_protocol_create", {
+				request: { userId, run: buildRunRequest(snapshot.snapshotId), windows: [], methodVersion: "cross-market@1", aggregationRuleVersion: "equal-window@1", crossMarket: { contexts: snapshotIds.map((snapshotId) => ({ snapshotId })) } },
+			});
+			setMessage(`Cross-market Protocol ${protocol.protocolId.slice(0, 12)} frozen.`);
+			await refreshValidation();
+		} catch (error) { setMessage(String(error)); }
+	};
 	const runValidation = async (protocolId: string) => {
 		if (!userId) return;
 		setRunningProtocolId(protocolId);
@@ -362,6 +379,9 @@ export function BacktestPage() {
 					</Field>
 					<Field label="Walk-forward minimum history (Bars)">
 						<Input type="number" min="1" value={walkForwardMinimumHistory} onChange={(e) => setWalkForwardMinimumHistory(e.target.value)} />
+					</Field>
+					<Field label="Cross-market Snapshot IDs (one per line)">
+						<textarea className="min-h-9 rounded-md border bg-background px-3 py-2" value={crossMarketSnapshotIds} onChange={(e) => setCrossMarketSnapshotIds(e.target.value)} placeholder="Freeze other market Snapshots first" />
 					</Field>
 					<Field label="Strategy">
 						<select
@@ -481,6 +501,9 @@ export function BacktestPage() {
 							onClick={() => void createWalkForwardValidation()}
 						>
 							Freeze walk-forward
+						</Button>
+						<Button variant="outline" disabled={!snapshot || !strategy || !crossMarketSnapshotIds.trim()} onClick={() => void createCrossMarketValidation()}>
+							Freeze cross-market
 						</Button>
 					</div>
 					<p className="self-end text-sm text-muted-foreground" aria-live="polite">
@@ -610,7 +633,7 @@ export function BacktestPage() {
 				<CardContent className="space-y-3 text-sm">
 					{protocols.map((protocol) => (
 						<div key={protocol.protocolId} className="flex items-center justify-between rounded-md border p-3">
-							<span className="font-mono">{protocol.protocolId.slice(0, 16)} · {protocol.methodVersion} · {protocol.windows.length} window{protocol.windows.length === 1 ? "" : "s"}</span>
+							<span className="font-mono">{protocol.protocolId.slice(0, 16)} · {protocol.methodVersion} · {protocol.crossMarket?.contexts.length ?? protocol.windows.length} context{(protocol.crossMarket?.contexts.length ?? protocol.windows.length) === 1 ? "" : "s"}</span>
 							<Button size="sm" disabled={runningProtocolId === protocol.protocolId} onClick={() => void runValidation(protocol.protocolId)}>{runningProtocolId === protocol.protocolId ? "Running…" : "Run / resume"}</Button>
 						</div>
 					))}
@@ -622,7 +645,11 @@ export function BacktestPage() {
 							</div>
 							<p className="mt-2 text-muted-foreground">{report.methodVersion}{report.walkForward ? ` · ${report.walkForward.windowSizeBars}-Bar windows, ${report.walkForward.stepSizeBars}-Bar step, ${report.walkForward.minimumHistoryBars}-Bar history` : ""}</p>
 							<p className="mt-2 text-muted-foreground">{report.aggregate.completedWindows} complete · {report.aggregate.failedWindows} failed · Out {percent(report.aggregate.averageSampleOutReturn)} · Drawdown {percent(report.aggregate.worstSampleOutDrawdown)} · Sharpe {formatDecimal(report.aggregate.averageSampleOutSharpe)} · Fees {formatDecimal(report.aggregate.totalFees)} · Trades {report.aggregate.totalTrades}</p>
+							{report.crossMarketEvidence && <p className="mt-2 text-muted-foreground">{report.crossMarketEvidence.completedMarkets} markets · Return spread {percent(report.crossMarketEvidence.totalReturnSpread)} · {report.recommendedContexts.length} evidence-backed Recommended Contexts</p>}
 							<div className="mt-2 space-y-1 text-xs text-muted-foreground">
+								{report.crossMarket.map((context) => (
+									<p key={context.snapshot.snapshotId}>{context.snapshot.code} · {context.snapshot.interval} · {context.failure ? `Failed: ${context.failure}` : `Return ${percent(context.metrics?.totalReturn ?? "0")} · Drawdown ${percent(context.metrics?.maxDrawdown ?? "0")} · Sharpe ${formatDecimal(context.metrics?.sharpe ?? "0")} · ${context.pauses.length} pauses`}</p>
+								))}
 								{report.windows.map((window) => (
 									<p key={`${window.sampleOutStartTimeMs}:${window.sampleOutEndTimeMs ?? "final"}`}>
 										{new Date(window.sampleOutStartTimeMs).toLocaleString()} {window.sampleOutEndTimeMs ? `– ${new Date(window.sampleOutEndTimeMs).toLocaleString()} ` : "– final "}· {window.failure ? `Failed: ${window.failure}` : `Return ${percent(window.sampleOutMetrics?.totalReturn ?? "0")} · Drawdown ${percent(window.sampleOutMetrics?.maxDrawdown ?? "0")} · Sharpe ${formatDecimal(window.sampleOutMetrics?.sharpe ?? "0")} · ${window.sampleOutPauses.length} pauses`}

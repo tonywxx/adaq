@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -810,8 +810,24 @@ pub struct ValidationProtocolCreateRequest {
     pub windows: Vec<ValidationWindowRequest>,
     #[serde(default)]
     pub walk_forward: Option<WalkForwardValidationRequest>,
+    #[serde(default)]
+    pub cross_market: Option<CrossMarketValidationRequest>,
     pub method_version: String,
     pub aggregation_rule_version: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossMarketValidationRequest {
+    pub contexts: Vec<CrossMarketValidationContextRequest>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossMarketValidationContextRequest {
+    pub snapshot_id: String,
+    #[serde(default)]
+    pub run_override: Option<BacktestRunRequest>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -841,6 +857,8 @@ pub struct ValidationProtocol {
     pub windows: Vec<ValidationWindowRequest>,
     #[serde(default)]
     pub walk_forward: Option<WalkForwardValidationRequest>,
+    #[serde(default)]
+    pub cross_market: Option<CrossMarketValidationRequest>,
     pub method_version: String,
     pub aggregation_rule_version: String,
 }
@@ -897,8 +915,41 @@ pub struct ValidationReport {
     pub aggregation_rule_version: String,
     #[serde(default)]
     pub walk_forward: Option<WalkForwardValidationRequest>,
+    #[serde(default)]
+    pub cross_market: Vec<CrossMarketValidationReport>,
+    #[serde(default)]
+    pub recommended_contexts: Vec<RecommendedContext>,
+    #[serde(default)]
+    pub cross_market_evidence: Option<CrossMarketEvidence>,
     pub windows: Vec<ValidationWindowReport>,
     pub aggregate: ValidationAggregate,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossMarketValidationReport {
+    pub snapshot: MarketDataSnapshot,
+    pub run: BacktestRunRequest,
+    pub run_id: Option<String>,
+    pub metrics: Option<ada_backtest_core::BacktestMetrics>,
+    pub pauses: Vec<RunPauseRecord>,
+    pub failure: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossMarketEvidence {
+    pub completed_markets: usize,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub total_return_spread: rust_decimal::Decimal,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommendedContext {
+    pub supporting_report_id: String,
+    pub snapshot: MarketDataSnapshot,
+    pub run: BacktestRunRequest,
 }
 
 #[tauri::command]
@@ -1328,6 +1379,7 @@ pub fn validation_protocol_create(
         run: request.run,
         windows,
         walk_forward: request.walk_forward,
+        cross_market: request.cross_market,
         method_version: request.method_version,
         aggregation_rule_version: request.aggregation_rule_version,
     };
@@ -1357,6 +1409,9 @@ fn run_validation_report(
     state: &M3State,
 ) -> Result<ValidationReport, String> {
     let protocol = state.load_protocol(&request.user_id, &request.protocol_id)?;
+    if let Some(cross_market) = &protocol.cross_market {
+        return run_cross_market_validation(&protocol, cross_market, state);
+    }
     let mut windows = Vec::with_capacity(protocol.windows.len());
     for window in &protocol.windows {
         let (sample_in, sample_out) = split_snapshot(&state, window)?;
@@ -1428,10 +1483,83 @@ fn run_validation_report(
         method_version: protocol.method_version,
         aggregation_rule_version: protocol.aggregation_rule_version,
         walk_forward: protocol.walk_forward,
+        cross_market: vec![],
+        recommended_contexts: vec![],
+        cross_market_evidence: None,
         windows,
         aggregate,
     };
     report.report_id = content_id(&report)?;
+    state.save_report(&report)?;
+    Ok(report)
+}
+
+fn run_cross_market_validation(
+    protocol: &ValidationProtocol,
+    cross_market: &CrossMarketValidationRequest,
+    state: &M3State,
+) -> Result<ValidationReport, String> {
+    let contexts = cross_market
+        .contexts
+        .iter()
+        .map(|context| {
+            let (snapshot, _) = state.snapshot(&context.snapshot_id)?;
+            let mut run = context
+                .run_override
+                .clone()
+                .unwrap_or_else(|| protocol.run.clone());
+            run.user_id = protocol.user_id.clone();
+            run.snapshot_id = snapshot.snapshot_id.clone();
+            match execute_backtest(run.clone(), state) {
+                Ok(result) => Ok(CrossMarketValidationReport {
+                    snapshot,
+                    run,
+                    run_id: Some(result.run_id),
+                    metrics: Some(result.result.metrics),
+                    pauses: result.pauses,
+                    failure: None,
+                }),
+                Err(error) => Ok(CrossMarketValidationReport {
+                    snapshot,
+                    run,
+                    run_id: None,
+                    metrics: None,
+                    pauses: vec![],
+                    failure: Some(error),
+                }),
+            }
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let aggregate = aggregate_cross_market(&contexts);
+    let evidence = cross_market_evidence(&contexts);
+    let mut report = ValidationReport {
+        report_id: String::new(),
+        protocol_id: protocol.protocol_id.clone(),
+        user_id: protocol.user_id.clone(),
+        method_version: protocol.method_version.clone(),
+        aggregation_rule_version: protocol.aggregation_rule_version.clone(),
+        walk_forward: None,
+        cross_market: contexts,
+        recommended_contexts: vec![],
+        cross_market_evidence: evidence,
+        windows: vec![],
+        aggregate,
+    };
+    report.recommended_contexts = report
+        .cross_market
+        .iter()
+        .enumerate()
+        .filter(|(_, context)| context.failure.is_none())
+        .map(|(_, context)| RecommendedContext {
+            supporting_report_id: report.report_id.clone(),
+            snapshot: context.snapshot.clone(),
+            run: context.run.clone(),
+        })
+        .collect();
+    report.report_id = validation_report_id(&report)?;
+    for context in &mut report.recommended_contexts {
+        context.supporting_report_id = report.report_id.clone();
+    }
     state.save_report(&report)?;
     Ok(report)
 }
@@ -1474,10 +1602,7 @@ fn validate_protocol(
     {
         return Err("Validation Protocol is invalid".into());
     }
-    state.package_for_user(&request.user_id, &request.run.strategy_archive_sha256)?;
-    for factor in &request.run.factor_instances {
-        state.package_for_user(&request.user_id, &factor.archive_sha256)?;
-    }
+    validate_run_configuration(&request.user_id, &request.run, state)?;
     match request.method_version.as_str() {
         "chronological-holdout@1"
             if request.walk_forward.is_none() && !request.windows.is_empty() =>
@@ -1496,7 +1621,75 @@ fn validate_protocol(
             }
             walk_forward_windows(state, walk_forward)?;
         }
+        "cross-market@1"
+            if request.windows.is_empty()
+                && request.walk_forward.is_none()
+                && request.cross_market.is_some() =>
+        {
+            validate_cross_market(request, state)?;
+        }
         _ => return Err("Validation Protocol is invalid".into()),
+    }
+    Ok(())
+}
+
+fn validate_run_configuration(
+    user_id: &str,
+    run: &BacktestRunRequest,
+    state: &M3State,
+) -> Result<(), String> {
+    if run.user_id != user_id {
+        return Err("Validation Run configuration belongs to another User".into());
+    }
+    state.package_for_user(user_id, &run.strategy_archive_sha256)?;
+    for factor in &run.factor_instances {
+        state.package_for_user(user_id, &factor.archive_sha256)?;
+    }
+    Ok(())
+}
+
+fn validate_cross_market(
+    request: &ValidationProtocolCreateRequest,
+    state: &M3State,
+) -> Result<(), String> {
+    let contexts = &request
+        .cross_market
+        .as_ref()
+        .expect("validated above")
+        .contexts;
+    if contexts.len() < 2 {
+        return Err("Cross-market validation requires at least two markets".into());
+    }
+    let mut snapshots = HashSet::new();
+    let mut markets = HashSet::new();
+    let mut interval = None;
+    for context in contexts {
+        if !snapshots.insert(&context.snapshot_id) {
+            return Err("Cross-market validation contains a duplicate Snapshot".into());
+        }
+        let (snapshot, bars) = state.snapshot(&context.snapshot_id)?;
+        if bars.is_empty() {
+            return Err("Cross-market validation requires market evidence".into());
+        }
+        if interval
+            .replace(snapshot.interval)
+            .is_some_and(|current| current != snapshot.interval)
+        {
+            return Err("Cross-market validation requires compatible Bar Intervals".into());
+        }
+        if !markets.insert((
+            snapshot.src.clone(),
+            snapshot.code.clone(),
+            snapshot.interval,
+        )) {
+            return Err("Cross-market validation contains a duplicate Instrument context".into());
+        }
+        if let Some(run) = &context.run_override {
+            if run.snapshot_id != context.snapshot_id {
+                return Err("Cross-market override must use its frozen Snapshot".into());
+            }
+            validate_run_configuration(&request.user_id, run, state)?;
+        }
     }
     Ok(())
 }
@@ -1626,12 +1819,78 @@ fn aggregate_validation(windows: &[ValidationWindowReport]) -> ValidationAggrega
     }
 }
 
+fn aggregate_cross_market(contexts: &[CrossMarketValidationReport]) -> ValidationAggregate {
+    let complete = contexts
+        .iter()
+        .filter_map(|context| context.metrics.as_ref())
+        .collect::<Vec<_>>();
+    let count = rust_decimal::Decimal::from(complete.len().max(1));
+    ValidationAggregate {
+        completed_windows: complete.len(),
+        failed_windows: contexts.len() - complete.len(),
+        average_sample_in_return: rust_decimal::Decimal::ZERO,
+        average_sample_out_return: complete
+            .iter()
+            .map(|metrics| metrics.total_return)
+            .sum::<rust_decimal::Decimal>()
+            / count,
+        worst_sample_out_drawdown: complete
+            .iter()
+            .map(|metrics| metrics.max_drawdown)
+            .min()
+            .unwrap_or_default(),
+        average_sample_out_sharpe: complete
+            .iter()
+            .map(|metrics| metrics.sharpe)
+            .sum::<rust_decimal::Decimal>()
+            / count,
+        total_fees: complete.iter().map(|metrics| metrics.total_fees).sum(),
+        total_trades: complete
+            .iter()
+            .map(|metrics| metrics.realized_trade_count)
+            .sum(),
+    }
+}
+
+fn cross_market_evidence(contexts: &[CrossMarketValidationReport]) -> Option<CrossMarketEvidence> {
+    let returns = contexts
+        .iter()
+        .filter_map(|context| context.metrics.as_ref().map(|metrics| metrics.total_return))
+        .collect::<Vec<_>>();
+    Some(CrossMarketEvidence {
+        completed_markets: returns.len(),
+        total_return_spread: returns
+            .iter()
+            .max()
+            .zip(returns.iter().min())
+            .map(|(max, min)| *max - *min)
+            .unwrap_or_default(),
+    })
+}
+
 fn content_id(value: &impl Serialize) -> Result<String, String> {
     let value = canonical_json(serde_json::to_value(value).map_err(string)?);
     Ok(Sha256::digest(serde_json::to_vec(&value).map_err(string)?)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
+}
+
+fn validation_report_id(report: &ValidationReport) -> Result<String, String> {
+    let mut value = serde_json::to_value(report).map_err(string)?;
+    let object = value
+        .as_object_mut()
+        .expect("Validation Report serializes as an object");
+    object.remove("reportId");
+    if let Some(serde_json::Value::Array(contexts)) = object.get_mut("recommendedContexts") {
+        for context in contexts {
+            context
+                .as_object_mut()
+                .expect("Recommended Context serializes as an object")
+                .remove("supportingReportId");
+        }
+    }
+    content_id(&value)
 }
 
 fn canonical_json(value: serde_json::Value) -> serde_json::Value {
@@ -2298,6 +2557,7 @@ mod tests {
                 sample_out_end_time_ms: None,
             }],
             walk_forward: None,
+            cross_market: None,
             method_version: "chronological-holdout@1".into(),
             aggregation_rule_version: "equal-window@1".into(),
         };
@@ -2321,6 +2581,7 @@ mod tests {
             run: validation.run.clone(),
             windows: validation.windows.clone(),
             walk_forward: validation.walk_forward.clone(),
+            cross_market: validation.cross_market.clone(),
             method_version: validation.method_version.clone(),
             aggregation_rule_version: validation.aggregation_rule_version.clone(),
         };
@@ -2361,6 +2622,9 @@ mod tests {
             method_version: protocol.method_version.clone(),
             aggregation_rule_version: protocol.aggregation_rule_version.clone(),
             walk_forward: protocol.walk_forward.clone(),
+            cross_market: vec![],
+            recommended_contexts: vec![],
+            cross_market_evidence: None,
             windows: vec![sample_report],
             aggregate,
         };
@@ -2471,6 +2735,7 @@ mod tests {
             run: request(),
             windows: vec![],
             walk_forward: Some(walk_forward.clone()),
+            cross_market: None,
             method_version: "walk-forward@1".into(),
             aggregation_rule_version: "equal-window@1".into(),
         };
@@ -2481,6 +2746,7 @@ mod tests {
             run: walk_forward_request.run.clone(),
             windows: walk_forward_windows(&state, &walk_forward).unwrap(),
             walk_forward: walk_forward_request.walk_forward.clone(),
+            cross_market: walk_forward_request.cross_market.clone(),
             method_version: walk_forward_request.method_version.clone(),
             aggregation_rule_version: walk_forward_request.aggregation_rule_version.clone(),
         };
@@ -2518,6 +2784,7 @@ mod tests {
             run: unavailable_run,
             windows: walk_forward_windows(&state, &unavailable_walk_forward).unwrap(),
             walk_forward: Some(unavailable_walk_forward),
+            cross_market: None,
             method_version: "walk-forward@1".into(),
             aggregation_rule_version: "equal-window@1".into(),
         };
@@ -2548,6 +2815,7 @@ mod tests {
             run: request(),
             windows: walk_forward_windows(&state, &resumable_walk_forward).unwrap(),
             walk_forward: Some(resumable_walk_forward),
+            cross_market: None,
             method_version: "walk-forward@1".into(),
             aggregation_rule_version: "equal-window@1".into(),
         };
@@ -2569,6 +2837,221 @@ mod tests {
         );
         assert!(first_report.windows[0].sample_out_end_time_ms.is_none());
         assert!(validation_markdown(&first_report).contains("walk-forward@1"));
+
+        let (_, source_bars) = state.snapshot(&snapshot.snapshot_id).unwrap();
+        let eth_snapshot = state
+            .persist_snapshot(&ada_data_core::BarSeries {
+                src: "okx".into(),
+                code: "ETH-USDT".into(),
+                interval: BarInterval::OneHour,
+                bars: source_bars.clone(),
+                gaps: vec![],
+            })
+            .unwrap();
+        let cross_market = CrossMarketValidationRequest {
+            contexts: vec![
+                CrossMarketValidationContextRequest {
+                    snapshot_id: snapshot.snapshot_id.clone(),
+                    run_override: None,
+                },
+                CrossMarketValidationContextRequest {
+                    snapshot_id: eth_snapshot.snapshot_id.clone(),
+                    run_override: None,
+                },
+            ],
+        };
+        let cross_market_request = ValidationProtocolCreateRequest {
+            user_id: "alice".into(),
+            run: request(),
+            windows: vec![],
+            walk_forward: None,
+            cross_market: Some(cross_market.clone()),
+            method_version: "cross-market@1".into(),
+            aggregation_rule_version: "equal-window@1".into(),
+        };
+        validate_protocol(&cross_market_request, &state).unwrap();
+        let mut cross_market_protocol = ValidationProtocol {
+            protocol_id: String::new(),
+            user_id: cross_market_request.user_id.clone(),
+            run: cross_market_request.run.clone(),
+            windows: vec![],
+            walk_forward: None,
+            cross_market: Some(cross_market.clone()),
+            method_version: cross_market_request.method_version.clone(),
+            aggregation_rule_version: cross_market_request.aggregation_rule_version.clone(),
+        };
+        cross_market_protocol.protocol_id = content_id(&cross_market_protocol).unwrap();
+        state.save_protocol(&cross_market_protocol).unwrap();
+        let cross_market_request_id = ValidationProtocolIdRequest {
+            user_id: "alice".into(),
+            protocol_id: cross_market_protocol.protocol_id.clone(),
+        };
+        let cross_market_report = run_validation_report(&cross_market_request_id, &state).unwrap();
+        assert_eq!(cross_market_report.cross_market.len(), 2);
+        assert_eq!(
+            cross_market_report.cross_market[0].snapshot.code,
+            "BTC-USDT"
+        );
+        assert_eq!(
+            cross_market_report.cross_market[1].snapshot.code,
+            "ETH-USDT"
+        );
+        assert_eq!(cross_market_report.aggregate.completed_windows, 2);
+        assert_eq!(
+            cross_market_report
+                .cross_market_evidence
+                .as_ref()
+                .unwrap()
+                .completed_markets,
+            2
+        );
+        assert!(
+            cross_market_report
+                .cross_market
+                .iter()
+                .all(|context| context.failure.is_none())
+        );
+        assert!(
+            cross_market_report
+                .recommended_contexts
+                .iter()
+                .all(|context| {
+                    context.supporting_report_id == cross_market_report.report_id
+                        && context.run.snapshot_id == context.snapshot.snapshot_id
+                })
+        );
+        assert_eq!(
+            validation_report_id(&cross_market_report).unwrap(),
+            cross_market_report.report_id
+        );
+        let cross_market_run_count = state.list_runs("alice").unwrap().len();
+        assert_eq!(
+            run_validation_report(&cross_market_request_id, &state)
+                .unwrap()
+                .report_id,
+            cross_market_report.report_id
+        );
+        assert_eq!(
+            state.list_runs("alice").unwrap().len(),
+            cross_market_run_count
+        );
+        assert!(
+            state
+                .list_reports("alice")
+                .unwrap()
+                .iter()
+                .any(|report| report.report_id == cross_market_report.report_id)
+        );
+        assert!(validation_markdown(&cross_market_report).contains("ETH-USDT"));
+        let mut invalid_override = request();
+        invalid_override.factor_instances.clear();
+        let mut failed_cross_market_protocol = ValidationProtocol {
+            protocol_id: String::new(),
+            user_id: "alice".into(),
+            run: request(),
+            windows: vec![],
+            walk_forward: None,
+            cross_market: Some(CrossMarketValidationRequest {
+                contexts: vec![
+                    CrossMarketValidationContextRequest {
+                        snapshot_id: snapshot.snapshot_id.clone(),
+                        run_override: None,
+                    },
+                    CrossMarketValidationContextRequest {
+                        snapshot_id: eth_snapshot.snapshot_id.clone(),
+                        run_override: Some(invalid_override),
+                    },
+                ],
+            }),
+            method_version: "cross-market@1".into(),
+            aggregation_rule_version: "equal-window@1".into(),
+        };
+        failed_cross_market_protocol.protocol_id =
+            content_id(&failed_cross_market_protocol).unwrap();
+        state.save_protocol(&failed_cross_market_protocol).unwrap();
+        let failed_cross_market_report = run_validation_report(
+            &ValidationProtocolIdRequest {
+                user_id: "alice".into(),
+                protocol_id: failed_cross_market_protocol.protocol_id,
+            },
+            &state,
+        )
+        .unwrap();
+        assert_eq!(failed_cross_market_report.aggregate.failed_windows, 1);
+        assert!(failed_cross_market_report.cross_market[1].failure.is_some());
+        assert_eq!(failed_cross_market_report.recommended_contexts.len(), 1);
+        assert!(
+            validate_protocol(
+                &ValidationProtocolCreateRequest {
+                    cross_market: Some(CrossMarketValidationRequest {
+                        contexts: vec![
+                            CrossMarketValidationContextRequest {
+                                snapshot_id: snapshot.snapshot_id.clone(),
+                                run_override: None,
+                            },
+                            CrossMarketValidationContextRequest {
+                                snapshot_id: "missing-snapshot".into(),
+                                run_override: None,
+                            },
+                        ],
+                    }),
+                    ..cross_market_request.clone()
+                },
+                &state
+            )
+            .is_err()
+        );
+        assert!(
+            validate_protocol(
+                &ValidationProtocolCreateRequest {
+                    cross_market: Some(CrossMarketValidationRequest {
+                        contexts: vec![
+                            CrossMarketValidationContextRequest {
+                                snapshot_id: snapshot.snapshot_id.clone(),
+                                run_override: None,
+                            },
+                            CrossMarketValidationContextRequest {
+                                snapshot_id: snapshot.snapshot_id.clone(),
+                                run_override: None,
+                            },
+                        ],
+                    }),
+                    ..cross_market_request.clone()
+                },
+                &state
+            )
+            .is_err()
+        );
+        let incompatible_snapshot = state
+            .persist_snapshot(&ada_data_core::BarSeries {
+                src: "okx".into(),
+                code: "SOL-USDT".into(),
+                interval: BarInterval::OneDay,
+                bars: source_bars,
+                gaps: vec![],
+            })
+            .unwrap();
+        assert!(
+            validate_protocol(
+                &ValidationProtocolCreateRequest {
+                    cross_market: Some(CrossMarketValidationRequest {
+                        contexts: vec![
+                            CrossMarketValidationContextRequest {
+                                snapshot_id: snapshot.snapshot_id.clone(),
+                                run_override: None,
+                            },
+                            CrossMarketValidationContextRequest {
+                                snapshot_id: incompatible_snapshot.snapshot_id,
+                                run_override: None,
+                            },
+                        ],
+                    }),
+                    ..cross_market_request
+                },
+                &state
+            )
+            .is_err()
+        );
 
         let mut legacy_json =
             serde_json::to_value(state.load_run("alice", &first.run_id).unwrap()).unwrap();
