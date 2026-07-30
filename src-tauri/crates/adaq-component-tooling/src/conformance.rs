@@ -64,7 +64,7 @@ fn verify_factor(
     {
         return Err("Factor runtime schema does not match manifest".into());
     }
-    let bars = ["100", "101", "99"]
+    let bars = ["100", "101", "99", "102", "103", "104", "105"]
         .into_iter()
         .enumerate()
         .map(
@@ -87,8 +87,8 @@ fn verify_factor(
     }
     let chunked = WasmLoader::default();
     chunked.load_factor_bytes(&package.wasm, parameters)?;
-    let mut chunks = chunked.process_factor(bars[..1].to_vec())?;
-    chunks.extend(chunked.process_factor(bars[1..].to_vec())?);
+    let mut chunks = chunked.process_factor(bars[..6].to_vec())?;
+    chunks.extend(chunked.process_factor(bars[6..].to_vec())?);
     if !factor_results_equal(&whole, &chunks) {
         return Err("Factor is not chunk-boundary independent".into());
     }
