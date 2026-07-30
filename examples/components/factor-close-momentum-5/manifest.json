@@ -1,0 +1,11 @@
+{
+  "manifestSchemaVersion": "1.0.0",
+  "componentId": "1ee1d0e0-39cf-4b20-bfeb-1f9da6696e93",
+  "version": "0.1.0",
+  "name": "Factor Close Momentum 5",
+  "kind": "factor",
+  "sdkVersion": "0.1.0",
+  "abiVersion": "1.0.0",
+  "outputNames": ["close-momentum-5"],
+  "warmupBars": 5
+}

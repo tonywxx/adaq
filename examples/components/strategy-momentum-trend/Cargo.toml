@@ -1,0 +1,12 @@
+[package]
+name = "strategy-momentum-trend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+adaq-component-sdk = { path = "../../../src-tauri/crates/adaq-component-sdk", features = ["strategy"] }
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]

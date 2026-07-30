@@ -175,8 +175,8 @@ Stable information describing a Component's identity, versions, parameters, inpu
 _Avoid_: Backtest result, performance claim
 
 **Validation Report**:
-Historical evidence associated with an exact Component Package hash, data snapshot, configuration, period, and validation method; it does not guarantee future performance.
-_Avoid_: Component Meta, profitability guarantee
+Immutable historical evidence produced by one Validation Protocol and its exact Backtest Runs for an exact Component Package hash. It records aggregate conclusions without guaranteeing future performance.
+_Avoid_: Component Meta, editable report, profitability guarantee
 
 **Component Dependency Mode**:
 The origin and lifecycle of a Strategy input: Built-in is free host functionality, Embedded is compiled into the Strategy Component, and External is a separately packaged Factor Component.
@@ -223,6 +223,10 @@ _Avoid_: Latest market data, mutable cache
 **Backtest Run**:
 An immutable execution record binding a Market Data Snapshot, Component Lock, Strategy parameters, Indicator Plan, Execution Profile, engine version, and seed.
 _Avoid_: Editable backtest session
+
+**Validation Protocol**:
+The immutable pre-validation definition of the exact Component Package, Recommended Context candidates, Market Data Snapshots, configurations, time splits, and validation method applied through Backtest Runs.
+_Avoid_: Mutable experiment settings, parameter optimizer
 
 **Target Exposure**:
 The desired signed notional fraction of a Strategy Instance's current Strategy Equity: zero is flat, positive is long, and negative is short.

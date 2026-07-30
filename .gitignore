@@ -10,15 +10,10 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+tony/
 *.local
 .env
 .env.*
-github_release.sh
-docs/*
-!docs/agents/
-!docs/agents/**
-!docs/adr/
-!docs/adr/**
 .pnpm-store/
 .npm-cache/
 

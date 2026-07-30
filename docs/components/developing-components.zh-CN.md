@@ -1,0 +1,59 @@
+# 开发 ADAQ 组件
+
+ADAQ 组件是本地的、确定性的 WebAssembly 组件。使用 `adaq-component` CLI；桌面应用导入已验证的 `.adaq` 归档文件，但它不是代码编辑器。
+
+## 开始、构建、验证、打包
+
+```sh
+adaq-component new factor close-change
+adaq-component new strategy trend
+cd close-change
+adaq-component build
+adaq-component verify dist/close-change-0.1.0.adaq
+adaq-component verify dist/close-change-0.1.0.adaq --previous ../close-change-0.1.0/manifest.json
+```
+
+`build` 运行组件测试、构建 `wasm32-unknown-unknown`、运行主机合规检查，并创建 `dist/*.adaq`。包仅包含 `manifest.json` 和 `component.wasm`。`verify` 验证现有包而不修改它；`--previous` 还会检查文档中定义的 SemVer 契约。
+
+## 策略功能槽位
+
+`manifestSchemaVersion` 恰好为 `1.0.0`。策略的非空 `featureSlots` 数组是其完整的、有序的 ABI 契约：名称是唯一的小写 kebab-case ASCII 标识符（最长 64 字节），顺序将成为客户端接收的密集索引。切勿输出 `inputNames`。
+
+```json
+{
+  "featureSlots": [
+    {"name":"close","source":{"kind":"market","field":"close"}},
+    {"name":"ema","source":{"kind":"builtin","indicator":"ema","output":"value","inputs":{"real-0":"close"},"parameters":{"time-period":20}}},
+    {"name":"change","source":{"kind":"external","dependencyAlias":"change-5","output":"close-change"}}
+  ],
+  "dependencies": [{"componentId":"11111111-1111-4111-8111-111111111111","version":"^1.0.0","alias":"change-5"}]
+}
+```
+
+- `market` 绑定一个原始 OHLCV 字段，预热（Warmup）为零。
+- `builtin` 绑定一个已文档化的目录指标输出。输入选择允许的 OHLCV 字段；参数是类型化的字面量或直接策略参数引用。省略的参数使用目录默认值。
+- `external` 绑定 `dependencies` 中唯一命名的因子别名的输出。某个 K 线可能缺少因子；ADAQ 在所有槽位都存在之前不会调用策略。
+
+所有传递的槽位值均为有限的 `f64`。它们仅是分析值：不要将其视为权威金融值，也不接受 NaN/无穷大。使用 `SlotIndexes` 绑定名称一次，然后处理有序的帧值。
+
+预热（Warmup）指第一个有可用输出的 K 线，而非数值收敛。[指标目录参考](../reference/indicator-catalog.zh-CN.md)报告了上游的`不稳定期`标志；它不添加隐藏历史。K线缺口（Bar Gap）会启动新的连续 K 线段，并重新创建因子和策略，因此预热重新开始。
+
+## 因子
+
+因子接收精确的十进制字符串 OHLCV K 线，并返回声明的命名有限 `f64` 输出。在转换为分析所需的值之前，保持金融算术为十进制。`outputNames` 有序、唯一小写 kebab-case，且限制为 64 个；每个存在的结果行必须完全提供该声明和顺序。`warmupBars` 声明初始缺失，而非收敛。因子不能声明功能槽位。
+
+因子别名标识因子实例，而非组件 ID：同一包可以在不同别名和参数绑定下出现多次。每个别名在 K 线缺口后独立重新创建。
+
+## 语义化版本
+
+对于稳定版（`1.x+`）组件，移除、重命名、重新排序或更改功能槽位；更改其来源；移除或更改参数；更改依赖项、预热、清单/ABI 版本；或移除/重命名/重新排序因子输出需要主版本号。追加因子输出或添加带默认值的参数需要次版本号。算法修复和仅文档修正是补丁变更。`0.x` 版本为开发不稳定版。每个变更的包仍然需要新的组件版本，因为 ADAQ 锁定精确哈希。
+
+## 故障排除
+
+- `forbidden ambient imports`：为 `wasm32-unknown-unknown` 构建；不要使用 WASI、文件系统、网络、环境、时钟或随机数。
+- `Factor runtime schema does not match manifest`：使 `describe()` 的输出名称和预热与 `manifest.json` 完全匹配。
+- `Indicator Plan validation failed`：检查槽位顺序/名称、目录指标 ID、源输入、参数类型/范围以及外部别名/输出。
+- `Target Exposure is invalid`：每帧返回一个有限的十进制目标值，在选定的仓位模式范围内。
+- `chunk-boundary independent`：在连续的 `process` 调用间正确保持因子/策略状态；主机验证比较整体执行和分块执行的结果。
+
+参见[清单参考](../reference/component-manifest.zh-CN.md)、[JSON Schema](../reference/component-manifest.schema.json) 和可执行的[测试固件](../../src-tauri/fixtures/README.md)。

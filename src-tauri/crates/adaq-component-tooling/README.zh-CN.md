@@ -34,6 +34,6 @@ adaq-component verify dist/my-factor-0.1.0.adaq --previous ../my-factor-0.1.0/ma
 
 `new` 创建 `Cargo.toml`、`src/lib.rs`、`manifest.json` 和一个项目 README。`build` 运行项目测试、执行 release `cargo component build`、运行与宿主相同的合规检查，并写入不可变的 `.adaq` 包。`verify` 检查现有包而不修改它；`--previous` 还会报告已确认的 Manifest SemVer 兼容性规则。
 
-在发布组件之前，请阅读完整的 [Factor 和 Strategy 开发指南](../../../docs/components/developing-components.md)。
+在发布组件之前，请阅读完整的 [Factor 和 Strategy 开发指南](../../../docs/components/developing-components.zh-CN.md)。
 
 仅用于仓库开发，在 `new` 之前设置 `ADAQ_COMPONENT_SDK_PATH` 可使生成的项目使用本地 SDK 检出，而非精确的已发布 SDK 版本。

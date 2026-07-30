@@ -319,13 +319,39 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
         ));
     }
     unique_identifiers(manifest.output_names.iter().map(String::as_str), "output")?;
-    unique_non_empty(
+    unique_identifiers(
         manifest
             .dependencies
             .iter()
             .map(|value| value.alias.as_str()),
         "dependency",
     )?;
+    let dependencies = manifest
+        .dependencies
+        .iter()
+        .map(|dependency| dependency.alias.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut referenced_dependencies = std::collections::HashSet::new();
+    for slot in &manifest.feature_slots {
+        if let FeatureSlotSource::External {
+            dependency_alias,
+            output,
+        } = &slot.source
+        {
+            if !dependencies.contains(dependency_alias.as_str()) || !is_lower_kebab(output) {
+                return Err(PackageError(
+                    "External Feature Slots require a declared dependency alias and lower-kebab-case output"
+                        .into(),
+                ));
+            }
+            referenced_dependencies.insert(dependency_alias.as_str());
+        }
+    }
+    if referenced_dependencies.len() != dependencies.len() {
+        return Err(PackageError(
+            "Every Component dependency must be referenced by an External Feature Slot".into(),
+        ));
+    }
     for parameter in &manifest.parameters {
         let valid_default = match parameter.parameter_type {
             ParameterType::Decimal => Decimal::from_str_exact(&parameter.default_value).is_ok(),
@@ -516,6 +542,34 @@ mod tests {
             manifest.wasm_sha256 = sha256(wasm);
             assert!(validate_manifest(&manifest, wasm).is_err());
         }
+    }
+
+    #[test]
+    fn external_slots_require_declared_and_used_dependencies() {
+        let wasm = b"\0asm\x0d\0\x01\0";
+        let mut strategy = manifest();
+        strategy.kind = ComponentKind::Strategy;
+        strategy.output_names.clear();
+        strategy.feature_slots = vec![FeatureSlotDefinition {
+            name: "momentum".into(),
+            source: FeatureSlotSource::External {
+                dependency_alias: "momentum".into(),
+                output: "close-momentum-5".into(),
+            },
+        }];
+        strategy.dependencies = vec![ComponentDependency {
+            component_id: Uuid::nil(),
+            version: VersionReq::STAR,
+            alias: "momentum".into(),
+        }];
+        strategy.wasm_sha256 = sha256(wasm);
+        assert!(validate_manifest(&strategy, wasm).is_ok());
+
+        strategy.feature_slots[0].source = FeatureSlotSource::External {
+            dependency_alias: "missing".into(),
+            output: "close-momentum-5".into(),
+        };
+        assert!(validate_manifest(&strategy, wasm).is_err());
     }
 
     #[test]

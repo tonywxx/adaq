@@ -1198,6 +1198,19 @@ mod tests {
         (manifest, wasm)
     }
 
+    fn public_example_package(name: &str) -> Vec<u8> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../examples/components")
+            .join(name)
+            .join("dist")
+            .join(format!("{name}-0.1.0.adaq"));
+        assert!(
+            path.is_file(),
+            "build the {name} example with adaq-component build"
+        );
+        fs::read(path).unwrap()
+    }
+
     fn legacy_package() -> Vec<u8> {
         let manifest = r#"{
             "componentId":"22222222-2222-4222-8222-222222222222",
@@ -1354,6 +1367,88 @@ mod tests {
         state
             .delete_component("alice", &strategy_entry.archive_sha256)
             .unwrap();
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_examples_import_and_execute_a_deterministic_backtest() {
+        let root = std::env::temp_dir().join(format!(
+            "adaq-m6-examples-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = M3State::open(&root).unwrap();
+        let factor = state
+            .import_component("alice", &public_example_package("factor-close-momentum-5"))
+            .unwrap();
+        let strategy = state
+            .import_component("alice", &public_example_package("strategy-momentum-trend"))
+            .unwrap();
+        let bars = (0..50)
+            .map(|index| {
+                let close = rust_decimal::Decimal::from(100 + index);
+                let time_index = if index < 25 { index } else { index + 5 };
+                OhlcvBar {
+                    open_time_ms: time_index * 3_600_000,
+                    open: close,
+                    high: close,
+                    low: close,
+                    close,
+                    base_volume: rust_decimal::Decimal::ONE,
+                    quote_volume: close,
+                }
+            })
+            .collect();
+        let snapshot = state
+            .persist_snapshot(&ada_data_core::BarSeries {
+                src: "okx".into(),
+                code: "BTC-USDT".into(),
+                interval: BarInterval::OneHour,
+                bars,
+                gaps: vec![BarGap {
+                    start_time_ms: 25 * 3_600_000,
+                    end_time_ms: 30 * 3_600_000,
+                }],
+            })
+            .unwrap();
+        let request = || BacktestRunRequest {
+            user_id: "alice".into(),
+            snapshot_id: snapshot.snapshot_id.clone(),
+            factor_instances: vec![FactorInstanceRequest {
+                alias: "momentum".into(),
+                archive_sha256: factor.archive_sha256.clone(),
+                parameters: HashMap::new(),
+            }],
+            strategy_archive_sha256: strategy.archive_sha256.clone(),
+            strategy_parameters: HashMap::new(),
+            initial_quote_allocation: 10_000.into(),
+            execution_profile: ExecutionProfile {
+                maker_fee_rate: rust_decimal::Decimal::new(8, 4),
+                taker_fee_rate: rust_decimal::Decimal::new(1, 3),
+                adverse_slippage_rate: rust_decimal::Decimal::ZERO,
+                rebalance_threshold: rust_decimal::Decimal::ZERO,
+                price_increment: rust_decimal::Decimal::ONE,
+                quantity_increment: rust_decimal::Decimal::new(1, 4),
+                minimum_quantity: rust_decimal::Decimal::new(1, 4),
+                risk_free_rate: rust_decimal::Decimal::ZERO,
+                fill_policy: ada_backtest_core::FillPolicy::Taker,
+            },
+        };
+
+        let first = execute_backtest(request(), &state).unwrap();
+        let replay = execute_backtest(request(), &state).unwrap();
+
+        assert_eq!(first.run_id, replay.run_id);
+        assert_eq!(first.component_lock.len(), 2);
+        assert_eq!(first.pauses.len(), 38);
+        assert!(!first.result.orders.is_empty());
+        assert!(!first.result.fills.is_empty());
+        assert_eq!(state.list_runs("alice").unwrap().len(), 1);
+
         drop(state);
         fs::remove_dir_all(root).unwrap();
     }

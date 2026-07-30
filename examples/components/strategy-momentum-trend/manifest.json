@@ -1,0 +1,21 @@
+{
+  "manifestSchemaVersion": "1.0.0",
+  "componentId": "29059002-ffb3-4631-a539-0c9193110b31",
+  "version": "0.1.0",
+  "name": "Strategy Momentum Trend",
+  "kind": "strategy",
+  "sdkVersion": "0.1.0",
+  "abiVersion": "1.0.0",
+  "parameters": [
+    {"name": "ema-period", "parameterType": "integer", "defaultValue": "20"},
+    {"name": "minimum-momentum", "parameterType": "decimal", "defaultValue": "0"}
+  ],
+  "featureSlots": [
+    {"name": "close", "source": {"kind": "market", "field": "close"}},
+    {"name": "ema", "source": {"kind": "builtin", "indicator": "ema", "output": "value", "inputs": {"real-0": "close"}, "parameters": {"time-period": {"strategyParameter": "ema-period"}}}},
+    {"name": "momentum", "source": {"kind": "external", "dependencyAlias": "momentum", "output": "close-momentum-5"}}
+  ],
+  "dependencies": [
+    {"componentId": "1ee1d0e0-39cf-4b20-bfeb-1f9da6696e93", "version": "^0.1.0", "alias": "momentum"}
+  ]
+}
