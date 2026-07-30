@@ -24,6 +24,7 @@ import {
 import {
 	defaultExecutionProfile,
 	matchingFactors,
+	parameterValues,
 	runGate,
 } from "./guided-backtest";
 import { formatDecimal } from "./format-decimal";
@@ -205,6 +206,7 @@ export function BacktestPage() {
 	const [executionOffset, setExecutionOffset] = useState(0);
 	const [history, setHistory] = useState<RunSummary[]>([]);
 	const [message, setMessage] = useState("");
+	const [runTechnicalError, setRunTechnicalError] = useState("");
 	const [snapshotTechnicalError, setSnapshotTechnicalError] = useState("");
 	const [downloadTaskId, setDownloadTaskId] = useState<string>();
 	const [sampleOutStart, setSampleOutStart] = useState("");
@@ -286,6 +288,41 @@ export function BacktestPage() {
 	const selectedStrategy = strategies.find(
 		(item) => item.archiveSha256 === strategy,
 	);
+	const review = snapshot && selectedStrategy && {
+		snapshot: {
+			id: snapshot.snapshotId,
+			instrument: `${snapshot.src.toUpperCase()} · ${snapshot.code} · ${snapshot.interval}`,
+			barCount: snapshot.barCount,
+			gaps: snapshot.gaps.length,
+		},
+		packages: [
+			{
+				role: "Strategy",
+				name: `${selectedStrategy.name} v${selectedStrategy.version}`,
+				hash: selectedStrategy.archiveSha256,
+				parameters: parameterValues(selectedStrategy, strategyParameters),
+				plannedAnalyticalInputs: selectedStrategy.featureSlots,
+			},
+			...selectedStrategy.dependencies.flatMap((dependency) => {
+				const factor = factors.find(
+					(item) => item.archiveSha256 === factorSelections[dependency.alias],
+				);
+				return factor
+					? [{
+						role: `Factor · ${dependency.alias}`,
+						name: `${factor.name} v${factor.version}`,
+						hash: factor.archiveSha256,
+						parameters: parameterValues(
+							factor,
+							factorParameters[dependency.alias] ?? {},
+						),
+					}]
+					: [];
+			}),
+		],
+		initialQuoteAllocation,
+		executionProfile,
+	};
 	const selectStage = (next: "data" | "strategy" | "execution" | "results") => {
 		if (next === "strategy" && !snapshot) {
 			setMessage("Select a Market Data Snapshot before continuing.");
@@ -298,6 +335,9 @@ export function BacktestPage() {
 				dependencies: selectedStrategy?.dependencies ?? [],
 				factorSelections,
 				initialQuoteAllocation,
+				executionValues: Object.entries(executionProfile)
+					.filter(([name]) => name !== "fillPolicy")
+					.map(([, value]) => value),
 				running,
 			});
 			if (gate) {
@@ -504,6 +544,9 @@ export function BacktestPage() {
 			dependencies: selectedStrategy?.dependencies ?? [],
 			factorSelections,
 			initialQuoteAllocation,
+			executionValues: Object.entries(executionProfile)
+				.filter(([name]) => name !== "fillPolicy")
+				.map(([, value]) => value),
 			running,
 		});
 		if (gate) {
@@ -512,6 +555,7 @@ export function BacktestPage() {
 		}
 		if (!userId || !snapshot || running) return;
 		setRunning(true);
+		setRunTechnicalError("");
 		setMessage("Running deterministic Backtest…");
 		try {
 			const value = await invoke<BacktestRun>("backtest_run", {
@@ -523,7 +567,9 @@ export function BacktestPage() {
 			setMessage(`Run ${value.runId.slice(0, 12)} completed.`);
 			await refreshHistory();
 		} catch (error) {
-			setMessage(String(error));
+			const details = String(error);
+			setMessage(details);
+			setRunTechnicalError(details);
 		} finally {
 			setRunning(false);
 		}
@@ -591,6 +637,8 @@ export function BacktestPage() {
 					<CardTitle>Data and Strategy configuration</CardTitle>
 				</CardHeader>
 				<CardContent className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+					{stage === "data" && (
+						<>
 					<Field label="Instrument" id="backtest-instrument">
 						<select
 							id="backtest-instrument"
@@ -680,6 +728,10 @@ export function BacktestPage() {
 							placeholder="Freeze other market Snapshots first"
 						/>
 					</Field>
+						</>
+					)}
+					{stage === "strategy" && (
+						<>
 					<Field label="Strategy">
 						<select
 							className="h-9 rounded-md border bg-background px-3"
@@ -756,6 +808,10 @@ export function BacktestPage() {
 							}
 						/>
 					))}
+						</>
+					)}
+					{stage === "data" && (
+						<>
 					<div className="flex flex-wrap items-end gap-2">
 						<Button disabled={Boolean(downloadTaskId)} onClick={() => void prepare()}>
 							Prepare Snapshot
@@ -853,8 +909,10 @@ export function BacktestPage() {
 									{snapshotTechnicalError}
 								</pre>
 							</div>
-						)}
-					</div>
+										)}
+									</div>
+						</>
+					)}
 				</CardContent>
 			</Card>
 			{stage === "execution" && snapshot && selectedStrategy && (
@@ -904,9 +962,15 @@ export function BacktestPage() {
 						<div className="md:col-span-2 lg:col-span-3 rounded-md border p-3 text-sm">
 							<p className="font-medium">Authoritative inputs</p>
 							<pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">
-								{JSON.stringify(buildRunRequest(snapshot.snapshotId), null, 2)}
+								{JSON.stringify(review, null, 2)}
 							</pre>
 						</div>
+						{runTechnicalError && (
+							<div className="md:col-span-2 lg:col-span-3 rounded-md border border-destructive p-3 text-sm" role="alert">
+								<p>Backtest error</p>
+								<pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-xs">{runTechnicalError}</pre>
+							</div>
+						)}
 						<Button disabled={running} onClick={() => void execute()}>
 							{running ? "Running…" : "Run Backtest"}
 						</Button>
@@ -916,7 +980,7 @@ export function BacktestPage() {
 					</CardContent>
 				</Card>
 			)}
-			{run && (
+			{stage === "results" && run && (
 				<>
 					<Card>
 						<CardContent className="grid grid-cols-2 gap-4 py-4 md:grid-cols-4 lg:grid-cols-6">
