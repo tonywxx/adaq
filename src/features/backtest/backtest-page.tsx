@@ -21,6 +21,11 @@ import {
 	snapshotStatus,
 	reuseSnapshot,
 } from "./backtest-data";
+import {
+	defaultExecutionProfile,
+	matchingFactors,
+	runGate,
+} from "./guided-backtest";
 import { formatDecimal } from "./format-decimal";
 
 type Snapshot = {
@@ -179,6 +184,12 @@ export function BacktestPage() {
 	const [strategyParameters, setStrategyParameters] = useState<
 		Record<string, string>
 	>({});
+	const [stage, setStage] = useState<"data" | "strategy" | "execution" | "results">(
+		"data",
+	);
+	const [initialQuoteAllocation, setInitialQuoteAllocation] = useState("10000");
+	const [executionProfile, setExecutionProfile] = useState(defaultExecutionProfile);
+	const [running, setRunning] = useState(false);
 	const [start, setStart] = useState(() =>
 		new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10),
 	);
@@ -275,6 +286,31 @@ export function BacktestPage() {
 	const selectedStrategy = strategies.find(
 		(item) => item.archiveSha256 === strategy,
 	);
+	const selectStage = (next: "data" | "strategy" | "execution" | "results") => {
+		if (next === "strategy" && !snapshot) {
+			setMessage("Select a Market Data Snapshot before continuing.");
+			return;
+		}
+		if (next === "execution") {
+			const gate = runGate({
+				snapshotId: snapshot?.snapshotId,
+				strategy: selectedStrategy,
+				dependencies: selectedStrategy?.dependencies ?? [],
+				factorSelections,
+				initialQuoteAllocation,
+				running,
+			});
+			if (gate) {
+				setMessage(gate);
+				return;
+			}
+		}
+		if (next === "results" && !run) {
+			setMessage("Run a Backtest before viewing Results.");
+			return;
+		}
+		setStage(next);
+	};
 	const prepare = async () => {
 		if (!userId) return;
 		const rangeError = snapshotRangeError(start, end);
@@ -337,18 +373,8 @@ export function BacktestPage() {
 				.filter((factor) => factor.archiveSha256) ?? [],
 		strategyArchiveSha256: strategy,
 		strategyParameters,
-		initialQuoteAllocation: "10000",
-		executionProfile: {
-			makerFeeRate: "0.0008",
-			takerFeeRate: "0.001",
-			adverseSlippageRate: "0.0005",
-			rebalanceThreshold: "0",
-			priceIncrement: "0.1",
-			quantityIncrement: "0.00000001",
-			minimumQuantity: "0.00001",
-			riskFreeRate: "0",
-			fillPolicy: "taker",
-		},
+		initialQuoteAllocation,
+		executionProfile,
 	});
 	const createValidation = async () => {
 		if (!userId || !snapshot) return;
@@ -472,7 +498,20 @@ export function BacktestPage() {
 		}
 	};
 	const execute = async () => {
-		if (!userId || !snapshot) return;
+		const gate = runGate({
+			snapshotId: snapshot?.snapshotId,
+			strategy: selectedStrategy,
+			dependencies: selectedStrategy?.dependencies ?? [],
+			factorSelections,
+			initialQuoteAllocation,
+			running,
+		});
+		if (gate) {
+			setMessage(gate);
+			return;
+		}
+		if (!userId || !snapshot || running) return;
+		setRunning(true);
 		setMessage("Running deterministic Backtest…");
 		try {
 			const value = await invoke<BacktestRun>("backtest_run", {
@@ -480,10 +519,13 @@ export function BacktestPage() {
 			});
 			setRun(value);
 			setExecutionOffset(0);
+			setStage("results");
 			setMessage(`Run ${value.runId.slice(0, 12)} completed.`);
 			await refreshHistory();
 		} catch (error) {
 			setMessage(String(error));
+		} finally {
+			setRunning(false);
 		}
 	};
 	const runId = run?.runId;
@@ -531,9 +573,22 @@ export function BacktestPage() {
 			title="Backtest"
 			description={`${selectedInstrument.code} · OKX Spot · Long Only`}
 		>
+			<nav aria-label="Backtest stages" className="mb-4 grid gap-2 sm:grid-cols-4">
+				{(["data", "strategy", "execution", "results"] as const).map((item, index) => (
+					<Button
+						key={item}
+						type="button"
+						variant={stage === item ? "default" : "outline"}
+						aria-current={stage === item ? "step" : undefined}
+						onClick={() => selectStage(item)}
+					>
+						{index + 1}. {item[0].toUpperCase() + item.slice(1)}
+					</Button>
+				))}
+			</nav>
 			<Card>
 				<CardHeader>
-					<CardTitle>Data stage</CardTitle>
+					<CardTitle>Data and Strategy configuration</CardTitle>
 				</CardHeader>
 				<CardContent className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
 					<Field label="Instrument" id="backtest-instrument">
@@ -657,8 +712,7 @@ export function BacktestPage() {
 								}
 							>
 								<option value="">Select {dependency.version}</option>
-								{factors
-									.filter((item) => item.componentId === dependency.componentId)
+								{matchingFactors(dependency, factors)
 									.map((item) => (
 										<option key={item.archiveSha256} value={item.archiveSha256}>
 											{item.name} v{item.version}
@@ -716,19 +770,8 @@ export function BacktestPage() {
 								Cancel
 							</Button>
 						)}
-						<Button
-							disabled={
-								!snapshot ||
-								!strategy ||
-								Boolean(
-									selectedStrategy?.dependencies.some(
-										(dependency) => !factorSelections[dependency.alias],
-									),
-								)
-							}
-							onClick={() => void execute()}
-						>
-							Run
+						<Button disabled={!snapshot || !strategy} onClick={() => selectStage("execution")}>
+							Review execution
 						</Button>
 						<Button
 							variant="outline"
@@ -814,6 +857,65 @@ export function BacktestPage() {
 					</div>
 				</CardContent>
 			</Card>
+			{stage === "execution" && snapshot && selectedStrategy && (
+				<Card className="mt-4">
+					<CardHeader>
+						<CardTitle>Execution and pre-Run review</CardTitle>
+					</CardHeader>
+					<CardContent className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+						<Field label="Initial quote allocation" id="backtest-allocation">
+							<Input
+								id="backtest-allocation"
+								type="text"
+								inputMode="decimal"
+								value={initialQuoteAllocation}
+								onChange={(event) => setInitialQuoteAllocation(event.target.value)}
+							/>
+						</Field>
+						{Object.entries(executionProfile)
+							.filter(([name]) => name !== "fillPolicy")
+							.map(([name, value]) => (
+								<Field key={name} label={name.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}>
+									<Input
+										type="text"
+										inputMode="decimal"
+										value={value}
+										onChange={(event) =>
+											setExecutionProfile((current) => ({ ...current, [name]: event.target.value }))
+										}
+									/>
+								</Field>
+							))}
+						<Field label="Fill policy">
+							<select
+								className="h-9 rounded-md border bg-background px-3"
+								value={executionProfile.fillPolicy}
+								onChange={(event) =>
+									setExecutionProfile((current) => ({
+										...current,
+										fillPolicy: event.target.value as "maker" | "taker",
+									}))
+								}
+							>
+								<option value="taker">Taker</option>
+								<option value="maker">Maker</option>
+							</select>
+						</Field>
+						<div className="md:col-span-2 lg:col-span-3 rounded-md border p-3 text-sm">
+							<p className="font-medium">Authoritative inputs</p>
+							<pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">
+								{JSON.stringify(buildRunRequest(snapshot.snapshotId), null, 2)}
+							</pre>
+						</div>
+						<Button disabled={running} onClick={() => void execute()}>
+							{running ? "Running…" : "Run Backtest"}
+						</Button>
+						<p className="self-center text-sm text-muted-foreground" role="status" aria-live="polite">
+							{message}
+						</p>
+					</CardContent>
+				</Card>
+			)}
 			{run && (
 				<>
 					<Card>
