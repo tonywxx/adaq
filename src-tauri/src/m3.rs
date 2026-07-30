@@ -808,6 +808,8 @@ pub struct ValidationProtocolCreateRequest {
     pub user_id: String,
     pub run: BacktestRunRequest,
     pub windows: Vec<ValidationWindowRequest>,
+    #[serde(default)]
+    pub walk_forward: Option<WalkForwardValidationRequest>,
     pub method_version: String,
     pub aggregation_rule_version: String,
 }
@@ -817,6 +819,17 @@ pub struct ValidationProtocolCreateRequest {
 pub struct ValidationWindowRequest {
     pub snapshot_id: String,
     pub sample_out_start_time_ms: i64,
+    #[serde(default)]
+    pub sample_out_end_time_ms: Option<i64>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalkForwardValidationRequest {
+    pub snapshot_id: String,
+    pub window_size_bars: usize,
+    pub step_size_bars: usize,
+    pub minimum_history_bars: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -826,6 +839,8 @@ pub struct ValidationProtocol {
     pub user_id: String,
     pub run: BacktestRunRequest,
     pub windows: Vec<ValidationWindowRequest>,
+    #[serde(default)]
+    pub walk_forward: Option<WalkForwardValidationRequest>,
     pub method_version: String,
     pub aggregation_rule_version: String,
 }
@@ -840,6 +855,9 @@ pub struct ValidationProtocolIdRequest {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationWindowReport {
+    pub sample_out_start_time_ms: i64,
+    #[serde(default)]
+    pub sample_out_end_time_ms: Option<i64>,
     pub sample_in_snapshot_id: String,
     pub sample_out_snapshot_id: String,
     pub sample_in_run_id: Option<String>,
@@ -877,6 +895,8 @@ pub struct ValidationReport {
     pub user_id: String,
     pub method_version: String,
     pub aggregation_rule_version: String,
+    #[serde(default)]
+    pub walk_forward: Option<WalkForwardValidationRequest>,
     pub windows: Vec<ValidationWindowReport>,
     pub aggregate: ValidationAggregate,
 }
@@ -1296,11 +1316,18 @@ pub fn validation_protocol_create(
     state: tauri::State<'_, M3State>,
 ) -> Result<ValidationProtocol, String> {
     validate_protocol(&request, &state)?;
+    let windows = request
+        .walk_forward
+        .as_ref()
+        .map(|walk_forward| walk_forward_windows(&state, walk_forward))
+        .transpose()?
+        .unwrap_or(request.windows);
     let mut protocol = ValidationProtocol {
         protocol_id: String::new(),
         user_id: request.user_id.clone(),
         run: request.run,
-        windows: request.windows,
+        windows,
+        walk_forward: request.walk_forward,
         method_version: request.method_version,
         aggregation_rule_version: request.aggregation_rule_version,
     };
@@ -1322,6 +1349,13 @@ pub fn validation_report_run(
     request: ValidationProtocolIdRequest,
     state: tauri::State<'_, M3State>,
 ) -> Result<ValidationReport, String> {
+    run_validation_report(&request, &state)
+}
+
+fn run_validation_report(
+    request: &ValidationProtocolIdRequest,
+    state: &M3State,
+) -> Result<ValidationReport, String> {
     let protocol = state.load_protocol(&request.user_id, &request.protocol_id)?;
     let mut windows = Vec::with_capacity(protocol.windows.len());
     for window in &protocol.windows {
@@ -1336,6 +1370,8 @@ pub fn validation_report_run(
             execute_backtest(sample_out_request, &state),
         ) {
             (Ok(sample_in_run), Ok(sample_out_run)) => windows.push(ValidationWindowReport {
+                sample_out_start_time_ms: window.sample_out_start_time_ms,
+                sample_out_end_time_ms: window.sample_out_end_time_ms,
                 sample_in_snapshot_id: sample_in.snapshot_id,
                 sample_out_snapshot_id: sample_out.snapshot_id,
                 sample_in_run_id: Some(sample_in_run.run_id),
@@ -1347,6 +1383,8 @@ pub fn validation_report_run(
                 failure: None,
             }),
             (sample_in_result, sample_out_result) => windows.push(ValidationWindowReport {
+                sample_out_start_time_ms: window.sample_out_start_time_ms,
+                sample_out_end_time_ms: window.sample_out_end_time_ms,
                 sample_in_snapshot_id: sample_in.snapshot_id,
                 sample_out_snapshot_id: sample_out.snapshot_id,
                 sample_in_run_id: sample_in_result.as_ref().ok().map(|run| run.run_id.clone()),
@@ -1389,6 +1427,7 @@ pub fn validation_report_run(
         user_id: protocol.user_id,
         method_version: protocol.method_version,
         aggregation_rule_version: protocol.aggregation_rule_version,
+        walk_forward: protocol.walk_forward,
         windows,
         aggregate,
     };
@@ -1429,8 +1468,6 @@ fn validate_protocol(
 ) -> Result<(), String> {
     validate_user(&request.user_id)?;
     if request.run.user_id != request.user_id
-        || request.windows.is_empty()
-        || request.method_version != "chronological-holdout@1"
         || !request
             .aggregation_rule_version
             .starts_with("equal-window@")
@@ -1441,8 +1478,25 @@ fn validate_protocol(
     for factor in &request.run.factor_instances {
         state.package_for_user(&request.user_id, &factor.archive_sha256)?;
     }
-    for window in &request.windows {
-        split_snapshot(state, window)?;
+    match request.method_version.as_str() {
+        "chronological-holdout@1"
+            if request.walk_forward.is_none() && !request.windows.is_empty() =>
+        {
+            for window in &request.windows {
+                split_snapshot(state, window)?;
+            }
+        }
+        "walk-forward@1" if request.windows.is_empty() => {
+            let walk_forward = request
+                .walk_forward
+                .as_ref()
+                .ok_or("Walk-forward configuration is required")?;
+            if request.run.snapshot_id != walk_forward.snapshot_id {
+                return Err("Walk-forward must use the frozen Snapshot".into());
+            }
+            walk_forward_windows(state, walk_forward)?;
+        }
+        _ => return Err("Validation Protocol is invalid".into()),
     }
     Ok(())
 }
@@ -1453,7 +1507,11 @@ fn split_snapshot(
 ) -> Result<(MarketDataSnapshot, MarketDataSnapshot), String> {
     let (snapshot, bars) = state.snapshot(&window.snapshot_id)?;
     let split = bars.partition_point(|bar| bar.open_time_ms < window.sample_out_start_time_ms);
-    if split == 0 || split == bars.len() {
+    let end = window
+        .sample_out_end_time_ms
+        .map(|end| bars.partition_point(|bar| bar.open_time_ms < end))
+        .unwrap_or(bars.len());
+    if split == 0 || split >= end {
         return Err("Validation sample-out window must be non-empty and chronological".into());
     }
     let gaps = snapshot
@@ -1473,8 +1531,43 @@ fn split_snapshot(
     };
     Ok((
         state.persist_snapshot(&series(bars[..split].to_vec()))?,
-        state.persist_snapshot(&series(bars[split..].to_vec()))?,
+        state.persist_snapshot(&series(bars[split..end].to_vec()))?,
     ))
+}
+
+fn walk_forward_windows(
+    state: &M3State,
+    request: &WalkForwardValidationRequest,
+) -> Result<Vec<ValidationWindowRequest>, String> {
+    if request.window_size_bars == 0
+        || request.step_size_bars == 0
+        || request.minimum_history_bars == 0
+    {
+        return Err("Walk-forward window sizes must be positive".into());
+    }
+    if request.step_size_bars < request.window_size_bars {
+        return Err("Walk-forward step must not overlap sample-out windows".into());
+    }
+    let (_, bars) = state.snapshot(&request.snapshot_id)?;
+    if request.minimum_history_bars >= bars.len() {
+        return Err("Walk-forward requires more history than the minimum".into());
+    }
+    let windows = (request.minimum_history_bars..bars.len())
+        .step_by(request.step_size_bars)
+        .take_while(|start| start.saturating_add(request.window_size_bars) <= bars.len())
+        .map(|start| ValidationWindowRequest {
+            snapshot_id: request.snapshot_id.clone(),
+            sample_out_start_time_ms: bars[start].open_time_ms,
+            sample_out_end_time_ms: bars
+                .get(start + request.window_size_bars)
+                .map(|bar| bar.open_time_ms),
+        })
+        .collect::<Vec<_>>();
+    if windows.is_empty() {
+        Err("Walk-forward history cannot produce a complete window".into())
+    } else {
+        Ok(windows)
+    }
 }
 
 fn aggregate_validation(windows: &[ValidationWindowReport]) -> ValidationAggregate {
@@ -2202,7 +2295,9 @@ mod tests {
             windows: vec![ValidationWindowRequest {
                 snapshot_id: snapshot.snapshot_id.clone(),
                 sample_out_start_time_ms: 25 * 3_600_000,
+                sample_out_end_time_ms: None,
             }],
+            walk_forward: None,
             method_version: "chronological-holdout@1".into(),
             aggregation_rule_version: "equal-window@1".into(),
         };
@@ -2212,6 +2307,7 @@ mod tests {
                     windows: vec![ValidationWindowRequest {
                         snapshot_id: snapshot.snapshot_id.clone(),
                         sample_out_start_time_ms: 0,
+                        sample_out_end_time_ms: None,
                     }],
                     ..validation.clone()
                 },
@@ -2224,6 +2320,7 @@ mod tests {
             user_id: validation.user_id.clone(),
             run: validation.run.clone(),
             windows: validation.windows.clone(),
+            walk_forward: validation.walk_forward.clone(),
             method_version: validation.method_version.clone(),
             aggregation_rule_version: validation.aggregation_rule_version.clone(),
         };
@@ -2242,6 +2339,8 @@ mod tests {
             let sample_in_run = execute_backtest(sample_in_request, &state).unwrap();
             let sample_out_run = execute_backtest(sample_out_request, &state).unwrap();
             ValidationWindowReport {
+                sample_out_start_time_ms: validation.windows[0].sample_out_start_time_ms,
+                sample_out_end_time_ms: validation.windows[0].sample_out_end_time_ms,
                 sample_in_snapshot_id: sample_in.snapshot_id,
                 sample_out_snapshot_id: sample_out.snapshot_id,
                 sample_in_run_id: Some(sample_in_run.run_id),
@@ -2261,6 +2360,7 @@ mod tests {
             user_id: "alice".into(),
             method_version: protocol.method_version.clone(),
             aggregation_rule_version: protocol.aggregation_rule_version.clone(),
+            walk_forward: protocol.walk_forward.clone(),
             windows: vec![sample_report],
             aggregate,
         };
@@ -2283,6 +2383,8 @@ mod tests {
             content_id(&changed_protocol).unwrap()
         );
         let failed = ValidationWindowReport {
+            sample_out_start_time_ms: 0,
+            sample_out_end_time_ms: None,
             sample_in_snapshot_id: snapshot.snapshot_id.clone(),
             sample_out_snapshot_id: snapshot.snapshot_id.clone(),
             sample_in_run_id: Some(first.run_id.clone()),
@@ -2294,6 +2396,179 @@ mod tests {
             failure: Some("unavailable".into()),
         };
         assert_eq!(aggregate_validation(&[failed]).failed_windows, 1);
+
+        let walk_forward = WalkForwardValidationRequest {
+            snapshot_id: snapshot.snapshot_id.clone(),
+            window_size_bars: 5,
+            step_size_bars: 5,
+            minimum_history_bars: 10,
+        };
+        let generated_walk_forward_windows = walk_forward_windows(&state, &walk_forward).unwrap();
+        assert_eq!(
+            generated_walk_forward_windows
+                .iter()
+                .map(|window| window.sample_out_start_time_ms)
+                .collect::<Vec<_>>(),
+            vec![
+                10 * 3_600_000,
+                15 * 3_600_000,
+                20 * 3_600_000,
+                30 * 3_600_000,
+                35 * 3_600_000,
+                40 * 3_600_000,
+                45 * 3_600_000,
+                50 * 3_600_000
+            ]
+        );
+        assert_eq!(
+            generated_walk_forward_windows[0].sample_out_end_time_ms,
+            Some(15 * 3_600_000)
+        );
+        let gap_window = generated_walk_forward_windows
+            .iter()
+            .find(|window| window.sample_out_start_time_ms == 30 * 3_600_000)
+            .unwrap();
+        assert_eq!(split_snapshot(&state, gap_window).unwrap().1.bar_count, 5);
+        assert!(
+            walk_forward_windows(
+                &state,
+                &WalkForwardValidationRequest {
+                    minimum_history_bars: 50,
+                    ..walk_forward.clone()
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            walk_forward_windows(
+                &state,
+                &WalkForwardValidationRequest {
+                    step_size_bars: 4,
+                    ..walk_forward.clone()
+                },
+            )
+            .is_err()
+        );
+        let partial_tail_windows = walk_forward_windows(
+            &state,
+            &WalkForwardValidationRequest {
+                window_size_bars: 6,
+                step_size_bars: 6,
+                ..walk_forward.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(partial_tail_windows.len(), 6);
+        assert_eq!(
+            partial_tail_windows
+                .last()
+                .unwrap()
+                .sample_out_start_time_ms,
+            45 * 3_600_000
+        );
+        let walk_forward_request = ValidationProtocolCreateRequest {
+            user_id: "alice".into(),
+            run: request(),
+            windows: vec![],
+            walk_forward: Some(walk_forward.clone()),
+            method_version: "walk-forward@1".into(),
+            aggregation_rule_version: "equal-window@1".into(),
+        };
+        validate_protocol(&walk_forward_request, &state).unwrap();
+        let mut walk_forward_protocol = ValidationProtocol {
+            protocol_id: String::new(),
+            user_id: walk_forward_request.user_id.clone(),
+            run: walk_forward_request.run.clone(),
+            windows: walk_forward_windows(&state, &walk_forward).unwrap(),
+            walk_forward: walk_forward_request.walk_forward.clone(),
+            method_version: walk_forward_request.method_version.clone(),
+            aggregation_rule_version: walk_forward_request.aggregation_rule_version.clone(),
+        };
+        walk_forward_protocol.protocol_id = content_id(&walk_forward_protocol).unwrap();
+        let mut changed_walk_forward_protocol = walk_forward_protocol.clone();
+        changed_walk_forward_protocol
+            .walk_forward
+            .as_mut()
+            .unwrap()
+            .step_size_bars = 6;
+        assert_ne!(
+            content_id(&walk_forward_protocol).unwrap(),
+            content_id(&changed_walk_forward_protocol).unwrap()
+        );
+        state.save_protocol(&walk_forward_protocol).unwrap();
+        assert_eq!(
+            state
+                .load_protocol("alice", &walk_forward_protocol.protocol_id)
+                .unwrap()
+                .walk_forward
+                .as_ref()
+                .unwrap()
+                .minimum_history_bars,
+            10
+        );
+        let unavailable_walk_forward = WalkForwardValidationRequest {
+            minimum_history_bars: 40,
+            ..walk_forward.clone()
+        };
+        let mut unavailable_run = request();
+        unavailable_run.strategy_archive_sha256 = "0".repeat(64);
+        let mut unavailable_protocol = ValidationProtocol {
+            protocol_id: String::new(),
+            user_id: "alice".into(),
+            run: unavailable_run,
+            windows: walk_forward_windows(&state, &unavailable_walk_forward).unwrap(),
+            walk_forward: Some(unavailable_walk_forward),
+            method_version: "walk-forward@1".into(),
+            aggregation_rule_version: "equal-window@1".into(),
+        };
+        unavailable_protocol.protocol_id = content_id(&unavailable_protocol).unwrap();
+        state.save_protocol(&unavailable_protocol).unwrap();
+        let unavailable_report = run_validation_report(
+            &ValidationProtocolIdRequest {
+                user_id: "alice".into(),
+                protocol_id: unavailable_protocol.protocol_id,
+            },
+            &state,
+        )
+        .unwrap();
+        assert_eq!(unavailable_report.aggregate.failed_windows, 2);
+        assert!(
+            unavailable_report
+                .windows
+                .iter()
+                .all(|window| window.failure.is_some())
+        );
+        let resumable_walk_forward = WalkForwardValidationRequest {
+            minimum_history_bars: 45,
+            ..walk_forward
+        };
+        let mut resumable_protocol = ValidationProtocol {
+            protocol_id: String::new(),
+            user_id: "alice".into(),
+            run: request(),
+            windows: walk_forward_windows(&state, &resumable_walk_forward).unwrap(),
+            walk_forward: Some(resumable_walk_forward),
+            method_version: "walk-forward@1".into(),
+            aggregation_rule_version: "equal-window@1".into(),
+        };
+        resumable_protocol.protocol_id = content_id(&resumable_protocol).unwrap();
+        state.save_protocol(&resumable_protocol).unwrap();
+        let report_request = ValidationProtocolIdRequest {
+            user_id: "alice".into(),
+            protocol_id: resumable_protocol.protocol_id.clone(),
+        };
+        let first_report = run_validation_report(&report_request, &state).unwrap();
+        let run_count = state.list_runs("alice").unwrap().len();
+        let resumed_report = run_validation_report(&report_request, &state).unwrap();
+        assert_eq!(first_report.report_id, resumed_report.report_id);
+        assert_eq!(state.list_runs("alice").unwrap().len(), run_count);
+        assert_eq!(first_report.windows.len(), 1);
+        assert_eq!(
+            first_report.windows[0].sample_out_start_time_ms,
+            50 * 3_600_000
+        );
+        assert!(first_report.windows[0].sample_out_end_time_ms.is_none());
+        assert!(validation_markdown(&first_report).contains("walk-forward@1"));
 
         let mut legacy_json =
             serde_json::to_value(state.load_run("alice", &first.run_id).unwrap()).unwrap();

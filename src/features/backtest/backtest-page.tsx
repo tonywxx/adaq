@@ -89,10 +89,21 @@ type RunSummary = {
 	barCount: number;
 	totalReturn: string;
 };
-type ValidationProtocol = { protocolId: string; windows: { snapshotId: string; sampleOutStartTimeMs: number }[] };
+type WalkForward = { snapshotId: string; windowSizeBars: number; stepSizeBars: number; minimumHistoryBars: number };
+type ValidationProtocol = { protocolId: string; methodVersion: string; windows: { snapshotId: string; sampleOutStartTimeMs: number; sampleOutEndTimeMs?: number }[]; walkForward?: WalkForward };
+type ValidationWindow = {
+	sampleOutStartTimeMs: number;
+	sampleOutEndTimeMs?: number;
+	sampleOutMetrics?: { totalReturn: string; maxDrawdown: string; sharpe: string };
+	sampleOutPauses: unknown[];
+	failure?: string;
+};
 type ValidationReport = {
 	reportId: string;
 	protocolId: string;
+	methodVersion: string;
+	walkForward?: WalkForward;
+	windows: ValidationWindow[];
 	aggregate: { completedWindows: number; failedWindows: number; averageSampleOutReturn: string; worstSampleOutDrawdown: string; averageSampleOutSharpe: string; totalFees: string; totalTrades: number };
 };
 type ExecutionPage = {
@@ -129,6 +140,9 @@ export function BacktestPage() {
 	const [message, setMessage] = useState("");
 	const [downloadTaskId, setDownloadTaskId] = useState<string>();
 	const [sampleOutStart, setSampleOutStart] = useState("");
+	const [walkForwardWindowSize, setWalkForwardWindowSize] = useState("30");
+	const [walkForwardStepSize, setWalkForwardStepSize] = useState("30");
+	const [walkForwardMinimumHistory, setWalkForwardMinimumHistory] = useState("90");
 	const [protocols, setProtocols] = useState<ValidationProtocol[]>([]);
 	const [reports, setReports] = useState<ValidationReport[]>([]);
 	const [runningProtocolId, setRunningProtocolId] = useState<string>();
@@ -229,10 +243,23 @@ export function BacktestPage() {
 			await refreshValidation();
 		} catch (error) { setMessage(String(error)); }
 	};
+	const createWalkForwardValidation = async () => {
+		if (!userId || !snapshot) return;
+		try {
+			const protocol = await invoke<ValidationProtocol>("validation_protocol_create", {
+				request: {
+					userId, run: buildRunRequest(snapshot.snapshotId), windows: [], methodVersion: "walk-forward@1", aggregationRuleVersion: "equal-window@1",
+					walkForward: { snapshotId: snapshot.snapshotId, windowSizeBars: Number(walkForwardWindowSize), stepSizeBars: Number(walkForwardStepSize), minimumHistoryBars: Number(walkForwardMinimumHistory) },
+				},
+			});
+			setMessage(`Walk-forward Protocol ${protocol.protocolId.slice(0, 12)} frozen.`);
+			await refreshValidation();
+		} catch (error) { setMessage(String(error)); }
+	};
 	const runValidation = async (protocolId: string) => {
 		if (!userId) return;
 		setRunningProtocolId(protocolId);
-		setMessage("Running holdout validation…");
+		setMessage("Running validation…");
 		try {
 			const report = await invoke<ValidationReport>("validation_report_run", { request: { userId, protocolId } });
 			setMessage(`Validation Report ${report.reportId.slice(0, 12)} completed.`);
@@ -326,6 +353,15 @@ export function BacktestPage() {
 					</Field>
 					<Field label="Sample-out starts">
 						<Input type="date" value={sampleOutStart} onChange={(e) => setSampleOutStart(e.target.value)} />
+					</Field>
+					<Field label="Walk-forward window (Bars)">
+						<Input type="number" min="1" value={walkForwardWindowSize} onChange={(e) => setWalkForwardWindowSize(e.target.value)} />
+					</Field>
+					<Field label="Walk-forward step (Bars)">
+						<Input type="number" min="1" value={walkForwardStepSize} onChange={(e) => setWalkForwardStepSize(e.target.value)} />
+					</Field>
+					<Field label="Walk-forward minimum history (Bars)">
+						<Input type="number" min="1" value={walkForwardMinimumHistory} onChange={(e) => setWalkForwardMinimumHistory(e.target.value)} />
 					</Field>
 					<Field label="Strategy">
 						<select
@@ -438,6 +474,13 @@ export function BacktestPage() {
 							onClick={() => void createValidation()}
 						>
 							Freeze holdout
+						</Button>
+						<Button
+							variant="outline"
+							disabled={!snapshot || !strategy || !walkForwardWindowSize || !walkForwardStepSize || !walkForwardMinimumHistory}
+							onClick={() => void createWalkForwardValidation()}
+						>
+							Freeze walk-forward
 						</Button>
 					</div>
 					<p className="self-end text-sm text-muted-foreground" aria-live="polite">
@@ -563,11 +606,11 @@ export function BacktestPage() {
 				</CardContent>
 			</Card>
 			<Card>
-				<CardHeader><CardTitle>Holdout validation</CardTitle></CardHeader>
+				<CardHeader><CardTitle>Research validation</CardTitle></CardHeader>
 				<CardContent className="space-y-3 text-sm">
 					{protocols.map((protocol) => (
 						<div key={protocol.protocolId} className="flex items-center justify-between rounded-md border p-3">
-							<span className="font-mono">{protocol.protocolId.slice(0, 16)} · {protocol.windows.length} window</span>
+							<span className="font-mono">{protocol.protocolId.slice(0, 16)} · {protocol.methodVersion} · {protocol.windows.length} window{protocol.windows.length === 1 ? "" : "s"}</span>
 							<Button size="sm" disabled={runningProtocolId === protocol.protocolId} onClick={() => void runValidation(protocol.protocolId)}>{runningProtocolId === protocol.protocolId ? "Running…" : "Run / resume"}</Button>
 						</div>
 					))}
@@ -577,11 +620,19 @@ export function BacktestPage() {
 								<span className="font-mono">{report.reportId.slice(0, 16)}</span>
 								<div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => void exportReport(report.reportId, "json")}>JSON</Button><Button size="sm" variant="outline" onClick={() => void exportReport(report.reportId, "markdown")}>Markdown</Button></div>
 							</div>
+							<p className="mt-2 text-muted-foreground">{report.methodVersion}{report.walkForward ? ` · ${report.walkForward.windowSizeBars}-Bar windows, ${report.walkForward.stepSizeBars}-Bar step, ${report.walkForward.minimumHistoryBars}-Bar history` : ""}</p>
 							<p className="mt-2 text-muted-foreground">{report.aggregate.completedWindows} complete · {report.aggregate.failedWindows} failed · Out {percent(report.aggregate.averageSampleOutReturn)} · Drawdown {percent(report.aggregate.worstSampleOutDrawdown)} · Sharpe {formatDecimal(report.aggregate.averageSampleOutSharpe)} · Fees {formatDecimal(report.aggregate.totalFees)} · Trades {report.aggregate.totalTrades}</p>
-							<details className="mt-2"><summary>Inspect immutable Report</summary><pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">{JSON.stringify(report, null, 2)}</pre></details>
+							<div className="mt-2 space-y-1 text-xs text-muted-foreground">
+								{report.windows.map((window) => (
+									<p key={`${window.sampleOutStartTimeMs}:${window.sampleOutEndTimeMs ?? "final"}`}>
+										{new Date(window.sampleOutStartTimeMs).toLocaleString()} {window.sampleOutEndTimeMs ? `– ${new Date(window.sampleOutEndTimeMs).toLocaleString()} ` : "– final "}· {window.failure ? `Failed: ${window.failure}` : `Return ${percent(window.sampleOutMetrics?.totalReturn ?? "0")} · Drawdown ${percent(window.sampleOutMetrics?.maxDrawdown ?? "0")} · Sharpe ${formatDecimal(window.sampleOutMetrics?.sharpe ?? "0")} · ${window.sampleOutPauses.length} pauses`}
+									</p>
+								))}
+							</div>
+							<details className="mt-2"><summary>Inspect immutable Report ({report.windows.length} windows)</summary><pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">{JSON.stringify(report, null, 2)}</pre></details>
 						</div>
 					))}
-					{protocols.length === 0 && <p className="text-muted-foreground">Freeze a Snapshot with a chronological sample-out boundary to begin.</p>}
+					{protocols.length === 0 && <p className="text-muted-foreground">Freeze a Snapshot with a holdout boundary or walk-forward configuration to begin.</p>}
 				</CardContent>
 			</Card>
 		</Workspace>
