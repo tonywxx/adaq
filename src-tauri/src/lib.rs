@@ -461,6 +461,7 @@ pub fn run() {
             m3::snapshot_create,
             m3::snapshot_download,
             m3::snapshot_list,
+            m3::snapshot_list_readable,
             m3::snapshot_cancel,
             m3::backtest_preflight,
             m3::backtest_run,

@@ -1,4 +1,6 @@
 import {
+	crossMarketGate,
+	crossMarketProtocolFields,
 	formatValidationError,
 	holdoutGate,
 	protocolDetails,
@@ -9,6 +11,33 @@ import {
 	walkForwardProtocolFields,
 	walkForwardPreview,
 } from "./validation-workspace";
+
+test("freezes an explicitly ordered unique cross-market protocol", () => {
+	expect(
+		crossMarketGate({ runId: "run", snapshotIds: ["btc", "eth"] }),
+	).toBeUndefined();
+	expect(
+		crossMarketProtocolFields([
+			{ snapshotId: "btc" },
+			{ snapshotId: "eth", runOverride: { snapshotId: "eth" } },
+		]),
+	).toEqual({
+		windows: [],
+		crossMarket: {
+			contexts: [
+				{ snapshotId: "btc" },
+				{ snapshotId: "eth", runOverride: { snapshotId: "eth" } },
+			],
+		},
+		methodVersion: "cross-market@1",
+	});
+	expect(crossMarketGate({ runId: "run", snapshotIds: ["btc", "btc"] })).toMatch(
+		/duplicate/i,
+	);
+	expect(crossMarketGate({ runId: "run", snapshotIds: ["btc"] })).toMatch(
+		/two/i,
+	);
+});
 
 test("requires a frozen Run and a chronological sample-out boundary", () => {
 	expect(holdoutGate()).toMatch(/Backtest Run/);
@@ -58,6 +87,14 @@ test("summarizes frozen Protocol evidence without hiding identities", () => {
 			windows: [{ snapshotId: "snapshot-identity" }],
 		}),
 	).toBe("chronological-holdout@1 · 1 window · Protocol protocol-identity");
+	expect(
+		protocolSummary({
+			protocolId: "cross-identity",
+			methodVersion: "cross-market@1",
+			windows: [],
+			crossMarket: { contexts: [{ snapshotId: "btc" }, { snapshotId: "eth" }] },
+		}),
+	).toBe("cross-market@1 · 2 market contexts · Protocol cross-identity");
 });
 
 test("previews deterministic complete walk-forward windows and rejects invalid history", () => {

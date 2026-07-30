@@ -7,6 +7,28 @@ export function holdoutGate(input?: {
 		return "Choose a chronological sample-out boundary.";
 }
 
+export function crossMarketGate(input?: {
+	runId?: string;
+	snapshotIds?: readonly string[];
+}) {
+	if (!input?.runId)
+		return "Select a completed Backtest Run for the shared configuration first.";
+	if (!input.snapshotIds || input.snapshotIds.length < 2)
+		return "Cross-market validation requires at least two market contexts.";
+	if (new Set(input.snapshotIds).size !== input.snapshotIds.length)
+		return "Cross-market validation contains a duplicate Snapshot.";
+}
+
+export function crossMarketProtocolFields(
+	contexts: Array<{ snapshotId: string; runOverride?: unknown }>,
+) {
+	return {
+		windows: [],
+		crossMarket: { contexts },
+		methodVersion: "cross-market@1",
+	};
+}
+
 export type WalkForwardConfiguration = {
 	windowSizeBars: number;
 	stepSizeBars: number;
@@ -95,7 +117,10 @@ export function protocolSummary(protocol: {
 	protocolId: string;
 	methodVersion: string;
 	windows: readonly unknown[];
+	crossMarket?: { contexts: readonly unknown[] };
 }) {
+	if (protocol.crossMarket)
+		return `${protocol.methodVersion} · ${protocol.crossMarket.contexts.length} market context${protocol.crossMarket.contexts.length === 1 ? "" : "s"} · Protocol ${protocol.protocolId}`;
 	return `${protocol.methodVersion} · ${protocol.windows.length} window${protocol.windows.length === 1 ? "" : "s"} · Protocol ${protocol.protocolId}`;
 }
 

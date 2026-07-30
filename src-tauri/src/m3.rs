@@ -471,6 +471,32 @@ impl M3State {
             .map_err(string)
     }
 
+    fn list_readable_snapshots(&self, user_id: &str) -> Result<Vec<MarketDataSnapshot>, String> {
+        validate_user(user_id)?;
+        let database = self.database.lock().map_err(string)?;
+        let mut statement = database
+            .prepare(
+                "SELECT s.metadata_json FROM market_data_snapshots s
+                 JOIN market_data_snapshot_access a USING(snapshot_id)
+                 WHERE a.user_id = ?1
+                 ORDER BY s.code, s.interval, s.start_time_ms, s.snapshot_id",
+            )
+            .map_err(string)?;
+        statement
+            .query_map([user_id], |row| {
+                serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })
+            .map_err(string)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(string)
+    }
+
     fn package_for_user(&self, user_id: &str, hash: &str) -> Result<ComponentPackage, String> {
         validate_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
@@ -580,6 +606,7 @@ impl M3State {
                 Ok(BacktestRunSummary {
                     run_id: row.get(0)?,
                     created_at: row.get(1)?,
+                    snapshot_id: run.snapshot.snapshot_id,
                     code: run.snapshot.code,
                     interval: run.snapshot.interval,
                     bar_count: run.snapshot.bar_count,
@@ -754,6 +781,12 @@ pub struct SnapshotListRequest {
     pub src: String,
     pub code: String,
     pub interval: BarInterval,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadableSnapshotListRequest {
+    pub user_id: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -980,6 +1013,7 @@ pub struct BacktestExecutionPage {
 pub struct BacktestRunSummary {
     pub run_id: String,
     pub created_at: String,
+    pub snapshot_id: String,
     pub code: String,
     pub interval: BarInterval,
     pub bar_count: usize,
@@ -1308,6 +1342,14 @@ pub fn snapshot_list(
     state: tauri::State<'_, M3State>,
 ) -> Result<Vec<MarketDataSnapshot>, String> {
     state.list_snapshots(&request)
+}
+
+#[tauri::command]
+pub fn snapshot_list_readable(
+    request: ReadableSnapshotListRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<Vec<MarketDataSnapshot>, String> {
+    state.list_readable_snapshots(&request.user_id)
 }
 
 #[tauri::command]
@@ -3627,5 +3669,179 @@ mod tests {
 
         drop(state);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn readable_snapshots_are_user_scoped_and_ordered_for_cross_market_selection() {
+        let root = std::env::temp_dir().join(format!(
+            "adaq-cross-market-snapshots-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = M3State::open(&root).unwrap();
+        let series = |code: &str, open_time_ms| ada_data_core::BarSeries {
+            src: "okx".into(),
+            code: code.into(),
+            interval: BarInterval::OneHour,
+            bars: vec![OhlcvBar {
+                open_time_ms,
+                open: 1.into(),
+                high: 1.into(),
+                low: 1.into(),
+                close: 1.into(),
+                base_volume: 1.into(),
+                quote_volume: 1.into(),
+            }],
+            gaps: vec![],
+        };
+        state
+            .persist_snapshot_for_user("alice", &series("ETH-USDT", 3_600_000))
+            .unwrap();
+        state
+            .persist_snapshot_for_user("alice", &series("BTC-USDT", 0))
+            .unwrap();
+        state
+            .persist_snapshot_for_user("bob", &series("SOL-USDT", 0))
+            .unwrap();
+
+        assert_eq!(
+            state
+                .list_readable_snapshots("alice")
+                .unwrap()
+                .iter()
+                .map(|snapshot| snapshot.code.as_str())
+                .collect::<Vec<_>>(),
+            vec!["BTC-USDT", "ETH-USDT"]
+        );
+        assert!(state.list_readable_snapshots(" ").is_err());
+
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cross_market_evidence_preserves_order_failures_dispersion_and_report_identity() {
+        let snapshot = |id: &str, code: &str| MarketDataSnapshot {
+            snapshot_id: id.into(),
+            src: "okx".into(),
+            code: code.into(),
+            interval: BarInterval::OneHour,
+            start_time_ms: 0,
+            end_time_ms: 3_600_000,
+            bar_count: 1,
+            gaps: vec![],
+            parquet_path: PathBuf::new(),
+        };
+        let run = |snapshot_id: &str| BacktestRunRequest {
+            user_id: "alice".into(),
+            snapshot_id: snapshot_id.into(),
+            factor_instances: vec![],
+            strategy_archive_sha256: "strategy".into(),
+            strategy_parameters: HashMap::new(),
+            initial_quote_allocation: 1.into(),
+            execution_profile: ExecutionProfile {
+                maker_fee_rate: rust_decimal::Decimal::ZERO,
+                taker_fee_rate: rust_decimal::Decimal::ZERO,
+                adverse_slippage_rate: rust_decimal::Decimal::ZERO,
+                rebalance_threshold: rust_decimal::Decimal::ZERO,
+                price_increment: rust_decimal::Decimal::ONE,
+                quantity_increment: rust_decimal::Decimal::ONE,
+                minimum_quantity: rust_decimal::Decimal::ZERO,
+                risk_free_rate: rust_decimal::Decimal::ZERO,
+                fill_policy: ada_backtest_core::FillPolicy::Taker,
+            },
+            seed: 0,
+        };
+        let metrics = |total_return| ada_backtest_core::BacktestMetrics {
+            initial_equity: 1.into(),
+            final_equity: 1.into(),
+            total_return,
+            cagr: 0.into(),
+            annualized_volatility: 0.into(),
+            sharpe: 0.into(),
+            sortino: 0.into(),
+            max_drawdown: 0.into(),
+            calmar: 0.into(),
+            realized_pnl: 0.into(),
+            unrealized_pnl: 0.into(),
+            total_fees: 0.into(),
+            turnover: 0.into(),
+            fill_count: 0,
+            realized_trade_count: 0,
+            win_rate: 0.into(),
+            profit_factor: 0.into(),
+            average_win: 0.into(),
+            average_loss: 0.into(),
+            exposure_time: 0.into(),
+            benchmark_return: 0.into(),
+            excess_return: 0.into(),
+        };
+        let contexts = vec![
+            CrossMarketValidationReport {
+                snapshot: snapshot("btc", "BTC-USDT"),
+                run: run("btc"),
+                run_id: Some("run-btc".into()),
+                metrics: Some(metrics(rust_decimal::Decimal::new(20, 2))),
+                pauses: vec![],
+                failure: None,
+            },
+            CrossMarketValidationReport {
+                snapshot: snapshot("eth", "ETH-USDT"),
+                run: run("eth"),
+                run_id: None,
+                metrics: None,
+                pauses: vec![],
+                failure: Some("missing-input".into()),
+            },
+            CrossMarketValidationReport {
+                snapshot: snapshot("sol", "SOL-USDT"),
+                run: run("sol"),
+                run_id: Some("run-sol".into()),
+                metrics: Some(metrics(rust_decimal::Decimal::new(-10, 2))),
+                pauses: vec![],
+                failure: None,
+            },
+        ];
+        let aggregate = aggregate_cross_market(&contexts);
+        assert_eq!(aggregate.completed_windows, 2);
+        assert_eq!(aggregate.failed_windows, 1);
+        assert_eq!(
+            cross_market_evidence(&contexts)
+                .unwrap()
+                .total_return_spread,
+            rust_decimal::Decimal::new(30, 2)
+        );
+
+        let report = ValidationReport {
+            report_id: String::new(),
+            protocol_id: "protocol".into(),
+            user_id: "alice".into(),
+            method_version: "cross-market@1".into(),
+            aggregation_rule_version: "equal-window@1".into(),
+            walk_forward: None,
+            cross_market: contexts.clone(),
+            windows: vec![],
+            aggregate,
+            recommended_contexts: vec![RecommendedContext {
+                supporting_report_id: String::new(),
+                snapshot: contexts[0].snapshot.clone(),
+                run: contexts[0].run.clone(),
+            }],
+            cross_market_evidence: cross_market_evidence(&contexts),
+        };
+        let identity = validation_report_id(&report).unwrap();
+        let exported = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            exported["recommendedContexts"][0]["supportingReportId"],
+            serde_json::Value::String(String::new())
+        );
+        assert!(validation_markdown(&report).contains("crossMarketEvidence"));
+        assert!(validation_markdown(&report).contains("recommendedContexts"));
+        let mut reordered = report;
+        reordered.cross_market.reverse();
+        assert_ne!(identity, validation_report_id(&reordered).unwrap());
     }
 }

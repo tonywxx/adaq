@@ -10,6 +10,8 @@ import { useMarketSessionStore } from "@/lib/market-session";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+	crossMarketGate,
+	crossMarketProtocolFields,
 	formatValidationError,
 	holdoutGate,
 	protocolDetails,
@@ -24,6 +26,7 @@ import {
 type RunSummary = {
 	runId: string;
 	createdAt: string;
+	snapshotId: string;
 	code: string;
 	interval: string;
 	barCount: number;
@@ -45,7 +48,23 @@ type Protocol = {
 		stepSizeBars: number;
 		minimumHistoryBars: number;
 	};
+	crossMarket?: {
+		contexts: Array<{
+			snapshotId: string;
+			runOverride?: Record<string, unknown>;
+		}>;
+	};
 };
+type Snapshot = {
+	snapshotId: string;
+	src: string;
+	code: string;
+	interval: string;
+	startTimeMs: number;
+	endTimeMs: number;
+	barCount: number;
+};
+type CrossMarketContext = { snapshot: Snapshot; runOverride?: BacktestRun };
 type Report = {
 	reportId: string;
 	protocolId: string;
@@ -75,6 +94,20 @@ type Report = {
 		totalTrades: number;
 	};
 	walkForward?: Protocol["walkForward"];
+	crossMarket: Array<{
+		snapshot: Snapshot;
+		run: Record<string, unknown>;
+		runId?: string;
+		metrics?: Metrics;
+		pauses: Array<{ openTimeMs: number; reason: string }>;
+		failure?: string;
+	}>;
+	crossMarketEvidence?: { completedMarkets: number; totalReturnSpread: string };
+	recommendedContexts: Array<{
+		supportingReportId: string;
+		snapshot: Snapshot;
+		run: Record<string, unknown>;
+	}>;
 };
 type Metrics = { totalReturn: string; maxDrawdown: string; sharpe: string };
 
@@ -83,13 +116,17 @@ export function ValidationPage() {
 	const [runs, setRuns] = useState<RunSummary[]>([]);
 	const [components, setComponents] = useState<LibraryComponent[]>([]);
 	const [source, setSource] = useState<BacktestRun>();
-	const [method, setMethod] = useState<"chronological-holdout" | "walk-forward">(
-		"chronological-holdout",
-	);
+	const [method, setMethod] = useState<
+		"chronological-holdout" | "walk-forward" | "cross-market"
+	>("chronological-holdout");
 	const [sampleOutStart, setSampleOutStart] = useState("");
 	const [windowSizeBars, setWindowSizeBars] = useState("100");
 	const [stepSizeBars, setStepSizeBars] = useState("100");
 	const [minimumHistoryBars, setMinimumHistoryBars] = useState("500");
+	const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+	const [crossMarketContexts, setCrossMarketContexts] = useState<
+		CrossMarketContext[]
+	>([]);
 	const [protocols, setProtocols] = useState<Protocol[]>([]);
 	const [reports, setReports] = useState<Report[]>([]);
 	const [selectedReportId, setSelectedReportId] = useState("");
@@ -101,17 +138,19 @@ export function ValidationPage() {
 
 	const refresh = useCallback(async () => {
 		if (!userId) return;
-		const [nextRuns, nextComponents, nextProtocols, nextReports] =
+		const [nextRuns, nextComponents, nextProtocols, nextReports, nextSnapshots] =
 			await Promise.all([
 				invoke<RunSummary[]>("backtest_list", { request: { userId } }),
 				invoke<LibraryComponent[]>("component_list", { request: { userId } }),
 				invoke<Protocol[]>("validation_protocol_list", { request: { userId } }),
 				invoke<Report[]>("validation_report_list", { request: { userId } }),
+				invoke<Snapshot[]>("snapshot_list_readable", { request: { userId } }),
 			]);
 		setRuns(nextRuns);
 		setComponents(nextComponents);
 		setProtocols(nextProtocols);
 		setReports(nextReports);
+		setSnapshots(nextSnapshots);
 		setSelectedReportId((current) =>
 			nextReports.some((report) => report.reportId === current)
 				? current
@@ -156,6 +195,12 @@ export function ValidationPage() {
 		!walkForwardError && source
 			? previewWalkForward(source.bars, walkForward)
 			: undefined;
+	const crossMarketError = crossMarketGate({
+		runId: source?.runId,
+		snapshotIds: crossMarketContexts.map(
+			(context) => context.snapshot.snapshotId,
+		),
+	});
 	const selectRun = async (runId: string) => {
 		if (!userId) return;
 		setFeedback(undefined);
@@ -178,7 +223,9 @@ export function ValidationPage() {
 						runId: source?.runId,
 						sampleOutStartTimeMs: boundary,
 					})
-				: walkForwardError;
+				: method === "walk-forward"
+					? walkForwardError
+					: crossMarketError;
 		if (gate || !userId || !source?.provenance) {
 			setFeedback({
 				summary: gate ?? "This Backtest Run has incomplete provenance.",
@@ -200,7 +247,21 @@ export function ValidationPage() {
 								],
 								methodVersion: "chronological-holdout@1",
 							}
-						: walkForwardProtocolFields(walkForward)),
+						: method === "walk-forward"
+							? walkForwardProtocolFields(walkForward)
+							: crossMarketProtocolFields(
+									crossMarketContexts.map(({ snapshot, runOverride }) => ({
+										snapshotId: snapshot.snapshotId,
+										...(runOverride?.provenance
+											? {
+													runOverride: validationRunRequest(
+														userId,
+														runOverride.provenance.normalizedRequest,
+													),
+												}
+											: {}),
+									})),
+								)),
 					aggregationRuleVersion: "equal-window@1",
 				},
 			});
@@ -257,7 +318,7 @@ export function ValidationPage() {
 	return (
 		<Workspace
 			title="Validation"
-			description="Immutable chronological holdout and walk-forward research evidence."
+			description="Immutable chronological holdout, walk-forward, and cross-market research evidence."
 		>
 			<Card>
 				<CardHeader>
@@ -265,7 +326,7 @@ export function ValidationPage() {
 				</CardHeader>
 				<CardContent className="space-y-3">
 					<div
-						className="grid gap-2 sm:grid-cols-2"
+						className="grid gap-2 sm:grid-cols-3"
 						role="radiogroup"
 						aria-label="Validation method"
 					>
@@ -279,6 +340,19 @@ export function ValidationPage() {
 							<span className="font-medium">Chronological holdout</span>
 							<p className="mt-1 text-muted-foreground">
 								Train before one boundary, then evaluate later evidence.
+							</p>
+						</label>
+						<label className="rounded-md border p-3 text-sm">
+							<input
+								type="radio"
+								name="validation-method"
+								checked={method === "cross-market"}
+								onChange={() => setMethod("cross-market")}
+							/>{" "}
+							<span className="font-medium">Cross-market</span>
+							<p className="mt-1 text-muted-foreground">
+								Compare ordered immutable market contexts without implying future
+								profitability.
 							</p>
 						</label>
 						<label className="rounded-md border p-3 text-sm">
@@ -300,7 +374,9 @@ export function ValidationPage() {
 						<code>
 							{method === "chronological-holdout"
 								? "chronological-holdout@1"
-								: "walk-forward@1"}
+								: method === "walk-forward"
+									? "walk-forward@1"
+									: "cross-market@1"}
 						</code>
 						<br />
 						Aggregation rule: <code>equal-window@1</code>
@@ -352,7 +428,7 @@ export function ValidationPage() {
 								onChange={(event) => setSampleOutStart(event.target.value)}
 							/>
 						</label>
-					) : (
+					) : method === "walk-forward" ? (
 						<WalkForwardControls
 							windowSizeBars={windowSizeBars}
 							stepSizeBars={stepSizeBars}
@@ -364,12 +440,48 @@ export function ValidationPage() {
 							preview={walkForwardPreview}
 							gaps={source?.snapshot.gaps ?? []}
 						/>
+					) : (
+						<CrossMarketControls
+							snapshots={snapshots}
+							contexts={crossMarketContexts}
+							runs={runs}
+							error={source ? crossMarketError : undefined}
+							onChange={setCrossMarketContexts}
+							onLoadOverride={async (snapshot, runId) => {
+								if (!userId) return;
+								try {
+									const run = await invoke<BacktestRun>("backtest_get", {
+										request: { userId, runId },
+									});
+									if (run.snapshot.snapshotId !== snapshot.snapshotId) {
+										setFeedback({
+											summary: "The override Run must use this exact frozen Snapshot.",
+											details: `Run ${runId} references ${run.snapshot.snapshotId}.`,
+										});
+										return;
+									}
+									setCrossMarketContexts((current) =>
+										current.map((context) =>
+											context.snapshot.snapshotId === snapshot.snapshotId
+												? { ...context, runOverride: run }
+												: context,
+										),
+									);
+								} catch (error) {
+									setFeedback({
+										summary: "Override Run could not load.",
+										details: String(error),
+									});
+								}
+							}}
+						/>
 					)}
 					<Button
 						disabled={
 							!source ||
 							(method === "chronological-holdout" && !sampleOutStart) ||
-							(method === "walk-forward" && Boolean(walkForwardError))
+							(method === "walk-forward" && Boolean(walkForwardError)) ||
+							(method === "cross-market" && Boolean(crossMarketError))
 						}
 						onClick={() => void freeze()}
 					>
@@ -400,6 +512,14 @@ export function ValidationPage() {
 											Sample-out boundary: {window.boundary}
 											<br />
 											Aggregation: <code>{window.aggregationRuleVersion}</code>
+										</p>
+									))}
+									{protocol.crossMarket?.contexts.map((context, index) => (
+										<p key={context.snapshotId} className="mt-2">
+											Market context {index + 1}:{" "}
+											<code className="break-all">{context.snapshotId}</code>
+											<br />
+											Configuration: {context.runOverride ? "exact override" : "shared"}
 										</p>
 									))}
 									<pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">
@@ -575,6 +695,144 @@ function WalkForwardControls({
 	);
 }
 
+function CrossMarketControls({
+	snapshots,
+	contexts,
+	runs,
+	error,
+	onChange,
+	onLoadOverride,
+}: {
+	snapshots: Snapshot[];
+	contexts: CrossMarketContext[];
+	runs: RunSummary[];
+	error?: string;
+	onChange: (contexts: CrossMarketContext[]) => void;
+	onLoadOverride: (snapshot: Snapshot, runId: string) => Promise<void>;
+}) {
+	const selected = new Set(
+		contexts.map((context) => context.snapshot.snapshotId),
+	);
+	return (
+		<div className="space-y-3 rounded-md border p-3">
+			<p className="text-sm font-medium">Ordered market contexts</p>
+			<p className="text-sm text-muted-foreground" role="status">
+				Select at least two readable Snapshots. The selected completed Run supplies
+				the shared configuration; an exact Run on the same Snapshot may override it.
+			</p>
+			<div className="grid gap-2 sm:grid-cols-2">
+				{snapshots.map((snapshot) => (
+					<Button
+						key={snapshot.snapshotId}
+						type="button"
+						variant={selected.has(snapshot.snapshotId) ? "default" : "outline"}
+						className="h-auto justify-start whitespace-normal p-3 text-left"
+						aria-pressed={selected.has(snapshot.snapshotId)}
+						disabled={selected.has(snapshot.snapshotId)}
+						onClick={() => onChange([...contexts, { snapshot }])}
+					>
+						<span>
+							{snapshot.code} · {snapshot.interval} · {snapshot.barCount} Bars
+						</span>
+						<span className="block break-all font-mono text-xs opacity-75">
+							Snapshot {snapshot.snapshotId}
+						</span>
+					</Button>
+				))}
+			</div>
+			{snapshots.length === 0 && (
+				<p className="text-sm text-muted-foreground">
+					No readable Snapshots are available.
+				</p>
+			)}
+			<ol className="space-y-2" aria-label="Selected cross-market contexts">
+				{contexts.map((context, index) => (
+					<li
+						key={context.snapshot.snapshotId}
+						className="rounded-md border p-3 text-sm"
+					>
+						<p>
+							{index + 1}. {context.snapshot.code} · {context.snapshot.interval} ·{" "}
+							{context.snapshot.barCount} Bars
+						</p>
+						<code className="block break-all text-xs">
+							{context.snapshot.snapshotId}
+						</code>
+						<div className="mt-2 flex flex-wrap gap-2">
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								disabled={index === 0}
+								onClick={() => {
+									const next = [...contexts];
+									[next[index - 1], next[index]] = [next[index], next[index - 1]];
+									onChange(next);
+								}}
+							>
+								Move earlier
+							</Button>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								disabled={index === contexts.length - 1}
+								onClick={() => {
+									const next = [...contexts];
+									[next[index], next[index + 1]] = [next[index + 1], next[index]];
+									onChange(next);
+								}}
+							>
+								Move later
+							</Button>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => onChange(contexts.filter((item) => item !== context))}
+							>
+								Remove
+							</Button>
+							<label className="text-xs">
+								Override configuration
+								<select
+									className="ml-2 rounded border p-1"
+									value={context.runOverride?.runId ?? ""}
+									onChange={(event) => {
+										if (!event.target.value) {
+											onChange(
+												contexts.map((item) =>
+													item === context ? { ...item, runOverride: undefined } : item,
+												),
+											);
+											return;
+										}
+										void onLoadOverride(context.snapshot, event.target.value);
+									}}
+								>
+									<option value="">Shared selected Run</option>
+									{runs
+										.filter((run) => run.snapshotId === context.snapshot.snapshotId)
+										.map((run) => (
+											<option key={run.runId} value={run.runId}>
+												{run.code} · {run.interval} · {run.runId.slice(0, 12)}
+											</option>
+										))}
+								</select>
+							</label>
+						</div>
+					</li>
+				))}
+			</ol>
+			{error && (
+				<pre className="overflow-x-auto whitespace-pre-wrap text-xs" role="alert">
+					{error}
+				</pre>
+			)}
+		</div>
+	);
+}
+
 function NumberControl({
 	id,
 	label,
@@ -703,6 +961,15 @@ function ReportViews({
 						{report.walkForward.minimumHistoryBars} Bars
 					</p>
 				)}
+				{report.crossMarketEvidence && (
+					<p className="rounded-md border p-3 text-sm" role="status">
+						Cross-market dispersion: {report.crossMarketEvidence.completedMarkets}{" "}
+						completed market
+						{report.crossMarketEvidence.completedMarkets === 1 ? "" : "s"} · total
+						return spread {percent(report.crossMarketEvidence.totalReturnSpread)}.
+						Historical evidence only; it is not a profitability guarantee.
+					</p>
+				)}
 				<div className="flex gap-2">
 					<Button
 						variant="outline"
@@ -719,6 +986,54 @@ function ReportViews({
 				</div>
 			</TabsContent>
 			<TabsContent value="evidence" className="space-y-2">
+				{report.crossMarket.map((context) => (
+					<div
+						key={context.snapshot.snapshotId}
+						className="rounded-md border p-3 text-sm"
+					>
+						<p>
+							{context.snapshot.code} · {context.snapshot.interval} ·{" "}
+							{context.snapshot.barCount} Bars
+						</p>
+						<code className="block break-all text-xs">
+							Snapshot {context.snapshot.snapshotId}
+						</code>
+						{context.failure ? (
+							<pre
+								className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs"
+								role="alert"
+							>
+								Failure: {context.failure}
+							</pre>
+						) : (
+							<p className="mt-2">
+								Return {percent(context.metrics?.totalReturn ?? "0")} · drawdown{" "}
+								{percent(context.metrics?.maxDrawdown ?? "0")} · Sharpe{" "}
+								{formatDecimal(context.metrics?.sharpe ?? "0")}
+							</p>
+						)}
+						<p className="mt-2">Run Pauses</p>
+						{context.pauses.length ? (
+							<ul className="list-disc pl-5 text-xs">
+								{context.pauses.map((pause) => (
+									<li key={`${pause.openTimeMs}:${pause.reason}`}>
+										{new Date(pause.openTimeMs).toLocaleString()} · {pause.reason}
+									</li>
+								))}
+							</ul>
+						) : (
+							<p className="text-muted-foreground">None</p>
+						)}
+						<p className="mt-2 text-xs">
+							<a
+								className="underline"
+								href={context.runId ? `/backtest?runId=${context.runId}` : "/backtest"}
+							>
+								Run {context.runId ?? "not completed"}
+							</a>
+						</p>
+					</div>
+				))}
 				{report.windows.map((window) => (
 					<div
 						key={`${window.sampleOutStartTimeMs}:${window.sampleOutEndTimeMs ?? "final"}`}
@@ -793,6 +1108,26 @@ function ReportViews({
 					)}
 					<p>Authoritative Report identity</p>
 					<code className="block break-all text-xs">{report.reportId}</code>
+					{report.recommendedContexts.length > 0 && (
+						<div>
+							<p className="mt-2">Recommended Contexts</p>
+							<p className="text-xs text-muted-foreground">
+								Historical evidence references, not best-market or future-profitability
+								claims.
+							</p>
+							{report.recommendedContexts.map((context) => (
+								<div key={context.snapshot.snapshotId} className="mt-2 text-xs">
+									{context.snapshot.code} · {context.snapshot.interval}
+									<code className="block break-all">
+										Report {context.supportingReportId}
+									</code>
+									<pre className="overflow-x-auto whitespace-pre-wrap">
+										{JSON.stringify(context.run, null, 2)}
+									</pre>
+								</div>
+							))}
+						</div>
+					)}
 				</div>
 			</TabsContent>
 		</>
