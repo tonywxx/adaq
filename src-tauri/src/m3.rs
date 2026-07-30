@@ -89,6 +89,12 @@ impl M3State {
                 bar_count INTEGER NOT NULL,
                 metadata_json TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS market_data_snapshot_access (
+                user_id TEXT NOT NULL,
+                snapshot_id TEXT NOT NULL,
+                PRIMARY KEY(user_id, snapshot_id),
+                FOREIGN KEY(snapshot_id) REFERENCES market_data_snapshots(snapshot_id)
+             );
              CREATE TABLE IF NOT EXISTS backtest_runs (
                 run_id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
@@ -415,10 +421,25 @@ impl M3State {
         Ok(snapshot)
     }
 
+    fn persist_snapshot_for_user(
+        &self,
+        user_id: &str,
+        series: &ada_data_core::BarSeries,
+    ) -> Result<MarketDataSnapshot, String> {
+        validate_user(user_id)?;
+        let snapshot = self.persist_snapshot(series)?;
+        self.database.lock().map_err(string)?.execute(
+            "INSERT OR IGNORE INTO market_data_snapshot_access (user_id, snapshot_id) VALUES (?1, ?2)",
+            params![user_id, snapshot.snapshot_id],
+        ).map_err(string)?;
+        Ok(snapshot)
+    }
+
     fn list_snapshots(
         &self,
         request: &SnapshotListRequest,
     ) -> Result<Vec<MarketDataSnapshot>, String> {
+        validate_user(&request.user_id)?;
         if request.src.trim().is_empty() || request.code.trim().is_empty() {
             return Err("Snapshot coverage request is invalid".into());
         }
@@ -426,20 +447,25 @@ impl M3State {
         let database = self.database.lock().map_err(string)?;
         let mut statement = database
             .prepare(
-                "SELECT metadata_json FROM market_data_snapshots
-             WHERE src = ?1 AND code = ?2 AND interval = ?3 ORDER BY start_time_ms",
+                "SELECT s.metadata_json FROM market_data_snapshots s
+             JOIN market_data_snapshot_access a USING(snapshot_id)
+             WHERE a.user_id = ?1 AND s.src = ?2 AND s.code = ?3 AND s.interval = ?4
+             ORDER BY s.start_time_ms, s.snapshot_id",
             )
             .map_err(string)?;
         statement
-            .query_map(params![request.src, request.code, interval], |row| {
-                serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })
-            })
+            .query_map(
+                params![request.user_id, request.src, request.code, interval],
+                |row| {
+                    serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })
+                },
+            )
             .map_err(string)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(string)
@@ -460,15 +486,22 @@ impl M3State {
         ComponentPackage::read(&fs::read(path).map_err(string)?).map_err(string)
     }
 
-    fn snapshot(&self, snapshot_id: &str) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
+    fn snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
+        validate_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
         let json: String = database
             .query_row(
-                "SELECT metadata_json FROM market_data_snapshots WHERE snapshot_id = ?1",
-                [snapshot_id],
+                "SELECT s.metadata_json FROM market_data_snapshots s
+             JOIN market_data_snapshot_access a USING(snapshot_id)
+             WHERE a.user_id = ?1 AND s.snapshot_id = ?2",
+                params![user_id, snapshot_id],
                 |row| row.get(0),
             )
-            .map_err(|_| "Market Data Snapshot was not found".to_owned())?;
+            .map_err(|_| "Market Data Snapshot is not available to this User".to_owned())?;
         drop(database);
         let snapshot: MarketDataSnapshot = serde_json::from_str(&json).map_err(string)?;
         let bars = self.snapshots.read(&snapshot).map_err(string)?;
@@ -694,6 +727,7 @@ pub struct ComponentDeleteRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotCreateRequest {
+    pub user_id: String,
     pub src: String,
     pub code: String,
     pub interval: BarInterval,
@@ -704,6 +738,7 @@ pub struct SnapshotCreateRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotDownloadRequest {
+    pub user_id: String,
     pub task_id: String,
     pub src: String,
     pub code: String,
@@ -715,6 +750,7 @@ pub struct SnapshotDownloadRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotListRequest {
+    pub user_id: String,
     pub src: String,
     pub code: String,
     pub interval: BarInterval,
@@ -1099,6 +1135,13 @@ pub async fn snapshot_create(
     client: tauri::State<'_, OkxClient>,
     state: tauri::State<'_, M3State>,
 ) -> Result<MarketDataSnapshot, String> {
+    validate_snapshot_request(
+        &request.user_id,
+        &request.src,
+        &request.code,
+        request.start_time_ms,
+        request.end_time_ms,
+    )?;
     if request.src != "okx" {
         return Err("M3 supports OKX Spot only".into());
     }
@@ -1113,7 +1156,7 @@ pub async fn snapshot_create(
         )
         .await
         .map_err(string)?;
-    state.persist_snapshot(&series)
+    state.persist_snapshot_for_user(&request.user_id, &series)
 }
 
 #[tauri::command]
@@ -1123,15 +1166,24 @@ pub async fn snapshot_download(
     client: tauri::State<'_, OkxClient>,
     state: tauri::State<'_, M3State>,
 ) -> Result<MarketDataSnapshot, String> {
+    validate_snapshot_request(
+        &request.user_id,
+        &request.src,
+        &request.code,
+        request.start_time_ms,
+        request.end_time_ms,
+    )?;
     if request.src != "okx" || request.task_id.trim().is_empty() {
         return Err("Snapshot download request is invalid".into());
     }
     let cancelled = Arc::new(AtomicBool::new(false));
-    state
-        .downloads
-        .lock()
-        .map_err(string)?
-        .insert(request.task_id.clone(), cancelled.clone());
+    {
+        let mut downloads = state.downloads.lock().map_err(string)?;
+        if downloads.contains_key(&request.task_id) {
+            return Err("Snapshot download is already in progress".into());
+        }
+        downloads.insert(request.task_id.clone(), cancelled.clone());
+    }
     let result = client
         .get_bar_series_range_with_progress(
             &request.code,
@@ -1159,7 +1211,7 @@ pub async fn snapshot_download(
         .remove(&request.task_id);
     match result {
         Ok(series) => {
-            let snapshot = state.persist_snapshot(&series)?;
+            let snapshot = state.persist_snapshot_for_user(&request.user_id, &series)?;
             let _ = on_event.send(SnapshotDownloadEvent::Completed {
                 snapshot_id: snapshot.snapshot_id.clone(),
                 bar_count: snapshot.bar_count,
@@ -1317,7 +1369,7 @@ fn execute_backtest(
     if let Ok(existing) = state.load_run(&request.user_id, &run_id) {
         return Ok(run_view(&existing, i64::MIN, i64::MAX, 2_000));
     }
-    let (snapshot, bars) = state.snapshot(&request.snapshot_id)?;
+    let (snapshot, bars) = state.snapshot_for_user(&request.user_id, &request.snapshot_id)?;
     let strategy_path = state.runtime_component(&strategy)?;
     let factor_paths = factor_packages
         .iter()
@@ -1487,7 +1539,7 @@ pub fn validation_protocol_create(
     let windows = request
         .walk_forward
         .as_ref()
-        .map(|walk_forward| walk_forward_windows(&state, walk_forward))
+        .map(|walk_forward| walk_forward_windows(&state, &request.user_id, walk_forward))
         .transpose()?
         .unwrap_or(request.windows);
     let mut protocol = ValidationProtocol {
@@ -1531,7 +1583,7 @@ fn run_validation_report(
     }
     let mut windows = Vec::with_capacity(protocol.windows.len());
     for window in &protocol.windows {
-        let (sample_in, sample_out) = split_snapshot(&state, window)?;
+        let (sample_in, sample_out) = split_snapshot(&state, &protocol.user_id, window)?;
         let mut sample_in_request = protocol.run.clone();
         sample_in_request.user_id = protocol.user_id.clone();
         sample_in_request.snapshot_id = sample_in.snapshot_id.clone();
@@ -1620,7 +1672,7 @@ fn run_cross_market_validation(
         .contexts
         .iter()
         .map(|context| {
-            let (snapshot, _) = state.snapshot(&context.snapshot_id)?;
+            let (snapshot, _) = state.snapshot_for_user(&protocol.user_id, &context.snapshot_id)?;
             let mut run = context
                 .run_override
                 .clone()
@@ -1725,7 +1777,7 @@ fn validate_protocol(
             if request.walk_forward.is_none() && !request.windows.is_empty() =>
         {
             for window in &request.windows {
-                split_snapshot(state, window)?;
+                split_snapshot(state, &request.user_id, window)?;
             }
         }
         "walk-forward@1" if request.windows.is_empty() => {
@@ -1736,7 +1788,7 @@ fn validate_protocol(
             if request.run.snapshot_id != walk_forward.snapshot_id {
                 return Err("Walk-forward must use the frozen Snapshot".into());
             }
-            walk_forward_windows(state, walk_forward)?;
+            walk_forward_windows(state, &request.user_id, walk_forward)?;
         }
         "cross-market@1"
             if request.windows.is_empty()
@@ -1784,7 +1836,7 @@ fn validate_cross_market(
         if !snapshots.insert(&context.snapshot_id) {
             return Err("Cross-market validation contains a duplicate Snapshot".into());
         }
-        let (snapshot, bars) = state.snapshot(&context.snapshot_id)?;
+        let (snapshot, bars) = state.snapshot_for_user(&request.user_id, &context.snapshot_id)?;
         if bars.is_empty() {
             return Err("Cross-market validation requires market evidence".into());
         }
@@ -1813,9 +1865,10 @@ fn validate_cross_market(
 
 fn split_snapshot(
     state: &M3State,
+    user_id: &str,
     window: &ValidationWindowRequest,
 ) -> Result<(MarketDataSnapshot, MarketDataSnapshot), String> {
-    let (snapshot, bars) = state.snapshot(&window.snapshot_id)?;
+    let (snapshot, bars) = state.snapshot_for_user(user_id, &window.snapshot_id)?;
     let split = bars.partition_point(|bar| bar.open_time_ms < window.sample_out_start_time_ms);
     let end = window
         .sample_out_end_time_ms
@@ -1840,13 +1893,14 @@ fn split_snapshot(
         gaps: gaps.clone(),
     };
     Ok((
-        state.persist_snapshot(&series(bars[..split].to_vec()))?,
-        state.persist_snapshot(&series(bars[split..end].to_vec()))?,
+        state.persist_snapshot_for_user(user_id, &series(bars[..split].to_vec()))?,
+        state.persist_snapshot_for_user(user_id, &series(bars[split..end].to_vec()))?,
     ))
 }
 
 fn walk_forward_windows(
     state: &M3State,
+    user_id: &str,
     request: &WalkForwardValidationRequest,
 ) -> Result<Vec<ValidationWindowRequest>, String> {
     if request.window_size_bars == 0
@@ -1858,7 +1912,7 @@ fn walk_forward_windows(
     if request.step_size_bars < request.window_size_bars {
         return Err("Walk-forward step must not overlap sample-out windows".into());
     }
-    let (_, bars) = state.snapshot(&request.snapshot_id)?;
+    let (_, bars) = state.snapshot_for_user(user_id, &request.snapshot_id)?;
     if request.minimum_history_bars >= bars.len() {
         return Err("Walk-forward requires more history than the minimum".into());
     }
@@ -2349,6 +2403,21 @@ fn validate_user(user_id: &str) -> Result<(), String> {
     }
 }
 
+fn validate_snapshot_request(
+    user_id: &str,
+    src: &str,
+    code: &str,
+    start_time_ms: i64,
+    end_time_ms: i64,
+) -> Result<(), String> {
+    validate_user(user_id)?;
+    if src.trim().is_empty() || code.trim().is_empty() || start_time_ms >= end_time_ms {
+        Err("Snapshot time range is invalid".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -2552,13 +2621,16 @@ mod tests {
             quote_volume: close.into(),
         };
         let snapshot = state
-            .persist_snapshot(&ada_data_core::BarSeries {
-                src: "okx".into(),
-                code: "BTC-USDT".into(),
-                interval: BarInterval::OneHour,
-                bars: vec![bar(0, 100), bar(3_600_000, 101), bar(7_200_000, 102)],
-                gaps: vec![],
-            })
+            .persist_snapshot_for_user(
+                "alice",
+                &ada_data_core::BarSeries {
+                    src: "okx".into(),
+                    code: "BTC-USDT".into(),
+                    interval: BarInterval::OneHour,
+                    bars: vec![bar(0, 100), bar(3_600_000, 101), bar(7_200_000, 102)],
+                    gaps: vec![],
+                },
+            )
             .unwrap();
         let request = || BacktestRunRequest {
             user_id: "alice".into(),
@@ -2651,16 +2723,19 @@ mod tests {
             })
             .collect();
         let snapshot = state
-            .persist_snapshot(&ada_data_core::BarSeries {
-                src: "okx".into(),
-                code: "BTC-USDT".into(),
-                interval: BarInterval::OneHour,
-                bars,
-                gaps: vec![BarGap {
-                    start_time_ms: 25 * 3_600_000,
-                    end_time_ms: 30 * 3_600_000,
-                }],
-            })
+            .persist_snapshot_for_user(
+                "alice",
+                &ada_data_core::BarSeries {
+                    src: "okx".into(),
+                    code: "BTC-USDT".into(),
+                    interval: BarInterval::OneHour,
+                    bars,
+                    gaps: vec![BarGap {
+                        start_time_ms: 25 * 3_600_000,
+                        end_time_ms: 30 * 3_600_000,
+                    }],
+                },
+            )
             .unwrap();
         let request = || BacktestRunRequest {
             user_id: "alice".into(),
@@ -2784,7 +2859,8 @@ mod tests {
         };
         state.save_protocol(&protocol).unwrap();
         let sample_report = {
-            let (sample_in, sample_out) = split_snapshot(&state, &validation.windows[0]).unwrap();
+            let (sample_in, sample_out) =
+                split_snapshot(&state, "alice", &validation.windows[0]).unwrap();
             let mut sample_in_request = validation.run.clone();
             sample_in_request.snapshot_id = sample_in.snapshot_id.clone();
             let mut sample_out_request = sample_in_request.clone();
@@ -2867,7 +2943,8 @@ mod tests {
             step_size_bars: 5,
             minimum_history_bars: 10,
         };
-        let generated_walk_forward_windows = walk_forward_windows(&state, &walk_forward).unwrap();
+        let generated_walk_forward_windows =
+            walk_forward_windows(&state, "alice", &walk_forward).unwrap();
         assert_eq!(
             generated_walk_forward_windows
                 .iter()
@@ -2892,10 +2969,17 @@ mod tests {
             .iter()
             .find(|window| window.sample_out_start_time_ms == 30 * 3_600_000)
             .unwrap();
-        assert_eq!(split_snapshot(&state, gap_window).unwrap().1.bar_count, 5);
+        assert_eq!(
+            split_snapshot(&state, "alice", gap_window)
+                .unwrap()
+                .1
+                .bar_count,
+            5
+        );
         assert!(
             walk_forward_windows(
                 &state,
+                "alice",
                 &WalkForwardValidationRequest {
                     minimum_history_bars: 50,
                     ..walk_forward.clone()
@@ -2906,6 +2990,7 @@ mod tests {
         assert!(
             walk_forward_windows(
                 &state,
+                "alice",
                 &WalkForwardValidationRequest {
                     step_size_bars: 4,
                     ..walk_forward.clone()
@@ -2915,6 +3000,7 @@ mod tests {
         );
         let partial_tail_windows = walk_forward_windows(
             &state,
+            "alice",
             &WalkForwardValidationRequest {
                 window_size_bars: 6,
                 step_size_bars: 6,
@@ -2944,7 +3030,7 @@ mod tests {
             protocol_id: String::new(),
             user_id: walk_forward_request.user_id.clone(),
             run: walk_forward_request.run.clone(),
-            windows: walk_forward_windows(&state, &walk_forward).unwrap(),
+            windows: walk_forward_windows(&state, "alice", &walk_forward).unwrap(),
             walk_forward: walk_forward_request.walk_forward.clone(),
             cross_market: walk_forward_request.cross_market.clone(),
             method_version: walk_forward_request.method_version.clone(),
@@ -2982,7 +3068,7 @@ mod tests {
             protocol_id: String::new(),
             user_id: "alice".into(),
             run: unavailable_run,
-            windows: walk_forward_windows(&state, &unavailable_walk_forward).unwrap(),
+            windows: walk_forward_windows(&state, "alice", &unavailable_walk_forward).unwrap(),
             walk_forward: Some(unavailable_walk_forward),
             cross_market: None,
             method_version: "walk-forward@1".into(),
@@ -3013,7 +3099,7 @@ mod tests {
             protocol_id: String::new(),
             user_id: "alice".into(),
             run: request(),
-            windows: walk_forward_windows(&state, &resumable_walk_forward).unwrap(),
+            windows: walk_forward_windows(&state, "alice", &resumable_walk_forward).unwrap(),
             walk_forward: Some(resumable_walk_forward),
             cross_market: None,
             method_version: "walk-forward@1".into(),
@@ -3038,15 +3124,20 @@ mod tests {
         assert!(first_report.windows[0].sample_out_end_time_ms.is_none());
         assert!(validation_markdown(&first_report).contains("walk-forward@1"));
 
-        let (_, source_bars) = state.snapshot(&snapshot.snapshot_id).unwrap();
+        let (_, source_bars) = state
+            .snapshot_for_user("alice", &snapshot.snapshot_id)
+            .unwrap();
         let eth_snapshot = state
-            .persist_snapshot(&ada_data_core::BarSeries {
-                src: "okx".into(),
-                code: "ETH-USDT".into(),
-                interval: BarInterval::OneHour,
-                bars: source_bars.clone(),
-                gaps: vec![],
-            })
+            .persist_snapshot_for_user(
+                "alice",
+                &ada_data_core::BarSeries {
+                    src: "okx".into(),
+                    code: "ETH-USDT".into(),
+                    interval: BarInterval::OneHour,
+                    bars: source_bars.clone(),
+                    gaps: vec![],
+                },
+            )
             .unwrap();
         let cross_market = CrossMarketValidationRequest {
             contexts: vec![
@@ -3223,13 +3314,16 @@ mod tests {
             .is_err()
         );
         let incompatible_snapshot = state
-            .persist_snapshot(&ada_data_core::BarSeries {
-                src: "okx".into(),
-                code: "SOL-USDT".into(),
-                interval: BarInterval::OneDay,
-                bars: source_bars,
-                gaps: vec![],
-            })
+            .persist_snapshot_for_user(
+                "alice",
+                &ada_data_core::BarSeries {
+                    src: "okx".into(),
+                    code: "SOL-USDT".into(),
+                    interval: BarInterval::OneDay,
+                    bars: source_bars,
+                    gaps: vec![],
+                },
+            )
             .unwrap();
         assert!(
             validate_protocol(
@@ -3271,6 +3365,71 @@ mod tests {
                 .unwrap()
                 .provenance
                 .is_none()
+        );
+
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn snapshots_are_user_scoped_and_listed_by_matching_coverage() {
+        let root = std::env::temp_dir().join(format!(
+            "adaq-snapshot-access-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = M3State::open(&root).unwrap();
+        let series = |open_time_ms| ada_data_core::BarSeries {
+            src: "okx".into(),
+            code: "BTC-USDT".into(),
+            interval: BarInterval::OneHour,
+            bars: vec![OhlcvBar {
+                open_time_ms,
+                open: 1.into(),
+                high: 1.into(),
+                low: 1.into(),
+                close: 1.into(),
+                base_volume: 1.into(),
+                quote_volume: 1.into(),
+            }],
+            gaps: vec![],
+        };
+        let later = state
+            .persist_snapshot_for_user("alice", &series(3_600_000))
+            .unwrap();
+        let earlier = state
+            .persist_snapshot_for_user("alice", &series(0))
+            .unwrap();
+        state
+            .persist_snapshot_for_user("bob", &series(7_200_000))
+            .unwrap();
+
+        let listed = state
+            .list_snapshots(&SnapshotListRequest {
+                user_id: "alice".into(),
+                src: "okx".into(),
+                code: "BTC-USDT".into(),
+                interval: BarInterval::OneHour,
+            })
+            .unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|snapshot| &snapshot.snapshot_id)
+                .collect::<Vec<_>>(),
+            vec![&earlier.snapshot_id, &later.snapshot_id]
+        );
+        assert!(
+            state
+                .snapshot_for_user("bob", &earlier.snapshot_id)
+                .is_err()
+        );
+        assert_eq!(
+            validate_snapshot_request("alice", "okx", "BTC-USDT", 1, 1).unwrap_err(),
+            "Snapshot time range is invalid"
         );
 
         drop(state);

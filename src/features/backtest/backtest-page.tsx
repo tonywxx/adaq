@@ -6,20 +6,32 @@ import {
 	Workspace,
 	type LibraryComponent,
 } from "@/features/components/components-page";
-import type { OhlcvBar } from "@/lib/market-chart-adapter";
-import { useMarketSessionStore } from "@/lib/market-session";
+import {
+	BAR_INTERVALS,
+	type BarInterval,
+	type OhlcvBar,
+} from "@/lib/market-chart-adapter";
+import { instrumentKey, useMarketSessionStore } from "@/lib/market-session";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BacktestChart } from "./backtest-chart";
+import {
+	snapshotError,
+	snapshotRangeError,
+	snapshotStatus,
+	reuseSnapshot,
+} from "./backtest-data";
 import { formatDecimal } from "./format-decimal";
 
 type Snapshot = {
 	snapshotId: string;
+	src: string;
 	code: string;
-	interval: string;
+	interval: BarInterval;
 	barCount: number;
 	startTimeMs: number;
 	endTimeMs: number;
+	gaps: { startTimeMs: number; endTimeMs: number }[];
 };
 type Fill = {
 	orderId: number;
@@ -91,12 +103,31 @@ type RunSummary = {
 	barCount: number;
 	totalReturn: string;
 };
-type WalkForward = { snapshotId: string; windowSizeBars: number; stepSizeBars: number; minimumHistoryBars: number };
-type ValidationProtocol = { protocolId: string; methodVersion: string; windows: { snapshotId: string; sampleOutStartTimeMs: number; sampleOutEndTimeMs?: number }[]; walkForward?: WalkForward; crossMarket?: { contexts: { snapshotId: string; runOverride?: unknown }[] } };
+type WalkForward = {
+	snapshotId: string;
+	windowSizeBars: number;
+	stepSizeBars: number;
+	minimumHistoryBars: number;
+};
+type ValidationProtocol = {
+	protocolId: string;
+	methodVersion: string;
+	windows: {
+		snapshotId: string;
+		sampleOutStartTimeMs: number;
+		sampleOutEndTimeMs?: number;
+	}[];
+	walkForward?: WalkForward;
+	crossMarket?: { contexts: { snapshotId: string; runOverride?: unknown }[] };
+};
 type ValidationWindow = {
 	sampleOutStartTimeMs: number;
 	sampleOutEndTimeMs?: number;
-	sampleOutMetrics?: { totalReturn: string; maxDrawdown: string; sharpe: string };
+	sampleOutMetrics?: {
+		totalReturn: string;
+		maxDrawdown: string;
+		sharpe: string;
+	};
 	sampleOutPauses: unknown[];
 	failure?: string;
 };
@@ -105,11 +136,25 @@ type ValidationReport = {
 	protocolId: string;
 	methodVersion: string;
 	walkForward?: WalkForward;
-	crossMarket: { snapshot: Snapshot; runId?: string; metrics?: { totalReturn: string; maxDrawdown: string; sharpe: string }; pauses: unknown[]; failure?: string }[];
+	crossMarket: {
+		snapshot: Snapshot;
+		runId?: string;
+		metrics?: { totalReturn: string; maxDrawdown: string; sharpe: string };
+		pauses: unknown[];
+		failure?: string;
+	}[];
 	crossMarketEvidence?: { completedMarkets: number; totalReturnSpread: string };
 	recommendedContexts: unknown[];
 	windows: ValidationWindow[];
-	aggregate: { completedWindows: number; failedWindows: number; averageSampleOutReturn: string; worstSampleOutDrawdown: string; averageSampleOutSharpe: string; totalFees: string; totalTrades: number };
+	aggregate: {
+		completedWindows: number;
+		failedWindows: number;
+		averageSampleOutReturn: string;
+		worstSampleOutDrawdown: string;
+		averageSampleOutSharpe: string;
+		totalFees: string;
+		totalTrades: number;
+	};
 };
 type ExecutionPage = {
 	orders: Order[];
@@ -122,6 +167,7 @@ const EXECUTION_PAGE_SIZE = 100;
 export function BacktestPage() {
 	const userId = useMarketSessionStore((state) => state.userId);
 	const instrument = useMarketSessionStore((state) => state.activeInstrument);
+	const watchlist = useMarketSessionStore((state) => state.watchlist);
 	const [components, setComponents] = useState<LibraryComponent[]>([]);
 	const [factorSelections, setFactorSelections] = useState<
 		Record<string, string>
@@ -137,23 +183,41 @@ export function BacktestPage() {
 		new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10),
 	);
 	const [end, setEnd] = useState(() => new Date().toISOString().slice(0, 10));
+	const [selectedInstrumentKey, setSelectedInstrumentKey] = useState(() =>
+		instrumentKey(instrument),
+	);
+	const [interval, setInterval] = useState<BarInterval>("1h");
 	const [snapshot, setSnapshot] = useState<Snapshot>();
+	const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
 	const [run, setRun] = useState<BacktestRun>();
 	const [executionPage, setExecutionPage] = useState<ExecutionPage>();
 	const [executionOffset, setExecutionOffset] = useState(0);
 	const [history, setHistory] = useState<RunSummary[]>([]);
 	const [message, setMessage] = useState("");
+	const [snapshotTechnicalError, setSnapshotTechnicalError] = useState("");
 	const [downloadTaskId, setDownloadTaskId] = useState<string>();
 	const [sampleOutStart, setSampleOutStart] = useState("");
 	const [walkForwardWindowSize, setWalkForwardWindowSize] = useState("30");
 	const [walkForwardStepSize, setWalkForwardStepSize] = useState("30");
-	const [walkForwardMinimumHistory, setWalkForwardMinimumHistory] = useState("90");
+	const [walkForwardMinimumHistory, setWalkForwardMinimumHistory] =
+		useState("90");
 	const [crossMarketSnapshotIds, setCrossMarketSnapshotIds] = useState("");
 	const [protocols, setProtocols] = useState<ValidationProtocol[]>([]);
 	const [reports, setReports] = useState<ValidationReport[]>([]);
 	const [runningProtocolId, setRunningProtocolId] = useState<string>();
 	const chartRequest = useRef(0);
 	const chartRange = useRef("");
+	const instruments = useMemo(
+		() => [
+			...new Map(
+				[...watchlist, instrument].map((item) => [instrumentKey(item), item]),
+			).values(),
+		],
+		[instrument, watchlist],
+	);
+	const selectedInstrument =
+		instruments.find((item) => instrumentKey(item) === selectedInstrumentKey) ??
+		instrument;
 	const refreshHistory = async () => {
 		if (userId)
 			try {
@@ -164,7 +228,9 @@ export function BacktestPage() {
 	};
 	const refreshValidation = async () => {
 		if (!userId) return;
-		setProtocols(await invoke("validation_protocol_list", { request: { userId } }));
+		setProtocols(
+			await invoke("validation_protocol_list", { request: { userId } }),
+		);
 		setReports(await invoke("validation_report_list", { request: { userId } }));
 	};
 	useEffect(() => {
@@ -184,6 +250,14 @@ export function BacktestPage() {
 			void refreshValidation().catch((error) => setMessage(String(error)));
 		}
 	}, [userId]);
+	useEffect(() => {
+		if (!userId) return;
+		void invoke<Snapshot[]>("snapshot_list", {
+			request: { userId, ...selectedInstrument, interval },
+		})
+			.then(setSnapshots)
+			.catch((error) => setSnapshotTechnicalError(snapshotError(error)));
+	}, [interval, selectedInstrument, userId]);
 	const factors = useMemo(
 		() =>
 			components.filter(
@@ -202,6 +276,12 @@ export function BacktestPage() {
 		(item) => item.archiveSha256 === strategy,
 	);
 	const prepare = async () => {
+		if (!userId) return;
+		const rangeError = snapshotRangeError(start, end);
+		if (rangeError) {
+			setSnapshotTechnicalError(rangeError);
+			return;
+		}
 		const taskId = crypto.randomUUID();
 		const onEvent = new Channel<{
 			event: "progress" | "completed" | "cancelled";
@@ -209,89 +289,187 @@ export function BacktestPage() {
 		}>();
 		onEvent.onmessage = (event) => {
 			if (event.event === "progress")
-				setMessage(`Downloaded ${event.data?.downloadedBars ?? 0} Closed Bars…`);
-			if (event.event === "cancelled") setMessage("Download cancelled.");
+				setMessage(snapshotStatus(event.event, event.data?.downloadedBars));
+			if (event.event === "cancelled") setMessage(snapshotStatus(event.event));
 		};
 		setDownloadTaskId(taskId);
+		setSnapshotTechnicalError("");
 		setMessage("Downloading and freezing Closed Bars…");
 		try {
 			const value = await invoke<Snapshot>("snapshot_download", {
 				request: {
 					taskId,
-					...instrument,
-					interval: "1h",
+					userId,
+					...selectedInstrument,
+					interval,
 					startTimeMs: Date.parse(start),
 					endTimeMs: Date.parse(end),
 				},
 				onEvent,
 			});
 			setSnapshot(value);
+			setSnapshots((current) =>
+				[
+					...current.filter((item) => item.snapshotId !== value.snapshotId),
+					value,
+				].sort((left, right) => left.startTimeMs - right.startTimeMs),
+			);
 			setMessage(`${value.barCount} Bars frozen.`);
 		} catch (error) {
-			if (!String(error).includes("cancelled")) setMessage(String(error));
+			const technicalError = snapshotError(error);
+			setSnapshotTechnicalError(technicalError);
+			if (technicalError.includes("cancelled"))
+				setMessage(snapshotStatus("cancelled"));
 		} finally {
 			setDownloadTaskId(undefined);
 		}
 	};
 	const buildRunRequest = (snapshotId: string) => ({
-		userId: userId!, snapshotId,
-		factorInstances: selectedStrategy?.dependencies.map((dependency) => ({ alias: dependency.alias, archiveSha256: factorSelections[dependency.alias], parameters: factorParameters[dependency.alias] ?? {} })).filter((factor) => factor.archiveSha256) ?? [],
-		strategyArchiveSha256: strategy, strategyParameters, initialQuoteAllocation: "10000",
-		executionProfile: { makerFeeRate: "0.0008", takerFeeRate: "0.001", adverseSlippageRate: "0.0005", rebalanceThreshold: "0", priceIncrement: "0.1", quantityIncrement: "0.00000001", minimumQuantity: "0.00001", riskFreeRate: "0", fillPolicy: "taker" },
+		userId: userId!,
+		snapshotId,
+		factorInstances:
+			selectedStrategy?.dependencies
+				.map((dependency) => ({
+					alias: dependency.alias,
+					archiveSha256: factorSelections[dependency.alias],
+					parameters: factorParameters[dependency.alias] ?? {},
+				}))
+				.filter((factor) => factor.archiveSha256) ?? [],
+		strategyArchiveSha256: strategy,
+		strategyParameters,
+		initialQuoteAllocation: "10000",
+		executionProfile: {
+			makerFeeRate: "0.0008",
+			takerFeeRate: "0.001",
+			adverseSlippageRate: "0.0005",
+			rebalanceThreshold: "0",
+			priceIncrement: "0.1",
+			quantityIncrement: "0.00000001",
+			minimumQuantity: "0.00001",
+			riskFreeRate: "0",
+			fillPolicy: "taker",
+		},
 	});
 	const createValidation = async () => {
 		if (!userId || !snapshot) return;
 		try {
-			const protocol = await invoke<ValidationProtocol>("validation_protocol_create", {
-				request: { userId, run: buildRunRequest(snapshot.snapshotId), windows: [{ snapshotId: snapshot.snapshotId, sampleOutStartTimeMs: Date.parse(sampleOutStart) }], methodVersion: "chronological-holdout@1", aggregationRuleVersion: "equal-window@1" },
-			});
+			const protocol = await invoke<ValidationProtocol>(
+				"validation_protocol_create",
+				{
+					request: {
+						userId,
+						run: buildRunRequest(snapshot.snapshotId),
+						windows: [
+							{
+								snapshotId: snapshot.snapshotId,
+								sampleOutStartTimeMs: Date.parse(sampleOutStart),
+							},
+						],
+						methodVersion: "chronological-holdout@1",
+						aggregationRuleVersion: "equal-window@1",
+					},
+				},
+			);
 			setMessage(`Protocol ${protocol.protocolId.slice(0, 12)} frozen.`);
 			await refreshValidation();
-		} catch (error) { setMessage(String(error)); }
+		} catch (error) {
+			setMessage(String(error));
+		}
 	};
 	const createWalkForwardValidation = async () => {
 		if (!userId || !snapshot) return;
 		try {
-			const protocol = await invoke<ValidationProtocol>("validation_protocol_create", {
-				request: {
-					userId, run: buildRunRequest(snapshot.snapshotId), windows: [], methodVersion: "walk-forward@1", aggregationRuleVersion: "equal-window@1",
-					walkForward: { snapshotId: snapshot.snapshotId, windowSizeBars: Number(walkForwardWindowSize), stepSizeBars: Number(walkForwardStepSize), minimumHistoryBars: Number(walkForwardMinimumHistory) },
+			const protocol = await invoke<ValidationProtocol>(
+				"validation_protocol_create",
+				{
+					request: {
+						userId,
+						run: buildRunRequest(snapshot.snapshotId),
+						windows: [],
+						methodVersion: "walk-forward@1",
+						aggregationRuleVersion: "equal-window@1",
+						walkForward: {
+							snapshotId: snapshot.snapshotId,
+							windowSizeBars: Number(walkForwardWindowSize),
+							stepSizeBars: Number(walkForwardStepSize),
+							minimumHistoryBars: Number(walkForwardMinimumHistory),
+						},
+					},
 				},
-			});
-			setMessage(`Walk-forward Protocol ${protocol.protocolId.slice(0, 12)} frozen.`);
+			);
+			setMessage(
+				`Walk-forward Protocol ${protocol.protocolId.slice(0, 12)} frozen.`,
+			);
 			await refreshValidation();
-		} catch (error) { setMessage(String(error)); }
+		} catch (error) {
+			setMessage(String(error));
+		}
 	};
 	const createCrossMarketValidation = async () => {
 		if (!userId || !snapshot) return;
-		const snapshotIds = [snapshot.snapshotId, ...crossMarketSnapshotIds.split(/\s+/)].filter(Boolean);
+		const snapshotIds = [
+			snapshot.snapshotId,
+			...crossMarketSnapshotIds.split(/\s+/),
+		].filter(Boolean);
 		try {
-			const protocol = await invoke<ValidationProtocol>("validation_protocol_create", {
-				request: { userId, run: buildRunRequest(snapshot.snapshotId), windows: [], methodVersion: "cross-market@1", aggregationRuleVersion: "equal-window@1", crossMarket: { contexts: snapshotIds.map((snapshotId) => ({ snapshotId })) } },
-			});
-			setMessage(`Cross-market Protocol ${protocol.protocolId.slice(0, 12)} frozen.`);
+			const protocol = await invoke<ValidationProtocol>(
+				"validation_protocol_create",
+				{
+					request: {
+						userId,
+						run: buildRunRequest(snapshot.snapshotId),
+						windows: [],
+						methodVersion: "cross-market@1",
+						aggregationRuleVersion: "equal-window@1",
+						crossMarket: {
+							contexts: snapshotIds.map((snapshotId) => ({ snapshotId })),
+						},
+					},
+				},
+			);
+			setMessage(
+				`Cross-market Protocol ${protocol.protocolId.slice(0, 12)} frozen.`,
+			);
 			await refreshValidation();
-		} catch (error) { setMessage(String(error)); }
+		} catch (error) {
+			setMessage(String(error));
+		}
 	};
 	const runValidation = async (protocolId: string) => {
 		if (!userId) return;
 		setRunningProtocolId(protocolId);
 		setMessage("Running validation…");
 		try {
-			const report = await invoke<ValidationReport>("validation_report_run", { request: { userId, protocolId } });
+			const report = await invoke<ValidationReport>("validation_report_run", {
+				request: { userId, protocolId },
+			});
 			setMessage(`Validation Report ${report.reportId.slice(0, 12)} completed.`);
 			await refreshValidation();
-		} catch (error) { setMessage(String(error)); } finally { setRunningProtocolId(undefined); }
+		} catch (error) {
+			setMessage(String(error));
+		} finally {
+			setRunningProtocolId(undefined);
+		}
 	};
 	const exportReport = async (reportId: string, format: "json" | "markdown") => {
 		if (!userId) return;
 		try {
-			const content = await invoke<string>("validation_report_export", { request: { userId, protocolId: reportId }, format });
+			const content = await invoke<string>("validation_report_export", {
+				request: { userId, protocolId: reportId },
+				format,
+			});
 			const anchor = document.createElement("a");
-			anchor.href = URL.createObjectURL(new Blob([content], { type: format === "json" ? "application/json" : "text/markdown" }));
+			anchor.href = URL.createObjectURL(
+				new Blob([content], {
+					type: format === "json" ? "application/json" : "text/markdown",
+				}),
+			);
 			anchor.download = `validation-report-${reportId}.${format === "json" ? "json" : "md"}`;
-			anchor.click(); URL.revokeObjectURL(anchor.href);
-		} catch (error) { setMessage(String(error)); }
+			anchor.click();
+			URL.revokeObjectURL(anchor.href);
+		} catch (error) {
+			setMessage(String(error));
+		}
 	};
 	const execute = async () => {
 		if (!userId || !snapshot) return;
@@ -351,37 +529,101 @@ export function BacktestPage() {
 	return (
 		<Workspace
 			title="Backtest"
-			description={`${instrument.code} · OKX Spot · Long Only`}
+			description={`${selectedInstrument.code} · OKX Spot · Long Only`}
 		>
 			<Card>
 				<CardHeader>
-					<CardTitle>Run configuration</CardTitle>
+					<CardTitle>Data stage</CardTitle>
 				</CardHeader>
 				<CardContent className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-					<Field label="Start">
+					<Field label="Instrument" id="backtest-instrument">
+						<select
+							id="backtest-instrument"
+							className="h-9 rounded-md border bg-background px-3"
+							value={selectedInstrumentKey}
+							onChange={(event) => {
+								setSelectedInstrumentKey(event.target.value);
+								setSnapshot(undefined);
+							}}
+						>
+							{instruments.map((item) => (
+								<option key={instrumentKey(item)} value={instrumentKey(item)}>
+									{item.code} · {item.src.toUpperCase()}
+								</option>
+							))}
+						</select>
+					</Field>
+					<Field label="Bar Interval" id="backtest-interval">
+						<select
+							id="backtest-interval"
+							className="h-9 rounded-md border bg-background px-3"
+							value={interval}
+							onChange={(event) => {
+								setInterval(event.target.value as BarInterval);
+								setSnapshot(undefined);
+							}}
+						>
+							{BAR_INTERVALS.map((value) => (
+								<option key={value} value={value}>
+									{value}
+								</option>
+							))}
+						</select>
+					</Field>
+					<Field label="Start" id="backtest-start">
 						<Input
+							id="backtest-start"
 							type="date"
 							value={start}
 							onChange={(e) => setStart(e.target.value)}
 						/>
 					</Field>
-					<Field label="End">
-						<Input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+					<Field label="End" id="backtest-end">
+						<Input
+							id="backtest-end"
+							type="date"
+							value={end}
+							onChange={(e) => setEnd(e.target.value)}
+						/>
 					</Field>
 					<Field label="Sample-out starts">
-						<Input type="date" value={sampleOutStart} onChange={(e) => setSampleOutStart(e.target.value)} />
+						<Input
+							type="date"
+							value={sampleOutStart}
+							onChange={(e) => setSampleOutStart(e.target.value)}
+						/>
 					</Field>
 					<Field label="Walk-forward window (Bars)">
-						<Input type="number" min="1" value={walkForwardWindowSize} onChange={(e) => setWalkForwardWindowSize(e.target.value)} />
+						<Input
+							type="number"
+							min="1"
+							value={walkForwardWindowSize}
+							onChange={(e) => setWalkForwardWindowSize(e.target.value)}
+						/>
 					</Field>
 					<Field label="Walk-forward step (Bars)">
-						<Input type="number" min="1" value={walkForwardStepSize} onChange={(e) => setWalkForwardStepSize(e.target.value)} />
+						<Input
+							type="number"
+							min="1"
+							value={walkForwardStepSize}
+							onChange={(e) => setWalkForwardStepSize(e.target.value)}
+						/>
 					</Field>
 					<Field label="Walk-forward minimum history (Bars)">
-						<Input type="number" min="1" value={walkForwardMinimumHistory} onChange={(e) => setWalkForwardMinimumHistory(e.target.value)} />
+						<Input
+							type="number"
+							min="1"
+							value={walkForwardMinimumHistory}
+							onChange={(e) => setWalkForwardMinimumHistory(e.target.value)}
+						/>
 					</Field>
 					<Field label="Cross-market Snapshot IDs (one per line)">
-						<textarea className="min-h-9 rounded-md border bg-background px-3 py-2" value={crossMarketSnapshotIds} onChange={(e) => setCrossMarketSnapshotIds(e.target.value)} placeholder="Freeze other market Snapshots first" />
+						<textarea
+							className="min-h-9 rounded-md border bg-background px-3 py-2"
+							value={crossMarketSnapshotIds}
+							onChange={(e) => setCrossMarketSnapshotIds(e.target.value)}
+							placeholder="Freeze other market Snapshots first"
+						/>
 					</Field>
 					<Field label="Strategy">
 						<select
@@ -460,7 +702,7 @@ export function BacktestPage() {
 							}
 						/>
 					))}
-					<div className="flex items-end gap-2">
+					<div className="flex flex-wrap items-end gap-2">
 						<Button disabled={Boolean(downloadTaskId)} onClick={() => void prepare()}>
 							Prepare Snapshot
 						</Button>
@@ -497,18 +739,79 @@ export function BacktestPage() {
 						</Button>
 						<Button
 							variant="outline"
-							disabled={!snapshot || !strategy || !walkForwardWindowSize || !walkForwardStepSize || !walkForwardMinimumHistory}
+							disabled={
+								!snapshot ||
+								!strategy ||
+								!walkForwardWindowSize ||
+								!walkForwardStepSize ||
+								!walkForwardMinimumHistory
+							}
 							onClick={() => void createWalkForwardValidation()}
 						>
 							Freeze walk-forward
 						</Button>
-						<Button variant="outline" disabled={!snapshot || !strategy || !crossMarketSnapshotIds.trim()} onClick={() => void createCrossMarketValidation()}>
+						<Button
+							variant="outline"
+							disabled={!snapshot || !strategy || !crossMarketSnapshotIds.trim()}
+							onClick={() => void createCrossMarketValidation()}
+						>
 							Freeze cross-market
 						</Button>
 					</div>
-					<p className="self-end text-sm text-muted-foreground" aria-live="polite">
+					<p
+						className="self-end text-sm text-muted-foreground"
+						role="status"
+						aria-live="polite"
+					>
 						{message}
 					</p>
+					<div className="md:col-span-2 lg:col-span-4">
+						<p className="mb-2 text-sm font-medium">Reuse immutable evidence</p>
+						{snapshots.length === 0 ? (
+							<p className="text-sm text-muted-foreground">
+								No matching Snapshots. Download and freeze new evidence.
+							</p>
+						) : (
+							<div className="grid gap-2">
+								{snapshots.map((item) => (
+									<Button
+										key={item.snapshotId}
+										type="button"
+										aria-pressed={snapshot?.snapshotId === item.snapshotId}
+										variant={
+											snapshot?.snapshotId === item.snapshotId ? "default" : "outline"
+										}
+										className="h-auto justify-start whitespace-normal p-3 text-left"
+										onClick={() => {
+											setSnapshot(reuseSnapshot(snapshots, item.snapshotId));
+											setSnapshotTechnicalError("");
+										}}
+									>
+										<span>
+											{item.src.toUpperCase()} · {item.code} · {item.interval} ·{" "}
+											{new Date(item.startTimeMs).toISOString().slice(0, 10)}–
+											{new Date(item.endTimeMs).toISOString().slice(0, 10)} ·{" "}
+											{item.barCount} Bars · {item.gaps.length} gaps
+										</span>
+										<span className="block break-all text-xs opacity-75">
+											Snapshot {item.snapshotId}
+										</span>
+									</Button>
+								))}
+							</div>
+						)}
+						{snapshotTechnicalError && (
+							<div
+								className="mt-3 rounded-md border border-destructive p-3 text-sm"
+								role="alert"
+							>
+								<p>Snapshot error</p>
+								<pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-xs">
+									{snapshotTechnicalError}
+								</pre>
+							</div>
+						)}
+					</div>
 				</CardContent>
 			</Card>
 			{run && (
@@ -629,37 +932,119 @@ export function BacktestPage() {
 				</CardContent>
 			</Card>
 			<Card>
-				<CardHeader><CardTitle>Research validation</CardTitle></CardHeader>
+				<CardHeader>
+					<CardTitle>Research validation</CardTitle>
+				</CardHeader>
 				<CardContent className="space-y-3 text-sm">
 					{protocols.map((protocol) => (
-						<div key={protocol.protocolId} className="flex items-center justify-between rounded-md border p-3">
-							<span className="font-mono">{protocol.protocolId.slice(0, 16)} · {protocol.methodVersion} · {protocol.crossMarket?.contexts.length ?? protocol.windows.length} context{(protocol.crossMarket?.contexts.length ?? protocol.windows.length) === 1 ? "" : "s"}</span>
-							<Button size="sm" disabled={runningProtocolId === protocol.protocolId} onClick={() => void runValidation(protocol.protocolId)}>{runningProtocolId === protocol.protocolId ? "Running…" : "Run / resume"}</Button>
+						<div
+							key={protocol.protocolId}
+							className="flex items-center justify-between rounded-md border p-3"
+						>
+							<span className="font-mono">
+								{protocol.protocolId.slice(0, 16)} · {protocol.methodVersion} ·{" "}
+								{protocol.crossMarket?.contexts.length ?? protocol.windows.length}{" "}
+								context
+								{(protocol.crossMarket?.contexts.length ?? protocol.windows.length) ===
+								1
+									? ""
+									: "s"}
+							</span>
+							<Button
+								size="sm"
+								disabled={runningProtocolId === protocol.protocolId}
+								onClick={() => void runValidation(protocol.protocolId)}
+							>
+								{runningProtocolId === protocol.protocolId
+									? "Running…"
+									: "Run / resume"}
+							</Button>
 						</div>
 					))}
 					{reports.map((report) => (
 						<div key={report.reportId} className="rounded-md border p-3">
 							<div className="flex items-center justify-between gap-2">
 								<span className="font-mono">{report.reportId.slice(0, 16)}</span>
-								<div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => void exportReport(report.reportId, "json")}>JSON</Button><Button size="sm" variant="outline" onClick={() => void exportReport(report.reportId, "markdown")}>Markdown</Button></div>
+								<div className="flex gap-2">
+									<Button
+										size="sm"
+										variant="outline"
+										onClick={() => void exportReport(report.reportId, "json")}
+									>
+										JSON
+									</Button>
+									<Button
+										size="sm"
+										variant="outline"
+										onClick={() => void exportReport(report.reportId, "markdown")}
+									>
+										Markdown
+									</Button>
+								</div>
 							</div>
-							<p className="mt-2 text-muted-foreground">{report.methodVersion}{report.walkForward ? ` · ${report.walkForward.windowSizeBars}-Bar windows, ${report.walkForward.stepSizeBars}-Bar step, ${report.walkForward.minimumHistoryBars}-Bar history` : ""}</p>
-							<p className="mt-2 text-muted-foreground">{report.aggregate.completedWindows} complete · {report.aggregate.failedWindows} failed · Out {percent(report.aggregate.averageSampleOutReturn)} · Drawdown {percent(report.aggregate.worstSampleOutDrawdown)} · Sharpe {formatDecimal(report.aggregate.averageSampleOutSharpe)} · Fees {formatDecimal(report.aggregate.totalFees)} · Trades {report.aggregate.totalTrades}</p>
-							{report.crossMarketEvidence && <p className="mt-2 text-muted-foreground">{report.crossMarketEvidence.completedMarkets} markets · Return spread {percent(report.crossMarketEvidence.totalReturnSpread)} · {report.recommendedContexts.length} evidence-backed Recommended Contexts</p>}
+							<p className="mt-2 text-muted-foreground">
+								{report.methodVersion}
+								{report.walkForward
+									? ` · ${report.walkForward.windowSizeBars}-Bar windows, ${report.walkForward.stepSizeBars}-Bar step, ${report.walkForward.minimumHistoryBars}-Bar history`
+									: ""}
+							</p>
+							<p className="mt-2 text-muted-foreground">
+								{report.aggregate.completedWindows} complete ·{" "}
+								{report.aggregate.failedWindows} failed · Out{" "}
+								{percent(report.aggregate.averageSampleOutReturn)} · Drawdown{" "}
+								{percent(report.aggregate.worstSampleOutDrawdown)} · Sharpe{" "}
+								{formatDecimal(report.aggregate.averageSampleOutSharpe)} · Fees{" "}
+								{formatDecimal(report.aggregate.totalFees)} · Trades{" "}
+								{report.aggregate.totalTrades}
+							</p>
+							{report.crossMarketEvidence && (
+								<p className="mt-2 text-muted-foreground">
+									{report.crossMarketEvidence.completedMarkets} markets · Return spread{" "}
+									{percent(report.crossMarketEvidence.totalReturnSpread)} ·{" "}
+									{report.recommendedContexts.length} evidence-backed Recommended
+									Contexts
+								</p>
+							)}
 							<div className="mt-2 space-y-1 text-xs text-muted-foreground">
 								{report.crossMarket.map((context) => (
-									<p key={context.snapshot.snapshotId}>{context.snapshot.code} · {context.snapshot.interval} · {context.failure ? `Failed: ${context.failure}` : `Return ${percent(context.metrics?.totalReturn ?? "0")} · Drawdown ${percent(context.metrics?.maxDrawdown ?? "0")} · Sharpe ${formatDecimal(context.metrics?.sharpe ?? "0")} · ${context.pauses.length} pauses`}</p>
+									<p key={context.snapshot.snapshotId}>
+										{context.snapshot.code} · {context.snapshot.interval} ·{" "}
+										{context.failure
+											? `Failed: ${context.failure}`
+											: `Return ${percent(context.metrics?.totalReturn ?? "0")} · Drawdown ${percent(context.metrics?.maxDrawdown ?? "0")} · Sharpe ${formatDecimal(context.metrics?.sharpe ?? "0")} · ${context.pauses.length} pauses`}
+									</p>
 								))}
 								{report.windows.map((window) => (
-									<p key={`${window.sampleOutStartTimeMs}:${window.sampleOutEndTimeMs ?? "final"}`}>
-										{new Date(window.sampleOutStartTimeMs).toLocaleString()} {window.sampleOutEndTimeMs ? `– ${new Date(window.sampleOutEndTimeMs).toLocaleString()} ` : "– final "}· {window.failure ? `Failed: ${window.failure}` : `Return ${percent(window.sampleOutMetrics?.totalReturn ?? "0")} · Drawdown ${percent(window.sampleOutMetrics?.maxDrawdown ?? "0")} · Sharpe ${formatDecimal(window.sampleOutMetrics?.sharpe ?? "0")} · ${window.sampleOutPauses.length} pauses`}
+									<p
+										key={`${window.sampleOutStartTimeMs}:${window.sampleOutEndTimeMs ?? "final"}`}
+									>
+										{new Date(window.sampleOutStartTimeMs).toLocaleString()}{" "}
+										{window.sampleOutEndTimeMs
+											? `– ${new Date(window.sampleOutEndTimeMs).toLocaleString()} `
+											: "– final "}
+										·{" "}
+										{window.failure
+											? `Failed: ${window.failure}`
+											: `Return ${percent(window.sampleOutMetrics?.totalReturn ?? "0")} · Drawdown ${percent(window.sampleOutMetrics?.maxDrawdown ?? "0")} · Sharpe ${formatDecimal(window.sampleOutMetrics?.sharpe ?? "0")} · ${window.sampleOutPauses.length} pauses`}
 									</p>
 								))}
 							</div>
-							<details className="mt-2"><summary>Inspect immutable Report ({report.windows.length} windows)</summary><pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">{JSON.stringify(report, null, 2)}</pre></details>
+							<details className="mt-2">
+								<summary>
+									Inspect immutable Report ({report.windows.length} windows)
+								</summary>
+								<pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">
+									{JSON.stringify(report, null, 2)}
+								</pre>
+							</details>
 						</div>
 					))}
-					{protocols.length === 0 && <p className="text-muted-foreground">Freeze a Snapshot with a holdout boundary or walk-forward configuration to begin.</p>}
+					{protocols.length === 0 && (
+						<p className="text-muted-foreground">
+							Freeze a Snapshot with a holdout boundary or walk-forward configuration
+							to begin.
+						</p>
+					)}
 				</CardContent>
 			</Card>
 		</Workspace>
@@ -668,14 +1053,16 @@ export function BacktestPage() {
 
 function Field({
 	label,
+	id,
 	children,
 }: {
 	label: string;
+	id?: string;
 	children: React.ReactNode;
 }) {
 	return (
 		<div className="grid gap-1">
-			<Label>{label}</Label>
+			<Label htmlFor={id}>{label}</Label>
 			{children}
 		</div>
 	);
