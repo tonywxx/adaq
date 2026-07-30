@@ -26,6 +26,7 @@ ADAQ V1 是本地优先的研究、回测与模拟桌面应用。它不执行真
 | M4 | Component Developer Kit。Rust SDK、`adaq-component` CLI、模板、conformance 检查与 `.adaq` 打包流程支持 Factor 和 Strategy Component 的 `new`、`build`、`verify`。 |
 | M5 | TA-Lib Indicator Engine、Indicator Catalog 与 Feature Slots。主机固定官方 C TA-Lib v0.7.1，暴露含 160 个 Indicators、179 个输出的 `adaq-indicator-catalog@1.0.0`，用 `planHash` 冻结 canonical Indicator Plans，支持 Market、Built-in、External Factor 三类 Slot source，按 Continuous Bar Segment 执行，在 Bar Gaps 重置分析状态，并执行 typed Plan/Run errors 与固定资源上限。 |
 | M6 | 可执行组件与研究验证。双语可执行 Factor 和 Strategy 示例讲解受支持的 SDK 与 CLI 工作流；可重放级 Backtest Run provenance 保留全部权威输入；不可变 Validation Protocol 与 Validation Report 支持时间顺序留出、滚动前推和跨市场研究，并提供可追溯证据及 JSON/Markdown 导出。 |
+| M7 | 研究工作区产品化。Components、Backtest 和 Validation 在不可变本地证据之上提供引导式、可审计的桌面工作流；[双语人工验收指南](docs/m7-manual-acceptance.zh-CN.md)覆盖从空项目开始的完整路径。 |
 
 M1-M6 合起来形成当前可用闭环：开发 Component，打包并验证，导入本地 Component Library，冻结精确市场数据和 Indicator Plans，运行沙箱化 Strategy Backtest，查看持久化的决策、成交、指标和图表，并生成不可变的研究验证证据。
 
@@ -51,3 +52,9 @@ adaq-component verify dist/my-factor-0.1.0.adaq
 使用 `adaq-component new strategy my-strategy` 创建 Strategy 组件。将 `dist/` 中验证通过的文件导入 ADAQ 的组件库。
 
 请先阅读[可执行 Factor 与 Strategy 双语示例](examples/components/README.zh-CN.md)，再将 [SDK 指南](src-tauri/crates/adaq-component-sdk/README.zh-CN.md)、[CLI 指南](src-tauri/crates/adaq-component-tooling/README.zh-CN.md)和[组件架构](CONTEXT.md)作为参考。这些 crate 目前从本仓库安装；发布之后，`cargo install adaq-component-tooling --locked` 将独立于桌面应用安装相同的 CLI。
+
+## 文档
+
+| English | 简体中文 | 说明 |
+| --- | --- | --- |
+| [M7 Manual Acceptance](docs/m7-manual-acceptance.md) | [M7 人工验收](docs/m7-manual-acceptance.zh-CN.md) | 完整、需人工复核的研究工作区验收路径 |

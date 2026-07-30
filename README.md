@@ -26,6 +26,7 @@ ADAQ V1 is a local-first research, backtesting, and simulation desktop app. It d
 | M4 | Component Developer Kit. The Rust SDK, `adaq-component` CLI, templates, conformance checks, and `.adaq` packaging flow support `new`, `build`, and `verify` for Factor and Strategy Components. |
 | M5 | TA-Lib Indicator Engine, Indicator Catalog, and Feature Slots. The host pins official C TA-Lib v0.7.1, exposes `adaq-indicator-catalog@1.0.0` with 160 Indicators and 179 outputs, freezes canonical Indicator Plans with `planHash`, supports Market, Built-in, and External Factor Slot sources, evaluates by Continuous Bar Segment, resets analytical state at Bar Gaps, and enforces typed Plan/Run errors plus fixed resource ceilings. |
 | M6 | Executable Components and Research Validation. Bilingual executable Factor and Strategy examples teach the supported SDK and CLI workflow; replay-grade Backtest Run provenance preserves every authoritative input; immutable Validation Protocols and Reports support chronological holdout, walk-forward, and cross-market research with traceable evidence and JSON/Markdown exports. |
+| M7 | Research Workspace Productization. Components, Backtest, and Validation provide guided, auditable desktop workflows over immutable local evidence; the [bilingual manual acceptance guides](docs/m7-manual-acceptance.md) cover the complete from-empty-project path. |
 
 Together, M1-M6 provide the current closed loop: develop a Component, package and verify it, import it into the local Component Library, freeze exact market data and Indicator Plans, run a sandboxed Strategy Backtest, inspect persisted decisions, fills, metrics, and charts, and produce immutable research-validation evidence.
 
@@ -61,3 +62,4 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 | [Component Template](src-tauri/crates/adaq-component-tooling/templates/README.md) | [组件模板中文](src-tauri/crates/adaq-component-tooling/templates/README.zh-CN.md) | Scaffold README for generated component projects |
 | [Executable Examples](examples/components/README.md) | [可执行示例中文](examples/components/README.zh-CN.md) | End-to-end Factor and Strategy SDK/CLI tutorial |
 | [Test Fixtures](src-tauri/fixtures/README.md) | [测试固件中文](src-tauri/fixtures/README.zh-CN.md) | WASM component build examples for integration tests |
+| [M7 Manual Acceptance](docs/m7-manual-acceptance.md) | [M7 人工验收中文](docs/m7-manual-acceptance.zh-CN.md) | Complete human-reviewed research-workspace acceptance path |
