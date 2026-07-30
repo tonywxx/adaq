@@ -15,8 +15,9 @@ use ada_backtest_core::{
 use ada_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
 use adaq_component_tooling::{
     ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
-    FactorInstancePlanInput, ParameterDefinition, RunLimits, component_parameters,
-    native_engine_identity, validate_and_freeze_with_factors_and_parameters, verify_package,
+    FactorInstancePlanInput, FrozenIndicatorPlan, ParameterDefinition, RunLimits,
+    component_parameters, native_engine_identity, validate_and_freeze_with_factors_and_parameters,
+    verify_package,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -411,7 +412,14 @@ impl M3State {
                 |row| row.get(0),
             )
             .map_err(|_| "Backtest Run was not found".to_owned())?;
-        serde_json::from_str(&json).map_err(string)
+        let run: BacktestRun = serde_json::from_str(&json).map_err(string)?;
+        if let Some(provenance) = &run.provenance {
+            validate_provenance(provenance)?;
+            if provenance.component_lock != run.component_lock {
+                return Err("Backtest Run provenance does not match its Component Lock".into());
+            }
+        }
+        Ok(run)
     }
 
     fn list_runs(&self, user_id: &str) -> Result<Vec<BacktestRunSummary>, String> {
@@ -545,6 +553,8 @@ pub struct BacktestRunRequest {
     #[serde(with = "rust_decimal::serde::str")]
     pub initial_quote_allocation: rust_decimal::Decimal,
     pub execution_profile: ExecutionProfile,
+    #[serde(default)]
+    pub seed: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -576,6 +586,8 @@ pub struct BacktestRun {
     pub pauses: Vec<RunPauseRecord>,
     pub result: ada_backtest_core::SimulationResult,
     pub component_lock: Vec<ComponentLockEntry>,
+    #[serde(default)]
+    pub provenance: Option<BacktestRunProvenance>,
 }
 
 #[derive(Serialize)]
@@ -588,16 +600,70 @@ pub struct BacktestRunView {
     pub pauses: Vec<RunPauseRecord>,
     pub result: ada_backtest_core::SimulationResult,
     pub component_lock: Vec<ComponentLockEntry>,
+    pub provenance: Option<BacktestRunProvenance>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestRunProvenance {
+    pub normalized_request: NormalizedBacktestRunRequest,
+    pub indicator_plan_json: String,
+    pub indicator_plan_hash: String,
+    pub component_lock: Vec<ComponentLockEntry>,
+    pub indicator_engine_build_identity: IndicatorEngineBuildIdentity,
+    pub backtest_engine_version: String,
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalizedBacktestRunRequest {
+    pub snapshot_id: String,
+    pub strategy_archive_sha256: String,
+    pub strategy_parameters: BTreeMap<String, String>,
+    pub factor_instances: Vec<NormalizedFactorInstance>,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub initial_quote_allocation: rust_decimal::Decimal,
+    pub execution_profile: ExecutionProfile,
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalizedFactorInstance {
+    pub alias: String,
+    pub archive_sha256: String,
+    pub parameters: Vec<NormalizedParameter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalizedParameter {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndicatorEngineBuildIdentity {
+    pub engine_version: String,
+    pub ta_lib_version: String,
+    pub ta_source_sha256: String,
+    pub catalog_version: String,
+    pub wrapper_sha256: String,
+    pub target_triple: String,
+    pub compiler_and_flags_sha256: String,
+    pub engine_build_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunPauseRecord {
     pub open_time_ms: i64,
     pub reason: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComponentLockEntry {
     pub component_id: String,
@@ -800,29 +866,8 @@ fn execute_backtest(
     }
     let strategy_parameters =
         component_parameters(&strategy.manifest, Some(&request.strategy_parameters))?;
-    let frozen_strategy_parameters = strategy
-        .manifest
-        .parameters
-        .iter()
-        .zip(&strategy_parameters)
-        .map(|(definition, value)| {
-            (
-                definition.name.clone(),
-                match value {
-                    adaq_component_tooling::ComponentParameterValue::Decimal(value)
-                    | adaq_component_tooling::ComponentParameterValue::String(value) => {
-                        value.clone()
-                    }
-                    adaq_component_tooling::ComponentParameterValue::Integer(value) => {
-                        value.to_string()
-                    }
-                    adaq_component_tooling::ComponentParameterValue::Boolean(value) => {
-                        value.to_string()
-                    }
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let frozen_strategy_parameters =
+        normalized_parameters(&strategy.manifest, &strategy_parameters);
     let factor_packages = request
         .factor_instances
         .iter()
@@ -855,15 +900,70 @@ fn execute_backtest(
             parameters: parameters.clone(),
         })
         .collect::<Vec<_>>();
+    let engine_identity = native_engine_identity().map_err(|error| error.to_string())?;
     let plan = validate_and_freeze_with_factors_and_parameters(
         &strategy.manifest,
         &strategy.archive_sha256,
-        &native_engine_identity().map_err(|error| error.to_string())?,
+        &engine_identity,
         &factor_inputs,
         &frozen_strategy_parameters,
     )
     .map_err(|error| format!("Indicator Plan validation failed: {:?}", error.issues))?;
-    let run_id = fingerprint(&request, plan.plan_hash())?;
+    let mut factor_instances = factor_packages
+        .iter()
+        .zip(&factor_parameters)
+        .map(|((factor, package), parameters)| NormalizedFactorInstance {
+            alias: factor.alias.clone(),
+            archive_sha256: package.archive_sha256.clone(),
+            parameters: normalized_parameter_bindings(&package.manifest, parameters),
+        })
+        .collect::<Vec<_>>();
+    factor_instances.sort_by(|left, right| left.alias.cmp(&right.alias));
+    if factor_instances
+        .windows(2)
+        .any(|pair| pair[0].alias == pair[1].alias)
+    {
+        return Err("Factor Instance aliases must be unique".into());
+    }
+    let component_lock = std::iter::once(component_lock_entry(&strategy))
+        .chain(factor_instances.iter().map(|factor| {
+            component_lock_entry(
+                &factor_packages
+                    .iter()
+                    .find(|(request, _)| request.alias == factor.alias)
+                    .expect("unique Factor aliases were checked")
+                    .1,
+            )
+        }))
+        .collect::<Vec<_>>();
+    let provenance = BacktestRunProvenance {
+        normalized_request: NormalizedBacktestRunRequest {
+            snapshot_id: request.snapshot_id.clone(),
+            strategy_archive_sha256: strategy.archive_sha256.clone(),
+            strategy_parameters: frozen_strategy_parameters,
+            factor_instances,
+            initial_quote_allocation: request.initial_quote_allocation,
+            execution_profile: request.execution_profile.clone(),
+            seed: request.seed,
+        },
+        indicator_plan_json: String::from_utf8(plan.to_json()).map_err(string)?,
+        indicator_plan_hash: plan.plan_hash().into(),
+        component_lock: component_lock.clone(),
+        indicator_engine_build_identity: IndicatorEngineBuildIdentity {
+            engine_version: engine_identity.engine_version,
+            ta_lib_version: engine_identity.ta_lib_version,
+            ta_source_sha256: engine_identity.ta_source_sha256,
+            catalog_version: engine_identity.catalog_version,
+            wrapper_sha256: engine_identity.wrapper_sha256,
+            target_triple: engine_identity.target_triple,
+            compiler_and_flags_sha256: engine_identity.compiler_and_flags_sha256,
+            engine_build_id: engine_identity.engine_build_id,
+        },
+        backtest_engine_version: format!("adaq-backtest-engine@{}", env!("CARGO_PKG_VERSION")),
+        seed: request.seed,
+    };
+    validate_provenance(&provenance)?;
+    let run_id = fingerprint(&request.user_id, &provenance)?;
     if let Ok(existing) = state.load_run(&request.user_id, &run_id) {
         return Ok(run_view(&existing, i64::MIN, i64::MAX, 2_000));
     }
@@ -943,15 +1043,8 @@ fn execute_backtest(
             })
             .collect(),
         result,
-        component_lock: std::iter::once(&strategy)
-            .chain(factor_packages.iter().map(|(_, package)| package))
-            .map(|package| ComponentLockEntry {
-                component_id: package.manifest.component_id.to_string(),
-                version: package.manifest.version.to_string(),
-                archive_sha256: package.archive_sha256.clone(),
-                wasm_sha256: package.manifest.wasm_sha256.clone(),
-            })
-            .collect(),
+        component_lock,
+        provenance: Some(provenance),
     };
     state.save_run(&request.user_id, &run_id, &run)?;
     Ok(run_view(&run, i64::MIN, i64::MAX, 2_000))
@@ -1035,15 +1128,184 @@ pub fn backtest_delete(
     state.delete_run(&request.user_id, &request.run_id)
 }
 
-fn fingerprint(request: &BacktestRunRequest, plan_hash: &str) -> Result<String, String> {
-    let digest = Sha256::digest(
-        [
-            serde_json::to_vec(request).map_err(string)?,
-            plan_hash.as_bytes().to_vec(),
-        ]
-        .concat(),
-    );
+fn fingerprint(user_id: &str, provenance: &BacktestRunProvenance) -> Result<String, String> {
+    let digest = Sha256::digest(serde_json::to_vec(&(user_id, provenance)).map_err(string)?);
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn normalized_parameters(
+    manifest: &ComponentManifest,
+    values: &[adaq_component_tooling::ComponentParameterValue],
+) -> BTreeMap<String, String> {
+    manifest
+        .parameters
+        .iter()
+        .zip(values)
+        .map(|(definition, value)| (definition.name.clone(), parameter_value(value)))
+        .collect()
+}
+
+fn normalized_parameter_bindings(
+    manifest: &ComponentManifest,
+    values: &[adaq_component_tooling::ComponentParameterValue],
+) -> Vec<NormalizedParameter> {
+    manifest
+        .parameters
+        .iter()
+        .zip(values)
+        .map(|(definition, value)| NormalizedParameter {
+            name: definition.name.clone(),
+            value: parameter_value(value),
+        })
+        .collect()
+}
+
+fn parameter_value(value: &adaq_component_tooling::ComponentParameterValue) -> String {
+    match value {
+        adaq_component_tooling::ComponentParameterValue::Decimal(value)
+        | adaq_component_tooling::ComponentParameterValue::String(value) => value.clone(),
+        adaq_component_tooling::ComponentParameterValue::Integer(value) => value.to_string(),
+        adaq_component_tooling::ComponentParameterValue::Boolean(value) => value.to_string(),
+    }
+}
+
+fn component_lock_entry(package: &ComponentPackage) -> ComponentLockEntry {
+    ComponentLockEntry {
+        component_id: package.manifest.component_id.to_string(),
+        version: package.manifest.version.to_string(),
+        archive_sha256: package.archive_sha256.clone(),
+        wasm_sha256: package.manifest.wasm_sha256.clone(),
+    }
+}
+
+fn validate_provenance(provenance: &BacktestRunProvenance) -> Result<(), String> {
+    let identity = adaq_component_tooling::EngineIdentity {
+        engine_version: provenance
+            .indicator_engine_build_identity
+            .engine_version
+            .clone(),
+        ta_lib_version: provenance
+            .indicator_engine_build_identity
+            .ta_lib_version
+            .clone(),
+        ta_source_sha256: provenance
+            .indicator_engine_build_identity
+            .ta_source_sha256
+            .clone(),
+        catalog_version: provenance
+            .indicator_engine_build_identity
+            .catalog_version
+            .clone(),
+        wrapper_sha256: provenance
+            .indicator_engine_build_identity
+            .wrapper_sha256
+            .clone(),
+        target_triple: provenance
+            .indicator_engine_build_identity
+            .target_triple
+            .clone(),
+        compiler_and_flags_sha256: provenance
+            .indicator_engine_build_identity
+            .compiler_and_flags_sha256
+            .clone(),
+        engine_build_id: provenance
+            .indicator_engine_build_identity
+            .engine_build_id
+            .clone(),
+    };
+    let frozen_plan =
+        FrozenIndicatorPlan::load_for_engine(provenance.indicator_plan_json.as_bytes(), &identity)
+            .map_err(|_| "Backtest Run provenance has an invalid frozen Indicator Plan")?;
+    let plan: serde_json::Value =
+        serde_json::from_str(&provenance.indicator_plan_json).map_err(string)?;
+    let content = plan.as_object().ok_or("Indicator Plan is invalid")?;
+    if content.get("planHash").and_then(serde_json::Value::as_str)
+        != Some(&provenance.indicator_plan_hash)
+        || frozen_plan.plan_hash() != provenance.indicator_plan_hash
+        || content
+            .get("strategyPackageSha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(&provenance.normalized_request.strategy_archive_sha256)
+        || content
+            .get("engineBuildId")
+            .and_then(serde_json::Value::as_str)
+            != Some(&provenance.indicator_engine_build_identity.engine_build_id)
+    {
+        return Err("Backtest Run provenance has inconsistent hashes or engine identity".into());
+    }
+    let requested_hashes = std::iter::once(&provenance.normalized_request.strategy_archive_sha256)
+        .chain(
+            provenance
+                .normalized_request
+                .factor_instances
+                .iter()
+                .map(|factor| &factor.archive_sha256),
+        )
+        .collect::<Vec<_>>();
+    let locked_hashes = provenance
+        .component_lock
+        .iter()
+        .map(|component| &component.archive_sha256)
+        .collect::<Vec<_>>();
+    let mut plan_aliases = content
+        .get("factors")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("Indicator Plan is missing Factor bindings")?
+        .iter()
+        .map(|factor| {
+            factor
+                .get("alias")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("Indicator Plan has an invalid Factor binding")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut request_aliases = provenance
+        .normalized_request
+        .factor_instances
+        .iter()
+        .map(|factor| factor.alias.as_str())
+        .collect::<Vec<_>>();
+    plan_aliases.sort_unstable();
+    request_aliases.sort_unstable();
+    let plan_factor_parameters = frozen_plan
+        .factors()
+        .map(|factor| {
+            (
+                factor.alias,
+                factor
+                    .parameters
+                    .iter()
+                    .map(parameter_value)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    if requested_hashes != locked_hashes
+        || plan_aliases != request_aliases
+        || provenance
+            .normalized_request
+            .factor_instances
+            .iter()
+            .any(|factor| {
+                plan_factor_parameters.get(factor.alias.as_str())
+                    != Some(
+                        &factor
+                            .parameters
+                            .iter()
+                            .map(|parameter| parameter.value.clone())
+                            .collect(),
+                    )
+            })
+        || locked_hashes.iter().any(|hash| !is_sha256(hash))
+        || provenance.seed != provenance.normalized_request.seed
+    {
+        return Err("Backtest Run provenance has inconsistent Component Locks or bindings".into());
+    }
+    Ok(())
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn resolve_factor_parameters(
@@ -1119,6 +1381,7 @@ fn run_view(run: &BacktestRun, start: i64, end: i64, max_points: usize) -> Backt
             .collect(),
         result,
         component_lock: run.component_lock.clone(),
+        provenance: run.provenance.clone(),
     }
 }
 
@@ -1345,13 +1608,17 @@ mod tests {
                 risk_free_rate: rust_decimal::Decimal::ZERO,
                 fill_policy: ada_backtest_core::FillPolicy::Taker,
             },
+            seed: 0,
         };
         let first = execute_backtest(request(), &state).unwrap();
         let second = execute_backtest(request(), &state).unwrap();
         assert!(!first.plan_hash.is_empty());
+        let mut changed_seed = first.provenance.clone().unwrap();
+        changed_seed.seed = 1;
+        changed_seed.normalized_request.seed = 1;
         assert_ne!(
-            fingerprint(&request(), &"a".repeat(64)).unwrap(),
-            fingerprint(&request(), &"b".repeat(64)).unwrap()
+            fingerprint("alice", first.provenance.as_ref().unwrap()).unwrap(),
+            fingerprint("alice", &changed_seed).unwrap()
         );
         assert_eq!(
             serde_json::to_value(&first).unwrap(),
@@ -1437,17 +1704,81 @@ mod tests {
                 risk_free_rate: rust_decimal::Decimal::ZERO,
                 fill_policy: ada_backtest_core::FillPolicy::Taker,
             },
+            seed: 0,
         };
 
         let first = execute_backtest(request(), &state).unwrap();
         let replay = execute_backtest(request(), &state).unwrap();
 
         assert_eq!(first.run_id, replay.run_id);
+        let provenance = first.provenance.as_ref().unwrap();
+        assert_eq!(
+            provenance.normalized_request.snapshot_id,
+            snapshot.snapshot_id
+        );
+        assert_eq!(provenance.indicator_plan_hash, first.plan_hash);
+        assert_eq!(provenance.component_lock, first.component_lock);
+        assert_eq!(
+            state.load_run("alice", &first.run_id).unwrap().provenance,
+            first.provenance
+        );
+        assert!(provenance.indicator_plan_json.contains("\"slots\""));
+        assert_eq!(
+            provenance.normalized_request.initial_quote_allocation,
+            rust_decimal::Decimal::from(10_000),
+        );
+        let mut inconsistent = provenance.clone();
+        inconsistent.component_lock[0].archive_sha256 = "f".repeat(64);
+        assert!(validate_provenance(&inconsistent).is_err());
+        let mut inconsistent = provenance.clone();
+        inconsistent.normalized_request.factor_instances[0].archive_sha256 = "f".repeat(64);
+        assert!(validate_provenance(&inconsistent).is_err());
+        let mut inconsistent = provenance.clone();
+        inconsistent.normalized_request.factor_instances[0]
+            .parameters
+            .push(NormalizedParameter {
+                name: "unexpected".into(),
+                value: "1".into(),
+            });
+        assert!(validate_provenance(&inconsistent).is_err());
+        let mut inconsistent = provenance.clone();
+        inconsistent.normalized_request.factor_instances[0].alias = "other".into();
+        assert!(validate_provenance(&inconsistent).is_err());
+        let mut inconsistent = provenance.clone();
+        inconsistent.indicator_plan_json = inconsistent
+            .indicator_plan_json
+            .replacen("momentum", "tampered", 1);
+        assert!(validate_provenance(&inconsistent).is_err());
         assert_eq!(first.component_lock.len(), 2);
         assert_eq!(first.pauses.len(), 38);
         assert!(!first.result.orders.is_empty());
         assert!(!first.result.fills.is_empty());
         assert_eq!(state.list_runs("alice").unwrap().len(), 1);
+        let mut changed_request = request();
+        changed_request.seed = 1;
+        let changed = execute_backtest(changed_request, &state).unwrap();
+        assert_ne!(first.run_id, changed.run_id);
+        assert_eq!(state.list_runs("alice").unwrap().len(), 2);
+
+        let mut legacy_json =
+            serde_json::to_value(state.load_run("alice", &first.run_id).unwrap()).unwrap();
+        legacy_json.as_object_mut().unwrap().remove("provenance");
+        state
+            .database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE backtest_runs SET result_json = ?1 WHERE run_id = ?2",
+                params![legacy_json.to_string(), first.run_id],
+            )
+            .unwrap();
+        assert!(
+            state
+                .load_run("alice", &first.run_id)
+                .unwrap()
+                .provenance
+                .is_none()
+        );
 
         drop(state);
         fs::remove_dir_all(root).unwrap();

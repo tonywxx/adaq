@@ -63,8 +63,12 @@ type Metrics = Record<
 	| "excessReturn",
 	string
 > & { fillCount: number; realizedTradeCount: number };
+type Provenance = {
+	[key: string]: unknown;
+};
 export type BacktestRun = {
 	runId: string;
+	provenance?: Provenance;
 	bars: OhlcvBar[];
 	result: {
 		orders: Order[];
@@ -444,6 +448,20 @@ export function BacktestPage() {
 							<Metric label="Fees" value={formatDecimal(run.result.totalFees)} />
 							<Metric label="Win rate" value={percent(run.result.metrics.winRate)} />
 							<Metric label="Fills" value={String(run.result.metrics.fillCount)} />
+						</CardContent>
+					</Card>
+					<Card>
+						<CardHeader>
+							<CardTitle>Replay provenance</CardTitle>
+						</CardHeader>
+						<CardContent className="space-y-1 break-all text-sm text-muted-foreground">
+							{run.provenance ? (
+								<pre className="overflow-x-auto whitespace-pre-wrap">
+									{JSON.stringify(run.provenance, null, 2)}
+								</pre>
+							) : (
+								<p>Legacy Run: complete replay provenance was not recorded.</p>
+							)}
 						</CardContent>
 					</Card>
 					<Card>
