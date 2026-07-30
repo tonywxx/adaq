@@ -8,6 +8,7 @@ import { AuthGate } from "@/components/auth-gate";
 import Home from "@/layout/home";
 import { BacktestPage } from "@/features/backtest/backtest-page";
 import { ComponentsPage } from "@/features/components/components-page";
+import { ValidationPage } from "@/features/validation/validation-page";
 
 const rootRoute = createRootRoute({
 	component: Outlet,
@@ -37,6 +38,15 @@ const componentsRoute = createRoute({
 		</AuthenticatedPage>
 	),
 });
+const validationRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/validation",
+	component: () => (
+		<AuthenticatedPage>
+			<ValidationPage />
+		</AuthenticatedPage>
+	),
+});
 
 function AppRoute() {
 	return (
@@ -58,6 +68,7 @@ const routeTree = rootRoute.addChildren([
 	appRoute,
 	backtestRoute,
 	componentsRoute,
+	validationRoute,
 ]);
 
 export const router = createRouter({ routeTree });

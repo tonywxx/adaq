@@ -41,6 +41,11 @@ const data = {
 			url: "/components",
 			icon: <ListIcon />,
 		},
+		{
+			title: "Validation",
+			url: "/validation",
+			icon: <FileTextIcon />,
+		},
 	],
 	navClouds: [
 		{

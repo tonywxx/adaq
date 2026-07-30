@@ -2,12 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-	Tabs,
-	TabsContent,
-	TabsList,
-	TabsTrigger,
-} from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
 	Workspace,
 	type LibraryComponent,
@@ -131,59 +126,6 @@ type RunSummary = {
 	barCount: number;
 	totalReturn: string;
 };
-type WalkForward = {
-	snapshotId: string;
-	windowSizeBars: number;
-	stepSizeBars: number;
-	minimumHistoryBars: number;
-};
-type ValidationProtocol = {
-	protocolId: string;
-	methodVersion: string;
-	windows: {
-		snapshotId: string;
-		sampleOutStartTimeMs: number;
-		sampleOutEndTimeMs?: number;
-	}[];
-	walkForward?: WalkForward;
-	crossMarket?: { contexts: { snapshotId: string; runOverride?: unknown }[] };
-};
-type ValidationWindow = {
-	sampleOutStartTimeMs: number;
-	sampleOutEndTimeMs?: number;
-	sampleOutMetrics?: {
-		totalReturn: string;
-		maxDrawdown: string;
-		sharpe: string;
-	};
-	sampleOutPauses: unknown[];
-	failure?: string;
-};
-type ValidationReport = {
-	reportId: string;
-	protocolId: string;
-	methodVersion: string;
-	walkForward?: WalkForward;
-	crossMarket: {
-		snapshot: Snapshot;
-		runId?: string;
-		metrics?: { totalReturn: string; maxDrawdown: string; sharpe: string };
-		pauses: unknown[];
-		failure?: string;
-	}[];
-	crossMarketEvidence?: { completedMarkets: number; totalReturnSpread: string };
-	recommendedContexts: unknown[];
-	windows: ValidationWindow[];
-	aggregate: {
-		completedWindows: number;
-		failedWindows: number;
-		averageSampleOutReturn: string;
-		worstSampleOutDrawdown: string;
-		averageSampleOutSharpe: string;
-		totalFees: string;
-		totalTrades: number;
-	};
-};
 type ExecutionPage = {
 	orders: Order[];
 	fills: Fill[];
@@ -215,14 +157,18 @@ export function BacktestPage() {
 	const [strategyParameters, setStrategyParameters] = useState<
 		Record<string, string>
 	>({});
-	const [stage, setStage] = useState<"data" | "strategy" | "execution" | "results">(
-		"data",
-	);
+	const [stage, setStage] = useState<
+		"data" | "strategy" | "execution" | "results"
+	>("data");
 	const [initialQuoteAllocation, setInitialQuoteAllocation] = useState("10000");
-	const [executionProfile, setExecutionProfile] = useState(defaultExecutionProfile);
+	const [executionProfile, setExecutionProfile] = useState(
+		defaultExecutionProfile,
+	);
 	const [seed, setSeed] = useState("0");
 	const [running, setRunning] = useState(false);
-	const [compatibleFactors, setCompatibleFactors] = useState<Record<string, string[]>>({});
+	const [compatibleFactors, setCompatibleFactors] = useState<
+		Record<string, string[]>
+	>({});
 	const [preflight, setPreflight] = useState<BacktestPreflight>();
 	const [start, setStart] = useState(() =>
 		new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10),
@@ -242,15 +188,6 @@ export function BacktestPage() {
 	const [runTechnicalError, setRunTechnicalError] = useState("");
 	const [snapshotTechnicalError, setSnapshotTechnicalError] = useState("");
 	const [downloadTaskId, setDownloadTaskId] = useState<string>();
-	const [sampleOutStart, setSampleOutStart] = useState("");
-	const [walkForwardWindowSize, setWalkForwardWindowSize] = useState("30");
-	const [walkForwardStepSize, setWalkForwardStepSize] = useState("30");
-	const [walkForwardMinimumHistory, setWalkForwardMinimumHistory] =
-		useState("90");
-	const [crossMarketSnapshotIds, setCrossMarketSnapshotIds] = useState("");
-	const [protocols, setProtocols] = useState<ValidationProtocol[]>([]);
-	const [reports, setReports] = useState<ValidationReport[]>([]);
-	const [runningProtocolId, setRunningProtocolId] = useState<string>();
 	const chartRequest = useRef(0);
 	const chartRange = useRef("");
 	const instruments = useMemo(
@@ -272,13 +209,6 @@ export function BacktestPage() {
 				setMessage(String(error));
 			}
 	};
-	const refreshValidation = async () => {
-		if (!userId) return;
-		setProtocols(
-			await invoke("validation_protocol_list", { request: { userId } }),
-		);
-		setReports(await invoke("validation_report_list", { request: { userId } }));
-	};
 	useEffect(() => {
 		if (userId) {
 			void invoke<LibraryComponent[]>("component_list", { request: { userId } })
@@ -293,7 +223,6 @@ export function BacktestPage() {
 			void invoke<RunSummary[]>("backtest_list", { request: { userId } })
 				.then(setHistory)
 				.catch((error) => setMessage(String(error)));
-			void refreshValidation().catch((error) => setMessage(String(error)));
 		}
 	}, [userId]);
 	useEffect(() => {
@@ -331,7 +260,9 @@ export function BacktestPage() {
 			.then(setCompatibleFactors)
 			.catch((error) => setMessage(String(error)));
 	}, [strategy, userId]);
-	const selectStage = async (next: "data" | "strategy" | "execution" | "results") => {
+	const selectStage = async (
+		next: "data" | "strategy" | "execution" | "results",
+	) => {
 		if (next === "strategy" && !snapshot) {
 			setMessage("Select a Market Data Snapshot before continuing.");
 			return;
@@ -441,127 +372,6 @@ export function BacktestPage() {
 		executionProfile,
 		seed: Number(seed),
 	});
-	const createValidation = async () => {
-		if (!userId || !snapshot) return;
-		try {
-			const protocol = await invoke<ValidationProtocol>(
-				"validation_protocol_create",
-				{
-					request: {
-						userId,
-						run: buildRunRequest(snapshot.snapshotId),
-						windows: [
-							{
-								snapshotId: snapshot.snapshotId,
-								sampleOutStartTimeMs: Date.parse(sampleOutStart),
-							},
-						],
-						methodVersion: "chronological-holdout@1",
-						aggregationRuleVersion: "equal-window@1",
-					},
-				},
-			);
-			setMessage(`Protocol ${protocol.protocolId.slice(0, 12)} frozen.`);
-			await refreshValidation();
-		} catch (error) {
-			setMessage(String(error));
-		}
-	};
-	const createWalkForwardValidation = async () => {
-		if (!userId || !snapshot) return;
-		try {
-			const protocol = await invoke<ValidationProtocol>(
-				"validation_protocol_create",
-				{
-					request: {
-						userId,
-						run: buildRunRequest(snapshot.snapshotId),
-						windows: [],
-						methodVersion: "walk-forward@1",
-						aggregationRuleVersion: "equal-window@1",
-						walkForward: {
-							snapshotId: snapshot.snapshotId,
-							windowSizeBars: Number(walkForwardWindowSize),
-							stepSizeBars: Number(walkForwardStepSize),
-							minimumHistoryBars: Number(walkForwardMinimumHistory),
-						},
-					},
-				},
-			);
-			setMessage(
-				`Walk-forward Protocol ${protocol.protocolId.slice(0, 12)} frozen.`,
-			);
-			await refreshValidation();
-		} catch (error) {
-			setMessage(String(error));
-		}
-	};
-	const createCrossMarketValidation = async () => {
-		if (!userId || !snapshot) return;
-		const snapshotIds = [
-			snapshot.snapshotId,
-			...crossMarketSnapshotIds.split(/\s+/),
-		].filter(Boolean);
-		try {
-			const protocol = await invoke<ValidationProtocol>(
-				"validation_protocol_create",
-				{
-					request: {
-						userId,
-						run: buildRunRequest(snapshot.snapshotId),
-						windows: [],
-						methodVersion: "cross-market@1",
-						aggregationRuleVersion: "equal-window@1",
-						crossMarket: {
-							contexts: snapshotIds.map((snapshotId) => ({ snapshotId })),
-						},
-					},
-				},
-			);
-			setMessage(
-				`Cross-market Protocol ${protocol.protocolId.slice(0, 12)} frozen.`,
-			);
-			await refreshValidation();
-		} catch (error) {
-			setMessage(String(error));
-		}
-	};
-	const runValidation = async (protocolId: string) => {
-		if (!userId) return;
-		setRunningProtocolId(protocolId);
-		setMessage("Running validation…");
-		try {
-			const report = await invoke<ValidationReport>("validation_report_run", {
-				request: { userId, protocolId },
-			});
-			setMessage(`Validation Report ${report.reportId.slice(0, 12)} completed.`);
-			await refreshValidation();
-		} catch (error) {
-			setMessage(String(error));
-		} finally {
-			setRunningProtocolId(undefined);
-		}
-	};
-	const exportReport = async (reportId: string, format: "json" | "markdown") => {
-		if (!userId) return;
-		try {
-			const content = await invoke<string>("validation_report_export", {
-				request: { userId, protocolId: reportId },
-				format,
-			});
-			const anchor = document.createElement("a");
-			anchor.href = URL.createObjectURL(
-				new Blob([content], {
-					type: format === "json" ? "application/json" : "text/markdown",
-				}),
-			);
-			anchor.download = `validation-report-${reportId}.${format === "json" ? "json" : "md"}`;
-			anchor.click();
-			URL.revokeObjectURL(anchor.href);
-		} catch (error) {
-			setMessage(String(error));
-		}
-	};
 	const execute = async () => {
 		if (!preflight) {
 			await selectStage("execution");
@@ -683,17 +493,19 @@ export function BacktestPage() {
 			description={`${selectedInstrument.code} · OKX Spot · Long Only`}
 		>
 			<nav aria-label="Backtest stages" className="mb-4 grid gap-2 sm:grid-cols-4">
-				{(["data", "strategy", "execution", "results"] as const).map((item, index) => (
-					<Button
-						key={item}
-						type="button"
-						variant={stage === item ? "default" : "outline"}
-						aria-current={stage === item ? "step" : undefined}
-						onClick={() => void selectStage(item)}
-					>
-						{index + 1}. {item[0].toUpperCase() + item.slice(1)}
-					</Button>
-				))}
+				{(["data", "strategy", "execution", "results"] as const).map(
+					(item, index) => (
+						<Button
+							key={item}
+							type="button"
+							variant={stage === item ? "default" : "outline"}
+							aria-current={stage === item ? "step" : undefined}
+							onClick={() => void selectStage(item)}
+						>
+							{index + 1}. {item[0].toUpperCase() + item.slice(1)}
+						</Button>
+					),
+				)}
 			</nav>
 			<Card>
 				<CardHeader>
@@ -702,282 +514,223 @@ export function BacktestPage() {
 				<CardContent className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
 					{stage === "data" && (
 						<>
-					<Field label="Instrument" id="backtest-instrument">
-						<select
-							id="backtest-instrument"
-							className="h-9 rounded-md border bg-background px-3"
-							value={selectedInstrumentKey}
-							onChange={(event) => {
-								setSelectedInstrumentKey(event.target.value);
-								setSnapshot(undefined);
-							}}
-						>
-							{instruments.map((item) => (
-								<option key={instrumentKey(item)} value={instrumentKey(item)}>
-									{item.code} · {item.src.toUpperCase()}
-								</option>
-							))}
-						</select>
-					</Field>
-					<Field label="Bar Interval" id="backtest-interval">
-						<select
-							id="backtest-interval"
-							className="h-9 rounded-md border bg-background px-3"
-							value={interval}
-							onChange={(event) => {
-								setInterval(event.target.value as BarInterval);
-								setSnapshot(undefined);
-							}}
-						>
-							{BAR_INTERVALS.map((value) => (
-								<option key={value} value={value}>
-									{value}
-								</option>
-							))}
-						</select>
-					</Field>
-					<Field label="Start" id="backtest-start">
-						<Input
-							id="backtest-start"
-							type="date"
-							value={start}
-							onChange={(e) => setStart(e.target.value)}
-						/>
-					</Field>
-					<Field label="End" id="backtest-end">
-						<Input
-							id="backtest-end"
-							type="date"
-							value={end}
-							onChange={(e) => setEnd(e.target.value)}
-						/>
-					</Field>
-					<Field label="Sample-out starts">
-						<Input
-							type="date"
-							value={sampleOutStart}
-							onChange={(e) => setSampleOutStart(e.target.value)}
-						/>
-					</Field>
-					<Field label="Walk-forward window (Bars)">
-						<Input
-							type="number"
-							min="1"
-							value={walkForwardWindowSize}
-							onChange={(e) => setWalkForwardWindowSize(e.target.value)}
-						/>
-					</Field>
-					<Field label="Walk-forward step (Bars)">
-						<Input
-							type="number"
-							min="1"
-							value={walkForwardStepSize}
-							onChange={(e) => setWalkForwardStepSize(e.target.value)}
-						/>
-					</Field>
-					<Field label="Walk-forward minimum history (Bars)">
-						<Input
-							type="number"
-							min="1"
-							value={walkForwardMinimumHistory}
-							onChange={(e) => setWalkForwardMinimumHistory(e.target.value)}
-						/>
-					</Field>
-					<Field label="Cross-market Snapshot IDs (one per line)">
-						<textarea
-							className="min-h-9 rounded-md border bg-background px-3 py-2"
-							value={crossMarketSnapshotIds}
-							onChange={(e) => setCrossMarketSnapshotIds(e.target.value)}
-							placeholder="Freeze other market Snapshots first"
-						/>
-					</Field>
+							<Field label="Instrument" id="backtest-instrument">
+								<select
+									id="backtest-instrument"
+									className="h-9 rounded-md border bg-background px-3"
+									value={selectedInstrumentKey}
+									onChange={(event) => {
+										setSelectedInstrumentKey(event.target.value);
+										setSnapshot(undefined);
+									}}
+								>
+									{instruments.map((item) => (
+										<option key={instrumentKey(item)} value={instrumentKey(item)}>
+											{item.code} · {item.src.toUpperCase()}
+										</option>
+									))}
+								</select>
+							</Field>
+							<Field label="Bar Interval" id="backtest-interval">
+								<select
+									id="backtest-interval"
+									className="h-9 rounded-md border bg-background px-3"
+									value={interval}
+									onChange={(event) => {
+										setInterval(event.target.value as BarInterval);
+										setSnapshot(undefined);
+									}}
+								>
+									{BAR_INTERVALS.map((value) => (
+										<option key={value} value={value}>
+											{value}
+										</option>
+									))}
+								</select>
+							</Field>
+							<Field label="Start" id="backtest-start">
+								<Input
+									id="backtest-start"
+									type="date"
+									value={start}
+									onChange={(e) => setStart(e.target.value)}
+								/>
+							</Field>
+							<Field label="End" id="backtest-end">
+								<Input
+									id="backtest-end"
+									type="date"
+									value={end}
+									onChange={(e) => setEnd(e.target.value)}
+								/>
+							</Field>
 						</>
 					)}
 					{stage === "strategy" && (
 						<>
-					<Field label="Strategy">
-						<select
-							className="h-9 rounded-md border bg-background px-3"
-							value={strategy}
-							onChange={(e) => {
-								setStrategy(e.target.value);
-								setFactorSelections({});
-								setFactorParameters({});
-								setStrategyParameters({});
-							}}
-						>
-							<option value="">Select</option>
-							{strategies.map((item) => (
-								<option key={item.archiveSha256} value={item.archiveSha256}>
-									{item.name} v{item.version}
-								</option>
-							))}
-						</select>
-					</Field>
-					{selectedStrategy?.dependencies.map((dependency) => (
-						<Field key={dependency.alias} label={`Factor · ${dependency.alias}`}>
-							<select
-								className="h-9 rounded-md border bg-background px-3"
-								value={factorSelections[dependency.alias] ?? ""}
-								onChange={(event) =>
-									setFactorSelections((current) => ({
-										...current,
-										[dependency.alias]: event.target.value,
-									}))
-								}
-							>
-								<option value="">Select {dependency.version}</option>
-								{matchingFactors(
-									dependency,
-									factors,
-									compatibleFactors[dependency.alias] ?? [],
-								)
-									.map((item) => (
+							<Field label="Strategy">
+								<select
+									className="h-9 rounded-md border bg-background px-3"
+									value={strategy}
+									onChange={(e) => {
+										setStrategy(e.target.value);
+										setFactorSelections({});
+										setFactorParameters({});
+										setStrategyParameters({});
+									}}
+								>
+									<option value="">Select</option>
+									{strategies.map((item) => (
 										<option key={item.archiveSha256} value={item.archiveSha256}>
 											{item.name} v{item.version}
 										</option>
 									))}
-							</select>
-						</Field>
-					))}
-					{selectedStrategy?.dependencies.flatMap((dependency) => {
-						const component = factors.find(
-							(item) => item.archiveSha256 === factorSelections[dependency.alias],
-						);
-						return (
-							component?.parameters.map((parameter) => (
+								</select>
+							</Field>
+							{selectedStrategy?.dependencies.map((dependency) => (
+								<Field key={dependency.alias} label={`Factor · ${dependency.alias}`}>
+									<select
+										className="h-9 rounded-md border bg-background px-3"
+										value={factorSelections[dependency.alias] ?? ""}
+										onChange={(event) =>
+											setFactorSelections((current) => ({
+												...current,
+												[dependency.alias]: event.target.value,
+											}))
+										}
+									>
+										<option value="">Select {dependency.version}</option>
+										{matchingFactors(
+											dependency,
+											factors,
+											compatibleFactors[dependency.alias] ?? [],
+										).map((item) => (
+											<option key={item.archiveSha256} value={item.archiveSha256}>
+												{item.name} v{item.version}
+											</option>
+										))}
+									</select>
+								</Field>
+							))}
+							{selectedStrategy?.dependencies.flatMap((dependency) => {
+								const component = factors.find(
+									(item) => item.archiveSha256 === factorSelections[dependency.alias],
+								);
+								return (
+									component?.parameters.map((parameter) => (
+										<ParameterField
+											key={`${dependency.alias}:${parameter.name}`}
+											label={`${dependency.alias} · ${parameter.name}`}
+											parameter={parameter}
+											value={
+												factorParameters[dependency.alias]?.[parameter.name] ??
+												parameter.defaultValue
+											}
+											onChange={(value) =>
+												setParameter(dependency.alias, parameter.name, value)
+											}
+										/>
+									)) ?? []
+								);
+							})}
+							{selectedStrategy?.parameters.map((parameter) => (
 								<ParameterField
-									key={`${dependency.alias}:${parameter.name}`}
-									label={`${dependency.alias} · ${parameter.name}`}
+									key={parameter.name}
+									label={`${selectedStrategy.name} · ${parameter.name}`}
 									parameter={parameter}
-									value={
-										factorParameters[dependency.alias]?.[parameter.name] ??
-										parameter.defaultValue
-									}
+									value={strategyParameters[parameter.name] ?? parameter.defaultValue}
 									onChange={(value) =>
-										setParameter(dependency.alias, parameter.name, value)
+										setStrategyParameters((current) => ({
+											...current,
+											[parameter.name]: value,
+										}))
 									}
 								/>
-							)) ?? []
-						);
-					})}
-					{selectedStrategy?.parameters.map((parameter) => (
-						<ParameterField
-							key={parameter.name}
-							label={`${selectedStrategy.name} · ${parameter.name}`}
-							parameter={parameter}
-							value={strategyParameters[parameter.name] ?? parameter.defaultValue}
-							onChange={(value) =>
-								setStrategyParameters((current) => ({
-									...current,
-									[parameter.name]: value,
-								}))
-							}
-						/>
-					))}
+							))}
 						</>
 					)}
 					{stage === "data" && (
 						<>
-					<div className="flex flex-wrap items-end gap-2">
-						<Button disabled={Boolean(downloadTaskId)} onClick={() => void prepare()}>
-							Prepare Snapshot
-						</Button>
-						{downloadTaskId && (
-							<Button
-								variant="outline"
-								onClick={() =>
-									void invoke("snapshot_cancel", { request: { taskId: downloadTaskId } })
-								}
-							>
-								Cancel
-							</Button>
-						)}
-						<Button disabled={!snapshot || !strategy} onClick={() => void selectStage("execution")}>
-							Review execution
-						</Button>
-						<Button
-							variant="outline"
-							disabled={!snapshot || !strategy || !sampleOutStart}
-							onClick={() => void createValidation()}
-						>
-							Freeze holdout
-						</Button>
-						<Button
-							variant="outline"
-							disabled={
-								!snapshot ||
-								!strategy ||
-								!walkForwardWindowSize ||
-								!walkForwardStepSize ||
-								!walkForwardMinimumHistory
-							}
-							onClick={() => void createWalkForwardValidation()}
-						>
-							Freeze walk-forward
-						</Button>
-						<Button
-							variant="outline"
-							disabled={!snapshot || !strategy || !crossMarketSnapshotIds.trim()}
-							onClick={() => void createCrossMarketValidation()}
-						>
-							Freeze cross-market
-						</Button>
-					</div>
-					<p
-						className="self-end text-sm text-muted-foreground"
-						role="status"
-						aria-live="polite"
-					>
-						{message}
-					</p>
-					<div className="md:col-span-2 lg:col-span-4">
-						<p className="mb-2 text-sm font-medium">Reuse immutable evidence</p>
-						{snapshots.length === 0 ? (
-							<p className="text-sm text-muted-foreground">
-								No matching Snapshots. Download and freeze new evidence.
-							</p>
-						) : (
-							<div className="grid gap-2">
-								{snapshots.map((item) => (
+							<div className="flex flex-wrap items-end gap-2">
+								<Button
+									disabled={Boolean(downloadTaskId)}
+									onClick={() => void prepare()}
+								>
+									Prepare Snapshot
+								</Button>
+								{downloadTaskId && (
 									<Button
-										key={item.snapshotId}
-										type="button"
-										aria-pressed={snapshot?.snapshotId === item.snapshotId}
-										variant={
-											snapshot?.snapshotId === item.snapshotId ? "default" : "outline"
+										variant="outline"
+										onClick={() =>
+											void invoke("snapshot_cancel", {
+												request: { taskId: downloadTaskId },
+											})
 										}
-										className="h-auto justify-start whitespace-normal p-3 text-left"
-										onClick={() => {
-											setSnapshot(reuseSnapshot(snapshots, item.snapshotId));
-											setSnapshotTechnicalError("");
-										}}
 									>
-										<span>
-											{item.src.toUpperCase()} · {item.code} · {item.interval} ·{" "}
-											{new Date(item.startTimeMs).toISOString().slice(0, 10)}–
-											{new Date(item.endTimeMs).toISOString().slice(0, 10)} ·{" "}
-											{item.barCount} Bars · {item.gaps.length} gaps
-										</span>
-										<span className="block break-all text-xs opacity-75">
-											Snapshot {item.snapshotId}
-										</span>
+										Cancel
 									</Button>
-								))}
+								)}
+								<Button
+									disabled={!snapshot || !strategy}
+									onClick={() => void selectStage("execution")}
+								>
+									Review execution
+								</Button>
 							</div>
-						)}
-						{snapshotTechnicalError && (
-							<div
-								className="mt-3 rounded-md border border-destructive p-3 text-sm"
-								role="alert"
+							<p
+								className="self-end text-sm text-muted-foreground"
+								role="status"
+								aria-live="polite"
 							>
-								<p>Snapshot error</p>
-								<pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-xs">
-									{snapshotTechnicalError}
-								</pre>
-							</div>
-										)}
+								{message}
+							</p>
+							<div className="md:col-span-2 lg:col-span-4">
+								<p className="mb-2 text-sm font-medium">Reuse immutable evidence</p>
+								{snapshots.length === 0 ? (
+									<p className="text-sm text-muted-foreground">
+										No matching Snapshots. Download and freeze new evidence.
+									</p>
+								) : (
+									<div className="grid gap-2">
+										{snapshots.map((item) => (
+											<Button
+												key={item.snapshotId}
+												type="button"
+												aria-pressed={snapshot?.snapshotId === item.snapshotId}
+												variant={
+													snapshot?.snapshotId === item.snapshotId ? "default" : "outline"
+												}
+												className="h-auto justify-start whitespace-normal p-3 text-left"
+												onClick={() => {
+													setSnapshot(reuseSnapshot(snapshots, item.snapshotId));
+													setSnapshotTechnicalError("");
+												}}
+											>
+												<span>
+													{item.src.toUpperCase()} · {item.code} · {item.interval} ·{" "}
+													{new Date(item.startTimeMs).toISOString().slice(0, 10)}–
+													{new Date(item.endTimeMs).toISOString().slice(0, 10)} ·{" "}
+													{item.barCount} Bars · {item.gaps.length} gaps
+												</span>
+												<span className="block break-all text-xs opacity-75">
+													Snapshot {item.snapshotId}
+												</span>
+											</Button>
+										))}
 									</div>
+								)}
+								{snapshotTechnicalError && (
+									<div
+										className="mt-3 rounded-md border border-destructive p-3 text-sm"
+										role="alert"
+									>
+										<p>Snapshot error</p>
+										<pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-xs">
+											{snapshotTechnicalError}
+										</pre>
+									</div>
+								)}
+							</div>
 						</>
 					)}
 				</CardContent>
@@ -1016,13 +769,19 @@ export function BacktestPage() {
 						{Object.entries(executionProfile)
 							.filter(([name]) => name !== "fillPolicy")
 							.map(([name, value]) => (
-								<Field key={name} label={name.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}>
+								<Field
+									key={name}
+									label={name.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}
+								>
 									<Input
 										type="text"
 										inputMode="decimal"
 										value={value}
 										onChange={(event) => {
-											setExecutionProfile((current) => ({ ...current, [name]: event.target.value }));
+											setExecutionProfile((current) => ({
+												...current,
+												[name]: event.target.value,
+											}));
 											setPreflight(undefined);
 										}}
 									/>
@@ -1051,18 +810,31 @@ export function BacktestPage() {
 							</pre>
 						</div>
 						{runTechnicalError && (
-							<div className="md:col-span-2 lg:col-span-3 rounded-md border border-destructive p-3 text-sm" role="alert">
+							<div
+								className="md:col-span-2 lg:col-span-3 rounded-md border border-destructive p-3 text-sm"
+								role="alert"
+							>
 								<p>Backtest error</p>
-								<pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-xs">{runTechnicalError}</pre>
+								<pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-xs">
+									{runTechnicalError}
+								</pre>
 							</div>
 						)}
 						<Button
 							disabled={running}
 							onClick={() => void (preflight ? execute() : selectStage("execution"))}
 						>
-							{running ? "Validating…" : preflight ? "Run Backtest" : "Validate inputs"}
+							{running
+								? "Validating…"
+								: preflight
+									? "Run Backtest"
+									: "Validate inputs"}
 						</Button>
-						<p className="self-center text-sm text-muted-foreground" role="status" aria-live="polite">
+						<p
+							className="self-center text-sm text-muted-foreground"
+							role="status"
+							aria-live="polite"
+						>
 							{message}
 						</p>
 					</CardContent>
@@ -1070,63 +842,69 @@ export function BacktestPage() {
 			)}
 			{stage === "results" && run && (
 				<Tabs key={run.runId} defaultValue="overview">
-					<TabsList aria-label="Backtest Run results" className="w-full justify-start overflow-x-auto">
+					<TabsList
+						aria-label="Backtest Run results"
+						className="w-full justify-start overflow-x-auto"
+					>
 						<TabsTrigger value="overview">Overview</TabsTrigger>
 						<TabsTrigger value="decisions">Decisions</TabsTrigger>
 						<TabsTrigger value="execution">Execution</TabsTrigger>
 						<TabsTrigger value="provenance">Provenance</TabsTrigger>
 					</TabsList>
 					{runTechnicalError && (
-						<p className="rounded-md border border-destructive p-3 text-sm" role="alert">
+						<p
+							className="rounded-md border border-destructive p-3 text-sm"
+							role="alert"
+						>
 							Results error: {runTechnicalError}
 						</p>
 					)}
 					<TabsContent value="overview" className="space-y-4">
 						<Card>
-						<CardContent className="grid grid-cols-2 gap-4 py-4 md:grid-cols-4 lg:grid-cols-6">
-							<Metric
-								label="Total return"
-								value={percent(run.result.metrics.totalReturn)}
-							/>
-							<Metric label="CAGR" value={percent(run.result.metrics.cagr)} />
-							<Metric
-								label="Max drawdown"
-								value={percent(run.result.metrics.maxDrawdown)}
-							/>
-							<Metric
-								label="Sharpe"
-								value={formatDecimal(run.result.metrics.sharpe)}
-							/>
-							<Metric
-								label="Sortino"
-								value={formatDecimal(run.result.metrics.sortino)}
-							/>
-							<Metric
-								label="Excess return"
-								value={percent(run.result.metrics.excessReturn)}
-							/>
-							<Metric
-								label="Final equity"
-								value={formatDecimal(run.result.metrics.finalEquity)}
-							/>
-							<Metric
-								label="Realized P&L"
-								value={formatDecimal(run.result.metrics.realizedPnl)}
-							/>
-							<Metric
-								label="Unrealized P&L"
-								value={formatDecimal(run.result.metrics.unrealizedPnl)}
-							/>
-							<Metric label="Fees" value={formatDecimal(run.result.totalFees)} />
-							<Metric label="Win rate" value={percent(run.result.metrics.winRate)} />
-							<Metric label="Fills" value={String(run.result.metrics.fillCount)} />
-						</CardContent>
-					</Card>
+							<CardContent className="grid grid-cols-2 gap-4 py-4 md:grid-cols-4 lg:grid-cols-6">
+								<Metric
+									label="Total return"
+									value={percent(run.result.metrics.totalReturn)}
+								/>
+								<Metric label="CAGR" value={percent(run.result.metrics.cagr)} />
+								<Metric
+									label="Max drawdown"
+									value={percent(run.result.metrics.maxDrawdown)}
+								/>
+								<Metric
+									label="Sharpe"
+									value={formatDecimal(run.result.metrics.sharpe)}
+								/>
+								<Metric
+									label="Sortino"
+									value={formatDecimal(run.result.metrics.sortino)}
+								/>
+								<Metric
+									label="Excess return"
+									value={percent(run.result.metrics.excessReturn)}
+								/>
+								<Metric
+									label="Final equity"
+									value={formatDecimal(run.result.metrics.finalEquity)}
+								/>
+								<Metric
+									label="Realized P&L"
+									value={formatDecimal(run.result.metrics.realizedPnl)}
+								/>
+								<Metric
+									label="Unrealized P&L"
+									value={formatDecimal(run.result.metrics.unrealizedPnl)}
+								/>
+								<Metric label="Fees" value={formatDecimal(run.result.totalFees)} />
+								<Metric label="Win rate" value={percent(run.result.metrics.winRate)} />
+								<Metric label="Fills" value={String(run.result.metrics.fillCount)} />
+							</CardContent>
+						</Card>
 						<Card>
-						<CardContent className="pt-4">
-							<BacktestChart run={run} onVisibleRangeChange={loadChartRange} />
-						</CardContent>
-					</Card>
+							<CardContent className="pt-4">
+								<BacktestChart run={run} onVisibleRangeChange={loadChartRange} />
+							</CardContent>
+						</Card>
 						<p className="text-sm text-muted-foreground">
 							Strategy equity is the solid blue line; benchmark is the thin gray line;
 							drawdown is the labeled lower area.
@@ -1154,7 +932,10 @@ export function BacktestPage() {
 				</CardHeader>
 				<CardContent className="space-y-2">
 					{history.map((item) => (
-						<div key={item.runId} className="flex items-center justify-between rounded-md border p-3 text-sm">
+						<div
+							key={item.runId}
+							className="flex items-center justify-between rounded-md border p-3 text-sm"
+						>
 							<button
 								type="button"
 								className="text-left"
@@ -1162,16 +943,18 @@ export function BacktestPage() {
 									userId &&
 									void invoke<BacktestRun>("backtest_get", {
 										request: { userId, runId: item.runId },
-									}).then((value) => {
-										setRun(value);
-										setExecutionOffset(0);
-										setRunTechnicalError("");
-										setStage("results");
-									}).catch((error) => {
-										const details = String(error);
-										setMessage(details);
-										setRunTechnicalError(details);
 									})
+										.then((value) => {
+											setRun(value);
+											setExecutionOffset(0);
+											setRunTechnicalError("");
+											setStage("results");
+										})
+										.catch((error) => {
+											const details = String(error);
+											setMessage(details);
+											setRunTechnicalError(details);
+										})
 								}
 							>
 								<span className="font-medium">
@@ -1185,122 +968,6 @@ export function BacktestPage() {
 					))}
 					{history.length === 0 && (
 						<p className="text-sm text-muted-foreground">No persisted Runs.</p>
-					)}
-				</CardContent>
-			</Card>
-			<Card>
-				<CardHeader>
-					<CardTitle>Research validation</CardTitle>
-				</CardHeader>
-				<CardContent className="space-y-3 text-sm">
-					{protocols.map((protocol) => (
-						<div
-							key={protocol.protocolId}
-							className="flex items-center justify-between rounded-md border p-3"
-						>
-							<span className="font-mono">
-								{protocol.protocolId.slice(0, 16)} · {protocol.methodVersion} ·{" "}
-								{protocol.crossMarket?.contexts.length ?? protocol.windows.length}{" "}
-								context
-								{(protocol.crossMarket?.contexts.length ?? protocol.windows.length) ===
-								1
-									? ""
-									: "s"}
-							</span>
-							<Button
-								size="sm"
-								disabled={runningProtocolId === protocol.protocolId}
-								onClick={() => void runValidation(protocol.protocolId)}
-							>
-								{runningProtocolId === protocol.protocolId
-									? "Running…"
-									: "Run / resume"}
-							</Button>
-						</div>
-					))}
-					{reports.map((report) => (
-						<div key={report.reportId} className="rounded-md border p-3">
-							<div className="flex items-center justify-between gap-2">
-								<span className="font-mono">{report.reportId.slice(0, 16)}</span>
-								<div className="flex gap-2">
-									<Button
-										size="sm"
-										variant="outline"
-										onClick={() => void exportReport(report.reportId, "json")}
-									>
-										JSON
-									</Button>
-									<Button
-										size="sm"
-										variant="outline"
-										onClick={() => void exportReport(report.reportId, "markdown")}
-									>
-										Markdown
-									</Button>
-								</div>
-							</div>
-							<p className="mt-2 text-muted-foreground">
-								{report.methodVersion}
-								{report.walkForward
-									? ` · ${report.walkForward.windowSizeBars}-Bar windows, ${report.walkForward.stepSizeBars}-Bar step, ${report.walkForward.minimumHistoryBars}-Bar history`
-									: ""}
-							</p>
-							<p className="mt-2 text-muted-foreground">
-								{report.aggregate.completedWindows} complete ·{" "}
-								{report.aggregate.failedWindows} failed · Out{" "}
-								{percent(report.aggregate.averageSampleOutReturn)} · Drawdown{" "}
-								{percent(report.aggregate.worstSampleOutDrawdown)} · Sharpe{" "}
-								{formatDecimal(report.aggregate.averageSampleOutSharpe)} · Fees{" "}
-								{formatDecimal(report.aggregate.totalFees)} · Trades{" "}
-								{report.aggregate.totalTrades}
-							</p>
-							{report.crossMarketEvidence && (
-								<p className="mt-2 text-muted-foreground">
-									{report.crossMarketEvidence.completedMarkets} markets · Return spread{" "}
-									{percent(report.crossMarketEvidence.totalReturnSpread)} ·{" "}
-									{report.recommendedContexts.length} evidence-backed Recommended
-									Contexts
-								</p>
-							)}
-							<div className="mt-2 space-y-1 text-xs text-muted-foreground">
-								{report.crossMarket.map((context) => (
-									<p key={context.snapshot.snapshotId}>
-										{context.snapshot.code} · {context.snapshot.interval} ·{" "}
-										{context.failure
-											? `Failed: ${context.failure}`
-											: `Return ${percent(context.metrics?.totalReturn ?? "0")} · Drawdown ${percent(context.metrics?.maxDrawdown ?? "0")} · Sharpe ${formatDecimal(context.metrics?.sharpe ?? "0")} · ${context.pauses.length} pauses`}
-									</p>
-								))}
-								{report.windows.map((window) => (
-									<p
-										key={`${window.sampleOutStartTimeMs}:${window.sampleOutEndTimeMs ?? "final"}`}
-									>
-										{new Date(window.sampleOutStartTimeMs).toLocaleString()}{" "}
-										{window.sampleOutEndTimeMs
-											? `– ${new Date(window.sampleOutEndTimeMs).toLocaleString()} `
-											: "– final "}
-										·{" "}
-										{window.failure
-											? `Failed: ${window.failure}`
-											: `Return ${percent(window.sampleOutMetrics?.totalReturn ?? "0")} · Drawdown ${percent(window.sampleOutMetrics?.maxDrawdown ?? "0")} · Sharpe ${formatDecimal(window.sampleOutMetrics?.sharpe ?? "0")} · ${window.sampleOutPauses.length} pauses`}
-									</p>
-								))}
-							</div>
-							<details className="mt-2">
-								<summary>
-									Inspect immutable Report ({report.windows.length} windows)
-								</summary>
-								<pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">
-									{JSON.stringify(report, null, 2)}
-								</pre>
-							</details>
-						</div>
-					))}
-					{protocols.length === 0 && (
-						<p className="text-muted-foreground">
-							Freeze a Snapshot with a holdout boundary or walk-forward configuration
-							to begin.
-						</p>
 					)}
 				</CardContent>
 			</Card>
@@ -1398,7 +1065,11 @@ function DecisionTable({ run }: { run: BacktestRun }) {
 				{entries.length ? (
 					<table className="w-full min-w-[680px] text-left text-sm [&_td]:border-t [&_td]:py-2 [&_td]:pr-4 [&_th]:pb-2 [&_th]:pr-4">
 						<thead>
-							<tr><th>Time</th><th>Record</th><th>Evidence</th></tr>
+							<tr>
+								<th>Time</th>
+								<th>Record</th>
+								<th>Evidence</th>
+							</tr>
 						</thead>
 						<tbody>
 							{entries.map((entry) => (
@@ -1411,7 +1082,9 @@ function DecisionTable({ run }: { run: BacktestRun }) {
 						</tbody>
 					</table>
 				) : (
-					<p className="text-muted-foreground">No Target Decisions or Run Pauses were recorded.</p>
+					<p className="text-muted-foreground">
+						No Target Decisions or Run Pauses were recorded.
+					</p>
 				)}
 			</CardContent>
 		</Card>
@@ -1451,17 +1124,56 @@ function ProvenanceView({
 					<>
 						<Evidence label="Run ID" value={run.runId} />
 						<Evidence label="Snapshot ID" value={run.snapshot.snapshotId} />
-						<Evidence label="Indicator Plan hash" value={provenance.indicatorPlanHash} />
+						<Evidence
+							label="Indicator Plan hash"
+							value={provenance.indicatorPlanHash}
+						/>
 						<Evidence label="Seed" value={String(provenance.seed)} />
-						<Evidence label="Strategy Package" value={provenance.normalizedRequest.strategyArchiveSha256} />
-						<Evidence label="Strategy parameters" value={JSON.stringify(provenance.normalizedRequest.strategyParameters, null, 2)} />
-						<Evidence label="Factor instances" value={JSON.stringify(provenance.normalizedRequest.factorInstances, null, 2)} />
-						<Evidence label="Initial quote allocation" value={provenance.normalizedRequest.initialQuoteAllocation} />
-						<Evidence label="Execution Profile" value={JSON.stringify(provenance.normalizedRequest.executionProfile, null, 2)} />
-						<Evidence label="Component Packages" value={JSON.stringify(provenance.componentLock, null, 2)} />
+						<Evidence
+							label="Strategy Package"
+							value={provenance.normalizedRequest.strategyArchiveSha256}
+						/>
+						<Evidence
+							label="Strategy parameters"
+							value={JSON.stringify(
+								provenance.normalizedRequest.strategyParameters,
+								null,
+								2,
+							)}
+						/>
+						<Evidence
+							label="Factor instances"
+							value={JSON.stringify(
+								provenance.normalizedRequest.factorInstances,
+								null,
+								2,
+							)}
+						/>
+						<Evidence
+							label="Initial quote allocation"
+							value={provenance.normalizedRequest.initialQuoteAllocation}
+						/>
+						<Evidence
+							label="Execution Profile"
+							value={JSON.stringify(
+								provenance.normalizedRequest.executionProfile,
+								null,
+								2,
+							)}
+						/>
+						<Evidence
+							label="Component Packages"
+							value={JSON.stringify(provenance.componentLock, null, 2)}
+						/>
 						<Evidence label="Indicator Plan" value={provenance.indicatorPlanJson} />
-						<Evidence label="Indicator Engine identity" value={JSON.stringify(provenance.indicatorEngineBuildIdentity, null, 2)} />
-						<Evidence label="Backtest engine version" value={provenance.backtestEngineVersion} />
+						<Evidence
+							label="Indicator Engine identity"
+							value={JSON.stringify(provenance.indicatorEngineBuildIdentity, null, 2)}
+						/>
+						<Evidence
+							label="Backtest engine version"
+							value={provenance.backtestEngineVersion}
+						/>
 					</>
 				)}
 			</CardContent>
@@ -1474,11 +1186,17 @@ function Evidence({ label, value }: { label: string; value: string }) {
 		<div className="rounded-md border p-3">
 			<div className="mb-2 flex flex-wrap items-center justify-between gap-2">
 				<p className="font-medium">{label}</p>
-				<Button size="xs" variant="outline" onClick={() => void navigator.clipboard.writeText(value)}>
+				<Button
+					size="xs"
+					variant="outline"
+					onClick={() => void navigator.clipboard.writeText(value)}
+				>
 					Copy {label}
 				</Button>
 			</div>
-			<pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-2 text-xs">{value}</pre>
+			<pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-2 text-xs">
+				{value}
+			</pre>
 		</div>
 	);
 }
@@ -1521,11 +1239,17 @@ function ExecutionTables({
 			</CardHeader>
 			<CardContent className="grid gap-6 overflow-auto xl:grid-cols-2 [&_td]:whitespace-nowrap [&_td]:py-2 [&_td]:pr-4 [&_th]:whitespace-nowrap [&_th]:pb-2 [&_th]:pr-4">
 				{error ? (
-					<p className="xl:col-span-2" role="alert">Execution query failed: {error}</p>
+					<p className="xl:col-span-2" role="alert">
+						Execution query failed: {error}
+					</p>
 				) : !page ? (
-					<p className="xl:col-span-2 text-muted-foreground" role="status">Loading paged execution evidence…</p>
+					<p className="xl:col-span-2 text-muted-foreground" role="status">
+						Loading paged execution evidence…
+					</p>
 				) : total === 0 ? (
-					<p className="xl:col-span-2 text-muted-foreground">No simulated Orders or Fills were recorded.</p>
+					<p className="xl:col-span-2 text-muted-foreground">
+						No simulated Orders or Fills were recorded.
+					</p>
 				) : null}
 				<table className="w-full min-w-[640px] text-left text-xs">
 					<thead>
@@ -1550,7 +1274,9 @@ function ExecutionTables({
 							</tr>
 						))}
 						{page && page.orders.length === 0 && total > 0 && (
-							<tr><td colSpan={5}>No Orders on this page.</td></tr>
+							<tr>
+								<td colSpan={5}>No Orders on this page.</td>
+							</tr>
 						)}
 					</tbody>
 				</table>
@@ -1580,7 +1306,9 @@ function ExecutionTables({
 							</tr>
 						))}
 						{page && page.fills.length === 0 && total > 0 && (
-							<tr><td colSpan={5}>No Fills on this page.</td></tr>
+							<tr>
+								<td colSpan={5}>No Fills on this page.</td>
+							</tr>
 						)}
 					</tbody>
 				</table>
