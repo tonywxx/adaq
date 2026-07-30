@@ -1,5 +1,6 @@
 import type { LibraryComponent } from "@/features/components/component-library";
 import {
+	copyRunConfiguration,
 	defaultExecutionProfile,
 	matchingFactors,
 	runGate,
@@ -64,4 +65,33 @@ test("stage gates prevent incomplete and duplicate-ready submissions", () => {
 		}),
 	).toMatch(/already running/);
 	expect(defaultExecutionProfile.fillPolicy).toBe("taker");
+});
+
+test("copies frozen normalized settings into a new editable configuration", () => {
+	expect(
+		copyRunConfiguration({
+			snapshotId: "snapshot",
+			strategyArchiveSha256: "strategy",
+			strategyParameters: { period: "20" },
+			factorInstances: [
+				{
+					alias: "signal",
+					archiveSha256: "factor",
+					parameters: [{ name: "length", value: "10" }],
+				},
+			],
+			initialQuoteAllocation: "10000.00",
+			executionProfile: defaultExecutionProfile,
+			seed: 7,
+		}),
+	).toEqual({
+		snapshotId: "snapshot",
+		strategy: "strategy",
+		strategyParameters: { period: "20" },
+		factorSelections: { signal: "factor" },
+		factorParameters: { signal: { length: "10" } },
+		initialQuoteAllocation: "10000.00",
+		executionProfile: defaultExecutionProfile,
+		seed: "7",
+	});
 });

@@ -3,6 +3,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+	Tabs,
+	TabsContent,
+	TabsList,
+	TabsTrigger,
+} from "@/components/ui/tabs";
+import {
 	Workspace,
 	type LibraryComponent,
 } from "@/features/components/components-page";
@@ -17,13 +23,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BacktestChart } from "./backtest-chart";
 import {
 	snapshotError,
+	provenanceMessage,
 	snapshotRangeError,
 	snapshotStatus,
 	reuseSnapshot,
 } from "./backtest-data";
 import {
+	copyRunConfiguration,
 	defaultExecutionProfile,
 	matchingFactors,
+	type NormalizedRunConfiguration,
 	runGate,
 } from "./guided-backtest";
 import { formatDecimal } from "./format-decimal";
@@ -83,12 +92,26 @@ type Metrics = Record<
 	string
 > & { fillCount: number; realizedTradeCount: number };
 type Provenance = {
-	[key: string]: unknown;
+	normalizedRequest: NormalizedRunConfiguration;
+	indicatorPlanJson: string;
+	indicatorPlanHash: string;
+	componentLock: Array<{
+		componentId: string;
+		version: string;
+		archiveSha256: string;
+		wasmSha256: string;
+	}>;
+	indicatorEngineBuildIdentity: Record<string, string>;
+	backtestEngineVersion: string;
+	seed: number;
 };
 export type BacktestRun = {
 	runId: string;
+	snapshot: Snapshot;
 	provenance?: Provenance;
 	bars: OhlcvBar[];
+	decisions: Array<{ openTimeMs: number; targetExposure: string }>;
+	pauses: Array<{ openTimeMs: number; reason: string }>;
 	result: {
 		orders: Order[];
 		fills: Fill[];
@@ -197,6 +220,7 @@ export function BacktestPage() {
 	);
 	const [initialQuoteAllocation, setInitialQuoteAllocation] = useState("10000");
 	const [executionProfile, setExecutionProfile] = useState(defaultExecutionProfile);
+	const [seed, setSeed] = useState("0");
 	const [running, setRunning] = useState(false);
 	const [compatibleFactors, setCompatibleFactors] = useState<Record<string, string[]>>({});
 	const [preflight, setPreflight] = useState<BacktestPreflight>();
@@ -415,6 +439,7 @@ export function BacktestPage() {
 		strategyParameters,
 		initialQuoteAllocation,
 		executionProfile,
+		seed: Number(seed),
 	});
 	const createValidation = async () => {
 		if (!userId || !snapshot) return;
@@ -577,6 +602,8 @@ export function BacktestPage() {
 	const runId = run?.runId;
 	useEffect(() => {
 		if (!userId || !runId) return;
+		let current = true;
+		setExecutionPage(undefined);
 		void invoke<ExecutionPage>("backtest_execution_data", {
 			request: {
 				userId,
@@ -585,8 +612,20 @@ export function BacktestPage() {
 				limit: EXECUTION_PAGE_SIZE,
 			},
 		})
-			.then(setExecutionPage)
-			.catch((error) => setMessage(String(error)));
+			.then((page) => {
+				if (!current) return;
+				setExecutionPage(page);
+				setRunTechnicalError("");
+			})
+			.catch((error) => {
+				if (!current) return;
+				const details = String(error);
+				setMessage(details);
+				setRunTechnicalError(details);
+			});
+		return () => {
+			current = false;
+		};
 	}, [executionOffset, runId, userId]);
 	const loadChartRange = useCallback(
 		async (startTimeMs: number, endTimeMs: number) => {
@@ -614,6 +653,30 @@ export function BacktestPage() {
 			...current,
 			[alias]: { ...current[alias], [name]: value },
 		}));
+	const useRunAsNewConfiguration = (source: BacktestRun) => {
+		if (!source.provenance) {
+			setMessage(
+				"This legacy Run has incomplete provenance and cannot be copied safely.",
+			);
+			return;
+		}
+		const configuration = copyRunConfiguration(
+			source.provenance.normalizedRequest,
+		);
+		setSnapshot(source.snapshot);
+		setStrategy(configuration.strategy);
+		setStrategyParameters(configuration.strategyParameters);
+		setFactorSelections(configuration.factorSelections);
+		setFactorParameters(configuration.factorParameters);
+		setInitialQuoteAllocation(configuration.initialQuoteAllocation);
+		setExecutionProfile(configuration.executionProfile);
+		setSeed(configuration.seed);
+		setPreflight(undefined);
+		setStage("strategy");
+		setMessage(
+			`Run ${source.runId.slice(0, 12)} copied into a new editable configuration.`,
+		);
+	};
 	return (
 		<Workspace
 			title="Backtest"
@@ -937,6 +1000,19 @@ export function BacktestPage() {
 								}}
 							/>
 						</Field>
+						<Field label="Seed" id="backtest-seed">
+							<Input
+								id="backtest-seed"
+								type="number"
+								min="0"
+								step="1"
+								value={seed}
+								onChange={(event) => {
+									setSeed(event.target.value);
+									setPreflight(undefined);
+								}}
+							/>
+						</Field>
 						{Object.entries(executionProfile)
 							.filter(([name]) => name !== "fillPolicy")
 							.map(([name, value]) => (
@@ -993,8 +1069,20 @@ export function BacktestPage() {
 				</Card>
 			)}
 			{stage === "results" && run && (
-				<>
-					<Card>
+				<Tabs key={run.runId} defaultValue="overview">
+					<TabsList aria-label="Backtest Run results" className="w-full justify-start overflow-x-auto">
+						<TabsTrigger value="overview">Overview</TabsTrigger>
+						<TabsTrigger value="decisions">Decisions</TabsTrigger>
+						<TabsTrigger value="execution">Execution</TabsTrigger>
+						<TabsTrigger value="provenance">Provenance</TabsTrigger>
+					</TabsList>
+					{runTechnicalError && (
+						<p className="rounded-md border border-destructive p-3 text-sm" role="alert">
+							Results error: {runTechnicalError}
+						</p>
+					)}
+					<TabsContent value="overview" className="space-y-4">
+						<Card>
 						<CardContent className="grid grid-cols-2 gap-4 py-4 md:grid-cols-4 lg:grid-cols-6">
 							<Metric
 								label="Total return"
@@ -1034,31 +1122,31 @@ export function BacktestPage() {
 							<Metric label="Fills" value={String(run.result.metrics.fillCount)} />
 						</CardContent>
 					</Card>
-					<Card>
-						<CardHeader>
-							<CardTitle>Replay provenance</CardTitle>
-						</CardHeader>
-						<CardContent className="space-y-1 break-all text-sm text-muted-foreground">
-							{run.provenance ? (
-								<pre className="overflow-x-auto whitespace-pre-wrap">
-									{JSON.stringify(run.provenance, null, 2)}
-								</pre>
-							) : (
-								<p>Legacy Run: complete replay provenance was not recorded.</p>
-							)}
-						</CardContent>
-					</Card>
-					<Card>
+						<Card>
 						<CardContent className="pt-4">
 							<BacktestChart run={run} onVisibleRangeChange={loadChartRange} />
 						</CardContent>
 					</Card>
-					<ExecutionTables
-						page={executionPage}
-						offset={executionOffset}
-						onOffset={setExecutionOffset}
-					/>
-				</>
+						<p className="text-sm text-muted-foreground">
+							Strategy equity is the solid blue line; benchmark is the thin gray line;
+							drawdown is the labeled lower area.
+						</p>
+					</TabsContent>
+					<TabsContent value="decisions">
+						<DecisionTable run={run} />
+					</TabsContent>
+					<TabsContent value="execution">
+						<ExecutionTables
+							page={executionPage}
+							offset={executionOffset}
+							onOffset={setExecutionOffset}
+							error={runTechnicalError}
+						/>
+					</TabsContent>
+					<TabsContent value="provenance">
+						<ProvenanceView run={run} onUseAsNew={useRunAsNewConfiguration} />
+					</TabsContent>
+				</Tabs>
 			)}
 			<Card>
 				<CardHeader>
@@ -1066,10 +1154,7 @@ export function BacktestPage() {
 				</CardHeader>
 				<CardContent className="space-y-2">
 					{history.map((item) => (
-						<div
-							key={item.runId}
-							className="flex items-center justify-between rounded-md border p-3 text-sm"
-						>
+						<div key={item.runId} className="flex items-center justify-between rounded-md border p-3 text-sm">
 							<button
 								type="button"
 								className="text-left"
@@ -1080,6 +1165,12 @@ export function BacktestPage() {
 									}).then((value) => {
 										setRun(value);
 										setExecutionOffset(0);
+										setRunTechnicalError("");
+										setStage("results");
+									}).catch((error) => {
+										const details = String(error);
+										setMessage(details);
+										setRunTechnicalError(details);
 									})
 								}
 							>
@@ -1090,18 +1181,6 @@ export function BacktestPage() {
 									{item.barCount} Bars · {percent(item.totalReturn)}
 								</span>
 							</button>
-							<Button
-								size="sm"
-								variant="ghost"
-								onClick={() =>
-									userId &&
-									void invoke("backtest_delete", {
-										request: { userId, runId: item.runId },
-									}).then(refreshHistory)
-								}
-							>
-								Delete
-							</Button>
 						</div>
 					))}
 					{history.length === 0 && (
@@ -1294,14 +1373,125 @@ function ParameterField({
 		</Field>
 	);
 }
+function DecisionTable({ run }: { run: BacktestRun }) {
+	const entries = [
+		...run.decisions.map((decision) => ({
+			...decision,
+			type: "Target Decision" as const,
+			description:
+				decision.targetExposure === "0"
+					? "Flat target exposure (not a Run Pause)"
+					: `Target exposure ${formatDecimal(decision.targetExposure)}`,
+		})),
+		...run.pauses.map((pause) => ({
+			...pause,
+			type: "Run Pause" as const,
+			description: pauseDescription(pause.reason),
+		})),
+	].sort((left, right) => left.openTimeMs - right.openTimeMs);
+	return (
+		<Card>
+			<CardHeader>
+				<CardTitle>Target Decisions and Run Pauses</CardTitle>
+			</CardHeader>
+			<CardContent className="overflow-auto">
+				{entries.length ? (
+					<table className="w-full min-w-[680px] text-left text-sm [&_td]:border-t [&_td]:py-2 [&_td]:pr-4 [&_th]:pb-2 [&_th]:pr-4">
+						<thead>
+							<tr><th>Time</th><th>Record</th><th>Evidence</th></tr>
+						</thead>
+						<tbody>
+							{entries.map((entry) => (
+								<tr key={`${entry.type}:${entry.openTimeMs}:${entry.description}`}>
+									<td>{new Date(entry.openTimeMs).toLocaleString()}</td>
+									<td>{entry.type}</td>
+									<td>{entry.description}</td>
+								</tr>
+							))}
+						</tbody>
+					</table>
+				) : (
+					<p className="text-muted-foreground">No Target Decisions or Run Pauses were recorded.</p>
+				)}
+			</CardContent>
+		</Card>
+	);
+}
+
+function pauseDescription(reason: string) {
+	if (reason === "warmup") return "Warmup — no Target Decision was invoked.";
+	if (reason.startsWith("missing-input:")) {
+		const [, slot, source] = reason.split(":", 3);
+		return `Missing Input${slot ? ` — Slot ${slot}` : ""}${source ? ` from ${source}` : ""}; no Target Decision was invoked.`;
+	}
+	return `Run Pause — ${reason}; no Target Decision was invoked.`;
+}
+
+function ProvenanceView({
+	run,
+	onUseAsNew,
+}: {
+	run: BacktestRun;
+	onUseAsNew: (run: BacktestRun) => void;
+}) {
+	const provenance = run.provenance;
+	const legacyMessage = provenanceMessage(Boolean(provenance));
+	return (
+		<Card>
+			<CardHeader className="flex-row items-center justify-between gap-3">
+				<CardTitle>Immutable Run provenance</CardTitle>
+				<Button size="sm" disabled={!provenance} onClick={() => onUseAsNew(run)}>
+					Use as new configuration
+				</Button>
+			</CardHeader>
+			<CardContent className="space-y-4 text-sm">
+				{!provenance ? (
+					<p role="alert">{legacyMessage}</p>
+				) : (
+					<>
+						<Evidence label="Run ID" value={run.runId} />
+						<Evidence label="Snapshot ID" value={run.snapshot.snapshotId} />
+						<Evidence label="Indicator Plan hash" value={provenance.indicatorPlanHash} />
+						<Evidence label="Seed" value={String(provenance.seed)} />
+						<Evidence label="Strategy Package" value={provenance.normalizedRequest.strategyArchiveSha256} />
+						<Evidence label="Strategy parameters" value={JSON.stringify(provenance.normalizedRequest.strategyParameters, null, 2)} />
+						<Evidence label="Factor instances" value={JSON.stringify(provenance.normalizedRequest.factorInstances, null, 2)} />
+						<Evidence label="Initial quote allocation" value={provenance.normalizedRequest.initialQuoteAllocation} />
+						<Evidence label="Execution Profile" value={JSON.stringify(provenance.normalizedRequest.executionProfile, null, 2)} />
+						<Evidence label="Component Packages" value={JSON.stringify(provenance.componentLock, null, 2)} />
+						<Evidence label="Indicator Plan" value={provenance.indicatorPlanJson} />
+						<Evidence label="Indicator Engine identity" value={JSON.stringify(provenance.indicatorEngineBuildIdentity, null, 2)} />
+						<Evidence label="Backtest engine version" value={provenance.backtestEngineVersion} />
+					</>
+				)}
+			</CardContent>
+		</Card>
+	);
+}
+
+function Evidence({ label, value }: { label: string; value: string }) {
+	return (
+		<div className="rounded-md border p-3">
+			<div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+				<p className="font-medium">{label}</p>
+				<Button size="xs" variant="outline" onClick={() => void navigator.clipboard.writeText(value)}>
+					Copy {label}
+				</Button>
+			</div>
+			<pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-2 text-xs">{value}</pre>
+		</div>
+	);
+}
 function ExecutionTables({
 	page,
 	offset,
 	onOffset,
+	error,
 }: {
 	page?: ExecutionPage;
 	offset: number;
 	onOffset: (offset: number) => void;
+	error?: string;
 }) {
 	const total = Math.max(page?.totalOrders ?? 0, page?.totalFills ?? 0);
 	return (
@@ -1309,11 +1499,8 @@ function ExecutionTables({
 			<CardHeader className="flex-row items-center justify-between">
 				<CardTitle>Orders and fills</CardTitle>
 				<div className="flex items-center gap-2 text-xs text-muted-foreground">
-					<span>
-						{total
-							? `${offset + 1}–${Math.min(offset + EXECUTION_PAGE_SIZE, total)} / ${total}`
-							: "0"}
-					</span>
+					<span>Orders: {page?.totalOrders ?? 0}</span>
+					<span>Fills: {page?.totalFills ?? 0}</span>
 					<Button
 						size="sm"
 						variant="outline"
@@ -1333,6 +1520,13 @@ function ExecutionTables({
 				</div>
 			</CardHeader>
 			<CardContent className="grid gap-6 overflow-auto xl:grid-cols-2 [&_td]:whitespace-nowrap [&_td]:py-2 [&_td]:pr-4 [&_th]:whitespace-nowrap [&_th]:pb-2 [&_th]:pr-4">
+				{error ? (
+					<p className="xl:col-span-2" role="alert">Execution query failed: {error}</p>
+				) : !page ? (
+					<p className="xl:col-span-2 text-muted-foreground" role="status">Loading paged execution evidence…</p>
+				) : total === 0 ? (
+					<p className="xl:col-span-2 text-muted-foreground">No simulated Orders or Fills were recorded.</p>
+				) : null}
 				<table className="w-full min-w-[640px] text-left text-xs">
 					<thead>
 						<tr>
@@ -1355,6 +1549,9 @@ function ExecutionTables({
 								</td>
 							</tr>
 						))}
+						{page && page.orders.length === 0 && total > 0 && (
+							<tr><td colSpan={5}>No Orders on this page.</td></tr>
+						)}
 					</tbody>
 				</table>
 				<table className="w-full min-w-[760px] text-left text-xs">
@@ -1382,6 +1579,9 @@ function ExecutionTables({
 								</td>
 							</tr>
 						))}
+						{page && page.fills.length === 0 && total > 0 && (
+							<tr><td colSpan={5}>No Fills on this page.</td></tr>
+						)}
 					</tbody>
 				</table>
 			</CardContent>

@@ -12,6 +12,45 @@ export const defaultExecutionProfile = {
 	fillPolicy: "taker" as "maker" | "taker",
 };
 
+export type NormalizedRunConfiguration = {
+	snapshotId: string;
+	strategyArchiveSha256: string;
+	strategyParameters: Record<string, string>;
+	factorInstances: Array<{
+		alias: string;
+		archiveSha256: string;
+		parameters: Array<{ name: string; value: string }>;
+	}>;
+	initialQuoteAllocation: string;
+	executionProfile: typeof defaultExecutionProfile;
+	seed: number;
+};
+
+export function copyRunConfiguration(configuration: NormalizedRunConfiguration) {
+	return {
+		snapshotId: configuration.snapshotId,
+		strategy: configuration.strategyArchiveSha256,
+		strategyParameters: configuration.strategyParameters,
+		factorSelections: Object.fromEntries(
+			configuration.factorInstances.map((factor) => [
+				factor.alias,
+				factor.archiveSha256,
+			]),
+		),
+		factorParameters: Object.fromEntries(
+			configuration.factorInstances.map((factor) => [
+				factor.alias,
+				Object.fromEntries(
+					factor.parameters.map((parameter) => [parameter.name, parameter.value]),
+				),
+			]),
+		),
+		initialQuoteAllocation: configuration.initialQuoteAllocation,
+		executionProfile: configuration.executionProfile,
+		seed: String(configuration.seed),
+	};
+}
+
 type Dependency = LibraryComponent["dependencies"][number];
 
 export function matchingFactors(

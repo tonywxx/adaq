@@ -30,3 +30,9 @@ export function reuseSnapshot<T extends { snapshotId: string }>(
 ) {
 	return snapshots.find((snapshot) => snapshot.snapshotId === snapshotId);
 }
+
+export function provenanceMessage(hasProvenance: boolean) {
+	return hasProvenance
+		? undefined
+		: "Legacy Run: complete provenance is unavailable, so this evidence remains readable but cannot be copied safely.";
+}

@@ -864,6 +864,7 @@ pub struct BacktestRunView {
     pub plan_hash: String,
     pub snapshot: MarketDataSnapshot,
     pub bars: Vec<OhlcvBar>,
+    pub decisions: Vec<SimulationDecision>,
     pub pauses: Vec<RunPauseRecord>,
     pub result: ada_backtest_core::SimulationResult,
     pub component_lock: Vec<ComponentLockEntry>,
@@ -1631,26 +1632,32 @@ pub fn backtest_execution_data(
         return Err("Backtest execution page is invalid".into());
     }
     let run = state.load_run(&request.user_id, &request.run_id)?;
-    Ok(BacktestExecutionPage {
-        orders: run
-            .result
+    Ok(execution_page(&run.result, request.offset, request.limit))
+}
+
+fn execution_page(
+    result: &ada_backtest_core::SimulationResult,
+    offset: usize,
+    limit: usize,
+) -> BacktestExecutionPage {
+    BacktestExecutionPage {
+        orders: result
             .orders
             .iter()
-            .skip(request.offset)
-            .take(request.limit)
+            .skip(offset)
+            .take(limit)
             .cloned()
             .collect(),
-        fills: run
-            .result
+        fills: result
             .fills
             .iter()
-            .skip(request.offset)
-            .take(request.limit)
+            .skip(offset)
+            .take(limit)
             .cloned()
             .collect(),
-        total_orders: run.result.orders.len(),
-        total_fills: run.result.fills.len(),
-    })
+        total_orders: result.orders.len(),
+        total_fills: result.fills.len(),
+    }
 }
 
 #[tauri::command]
@@ -2473,6 +2480,12 @@ fn run_view(run: &BacktestRun, start: i64, end: i64, max_points: usize) -> Backt
         plan_hash: run.plan_hash.clone(),
         snapshot: run.snapshot.clone(),
         bars: aggregate_bars(&run.bars, start, end, max_points),
+        decisions: run
+            .decisions
+            .iter()
+            .filter(|decision| decision.open_time_ms >= start && decision.open_time_ms < end)
+            .cloned()
+            .collect(),
         pauses: run
             .pauses
             .iter()
@@ -2983,6 +2996,11 @@ mod tests {
         assert_eq!(first.pauses.len(), 38);
         assert!(!first.result.orders.is_empty());
         assert!(!first.result.fills.is_empty());
+        let execution_page = execution_page(&first.result, 0, 1);
+        assert_eq!(execution_page.orders.len(), 1);
+        assert_eq!(execution_page.fills.len(), 1);
+        assert_eq!(execution_page.total_orders, first.result.orders.len());
+        assert_eq!(execution_page.total_fills, first.result.fills.len());
         assert_eq!(state.list_runs("alice").unwrap().len(), 1);
         let mut changed_request = request();
         changed_request.seed = 1;

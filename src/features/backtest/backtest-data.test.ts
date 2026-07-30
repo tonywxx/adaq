@@ -1,5 +1,6 @@
 import {
 	reuseSnapshot,
+	provenanceMessage,
 	snapshotError,
 	snapshotRangeError,
 	snapshotStatus,
@@ -24,4 +25,9 @@ test("reuses the selected immutable Snapshot", () => {
 	const first = { snapshotId: "first" };
 	const second = { snapshotId: "second" };
 	expect(reuseSnapshot([first, second], "second")).toBe(second);
+});
+
+test("keeps incomplete legacy provenance explicit", () => {
+	expect(provenanceMessage(false)).toMatch(/Legacy Run/);
+	expect(provenanceMessage(true)).toBeUndefined();
 });
