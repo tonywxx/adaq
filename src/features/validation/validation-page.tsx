@@ -8,7 +8,7 @@ import type { LibraryComponent } from "@/features/components/component-library";
 import { Workspace } from "@/features/components/components-page";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	formatValidationError,
 	holdoutGate,
@@ -16,6 +16,9 @@ import {
 	protocolSummary,
 	reportExportFilename,
 	validationRunRequest,
+	walkForwardGate,
+	walkForwardProtocolFields,
+	walkForwardPreview as previewWalkForward,
 } from "./validation-workspace";
 
 type RunSummary = {
@@ -36,6 +39,12 @@ type Protocol = {
 		sampleOutStartTimeMs: number;
 		sampleOutEndTimeMs?: number;
 	}>;
+	walkForward?: {
+		snapshotId: string;
+		windowSizeBars: number;
+		stepSizeBars: number;
+		minimumHistoryBars: number;
+	};
 };
 type Report = {
 	reportId: string;
@@ -65,6 +74,7 @@ type Report = {
 		totalFees: string;
 		totalTrades: number;
 	};
+	walkForward?: Protocol["walkForward"];
 };
 type Metrics = { totalReturn: string; maxDrawdown: string; sharpe: string };
 
@@ -73,7 +83,13 @@ export function ValidationPage() {
 	const [runs, setRuns] = useState<RunSummary[]>([]);
 	const [components, setComponents] = useState<LibraryComponent[]>([]);
 	const [source, setSource] = useState<BacktestRun>();
+	const [method, setMethod] = useState<"chronological-holdout" | "walk-forward">(
+		"chronological-holdout",
+	);
 	const [sampleOutStart, setSampleOutStart] = useState("");
+	const [windowSizeBars, setWindowSizeBars] = useState("100");
+	const [stepSizeBars, setStepSizeBars] = useState("100");
+	const [minimumHistoryBars, setMinimumHistoryBars] = useState("500");
 	const [protocols, setProtocols] = useState<Protocol[]>([]);
 	const [reports, setReports] = useState<Report[]>([]);
 	const [selectedReportId, setSelectedReportId] = useState("");
@@ -83,7 +99,7 @@ export function ValidationPage() {
 		details?: string;
 	}>();
 
-	const refresh = async () => {
+	const refresh = useCallback(async () => {
 		if (!userId) return;
 		const [nextRuns, nextComponents, nextProtocols, nextReports] =
 			await Promise.all([
@@ -101,7 +117,7 @@ export function ValidationPage() {
 				? current
 				: (nextReports[0]?.reportId ?? ""),
 		);
-	};
+	}, [userId]);
 	useEffect(() => {
 		setSource(undefined);
 		setSampleOutStart("");
@@ -112,7 +128,7 @@ export function ValidationPage() {
 				details: String(error),
 			}),
 		);
-	}, [userId]);
+	}, [refresh]);
 	const labels = useMemo(
 		() =>
 			new Map(
@@ -125,6 +141,21 @@ export function ValidationPage() {
 	);
 	const selectedReport =
 		reports.find((report) => report.reportId === selectedReportId) ?? reports[0];
+	const walkForward = {
+		snapshotId: source?.snapshot.snapshotId ?? "",
+		windowSizeBars: Number(windowSizeBars),
+		stepSizeBars: Number(stepSizeBars),
+		minimumHistoryBars: Number(minimumHistoryBars),
+	};
+	const walkForwardError = walkForwardGate({
+		runId: source?.runId,
+		barCount: source?.bars.length,
+		configuration: walkForward,
+	});
+	const walkForwardPreview =
+		!walkForwardError && source
+			? previewWalkForward(source.bars, walkForward)
+			: undefined;
 	const selectRun = async (runId: string) => {
 		if (!userId) return;
 		setFeedback(undefined);
@@ -141,10 +172,13 @@ export function ValidationPage() {
 	};
 	const freeze = async () => {
 		const boundary = Date.parse(sampleOutStart);
-		const gate = holdoutGate({
-			runId: source?.runId,
-			sampleOutStartTimeMs: boundary,
-		});
+		const gate =
+			method === "chronological-holdout"
+				? holdoutGate({
+						runId: source?.runId,
+						sampleOutStartTimeMs: boundary,
+					})
+				: walkForwardError;
 		if (gate || !userId || !source?.provenance) {
 			setFeedback({
 				summary: gate ?? "This Backtest Run has incomplete provenance.",
@@ -156,13 +190,17 @@ export function ValidationPage() {
 				request: {
 					userId,
 					run: validationRunRequest(userId, source.provenance.normalizedRequest),
-					windows: [
-						{
-							snapshotId: source.snapshot.snapshotId,
-							sampleOutStartTimeMs: boundary,
-						},
-					],
-					methodVersion: "chronological-holdout@1",
+					...(method === "chronological-holdout"
+						? {
+								windows: [
+									{
+										snapshotId: source.snapshot.snapshotId,
+										sampleOutStartTimeMs: boundary,
+									},
+								],
+								methodVersion: "chronological-holdout@1",
+							}
+						: walkForwardProtocolFields(walkForward)),
 					aggregationRuleVersion: "equal-window@1",
 				},
 			});
@@ -219,19 +257,51 @@ export function ValidationPage() {
 	return (
 		<Workspace
 			title="Validation"
-			description="Chronological holdout evidence for immutable research configurations."
+			description="Immutable chronological holdout and walk-forward research evidence."
 		>
 			<Card>
 				<CardHeader>
-					<CardTitle>1. Choose chronological holdout</CardTitle>
+					<CardTitle>1. Choose validation method</CardTitle>
 				</CardHeader>
 				<CardContent className="space-y-3">
-					<p className="text-sm text-muted-foreground">
-						Train on evidence before the boundary, then evaluate the later frozen
-						sample-out evidence.
-					</p>
+					<div
+						className="grid gap-2 sm:grid-cols-2"
+						role="radiogroup"
+						aria-label="Validation method"
+					>
+						<label className="rounded-md border p-3 text-sm">
+							<input
+								type="radio"
+								name="validation-method"
+								checked={method === "chronological-holdout"}
+								onChange={() => setMethod("chronological-holdout")}
+							/>{" "}
+							<span className="font-medium">Chronological holdout</span>
+							<p className="mt-1 text-muted-foreground">
+								Train before one boundary, then evaluate later evidence.
+							</p>
+						</label>
+						<label className="rounded-md border p-3 text-sm">
+							<input
+								type="radio"
+								name="validation-method"
+								checked={method === "walk-forward"}
+								onChange={() => setMethod("walk-forward")}
+							/>{" "}
+							<span className="font-medium">Walk-forward</span>
+							<p className="mt-1 text-muted-foreground">
+								Repeat ordered train and complete sample-out windows on one frozen
+								Snapshot.
+							</p>
+						</label>
+					</div>
 					<div className="rounded-md border p-3 text-sm">
-						Method version: <code>chronological-holdout@1</code>
+						Method version:{" "}
+						<code>
+							{method === "chronological-holdout"
+								? "chronological-holdout@1"
+								: "walk-forward@1"}
+						</code>
 						<br />
 						Aggregation rule: <code>equal-window@1</code>
 					</div>
@@ -269,16 +339,38 @@ export function ValidationPage() {
 						)}
 					</div>
 					{source && <ProtocolContext run={source} labels={labels} />}
-					<label className="grid max-w-sm gap-2 text-sm font-medium">
-						Sample-out starts
-						<Input
-							type="datetime-local"
-							value={sampleOutStart}
-							onChange={(event) => setSampleOutStart(event.target.value)}
+					{method === "chronological-holdout" ? (
+						<label
+							className="grid max-w-sm gap-2 text-sm font-medium"
+							htmlFor="sample-out-start"
+						>
+							Sample-out starts
+							<Input
+								id="sample-out-start"
+								type="datetime-local"
+								value={sampleOutStart}
+								onChange={(event) => setSampleOutStart(event.target.value)}
+							/>
+						</label>
+					) : (
+						<WalkForwardControls
+							windowSizeBars={windowSizeBars}
+							stepSizeBars={stepSizeBars}
+							minimumHistoryBars={minimumHistoryBars}
+							onWindowSizeBarsChange={setWindowSizeBars}
+							onStepSizeBarsChange={setStepSizeBars}
+							onMinimumHistoryBarsChange={setMinimumHistoryBars}
+							error={source ? walkForwardError : undefined}
+							preview={walkForwardPreview}
+							gaps={source?.snapshot.gaps ?? []}
 						/>
-					</label>
+					)}
 					<Button
-						disabled={!source || !sampleOutStart}
+						disabled={
+							!source ||
+							(method === "chronological-holdout" && !sampleOutStart) ||
+							(method === "walk-forward" && Boolean(walkForwardError))
+						}
 						onClick={() => void freeze()}
 					>
 						Freeze Validation Protocol
@@ -383,6 +475,141 @@ export function ValidationPage() {
 	);
 }
 
+function WalkForwardControls({
+	windowSizeBars,
+	stepSizeBars,
+	minimumHistoryBars,
+	onWindowSizeBarsChange,
+	onStepSizeBarsChange,
+	onMinimumHistoryBarsChange,
+	error,
+	preview,
+	gaps,
+}: {
+	windowSizeBars: string;
+	stepSizeBars: string;
+	minimumHistoryBars: string;
+	onWindowSizeBarsChange: (value: string) => void;
+	onStepSizeBarsChange: (value: string) => void;
+	onMinimumHistoryBarsChange: (value: string) => void;
+	error?: string;
+	preview?: ReturnType<typeof previewWalkForward>;
+	gaps: Array<{ startTimeMs: number; endTimeMs: number }>;
+}) {
+	return (
+		<div className="space-y-3 rounded-md border p-3">
+			<div className="grid gap-3 sm:grid-cols-3">
+				<NumberControl
+					id="sample-out-window"
+					label="Sample-out window (Bars)"
+					value={windowSizeBars}
+					onChange={onWindowSizeBarsChange}
+				/>
+				<NumberControl
+					id="walk-forward-step"
+					label="Step (Bars)"
+					value={stepSizeBars}
+					onChange={onStepSizeBarsChange}
+				/>
+				<NumberControl
+					id="walk-forward-minimum-history"
+					label="Minimum history (Bars)"
+					value={minimumHistoryBars}
+					onChange={onMinimumHistoryBarsChange}
+				/>
+			</div>
+			{error ? (
+				<pre className="overflow-x-auto whitespace-pre-wrap text-xs" role="alert">
+					{error}
+				</pre>
+			) : preview ? (
+				<div className="space-y-1 text-sm" role="status">
+					<p>
+						{preview.windows.length} deterministic complete window
+						{preview.windows.length === 1 ? "" : "s"} will freeze in chronological
+						order.
+					</p>
+					<ol className="list-decimal pl-5 text-xs">
+						{preview.windows.map((window) => {
+							const gapCount = gapCountForWindow(window, gaps);
+							return (
+								<li
+									key={`${window.sampleOutStartTimeMs}:${window.sampleOutEndTimeMs ?? "final"}`}
+								>
+									{new Date(window.sampleOutStartTimeMs).toLocaleString()} –{" "}
+									{window.sampleOutEndTimeMs
+										? new Date(window.sampleOutEndTimeMs).toLocaleString()
+										: "final"}
+									{gapCount > 0 && (
+										<>
+											{" "}
+											· {gapCount} Bar Gap{gapCount === 1 ? "" : "s"} in frozen evidence
+										</>
+									)}
+								</li>
+							);
+						})}
+					</ol>
+					{preview.partialFinalWindow && (
+						<p>The partial final window is excluded; only complete windows freeze.</p>
+					)}
+				</div>
+			) : null}
+			{gaps.length > 0 && (
+				<details className="text-sm">
+					<summary>
+						{gaps.length} Bar Gap{gaps.length === 1 ? "" : "s"} remain visible in Run
+						evidence
+					</summary>
+					<ul className="mt-2 list-disc pl-5 text-xs">
+						{gaps.map((gap) => (
+							<li key={`${gap.startTimeMs}:${gap.endTimeMs}`}>
+								{new Date(gap.startTimeMs).toLocaleString()} –{" "}
+								{new Date(gap.endTimeMs).toLocaleString()}
+							</li>
+						))}
+					</ul>
+				</details>
+			)}
+		</div>
+	);
+}
+
+function NumberControl({
+	id,
+	label,
+	value,
+	onChange,
+}: {
+	id: string;
+	label: string;
+	value: string;
+	onChange: (value: string) => void;
+}) {
+	return (
+		<label className="grid gap-2 text-sm font-medium" htmlFor={id}>
+			{label}
+			<Input
+				id={id}
+				type="number"
+				min="1"
+				step="1"
+				inputMode="numeric"
+				value={value}
+				onChange={(event) => onChange(event.target.value)}
+			/>
+		</label>
+	);
+}
+
+function gapCountForWindow(
+	window: { sampleOutEndTimeMs?: number },
+	gaps: Array<{ startTimeMs: number; endTimeMs: number }>,
+) {
+	const end = window.sampleOutEndTimeMs ?? Number.MAX_SAFE_INTEGER;
+	return gaps.filter((gap) => gap.startTimeMs < end).length;
+}
+
 function ProtocolContext({
 	run,
 	labels,
@@ -450,6 +677,10 @@ function ReportViews({
 						value={percent(report.aggregate.averageSampleOutReturn)}
 					/>
 					<Metric
+						label="Average sample-in return"
+						value={percent(report.aggregate.averageSampleInReturn)}
+					/>
+					<Metric
 						label="Worst drawdown"
 						value={percent(report.aggregate.worstSampleOutDrawdown)}
 					/>
@@ -463,6 +694,15 @@ function ReportViews({
 					/>
 					<Metric label="Trades" value={String(report.aggregate.totalTrades)} />
 				</div>
+				{report.walkForward && (
+					<p className="rounded-md border p-3 text-sm">
+						Walk-forward consistency: {report.windows.length} ordered window
+						{report.windows.length === 1 ? "" : "s"} · sample-out{" "}
+						{report.walkForward.windowSizeBars} Bars · step{" "}
+						{report.walkForward.stepSizeBars} Bars · minimum history{" "}
+						{report.walkForward.minimumHistoryBars} Bars
+					</p>
+				)}
 				<div className="flex gap-2">
 					<Button
 						variant="outline"
@@ -517,6 +757,12 @@ function ReportViews({
 							<p className="text-muted-foreground">None</p>
 						)}
 						<p className="mt-2 text-xs">
+							Sample-in Snapshot{" "}
+							<code className="break-all">{window.sampleInSnapshotId}</code>
+							<br />
+							Sample-out Snapshot{" "}
+							<code className="break-all">{window.sampleOutSnapshotId}</code>
+							<br />
 							<a className="underline" href="/backtest">
 								Sample-in Run {window.sampleInRunId ?? "not completed"}
 							</a>

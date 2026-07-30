@@ -5,6 +5,9 @@ import {
 	protocolSummary,
 	reportExportFilename,
 	validationRunRequest,
+	walkForwardGate,
+	walkForwardProtocolFields,
+	walkForwardPreview,
 } from "./validation-workspace";
 
 test("requires a frozen Run and a chronological sample-out boundary", () => {
@@ -55,6 +58,48 @@ test("summarizes frozen Protocol evidence without hiding identities", () => {
 			windows: [{ snapshotId: "snapshot-identity" }],
 		}),
 	).toBe("chronological-holdout@1 · 1 window · Protocol protocol-identity");
+});
+
+test("previews deterministic complete walk-forward windows and rejects invalid history", () => {
+	const bars = Array.from({ length: 20 }, (_, index) => ({
+		openTimeMs: index * 3_600_000,
+	}));
+	const configuration = {
+		windowSizeBars: 5,
+		stepSizeBars: 5,
+		minimumHistoryBars: 10,
+	};
+	expect(
+		walkForwardGate({ runId: "run", barCount: bars.length, configuration }),
+	).toBeUndefined();
+	expect(walkForwardPreview(bars, configuration)).toEqual({
+		windows: [
+			{ sampleOutStartTimeMs: 10 * 3_600_000, sampleOutEndTimeMs: 15 * 3_600_000 },
+			{ sampleOutStartTimeMs: 15 * 3_600_000, sampleOutEndTimeMs: undefined },
+		],
+		partialFinalWindow: false,
+	});
+	expect(
+		walkForwardGate({
+			runId: "run",
+			barCount: bars.length,
+			configuration: { ...configuration, minimumHistoryBars: bars.length },
+		}),
+	).toMatch(/more history/);
+	expect(
+		walkForwardPreview(bars, {
+			...configuration,
+			windowSizeBars: 6,
+			stepSizeBars: 6,
+		}),
+	).toMatchObject({ partialFinalWindow: true });
+	expect(
+		walkForwardProtocolFields({ snapshotId: "snapshot", ...configuration }),
+	).toEqual({
+		windows: [],
+		walkForward: { snapshotId: "snapshot", ...configuration },
+		methodVersion: "walk-forward@1",
+	});
 });
 
 test("keeps frozen boundaries and export identities reviewable", () => {

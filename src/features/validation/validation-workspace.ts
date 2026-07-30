@@ -7,6 +7,83 @@ export function holdoutGate(input?: {
 		return "Choose a chronological sample-out boundary.";
 }
 
+export type WalkForwardConfiguration = {
+	windowSizeBars: number;
+	stepSizeBars: number;
+	minimumHistoryBars: number;
+};
+
+export type WalkForwardPreview = {
+	windows: Array<{
+		sampleOutStartTimeMs: number;
+		sampleOutEndTimeMs?: number;
+	}>;
+	partialFinalWindow: boolean;
+};
+
+export function walkForwardGate(input?: {
+	runId?: string;
+	barCount?: number;
+	configuration?: WalkForwardConfiguration;
+}) {
+	if (!input?.runId) return "Select a completed Backtest Run first.";
+	const configuration = input.configuration;
+	if (
+		!configuration ||
+		![
+			configuration.windowSizeBars,
+			configuration.stepSizeBars,
+			configuration.minimumHistoryBars,
+		].every((value) => Number.isInteger(value) && value > 0)
+	)
+		return "Walk-forward window sizes must be positive";
+	if (configuration.stepSizeBars < configuration.windowSizeBars)
+		return "Walk-forward step must not overlap sample-out windows";
+	if (!input.barCount || configuration.minimumHistoryBars >= input.barCount)
+		return "Walk-forward requires more history than the minimum.";
+	if (
+		configuration.minimumHistoryBars + configuration.windowSizeBars >
+		input.barCount
+	)
+		return "Walk-forward history cannot produce a complete window.";
+}
+
+export function walkForwardProtocolFields(
+	walkForward: WalkForwardConfiguration & { snapshotId: string },
+) {
+	return {
+		windows: [],
+		walkForward,
+		methodVersion: "walk-forward@1",
+	};
+}
+
+export function walkForwardPreview(
+	bars: readonly { openTimeMs: number }[],
+	configuration: WalkForwardConfiguration,
+): WalkForwardPreview {
+	const windows = [];
+	for (
+		let start = configuration.minimumHistoryBars;
+		start + configuration.windowSizeBars <= bars.length;
+		start += configuration.stepSizeBars
+	) {
+		windows.push({
+			sampleOutStartTimeMs: bars[start].openTimeMs,
+			sampleOutEndTimeMs: bars[start + configuration.windowSizeBars]?.openTimeMs,
+		});
+	}
+	const nextStart =
+		configuration.minimumHistoryBars +
+		windows.length * configuration.stepSizeBars;
+	return {
+		windows,
+		partialFinalWindow:
+			nextStart < bars.length &&
+			nextStart + configuration.windowSizeBars > bars.length,
+	};
+}
+
 export function formatValidationError(error: unknown) {
 	return {
 		summary: "Validation could not freeze the Protocol.",
