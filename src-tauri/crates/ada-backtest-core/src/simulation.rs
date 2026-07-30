@@ -180,6 +180,27 @@ impl std::error::Error for SimulationError {}
 pub struct SpotSimulator;
 
 impl SpotSimulator {
+    pub fn validate_execution_inputs(
+        initial_quote_allocation: Decimal,
+        profile: &ExecutionProfile,
+    ) -> Result<(), SimulationError> {
+        if initial_quote_allocation <= Decimal::ZERO {
+            return Err(SimulationError("Backtest allocation is invalid".into()));
+        }
+        if profile.price_increment <= Decimal::ZERO
+            || profile.quantity_increment <= Decimal::ZERO
+            || profile.minimum_quantity < Decimal::ZERO
+            || profile.maker_fee_rate < Decimal::ZERO
+            || profile.taker_fee_rate < Decimal::ZERO
+            || profile.adverse_slippage_rate < Decimal::ZERO
+            || profile.rebalance_threshold < Decimal::ZERO
+            || profile.risk_free_rate < Decimal::ZERO
+        {
+            return Err(SimulationError("Execution Profile is invalid".into()));
+        }
+        Ok(())
+    }
+
     pub fn execute(
         bars: &[OhlcvBar],
         gaps: &[BarGap],
@@ -442,22 +463,10 @@ fn validate(
     allocation: Decimal,
     profile: &ExecutionProfile,
 ) -> Result<(), SimulationError> {
-    if bars.is_empty() || bars.len() > 1_000_000 || allocation <= Decimal::ZERO {
-        return Err(SimulationError(
-            "Backtest input or allocation is invalid".into(),
-        ));
+    if bars.is_empty() || bars.len() > 1_000_000 {
+        return Err(SimulationError("Backtest input is invalid".into()));
     }
-    if profile.price_increment <= Decimal::ZERO
-        || profile.quantity_increment <= Decimal::ZERO
-        || profile.minimum_quantity < Decimal::ZERO
-        || profile.maker_fee_rate < Decimal::ZERO
-        || profile.taker_fee_rate < Decimal::ZERO
-        || profile.adverse_slippage_rate < Decimal::ZERO
-        || profile.rebalance_threshold < Decimal::ZERO
-        || profile.risk_free_rate < Decimal::ZERO
-    {
-        return Err(SimulationError("Execution Profile is invalid".into()));
-    }
+    SpotSimulator::validate_execution_inputs(allocation, profile)?;
     if decisions.iter().any(|decision| {
         decision.target_exposure < Decimal::ZERO || decision.target_exposure > Decimal::ONE
     }) {
@@ -718,6 +727,24 @@ mod tests {
             risk_free_rate: Decimal::ZERO,
             fill_policy: policy,
         }
+    }
+
+    #[test]
+    fn preflight_rejects_invalid_allocation_and_execution_increments() {
+        let mut execution = profile(FillPolicy::Taker);
+        assert_eq!(
+            SpotSimulator::validate_execution_inputs(Decimal::ZERO, &execution)
+                .unwrap_err()
+                .to_string(),
+            "Backtest allocation is invalid"
+        );
+        execution.price_increment = Decimal::ZERO;
+        assert_eq!(
+            SpotSimulator::validate_execution_inputs(Decimal::ONE, &execution)
+                .unwrap_err()
+                .to_string(),
+            "Execution Profile is invalid"
+        );
     }
 
     #[test]

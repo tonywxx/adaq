@@ -15,8 +15,8 @@ use ada_backtest_core::{
 use ada_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
 use adaq_component_tooling::{
     ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
-    FactorInstancePlanInput, FeatureSlotDefinition, FrozenIndicatorPlan, ParameterDefinition,
-    RunLimits, component_parameters, native_engine_identity,
+    ComponentParameterValue, FactorInstancePlanInput, FeatureSlotDefinition, FrozenIndicatorPlan,
+    ParameterDefinition, RunLimits, component_parameters, native_engine_identity,
     validate_and_freeze_with_factors_and_parameters, verify_package,
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -793,6 +793,37 @@ pub struct BacktestRunRequest {
     pub seed: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestDependencyRequest {
+    pub user_id: String,
+    pub strategy_archive_sha256: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestPreflight {
+    pub run_id: String,
+    pub reuses_existing_run: bool,
+    pub snapshot: MarketDataSnapshot,
+    pub normalized_request: NormalizedBacktestRunRequest,
+    pub indicator_plan: serde_json::Value,
+    pub component_lock: Vec<ComponentLockEntry>,
+}
+
+struct PreparedBacktest {
+    strategy: ComponentPackage,
+    strategy_parameters: Vec<ComponentParameterValue>,
+    factor_packages: Vec<ComponentPackage>,
+    plan: FrozenIndicatorPlan,
+    provenance: BacktestRunProvenance,
+    component_lock: Vec<ComponentLockEntry>,
+    run_id: String,
+    snapshot: MarketDataSnapshot,
+    bars: Vec<OhlcvBar>,
+    gaps: Vec<BarGap>,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FactorInstanceRequest {
@@ -1122,6 +1153,41 @@ pub fn component_list(
 }
 
 #[tauri::command]
+pub fn backtest_compatible_factors(
+    request: BacktestDependencyRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
+    if strategy.manifest.kind != ComponentKind::Strategy {
+        return Err("Backtest requires a Strategy Component".into());
+    }
+    let components = state.list_components(&request.user_id)?;
+    strategy
+        .manifest
+        .dependencies
+        .iter()
+        .map(|dependency| {
+            let hashes = components
+                .iter()
+                .filter(|component| {
+                    component.kind == "factor"
+                        && component.compatible
+                        && component.component_id == dependency.component_id.to_string()
+                })
+                .filter_map(|component| {
+                    state
+                        .package_for_user(&request.user_id, &component.archive_sha256)
+                        .ok()
+                        .filter(|package| dependency.version.matches(&package.manifest.version))
+                        .map(|_| component.archive_sha256.clone())
+                })
+                .collect();
+            Ok((dependency.alias.clone(), hashes))
+        })
+        .collect()
+}
+
+#[tauri::command]
 pub fn component_delete(
     request: ComponentDeleteRequest,
     state: tauri::State<'_, M3State>,
@@ -1258,10 +1324,126 @@ pub fn backtest_run(
     execute_backtest(request, &state)
 }
 
+#[tauri::command]
+pub fn backtest_preflight(
+    request: BacktestRunRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<BacktestPreflight, String> {
+    let prepared = prepare_backtest(&request, &state)?;
+    Ok(BacktestPreflight {
+        run_id: prepared.run_id.clone(),
+        reuses_existing_run: state.load_run(&request.user_id, &prepared.run_id).is_ok(),
+        snapshot: prepared.snapshot,
+        normalized_request: prepared.provenance.normalized_request,
+        indicator_plan: serde_json::from_str(&prepared.provenance.indicator_plan_json)
+            .map_err(string)?,
+        component_lock: prepared.component_lock,
+    })
+}
+
 fn execute_backtest(
     request: BacktestRunRequest,
     state: &M3State,
 ) -> Result<BacktestRunView, String> {
+    let prepared = prepare_backtest(&request, state)?;
+    if let Ok(existing) = state.load_run(&request.user_id, &prepared.run_id) {
+        return Ok(run_view(&existing, i64::MIN, i64::MAX, 2_000));
+    }
+    let PreparedBacktest {
+        strategy,
+        strategy_parameters,
+        factor_packages,
+        plan,
+        provenance,
+        component_lock,
+        run_id,
+        snapshot,
+        bars,
+        gaps,
+    } = prepared;
+    let strategy_path = state.runtime_component(&strategy)?;
+    let factor_paths = factor_packages
+        .iter()
+        .map(|package| state.runtime_component(package))
+        .collect::<Result<Vec<_>, _>>()?;
+    let strategy_path = strategy_path.to_string_lossy();
+    let factor_paths = factor_paths
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let factors = request
+        .factor_instances
+        .iter()
+        .zip(&factor_paths)
+        .map(|(factor, path)| FactorRunRequest {
+            alias: &factor.alias,
+            path,
+        })
+        .collect::<Vec<_>>();
+    let engine_result = RunEngine::execute(&RunRequest {
+        strategy_path: &strategy_path,
+        strategy_parameters: &strategy_parameters,
+        factors: &factors,
+        bars: &bars,
+        gaps: &gaps,
+        plan: &plan,
+        position_mode: PositionMode::LongOnly,
+        limits: RunLimits::default(),
+    })
+    .map_err(|error| error.to_string())?;
+    let bars = engine_result.bars;
+    let decisions = engine_result
+        .decisions
+        .into_iter()
+        .map(|decision| SimulationDecision {
+            open_time_ms: decision.open_time_ms,
+            target_exposure: decision.target_exposure,
+        })
+        .collect::<Vec<_>>();
+    let result = SpotSimulator::execute(
+        &bars,
+        &gaps,
+        &decisions,
+        request.initial_quote_allocation,
+        &request.execution_profile,
+    )
+    .map_err(string)?;
+    let run = BacktestRun {
+        run_id: run_id.clone(),
+        plan_hash: engine_result.plan_hash,
+        snapshot,
+        bars,
+        decisions,
+        pauses: engine_result
+            .pauses
+            .iter()
+            .map(|pause| RunPauseRecord {
+                open_time_ms: pause.open_time_ms,
+                reason: match &pause.reason {
+                    crate::run_engine::RunPauseReason::Warmup => "warmup".into(),
+                    crate::run_engine::RunPauseReason::MissingInput { slot, source } => {
+                        format!("missing-input:{slot}:{source}")
+                    }
+                },
+            })
+            .collect(),
+        result,
+        component_lock,
+        provenance: Some(provenance),
+    };
+    state.save_run(&request.user_id, &run_id, &run)?;
+    Ok(run_view(&run, i64::MIN, i64::MAX, 2_000))
+}
+
+fn prepare_backtest(
+    request: &BacktestRunRequest,
+    state: &M3State,
+) -> Result<PreparedBacktest, String> {
+    SpotSimulator::validate_execution_inputs(
+        request.initial_quote_allocation,
+        &request.execution_profile,
+    )
+    .map_err(string)?;
     let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
     if !matches!(strategy.manifest.kind, ComponentKind::Strategy) {
         return Err("Backtest requires a Strategy Component".into());
@@ -1366,15 +1548,7 @@ fn execute_backtest(
     };
     validate_provenance(&provenance)?;
     let run_id = fingerprint(&request.user_id, &provenance)?;
-    if let Ok(existing) = state.load_run(&request.user_id, &run_id) {
-        return Ok(run_view(&existing, i64::MIN, i64::MAX, 2_000));
-    }
     let (snapshot, bars) = state.snapshot_for_user(&request.user_id, &request.snapshot_id)?;
-    let strategy_path = state.runtime_component(&strategy)?;
-    let factor_paths = factor_packages
-        .iter()
-        .map(|(_, package)| state.runtime_component(package))
-        .collect::<Result<Vec<_>, _>>()?;
     let gaps = snapshot
         .gaps
         .iter()
@@ -1383,73 +1557,21 @@ fn execute_backtest(
             end_time_ms: gap.end_time_ms,
         })
         .collect::<Vec<_>>();
-    let strategy_path = strategy_path.to_string_lossy();
-    let factor_paths = factor_paths
-        .iter()
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let factors = request
-        .factor_instances
-        .iter()
-        .zip(&factor_paths)
-        .map(|(factor, path)| FactorRunRequest {
-            alias: &factor.alias,
-            path,
-        })
-        .collect::<Vec<_>>();
-    let engine_result = RunEngine::execute(&RunRequest {
-        strategy_path: &strategy_path,
-        strategy_parameters: &strategy_parameters,
-        factors: &factors,
-        bars: &bars,
-        gaps: &gaps,
-        plan: &plan,
-        position_mode: PositionMode::LongOnly,
-        limits: RunLimits::default(),
-    })
-    .map_err(|error| error.to_string())?;
-    let bars = engine_result.bars;
-    let decisions = engine_result
-        .decisions
-        .into_iter()
-        .map(|decision| SimulationDecision {
-            open_time_ms: decision.open_time_ms,
-            target_exposure: decision.target_exposure,
-        })
-        .collect::<Vec<_>>();
-    let result = SpotSimulator::execute(
-        &bars,
-        &gaps,
-        &decisions,
-        request.initial_quote_allocation,
-        &request.execution_profile,
-    )
-    .map_err(string)?;
-    let run = BacktestRun {
-        run_id: run_id.clone(),
-        plan_hash: engine_result.plan_hash,
+    Ok(PreparedBacktest {
+        strategy,
+        strategy_parameters,
+        factor_packages: factor_packages
+            .into_iter()
+            .map(|(_, package)| package)
+            .collect(),
+        plan,
+        provenance,
+        component_lock,
+        run_id,
         snapshot,
         bars,
-        decisions,
-        pauses: engine_result
-            .pauses
-            .iter()
-            .map(|pause| RunPauseRecord {
-                open_time_ms: pause.open_time_ms,
-                reason: match &pause.reason {
-                    crate::run_engine::RunPauseReason::Warmup => "warmup".into(),
-                    crate::run_engine::RunPauseReason::MissingInput { slot, source } => {
-                        format!("missing-input:{slot}:{source}")
-                    }
-                },
-            })
-            .collect(),
-        result,
-        component_lock,
-        provenance: Some(provenance),
-    };
-    state.save_run(&request.user_id, &run_id, &run)?;
-    Ok(run_view(&run, i64::MIN, i64::MAX, 2_000))
+        gaps,
+    })
 }
 
 #[tauri::command]
@@ -2652,6 +2774,17 @@ mod tests {
             },
             seed: 0,
         };
+        let preview = prepare_backtest(&request(), &state).unwrap();
+        assert!(state.load_run("alice", &preview.run_id).is_err());
+        assert_eq!(
+            preview
+                .provenance
+                .normalized_request
+                .initial_quote_allocation,
+            rust_decimal::Decimal::from(10_000),
+        );
+        assert!(preview.provenance.indicator_plan_json.contains("\"slots\""));
+
         let first = execute_backtest(request(), &state).unwrap();
         let second = execute_backtest(request(), &state).unwrap();
         assert!(!first.plan_hash.is_empty());

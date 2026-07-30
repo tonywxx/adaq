@@ -24,7 +24,6 @@ import {
 import {
 	defaultExecutionProfile,
 	matchingFactors,
-	parameterValues,
 	runGate,
 } from "./guided-backtest";
 import { formatDecimal } from "./format-decimal";
@@ -168,6 +167,14 @@ type ExecutionPage = {
 	totalOrders: number;
 	totalFills: number;
 };
+type BacktestPreflight = {
+	runId: string;
+	reusesExistingRun: boolean;
+	snapshot: Snapshot;
+	normalizedRequest: Record<string, unknown>;
+	indicatorPlan: Record<string, unknown>;
+	componentLock: Array<Record<string, unknown>>;
+};
 const EXECUTION_PAGE_SIZE = 100;
 
 export function BacktestPage() {
@@ -191,6 +198,8 @@ export function BacktestPage() {
 	const [initialQuoteAllocation, setInitialQuoteAllocation] = useState("10000");
 	const [executionProfile, setExecutionProfile] = useState(defaultExecutionProfile);
 	const [running, setRunning] = useState(false);
+	const [compatibleFactors, setCompatibleFactors] = useState<Record<string, string[]>>({});
+	const [preflight, setPreflight] = useState<BacktestPreflight>();
 	const [start, setStart] = useState(() =>
 		new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10),
 	);
@@ -288,42 +297,17 @@ export function BacktestPage() {
 	const selectedStrategy = strategies.find(
 		(item) => item.archiveSha256 === strategy,
 	);
-	const review = snapshot && selectedStrategy && {
-		snapshot: {
-			id: snapshot.snapshotId,
-			instrument: `${snapshot.src.toUpperCase()} · ${snapshot.code} · ${snapshot.interval}`,
-			barCount: snapshot.barCount,
-			gaps: snapshot.gaps.length,
-		},
-		packages: [
-			{
-				role: "Strategy",
-				name: `${selectedStrategy.name} v${selectedStrategy.version}`,
-				hash: selectedStrategy.archiveSha256,
-				parameters: parameterValues(selectedStrategy, strategyParameters),
-				plannedAnalyticalInputs: selectedStrategy.featureSlots,
-			},
-			...selectedStrategy.dependencies.flatMap((dependency) => {
-				const factor = factors.find(
-					(item) => item.archiveSha256 === factorSelections[dependency.alias],
-				);
-				return factor
-					? [{
-						role: `Factor · ${dependency.alias}`,
-						name: `${factor.name} v${factor.version}`,
-						hash: factor.archiveSha256,
-						parameters: parameterValues(
-							factor,
-							factorParameters[dependency.alias] ?? {},
-						),
-					}]
-					: [];
-			}),
-		],
-		initialQuoteAllocation,
-		executionProfile,
-	};
-	const selectStage = (next: "data" | "strategy" | "execution" | "results") => {
+	useEffect(() => {
+		setCompatibleFactors({});
+		setPreflight(undefined);
+		if (!userId || !strategy) return;
+		void invoke<Record<string, string[]>>("backtest_compatible_factors", {
+			request: { userId, strategyArchiveSha256: strategy },
+		})
+			.then(setCompatibleFactors)
+			.catch((error) => setMessage(String(error)));
+	}, [strategy, userId]);
+	const selectStage = async (next: "data" | "strategy" | "execution" | "results") => {
 		if (next === "strategy" && !snapshot) {
 			setMessage("Select a Market Data Snapshot before continuing.");
 			return;
@@ -334,21 +318,37 @@ export function BacktestPage() {
 				strategy: selectedStrategy,
 				dependencies: selectedStrategy?.dependencies ?? [],
 				factorSelections,
-				initialQuoteAllocation,
-				executionValues: Object.entries(executionProfile)
-					.filter(([name]) => name !== "fillPolicy")
-					.map(([, value]) => value),
 				running,
 			});
 			if (gate) {
 				setMessage(gate);
 				return;
 			}
+			if (!snapshot) return;
+			setStage("execution");
+			setRunning(true);
+			setRunTechnicalError("");
+			try {
+				setPreflight(
+					await invoke<BacktestPreflight>("backtest_preflight", {
+						request: buildRunRequest(snapshot.snapshotId),
+					}),
+				);
+				setMessage("Authoritative inputs validated. Review before running.");
+			} catch (error) {
+				const details = String(error);
+				setRunTechnicalError(details);
+				setMessage(details);
+			} finally {
+				setRunning(false);
+			}
+			return;
 		}
 		if (next === "results" && !run) {
 			setMessage("Run a Backtest before viewing Results.");
 			return;
 		}
+		if (next === "data" || next === "strategy") setPreflight(undefined);
 		setStage(next);
 	};
 	const prepare = async () => {
@@ -538,15 +538,15 @@ export function BacktestPage() {
 		}
 	};
 	const execute = async () => {
+		if (!preflight) {
+			await selectStage("execution");
+			return;
+		}
 		const gate = runGate({
 			snapshotId: snapshot?.snapshotId,
 			strategy: selectedStrategy,
 			dependencies: selectedStrategy?.dependencies ?? [],
 			factorSelections,
-			initialQuoteAllocation,
-			executionValues: Object.entries(executionProfile)
-				.filter(([name]) => name !== "fillPolicy")
-				.map(([, value]) => value),
 			running,
 		});
 		if (gate) {
@@ -626,7 +626,7 @@ export function BacktestPage() {
 						type="button"
 						variant={stage === item ? "default" : "outline"}
 						aria-current={stage === item ? "step" : undefined}
-						onClick={() => selectStage(item)}
+						onClick={() => void selectStage(item)}
 					>
 						{index + 1}. {item[0].toUpperCase() + item.slice(1)}
 					</Button>
@@ -764,7 +764,11 @@ export function BacktestPage() {
 								}
 							>
 								<option value="">Select {dependency.version}</option>
-								{matchingFactors(dependency, factors)
+								{matchingFactors(
+									dependency,
+									factors,
+									compatibleFactors[dependency.alias] ?? [],
+								)
 									.map((item) => (
 										<option key={item.archiveSha256} value={item.archiveSha256}>
 											{item.name} v{item.version}
@@ -826,7 +830,7 @@ export function BacktestPage() {
 								Cancel
 							</Button>
 						)}
-						<Button disabled={!snapshot || !strategy} onClick={() => selectStage("execution")}>
+						<Button disabled={!snapshot || !strategy} onClick={() => void selectStage("execution")}>
 							Review execution
 						</Button>
 						<Button
@@ -927,7 +931,10 @@ export function BacktestPage() {
 								type="text"
 								inputMode="decimal"
 								value={initialQuoteAllocation}
-								onChange={(event) => setInitialQuoteAllocation(event.target.value)}
+								onChange={(event) => {
+									setInitialQuoteAllocation(event.target.value);
+									setPreflight(undefined);
+								}}
 							/>
 						</Field>
 						{Object.entries(executionProfile)
@@ -938,9 +945,10 @@ export function BacktestPage() {
 										type="text"
 										inputMode="decimal"
 										value={value}
-										onChange={(event) =>
-											setExecutionProfile((current) => ({ ...current, [name]: event.target.value }))
-										}
+										onChange={(event) => {
+											setExecutionProfile((current) => ({ ...current, [name]: event.target.value }));
+											setPreflight(undefined);
+										}}
 									/>
 								</Field>
 							))}
@@ -948,12 +956,13 @@ export function BacktestPage() {
 							<select
 								className="h-9 rounded-md border bg-background px-3"
 								value={executionProfile.fillPolicy}
-								onChange={(event) =>
+								onChange={(event) => {
 									setExecutionProfile((current) => ({
 										...current,
 										fillPolicy: event.target.value as "maker" | "taker",
-									}))
-								}
+									}));
+									setPreflight(undefined);
+								}}
 							>
 								<option value="taker">Taker</option>
 								<option value="maker">Maker</option>
@@ -962,7 +971,7 @@ export function BacktestPage() {
 						<div className="md:col-span-2 lg:col-span-3 rounded-md border p-3 text-sm">
 							<p className="font-medium">Authoritative inputs</p>
 							<pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">
-								{JSON.stringify(review, null, 2)}
+								{JSON.stringify(preflight, null, 2)}
 							</pre>
 						</div>
 						{runTechnicalError && (
@@ -971,8 +980,11 @@ export function BacktestPage() {
 								<pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-xs">{runTechnicalError}</pre>
 							</div>
 						)}
-						<Button disabled={running} onClick={() => void execute()}>
-							{running ? "Running…" : "Run Backtest"}
+						<Button
+							disabled={running}
+							onClick={() => void (preflight ? execute() : selectStage("execution"))}
+						>
+							{running ? "Validating…" : preflight ? "Run Backtest" : "Validate inputs"}
 						</Button>
 						<p className="self-center text-sm text-muted-foreground" role="status" aria-live="polite">
 							{message}

@@ -32,9 +32,9 @@ test("shows only usable Factor Components for a required dependency", () => {
 		matchingFactors(dependency, [
 			component({}),
 			component({ componentId: "other" }),
-			component({ version: "2.0.0" }),
+			component({ version: "2.0.0", archiveSha256: "c".repeat(64) }),
 			component({ compatible: false, compatibilityError: "unsupported ABI" }),
-		]),
+		], ["a".repeat(64)]),
 	).toHaveLength(1);
 });
 
@@ -59,7 +59,6 @@ test("stage gates prevent incomplete and duplicate-ready submissions", () => {
 			strategy,
 			dependencies: [],
 			factorSelections: {},
-			initialQuoteAllocation: "10000",
 		}),
 	).toMatch(/Snapshot/);
 	expect(
@@ -68,7 +67,6 @@ test("stage gates prevent incomplete and duplicate-ready submissions", () => {
 			strategy,
 			dependencies: [],
 			factorSelections: {},
-			initialQuoteAllocation: "10000.00",
 		}),
 	).toBeUndefined();
 	expect(
@@ -77,17 +75,6 @@ test("stage gates prevent incomplete and duplicate-ready submissions", () => {
 			strategy,
 			dependencies: [],
 			factorSelections: {},
-			initialQuoteAllocation: "10000",
-			executionValues: ["bad"],
-		}),
-	).toMatch(/Execution Profile/);
-	expect(
-		runGate({
-			snapshotId: "snapshot",
-			strategy,
-			dependencies: [],
-			factorSelections: {},
-			initialQuoteAllocation: "10000.00",
 			running: true,
 		}),
 	).toMatch(/already running/);
