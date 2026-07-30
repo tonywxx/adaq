@@ -466,10 +466,33 @@ impl M3State {
 
     fn delete_run(&self, user_id: &str, run_id: &str) -> Result<(), String> {
         validate_user(user_id)?;
-        let changed = self
-            .database
-            .lock()
+        let database = self.database.lock().map_err(string)?;
+        let mut statement = database
+            .prepare("SELECT report_json FROM validation_reports WHERE user_id = ?1")
+            .map_err(string)?;
+        let reports = statement
+            .query_map([user_id], |row| {
+                serde_json::from_str::<ValidationReport>(&row.get::<_, String>(0)?).map_err(
+                    |error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    },
+                )
+            })
             .map_err(string)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(string)?;
+        if reports
+            .iter()
+            .any(|report| report_references_run(report, run_id))
+        {
+            return Err("Backtest Run is referenced by an immutable Validation Report".into());
+        }
+        drop(statement);
+        let changed = database
             .execute(
                 "DELETE FROM backtest_runs WHERE user_id = ?1 AND run_id = ?2",
                 params![user_id, run_id],
@@ -1893,6 +1916,16 @@ fn validation_report_id(report: &ValidationReport) -> Result<String, String> {
     content_id(&value)
 }
 
+fn report_references_run(report: &ValidationReport, run_id: &str) -> bool {
+    report.windows.iter().any(|window| {
+        window.sample_in_run_id.as_deref() == Some(run_id)
+            || window.sample_out_run_id.as_deref() == Some(run_id)
+    }) || report
+        .cross_market
+        .iter()
+        .any(|context| context.run_id.as_deref() == Some(run_id))
+}
+
 fn canonical_json(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Array(values) => {
@@ -2630,6 +2663,14 @@ mod tests {
         };
         report.report_id = content_id(&report).unwrap();
         state.save_report(&report).unwrap();
+        assert!(
+            state
+                .delete_run(
+                    "alice",
+                    report.windows[0].sample_in_run_id.as_deref().unwrap(),
+                )
+                .is_err()
+        );
         assert_eq!(state.list_reports("alice").unwrap().len(), 1);
         assert!(state.list_reports("bob").unwrap().is_empty());
         assert!(validation_markdown(&report).contains(&report.protocol_id));
