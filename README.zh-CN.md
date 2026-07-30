@@ -25,8 +25,9 @@ ADAQ V1 是本地优先的研究、回测与模拟桌面应用。它不执行真
 | M3 | 可复现的 crypto Spot Backtest。Backtest Run 不可变地绑定 Market Data Snapshot、Component Lock、参数、Indicator Plan、Execution Profile、引擎版本与 seed。结果本地持久化，包括 Target Decisions、模拟订单、成交、权益、费用、指标、历史记录和图表。 |
 | M4 | Component Developer Kit。Rust SDK、`adaq-component` CLI、模板、conformance 检查与 `.adaq` 打包流程支持 Factor 和 Strategy Component 的 `new`、`build`、`verify`。 |
 | M5 | TA-Lib Indicator Engine、Indicator Catalog 与 Feature Slots。主机固定官方 C TA-Lib v0.7.1，暴露含 160 个 Indicators、179 个输出的 `adaq-indicator-catalog@1.0.0`，用 `planHash` 冻结 canonical Indicator Plans，支持 Market、Built-in、External Factor 三类 Slot source，按 Continuous Bar Segment 执行，在 Bar Gaps 重置分析状态，并执行 typed Plan/Run errors 与固定资源上限。 |
+| M6 | 可执行组件与研究验证。双语可执行 Factor 和 Strategy 示例讲解受支持的 SDK 与 CLI 工作流；可重放级 Backtest Run provenance 保留全部权威输入；不可变 Validation Protocol 与 Validation Report 支持时间顺序留出、滚动前推和跨市场研究，并提供可追溯证据及 JSON/Markdown 导出。 |
 
-M1-M5 合起来形成当前可用闭环：开发 Component，打包并验证，导入本地 Component Library，冻结精确市场数据和 Indicator Plans，运行沙箱化 Strategy Backtest，并查看持久化的决策、成交、指标和图表。
+M1-M6 合起来形成当前可用闭环：开发 Component，打包并验证，导入本地 Component Library，冻结精确市场数据和 Indicator Plans，运行沙箱化 Strategy Backtest，查看持久化的决策、成交、指标和图表，并生成不可变的研究验证证据。
 
 ## 开发组件
 

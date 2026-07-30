@@ -25,8 +25,9 @@ ADAQ V1 is a local-first research, backtesting, and simulation desktop app. It d
 | M3 | Reproducible crypto Spot Backtest. A Backtest Run immutably binds a Market Data Snapshot, Component Lock, parameters, Indicator Plan, Execution Profile, engine version, and seed. Results persist locally with Target Decisions, simulated orders, fills, equity, fees, metrics, history, and charts. |
 | M4 | Component Developer Kit. The Rust SDK, `adaq-component` CLI, templates, conformance checks, and `.adaq` packaging flow support `new`, `build`, and `verify` for Factor and Strategy Components. |
 | M5 | TA-Lib Indicator Engine, Indicator Catalog, and Feature Slots. The host pins official C TA-Lib v0.7.1, exposes `adaq-indicator-catalog@1.0.0` with 160 Indicators and 179 outputs, freezes canonical Indicator Plans with `planHash`, supports Market, Built-in, and External Factor Slot sources, evaluates by Continuous Bar Segment, resets analytical state at Bar Gaps, and enforces typed Plan/Run errors plus fixed resource ceilings. |
+| M6 | Executable Components and Research Validation. Bilingual executable Factor and Strategy examples teach the supported SDK and CLI workflow; replay-grade Backtest Run provenance preserves every authoritative input; immutable Validation Protocols and Reports support chronological holdout, walk-forward, and cross-market research with traceable evidence and JSON/Markdown exports. |
 
-Together, M1-M5 provide the current closed loop: develop a Component, package and verify it, import it into the local Component Library, freeze exact market data and Indicator Plans, run a sandboxed Strategy Backtest, and inspect persisted decisions, fills, metrics, and charts.
+Together, M1-M6 provide the current closed loop: develop a Component, package and verify it, import it into the local Component Library, freeze exact market data and Indicator Plans, run a sandboxed Strategy Backtest, inspect persisted decisions, fills, metrics, and charts, and produce immutable research-validation evidence.
 
 ## Develop a Component
 

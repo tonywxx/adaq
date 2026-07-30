@@ -252,6 +252,14 @@ _Avoid_: Buy signal, sell signal, chart marker
 An evidence-backed Instrument, Bar Interval, and parameter configuration in which a Component was historically evaluated.
 _Avoid_: Best market, guaranteed configuration, highest future win rate
 
+**Candidate Discovery**:
+The process of producing Factor or Strategy Component candidates for evaluation without asserting their quality or future performance.
+_Avoid_: Best-strategy generation, winner discovery
+
+**Validation-ranked Candidate**:
+A Component candidate's position under one exact Validation Protocol and scoring rule; the rank is historical evidence within that frozen study, not proof of global optimality or future profitability.
+_Avoid_: Best Factor, best Strategy, guaranteed winner
+
 ### Supervised Live Trading
 
 **Supervised Local Execution**:
