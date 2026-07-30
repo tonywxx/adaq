@@ -94,6 +94,18 @@ impl M3State {
                 PRIMARY KEY(run_id, archive_sha256),
                 FOREIGN KEY(run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
                 FOREIGN KEY(archive_sha256) REFERENCES component_content(archive_sha256)
+             );
+             CREATE TABLE IF NOT EXISTS validation_protocols (
+                protocol_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                protocol_json TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS validation_reports (
+                report_id TEXT PRIMARY KEY,
+                protocol_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                report_json TEXT NOT NULL,
+                FOREIGN KEY(protocol_id) REFERENCES validation_protocols(protocol_id)
              );",
             )
             .map_err(string)?;
@@ -469,6 +481,77 @@ impl M3State {
             Ok(())
         }
     }
+
+    fn save_protocol(&self, protocol: &ValidationProtocol) -> Result<(), String> {
+        self.database.lock().map_err(string)?.execute(
+            "INSERT OR IGNORE INTO validation_protocols(protocol_id, user_id, protocol_json) VALUES (?1, ?2, ?3)",
+            params![protocol.protocol_id, protocol.user_id, serde_json::to_string(protocol).map_err(string)?],
+        ).map_err(string)?;
+        Ok(())
+    }
+
+    fn load_protocol(
+        &self,
+        user_id: &str,
+        protocol_id: &str,
+    ) -> Result<ValidationProtocol, String> {
+        validate_user(user_id)?;
+        self.database.lock().map_err(string)?.query_row(
+            "SELECT protocol_json FROM validation_protocols WHERE user_id = ?1 AND protocol_id = ?2",
+            params![user_id, protocol_id],
+            |row| serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))),
+        ).map_err(|_| "Validation Protocol was not found".to_owned())
+    }
+
+    fn list_protocols(&self, user_id: &str) -> Result<Vec<ValidationProtocol>, String> {
+        validate_user(user_id)?;
+        let database = self.database.lock().map_err(string)?;
+        let mut statement = database.prepare("SELECT protocol_json FROM validation_protocols WHERE user_id = ?1 ORDER BY rowid DESC").map_err(string)?;
+        statement
+            .query_map([user_id], |row| {
+                serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })
+            .map_err(string)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(string)
+    }
+
+    fn save_report(&self, report: &ValidationReport) -> Result<(), String> {
+        self.database.lock().map_err(string)?.execute(
+            "INSERT OR IGNORE INTO validation_reports(report_id, protocol_id, user_id, report_json) VALUES (?1, ?2, ?3, ?4)",
+            params![report.report_id, report.protocol_id, report.user_id, serde_json::to_string(report).map_err(string)?],
+        ).map_err(string)?;
+        Ok(())
+    }
+
+    fn list_reports(&self, user_id: &str) -> Result<Vec<ValidationReport>, String> {
+        validate_user(user_id)?;
+        let database = self.database.lock().map_err(string)?;
+        let mut statement = database
+            .prepare(
+                "SELECT report_json FROM validation_reports WHERE user_id = ?1 ORDER BY rowid DESC",
+            )
+            .map_err(string)?;
+        statement
+            .query_map([user_id], |row| {
+                serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })
+            .map_err(string)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(string)
+    }
 }
 
 #[derive(Deserialize)]
@@ -540,7 +623,7 @@ pub struct TaskRequest {
     pub task_id: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BacktestRunRequest {
     pub user_id: String,
@@ -557,7 +640,7 @@ pub struct BacktestRunRequest {
     pub seed: u64,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FactorInstanceRequest {
     pub alias: String,
@@ -566,7 +649,7 @@ pub struct FactorInstanceRequest {
     pub parameters: HashMap<String, FactorParameterBinding>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum FactorParameterBinding {
     Literal(String),
@@ -717,6 +800,85 @@ pub struct BacktestRunSummary {
     pub bar_count: usize,
     #[serde(with = "rust_decimal::serde::str")]
     pub total_return: rust_decimal::Decimal,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidationProtocolCreateRequest {
+    pub user_id: String,
+    pub run: BacktestRunRequest,
+    pub windows: Vec<ValidationWindowRequest>,
+    pub method_version: String,
+    pub aggregation_rule_version: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidationWindowRequest {
+    pub snapshot_id: String,
+    pub sample_out_start_time_ms: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidationProtocol {
+    pub protocol_id: String,
+    pub user_id: String,
+    pub run: BacktestRunRequest,
+    pub windows: Vec<ValidationWindowRequest>,
+    pub method_version: String,
+    pub aggregation_rule_version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidationProtocolIdRequest {
+    pub user_id: String,
+    pub protocol_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidationWindowReport {
+    pub sample_in_snapshot_id: String,
+    pub sample_out_snapshot_id: String,
+    pub sample_in_run_id: Option<String>,
+    pub sample_out_run_id: Option<String>,
+    pub sample_in_metrics: Option<ada_backtest_core::BacktestMetrics>,
+    pub sample_out_metrics: Option<ada_backtest_core::BacktestMetrics>,
+    pub sample_in_pauses: Vec<RunPauseRecord>,
+    pub sample_out_pauses: Vec<RunPauseRecord>,
+    pub failure: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidationAggregate {
+    pub completed_windows: usize,
+    pub failed_windows: usize,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub average_sample_in_return: rust_decimal::Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub average_sample_out_return: rust_decimal::Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub worst_sample_out_drawdown: rust_decimal::Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub average_sample_out_sharpe: rust_decimal::Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub total_fees: rust_decimal::Decimal,
+    pub total_trades: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidationReport {
+    pub report_id: String,
+    pub protocol_id: String,
+    pub user_id: String,
+    pub method_version: String,
+    pub aggregation_rule_version: String,
+    pub windows: Vec<ValidationWindowReport>,
+    pub aggregate: ValidationAggregate,
 }
 
 #[tauri::command]
@@ -1126,6 +1288,280 @@ pub fn backtest_delete(
     state: tauri::State<'_, M3State>,
 ) -> Result<(), String> {
     state.delete_run(&request.user_id, &request.run_id)
+}
+
+#[tauri::command]
+pub fn validation_protocol_create(
+    request: ValidationProtocolCreateRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<ValidationProtocol, String> {
+    validate_protocol(&request, &state)?;
+    let mut protocol = ValidationProtocol {
+        protocol_id: String::new(),
+        user_id: request.user_id.clone(),
+        run: request.run,
+        windows: request.windows,
+        method_version: request.method_version,
+        aggregation_rule_version: request.aggregation_rule_version,
+    };
+    protocol.protocol_id = content_id(&protocol)?;
+    state.save_protocol(&protocol)?;
+    state.load_protocol(&protocol.user_id, &protocol.protocol_id)
+}
+
+#[tauri::command]
+pub fn validation_protocol_list(
+    request: ComponentUserRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<Vec<ValidationProtocol>, String> {
+    state.list_protocols(&request.user_id)
+}
+
+#[tauri::command]
+pub fn validation_report_run(
+    request: ValidationProtocolIdRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<ValidationReport, String> {
+    let protocol = state.load_protocol(&request.user_id, &request.protocol_id)?;
+    let mut windows = Vec::with_capacity(protocol.windows.len());
+    for window in &protocol.windows {
+        let (sample_in, sample_out) = split_snapshot(&state, window)?;
+        let mut sample_in_request = protocol.run.clone();
+        sample_in_request.user_id = protocol.user_id.clone();
+        sample_in_request.snapshot_id = sample_in.snapshot_id.clone();
+        let mut sample_out_request = sample_in_request.clone();
+        sample_out_request.snapshot_id = sample_out.snapshot_id.clone();
+        match (
+            execute_backtest(sample_in_request, &state),
+            execute_backtest(sample_out_request, &state),
+        ) {
+            (Ok(sample_in_run), Ok(sample_out_run)) => windows.push(ValidationWindowReport {
+                sample_in_snapshot_id: sample_in.snapshot_id,
+                sample_out_snapshot_id: sample_out.snapshot_id,
+                sample_in_run_id: Some(sample_in_run.run_id),
+                sample_out_run_id: Some(sample_out_run.run_id),
+                sample_in_metrics: Some(sample_in_run.result.metrics),
+                sample_out_metrics: Some(sample_out_run.result.metrics),
+                sample_in_pauses: sample_in_run.pauses,
+                sample_out_pauses: sample_out_run.pauses,
+                failure: None,
+            }),
+            (sample_in_result, sample_out_result) => windows.push(ValidationWindowReport {
+                sample_in_snapshot_id: sample_in.snapshot_id,
+                sample_out_snapshot_id: sample_out.snapshot_id,
+                sample_in_run_id: sample_in_result.as_ref().ok().map(|run| run.run_id.clone()),
+                sample_out_run_id: sample_out_result
+                    .as_ref()
+                    .ok()
+                    .map(|run| run.run_id.clone()),
+                sample_in_metrics: sample_in_result
+                    .as_ref()
+                    .ok()
+                    .map(|run| run.result.metrics.clone()),
+                sample_out_metrics: sample_out_result
+                    .as_ref()
+                    .ok()
+                    .map(|run| run.result.metrics.clone()),
+                sample_in_pauses: sample_in_result
+                    .as_ref()
+                    .ok()
+                    .map(|run| run.pauses.clone())
+                    .unwrap_or_default(),
+                sample_out_pauses: sample_out_result
+                    .as_ref()
+                    .ok()
+                    .map(|run| run.pauses.clone())
+                    .unwrap_or_default(),
+                failure: Some(
+                    [sample_in_result.err(), sample_out_result.err()]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                ),
+            }),
+        }
+    }
+    let aggregate = aggregate_validation(&windows);
+    let mut report = ValidationReport {
+        report_id: String::new(),
+        protocol_id: protocol.protocol_id,
+        user_id: protocol.user_id,
+        method_version: protocol.method_version,
+        aggregation_rule_version: protocol.aggregation_rule_version,
+        windows,
+        aggregate,
+    };
+    report.report_id = content_id(&report)?;
+    state.save_report(&report)?;
+    Ok(report)
+}
+
+#[tauri::command]
+pub fn validation_report_list(
+    request: ComponentUserRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<Vec<ValidationReport>, String> {
+    state.list_reports(&request.user_id)
+}
+
+#[tauri::command]
+pub fn validation_report_export(
+    request: ValidationProtocolIdRequest,
+    format: String,
+    state: tauri::State<'_, M3State>,
+) -> Result<String, String> {
+    let report = state
+        .list_reports(&request.user_id)?
+        .into_iter()
+        .find(|report| report.report_id == request.protocol_id)
+        .ok_or("Validation Report was not found")?;
+    match format.as_str() {
+        "json" => serde_json::to_string_pretty(&report).map_err(string),
+        "markdown" => Ok(validation_markdown(&report)),
+        _ => Err("Validation export format is invalid".into()),
+    }
+}
+
+fn validate_protocol(
+    request: &ValidationProtocolCreateRequest,
+    state: &M3State,
+) -> Result<(), String> {
+    validate_user(&request.user_id)?;
+    if request.run.user_id != request.user_id
+        || request.windows.is_empty()
+        || request.method_version != "chronological-holdout@1"
+        || !request
+            .aggregation_rule_version
+            .starts_with("equal-window@")
+    {
+        return Err("Validation Protocol is invalid".into());
+    }
+    state.package_for_user(&request.user_id, &request.run.strategy_archive_sha256)?;
+    for factor in &request.run.factor_instances {
+        state.package_for_user(&request.user_id, &factor.archive_sha256)?;
+    }
+    for window in &request.windows {
+        split_snapshot(state, window)?;
+    }
+    Ok(())
+}
+
+fn split_snapshot(
+    state: &M3State,
+    window: &ValidationWindowRequest,
+) -> Result<(MarketDataSnapshot, MarketDataSnapshot), String> {
+    let (snapshot, bars) = state.snapshot(&window.snapshot_id)?;
+    let split = bars.partition_point(|bar| bar.open_time_ms < window.sample_out_start_time_ms);
+    if split == 0 || split == bars.len() {
+        return Err("Validation sample-out window must be non-empty and chronological".into());
+    }
+    let gaps = snapshot
+        .gaps
+        .iter()
+        .map(|gap| BarGap {
+            start_time_ms: gap.start_time_ms,
+            end_time_ms: gap.end_time_ms,
+        })
+        .collect::<Vec<_>>();
+    let series = |bars: Vec<OhlcvBar>| ada_data_core::BarSeries {
+        src: snapshot.src.clone(),
+        code: snapshot.code.clone(),
+        interval: snapshot.interval,
+        bars,
+        gaps: gaps.clone(),
+    };
+    Ok((
+        state.persist_snapshot(&series(bars[..split].to_vec()))?,
+        state.persist_snapshot(&series(bars[split..].to_vec()))?,
+    ))
+}
+
+fn aggregate_validation(windows: &[ValidationWindowReport]) -> ValidationAggregate {
+    let complete = windows
+        .iter()
+        .filter(|window| window.failure.is_none())
+        .collect::<Vec<_>>();
+    let count = rust_decimal::Decimal::from(complete.len().max(1));
+    let average = |metric: fn(&ada_backtest_core::BacktestMetrics) -> rust_decimal::Decimal,
+                   sample_out: bool| {
+        complete
+            .iter()
+            .map(|window| {
+                metric(if sample_out {
+                    window.sample_out_metrics.as_ref().unwrap()
+                } else {
+                    window.sample_in_metrics.as_ref().unwrap()
+                })
+            })
+            .sum::<rust_decimal::Decimal>()
+            / count
+    };
+    ValidationAggregate {
+        completed_windows: complete.len(),
+        failed_windows: windows.len() - complete.len(),
+        average_sample_in_return: average(|metrics| metrics.total_return, false),
+        average_sample_out_return: average(|metrics| metrics.total_return, true),
+        worst_sample_out_drawdown: complete
+            .iter()
+            .map(|window| window.sample_out_metrics.as_ref().unwrap().max_drawdown)
+            .min()
+            .unwrap_or_default(),
+        average_sample_out_sharpe: average(|metrics| metrics.sharpe, true),
+        total_fees: complete
+            .iter()
+            .map(|window| {
+                window.sample_in_metrics.as_ref().unwrap().total_fees
+                    + window.sample_out_metrics.as_ref().unwrap().total_fees
+            })
+            .sum(),
+        total_trades: complete
+            .iter()
+            .map(|window| {
+                window
+                    .sample_in_metrics
+                    .as_ref()
+                    .unwrap()
+                    .realized_trade_count
+                    + window
+                        .sample_out_metrics
+                        .as_ref()
+                        .unwrap()
+                        .realized_trade_count
+            })
+            .sum(),
+    }
+}
+
+fn content_id(value: &impl Serialize) -> Result<String, String> {
+    let value = canonical_json(serde_json::to_value(value).map_err(string)?);
+    Ok(Sha256::digest(serde_json::to_vec(&value).map_err(string)?)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn canonical_json(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(canonical_json).collect())
+        }
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| (key, canonical_json(value)))
+                .collect(),
+        ),
+        value => value,
+    }
+}
+
+fn validation_markdown(report: &ValidationReport) -> String {
+    format!(
+        "# Validation Report {}\n\n```json\n{}\n```\n",
+        report.report_id,
+        serde_json::to_string_pretty(report).expect("Validation Report serializes")
+    )
 }
 
 fn fingerprint(user_id: &str, provenance: &BacktestRunProvenance) -> Result<String, String> {
@@ -1759,6 +2195,105 @@ mod tests {
         let changed = execute_backtest(changed_request, &state).unwrap();
         assert_ne!(first.run_id, changed.run_id);
         assert_eq!(state.list_runs("alice").unwrap().len(), 2);
+
+        let validation = ValidationProtocolCreateRequest {
+            user_id: "alice".into(),
+            run: request(),
+            windows: vec![ValidationWindowRequest {
+                snapshot_id: snapshot.snapshot_id.clone(),
+                sample_out_start_time_ms: 25 * 3_600_000,
+            }],
+            method_version: "chronological-holdout@1".into(),
+            aggregation_rule_version: "equal-window@1".into(),
+        };
+        assert!(
+            validate_protocol(
+                &ValidationProtocolCreateRequest {
+                    windows: vec![ValidationWindowRequest {
+                        snapshot_id: snapshot.snapshot_id.clone(),
+                        sample_out_start_time_ms: 0,
+                    }],
+                    ..validation.clone()
+                },
+                &state,
+            )
+            .is_err()
+        );
+        let protocol = ValidationProtocol {
+            protocol_id: String::new(),
+            user_id: validation.user_id.clone(),
+            run: validation.run.clone(),
+            windows: validation.windows.clone(),
+            method_version: validation.method_version.clone(),
+            aggregation_rule_version: validation.aggregation_rule_version.clone(),
+        };
+        let protocol_id = content_id(&protocol).unwrap();
+        let protocol = ValidationProtocol {
+            protocol_id,
+            ..protocol
+        };
+        state.save_protocol(&protocol).unwrap();
+        let sample_report = {
+            let (sample_in, sample_out) = split_snapshot(&state, &validation.windows[0]).unwrap();
+            let mut sample_in_request = validation.run.clone();
+            sample_in_request.snapshot_id = sample_in.snapshot_id.clone();
+            let mut sample_out_request = sample_in_request.clone();
+            sample_out_request.snapshot_id = sample_out.snapshot_id.clone();
+            let sample_in_run = execute_backtest(sample_in_request, &state).unwrap();
+            let sample_out_run = execute_backtest(sample_out_request, &state).unwrap();
+            ValidationWindowReport {
+                sample_in_snapshot_id: sample_in.snapshot_id,
+                sample_out_snapshot_id: sample_out.snapshot_id,
+                sample_in_run_id: Some(sample_in_run.run_id),
+                sample_out_run_id: Some(sample_out_run.run_id),
+                sample_in_metrics: Some(sample_in_run.result.metrics),
+                sample_out_metrics: Some(sample_out_run.result.metrics),
+                sample_in_pauses: sample_in_run.pauses,
+                sample_out_pauses: sample_out_run.pauses,
+                failure: None,
+            }
+        };
+        let aggregate = aggregate_validation(&[sample_report.clone()]);
+        assert_eq!(aggregate.completed_windows, 1);
+        let mut report = ValidationReport {
+            report_id: String::new(),
+            protocol_id: protocol.protocol_id.clone(),
+            user_id: "alice".into(),
+            method_version: protocol.method_version.clone(),
+            aggregation_rule_version: protocol.aggregation_rule_version.clone(),
+            windows: vec![sample_report],
+            aggregate,
+        };
+        report.report_id = content_id(&report).unwrap();
+        state.save_report(&report).unwrap();
+        assert_eq!(state.list_reports("alice").unwrap().len(), 1);
+        assert!(state.list_reports("bob").unwrap().is_empty());
+        assert!(validation_markdown(&report).contains(&report.protocol_id));
+        assert!(
+            serde_json::to_string(&report)
+                .unwrap()
+                .contains(&report.report_id)
+        );
+        let changed_protocol = ValidationProtocol {
+            aggregation_rule_version: "equal-window@2".into(),
+            ..protocol.clone()
+        };
+        assert_ne!(
+            content_id(&protocol).unwrap(),
+            content_id(&changed_protocol).unwrap()
+        );
+        let failed = ValidationWindowReport {
+            sample_in_snapshot_id: snapshot.snapshot_id.clone(),
+            sample_out_snapshot_id: snapshot.snapshot_id.clone(),
+            sample_in_run_id: Some(first.run_id.clone()),
+            sample_out_run_id: None,
+            sample_in_metrics: Some(first.result.metrics.clone()),
+            sample_out_metrics: None,
+            sample_in_pauses: first.pauses.clone(),
+            sample_out_pauses: vec![],
+            failure: Some("unavailable".into()),
+        };
+        assert_eq!(aggregate_validation(&[failed]).failed_windows, 1);
 
         let mut legacy_json =
             serde_json::to_value(state.load_run("alice", &first.run_id).unwrap()).unwrap();

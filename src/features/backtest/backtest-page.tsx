@@ -89,6 +89,12 @@ type RunSummary = {
 	barCount: number;
 	totalReturn: string;
 };
+type ValidationProtocol = { protocolId: string; windows: { snapshotId: string; sampleOutStartTimeMs: number }[] };
+type ValidationReport = {
+	reportId: string;
+	protocolId: string;
+	aggregate: { completedWindows: number; failedWindows: number; averageSampleOutReturn: string; worstSampleOutDrawdown: string; averageSampleOutSharpe: string; totalFees: string; totalTrades: number };
+};
 type ExecutionPage = {
 	orders: Order[];
 	fills: Fill[];
@@ -122,6 +128,10 @@ export function BacktestPage() {
 	const [history, setHistory] = useState<RunSummary[]>([]);
 	const [message, setMessage] = useState("");
 	const [downloadTaskId, setDownloadTaskId] = useState<string>();
+	const [sampleOutStart, setSampleOutStart] = useState("");
+	const [protocols, setProtocols] = useState<ValidationProtocol[]>([]);
+	const [reports, setReports] = useState<ValidationReport[]>([]);
+	const [runningProtocolId, setRunningProtocolId] = useState<string>();
 	const chartRequest = useRef(0);
 	const chartRange = useRef("");
 	const refreshHistory = async () => {
@@ -131,6 +141,11 @@ export function BacktestPage() {
 			} catch (error) {
 				setMessage(String(error));
 			}
+	};
+	const refreshValidation = async () => {
+		if (!userId) return;
+		setProtocols(await invoke("validation_protocol_list", { request: { userId } }));
+		setReports(await invoke("validation_report_list", { request: { userId } }));
 	};
 	useEffect(() => {
 		if (userId) {
@@ -146,6 +161,7 @@ export function BacktestPage() {
 			void invoke<RunSummary[]>("backtest_list", { request: { userId } })
 				.then(setHistory)
 				.catch((error) => setMessage(String(error)));
+			void refreshValidation().catch((error) => setMessage(String(error)));
 		}
 	}, [userId]);
 	const factors = useMemo(
@@ -197,37 +213,48 @@ export function BacktestPage() {
 			setDownloadTaskId(undefined);
 		}
 	};
+	const buildRunRequest = (snapshotId: string) => ({
+		userId: userId!, snapshotId,
+		factorInstances: selectedStrategy?.dependencies.map((dependency) => ({ alias: dependency.alias, archiveSha256: factorSelections[dependency.alias], parameters: factorParameters[dependency.alias] ?? {} })).filter((factor) => factor.archiveSha256) ?? [],
+		strategyArchiveSha256: strategy, strategyParameters, initialQuoteAllocation: "10000",
+		executionProfile: { makerFeeRate: "0.0008", takerFeeRate: "0.001", adverseSlippageRate: "0.0005", rebalanceThreshold: "0", priceIncrement: "0.1", quantityIncrement: "0.00000001", minimumQuantity: "0.00001", riskFreeRate: "0", fillPolicy: "taker" },
+	});
+	const createValidation = async () => {
+		if (!userId || !snapshot) return;
+		try {
+			const protocol = await invoke<ValidationProtocol>("validation_protocol_create", {
+				request: { userId, run: buildRunRequest(snapshot.snapshotId), windows: [{ snapshotId: snapshot.snapshotId, sampleOutStartTimeMs: Date.parse(sampleOutStart) }], methodVersion: "chronological-holdout@1", aggregationRuleVersion: "equal-window@1" },
+			});
+			setMessage(`Protocol ${protocol.protocolId.slice(0, 12)} frozen.`);
+			await refreshValidation();
+		} catch (error) { setMessage(String(error)); }
+	};
+	const runValidation = async (protocolId: string) => {
+		if (!userId) return;
+		setRunningProtocolId(protocolId);
+		setMessage("Running holdout validation…");
+		try {
+			const report = await invoke<ValidationReport>("validation_report_run", { request: { userId, protocolId } });
+			setMessage(`Validation Report ${report.reportId.slice(0, 12)} completed.`);
+			await refreshValidation();
+		} catch (error) { setMessage(String(error)); } finally { setRunningProtocolId(undefined); }
+	};
+	const exportReport = async (reportId: string, format: "json" | "markdown") => {
+		if (!userId) return;
+		try {
+			const content = await invoke<string>("validation_report_export", { request: { userId, protocolId: reportId }, format });
+			const anchor = document.createElement("a");
+			anchor.href = URL.createObjectURL(new Blob([content], { type: format === "json" ? "application/json" : "text/markdown" }));
+			anchor.download = `validation-report-${reportId}.${format === "json" ? "json" : "md"}`;
+			anchor.click(); URL.revokeObjectURL(anchor.href);
+		} catch (error) { setMessage(String(error)); }
+	};
 	const execute = async () => {
 		if (!userId || !snapshot) return;
 		setMessage("Running deterministic Backtest…");
 		try {
 			const value = await invoke<BacktestRun>("backtest_run", {
-				request: {
-					userId,
-					snapshotId: snapshot.snapshotId,
-					factorInstances:
-						selectedStrategy?.dependencies
-							.map((dependency) => ({
-								alias: dependency.alias,
-								archiveSha256: factorSelections[dependency.alias],
-								parameters: factorParameters[dependency.alias] ?? {},
-							}))
-							.filter((instance) => instance.archiveSha256) ?? [],
-					strategyArchiveSha256: strategy,
-					strategyParameters,
-					initialQuoteAllocation: "10000",
-					executionProfile: {
-						makerFeeRate: "0.0008",
-						takerFeeRate: "0.001",
-						adverseSlippageRate: "0.0005",
-						rebalanceThreshold: "0",
-						priceIncrement: "0.1",
-						quantityIncrement: "0.00000001",
-						minimumQuantity: "0.00001",
-						riskFreeRate: "0",
-						fillPolicy: "taker",
-					},
-				},
+				request: buildRunRequest(snapshot.snapshotId),
 			});
 			setRun(value);
 			setExecutionOffset(0);
@@ -296,6 +323,9 @@ export function BacktestPage() {
 					</Field>
 					<Field label="End">
 						<Input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+					</Field>
+					<Field label="Sample-out starts">
+						<Input type="date" value={sampleOutStart} onChange={(e) => setSampleOutStart(e.target.value)} />
 					</Field>
 					<Field label="Strategy">
 						<select
@@ -401,6 +431,13 @@ export function BacktestPage() {
 							onClick={() => void execute()}
 						>
 							Run
+						</Button>
+						<Button
+							variant="outline"
+							disabled={!snapshot || !strategy || !sampleOutStart}
+							onClick={() => void createValidation()}
+						>
+							Freeze holdout
 						</Button>
 					</div>
 					<p className="self-end text-sm text-muted-foreground" aria-live="polite">
@@ -523,6 +560,28 @@ export function BacktestPage() {
 					{history.length === 0 && (
 						<p className="text-sm text-muted-foreground">No persisted Runs.</p>
 					)}
+				</CardContent>
+			</Card>
+			<Card>
+				<CardHeader><CardTitle>Holdout validation</CardTitle></CardHeader>
+				<CardContent className="space-y-3 text-sm">
+					{protocols.map((protocol) => (
+						<div key={protocol.protocolId} className="flex items-center justify-between rounded-md border p-3">
+							<span className="font-mono">{protocol.protocolId.slice(0, 16)} · {protocol.windows.length} window</span>
+							<Button size="sm" disabled={runningProtocolId === protocol.protocolId} onClick={() => void runValidation(protocol.protocolId)}>{runningProtocolId === protocol.protocolId ? "Running…" : "Run / resume"}</Button>
+						</div>
+					))}
+					{reports.map((report) => (
+						<div key={report.reportId} className="rounded-md border p-3">
+							<div className="flex items-center justify-between gap-2">
+								<span className="font-mono">{report.reportId.slice(0, 16)}</span>
+								<div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => void exportReport(report.reportId, "json")}>JSON</Button><Button size="sm" variant="outline" onClick={() => void exportReport(report.reportId, "markdown")}>Markdown</Button></div>
+							</div>
+							<p className="mt-2 text-muted-foreground">{report.aggregate.completedWindows} complete · {report.aggregate.failedWindows} failed · Out {percent(report.aggregate.averageSampleOutReturn)} · Drawdown {percent(report.aggregate.worstSampleOutDrawdown)} · Sharpe {formatDecimal(report.aggregate.averageSampleOutSharpe)} · Fees {formatDecimal(report.aggregate.totalFees)} · Trades {report.aggregate.totalTrades}</p>
+							<details className="mt-2"><summary>Inspect immutable Report</summary><pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">{JSON.stringify(report, null, 2)}</pre></details>
+						</div>
+					))}
+					{protocols.length === 0 && <p className="text-muted-foreground">Freeze a Snapshot with a chronological sample-out boundary to begin.</p>}
 				</CardContent>
 			</Card>
 		</Workspace>

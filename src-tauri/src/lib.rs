@@ -466,7 +466,12 @@ pub fn run() {
             m3::backtest_get,
             m3::backtest_chart_data,
             m3::backtest_execution_data,
-            m3::backtest_delete
+            m3::backtest_delete,
+            m3::validation_protocol_create,
+            m3::validation_protocol_list,
+            m3::validation_report_run,
+            m3::validation_report_list,
+            m3::validation_report_export
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
