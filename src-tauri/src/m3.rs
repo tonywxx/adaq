@@ -15,9 +15,9 @@ use ada_backtest_core::{
 use ada_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
 use adaq_component_tooling::{
     ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
-    FactorInstancePlanInput, FrozenIndicatorPlan, ParameterDefinition, RunLimits,
-    component_parameters, native_engine_identity, validate_and_freeze_with_factors_and_parameters,
-    verify_package,
+    FactorInstancePlanInput, FeatureSlotDefinition, FrozenIndicatorPlan, ParameterDefinition,
+    RunLimits, component_parameters, native_engine_identity,
+    validate_and_freeze_with_factors_and_parameters, verify_package,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -37,14 +37,21 @@ pub struct M3State {
 pub struct LibraryComponent {
     component_id: String,
     version: String,
+    manifest_schema_version: String,
     sdk_version: String,
+    abi_version: String,
     name: String,
     kind: String,
     archive_sha256: String,
     wasm_sha256: String,
     parameters: Vec<ParameterDefinition>,
+    feature_slots: Vec<FeatureSlotDefinition>,
+    output_names: Vec<String>,
     dependencies: Vec<ComponentDependency>,
+    warmup_bars: u32,
+    compatible: bool,
     compatibility_error: Option<String>,
+    locked_by_run_ids: Vec<String>,
 }
 
 impl M3State {
@@ -173,20 +180,46 @@ impl M3State {
         Ok(LibraryComponent {
             component_id,
             version,
+            manifest_schema_version: package.manifest.manifest_schema_version.to_string(),
             sdk_version,
+            abi_version: package.manifest.abi_version.to_string(),
             name: package.manifest.name,
             kind,
             archive_sha256: package.archive_sha256,
             wasm_sha256: package.manifest.wasm_sha256,
             parameters: package.manifest.parameters,
+            feature_slots: package.manifest.feature_slots,
+            output_names: package.manifest.output_names,
             dependencies: package.manifest.dependencies,
+            warmup_bars: package.manifest.warmup_bars,
+            compatible: true,
             compatibility_error: None,
+            locked_by_run_ids: vec![],
         })
     }
 
     pub fn list_components(&self, user_id: &str) -> Result<Vec<LibraryComponent>, String> {
         validate_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
+        let mut locked_by_hash = HashMap::<String, Vec<String>>::new();
+        {
+            let mut lock_statement = database
+                .prepare(
+                    "SELECT rc.archive_sha256, rc.run_id FROM backtest_run_components rc
+                     JOIN backtest_runs r USING(run_id)
+                     WHERE r.user_id = ?1 ORDER BY r.created_at, rc.run_id",
+                )
+                .map_err(string)?;
+            for row in lock_statement
+                .query_map([user_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(string)?
+            {
+                let (hash, run_id) = row.map_err(string)?;
+                locked_by_hash.entry(hash).or_default().push(run_id);
+            }
+        }
         let mut statement = database
             .prepare(
                 "SELECT c.component_id, c.version, c.name, c.kind, c.archive_sha256, c.wasm_sha256, c.archive_path
@@ -215,29 +248,69 @@ impl M3State {
                     match fs::read(path)
                         .map_err(string)
                         .and_then(|bytes| ComponentPackage::read(&bytes).map_err(string))
-                    {
+                        .and_then(|package| {
+                            verify_package(&package)?;
+                            let package_kind =
+                                format!("{:?}", package.manifest.kind).to_lowercase();
+                            if package.archive_sha256 != archive_sha256
+                                || package.manifest.component_id.to_string() != component_id
+                                || package.manifest.version.to_string() != version
+                                || package.manifest.name != name
+                                || package_kind != kind
+                                || package.manifest.wasm_sha256 != wasm_sha256
+                            {
+                                return Err(
+                                    "Component Package does not match stored identity or hashes"
+                                        .into(),
+                                );
+                            }
+                            Ok(package)
+                        }) {
                         Ok(package) => Ok(LibraryComponent {
                             component_id,
                             version,
+                            manifest_schema_version: package
+                                .manifest
+                                .manifest_schema_version
+                                .to_string(),
                             sdk_version: package.manifest.sdk_version.to_string(),
+                            abi_version: package.manifest.abi_version.to_string(),
                             name,
                             kind,
+                            locked_by_run_ids: locked_by_hash
+                                .get(&archive_sha256)
+                                .cloned()
+                                .unwrap_or_default(),
                             archive_sha256,
                             wasm_sha256,
                             parameters: package.manifest.parameters,
+                            feature_slots: package.manifest.feature_slots,
+                            output_names: package.manifest.output_names,
                             dependencies: package.manifest.dependencies,
+                            warmup_bars: package.manifest.warmup_bars,
+                            compatible: true,
                             compatibility_error: None,
                         }),
                         Err(error) => Ok(LibraryComponent {
                             component_id,
                             version,
+                            manifest_schema_version: String::new(),
                             sdk_version: String::new(),
+                            abi_version: String::new(),
                             name,
                             kind,
+                            locked_by_run_ids: locked_by_hash
+                                .get(&archive_sha256)
+                                .cloned()
+                                .unwrap_or_default(),
                             archive_sha256,
                             wasm_sha256,
                             parameters: vec![],
+                            feature_slots: vec![],
+                            output_names: vec![],
                             dependencies: vec![],
+                            warmup_bars: 0,
+                            compatible: false,
                             compatibility_error: Some(format!(
                                 "Incompatible Component Package: {error}"
                             )),
@@ -251,17 +324,38 @@ impl M3State {
     pub fn delete_component(&self, user_id: &str, hash: &str) -> Result<(), String> {
         validate_user(user_id)?;
         let mut database = self.database.lock().map_err(string)?;
-        let referenced: i64 = database
+        let entitled: bool = database
             .query_row(
-                "SELECT COUNT(*) FROM backtest_run_components rc
-             JOIN backtest_runs r USING(run_id)
-             WHERE r.user_id = ?1 AND rc.archive_sha256 = ?2",
+                "SELECT EXISTS(SELECT 1 FROM component_access WHERE user_id = ?1 AND archive_sha256 = ?2)",
                 params![user_id, hash],
                 |row| row.get(0),
             )
             .map_err(string)?;
-        if referenced > 0 {
-            return Err("Component Package is locked by a Backtest Run".into());
+        if !entitled {
+            return Err("Component Package is not available to this User".into());
+        }
+        let locked_by_run_ids = database
+            .prepare(
+                "SELECT rc.run_id FROM backtest_run_components rc
+                 JOIN backtest_runs r USING(run_id)
+                 WHERE r.user_id = ?1 AND rc.archive_sha256 = ?2
+                 ORDER BY r.created_at, rc.run_id",
+            )
+            .map_err(string)?
+            .query_map(params![user_id, hash], |row| row.get::<_, String>(0))
+            .map_err(string)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(string)?;
+        if !locked_by_run_ids.is_empty() {
+            let noun = if locked_by_run_ids.len() == 1 {
+                "Backtest Run"
+            } else {
+                "Backtest Runs"
+            };
+            return Err(format!(
+                "Component Package is locked by {noun}: {}",
+                locked_by_run_ids.join(", ")
+            ));
         }
         let transaction = database.transaction().map_err(string)?;
         transaction
@@ -2367,6 +2461,45 @@ mod tests {
     }
 
     #[test]
+    fn component_list_revalidates_stored_identity_and_hashes() {
+        let root = std::env::temp_dir().join(format!(
+            "adaq-replaced-component-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = M3State::open(&root).unwrap();
+        let (factor, wasm) = fixture("factor");
+        let imported = state
+            .import_component("alice", &pack_component(factor, &wasm).unwrap())
+            .unwrap();
+        let (strategy, wasm) = fixture("strategy");
+        fs::write(
+            state
+                .root
+                .join("components")
+                .join(format!("{}.adaq", imported.archive_sha256)),
+            pack_component(strategy, &wasm).unwrap(),
+        )
+        .unwrap();
+
+        let listed = state.list_components("alice").unwrap();
+        assert!(!listed[0].compatible);
+        assert!(
+            listed[0]
+                .compatibility_error
+                .as_deref()
+                .unwrap()
+                .contains("does not match stored identity or hashes")
+        );
+
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn component_library_is_user_scoped_and_identity_locked() {
         let root = std::env::temp_dir().join(format!(
             "adaq-m3-{}-{}",
@@ -2379,9 +2512,24 @@ mod tests {
         let state = M3State::open(&root).unwrap();
         let (factor, wasm) = fixture("factor");
         let bytes = pack_component(factor.clone(), &wasm).unwrap();
-        state.import_component("alice", &bytes).unwrap();
+        let factor_entry = state.import_component("alice", &bytes).unwrap();
+        assert_eq!(
+            factor_entry.manifest_schema_version,
+            factor.manifest_schema_version.to_string()
+        );
+        assert_eq!(factor_entry.abi_version, factor.abi_version.to_string());
+        assert_eq!(factor_entry.output_names, factor.output_names);
+        assert_eq!(factor_entry.warmup_bars, factor.warmup_bars);
+        assert!(factor_entry.compatible);
+        assert!(factor_entry.locked_by_run_ids.is_empty());
         assert_eq!(state.list_components("alice").unwrap().len(), 1);
         assert!(state.list_components("bob").unwrap().is_empty());
+        assert_eq!(
+            state
+                .delete_component("bob", &factor_entry.archive_sha256)
+                .unwrap_err(),
+            "Component Package is not available to this User"
+        );
 
         let mut conflicting = factor;
         conflicting.name = "Conflicting Package".into();
@@ -2391,6 +2539,7 @@ mod tests {
         let (strategy, wasm) = fixture("strategy");
         let bytes = pack_component(strategy, &wasm).unwrap();
         let strategy_entry = state.import_component("alice", &bytes).unwrap();
+        assert!(!strategy_entry.feature_slots.is_empty());
         assert_eq!(state.list_components("alice").unwrap().len(), 2);
 
         let bar = |open_time_ms, close: i64| OhlcvBar {
@@ -2446,10 +2595,20 @@ mod tests {
             serde_json::to_value(&second).unwrap()
         );
         assert_eq!(state.list_runs("alice").unwrap().len(), 1);
-        assert!(
+        let locked = state.list_components("alice").unwrap();
+        let locked_strategy = locked
+            .iter()
+            .find(|component| component.archive_sha256 == strategy_entry.archive_sha256)
+            .unwrap();
+        assert_eq!(locked_strategy.locked_by_run_ids, [first.run_id.clone()]);
+        assert_eq!(
             state
                 .delete_component("alice", &strategy_entry.archive_sha256)
-                .is_err()
+                .unwrap_err(),
+            format!(
+                "Component Package is locked by Backtest Run: {}",
+                first.run_id
+            )
         );
         state.delete_run("alice", &first.run_id).unwrap();
         state

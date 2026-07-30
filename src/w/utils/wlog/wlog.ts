@@ -26,15 +26,33 @@ export type ConsoleMethods =
 	| "count"
 	| "assert";
 
-export enum LogLevel {
-	OFF = 0,
-	ERROR = 1,
-	WARN = 2,
-	INFO = 3,
-	DEBUG = 4,
-	TRACE = 5,
-	ALL = 6,
-}
+export type LogLevelName =
+	| "OFF"
+	| "ERROR"
+	| "WARN"
+	| "INFO"
+	| "DEBUG"
+	| "TRACE"
+	| "ALL";
+
+export const LogLevel = {
+	0: "OFF",
+	1: "ERROR",
+	2: "WARN",
+	3: "INFO",
+	4: "DEBUG",
+	5: "TRACE",
+	6: "ALL",
+	OFF: 0,
+	ERROR: 1,
+	WARN: 2,
+	INFO: 3,
+	DEBUG: 4,
+	TRACE: 5,
+	ALL: 6,
+} as const;
+
+export type LogLevel = (typeof LogLevel)[LogLevelName];
 
 export interface LogColorScheme {
 	label: string;
@@ -85,7 +103,7 @@ export interface WLogFn {
 	config: (config: Partial<WLogConfig>) => void;
 	getConfig: () => Readonly<WLogConfig>;
 	reset: () => void;
-	setLevel: (level: LogLevel | keyof typeof LogLevel) => void;
+	setLevel: (level: LogLevel | LogLevelName) => void;
 	setSwitch: (enabled: boolean) => void;
 	setPrefix: (prefix: string) => void;
 }
@@ -427,7 +445,7 @@ function levelLog(
 ): void {
 	if (
 		!config.logSwitch ||
-		config.level < LogLevel[level.toUpperCase() as keyof typeof LogLevel]
+		config.level < LogLevel[level.toUpperCase() as LogLevelName]
 	) {
 		return;
 	}
@@ -597,7 +615,7 @@ wlogFn.config = (newConfig: Partial<WLogConfig>) =>
 wlogFn.getConfig = () => Object.freeze({ ...config });
 wlogFn.reset = () => Object.assign(config, DEFAULT_CONFIG);
 
-wlogFn.setLevel = (level: LogLevel | keyof typeof LogLevel) => {
+wlogFn.setLevel = (level: LogLevel | LogLevelName) => {
 	config.level = typeof level === "string" ? LogLevel[level] : level;
 };
 

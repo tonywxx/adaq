@@ -1,3 +1,5 @@
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
 	Card,
 	CardContent,
@@ -5,134 +7,518 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	deleteComponentPackage,
+	formatComponentError,
+	importComponentPackage,
+	type LibraryComponent,
+} from "./component-library";
 
-export type LibraryComponent = {
-	componentId: string;
-	version: string;
-	name: string;
-	kind: "factor" | "strategy";
-	archiveSha256: string;
-	wasmSha256: string;
-	parameters: Array<{
-		name: string;
-		parameterType: "decimal" | "integer" | "boolean" | "string";
-		defaultValue: string;
-		allowedValues: string[];
-	}>;
-	dependencies: Array<{ componentId: string; version: string; alias: string }>;
-	compatibilityError?: string;
+export type { LibraryComponent } from "./component-library";
+
+type Feedback = {
+	tone: "success" | "error";
+	summary: string;
+	details?: string;
 };
 
 export function ComponentsPage() {
 	const userId = useMarketSessionStore((state) => state.userId);
 	const [items, setItems] = useState<LibraryComponent[]>([]);
-	const [message, setMessage] = useState("");
-	const refresh = async () => {
-		if (!userId) return;
+	const [selectedHash, setSelectedHash] = useState("");
+	const [importing, setImporting] = useState(false);
+	const [deleting, setDeleting] = useState(false);
+	const [importFeedback, setImportFeedback] = useState<Feedback>();
+	const [deleteFeedback, setDeleteFeedback] = useState<Feedback>();
+	const [loadFeedback, setLoadFeedback] = useState<Feedback>();
+	const activeUserId = useRef(userId);
+	const requestVersion = useRef(0);
+	activeUserId.current = userId;
+	const refresh = useCallback(async () => {
+		if (!userId) return [];
+		const requestedUserId = userId;
+		const version = ++requestVersion.current;
+		let components: LibraryComponent[];
 		try {
-			setItems(await invoke("component_list", { request: { userId } }));
+			components = await invoke("component_list", {
+				request: { userId: requestedUserId },
+			});
 		} catch (error) {
-			setMessage(String(error));
+			if (
+				version === requestVersion.current &&
+				activeUserId.current === requestedUserId
+			)
+				throw error;
+			return [];
 		}
-	};
-	useEffect(() => {
-		if (!userId) return;
-		void invoke<LibraryComponent[]>("component_list", { request: { userId } })
-			.then(setItems)
-			.catch((error) => setMessage(String(error)));
+		if (
+			version !== requestVersion.current ||
+			activeUserId.current !== requestedUserId
+		)
+			return [];
+		setItems(components);
+		setSelectedHash((current) =>
+			components.some((item) => item.archiveSha256 === current)
+				? current
+				: (components[0]?.archiveSha256 ?? ""),
+		);
+		setLoadFeedback(undefined);
+		return components;
 	}, [userId]);
+
+	useEffect(() => {
+		requestVersion.current += 1;
+		setItems([]);
+		setSelectedHash("");
+		setImporting(false);
+		setDeleting(false);
+		setImportFeedback(undefined);
+		setDeleteFeedback(undefined);
+		setLoadFeedback(undefined);
+		if (!userId) return;
+		void refresh().catch((error) => {
+			setLoadFeedback({ tone: "error", ...formatComponentError(error, "load") });
+		});
+	}, [refresh, userId]);
+
 	const importPackage = async (file?: File) => {
 		if (!file || !userId) return;
-		setMessage("Validating package…");
+		setImporting(true);
+		setImportFeedback(undefined);
 		try {
-			await invoke("component_import", {
-				request: {
-					userId,
-					bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
-				},
+			const imported = await importComponentPackage(
+				userId,
+				Array.from(new Uint8Array(await file.arrayBuffer())),
+				(command, args) => invoke(command, args),
+				refresh,
+			);
+			if (activeUserId.current !== userId) return;
+			setSelectedHash(imported.archiveSha256);
+			setImportFeedback({
+				tone: "success",
+				summary: `${file.name} imported as ${imported.name} v${imported.version}.`,
+				details: `Archive SHA-256: ${imported.archiveSha256}\nWASM SHA-256: ${imported.wasmSha256}`,
 			});
-			setMessage(`${file.name} imported.`);
-			await refresh();
 		} catch (error) {
-			setMessage(String(error));
+			setImportFeedback({
+				tone: "error",
+				...formatComponentError(error, "import"),
+			});
+		} finally {
+			setImporting(false);
 		}
 	};
-	const removePackage = async (archiveSha256: string) => {
+
+	const removePackage = async (component: LibraryComponent) => {
 		if (!userId) return;
+		setDeleting(true);
+		setDeleteFeedback(undefined);
 		try {
-			await invoke("component_delete", { request: { userId, archiveSha256 } });
-			setMessage("Component removed from this User's Library.");
-			await refresh();
+			const result = await deleteComponentPackage(
+				userId,
+				component,
+				(command, args) => invoke(command, args),
+				refresh,
+				window.confirm,
+			);
+			if (activeUserId.current !== userId) return;
+			if (result === "deleted") {
+				setDeleteFeedback({
+					tone: "success",
+					summary: `${component.name} v${component.version} was removed from this User's Component Library.`,
+				});
+			} else if (result === "locked") {
+				setDeleteFeedback({
+					tone: "error",
+					summary:
+						"This Component is locked by an immutable Backtest Run and cannot be removed.",
+					details: component.lockedByRunIds.join("\n"),
+				});
+			}
 		} catch (error) {
-			setMessage(String(error));
+			setDeleteFeedback({
+				tone: "error",
+				...formatComponentError(error, "delete"),
+			});
+		} finally {
+			setDeleting(false);
 		}
 	};
+
+	const selected = items.find((item) => item.archiveSha256 === selectedHash);
+
 	return (
 		<Workspace
 			title="Component Library"
-			description="User-scoped, verified local Factor and Strategy packages."
+			description="Audit and manage this User's verified local Factor and Strategy packages."
 		>
 			<Card>
 				<CardHeader>
-					<CardTitle>Import .adaq</CardTitle>
+					<CardTitle>Import Component Package</CardTitle>
 					<CardDescription>
-						Packages must contain manifest.json and component.wasm.
+						Choose an immutable .adaq package containing manifest.json and
+						component.wasm.
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="space-y-3">
+					<label className="block text-sm font-medium" htmlFor="component-package">
+						.adaq package
+					</label>
 					<input
+						id="component-package"
 						type="file"
-						accept=".adaq,application/zip"
+						accept=".adaq"
+						disabled={importing}
+						className="block w-full rounded-md border bg-background p-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-1 file:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
 						onChange={(event) => void importPackage(event.target.files?.[0])}
 					/>
-					{message && (
-						<p className="text-sm text-muted-foreground" aria-live="polite">
-							{message}
+					{importing && (
+						<p className="text-sm" role="status">
+							Validating package…
 						</p>
 					)}
+					{importFeedback && <ActionFeedback feedback={importFeedback} />}
 				</CardContent>
 			</Card>
-			<div className="grid gap-3 md:grid-cols-2">
-				{items.map((item) => (
-					<Card key={item.archiveSha256}>
-						<CardHeader>
-							<CardTitle>{item.name}</CardTitle>
-							<CardDescription>
-								{item.kind} · v{item.version}
-							</CardDescription>
-						</CardHeader>
-						<CardContent className="space-y-3 font-mono text-xs text-muted-foreground">
-							{item.compatibilityError && (
-								<p className="font-sans text-destructive">
-									{item.compatibilityError}. Delete it and import a Manifest 1.0 package.
+
+			{loadFeedback && <ActionFeedback feedback={loadFeedback} />}
+			<div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]">
+				<Card className="min-w-0">
+					<CardHeader>
+						<CardTitle>Packages</CardTitle>
+						<CardDescription>{items.length} available to this User</CardDescription>
+					</CardHeader>
+					<CardContent>
+						{items.length ? (
+							<ul className="space-y-2" aria-label="Component packages">
+								{items.map((item) => (
+									<li key={item.archiveSha256}>
+										<button
+											type="button"
+											aria-current={selectedHash === item.archiveSha256}
+											className="w-full rounded-lg border p-3 text-left focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 aria-current:border-ring aria-current:bg-muted"
+											onClick={() => {
+												setSelectedHash(item.archiveSha256);
+												setDeleteFeedback(undefined);
+											}}
+										>
+											<span className="block font-medium">{item.name}</span>
+											<span className="text-xs text-muted-foreground">
+												{item.kind} · v{item.version}
+											</span>
+											<span className="mt-2 flex flex-wrap gap-1">
+												<CompatibilityBadge component={item} />
+												<LockBadge component={item} />
+											</span>
+										</button>
+									</li>
+								))}
+							</ul>
+						) : (
+							<div className="rounded-lg border border-dashed p-6 text-center">
+								<p className="font-medium">No Component Packages</p>
+								<p className="mt-1 text-sm text-muted-foreground">
+									Import a verified .adaq package to begin.
 								</p>
-							)}
-							{item.componentId}
-							<br />
-							{item.wasmSha256}
-							<div>
-								<Button
-									size="sm"
-									variant="outline"
-									onClick={() => void removePackage(item.archiveSha256)}
-								>
-									Delete
-								</Button>
 							</div>
+						)}
+					</CardContent>
+				</Card>
+
+				{selected ? (
+					<ComponentDetail
+						component={selected}
+						deleting={deleting}
+						feedback={deleteFeedback}
+						onDelete={removePackage}
+					/>
+				) : (
+					<Card className="min-w-0">
+						<CardContent className="p-6 text-sm text-muted-foreground">
+							Select a Component Package to inspect its exact contract.
 						</CardContent>
 					</Card>
-				))}
-				{items.length === 0 && (
-					<p className="text-sm text-muted-foreground">
-						No Components imported for this User.
-					</p>
 				)}
 			</div>
 		</Workspace>
+	);
+}
+
+function ComponentDetail({
+	component,
+	deleting,
+	feedback,
+	onDelete,
+}: {
+	component: LibraryComponent;
+	deleting: boolean;
+	feedback?: Feedback;
+	onDelete: (component: LibraryComponent) => Promise<void>;
+}) {
+	const locked = component.lockedByRunIds.length > 0;
+	return (
+		<Card className="min-w-0">
+			<CardHeader>
+				<div className="flex flex-wrap items-start justify-between gap-3">
+					<div>
+						<CardTitle>{component.name}</CardTitle>
+						<CardDescription>
+							{component.kind} · v{component.version}
+						</CardDescription>
+					</div>
+					<div className="flex flex-wrap gap-1">
+						<CompatibilityBadge component={component} />
+						<LockBadge component={component} />
+					</div>
+				</div>
+			</CardHeader>
+			<CardContent className="space-y-6">
+				{!component.compatible && (
+					<div
+						className="rounded-lg border border-destructive/40 bg-destructive/10 p-3"
+						role="alert"
+					>
+						<p className="font-medium">Incompatible Component Package</p>
+						<p className="mt-1 text-sm">
+							This package cannot be executed by this host.
+						</p>
+						<TechnicalDetails
+							details={
+								component.compatibilityError ??
+								"Compatibility validation failed without details."
+							}
+						/>
+					</div>
+				)}
+
+				<DetailSection title="Identity and versions">
+					<dl className="grid gap-3 sm:grid-cols-2">
+						<Detail label="Component ID" value={component.componentId} mono />
+						<Detail label="Version" value={component.version} />
+						<Detail
+							label="Manifest schema"
+							value={component.manifestSchemaVersion || "Unavailable"}
+						/>
+						<Detail label="ABI" value={component.abiVersion || "Unavailable"} />
+						<Detail label="SDK" value={component.sdkVersion || "Unavailable"} />
+						<Detail label="Warmup" value={`${component.warmupBars} Closed Bars`} />
+					</dl>
+				</DetailSection>
+
+				<DetailSection title="Exact hashes">
+					<div className="space-y-3">
+						<HashValue label="Archive SHA-256" value={component.archiveSha256} />
+						<HashValue label="WASM SHA-256" value={component.wasmSha256} />
+					</div>
+				</DetailSection>
+
+				<DetailSection title="Parameters">
+					{component.parameters.length ? (
+						<ul className="space-y-2">
+							{component.parameters.map((parameter) => (
+								<li className="rounded-md border p-3 text-sm" key={parameter.name}>
+									<p className="font-medium">{parameter.name}</p>
+									<p className="text-muted-foreground">
+										{parameter.parameterType} · default {parameter.defaultValue}
+										{parameter.allowedValues.length
+											? ` · allowed ${parameter.allowedValues.join(", ")}`
+											: ""}
+									</p>
+								</li>
+							))}
+						</ul>
+					) : (
+						<EmptyContract label="No parameters declared." />
+					)}
+				</DetailSection>
+
+				<DetailSection title="Feature Slots">
+					{component.featureSlots.length ? (
+						<ol className="space-y-2">
+							{component.featureSlots.map((slot) => (
+								<li className="rounded-md border p-3" key={slot.name}>
+									<p className="text-sm font-medium">{slot.name}</p>
+									<pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">
+										{JSON.stringify(slot.source, null, 2)}
+									</pre>
+								</li>
+							))}
+						</ol>
+					) : (
+						<EmptyContract label="No Feature Slots declared." />
+					)}
+				</DetailSection>
+
+				<DetailSection title="Factor dependencies">
+					{component.dependencies.length ? (
+						<ul className="space-y-2">
+							{component.dependencies.map((dependency) => (
+								<li className="rounded-md border p-3 text-sm" key={dependency.alias}>
+									<p className="font-medium">{dependency.alias}</p>
+									<p className="break-all font-mono text-xs text-muted-foreground">
+										{dependency.componentId} · {dependency.version}
+									</p>
+								</li>
+							))}
+						</ul>
+					) : (
+						<EmptyContract label="No external Factor dependencies declared." />
+					)}
+				</DetailSection>
+
+				<DetailSection title="Outputs">
+					<p className="text-sm text-muted-foreground">
+						{component.outputNames.length
+							? component.outputNames.join(", ")
+							: "No named outputs declared."}
+					</p>
+				</DetailSection>
+
+				<DetailSection title="Run-lock state">
+					{locked ? (
+						<div className="space-y-2">
+							<p className="text-sm font-medium">
+								Locked — historical evidence references this exact package.
+							</p>
+							<ul className="space-y-1 font-mono text-xs">
+								{component.lockedByRunIds.map((runId) => (
+									<li className="break-all" key={runId}>
+										Backtest Run {runId}
+									</li>
+								))}
+							</ul>
+						</div>
+					) : (
+						<p className="text-sm text-muted-foreground">
+							Unlocked — no historical Backtest Run for this User references this
+							package.
+						</p>
+					)}
+				</DetailSection>
+
+				<div className="space-y-3 border-t pt-4">
+					<Button
+						variant="destructive"
+						disabled={locked}
+						loading={deleting}
+						loadingText="Removing…"
+						onClick={() => void onDelete(component)}
+					>
+						Delete Component Package
+					</Button>
+					{locked && (
+						<p className="text-sm text-muted-foreground">
+							Deletion is unavailable because the Backtest Run reference above must
+							remain reproducible.
+						</p>
+					)}
+					{feedback && <ActionFeedback feedback={feedback} />}
+				</div>
+			</CardContent>
+		</Card>
+	);
+}
+
+function CompatibilityBadge({ component }: { component: LibraryComponent }) {
+	return (
+		<Badge variant={component.compatible ? "secondary" : "destructive"}>
+			{component.compatible ? "Compatible" : "Incompatible"}
+		</Badge>
+	);
+}
+
+function LockBadge({ component }: { component: LibraryComponent }) {
+	return (
+		<Badge variant={component.lockedByRunIds.length ? "outline" : "secondary"}>
+			{component.lockedByRunIds.length ? "Locked by Run" : "Unlocked"}
+		</Badge>
+	);
+}
+
+function DetailSection({
+	title,
+	children,
+}: {
+	title: string;
+	children: React.ReactNode;
+}) {
+	return (
+		<section className="space-y-2">
+			<h2 className="text-sm font-semibold">{title}</h2>
+			{children}
+		</section>
+	);
+}
+
+function Detail({
+	label,
+	value,
+	mono = false,
+}: {
+	label: string;
+	value: string;
+	mono?: boolean;
+}) {
+	return (
+		<div className="min-w-0">
+			<dt className="text-xs text-muted-foreground">{label}</dt>
+			<dd className={mono ? "break-all font-mono text-xs" : "text-sm"}>{value}</dd>
+		</div>
+	);
+}
+
+function HashValue({ label, value }: { label: string; value: string }) {
+	return (
+		<div className="min-w-0 rounded-md border p-3">
+			<p className="text-xs text-muted-foreground">{label}</p>
+			<code className="block break-all text-xs">{value}</code>
+			<Button
+				className="mt-2"
+				size="xs"
+				variant="outline"
+				onClick={() => void navigator.clipboard.writeText(value)}
+			>
+				Copy {label}
+			</Button>
+		</div>
+	);
+}
+
+function EmptyContract({ label }: { label: string }) {
+	return <p className="text-sm text-muted-foreground">{label}</p>;
+}
+
+function ActionFeedback({ feedback }: { feedback: Feedback }) {
+	return (
+		<div
+			className={`rounded-lg border p-3 text-sm ${feedback.tone === "error" ? "border-destructive/40 bg-destructive/10" : "bg-muted"}`}
+			role={feedback.tone === "error" ? "alert" : "status"}
+		>
+			<p className="font-medium">{feedback.summary}</p>
+			{feedback.details && <TechnicalDetails details={feedback.details} />}
+		</div>
+	);
+}
+
+function TechnicalDetails({ details }: { details: string }) {
+	return (
+		<details className="mt-2">
+			<summary className="cursor-pointer font-medium">Technical details</summary>
+			<Button
+				className="my-2"
+				size="xs"
+				variant="outline"
+				onClick={() => void navigator.clipboard.writeText(details)}
+			>
+				Copy technical details
+			</Button>
+			<pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-background p-2 text-xs">
+				{details}
+			</pre>
+		</details>
 	);
 }
 
@@ -146,7 +532,7 @@ export function Workspace({
 	children: React.ReactNode;
 }) {
 	return (
-		<div className="flex flex-1 flex-col gap-5 p-4 lg:p-6">
+		<div className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
 			<div>
 				<h1 className="text-2xl font-semibold">{title}</h1>
 				<p className="text-sm text-muted-foreground">{description}</p>
