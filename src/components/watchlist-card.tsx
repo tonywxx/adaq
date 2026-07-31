@@ -10,6 +10,13 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
+	Pagination,
+	PaginationContent,
+	PaginationItem,
+	PaginationNext,
+	PaginationPrevious,
+} from "@/components/ui/pagination";
+import {
 	Select,
 	SelectContent,
 	SelectItem,
@@ -41,15 +48,17 @@ import WChart from "@/w/lightweight-charts/WChart";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { LoaderCircleIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const MINI_CHART_BARS = 60;
+const WATCHLIST_PAGE_SIZE = 10;
 type MiniChartInterval = (typeof MINI_CHART_INTERVALS)[number];
 
 export function WatchlistCard() {
 	const ready = useMarketSessionStore((state) => state.ready);
 	const loadError = useMarketSessionStore((state) => state.loadError);
 	const watchlist = useMarketSessionStore((state) => state.watchlist);
+	const watchlistLimit = useMarketSessionStore((state) => state.watchlistLimit);
 	const activeInstrument = useMarketSessionStore(
 		(state) => state.activeInstrument,
 	);
@@ -61,13 +70,32 @@ export function WatchlistCard() {
 	const [adding, setAdding] = useState(false);
 	const [query, setQuery] = useState("");
 	const [mutationError, setMutationError] = useState<string>();
+	const [watchlistPage, setWatchlistPage] = useState(1);
 	const live = tickerStatus === "live" && barStatus === "live";
+	const pageCount = Math.max(
+		1,
+		Math.ceil(watchlist.length / WATCHLIST_PAGE_SIZE),
+	);
+	const currentPage = Math.min(watchlistPage, pageCount);
+	const visibleWatchlist = watchlist.slice(
+		(currentPage - 1) * WATCHLIST_PAGE_SIZE,
+		currentPage * WATCHLIST_PAGE_SIZE,
+	);
+	useEffect(() => {
+		const activeIndex = watchlist.findIndex(
+			(item) => instrumentKey(item) === instrumentKey(activeInstrument),
+		);
+		if (activeIndex >= 0)
+			setWatchlistPage(Math.floor(activeIndex / WATCHLIST_PAGE_SIZE) + 1);
+	}, [activeInstrument, watchlist]);
 
 	return (
 		<Card className="min-w-0 rounded-md py-4 lg:sticky lg:top-6 lg:max-h-[calc(100svh-6rem)]">
 			<CardHeader>
 				<CardTitle className="text-xl font-semibold">Watchlist</CardTitle>
-				<CardDescription>{watchlist.length} / 20 · OKX Spot</CardDescription>
+				<CardDescription>
+					{watchlist.length} / {watchlistLimit || "—"} · OKX Spot
+				</CardDescription>
 				<CardAction>
 					<Badge
 						variant="outline"
@@ -118,7 +146,7 @@ export function WatchlistCard() {
 						size="sm"
 						variant="outline"
 						className="ml-auto"
-						disabled={!ready || watchlist.length >= 20}
+						disabled={!ready || watchlist.length >= watchlistLimit}
 						onClick={() => setAdding((value) => !value)}
 					>
 						<PlusIcon />
@@ -163,7 +191,7 @@ export function WatchlistCard() {
 							Your Watchlist is empty.
 						</div>
 					) : (
-						watchlist.map((instrument) => (
+						visibleWatchlist.map((instrument) => (
 							<WatchlistRow
 								key={instrumentKey(instrument)}
 								instrument={instrument}
@@ -178,6 +206,29 @@ export function WatchlistCard() {
 						))
 					)}
 				</div>
+				{ready && watchlist.length > WATCHLIST_PAGE_SIZE && (
+					<Pagination>
+						<PaginationContent>
+							<PaginationItem>
+								<PaginationPrevious
+									disabled={currentPage === 1}
+									onClick={() => setWatchlistPage(currentPage - 1)}
+								/>
+							</PaginationItem>
+							<PaginationItem>
+								<span className="px-3 text-sm" aria-current="page">
+									Page {currentPage} of {pageCount}
+								</span>
+							</PaginationItem>
+							<PaginationItem>
+								<PaginationNext
+									disabled={currentPage === pageCount}
+									onClick={() => setWatchlistPage(currentPage + 1)}
+								/>
+							</PaginationItem>
+						</PaginationContent>
+					</Pagination>
+				)}
 
 				{mutationError && (
 					<div className="text-xs text-destructive" role="status">

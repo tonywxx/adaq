@@ -7,7 +7,14 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
-import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
+import { LoadingState } from "@/components/loading-state";
+import {
+	Pagination,
+	PaginationContent,
+	PaginationItem,
+	PaginationNext,
+	PaginationPrevious,
+} from "@/components/ui/pagination";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -25,68 +32,98 @@ type Feedback = {
 	summary: string;
 	details?: string;
 };
+type ComponentPage = {
+	items: LibraryComponent[];
+	total: number;
+	page: number;
+	pageSize: number;
+};
+
+const COMPONENT_PAGE_SIZE = 10;
 
 export function ComponentsPage() {
 	const userId = useMarketSessionStore((state) => state.userId);
 	const [items, setItems] = useState<LibraryComponent[]>([]);
+	const [packagesPage, setPackagesPage] = useState(1);
+	const [packagesTotal, setPackagesTotal] = useState(0);
 	const [selectedHash, setSelectedHash] = useState("");
 	const [importing, setImporting] = useState(false);
 	const [deleting, setDeleting] = useState(false);
 	const [importFeedback, setImportFeedback] = useState<Feedback>();
 	const [deleteFeedback, setDeleteFeedback] = useState<Feedback>();
 	const [loadFeedback, setLoadFeedback] = useState<Feedback>();
-	const [pageLoading, setPageLoading] = useState(true);
+	const [packagesLoading, setPackagesLoading] = useState(true);
 	const activeUserId = useRef(userId);
 	const requestVersion = useRef(0);
 	activeUserId.current = userId;
-	const refresh = useCallback(async () => {
-		if (!userId) return [];
-		const requestedUserId = userId;
-		const version = ++requestVersion.current;
-		let components: LibraryComponent[];
-		try {
-			components = await invoke("component_list", {
-				request: { userId: requestedUserId },
-			});
-		} catch (error) {
+	const refresh = useCallback(
+		async (page = packagesPage) => {
+			if (!userId) return [];
+			const requestedUserId = userId;
+			const version = ++requestVersion.current;
+			let result: ComponentPage;
+			try {
+				result = await invoke("component_page", {
+					request: { userId: requestedUserId, page },
+				});
+			} catch (error) {
+				if (
+					version === requestVersion.current &&
+					activeUserId.current === requestedUserId
+				)
+					throw error;
+				return [];
+			}
+			const components = result.items;
 			if (
-				version === requestVersion.current &&
-				activeUserId.current === requestedUserId
+				version !== requestVersion.current ||
+				activeUserId.current !== requestedUserId
 			)
-				throw error;
-			return [];
-		}
-		if (
-			version !== requestVersion.current ||
-			activeUserId.current !== requestedUserId
-		)
-			return [];
-		setItems(components);
-		setSelectedHash((current) =>
-			components.some((item) => item.archiveSha256 === current)
-				? current
-				: (components[0]?.archiveSha256 ?? ""),
-		);
-		setLoadFeedback(undefined);
-		return components;
-	}, [userId]);
+				return [];
+			setItems(components);
+			setPackagesTotal(result.total);
+			setSelectedHash((current) =>
+				components.some((item) => item.archiveSha256 === current)
+					? current
+					: (components[0]?.archiveSha256 ?? ""),
+			);
+			setLoadFeedback(undefined);
+			return components;
+		},
+		[packagesPage, userId],
+	);
 
 	useEffect(() => {
 		requestVersion.current += 1;
 		setItems([]);
+		setPackagesPage(1);
+		setPackagesTotal(0);
 		setSelectedHash("");
 		setImporting(false);
 		setDeleting(false);
 		setImportFeedback(undefined);
 		setDeleteFeedback(undefined);
 		setLoadFeedback(undefined);
-		if (!userId) return;
-		setPageLoading(true);
+		if (!userId) {
+			setPackagesLoading(false);
+			return;
+		}
+		let active = true;
+		setPackagesLoading(true);
 		void refresh()
 			.catch((error) => {
-				setLoadFeedback({ tone: "error", ...formatComponentError(error, "load") });
+				if (active)
+					setLoadFeedback({
+						tone: "error",
+						...formatComponentError(error, "load"),
+					});
 			})
-			.finally(() => setPageLoading(false));
+			.finally(() => {
+				if (active) setPackagesLoading(false);
+			});
+		return () => {
+			active = false;
+		};
 	}, [refresh, userId]);
 
 	const importPackage = async (file?: File) => {
@@ -98,9 +135,10 @@ export function ComponentsPage() {
 				userId,
 				Array.from(new Uint8Array(await file.arrayBuffer())),
 				(command, args) => invoke(command, args),
-				refresh,
+				() => refresh(1),
 			);
 			if (activeUserId.current !== userId) return;
+			setPackagesPage(1);
 			setSelectedHash(imported.archiveSha256);
 			setImportFeedback({
 				tone: "success",
@@ -155,8 +193,6 @@ export function ComponentsPage() {
 
 	const selected = items.find((item) => item.archiveSha256 === selectedHash);
 
-	if (pageLoading) return <PageLoadingSkeleton />;
-
 	return (
 		<Workspace
 			title="Component Library"
@@ -196,11 +232,13 @@ export function ComponentsPage() {
 				<Card className="min-w-0">
 					<CardHeader>
 						<CardTitle>Packages</CardTitle>
-						<CardDescription>{items.length} available to this User</CardDescription>
+						<CardDescription>{packagesTotal} available to this User</CardDescription>
 					</CardHeader>
-					<CardContent>
-						{items.length ? (
-							<ul className="space-y-2" aria-label="Component packages">
+					<CardContent className="flex flex-col gap-3">
+						{packagesLoading ? (
+							<LoadingState label="Loading Component Packages…" />
+						) : items.length ? (
+							<ul className="flex flex-col gap-2" aria-label="Component packages">
 								{items.map((item) => (
 									<li key={item.archiveSha256}>
 										<button
@@ -231,6 +269,32 @@ export function ComponentsPage() {
 									Import a verified .adaq package to begin.
 								</p>
 							</div>
+						)}
+						{!packagesLoading && packagesTotal > COMPONENT_PAGE_SIZE && (
+							<Pagination>
+								<PaginationContent>
+									<PaginationItem>
+										<PaginationPrevious
+											disabled={packagesPage === 1}
+											onClick={() => setPackagesPage((page) => page - 1)}
+										/>
+									</PaginationItem>
+									<PaginationItem>
+										<span className="px-3 text-sm" aria-current="page">
+											Page {packagesPage} of{" "}
+											{Math.ceil(packagesTotal / COMPONENT_PAGE_SIZE)}
+										</span>
+									</PaginationItem>
+									<PaginationItem>
+										<PaginationNext
+											disabled={
+												packagesPage >= Math.ceil(packagesTotal / COMPONENT_PAGE_SIZE)
+											}
+											onClick={() => setPackagesPage((page) => page + 1)}
+										/>
+									</PaginationItem>
+								</PaginationContent>
+							</Pagination>
 						)}
 					</CardContent>
 				</Card>

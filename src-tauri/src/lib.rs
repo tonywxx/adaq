@@ -458,6 +458,7 @@ pub fn run() {
             market_unsubscribe_bar,
             m3::component_import,
             m3::component_list,
+            m3::component_page,
             m3::backtest_compatible_factors,
             m3::component_delete,
             m3::snapshot_create,

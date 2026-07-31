@@ -2,6 +2,7 @@
 import { AutoUpdateButton } from "@/components/ui/autoupdate-button";
 import { DarkModeDropDownMenu } from "@/components/ui/dark-mode-dropdown-menu";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { useHistoryControls } from "@/lib/navigation-history";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
 
@@ -26,6 +27,7 @@ async function runWindowAction(action: () => Promise<void>) {
 }
 
 export function AppTitlebar() {
+	const { back, canGoBack, canGoForward, forward } = useHistoryControls();
 	const startDrag = () => {
 		if (!appWindow) {
 			return;
@@ -70,8 +72,9 @@ export function AppTitlebar() {
 						type="button"
 						aria-label="Back"
 						title="Back"
-						disabled
-						className="flex size-4 items-center justify-center text-sidebar-foreground/35 disabled:cursor-default"
+						disabled={!canGoBack}
+						className="flex size-4 items-center justify-center text-sidebar-foreground/45 hover:text-sidebar-foreground/70 disabled:cursor-default disabled:text-sidebar-foreground/35"
+						onClick={back}
 						onPointerDown={(event) => event.stopPropagation()}
 					>
 						<ArrowLeftIcon className="size-4 stroke-[1.6]" />
@@ -80,8 +83,9 @@ export function AppTitlebar() {
 						type="button"
 						aria-label="Forward"
 						title="Forward"
-						disabled
-						className="flex size-4 items-center justify-center text-sidebar-foreground/25 disabled:cursor-default"
+						disabled={!canGoForward}
+						className="flex size-4 items-center justify-center text-sidebar-foreground/45 hover:text-sidebar-foreground/70 disabled:cursor-default disabled:text-sidebar-foreground/35"
+						onClick={forward}
 						onPointerDown={(event) => event.stopPropagation()}
 					>
 						<ArrowRightIcon className="size-4 stroke-[1.6]" />

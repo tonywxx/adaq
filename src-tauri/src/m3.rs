@@ -25,6 +25,10 @@ use sha2::{Digest, Sha256};
 
 use crate::run_engine::{FactorRunRequest, PositionMode, RunEngine, RunRequest};
 
+const RUN_HISTORY_PAGE_SIZE: usize = 10;
+const SNAPSHOT_PAGE_SIZE: usize = 10;
+const COMPONENT_PAGE_SIZE: usize = 10;
+
 pub struct M3State {
     root: PathBuf,
     snapshots: SnapshotStore,
@@ -205,6 +209,50 @@ impl M3State {
     }
 
     pub fn list_components(&self, user_id: &str) -> Result<Vec<LibraryComponent>, String> {
+        self.list_components_range(user_id, -1, 0)
+    }
+
+    fn list_components_page(&self, user_id: &str, page: usize) -> Result<ComponentPage, String> {
+        validate_user(user_id)?;
+        if page == 0 {
+            return Err("Component Package page is invalid".into());
+        }
+        let total = self
+            .database
+            .lock()
+            .map_err(string)?
+            .query_row(
+                "SELECT COUNT(*) FROM component_content c
+                 JOIN component_access a USING(archive_sha256)
+                 WHERE a.user_id = ?1",
+                [user_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(string)?
+            .try_into()
+            .map_err(|_| "Component Package count is invalid")?;
+        let offset = page
+            .checked_sub(1)
+            .and_then(|value| value.checked_mul(COMPONENT_PAGE_SIZE))
+            .ok_or_else(|| "Component Package page is too large".to_owned())?;
+        Ok(ComponentPage {
+            items: self.list_components_range(
+                user_id,
+                COMPONENT_PAGE_SIZE as i64,
+                offset as i64,
+            )?,
+            total,
+            page,
+            page_size: COMPONENT_PAGE_SIZE,
+        })
+    }
+
+    fn list_components_range(
+        &self,
+        user_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<LibraryComponent>, String> {
         validate_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
         let mut locked_by_hash = HashMap::<String, Vec<String>>::new();
@@ -230,11 +278,12 @@ impl M3State {
             .prepare(
                 "SELECT c.component_id, c.version, c.name, c.kind, c.archive_sha256, c.wasm_sha256, c.archive_path
              FROM component_content c JOIN component_access a USING(archive_sha256)
-             WHERE a.user_id = ?1 ORDER BY c.name, c.version",
+             WHERE a.user_id = ?1 ORDER BY c.name, c.version, c.archive_sha256
+             LIMIT ?2 OFFSET ?3",
             )
             .map_err(string)?;
         statement
-            .query_map([user_id], |row| {
+            .query_map(params![user_id, limit, offset], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -435,27 +484,47 @@ impl M3State {
         Ok(snapshot)
     }
 
-    fn list_snapshots(
-        &self,
-        request: &SnapshotListRequest,
-    ) -> Result<Vec<MarketDataSnapshot>, String> {
+    fn list_snapshots(&self, request: &SnapshotListRequest) -> Result<SnapshotPage, String> {
         validate_user(&request.user_id)?;
-        if request.src.trim().is_empty() || request.code.trim().is_empty() {
+        if request.src.trim().is_empty() || request.code.trim().is_empty() || request.page == 0 {
             return Err("Snapshot coverage request is invalid".into());
         }
         let interval = serde_json::to_string(&request.interval).map_err(string)?;
         let database = self.database.lock().map_err(string)?;
+        let total = database
+            .query_row(
+                "SELECT COUNT(*) FROM market_data_snapshots s
+                 JOIN market_data_snapshot_access a USING(snapshot_id)
+                 WHERE a.user_id = ?1 AND s.src = ?2 AND s.code = ?3 AND s.interval = ?4",
+                params![request.user_id, request.src, request.code, interval],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(string)?
+            .try_into()
+            .map_err(|_| "Snapshot count is invalid")?;
+        let offset = request
+            .page
+            .checked_sub(1)
+            .and_then(|value| value.checked_mul(SNAPSHOT_PAGE_SIZE))
+            .ok_or_else(|| "Snapshot page is too large".to_owned())?;
         let mut statement = database
             .prepare(
                 "SELECT s.metadata_json FROM market_data_snapshots s
              JOIN market_data_snapshot_access a USING(snapshot_id)
              WHERE a.user_id = ?1 AND s.src = ?2 AND s.code = ?3 AND s.interval = ?4
-             ORDER BY s.start_time_ms, s.snapshot_id",
+             ORDER BY s.start_time_ms, s.snapshot_id LIMIT ?5 OFFSET ?6",
             )
             .map_err(string)?;
-        statement
+        let items = statement
             .query_map(
-                params![request.user_id, request.src, request.code, interval],
+                params![
+                    request.user_id,
+                    request.src,
+                    request.code,
+                    interval,
+                    SNAPSHOT_PAGE_SIZE as i64,
+                    offset as i64
+                ],
                 |row| {
                     serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(
@@ -468,7 +537,13 @@ impl M3State {
             )
             .map_err(string)?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(string)
+            .map_err(string)?;
+        Ok(SnapshotPage {
+            items,
+            total,
+            page: request.page,
+            page_size: SNAPSHOT_PAGE_SIZE,
+        })
     }
 
     fn list_readable_snapshots(&self, user_id: &str) -> Result<Vec<MarketDataSnapshot>, String> {
@@ -608,6 +683,7 @@ impl M3State {
         Ok(run)
     }
 
+    #[cfg(test)]
     fn list_runs(&self, user_id: &str) -> Result<Vec<BacktestRunSummary>, String> {
         validate_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
@@ -637,6 +713,106 @@ impl M3State {
             .map_err(string)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(string)
+    }
+
+    fn list_runs_page(
+        &self,
+        user_id: &str,
+        src: Option<&str>,
+        code: Option<&str>,
+        page: usize,
+    ) -> Result<BacktestRunPage, String> {
+        validate_user(user_id)?;
+        let instrument_valid = match (src, code) {
+            (None, None) => true,
+            (Some(src), Some(code)) => !src.trim().is_empty() && !code.trim().is_empty(),
+            _ => false,
+        };
+        if page == 0 || !instrument_valid {
+            return Err("Backtest Run history request is invalid".into());
+        }
+        let database = self.database.lock().map_err(string)?;
+        let filter = "user_id = ?1
+            AND (?2 IS NULL OR (
+                json_extract(result_json, '$.snapshot.src') = ?2
+                AND json_extract(result_json, '$.snapshot.code') = ?3
+            ))";
+        let total = database
+            .query_row(
+                &format!("SELECT COUNT(*) FROM backtest_runs WHERE {filter}"),
+                params![user_id, src, code],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(string)?
+            .try_into()
+            .map_err(|_| "Backtest Run history count is invalid")?;
+        let offset = page
+            .checked_sub(1)
+            .and_then(|value| value.checked_mul(RUN_HISTORY_PAGE_SIZE))
+            .ok_or_else(|| "Backtest Run history page is too large".to_owned())?;
+        let mut statement = database
+            .prepare(&format!(
+                "SELECT run_id, created_at,
+                    json_extract(result_json, '$.snapshot.snapshotId'),
+                    json_extract(result_json, '$.snapshot.code'),
+                    json_extract(result_json, '$.snapshot.interval'),
+                    json_extract(result_json, '$.snapshot.barCount'),
+                    json_extract(result_json, '$.result.metrics.totalReturn')
+                 FROM backtest_runs WHERE {filter}
+                 ORDER BY created_at DESC, run_id DESC LIMIT ?4 OFFSET ?5"
+            ))
+            .map_err(string)?;
+        let items = statement
+            .query_map(
+                params![
+                    user_id,
+                    src,
+                    code,
+                    RUN_HISTORY_PAGE_SIZE as i64,
+                    offset as i64
+                ],
+                |row| {
+                    let interval_text = row.get::<_, String>(4)?;
+                    let interval = serde_json::from_value(serde_json::Value::String(interval_text))
+                        .map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                4,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?;
+                    let total_return_text = row.get::<_, String>(6)?;
+                    let total_return = total_return_text.parse().map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            6,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?;
+                    let bar_count_value = row.get::<_, i64>(5)?;
+                    let bar_count = usize::try_from(bar_count_value).map_err(|_| {
+                        rusqlite::Error::IntegralValueOutOfRange(5, bar_count_value)
+                    })?;
+                    Ok(BacktestRunSummary {
+                        run_id: row.get(0)?,
+                        created_at: row.get(1)?,
+                        snapshot_id: row.get(2)?,
+                        code: row.get(3)?,
+                        interval,
+                        bar_count,
+                        total_return,
+                    })
+                },
+            )
+            .map_err(string)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(string)?;
+        Ok(BacktestRunPage {
+            items,
+            total,
+            page,
+            page_size: RUN_HISTORY_PAGE_SIZE,
+        })
     }
 
     fn delete_run(&self, user_id: &str, run_id: &str) -> Result<(), String> {
@@ -760,6 +936,22 @@ pub struct ComponentUserRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ComponentPageRequest {
+    pub user_id: String,
+    pub page: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentPage {
+    pub items: Vec<LibraryComponent>,
+    pub total: usize,
+    pub page: usize,
+    pub page_size: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ComponentImportRequest {
     pub user_id: String,
     pub bytes: Vec<u8>,
@@ -802,12 +994,33 @@ pub struct SnapshotListRequest {
     pub src: String,
     pub code: String,
     pub interval: BarInterval,
+    pub page: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotPage {
+    pub items: Vec<MarketDataSnapshot>,
+    pub total: usize,
+    pub page: usize,
+    pub page_size: usize,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadableSnapshotListRequest {
     pub user_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestListRequest {
+    pub user_id: String,
+    #[serde(default)]
+    pub src: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
+    pub page: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -1042,6 +1255,15 @@ pub struct BacktestRunSummary {
     pub total_return: rust_decimal::Decimal,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestRunPage {
+    pub items: Vec<BacktestRunSummary>,
+    pub total: usize,
+    pub page: usize,
+    pub page_size: usize,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationProtocolCreateRequest {
@@ -1201,11 +1423,19 @@ pub fn component_import(
 }
 
 #[tauri::command]
-pub fn component_list(
+pub async fn component_list(
     request: ComponentUserRequest,
     state: tauri::State<'_, M3State>,
 ) -> Result<Vec<LibraryComponent>, String> {
     state.list_components(&request.user_id)
+}
+
+#[tauri::command]
+pub async fn component_page(
+    request: ComponentPageRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<ComponentPage, String> {
+    state.list_components_page(&request.user_id, request.page)
 }
 
 #[tauri::command]
@@ -1345,15 +1575,15 @@ pub async fn snapshot_download(
 }
 
 #[tauri::command]
-pub fn snapshot_list(
+pub async fn snapshot_list(
     request: SnapshotListRequest,
     state: tauri::State<'_, M3State>,
-) -> Result<Vec<MarketDataSnapshot>, String> {
+) -> Result<SnapshotPage, String> {
     state.list_snapshots(&request)
 }
 
 #[tauri::command]
-pub fn snapshot_list_readable(
+pub async fn snapshot_list_readable(
     request: ReadableSnapshotListRequest,
     state: tauri::State<'_, M3State>,
 ) -> Result<Vec<MarketDataSnapshot>, String> {
@@ -1635,11 +1865,16 @@ fn prepare_backtest(
 }
 
 #[tauri::command]
-pub fn backtest_list(
-    request: ComponentUserRequest,
+pub async fn backtest_list(
+    request: BacktestListRequest,
     state: tauri::State<'_, M3State>,
-) -> Result<Vec<BacktestRunSummary>, String> {
-    state.list_runs(&request.user_id)
+) -> Result<BacktestRunPage, String> {
+    state.list_runs_page(
+        &request.user_id,
+        request.src.as_deref(),
+        request.code.as_deref(),
+        request.page,
+    )
 }
 
 #[tauri::command]
@@ -1746,7 +1981,7 @@ pub fn validation_protocol_create(
 }
 
 #[tauri::command]
-pub fn validation_protocol_list(
+pub async fn validation_protocol_list(
     request: ComponentUserRequest,
     state: tauri::State<'_, M3State>,
 ) -> Result<Vec<ValidationProtocol>, String> {
@@ -1922,7 +2157,7 @@ fn run_cross_market_validation(
 }
 
 #[tauri::command]
-pub fn validation_report_list(
+pub async fn validation_report_list(
     request: ComponentUserRequest,
     state: tauri::State<'_, M3State>,
 ) -> Result<Vec<ValidationReport>, String> {
@@ -2625,6 +2860,127 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
     use zip::{ZipWriter, write::SimpleFileOptions};
+
+    #[test]
+    fn component_library_pages_packages_ten_at_a_time() {
+        let root = std::env::temp_dir().join(format!(
+            "adaq-component-page-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = M3State::open(&root).unwrap();
+        let database = state.database.lock().unwrap();
+        for index in 0..12 {
+            let archive_sha256 = format!("{index:064x}");
+            let path = root.join(format!("invalid-{index}.adaq"));
+            fs::write(&path, b"invalid package").unwrap();
+            database
+                .execute(
+                    "INSERT INTO component_content VALUES (?1, ?2, '1.0.0', ?3, 'factor', ?4, ?5)",
+                    params![
+                        archive_sha256,
+                        format!("00000000-0000-4000-8000-{index:012}"),
+                        format!("Package {index:02}"),
+                        format!("{:064x}", index + 100),
+                        path.to_string_lossy()
+                    ],
+                )
+                .unwrap();
+            database
+                .execute(
+                    "INSERT INTO component_access VALUES ('alice', ?1)",
+                    [archive_sha256],
+                )
+                .unwrap();
+        }
+        drop(database);
+
+        let first = state.list_components_page("alice", 1).unwrap();
+        assert_eq!(first.total, 12);
+        assert_eq!(first.items.len(), 10);
+        assert!(first.items.iter().all(|item| !item.compatible));
+
+        let second = state.list_components_page("alice", 2).unwrap();
+        assert_eq!(second.total, 12);
+        assert_eq!(second.items.len(), 2);
+    }
+
+    #[test]
+    fn run_history_is_filtered_and_paged_by_instrument() {
+        let root = std::env::temp_dir().join(format!(
+            "adaq-run-history-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = M3State::open(&root).unwrap();
+        let database = state.database.lock().unwrap();
+        for index in 0..12 {
+            let json = serde_json::json!({
+                "snapshot": {
+                    "snapshotId": format!("btc-{index}"),
+                    "src": "okx",
+                    "code": "BTC-USDT",
+                    "interval": "1h",
+                    "barCount": 100
+                },
+                "result": { "metrics": { "totalReturn": "0.1" } }
+            });
+            database
+                .execute(
+                    "INSERT INTO backtest_runs(run_id, user_id, created_at, result_json) VALUES (?1, 'alice', ?2, ?3)",
+                    params![format!("btc-{index}"), format!("2026-07-30 00:{index:02}:00"), json.to_string()],
+                )
+                .unwrap();
+        }
+        for (user, code) in [("alice", "ETH-USDT"), ("bob", "BTC-USDT")] {
+            let json = serde_json::json!({
+                "snapshot": {
+                    "snapshotId": format!("{user}-{code}"),
+                    "src": "okx",
+                    "code": code,
+                    "interval": "1h",
+                    "barCount": 100
+                },
+                "result": { "metrics": { "totalReturn": "0.2" } }
+            });
+            database
+                .execute(
+                    "INSERT INTO backtest_runs(run_id, user_id, created_at, result_json) VALUES (?1, ?2, '2026-07-30 01:00:00', ?3)",
+                    params![format!("{user}-{code}"), user, json.to_string()],
+                )
+                .unwrap();
+        }
+        drop(database);
+
+        let first = state
+            .list_runs_page("alice", Some("okx"), Some("BTC-USDT"), 1)
+            .unwrap();
+        assert_eq!(first.total, 12);
+        assert_eq!(first.items.len(), 10);
+        assert!(first.items.iter().all(|run| run.code == "BTC-USDT"));
+
+        let second = state
+            .list_runs_page("alice", Some("okx"), Some("BTC-USDT"), 2)
+            .unwrap();
+        assert_eq!(second.total, 12);
+        assert_eq!(second.items.len(), 2);
+
+        let eth = state
+            .list_runs_page("alice", Some("okx"), Some("ETH-USDT"), 1)
+            .unwrap();
+        assert_eq!(eth.total, 1);
+        assert_eq!(eth.items[0].code, "ETH-USDT");
+
+        let all = state.list_runs_page("alice", None, None, 1).unwrap();
+        assert_eq!(all.total, 13);
+        assert_eq!(all.items.len(), 10);
+    }
 
     fn fixture(name: &str) -> (ComponentManifest, Vec<u8>) {
         let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3656,8 +4012,17 @@ mod tests {
         let earlier = state
             .persist_snapshot_for_user("alice", &series(0))
             .unwrap();
+        let mut expected = vec![earlier.snapshot_id.clone(), later.snapshot_id.clone()];
+        for hour in 2..12 {
+            expected.push(
+                state
+                    .persist_snapshot_for_user("alice", &series(hour * 3_600_000))
+                    .unwrap()
+                    .snapshot_id,
+            );
+        }
         state
-            .persist_snapshot_for_user("bob", &series(7_200_000))
+            .persist_snapshot_for_user("bob", &series(12 * 3_600_000))
             .unwrap();
 
         let listed = state
@@ -3666,14 +4031,35 @@ mod tests {
                 src: "okx".into(),
                 code: "BTC-USDT".into(),
                 interval: BarInterval::OneHour,
+                page: 1,
             })
             .unwrap();
         assert_eq!(
             listed
+                .items
                 .iter()
                 .map(|snapshot| &snapshot.snapshot_id)
                 .collect::<Vec<_>>(),
-            vec![&earlier.snapshot_id, &later.snapshot_id]
+            expected[..10].iter().collect::<Vec<_>>()
+        );
+        assert_eq!(listed.total, 12);
+        let second = state
+            .list_snapshots(&SnapshotListRequest {
+                user_id: "alice".into(),
+                src: "okx".into(),
+                code: "BTC-USDT".into(),
+                interval: BarInterval::OneHour,
+                page: 2,
+            })
+            .unwrap();
+        assert_eq!(second.items.len(), 2);
+        assert_eq!(
+            second
+                .items
+                .iter()
+                .map(|snapshot| &snapshot.snapshot_id)
+                .collect::<Vec<_>>(),
+            expected[10..].iter().collect::<Vec<_>>()
         );
         assert!(
             state

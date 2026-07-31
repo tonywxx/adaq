@@ -260,6 +260,12 @@ _Avoid_: Best-strategy generation, winner discovery
 A Component candidate's position under one exact Validation Protocol and scoring rule; the rank is historical evidence within that frozen study, not proof of global optimality or future profitability.
 _Avoid_: Best Factor, best Strategy, guaranteed winner
 
+### Application Navigation
+
+**Page Navigation History**:
+The ordered sequence of ADAQ application pages and selected Backtest-result or Validation-report tabs visited in the current WebView session, used by Back and Forward to restore a previously visited page or tab, or revisit one after going back. A new page or tab visited after going back discards the Forward sequence. It excludes report selection, form state, external pages, other non-ADAQ history entries, and shareable URL state.
+_Avoid_: Page stack, custom navigation session, WebView history, deep link
+
 ### Supervised Live Trading
 
 **Supervised Local Execution**:

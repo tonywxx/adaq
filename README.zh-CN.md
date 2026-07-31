@@ -1,12 +1,12 @@
-# ADAQ
+# AdaQ
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 [![Release](https://github.com/tonywxx/adaq/actions/workflows/release.yml/badge.svg)](https://github.com/tonywxx/adaq/actions/workflows/release.yml)
 
-> **ADAQ** (Ada Quant) 是一个 AI 驱动的量化交易平台，支持股票和数字加密资产。
+> **AdaQ** (Ada Quant) 是一个 AI 驱动的量化交易平台，支持股票和数字加密资产。
 
-ADAQ V1 是本地优先的研究、回测与模拟桌面应用。它不执行真实账户订单；真实交易属于未来独立的、由主机控制的监督式 Live 里程碑。
+AdaQ V1 是本地优先的研究、回测与模拟桌面应用。它不执行真实账户订单；真实交易属于未来独立的、由主机控制的监督式 Live 里程碑。
 
 ## 功能特性
 
@@ -16,10 +16,18 @@ ADAQ V1 是本地优先的研究、回测与模拟桌面应用。它不执行真
 - 主机拥有的 TA-Lib Indicator Catalog 与冻结 Feature Slots
 - 带不可变 Backtest Run 的确定性 Spot 模拟
 
+## 截图预览
+
+| 仪表盘 | 回测 |
+|:---:|:---:|
+| ![仪表盘](screenshots/1-dashboard.png) | ![回测](screenshots/2-backtest.png) |
+| **组件库** | **验证** |
+| ![组件库](screenshots/3-components.png) | ![验证](screenshots/4-validation.png) |
+
 ## 已实现里程碑
 
 | 里程碑 | 已交付能力 |
-|--------|------------|
+| -------- | ------------ |
 | M1 | 固定的 WebAssembly Component ABI：`adaq:factor@1.0.0` 与 `adaq:strategy@1.0.0`。Factor Component 将 Closed Bars 转换为具名标量输出；Strategy Component 消费密集的 Feature Slots，并输出完整的 Target Exposure 决策。 |
 | M2 | 确定性的内存 Run Engine。主机校验 Closed Bars、执行沙箱资源限制、绑定有序 Feature Slots、记录 Warmup 或 Missing Input 暂停，并在无效数据或无效目标仓位时 fail closed。 |
 | M3 | 可复现的 crypto Spot Backtest。Backtest Run 不可变地绑定 Market Data Snapshot、Component Lock、参数、Indicator Plan、Execution Profile、引擎版本与 seed。结果本地持久化，包括 Target Decisions、模拟订单、成交、权益、费用、指标、历史记录和图表。 |

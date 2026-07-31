@@ -26,6 +26,7 @@ export type WatchlistState = {
 	items: InstrumentRef[];
 	activeInstrument: InstrumentRef;
 	miniChartInterval: BarInterval;
+	limit: number;
 };
 
 export type TickerSnapshot = {
@@ -83,6 +84,7 @@ type MarketSessionStore = {
 	ready: boolean;
 	loadError?: string;
 	watchlist: InstrumentRef[];
+	watchlistLimit: number;
 	activeInstrument: InstrumentRef;
 	miniChartInterval: BarInterval;
 	mainChartInterval: BarInterval;
@@ -111,6 +113,7 @@ const initialState = {
 	ready: false,
 	loadError: undefined,
 	watchlist: [],
+	watchlistLimit: 0,
 	activeInstrument: DEFAULT_ACTIVE_INSTRUMENT as InstrumentRef,
 	miniChartInterval: "1m" as BarInterval,
 	mainChartInterval: "15m" as BarInterval,
@@ -131,6 +134,7 @@ export const useMarketSessionStore = create<MarketSessionStore>((set) => ({
 			ready: true,
 			loadError: undefined,
 			watchlist: state.items,
+			watchlistLimit: state.limit,
 			activeInstrument: state.activeInstrument,
 			miniChartInterval: state.miniChartInterval,
 		}),

@@ -1,8 +1,15 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
+import { LoadingState } from "@/components/loading-state";
 import { Label } from "@/components/ui/label";
+import {
+	Pagination,
+	PaginationContent,
+	PaginationItem,
+	PaginationNext,
+	PaginationPrevious,
+} from "@/components/ui/pagination";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
 	Workspace,
@@ -14,6 +21,7 @@ import {
 	type OhlcvBar,
 } from "@/lib/market-chart-adapter";
 import { instrumentKey, useMarketSessionStore } from "@/lib/market-session";
+import { useHistoryTab } from "@/lib/navigation-history";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BacktestChart } from "./backtest-chart";
@@ -42,6 +50,12 @@ type Snapshot = {
 	startTimeMs: number;
 	endTimeMs: number;
 	gaps: { startTimeMs: number; endTimeMs: number }[];
+};
+type SnapshotPage = {
+	items: Snapshot[];
+	total: number;
+	page: number;
+	pageSize: number;
 };
 type Fill = {
 	orderId: number;
@@ -127,6 +141,12 @@ type RunSummary = {
 	barCount: number;
 	totalReturn: string;
 };
+type RunHistoryPage = {
+	items: RunSummary[];
+	total: number;
+	page: number;
+	pageSize: number;
+};
 type ExecutionPage = {
 	orders: Order[];
 	fills: Fill[];
@@ -142,6 +162,8 @@ type BacktestPreflight = {
 	componentLock: Array<Record<string, unknown>>;
 };
 const EXECUTION_PAGE_SIZE = 100;
+const RUN_HISTORY_PAGE_SIZE = 10;
+const SNAPSHOT_PAGE_SIZE = 10;
 
 export function BacktestPage() {
 	const userId = useMarketSessionStore((state) => state.userId);
@@ -181,15 +203,26 @@ export function BacktestPage() {
 	const [interval, setInterval] = useState<BarInterval>("1h");
 	const [snapshot, setSnapshot] = useState<Snapshot>();
 	const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+	const [snapshotsPage, setSnapshotsPage] = useState(1);
+	const [snapshotsTotal, setSnapshotsTotal] = useState(0);
 	const [run, setRun] = useState<BacktestRun>();
+	const [resultTab, setResultTab] = useHistoryTab(
+		"backtest-results",
+		"overview",
+		run?.runId,
+	);
 	const [executionPage, setExecutionPage] = useState<ExecutionPage>();
 	const [executionOffset, setExecutionOffset] = useState(0);
 	const [history, setHistory] = useState<RunSummary[]>([]);
+	const [historyPage, setHistoryPage] = useState(1);
+	const [historyTotal, setHistoryTotal] = useState(0);
 	const [message, setMessage] = useState("");
 	const [runTechnicalError, setRunTechnicalError] = useState("");
 	const [snapshotTechnicalError, setSnapshotTechnicalError] = useState("");
 	const [downloadTaskId, setDownloadTaskId] = useState<string>();
-	const [pageLoading, setPageLoading] = useState(true);
+	const [componentsLoading, setComponentsLoading] = useState(true);
+	const [historyLoading, setHistoryLoading] = useState(true);
+	const [snapshotsLoading, setSnapshotsLoading] = useState(true);
 	const chartRequest = useRef(0);
 	const chartRange = useRef("");
 	const instruments = useMemo(
@@ -203,45 +236,89 @@ export function BacktestPage() {
 	const selectedInstrument =
 		instruments.find((item) => instrumentKey(item) === selectedInstrumentKey) ??
 		instrument;
-	const refreshHistory = async () => {
-		if (userId)
+	const refreshHistory = useCallback(
+		async (page: number, isActive: () => boolean = () => true) => {
+			if (!userId) return;
+			setHistoryLoading(true);
 			try {
-				setHistory(await invoke("backtest_list", { request: { userId } }));
+				const result = await invoke<RunHistoryPage>("backtest_list", {
+					request: {
+						userId,
+						src: selectedInstrument.src,
+						code: selectedInstrument.code,
+						page,
+					},
+				});
+				if (!isActive()) return;
+				setHistory(result.items);
+				setHistoryTotal(result.total);
 			} catch (error) {
-				setMessage(String(error));
+				if (isActive()) setMessage(String(error));
+			} finally {
+				if (isActive()) setHistoryLoading(false);
 			}
-	};
+		},
+		[selectedInstrument.code, selectedInstrument.src, userId],
+	);
+	const refreshSnapshots = useCallback(
+		async (page: number, isActive: () => boolean = () => true) => {
+			if (!userId) return;
+			setSnapshotsLoading(true);
+			try {
+				const result = await invoke<SnapshotPage>("snapshot_list", {
+					request: {
+						userId,
+						...selectedInstrument,
+						interval,
+						page,
+					},
+				});
+				if (!isActive()) return;
+				setSnapshots(result.items);
+				setSnapshotsTotal(result.total);
+			} catch (error) {
+				if (isActive()) setSnapshotTechnicalError(snapshotError(error));
+			} finally {
+				if (isActive()) setSnapshotsLoading(false);
+			}
+		},
+		[interval, selectedInstrument, userId],
+	);
 	useEffect(() => {
 		if (!userId) return;
 		let active = true;
-		setPageLoading(true);
-		void Promise.all([
-			invoke<LibraryComponent[]>("component_list", { request: { userId } }),
-			invoke<RunSummary[]>("backtest_list", { request: { userId } }),
-		])
-			.then(([items, nextHistory]) => {
+		setComponentsLoading(true);
+		void invoke<LibraryComponent[]>("component_list", { request: { userId } })
+			.then((items) => {
 				if (!active) return;
 				setComponents(items);
-				setHistory(nextHistory);
 				if (items.some((item) => item.compatibilityError))
 					setMessage(
 						"Incompatible Components are hidden. Remove them from Component Library and import Manifest 1.0 packages.",
 					);
 			})
 			.catch((error) => active && setMessage(String(error)))
-			.finally(() => active && setPageLoading(false));
+			.finally(() => active && setComponentsLoading(false));
 		return () => {
 			active = false;
 		};
 	}, [userId]);
 	useEffect(() => {
 		if (!userId) return;
-		void invoke<Snapshot[]>("snapshot_list", {
-			request: { userId, ...selectedInstrument, interval },
-		})
-			.then(setSnapshots)
-			.catch((error) => setSnapshotTechnicalError(snapshotError(error)));
-	}, [interval, selectedInstrument, userId]);
+		let active = true;
+		void refreshHistory(historyPage, () => active);
+		return () => {
+			active = false;
+		};
+	}, [historyPage, refreshHistory, userId]);
+	useEffect(() => {
+		if (!userId) return;
+		let active = true;
+		void refreshSnapshots(snapshotsPage, () => active);
+		return () => {
+			active = false;
+		};
+	}, [refreshSnapshots, snapshotsPage, userId]);
 	const factors = useMemo(
 		() =>
 			components.filter(
@@ -348,12 +425,7 @@ export function BacktestPage() {
 				onEvent,
 			});
 			setSnapshot(value);
-			setSnapshots((current) =>
-				[
-					...current.filter((item) => item.snapshotId !== value.snapshotId),
-					value,
-				].sort((left, right) => left.startTimeMs - right.startTimeMs),
-			);
+			void refreshSnapshots(snapshotsPage);
 			setMessage(`${value.barCount} Bars frozen.`);
 		} catch (error) {
 			const technicalError = snapshotError(error);
@@ -409,7 +481,8 @@ export function BacktestPage() {
 			setExecutionOffset(0);
 			setStage("results");
 			setMessage(`Run ${value.runId.slice(0, 12)} completed.`);
-			await refreshHistory();
+			if (historyPage === 1) void refreshHistory(1);
+			else setHistoryPage(1);
 		} catch (error) {
 			const details = String(error);
 			setMessage(details);
@@ -496,8 +569,6 @@ export function BacktestPage() {
 			`Run ${source.runId.slice(0, 12)} copied into a new editable configuration.`,
 		);
 	};
-	if (pageLoading) return <PageLoadingSkeleton />;
-
 	return (
 		<Workspace
 			title="Backtest"
@@ -532,6 +603,8 @@ export function BacktestPage() {
 									value={selectedInstrumentKey}
 									onChange={(event) => {
 										setSelectedInstrumentKey(event.target.value);
+										setHistoryPage(1);
+										setSnapshotsPage(1);
 										setSnapshot(undefined);
 									}}
 								>
@@ -549,6 +622,7 @@ export function BacktestPage() {
 									value={interval}
 									onChange={(event) => {
 										setInterval(event.target.value as BarInterval);
+										setSnapshotsPage(1);
 										setSnapshot(undefined);
 									}}
 								>
@@ -577,7 +651,13 @@ export function BacktestPage() {
 							</Field>
 						</>
 					)}
-					{stage === "strategy" && (
+					{stage === "strategy" && componentsLoading && (
+						<LoadingState
+							label="Loading Strategy Components…"
+							className="md:col-span-2 lg:col-span-4"
+						/>
+					)}
+					{stage === "strategy" && !componentsLoading && (
 						<>
 							<Field label="Strategy">
 								<select
@@ -697,7 +777,9 @@ export function BacktestPage() {
 							</p>
 							<div className="md:col-span-2 lg:col-span-4">
 								<p className="mb-2 text-sm font-medium">Reuse immutable evidence</p>
-								{snapshots.length === 0 ? (
+								{snapshotsLoading ? (
+									<LoadingState label="Loading Snapshots…" />
+								) : snapshots.length === 0 ? (
 									<p className="text-sm text-muted-foreground">
 										No matching Snapshots. Download and freeze new evidence.
 									</p>
@@ -729,6 +811,32 @@ export function BacktestPage() {
 											</Button>
 										))}
 									</div>
+								)}
+								{!snapshotsLoading && snapshotsTotal > SNAPSHOT_PAGE_SIZE && (
+									<Pagination className="mt-3">
+										<PaginationContent>
+											<PaginationItem>
+												<PaginationPrevious
+													disabled={snapshotsPage === 1}
+													onClick={() => setSnapshotsPage((page) => page - 1)}
+												/>
+											</PaginationItem>
+											<PaginationItem>
+												<span className="px-3 text-sm" aria-current="page">
+													Page {snapshotsPage} of{" "}
+													{Math.ceil(snapshotsTotal / SNAPSHOT_PAGE_SIZE)}
+												</span>
+											</PaginationItem>
+											<PaginationItem>
+												<PaginationNext
+													disabled={
+														snapshotsPage >= Math.ceil(snapshotsTotal / SNAPSHOT_PAGE_SIZE)
+													}
+													onClick={() => setSnapshotsPage((page) => page + 1)}
+												/>
+											</PaginationItem>
+										</PaginationContent>
+									</Pagination>
 								)}
 								{snapshotTechnicalError && (
 									<div
@@ -852,7 +960,7 @@ export function BacktestPage() {
 				</Card>
 			)}
 			{stage === "results" && run && (
-				<Tabs key={run.runId} defaultValue="overview">
+				<Tabs key={run.runId} value={resultTab} onValueChange={setResultTab}>
 					<TabsList
 						aria-label="Backtest Run results"
 						className="w-full justify-start overflow-x-auto"
@@ -939,46 +1047,76 @@ export function BacktestPage() {
 			)}
 			<Card>
 				<CardHeader>
-					<CardTitle>Run history</CardTitle>
+					<CardTitle>Run history · {selectedInstrument.code}</CardTitle>
 				</CardHeader>
-				<CardContent className="space-y-2">
-					{history.map((item) => (
-						<div
-							key={item.runId}
-							className="flex items-center justify-between rounded-md border p-3 text-sm"
-						>
-							<button
-								type="button"
-								className="text-left"
-								onClick={() =>
-									userId &&
-									void invoke<BacktestRun>("backtest_get", {
-										request: { userId, runId: item.runId },
-									})
-										.then((value) => {
-											setRun(value);
-											setExecutionOffset(0);
-											setRunTechnicalError("");
-											setStage("results");
-										})
-										.catch((error) => {
-											const details = String(error);
-											setMessage(details);
-											setRunTechnicalError(details);
-										})
-								}
+				<CardContent className="flex flex-col gap-2">
+					{historyLoading && <LoadingState label="Loading Run History…" />}
+					{!historyLoading &&
+						history.map((item) => (
+							<div
+								key={item.runId}
+								className="flex items-center justify-between rounded-md border p-3 text-sm"
 							>
-								<span className="font-medium">
-									{item.code} · {item.interval}
-								</span>
-								<span className="ml-3 text-muted-foreground">
-									{item.barCount} Bars · {percent(item.totalReturn)}
-								</span>
-							</button>
-						</div>
-					))}
-					{history.length === 0 && (
-						<p className="text-sm text-muted-foreground">No persisted Runs.</p>
+								<button
+									type="button"
+									className="text-left"
+									onClick={() =>
+										userId &&
+										void invoke<BacktestRun>("backtest_get", {
+											request: { userId, runId: item.runId },
+										})
+											.then((value) => {
+												setRun(value);
+												setExecutionOffset(0);
+												setRunTechnicalError("");
+												setStage("results");
+											})
+											.catch((error) => {
+												const details = String(error);
+												setMessage(details);
+												setRunTechnicalError(details);
+											})
+									}
+								>
+									<span className="font-medium">
+										{item.code} · {item.interval}
+									</span>
+									<span className="ml-3 text-muted-foreground">
+										{item.barCount} Bars · {percent(item.totalReturn)}
+									</span>
+								</button>
+							</div>
+						))}
+					{!historyLoading && history.length === 0 && (
+						<p className="text-sm text-muted-foreground">
+							No persisted Runs for {selectedInstrument.code}.
+						</p>
+					)}
+					{!historyLoading && historyTotal > RUN_HISTORY_PAGE_SIZE && (
+						<Pagination>
+							<PaginationContent>
+								<PaginationItem>
+									<PaginationPrevious
+										disabled={historyPage === 1}
+										onClick={() => setHistoryPage((page) => page - 1)}
+									/>
+								</PaginationItem>
+								<PaginationItem>
+									<span className="px-3 text-sm" aria-current="page">
+										Page {historyPage} of{" "}
+										{Math.ceil(historyTotal / RUN_HISTORY_PAGE_SIZE)}
+									</span>
+								</PaginationItem>
+								<PaginationItem>
+									<PaginationNext
+										disabled={
+											historyPage >= Math.ceil(historyTotal / RUN_HISTORY_PAGE_SIZE)
+										}
+										onClick={() => setHistoryPage((page) => page + 1)}
+									/>
+								</PaginationItem>
+							</PaginationContent>
+						</Pagination>
 					)}
 				</CardContent>
 			</Card>

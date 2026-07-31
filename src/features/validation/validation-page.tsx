@@ -1,13 +1,21 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
+import { LoadingState } from "@/components/loading-state";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+	Pagination,
+	PaginationContent,
+	PaginationItem,
+	PaginationNext,
+	PaginationPrevious,
+} from "@/components/ui/pagination";
 import type { BacktestRun } from "@/features/backtest/backtest-page";
 import { formatDecimal } from "@/features/backtest/format-decimal";
 import type { LibraryComponent } from "@/features/components/component-library";
 import { Workspace } from "@/features/components/components-page";
 import { useMarketSessionStore } from "@/lib/market-session";
+import { useHistoryTab } from "@/lib/navigation-history";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { open } from "@tauri-apps/plugin-fs";
@@ -35,6 +43,12 @@ type RunSummary = {
 	interval: string;
 	barCount: number;
 	totalReturn: string;
+};
+type RunHistoryPage = {
+	items: RunSummary[];
+	total: number;
+	page: number;
+	pageSize: number;
 };
 type Protocol = {
 	protocolId: string;
@@ -117,10 +131,13 @@ type Metrics = { totalReturn: string; maxDrawdown: string; sharpe: string };
 
 const waitForPaint = () =>
 	new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+const RUN_HISTORY_PAGE_SIZE = 10;
 
 export function ValidationPage() {
 	const userId = useMarketSessionStore((state) => state.userId);
 	const [runs, setRuns] = useState<RunSummary[]>([]);
+	const [runsPage, setRunsPage] = useState(1);
+	const [runsTotal, setRunsTotal] = useState(0);
 	const [components, setComponents] = useState<LibraryComponent[]>([]);
 	const [source, setSource] = useState<BacktestRun>();
 	const [method, setMethod] = useState<
@@ -137,54 +154,96 @@ export function ValidationPage() {
 	const [protocols, setProtocols] = useState<Protocol[]>([]);
 	const [reports, setReports] = useState<Report[]>([]);
 	const [selectedReportId, setSelectedReportId] = useState("");
+	const [reportTab, setReportTab] = useHistoryTab(
+		"validation-report",
+		"summary",
+		selectedReportId || undefined,
+	);
 	const [loadingRunId, setLoadingRunId] = useState<string>();
 	const [freezing, setFreezing] = useState(false);
 	const [runningProtocolId, setRunningProtocolId] = useState<string>();
 	const [exportingReport, setExportingReport] = useState<string>();
-	const [pageLoading, setPageLoading] = useState(true);
+	const [runsLoading, setRunsLoading] = useState(true);
+	const [protocolsLoading, setProtocolsLoading] = useState(true);
+	const [reportsLoading, setReportsLoading] = useState(true);
+	const [snapshotsLoading, setSnapshotsLoading] = useState(true);
 	const [feedback, setFeedback] = useState<{
 		summary: string;
 		details?: string;
 	}>();
+	const refreshRuns = useCallback(
+		async (page: number, isActive: () => boolean = () => true) => {
+			if (!userId) return;
+			setRunsLoading(true);
+			try {
+				const result = await invoke<RunHistoryPage>("backtest_list", {
+					request: { userId, page },
+				});
+				if (!isActive()) return;
+				setRuns(result.items);
+				setRunsTotal(result.total);
+			} catch (error) {
+				if (isActive())
+					setFeedback({
+						summary: "Completed Backtest Runs could not load.",
+						details: String(error),
+					});
+			} finally {
+				if (isActive()) setRunsLoading(false);
+			}
+		},
+		[userId],
+	);
 
 	const refresh = useCallback(async () => {
 		if (!userId) return;
-		const [nextRuns, nextComponents, nextProtocols, nextReports, nextSnapshots] =
-			await Promise.all([
-				invoke<RunSummary[]>("backtest_list", { request: { userId } }),
-				invoke<LibraryComponent[]>("component_list", { request: { userId } }),
-				invoke<Protocol[]>("validation_protocol_list", { request: { userId } }),
-				invoke<Report[]>("validation_report_list", { request: { userId } }),
-				invoke<Snapshot[]>("snapshot_list_readable", { request: { userId } }),
-			]);
-		setRuns(nextRuns);
-		setComponents(nextComponents);
-		setProtocols(nextProtocols);
-		setReports(nextReports);
-		setSnapshots(nextSnapshots);
-		setSelectedReportId((current) =>
-			nextReports.some((report) => report.reportId === current)
-				? current
-				: (nextReports[0]?.reportId ?? ""),
-		);
+		setProtocolsLoading(true);
+		setReportsLoading(true);
+		setSnapshotsLoading(true);
+		await Promise.all([
+			invoke<LibraryComponent[]>("component_list", { request: { userId } }).then(
+				setComponents,
+			),
+			invoke<Protocol[]>("validation_protocol_list", { request: { userId } })
+				.then(setProtocols)
+				.finally(() => setProtocolsLoading(false)),
+			invoke<Report[]>("validation_report_list", { request: { userId } })
+				.then((nextReports) => {
+					setReports(nextReports);
+					setSelectedReportId((current) =>
+						nextReports.some((report) => report.reportId === current)
+							? current
+							: (nextReports[0]?.reportId ?? ""),
+					);
+				})
+				.finally(() => setReportsLoading(false)),
+			invoke<Snapshot[]>("snapshot_list_readable", { request: { userId } })
+				.then(setSnapshots)
+				.finally(() => setSnapshotsLoading(false)),
+		]);
 	}, [userId]);
+	useEffect(() => {
+		if (!userId) return;
+		let active = true;
+		void refreshRuns(runsPage, () => active);
+		return () => {
+			active = false;
+		};
+	}, [refreshRuns, runsPage, userId]);
 	useEffect(() => {
 		if (!userId) return;
 		let active = true;
 		setSource(undefined);
 		setSampleOutStart("");
 		setFeedback(undefined);
-		setPageLoading(true);
-		void refresh()
-			.catch(
-				(error) =>
-					active &&
-					setFeedback({
-						summary: "Validation evidence could not load.",
-						details: String(error),
-					}),
-			)
-			.finally(() => active && setPageLoading(false));
+		void refresh().catch(
+			(error) =>
+				active &&
+				setFeedback({
+					summary: "Validation evidence could not load.",
+					details: String(error),
+				}),
+		);
 		return () => {
 			active = false;
 		};
@@ -315,7 +374,7 @@ export function ValidationPage() {
 			setFeedback({
 				summary: `Validation Report ${report.reportId.slice(0, 16)} completed.`,
 			});
-			await refresh();
+			await Promise.all([refresh(), refreshRuns(runsPage)]);
 		} catch (error) {
 			setFeedback({
 				summary: "Validation could not run or resume.",
@@ -359,7 +418,6 @@ export function ValidationPage() {
 			setExportingReport(undefined);
 		}
 	};
-	if (pageLoading) return <PageLoadingSkeleton />;
 	return (
 		<Workspace
 			title="Validation"
@@ -435,31 +493,58 @@ export function ValidationPage() {
 				<CardContent className="space-y-4">
 					<div className="grid gap-2">
 						<p className="text-sm font-medium">Completed Backtest Run</p>
-						{runs.map((item) => (
-							<Button
-								key={item.runId}
-								type="button"
-								variant={source?.runId === item.runId ? "default" : "outline"}
-								className="h-auto justify-start whitespace-normal p-3 text-left"
-								aria-pressed={source?.runId === item.runId}
-								loading={loadingRunId === item.runId}
-								loadingText="Loading Run…"
-								disabled={Boolean(loadingRunId)}
-								onClick={() => void selectRun(item.runId)}
-							>
-								<span>
-									{item.code} · {item.interval} · {item.barCount} Bars · return{" "}
-									{percent(item.totalReturn)}
-								</span>
-								<span className="block break-all font-mono text-xs opacity-75">
-									Run {item.runId}
-								</span>
-							</Button>
-						))}
-						{runs.length === 0 && (
+						{runsLoading ? (
+							<LoadingState label="Loading Completed Runs…" />
+						) : (
+							runs.map((item) => (
+								<Button
+									key={item.runId}
+									type="button"
+									variant={source?.runId === item.runId ? "default" : "outline"}
+									className="h-auto justify-start whitespace-normal p-3 text-left"
+									aria-pressed={source?.runId === item.runId}
+									loading={loadingRunId === item.runId}
+									loadingText="Loading Run…"
+									disabled={Boolean(loadingRunId)}
+									onClick={() => void selectRun(item.runId)}
+								>
+									<span>
+										{item.code} · {item.interval} · {item.barCount} Bars · return{" "}
+										{percent(item.totalReturn)}
+									</span>
+									<span className="block break-all font-mono text-xs opacity-75">
+										Run {item.runId}
+									</span>
+								</Button>
+							))
+						)}
+						{!runsLoading && runs.length === 0 && (
 							<p className="text-sm text-muted-foreground">
 								No completed Backtest Runs. Create one in Backtest first.
 							</p>
+						)}
+						{!runsLoading && runsTotal > RUN_HISTORY_PAGE_SIZE && (
+							<Pagination>
+								<PaginationContent>
+									<PaginationItem>
+										<PaginationPrevious
+											disabled={runsPage === 1}
+											onClick={() => setRunsPage((page) => page - 1)}
+										/>
+									</PaginationItem>
+									<PaginationItem>
+										<span className="px-3 text-sm" aria-current="page">
+											Page {runsPage} of {Math.ceil(runsTotal / RUN_HISTORY_PAGE_SIZE)}
+										</span>
+									</PaginationItem>
+									<PaginationItem>
+										<PaginationNext
+											disabled={runsPage >= Math.ceil(runsTotal / RUN_HISTORY_PAGE_SIZE)}
+											onClick={() => setRunsPage((page) => page + 1)}
+										/>
+									</PaginationItem>
+								</PaginationContent>
+							</Pagination>
 						)}
 					</div>
 					{source && <ProtocolContext run={source} labels={labels} />}
@@ -493,6 +578,7 @@ export function ValidationPage() {
 							snapshots={snapshots}
 							contexts={crossMarketContexts}
 							runs={runs}
+							loading={snapshotsLoading}
 							error={source ? crossMarketError : undefined}
 							onChange={setCrossMarketContexts}
 							onLoadOverride={async (snapshot, runId) => {
@@ -546,49 +632,53 @@ export function ValidationPage() {
 					<CardTitle>3. Run or resume frozen Protocols</CardTitle>
 				</CardHeader>
 				<CardContent className="space-y-3">
-					{protocols.map((protocol) => (
-						<div
-							key={protocol.protocolId}
-							className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm"
-						>
-							<div>
-								<p>{protocolSummary(protocol)}</p>
-								<code className="break-all text-xs">{protocol.protocolId}</code>
-								<details className="mt-2">
-									<summary>Review immutable Protocol</summary>
-									{protocolDetails(protocol).map((window) => (
-										<p key={`${window.snapshotId}:${window.boundary}`} className="mt-2">
-											Snapshot <code className="break-all">{window.snapshotId}</code>
-											<br />
-											Sample-out boundary: {window.boundary}
-											<br />
-											Aggregation: <code>{window.aggregationRuleVersion}</code>
-										</p>
-									))}
-									{protocol.crossMarket?.contexts.map((context, index) => (
-										<p key={context.snapshotId} className="mt-2">
-											Market context {index + 1}:{" "}
-											<code className="break-all">{context.snapshotId}</code>
-											<br />
-											Configuration: {context.runOverride ? "exact override" : "shared"}
-										</p>
-									))}
-									<pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">
-										{JSON.stringify(protocol.run, null, 2)}
-									</pre>
-								</details>
-							</div>
-							<Button
-								loading={runningProtocolId === protocol.protocolId}
-								loadingText="Running…"
-								disabled={Boolean(runningProtocolId)}
-								onClick={() => void run(protocol.protocolId)}
+					{protocolsLoading ? (
+						<LoadingState label="Loading Protocols…" />
+					) : (
+						protocols.map((protocol) => (
+							<div
+								key={protocol.protocolId}
+								className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm"
 							>
-								Run / resume
-							</Button>
-						</div>
-					))}
-					{protocols.length === 0 && (
+								<div>
+									<p>{protocolSummary(protocol)}</p>
+									<code className="break-all text-xs">{protocol.protocolId}</code>
+									<details className="mt-2">
+										<summary>Review immutable Protocol</summary>
+										{protocolDetails(protocol).map((window) => (
+											<p key={`${window.snapshotId}:${window.boundary}`} className="mt-2">
+												Snapshot <code className="break-all">{window.snapshotId}</code>
+												<br />
+												Sample-out boundary: {window.boundary}
+												<br />
+												Aggregation: <code>{window.aggregationRuleVersion}</code>
+											</p>
+										))}
+										{protocol.crossMarket?.contexts.map((context, index) => (
+											<p key={context.snapshotId} className="mt-2">
+												Market context {index + 1}:{" "}
+												<code className="break-all">{context.snapshotId}</code>
+												<br />
+												Configuration: {context.runOverride ? "exact override" : "shared"}
+											</p>
+										))}
+										<pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">
+											{JSON.stringify(protocol.run, null, 2)}
+										</pre>
+									</details>
+								</div>
+								<Button
+									loading={runningProtocolId === protocol.protocolId}
+									loadingText="Running…"
+									disabled={Boolean(runningProtocolId)}
+									onClick={() => void run(protocol.protocolId)}
+								>
+									Run / resume
+								</Button>
+							</div>
+						))
+					)}
+					{!protocolsLoading && protocols.length === 0 && (
 						<p className="text-sm text-muted-foreground">
 							Freeze a Protocol to run it. Completed immutable Backtest Runs are
 							reused.
@@ -601,7 +691,9 @@ export function ValidationPage() {
 					<CardTitle>4. Validation Reports</CardTitle>
 				</CardHeader>
 				<CardContent>
-					{selectedReport ? (
+					{reportsLoading ? (
+						<LoadingState label="Loading Reports…" />
+					) : selectedReport ? (
 						<>
 							<div className="mb-3 flex flex-wrap gap-2">
 								{reports.map((report) => (
@@ -617,7 +709,11 @@ export function ValidationPage() {
 									</Button>
 								))}
 							</div>
-							<Tabs key={selectedReport.reportId} defaultValue="summary">
+							<Tabs
+								key={selectedReport.reportId}
+								value={reportTab}
+								onValueChange={setReportTab}
+							>
 								<TabsList
 									aria-label="Validation Report views"
 									className="w-full justify-start overflow-x-auto"
@@ -751,6 +847,7 @@ function CrossMarketControls({
 	snapshots,
 	contexts,
 	runs,
+	loading,
 	error,
 	onChange,
 	onLoadOverride,
@@ -758,6 +855,7 @@ function CrossMarketControls({
 	snapshots: Snapshot[];
 	contexts: CrossMarketContext[];
 	runs: RunSummary[];
+	loading: boolean;
 	error?: string;
 	onChange: (contexts: CrossMarketContext[]) => void;
 	onLoadOverride: (snapshot: Snapshot, runId: string) => Promise<void>;
@@ -772,27 +870,29 @@ function CrossMarketControls({
 				Select at least two readable Snapshots. The selected completed Run supplies
 				the shared configuration; an exact Run on the same Snapshot may override it.
 			</p>
+			{loading && <LoadingState label="Loading readable Snapshots…" />}
 			<div className="grid gap-2 sm:grid-cols-2">
-				{snapshots.map((snapshot) => (
-					<Button
-						key={snapshot.snapshotId}
-						type="button"
-						variant={selected.has(snapshot.snapshotId) ? "default" : "outline"}
-						className="h-auto justify-start whitespace-normal p-3 text-left"
-						aria-pressed={selected.has(snapshot.snapshotId)}
-						disabled={selected.has(snapshot.snapshotId)}
-						onClick={() => onChange([...contexts, { snapshot }])}
-					>
-						<span>
-							{snapshot.code} · {snapshot.interval} · {snapshot.barCount} Bars
-						</span>
-						<span className="block break-all font-mono text-xs opacity-75">
-							Snapshot {snapshot.snapshotId}
-						</span>
-					</Button>
-				))}
+				{!loading &&
+					snapshots.map((snapshot) => (
+						<Button
+							key={snapshot.snapshotId}
+							type="button"
+							variant={selected.has(snapshot.snapshotId) ? "default" : "outline"}
+							className="h-auto justify-start whitespace-normal p-3 text-left"
+							aria-pressed={selected.has(snapshot.snapshotId)}
+							disabled={selected.has(snapshot.snapshotId)}
+							onClick={() => onChange([...contexts, { snapshot }])}
+						>
+							<span>
+								{snapshot.code} · {snapshot.interval} · {snapshot.barCount} Bars
+							</span>
+							<span className="block break-all font-mono text-xs opacity-75">
+								Snapshot {snapshot.snapshotId}
+							</span>
+						</Button>
+					))}
 			</div>
-			{snapshots.length === 0 && (
+			{!loading && snapshots.length === 0 && (
 				<p className="text-sm text-muted-foreground">
 					No readable Snapshots are available.
 				</p>

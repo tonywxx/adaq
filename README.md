@@ -1,12 +1,12 @@
-# ADAQ
+# AdaQ
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 [![Release](https://github.com/tonywxx/adaq/actions/workflows/release.yml/badge.svg)](https://github.com/tonywxx/adaq/actions/workflows/release.yml)
 
-> **ADAQ** (Ada Quant) is an AI-powered quantitative trading platform for equities and digital crypto assets.
+> **AdaQ** (Ada Quant) is an AI-powered quantitative trading platform for equities and digital crypto assets.
 
-ADAQ V1 is a local-first research, backtesting, and simulation desktop app. It does not execute real account orders; live trading is a separate future supervised, host-controlled milestone.
+AdaQ V1 is a local-first research, backtesting, and simulation desktop app. It does not execute real account orders; live trading is a separate future supervised, host-controlled milestone.
 
 ## Features
 
@@ -16,10 +16,18 @@ ADAQ V1 is a local-first research, backtesting, and simulation desktop app. It d
 - Host-owned TA-Lib Indicator Catalog and frozen Feature Slots
 - Deterministic Spot simulation with immutable Backtest Runs
 
+## Screenshots
+
+| Dashboard | Backtest |
+|:---:|:---:|
+| ![Dashboard](screenshots/1-dashboard.png) | ![Backtest](screenshots/2-backtest.png) |
+| **Components** | **Validation** |
+| ![Components](screenshots/3-components.png) | ![Validation](screenshots/4-validation.png) |
+
 ## Implemented Milestones
 
 | Milestone | Delivered capability |
-|-----------|----------------------|
+| ----------- | ---------------------- |
 | M1 | Fixed WebAssembly Component ABI for `adaq:factor@1.0.0` and `adaq:strategy@1.0.0`. Factor Components transform Closed Bars into named scalar outputs; Strategy Components consume dense Feature Slots and emit complete Target Exposure decisions. |
 | M2 | Deterministic in-memory Run Engine. The host validates Closed Bars, enforces sandbox limits, binds ordered Feature Slots, records warmup or missing-input pauses, and fails closed on invalid data or invalid targets. |
 | M3 | Reproducible crypto Spot Backtest. A Backtest Run immutably binds a Market Data Snapshot, Component Lock, parameters, Indicator Plan, Execution Profile, engine version, and seed. Results persist locally with Target Decisions, simulated orders, fills, equity, fees, metrics, history, and charts. |
@@ -56,7 +64,7 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 ## Documentation
 
 | English | 简体中文 | Description |
-|---------|----------|-------------|
+| --------- | ---------- | ------------- |
 | [Component SDK](src-tauri/crates/adaq-component-sdk/README.md) | [Component SDK 中文](src-tauri/crates/adaq-component-sdk/README.zh-CN.md) | Rust SDK for implementing Factor and Strategy Components |
 | [CLI Tooling](src-tauri/crates/adaq-component-tooling/README.md) | [CLI 工具中文](src-tauri/crates/adaq-component-tooling/README.zh-CN.md) | Build, verify, and manage `.adaq` packages |
 | [Component Template](src-tauri/crates/adaq-component-tooling/templates/README.md) | [组件模板中文](src-tauri/crates/adaq-component-tooling/templates/README.zh-CN.md) | Scaffold README for generated component projects |

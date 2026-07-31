@@ -22,6 +22,7 @@ pub struct WatchlistState {
     pub items: Vec<InstrumentRef>,
     pub active_instrument: InstrumentRef,
     pub mini_chart_interval: BarInterval,
+    pub limit: i64,
 }
 
 pub struct WatchlistDb(Mutex<Connection>);
@@ -251,6 +252,7 @@ fn load_state(connection: &Connection, user_id: &str) -> Result<WatchlistState, 
             code: active_code,
         },
         mini_chart_interval: parse_interval(&interval).unwrap_or(BarInterval::OneMinute),
+        limit: WATCHLIST_LIMIT,
     })
 }
 
@@ -304,7 +306,7 @@ fn validate_instrument(instrument: &InstrumentRef) -> Result<(), String> {
 mod tests {
     use rusqlite::Connection;
 
-    use super::{InstrumentRef, WatchlistDb};
+    use super::{InstrumentRef, WATCHLIST_LIMIT, WatchlistDb};
 
     fn database() -> WatchlistDb {
         WatchlistDb::from_connection(Connection::open_in_memory().unwrap()).unwrap()
@@ -320,7 +322,9 @@ mod tests {
     #[test]
     fn initializes_defaults_once_and_allows_an_empty_watchlist() {
         let database = database();
-        assert_eq!(database.get("user-1").unwrap().items.len(), 3);
+        let initial = database.get("user-1").unwrap();
+        assert_eq!(initial.items.len(), 3);
+        assert_eq!(initial.limit, WATCHLIST_LIMIT);
 
         for code in ["BTC-USDT", "ETH-USDT", "SOL-USDT"] {
             database.remove("user-1", &instrument(code)).unwrap();
