@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import { useNavigate } from "@tanstack/react-router";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 import {
 	SidebarGroup,
@@ -20,17 +22,23 @@ export function NavSecondary({
 		icon: React.ReactNode;
 	}[];
 } & React.ComponentPropsWithoutRef<typeof SidebarGroup>) {
+	const navigate = useNavigate();
+	function open(item: { url: string }) {
+		if (item.url.startsWith("/")) {
+			void navigate({ to: item.url });
+			return;
+		}
+		void openUrl(item.url);
+	}
 	return (
 		<SidebarGroup {...props}>
 			<SidebarGroupContent>
 				<SidebarMenu>
 					{items.map((item) => (
 						<SidebarMenuItem key={item.title}>
-							<SidebarMenuButton asChild>
-								<a href={item.url}>
-									{item.icon}
-									<span>{item.title}</span>
-								</a>
+							<SidebarMenuButton onClick={() => open(item)}>
+								{item.icon}
+								<span>{item.title}</span>
 							</SidebarMenuButton>
 						</SidebarMenuItem>
 					))}

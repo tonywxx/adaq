@@ -14,13 +14,13 @@ import { Link } from "@tanstack/react-router";
 import {
 	CameraIcon,
 	ChartBarIcon,
-	CircleHelpIcon,
 	CommandIcon,
 	FileTextIcon,
+	QrCodeIcon,
 	LayoutDashboardIcon,
 	ListIcon,
-	SearchIcon,
 	Settings2Icon,
+	GitCompareArrows,
 } from "lucide-react";
 import type * as React from "react";
 
@@ -98,18 +98,18 @@ const data = {
 	navSecondary: [
 		{
 			title: "Settings",
-			url: "#",
+			url: "/settings/general",
 			icon: <Settings2Icon />,
 		},
 		{
-			title: "Get Help",
-			url: "#",
-			icon: <CircleHelpIcon />,
+			title: "GitHub",
+			url: "https://github.com/tonywxx/adaq",
+			icon: <GitCompareArrows />,
 		},
 		{
-			title: "Search",
-			url: "#",
-			icon: <SearchIcon />,
+			title: "WeChat",
+			url: "https://mp.weixin.qq.com/s/fHFDyntJ7PRwrsRJqfLnaA", // https://weixin.qq.com/r/mp/TC_Pl63E2vClren093pe
+			icon: <QrCodeIcon />,
 		},
 	],
 };

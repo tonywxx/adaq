@@ -26,7 +26,11 @@ async function runWindowAction(action: () => Promise<void>) {
 	}
 }
 
-export function AppTitlebar() {
+export function AppTitlebar({
+	showSidebarTrigger = true,
+}: {
+	showSidebarTrigger?: boolean;
+}) {
 	const { back, canGoBack, canGoForward, forward } = useHistoryControls();
 	const startDrag = () => {
 		if (!appWindow) {
@@ -64,10 +68,12 @@ export function AppTitlebar() {
 		>
 			<div className="flex h-full shrink-0 items-center gap-3 overflow-hidden bg-sidebar pl-22 pr-4 transition-[width,border-color] duration-200 ease-linear w-(--titlebar-sidebar-collapsed-width) border-b">
 				<div className="flex items-center gap-3 bg-sidebar">
-					<SidebarTrigger
-						className="size-5 bg-transparent text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground/70 [&_svg]:size-3.5"
-						onPointerDown={(event) => event.stopPropagation()}
-					/>
+					{showSidebarTrigger ? (
+						<SidebarTrigger
+							className="size-5 bg-transparent text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground/70 [&_svg]:size-3.5"
+							onPointerDown={(event) => event.stopPropagation()}
+						/>
+					) : null}
 					<button
 						type="button"
 						aria-label="Back"

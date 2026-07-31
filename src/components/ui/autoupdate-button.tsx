@@ -5,6 +5,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { DownloadIcon, RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { autoDownloadUpdates } from "@/lib/app-settings";
 import { Button } from "./button";
 
 const AUTO_UPDATE_DEBUG = false;
@@ -241,7 +242,7 @@ export function AutoUpdateButton() {
 		}
 
 		void checkForUpdates({
-			autoDownload: true,
+			autoDownload: autoDownloadUpdates(),
 			notifyNoUpdate: false,
 			notifyError: false,
 		});
@@ -260,9 +261,9 @@ export function AutoUpdateButton() {
 		let disposed = false;
 		let unlisten: (() => void) | null = null;
 
-		listen(CHECK_FOR_UPDATES_EVENT, () => {
-			void checkForUpdates({
-				autoDownload: true,
+			listen(CHECK_FOR_UPDATES_EVENT, () => {
+				void checkForUpdates({
+					autoDownload: autoDownloadUpdates(),
 				notifyNoUpdate: true,
 				notifyError: true,
 			});

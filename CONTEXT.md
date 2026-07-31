@@ -10,6 +10,18 @@ Domain language for market data, component-based quantitative research, reproduc
 The registered ADAQ identity that owns private Run history, configuration, and Component Entitlements. Device-shared content does not make another User's private records or Components accessible.
 _Avoid_: Device, Venue account
 
+**User Profile**:
+The User's editable presentation identity, currently limited to display name and avatar.
+_Avoid_: Account, credentials
+
+**Account Settings**:
+The User's authentication details and session actions, currently limited to viewing the email address, changing the password, and signing out. Account deletion is excluded.
+_Avoid_: User Profile, Venue account
+
+**Local Research Data**:
+Device-resident Watchlist, Component, Market Data, Run, and Validation records owned by one User. Reset operations affect only the current User, and shared files are removed only when no other User retains access.
+_Avoid_: Account data, device-wide data
+
 **Component Entitlement**:
 A User-scoped right to view and execute an exact Component product under its licence and registered-device rules. Component Package bytes may be deduplicated on a device without sharing the entitlement.
 _Avoid_: Component file, device ownership, global licence

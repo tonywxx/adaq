@@ -10,7 +10,10 @@ use ada_data_core::{
 #[cfg(test)]
 use adaq_component_sdk::host::{factor_abi, strategy_abi};
 use adaq_component_tooling::{FactorSchema, WasmLoader};
-use std::sync::Mutex;
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 use tauri::{
     Emitter, Manager, State,
     ipc::Channel,
@@ -22,6 +25,16 @@ use m3::M3State;
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
 const CHECK_FOR_UPDATES_EVENT: &str = "adaq-check-for-updates";
+
+fn database_path(app_data_dir: &Path) -> Result<PathBuf, std::io::Error> {
+    let current = app_data_dir.join("adaq.db");
+    let legacy = app_data_dir.join("adaq.sqlite3");
+    // Remove the legacy branch after two releases containing this migration.
+    if !current.exists() && legacy.exists() {
+        std::fs::rename(legacy, &current)?;
+    }
+    Ok(current)
+}
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -380,11 +393,9 @@ pub fn run() {
             app.manage(BarStreamState::default());
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
+            let database_path = database_path(&app_data_dir)?;
             app.manage(M3State::open(&app_data_dir).map_err(std::io::Error::other)?);
-            app.manage(
-                WatchlistDb::open(&app_data_dir.join("adaq.sqlite3"))
-                    .map_err(std::io::Error::other)?,
-            );
+            app.manage(WatchlistDb::open(&database_path).map_err(std::io::Error::other)?);
             let handle = app.handle();
             let app_menu = SubmenuBuilder::new(handle, "adaq")
                 .about(Some(AboutMetadata {
@@ -473,6 +484,8 @@ pub fn run() {
             m3::backtest_chart_data,
             m3::backtest_execution_data,
             m3::backtest_delete,
+            m3::local_data_summary,
+            m3::local_data_reset,
             m3::validation_protocol_create,
             m3::validation_protocol_list,
             m3::validation_report_run,
@@ -485,8 +498,39 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{WasmLoader, factor_abi, strategy_abi};
-    use std::path::PathBuf;
+    use super::{WasmLoader, database_path, factor_abi, strategy_abi};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn database_migration_renames_legacy_without_overwriting_current() {
+        let root = std::env::temp_dir().join(format!(
+            "adaq-database-migration-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let legacy = root.join("adaq.sqlite3");
+        let current = root.join("adaq.db");
+        fs::write(&legacy, b"legacy").unwrap();
+
+        assert_eq!(database_path(&root).unwrap(), current);
+        assert_eq!(fs::read(&current).unwrap(), b"legacy");
+        assert!(!legacy.exists());
+
+        fs::write(&legacy, b"stale legacy").unwrap();
+        fs::write(&current, b"current").unwrap();
+        assert_eq!(database_path(&root).unwrap(), current);
+        assert_eq!(fs::read(&current).unwrap(), b"current");
+        assert_eq!(fs::read(&legacy).unwrap(), b"stale legacy");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn fixture(name: &str) -> String {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

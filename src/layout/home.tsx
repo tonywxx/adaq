@@ -9,7 +9,13 @@ import { WatchlistCard } from "@/components/watchlist-card";
 import { useMarketSessionStore } from "@/lib/market-session";
 import type { ReactNode } from "react";
 
-export default function Home({ children }: { children?: ReactNode }) {
+export default function Home({
+	children,
+	showSidebar = true,
+}: {
+	children?: ReactNode;
+	showSidebar?: boolean;
+}) {
 	return (
 		<SidebarProvider
 			className="h-svh overflow-hidden bg-sidebar pt-(--header-height)"
@@ -21,11 +27,15 @@ export default function Home({ children }: { children?: ReactNode }) {
 				} as React.CSSProperties
 			}
 		>
-			<AppTitlebar />
+			<AppTitlebar showSidebarTrigger={showSidebar} />
 			<Toaster />
 
-			<AppSidebar className="top-14 h-[calc(100svh-3.5rem)]" variant="inset" />
-			<SidebarInset className="m-0! rounded-none! min-h-0 overflow-y-auto border-l border-border shadow-none!">
+			{showSidebar ? (
+				<AppSidebar className="top-14 h-[calc(100svh-3.5rem)]" variant="inset" />
+			) : null}
+			<SidebarInset
+				className={`m-0! min-h-0 overflow-y-auto rounded-none! shadow-none! ${showSidebar ? "border-l border-border" : ""}`}
+			>
 				{children ?? <Dashboard />}
 			</SidebarInset>
 		</SidebarProvider>

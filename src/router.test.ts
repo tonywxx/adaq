@@ -10,6 +10,7 @@ test("workspace navigation keeps one authenticated shell mounted", () => {
 		/const rootRoute = createRootRoute\(\{\s*component: AppShell/,
 	);
 	expect(source).toMatch(
-		/<AuthGate>\s*<Home>\s*<Outlet \/>\s*<\/Home>\s*<\/AuthGate>/,
+		/<AuthGate>\s*<Home showSidebar=\{!isSettings\}>\s*<Outlet \/>\s*<\/Home>\s*<\/AuthGate>/,
 	);
+	expect(source).toMatch(/path: "\/settings\/\$section"/);
 });

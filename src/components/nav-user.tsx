@@ -17,16 +17,17 @@ import {
 import { supabase } from "@/lib/supabase";
 import type { User } from "@supabase/supabase-js";
 import {
-	BellIcon,
 	CircleUserRoundIcon,
-	CreditCardIcon,
 	EllipsisVerticalIcon,
 	LogOutIcon,
+	Settings2Icon,
 } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 export function NavUser() {
 	const { isMobile } = useSidebar();
+	const navigate = useNavigate();
 	const [authUser, setAuthUser] = useState<User | null>(null);
 	const user = userInfo(authUser);
 
@@ -88,17 +89,27 @@ export function NavUser() {
 									</div>
 								</div>
 							</DropdownMenuLabel>
-							<DropdownMenuItem>
+							<DropdownMenuItem
+								onClick={() =>
+									void navigate({
+										to: "/settings/$section",
+										params: { section: "account" },
+									})
+								}
+							>
 								<CircleUserRoundIcon />
 								Account
 							</DropdownMenuItem>
-							<DropdownMenuItem>
-								<CreditCardIcon />
-								Billing
-							</DropdownMenuItem>
-							<DropdownMenuItem>
-								<BellIcon />
-								Notifications
+							<DropdownMenuItem
+								onClick={() =>
+									void navigate({
+										to: "/settings/$section",
+										params: { section: "general" },
+									})
+								}
+							>
+								<Settings2Icon />
+								Settings
 							</DropdownMenuItem>
 						</DropdownMenuGroup>
 						<DropdownMenuSeparator />

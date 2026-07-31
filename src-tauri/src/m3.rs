@@ -36,6 +36,45 @@ pub struct M3State {
     downloads: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataSummary {
+    data_directory: String,
+    database_bytes: u64,
+    component_bytes: u64,
+    market_data_bytes: u64,
+    watchlist_count: u64,
+    component_count: u64,
+    snapshot_count: u64,
+    run_count: u64,
+    protocol_count: u64,
+    report_count: u64,
+    component_blocking_run_count: u64,
+    market_data_blocking_record_count: u64,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalDataResetKind {
+    Watchlist,
+    Components,
+    MarketData,
+    All,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataRequest {
+    pub user_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataResetRequest {
+    pub user_id: String,
+    pub kind: LocalDataResetKind,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryComponent {
@@ -63,7 +102,7 @@ impl M3State {
         let root = app_data.join("m3");
         fs::create_dir_all(root.join("components")).map_err(string)?;
         let snapshots = SnapshotStore::new(root.join("market-data")).map_err(string)?;
-        let database = Connection::open(app_data.join("adaq.sqlite3")).map_err(string)?;
+        let database = Connection::open(app_data.join("adaq.db")).map_err(string)?;
         database
             .execute_batch(
                 "PRAGMA foreign_keys = ON;
@@ -132,6 +171,76 @@ impl M3State {
             database: Mutex::new(database),
             downloads: Mutex::new(HashMap::new()),
         })
+    }
+
+    pub fn local_data_summary(&self, user_id: &str) -> Result<LocalDataSummary, String> {
+        validate_user(user_id)?;
+        let database = self.database.lock().map_err(string)?;
+        let count = |sql: &str| -> Result<u64, String> {
+            database
+                .query_row(sql, [user_id], |row| row.get::<_, i64>(0))
+                .map(|value| value.max(0) as u64)
+                .map_err(string)
+        };
+        let component_paths = strings(
+            &database,
+            "SELECT c.archive_path FROM component_content c
+			 JOIN component_access a USING(archive_sha256) WHERE a.user_id = ?1",
+            user_id,
+        )?;
+        let snapshot_json = strings(
+            &database,
+            "SELECT s.metadata_json FROM market_data_snapshots s
+			 JOIN market_data_snapshot_access a USING(snapshot_id) WHERE a.user_id = ?1",
+            user_id,
+        )?;
+        let database_path = self.root.parent().unwrap_or(&self.root).join("adaq.db");
+        let data_directory = database_path
+            .parent()
+            .unwrap_or(&self.root)
+            .to_string_lossy()
+            .into_owned();
+        let market_paths = snapshot_json
+            .iter()
+            .filter_map(|json| serde_json::from_str::<MarketDataSnapshot>(json).ok())
+            .map(|snapshot| snapshot.parquet_path)
+            .collect::<Vec<_>>();
+
+        Ok(LocalDataSummary {
+            data_directory,
+            database_bytes: file_bytes(&database_path),
+            component_bytes: component_paths.iter().map(file_bytes).sum(),
+            market_data_bytes: market_paths.iter().map(file_bytes).sum(),
+            watchlist_count: count("SELECT COUNT(*) FROM watchlist_items WHERE user_id = ?1")?,
+            component_count: count("SELECT COUNT(*) FROM component_access WHERE user_id = ?1")?,
+            snapshot_count: count(
+                "SELECT COUNT(*) FROM market_data_snapshot_access WHERE user_id = ?1",
+            )?,
+            run_count: count("SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1")?,
+            protocol_count: count("SELECT COUNT(*) FROM validation_protocols WHERE user_id = ?1")?,
+            report_count: count("SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1")?,
+            component_blocking_run_count: count(
+                "SELECT COUNT(DISTINCT r.run_id) FROM backtest_runs r
+				 JOIN backtest_run_components rc USING(run_id)
+				 JOIN component_access a USING(archive_sha256)
+				 WHERE r.user_id = ?1 AND a.user_id = ?1",
+            )?,
+            market_data_blocking_record_count: count(
+                "SELECT (SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1)
+				 + (SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1)",
+            )?,
+        })
+    }
+
+    pub fn reset_local_data(&self, user_id: &str, kind: LocalDataResetKind) -> Result<(), String> {
+        validate_user(user_id)?;
+        let mut database = self.database.lock().map_err(string)?;
+        match kind {
+            LocalDataResetKind::Watchlist => reset_watchlist(&mut database, user_id),
+            LocalDataResetKind::Components => reset_components(&mut database, user_id, &self.root),
+            LocalDataResetKind::MarketData => reset_market_data(&mut database, user_id, &self.root),
+            LocalDataResetKind::All => reset_all(&mut database, user_id, &self.root),
+        }
     }
 
     pub fn import_component(
@@ -1954,6 +2063,22 @@ pub fn backtest_delete(
 }
 
 #[tauri::command]
+pub fn local_data_summary(
+    request: LocalDataRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<LocalDataSummary, String> {
+    state.local_data_summary(&request.user_id)
+}
+
+#[tauri::command]
+pub fn local_data_reset(
+    request: LocalDataResetRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<(), String> {
+    state.reset_local_data(&request.user_id, request.kind)
+}
+
+#[tauri::command]
 pub fn validation_protocol_create(
     request: ValidationProtocolCreateRequest,
     state: tauri::State<'_, M3State>,
@@ -2847,6 +2972,296 @@ fn validate_snapshot_request(
     }
 }
 
+fn reset_watchlist(database: &mut Connection, user_id: &str) -> Result<(), String> {
+    let transaction = database.transaction().map_err(string)?;
+    transaction
+        .execute(
+            "DELETE FROM watchlist_settings WHERE user_id = ?1",
+            [user_id],
+        )
+        .map_err(string)?;
+    insert_default_watchlist(&transaction, user_id)?;
+    transaction.commit().map_err(string)
+}
+
+fn insert_default_watchlist(database: &Connection, user_id: &str) -> Result<(), String> {
+    database
+        .execute(
+            "INSERT INTO watchlist_settings(user_id, active_src, active_code, mini_chart_interval)
+             VALUES (?1, 'okx', 'BTC-USDT', '1m')",
+            [user_id],
+        )
+        .map_err(string)?;
+    for (position, code) in ["BTC-USDT", "ETH-USDT", "SOL-USDT"].iter().enumerate() {
+        database
+            .execute(
+                "INSERT INTO watchlist_items(user_id, src, code, position)
+                 VALUES (?1, 'okx', ?2, ?3)",
+                params![user_id, code, position as i64],
+            )
+            .map_err(string)?;
+    }
+    Ok(())
+}
+
+fn reset_components(database: &mut Connection, user_id: &str, root: &Path) -> Result<(), String> {
+    let blocking: i64 = database
+        .query_row(
+            "SELECT COUNT(DISTINCT r.run_id) FROM backtest_runs r
+             JOIN backtest_run_components rc USING(run_id)
+             JOIN component_access a USING(archive_sha256)
+             WHERE r.user_id = ?1 AND a.user_id = ?1",
+            [user_id],
+            |row| row.get(0),
+        )
+        .map_err(string)?;
+    if blocking > 0 {
+        return Err(format!(
+            "Component Package reset is blocked by {blocking} immutable Backtest Run(s)"
+        ));
+    }
+    let paths = strings(
+        database,
+        "SELECT c.archive_path FROM component_content c
+         JOIN component_access a USING(archive_sha256)
+         WHERE a.user_id = ?1
+         AND NOT EXISTS(SELECT 1 FROM component_access other
+             WHERE other.archive_sha256 = c.archive_sha256 AND other.user_id <> ?1)
+         AND NOT EXISTS(SELECT 1 FROM backtest_run_components rc
+             WHERE rc.archive_sha256 = c.archive_sha256)",
+        user_id,
+    )?;
+    let staged = stage_files(paths.iter().map(PathBuf::from), root)?;
+    let result = (|| {
+        let transaction = database.transaction().map_err(string)?;
+        transaction
+            .execute("DELETE FROM component_access WHERE user_id = ?1", [user_id])
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM component_content
+                 WHERE NOT EXISTS(SELECT 1 FROM component_access a
+                     WHERE a.archive_sha256 = component_content.archive_sha256)
+                 AND NOT EXISTS(SELECT 1 FROM backtest_run_components rc
+                     WHERE rc.archive_sha256 = component_content.archive_sha256)",
+                [],
+            )
+            .map_err(string)?;
+        transaction.commit().map_err(string)
+    })();
+    finish_staged_files(staged, result)
+}
+
+fn reset_market_data(database: &mut Connection, user_id: &str, root: &Path) -> Result<(), String> {
+    let blocking: i64 = database
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1)
+             + (SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1)",
+            [user_id],
+            |row| row.get(0),
+        )
+        .map_err(string)?;
+    if blocking > 0 {
+        return Err(format!(
+            "Market Data reset is blocked by {blocking} immutable research record(s)"
+        ));
+    }
+    let metadata = strings(
+        database,
+        "SELECT s.metadata_json FROM market_data_snapshots s
+         JOIN market_data_snapshot_access a USING(snapshot_id)
+         WHERE a.user_id = ?1
+         AND NOT EXISTS(SELECT 1 FROM market_data_snapshot_access other
+             WHERE other.snapshot_id = s.snapshot_id AND other.user_id <> ?1)",
+        user_id,
+    )?;
+    let paths = metadata
+        .iter()
+        .map(|json| serde_json::from_str::<MarketDataSnapshot>(json).map_err(string))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|snapshot| snapshot.parquet_path);
+    let staged = stage_files(paths, root)?;
+    let result = (|| {
+        let transaction = database.transaction().map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM market_data_snapshot_access WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM market_data_snapshots
+                 WHERE NOT EXISTS(SELECT 1 FROM market_data_snapshot_access a
+                     WHERE a.snapshot_id = market_data_snapshots.snapshot_id)",
+                [],
+            )
+            .map_err(string)?;
+        transaction.commit().map_err(string)
+    })();
+    finish_staged_files(staged, result)
+}
+
+fn reset_all(database: &mut Connection, user_id: &str, root: &Path) -> Result<(), String> {
+    let component_paths = strings(
+        database,
+        "SELECT c.archive_path FROM component_content c
+         JOIN component_access a USING(archive_sha256)
+         WHERE a.user_id = ?1
+         AND NOT EXISTS(SELECT 1 FROM component_access other
+             WHERE other.archive_sha256 = c.archive_sha256 AND other.user_id <> ?1)
+         AND NOT EXISTS(SELECT 1 FROM backtest_run_components rc
+             JOIN backtest_runs r USING(run_id)
+             WHERE rc.archive_sha256 = c.archive_sha256 AND r.user_id <> ?1)",
+        user_id,
+    )?;
+    let snapshot_metadata = strings(
+        database,
+        "SELECT s.metadata_json FROM market_data_snapshots s
+         JOIN market_data_snapshot_access a USING(snapshot_id)
+         WHERE a.user_id = ?1
+         AND NOT EXISTS(SELECT 1 FROM market_data_snapshot_access other
+             WHERE other.snapshot_id = s.snapshot_id AND other.user_id <> ?1)",
+        user_id,
+    )?;
+    let paths = component_paths.into_iter().map(PathBuf::from).chain(
+        snapshot_metadata
+            .iter()
+            .map(|json| serde_json::from_str::<MarketDataSnapshot>(json).map_err(string))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|snapshot| snapshot.parquet_path),
+    );
+    let staged = stage_files(paths, root)?;
+    let result = (|| {
+        let transaction = database.transaction().map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM validation_reports WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM validation_protocols WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction
+            .execute("DELETE FROM backtest_runs WHERE user_id = ?1", [user_id])
+            .map_err(string)?;
+        transaction
+            .execute("DELETE FROM component_access WHERE user_id = ?1", [user_id])
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM market_data_snapshot_access WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM component_content
+                 WHERE NOT EXISTS(SELECT 1 FROM component_access a
+                     WHERE a.archive_sha256 = component_content.archive_sha256)
+                 AND NOT EXISTS(SELECT 1 FROM backtest_run_components rc
+                     WHERE rc.archive_sha256 = component_content.archive_sha256)",
+                [],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM market_data_snapshots
+                 WHERE NOT EXISTS(SELECT 1 FROM market_data_snapshot_access a
+                     WHERE a.snapshot_id = market_data_snapshots.snapshot_id)",
+                [],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM watchlist_settings WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        insert_default_watchlist(&transaction, user_id)?;
+        transaction.commit().map_err(string)
+    })();
+    finish_staged_files(staged, result)
+}
+
+fn strings(database: &Connection, sql: &str, user_id: &str) -> Result<Vec<String>, String> {
+    database
+        .prepare(sql)
+        .map_err(string)?
+        .query_map([user_id], |row| row.get(0))
+        .map_err(string)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(string)
+}
+
+fn file_bytes(path: impl AsRef<Path>) -> u64 {
+    fs::metadata(path).map_or(0, |metadata| metadata.len())
+}
+
+fn stage_files(
+    paths: impl IntoIterator<Item = PathBuf>,
+    allowed_root: &Path,
+) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    let mut staged = Vec::new();
+    for path in paths {
+        if !path.starts_with(allowed_root) {
+            restore_staged_files(&staged);
+            return Err(format!(
+                "Refusing to reset a file outside the local data store: {}",
+                path.display()
+            ));
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let temporary = path.with_extension(format!(
+            "{}.reset",
+            path.extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("data")
+        ));
+        if temporary.exists() {
+            restore_staged_files(&staged);
+            return Err(format!(
+                "Reset staging path already exists: {}",
+                temporary.display()
+            ));
+        }
+        if let Err(error) = fs::rename(&path, &temporary) {
+            restore_staged_files(&staged);
+            return Err(error.to_string());
+        }
+        staged.push((path, temporary));
+    }
+    Ok(staged)
+}
+
+fn finish_staged_files(
+    staged: Vec<(PathBuf, PathBuf)>,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    if let Err(error) = result {
+        restore_staged_files(&staged);
+        return Err(error);
+    }
+    for (_, temporary) in staged {
+        let _ = fs::remove_file(temporary);
+    }
+    Ok(())
+}
+
+fn restore_staged_files(staged: &[(PathBuf, PathBuf)]) {
+    for (path, temporary) in staged.iter().rev() {
+        let _ = fs::rename(temporary, path);
+    }
+}
+
 fn string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -2854,12 +3269,93 @@ fn string(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::watchlist::WatchlistDb;
     use adaq_component_tooling::{ComponentManifest, pack_component};
     use std::{
         io::{Cursor, Write},
         time::{SystemTime, UNIX_EPOCH},
     };
     use zip::{ZipWriter, write::SimpleFileOptions};
+
+    fn local_data_state(name: &str) -> (PathBuf, M3State, WatchlistDb) {
+        let root = std::env::temp_dir().join(format!(
+            "adaq-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = M3State::open(&root).unwrap();
+        let watchlist = WatchlistDb::open(&root.join("adaq.db")).unwrap();
+        (root, state, watchlist)
+    }
+
+    #[test]
+    fn reset_all_is_user_scoped_and_restores_watchlist_defaults() {
+        let (root, state, watchlist) = local_data_state("reset-all");
+        watchlist.get("alice").unwrap();
+        watchlist.get("bob").unwrap();
+        let package = root.join("m3/components/shared.adaq");
+        fs::write(&package, b"package").unwrap();
+        let database = state.database.lock().unwrap();
+        database.execute(
+			"INSERT INTO component_content VALUES ('hash', 'component', '1.0.0', 'Shared', 'factor', 'wasm', ?1)",
+			[package.to_string_lossy().as_ref()],
+		).unwrap();
+        for user in ["alice", "bob"] {
+            database
+                .execute("INSERT INTO component_access VALUES (?1, 'hash')", [user])
+                .unwrap();
+        }
+        drop(database);
+
+        state
+            .reset_local_data("alice", LocalDataResetKind::All)
+            .unwrap();
+
+        let alice = state.local_data_summary("alice").unwrap();
+        let bob = state.local_data_summary("bob").unwrap();
+        assert_eq!(alice.watchlist_count, 3);
+        assert_eq!(alice.component_count, 0);
+        assert_eq!(bob.watchlist_count, 3);
+        assert_eq!(bob.component_count, 1);
+        assert!(package.is_file());
+    }
+
+    #[test]
+    fn component_reset_refuses_to_break_a_run_lock() {
+        let (root, state, watchlist) = local_data_state("reset-components");
+        watchlist.get("alice").unwrap();
+        let package = root.join("m3/components/locked.adaq");
+        fs::write(&package, b"package").unwrap();
+        let database = state.database.lock().unwrap();
+        database.execute(
+			"INSERT INTO component_content VALUES ('hash', 'component', '1.0.0', 'Locked', 'factor', 'wasm', ?1)",
+			[package.to_string_lossy().as_ref()],
+		).unwrap();
+        database
+            .execute("INSERT INTO component_access VALUES ('alice', 'hash')", [])
+            .unwrap();
+        database.execute("INSERT INTO backtest_runs(run_id, user_id, result_json) VALUES ('run', 'alice', '{}')", []).unwrap();
+        database
+            .execute(
+                "INSERT INTO backtest_run_components VALUES ('run', 'hash')",
+                [],
+            )
+            .unwrap();
+        drop(database);
+
+        let error = state
+            .reset_local_data("alice", LocalDataResetKind::Components)
+            .unwrap_err();
+        assert!(error.contains("blocked by 1 immutable Backtest Run"));
+        assert_eq!(
+            state.local_data_summary("alice").unwrap().component_count,
+            1
+        );
+        assert!(package.is_file());
+    }
 
     #[test]
     fn component_library_pages_packages_ten_at_a_time() {
