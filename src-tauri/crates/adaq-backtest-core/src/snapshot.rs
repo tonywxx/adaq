@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use ada_data_core::{BarGap, BarInterval, BarSeries, OhlcvBar};
+use adaq_data_core::{BarGap, BarInterval, BarSeries, OhlcvBar};
 use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
@@ -237,7 +237,7 @@ fn error(error: impl std::fmt::Display) -> SnapshotError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ada_data_core::BarSeries;
+    use adaq_data_core::BarSeries;
 
     fn bar(time: i64, close: i64) -> OhlcvBar {
         let value = Decimal::from(close);

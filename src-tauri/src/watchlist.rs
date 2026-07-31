@@ -1,6 +1,6 @@
 use std::{path::Path, sync::Mutex};
 
-use ada_data_core::BarInterval;
+use adaq_data_core::BarInterval;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 

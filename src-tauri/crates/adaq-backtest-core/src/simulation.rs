@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use ada_data_core::{BarGap, OhlcvBar};
+use adaq_data_core::{BarGap, OhlcvBar};
 use rust_decimal::{
     Decimal,
     prelude::{FromPrimitive, ToPrimitive},

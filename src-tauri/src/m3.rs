@@ -8,11 +8,11 @@ use std::{
     },
 };
 
-use ada_backtest_core::{
+use adaq_backtest_core::{
     ExecutionProfile, MarketDataSnapshot, SnapshotStore, SpotSimulator,
     TargetDecision as SimulationDecision,
 };
-use ada_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
+use adaq_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
 use adaq_component_tooling::{
     ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
     ComponentParameterValue, FactorInstancePlanInput, FeatureSlotDefinition, FrozenIndicatorPlan,
@@ -564,7 +564,7 @@ impl M3State {
 
     pub fn persist_snapshot(
         &self,
-        series: &ada_data_core::BarSeries,
+        series: &adaq_data_core::BarSeries,
     ) -> Result<MarketDataSnapshot, String> {
         let snapshot = self.snapshots.persist(series).map_err(string)?;
         let metadata = serde_json::to_string(&snapshot).map_err(string)?;
@@ -582,7 +582,7 @@ impl M3State {
     fn persist_snapshot_for_user(
         &self,
         user_id: &str,
-        series: &ada_data_core::BarSeries,
+        series: &adaq_data_core::BarSeries,
     ) -> Result<MarketDataSnapshot, String> {
         validate_user(user_id)?;
         let snapshot = self.persist_snapshot(series)?;
@@ -1227,7 +1227,7 @@ pub struct BacktestRun {
     pub decisions: Vec<SimulationDecision>,
     #[serde(default)]
     pub pauses: Vec<RunPauseRecord>,
-    pub result: ada_backtest_core::SimulationResult,
+    pub result: adaq_backtest_core::SimulationResult,
     pub component_lock: Vec<ComponentLockEntry>,
     #[serde(default)]
     pub provenance: Option<BacktestRunProvenance>,
@@ -1242,7 +1242,7 @@ pub struct BacktestRunView {
     pub bars: Vec<OhlcvBar>,
     pub decisions: Vec<SimulationDecision>,
     pub pauses: Vec<RunPauseRecord>,
-    pub result: ada_backtest_core::SimulationResult,
+    pub result: adaq_backtest_core::SimulationResult,
     pub component_lock: Vec<ComponentLockEntry>,
     pub provenance: Option<BacktestRunProvenance>,
 }
@@ -1345,8 +1345,8 @@ pub struct BacktestExecutionRequest {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BacktestExecutionPage {
-    pub orders: Vec<ada_backtest_core::SimulatedOrder>,
-    pub fills: Vec<ada_backtest_core::Fill>,
+    pub orders: Vec<adaq_backtest_core::SimulatedOrder>,
+    pub fills: Vec<adaq_backtest_core::Fill>,
     pub total_orders: usize,
     pub total_fills: usize,
 }
@@ -1451,8 +1451,8 @@ pub struct ValidationWindowReport {
     pub sample_out_snapshot_id: String,
     pub sample_in_run_id: Option<String>,
     pub sample_out_run_id: Option<String>,
-    pub sample_in_metrics: Option<ada_backtest_core::BacktestMetrics>,
-    pub sample_out_metrics: Option<ada_backtest_core::BacktestMetrics>,
+    pub sample_in_metrics: Option<adaq_backtest_core::BacktestMetrics>,
+    pub sample_out_metrics: Option<adaq_backtest_core::BacktestMetrics>,
     pub sample_in_pauses: Vec<RunPauseRecord>,
     pub sample_out_pauses: Vec<RunPauseRecord>,
     pub failure: Option<String>,
@@ -1502,7 +1502,7 @@ pub struct CrossMarketValidationReport {
     pub snapshot: MarketDataSnapshot,
     pub run: BacktestRunRequest,
     pub run_id: Option<String>,
-    pub metrics: Option<ada_backtest_core::BacktestMetrics>,
+    pub metrics: Option<adaq_backtest_core::BacktestMetrics>,
     pub pauses: Vec<RunPauseRecord>,
     pub failure: Option<String>,
 }
@@ -2030,7 +2030,7 @@ pub fn backtest_execution_data(
 }
 
 fn execution_page(
-    result: &ada_backtest_core::SimulationResult,
+    result: &adaq_backtest_core::SimulationResult,
     offset: usize,
     limit: usize,
 ) -> BacktestExecutionPage {
@@ -2433,7 +2433,7 @@ fn split_snapshot(
             end_time_ms: gap.end_time_ms,
         })
         .collect::<Vec<_>>();
-    let series = |bars: Vec<OhlcvBar>| ada_data_core::BarSeries {
+    let series = |bars: Vec<OhlcvBar>| adaq_data_core::BarSeries {
         src: snapshot.src.clone(),
         code: snapshot.code.clone(),
         interval: snapshot.interval,
@@ -2488,7 +2488,7 @@ fn aggregate_validation(windows: &[ValidationWindowReport]) -> ValidationAggrega
         .filter(|window| window.failure.is_none())
         .collect::<Vec<_>>();
     let count = rust_decimal::Decimal::from(complete.len().max(1));
-    let average = |metric: fn(&ada_backtest_core::BacktestMetrics) -> rust_decimal::Decimal,
+    let average = |metric: fn(&adaq_backtest_core::BacktestMetrics) -> rust_decimal::Decimal,
                    sample_out: bool| {
         complete
             .iter()
@@ -2929,11 +2929,11 @@ fn aggregate_bars(bars: &[OhlcvBar], start: i64, end: i64, max_points: usize) ->
 }
 
 fn aggregate_equity(
-    points: &[ada_backtest_core::EquityPoint],
+    points: &[adaq_backtest_core::EquityPoint],
     start: i64,
     end: i64,
     max_points: usize,
-) -> Vec<ada_backtest_core::EquityPoint> {
+) -> Vec<adaq_backtest_core::EquityPoint> {
     let filtered = points
         .iter()
         .filter(|point| point.open_time_ms >= start && point.open_time_ms < end)
@@ -3679,7 +3679,7 @@ mod tests {
         let snapshot = state
             .persist_snapshot_for_user(
                 "alice",
-                &ada_data_core::BarSeries {
+                &adaq_data_core::BarSeries {
                     src: "okx".into(),
                     code: "BTC-USDT".into(),
                     interval: BarInterval::OneHour,
@@ -3704,7 +3704,7 @@ mod tests {
                 quantity_increment: rust_decimal::Decimal::new(1, 4),
                 minimum_quantity: rust_decimal::Decimal::new(1, 4),
                 risk_free_rate: rust_decimal::Decimal::ZERO,
-                fill_policy: ada_backtest_core::FillPolicy::Taker,
+                fill_policy: adaq_backtest_core::FillPolicy::Taker,
             },
             seed: 0,
         };
@@ -3825,7 +3825,7 @@ mod tests {
         let snapshot = state
             .persist_snapshot_for_user(
                 "alice",
-                &ada_data_core::BarSeries {
+                &adaq_data_core::BarSeries {
                     src: "okx".into(),
                     code: "BTC-USDT".into(),
                     interval: BarInterval::OneHour,
@@ -3857,7 +3857,7 @@ mod tests {
                 quantity_increment: rust_decimal::Decimal::new(1, 4),
                 minimum_quantity: rust_decimal::Decimal::new(1, 4),
                 risk_free_rate: rust_decimal::Decimal::ZERO,
-                fill_policy: ada_backtest_core::FillPolicy::Taker,
+                fill_policy: adaq_backtest_core::FillPolicy::Taker,
             },
             seed: 0,
         };
@@ -4235,7 +4235,7 @@ mod tests {
         let eth_snapshot = state
             .persist_snapshot_for_user(
                 "alice",
-                &ada_data_core::BarSeries {
+                &adaq_data_core::BarSeries {
                     src: "okx".into(),
                     code: "ETH-USDT".into(),
                     interval: BarInterval::OneHour,
@@ -4421,7 +4421,7 @@ mod tests {
         let incompatible_snapshot = state
             .persist_snapshot_for_user(
                 "alice",
-                &ada_data_core::BarSeries {
+                &adaq_data_core::BarSeries {
                     src: "okx".into(),
                     code: "SOL-USDT".into(),
                     interval: BarInterval::OneDay,
@@ -4487,7 +4487,7 @@ mod tests {
                 .as_nanos()
         ));
         let state = M3State::open(&root).unwrap();
-        let series = |open_time_ms| ada_data_core::BarSeries {
+        let series = |open_time_ms| adaq_data_core::BarSeries {
             src: "okx".into(),
             code: "BTC-USDT".into(),
             interval: BarInterval::OneHour,
@@ -4582,7 +4582,7 @@ mod tests {
                 .as_nanos()
         ));
         let state = M3State::open(&root).unwrap();
-        let series = |code: &str, open_time_ms| ada_data_core::BarSeries {
+        let series = |code: &str, open_time_ms| adaq_data_core::BarSeries {
             src: "okx".into(),
             code: code.into(),
             interval: BarInterval::OneHour,
@@ -4651,11 +4651,11 @@ mod tests {
                 quantity_increment: rust_decimal::Decimal::ONE,
                 minimum_quantity: rust_decimal::Decimal::ZERO,
                 risk_free_rate: rust_decimal::Decimal::ZERO,
-                fill_policy: ada_backtest_core::FillPolicy::Taker,
+                fill_policy: adaq_backtest_core::FillPolicy::Taker,
             },
             seed: 0,
         };
-        let metrics = |total_return| ada_backtest_core::BacktestMetrics {
+        let metrics = |total_return| adaq_backtest_core::BacktestMetrics {
             initial_equity: 1.into(),
             final_equity: 1.into(),
             total_return,

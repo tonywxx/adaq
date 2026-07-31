@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use ada_data_core::{BarGap, OhlcvBar};
+use adaq_data_core::{BarGap, OhlcvBar};
 use adaq_component_sdk::{decimal_to_f64, host::strategy_abi};
 use adaq_component_tooling::{
     ComponentParameterValue, FrozenBuiltInParameter, FrozenIndicatorPlan, FrozenSourceView,

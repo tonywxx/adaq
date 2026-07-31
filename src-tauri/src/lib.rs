@@ -3,7 +3,7 @@ mod m3;
 mod run_engine;
 mod watchlist;
 
-use ada_data_core::{
+use adaq_data_core::{
     BarInterval, BarSeries, BarStreamEvent, BarSubscription, DataError, HistoricalBarRange,
     InstrumentStatus, OkxClient, SpotInstrument, TickerSnapshot, TickerStreamEvent,
 };

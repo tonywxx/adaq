@@ -7,8 +7,8 @@ edition = "2024"
 
 [workspace]
 members = [
-    "crates/ada-data-core",
-    "crates/ada-backtest-core",
+    "crates/adaq-data-core",
+    "crates/adaq-backtest-core",
     "crates/adaq-component-sdk",
     "crates/adaq-component-tooling",
     "crates/adaq-indicator-engine",
@@ -28,8 +28,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-ada-data-core = { path = "crates/ada-data-core" }
-ada-backtest-core = { path = "crates/ada-backtest-core" }
+adaq-data-core = { path = "crates/adaq-data-core" }
+adaq-backtest-core = { path = "crates/adaq-backtest-core" }
 adaq-component-sdk = { path = "crates/adaq-component-sdk", features = ["host"] }
 adaq-component-tooling = { path = "crates/adaq-component-tooling" }
 adaq-indicator-engine = { path = "crates/adaq-indicator-engine" }

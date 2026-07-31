@@ -1,11 +1,11 @@
 [package]
-name = "ada-backtest-core"
+name = "adaq-backtest-core"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-ada-data-core = { path = "../ada-data-core" }
+adaq-data-core = { path = "../adaq-data-core" }
 arrow-array = "59.1"
 arrow-schema = "59.1"
 parquet = { version = "59.1", default-features = false, features = ["arrow", "snap"] }

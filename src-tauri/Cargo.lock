@@ -3,43 +3,13 @@
 version = 4
 
 [[package]]
-name = "ada-backtest-core"
-version = "0.1.0"
-dependencies = [
- "ada-data-core",
- "arrow-array",
- "arrow-schema",
- "parquet",
- "rust_decimal",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
-]
-
-[[package]]
-name = "ada-data-core"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "reqwest 0.13.1",
- "rust_decimal",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "time",
- "tokio",
- "tokio-tungstenite",
-]
-
-[[package]]
 name = "adaq"
 version = "0.8.6"
 dependencies = [
- "ada-backtest-core",
- "ada-data-core",
+ "adaq-backtest-core",
  "adaq-component-sdk",
  "adaq-component-tooling",
+ "adaq-data-core",
  "adaq-indicator-engine",
  "rusqlite",
  "rust_decimal",
@@ -56,6 +26,21 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "zip 8.6.0",
+]
+
+[[package]]
+name = "adaq-backtest-core"
+version = "0.1.0"
+dependencies = [
+ "adaq-data-core",
+ "arrow-array",
+ "arrow-schema",
+ "parquet",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
 ]
 
 [[package]]
@@ -83,6 +68,21 @@ dependencies = [
  "wasmparser 0.254.0",
  "wasmtime",
  "zip 8.6.0",
+]
+
+[[package]]
+name = "adaq-data-core"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "reqwest 0.13.1",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "time",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
