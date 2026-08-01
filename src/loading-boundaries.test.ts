@@ -8,9 +8,10 @@ const read = (path: string) =>
 test("slow workspace reads expose loading feedback at their data boundaries", () => {
 	const backtest = read("./features/backtest/backtest-page.tsx");
 	const components = read("./features/components/components-page.tsx");
+	const models = read("./features/models/models-page.tsx");
 	const validation = read("./features/validation/validation-page.tsx");
 
-	for (const source of [backtest, components, validation]) {
+	for (const source of [backtest, components, models, validation]) {
 		expect(source).not.toMatch(/if \(pageLoading\) return <PageLoadingSkeleton/);
 	}
 	expect(backtest).toMatch(/Loading Run History…/);
@@ -19,6 +20,19 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	expect(components).toMatch(
 		/let active = true;[\s\S]*\.finally\(\(\) => \{[\s\S]*if \(active\) setPackagesLoading\(false\);[\s\S]*return \(\) => \{[\s\S]*active = false;/,
 	);
+	expect(models).toMatch(/Loading Model Packages…/);
+	expect(models).toMatch(/Loading Market Data Snapshots…/);
+	expect(models).toMatch(/Loading Generation Attempts…/);
+	expect(models).toMatch(
+		/requestAnimationFrame\(\(\) =>\s*requestAnimationFrame\(\(\) => resolve\(\)\)/,
+	);
+	for (const refresh of [
+		"refreshComponents",
+		"refreshSnapshots",
+		"refreshAttempts",
+	]) {
+		expect(models).toMatch(new RegExp(`const ${refresh} = useCallback`));
+	}
 	expect(validation).toMatch(/Loading Completed Runs…/);
 	expect(validation).toMatch(/Loading Protocols…/);
 	expect(validation).toMatch(/Loading Reports…/);

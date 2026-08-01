@@ -230,15 +230,20 @@ pub fn dataset_generation_retry(
 }
 
 #[tauri::command]
-pub fn dataset_generation_list(
+pub async fn dataset_generation_list(
     user_id: String,
-    state: tauri::State<'_, M3State>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<DatasetGenerationAttempt>, String> {
-    validate_user(&user_id)?;
-    let database = state.database.lock().map_err(string)?;
-    database.prepare("SELECT attempt_id, dataset_id, status, diagnostic_json, progress_completed, progress_total FROM dataset_generation_attempts WHERE user_id = ?1 ORDER BY created_at DESC")
-        .map_err(string)?.query_map([user_id], |row| Ok(DatasetGenerationAttempt { attempt_id: row.get(0)?, dataset_id: row.get(1)?, status: row.get(2)?, diagnostic_evidence: row.get(3)?, progress_completed: row.get(4)?, progress_total: row.get(5)? }))
-        .map_err(string)?.collect::<Result<Vec<_>, _>>().map_err(string)
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_user(&user_id)?;
+        let state = app.state::<M3State>();
+        let database = state.database.lock().map_err(string)?;
+        database.prepare("SELECT attempt_id, dataset_id, status, diagnostic_json, progress_completed, progress_total FROM dataset_generation_attempts WHERE user_id = ?1 ORDER BY created_at DESC")
+            .map_err(string)?.query_map([user_id], |row| Ok(DatasetGenerationAttempt { attempt_id: row.get(0)?, dataset_id: row.get(1)?, status: row.get(2)?, diagnostic_evidence: row.get(3)?, progress_completed: row.get(4)?, progress_total: row.get(5)? }))
+            .map_err(string)?.collect::<Result<Vec<_>, _>>().map_err(string)
+    })
+    .await
+    .map_err(string)?
 }
 
 #[tauri::command]

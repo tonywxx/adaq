@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { AuthGate } from "@/components/auth-gate";
 import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
+import { ModelsPage } from "@/features/models/models-page";
 import Home, { Dashboard } from "@/layout/home";
 import { lazy, Suspense, useEffect } from "react";
 import { LAST_APP_PATH_KEY } from "@/lib/app-settings";
@@ -25,11 +26,6 @@ const ComponentsPage = lazy(() =>
 const ValidationPage = lazy(() =>
 	import("@/features/validation/validation-page").then((module) => ({
 		default: module.ValidationPage,
-	})),
-);
-const ModelsPage = lazy(() =>
-	import("@/features/models/models-page").then((module) => ({
-		default: module.ModelsPage,
 	})),
 );
 const SettingsPage = lazy(() =>
@@ -78,11 +74,7 @@ const validationRoute = createRoute({
 const modelsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/models",
-	component: () => (
-		<Suspense fallback={<PageLoadingSkeleton />}>
-			<ModelsPage />
-		</Suspense>
-	),
+	component: ModelsPage,
 });
 const settingsIndexRoute = createRoute({
 	getParentRoute: () => rootRoute,

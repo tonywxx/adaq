@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { LoadingState } from "@/components/loading-state";
 import type { LibraryComponent } from "@/features/components/component-library";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { useHistoryTab } from "@/lib/navigation-history";
@@ -53,12 +54,21 @@ type Attempt = {
 	progressTotal: number;
 };
 
+const afterPaint = () =>
+	new Promise<void>((resolve) =>
+		requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+	);
+
 export function ModelsPage() {
 	const userId = useMarketSessionStore((state) => state.userId);
 	const [models, setModels] = useState<LibraryComponent[]>([]);
 	const [components, setComponents] = useState<LibraryComponent[]>([]);
 	const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
 	const [datasets, setDatasets] = useState<Dataset[]>([]);
+	const [componentsLoading, setComponentsLoading] = useState(true);
+	const [snapshotsLoading, setSnapshotsLoading] = useState(true);
+	const [attemptsLoading, setAttemptsLoading] = useState(true);
+	const [datasetsLoading, setDatasetsLoading] = useState(false);
 	const [attempts, setAttempts] = useState<Attempt[]>([]);
 	const [compatibleFactors, setCompatibleFactors] = useState<
 		Record<string, string[]>
@@ -72,31 +82,128 @@ export function ModelsPage() {
 	const [evidence, setEvidence] = useState("");
 	const [activeAttempt, setActiveAttempt] = useState("");
 	const [tab, setTab] = useHistoryTab("models", "create");
-	const refresh = useCallback(async () => {
-		if (!userId) return;
-		const [components, readable, generated, generationAttempts] =
-			await Promise.all([
-				invoke<LibraryComponent[]>("component_list", { request: { userId } }),
-				invoke<Snapshot[]>("snapshot_list_readable", { request: { userId } }),
-				invoke<Dataset[]>("signal_dataset_list", { userId }),
-				invoke<Attempt[]>("dataset_generation_list", { userId }),
-			]);
-		setModels(components.filter((item) => item.kind === "model"));
-		setComponents(components);
-		setSnapshots(readable);
-		setDatasets(generated);
-		setAttempts(generationAttempts);
-		setModel(
-			(current) =>
-				current ||
-				components.find((item) => item.kind === "model")?.archiveSha256 ||
-				"",
-		);
-		setSnapshot((current) => current || readable[0]?.snapshotId || "");
-	}, [userId]);
+	const refreshComponents = useCallback(
+		async (isActive: () => boolean = () => true) => {
+			if (!userId) return;
+			setComponentsLoading(true);
+			await afterPaint();
+			if (!isActive()) return;
+			try {
+				const items = await invoke<LibraryComponent[]>("component_list", {
+					request: { userId },
+				});
+				if (!isActive()) return;
+				setModels(items.filter((item) => item.kind === "model"));
+				setComponents(items);
+				setModel(
+					(current) =>
+						current ||
+						items.find((item) => item.kind === "model")?.archiveSha256 ||
+						"",
+				);
+			} finally {
+				if (isActive()) setComponentsLoading(false);
+			}
+		},
+		[userId],
+	);
+	const refreshSnapshots = useCallback(
+		async (isActive: () => boolean = () => true) => {
+			if (!userId) return;
+			setSnapshotsLoading(true);
+			await afterPaint();
+			if (!isActive()) return;
+			try {
+				const items = await invoke<Snapshot[]>("snapshot_list_readable", {
+					request: { userId },
+				});
+				if (!isActive()) return;
+				setSnapshots(items);
+				setSnapshot((current) => current || items[0]?.snapshotId || "");
+			} finally {
+				if (isActive()) setSnapshotsLoading(false);
+			}
+		},
+		[userId],
+	);
+	const refreshAttempts = useCallback(
+		async (isActive: () => boolean = () => true) => {
+			if (!userId) return;
+			setAttemptsLoading(true);
+			await afterPaint();
+			if (!isActive()) return;
+			try {
+				const items = await invoke<Attempt[]>("dataset_generation_list", {
+					userId,
+				});
+				if (isActive()) setAttempts(items);
+			} finally {
+				if (isActive()) setAttemptsLoading(false);
+			}
+		},
+		[userId],
+	);
+	const refreshDatasets = useCallback(
+		async (isActive: () => boolean = () => true) => {
+			if (!userId) return;
+			setDatasetsLoading(true);
+			await afterPaint();
+			if (!isActive()) return;
+			try {
+				const items = await invoke<Dataset[]>("signal_dataset_list", { userId });
+				if (isActive()) setDatasets(items);
+			} finally {
+				if (isActive()) setDatasetsLoading(false);
+			}
+		},
+		[userId],
+	);
+	const refresh = useCallback(
+		(isActive: () => boolean = () => true) =>
+			Promise.all([
+				refreshComponents(isActive),
+				refreshSnapshots(isActive),
+				refreshAttempts(isActive),
+			]),
+		[refreshAttempts, refreshComponents, refreshSnapshots],
+	);
 	useEffect(() => {
-		void refresh().catch((error) => setEvidence(String(error)));
-	}, [refresh]);
+		let active = true;
+		void refreshComponents(() => active).catch(
+			(error) => active && setEvidence(formatModelError(error)),
+		);
+		return () => {
+			active = false;
+		};
+	}, [refreshComponents]);
+	useEffect(() => {
+		let active = true;
+		void refreshSnapshots(() => active).catch(
+			(error) => active && setEvidence(formatModelError(error)),
+		);
+		return () => {
+			active = false;
+		};
+	}, [refreshSnapshots]);
+	useEffect(() => {
+		let active = true;
+		void refreshAttempts(() => active).catch(
+			(error) => active && setEvidence(formatModelError(error)),
+		);
+		return () => {
+			active = false;
+		};
+	}, [refreshAttempts]);
+	useEffect(() => {
+		if (tab !== "datasets") return;
+		let active = true;
+		void refreshDatasets(() => active).catch(
+			(error) => active && setEvidence(formatModelError(error)),
+		);
+		return () => {
+			active = false;
+		};
+	}, [refreshDatasets, tab]);
 	useEffect(() => {
 		setCompatibleFactors({});
 		if (!userId || !model) return;
@@ -126,7 +233,7 @@ export function ModelsPage() {
 				attempt.datasetId ||
 				`Dataset generation ${attempt.status}.`,
 		);
-		await refresh();
+		await Promise.all([refresh(), refreshDatasets()]);
 	};
 	const generate = async () => {
 		if (!userId || !model || !snapshot || busy) return;
@@ -210,56 +317,68 @@ export function ModelsPage() {
 							<CardTitle>Native Dataset Generation</CardTitle>
 						</CardHeader>
 						<CardContent className="grid gap-4">
-							<label className="grid gap-1 text-sm">
-								Model Package
-								<select
-									className="rounded border bg-background p-2"
-									value={model}
-									onChange={(event) => setModel(event.target.value)}
-								>
-									{models.map((item) => (
-										<option key={item.archiveSha256} value={item.archiveSha256}>
-											{item.name} — {item.archiveSha256}
-										</option>
-									))}
-								</select>
-							</label>
-							{models
-								.find((item) => item.archiveSha256 === model)
-								?.parameters.map((parameter) => (
-									<label key={parameter.name} className="grid gap-1 text-sm">
-										{parameter.name}
-										<input
+							{componentsLoading ? (
+								<LoadingState label="Loading Model Packages…" />
+							) : (
+								<>
+									<label className="grid gap-1 text-sm">
+										Model Package
+										<select
 											className="rounded border bg-background p-2"
-											value={modelParameters[parameter.name] ?? parameter.defaultValue}
-											onChange={(event) =>
-												setModelParameters((current) => ({
-													...current,
-													[parameter.name]: event.target.value,
-												}))
-											}
-										/>
+											value={model}
+											onChange={(event) => setModel(event.target.value)}
+										>
+											{models.map((item) => (
+												<option key={item.archiveSha256} value={item.archiveSha256}>
+													{item.name} — {item.archiveSha256}
+												</option>
+											))}
+										</select>
 									</label>
-								))}
-							<label className="grid gap-1 text-sm">
-								Market Data Snapshot
-								<select
-									className="rounded border bg-background p-2"
-									value={snapshot}
-									onChange={(event) => setSnapshot(event.target.value)}
-								>
-									{snapshots.map((item) => (
-										<option key={item.snapshotId} value={item.snapshotId}>
-											{item.code} {item.interval} — {item.snapshotId}
-										</option>
-									))}
-								</select>
-							</label>
+									{models
+										.find((item) => item.archiveSha256 === model)
+										?.parameters.map((parameter) => (
+											<label key={parameter.name} className="grid gap-1 text-sm">
+												{parameter.name}
+												<input
+													className="rounded border bg-background p-2"
+													value={modelParameters[parameter.name] ?? parameter.defaultValue}
+													onChange={(event) =>
+														setModelParameters((current) => ({
+															...current,
+															[parameter.name]: event.target.value,
+														}))
+													}
+												/>
+											</label>
+										))}
+								</>
+							)}
+							{snapshotsLoading ? (
+								<LoadingState label="Loading Market Data Snapshots…" />
+							) : (
+								<label className="grid gap-1 text-sm">
+									Market Data Snapshot
+									<select
+										className="rounded border bg-background p-2"
+										value={snapshot}
+										onChange={(event) => setSnapshot(event.target.value)}
+									>
+										{snapshots.map((item) => (
+											<option key={item.snapshotId} value={item.snapshotId}>
+												{item.code} {item.interval} — {item.snapshotId}
+											</option>
+										))}
+									</select>
+								</label>
+							)}
 							<div className="flex gap-2">
 								<Button
 									className="w-fit"
 									loading={busy}
-									disabled={!model || !snapshot || busy}
+									disabled={
+										componentsLoading || snapshotsLoading || !model || !snapshot || busy
+									}
 									onClick={() => void generate()}
 								>
 									Create Dataset
@@ -280,34 +399,43 @@ export function ModelsPage() {
 							)}
 							<div className="grid gap-2">
 								<p className="text-sm font-medium">Generation Attempts</p>
-								{attempts.map((attempt) => (
-									<div
-										key={attempt.attemptId}
-										className="grid gap-2 rounded border p-2 text-xs"
-									>
-										<div className="flex items-center justify-between gap-3">
-											<span className="break-all select-text">
-												{attempt.status} · {attempt.progressCompleted}/
-												{attempt.progressTotal || "?"} · {attempt.attemptId}
-											</span>
-											{(attempt.status === "failed" || attempt.status === "cancelled") && (
-												<Button
-													size="sm"
-													variant="outline"
-													disabled={busy}
-													onClick={() => void retry(attempt.attemptId)}
-												>
-													Retry
-												</Button>
+								{attemptsLoading ? (
+									<LoadingState label="Loading Generation Attempts…" />
+								) : attempts.length ? (
+									attempts.map((attempt) => (
+										<div
+											key={attempt.attemptId}
+											className="grid gap-2 rounded border p-2 text-xs"
+										>
+											<div className="flex items-center justify-between gap-3">
+												<span className="break-all select-text">
+													{attempt.status} · {attempt.progressCompleted}/
+													{attempt.progressTotal || "?"} · {attempt.attemptId}
+												</span>
+												{(attempt.status === "failed" ||
+													attempt.status === "cancelled") && (
+													<Button
+														size="sm"
+														variant="outline"
+														disabled={busy}
+														onClick={() => void retry(attempt.attemptId)}
+													>
+														Retry
+													</Button>
+												)}
+											</div>
+											{attempt.diagnosticEvidence && (
+												<pre className="max-h-32 overflow-auto whitespace-pre-wrap select-text">
+													{attempt.diagnosticEvidence}
+												</pre>
 											)}
 										</div>
-										{attempt.diagnosticEvidence && (
-											<pre className="max-h-32 overflow-auto whitespace-pre-wrap select-text">
-												{attempt.diagnosticEvidence}
-											</pre>
-										)}
-									</div>
-								))}
+									))
+								) : (
+									<p className="text-sm text-muted-foreground">
+										No Generation Attempts yet.
+									</p>
+								)}
 							</div>
 						</CardContent>
 					</Card>
@@ -318,7 +446,9 @@ export function ModelsPage() {
 							<CardTitle>Signal Datasets</CardTitle>
 						</CardHeader>
 						<CardContent className="grid gap-3">
-							{datasets.length ? (
+							{datasetsLoading ? (
+								<LoadingState label="Loading Signal Datasets…" />
+							) : datasets.length ? (
 								datasets.map((item) => (
 									<article
 										key={item.datasetId}

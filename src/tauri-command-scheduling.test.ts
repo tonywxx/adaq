@@ -21,3 +21,32 @@ test("workspace list commands do not block the Tauri main thread", () => {
 		);
 	}
 });
+
+test("Models list commands run blocking work off the Tauri main thread", () => {
+	const sources = [
+		[
+			readFileSync(
+				new URL("../src-tauri/src/m3.rs", import.meta.url),
+				"utf8",
+			),
+			["component_list", "snapshot_list_readable"],
+		],
+		[
+			readFileSync(
+				new URL("../src-tauri/src/m8.rs", import.meta.url),
+				"utf8",
+			),
+			["dataset_generation_list"],
+		],
+	] as const;
+
+	for (const [source, commands] of sources) {
+		for (const command of commands) {
+			const start = source.indexOf(`pub async fn ${command}(`);
+			const end = source.indexOf("\n#[tauri::command]", start);
+			expect(source.slice(start, end)).toContain(
+				"tauri::async_runtime::spawn_blocking",
+			);
+		}
+	}
+});

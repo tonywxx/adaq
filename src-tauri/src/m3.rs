@@ -23,6 +23,7 @@ use adaq_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClien
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tauri::Manager;
 
 use crate::run_engine::{FactorRunRequest, PositionMode, RunEngine, RunRequest};
 
@@ -1610,9 +1611,13 @@ pub fn component_import(
 #[tauri::command]
 pub async fn component_list(
     request: ComponentUserRequest,
-    state: tauri::State<'_, M3State>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<LibraryComponent>, String> {
-    state.list_components(&request.user_id)
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<M3State>().list_components(&request.user_id)
+    })
+    .await
+    .map_err(string)?
 }
 
 #[tauri::command]
@@ -1770,9 +1775,14 @@ pub async fn snapshot_list(
 #[tauri::command]
 pub async fn snapshot_list_readable(
     request: ReadableSnapshotListRequest,
-    state: tauri::State<'_, M3State>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<MarketDataSnapshot>, String> {
-    state.list_readable_snapshots(&request.user_id)
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<M3State>()
+            .list_readable_snapshots(&request.user_id)
+    })
+    .await
+    .map_err(string)?
 }
 
 #[tauri::command]
