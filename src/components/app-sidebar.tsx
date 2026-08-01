@@ -21,6 +21,7 @@ import {
 	ListIcon,
 	Settings2Icon,
 	GitCompareArrows,
+	CandlestickChart,
 } from "lucide-react";
 import type * as React from "react";
 
@@ -130,7 +131,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 							className="data-[slot=sidebar-menu-button]:p-1.5!"
 						>
 							<Link to="/">
-								<CommandIcon className="size-5!" />
+								<CandlestickChart className="size-5!" />
 								<span className="text-base font-semibold">AdaQ</span>
 							</Link>
 						</SidebarMenuButton>
