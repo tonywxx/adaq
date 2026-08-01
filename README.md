@@ -19,11 +19,13 @@ AdaQ V1 is a local-first research, backtesting, and simulation desktop app. It d
 
 ## Screenshots
 
-| Dashboard | Backtest |
+| Dashboard | Components |
 |:---:|:---:|
-| ![Dashboard](screenshots/1-dashboard.png) | ![Backtest](screenshots/2-backtest.png) |
-| **Components** | **Validation** |
-| ![Components](screenshots/3-components.png) | ![Validation](screenshots/4-validation.png) |
+| ![Dashboard](screenshots/1-dashboard.png) | ![Components](screenshots/2-components.png) |
+| **Models** | **Backtest** |
+| ![Models](screenshots/3-models.png) | ![Backtest](screenshots/4-backtest.png) |
+| **Validation** |
+| ![Validation](screenshots/5-validation.png) |
 
 ## Implemented Milestones
 

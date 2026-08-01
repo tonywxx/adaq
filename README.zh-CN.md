@@ -19,11 +19,13 @@ AdaQ V1 是本地优先的研究、回测与模拟桌面应用。它不执行真
 
 ## 截图预览
 
-| 仪表盘 | 回测 |
+| 仪表盘 | 组件库 |
 |:---:|:---:|
-| ![仪表盘](screenshots/1-dashboard.png) | ![回测](screenshots/2-backtest.png) |
-| **组件库** | **验证** |
-| ![组件库](screenshots/3-components.png) | ![验证](screenshots/4-validation.png) |
+| ![仪表盘](screenshots/1-dashboard.png) | ![组件库](screenshots/2-components.png) |
+| **模型** | **回测** |
+| ![模型](screenshots/3-models.png) | ![回测](screenshots/4-backtest.png) |
+| **验证** |
+| ![验证](screenshots/5-validation.png) |
 
 ## 已实现里程碑
 
