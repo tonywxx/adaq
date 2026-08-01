@@ -7,7 +7,7 @@ This is the canonical human-reviewed M8 path. Perform one row at a time and reta
 
 | Exact operation | Expected result | On failure, capture |
 | --- | --- | --- |
-| Run `node --version` from the repository root. | Node.js 24.x is selected, matching release CI. | Complete output and the Node installation method. |
+| Run `node --version` from the repository root. | Node.js 24 or later is selected; release CI provides the Node 24 baseline while the acceptance record retains the exact local version. | Complete output and the Node installation method. |
 | Run `corepack prepare pnpm@11.18.0 --activate`. | The repository's pinned pnpm version is activated. | Complete output and `corepack --version`. |
 | Run `pnpm install --frozen-lockfile`. | Dependencies match `pnpm-lock.yaml`. | Complete output, `node --version`, and `pnpm --version`. |
 | Run `rustup toolchain install stable`. | The stable Rust toolchain is installed. | Complete output and `rustup show`. |

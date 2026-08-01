@@ -7,7 +7,7 @@
 
 | 精确操作 | 预期结果 | 失败时保留 |
 | --- | --- | --- |
-| 在仓库根目录运行 `node --version`。 | 选中与 release CI 一致的 Node.js 24.x。 | 完整输出和 Node 安装方式。 |
+| 在仓库根目录运行 `node --version`。 | 选中 Node.js 24 或更高版本；release CI 提供 Node 24 baseline，验收记录保留精确 local version。 | 完整输出和 Node 安装方式。 |
 | 运行 `corepack prepare pnpm@11.18.0 --activate`。 | 启用仓库固定的 pnpm 版本。 | 完整输出和 `corepack --version`。 |
 | 运行 `pnpm install --frozen-lockfile`。 | 依赖与 `pnpm-lock.yaml` 一致。 | 完整输出、`node --version` 和 `pnpm --version`。 |
 | 运行 `rustup toolchain install stable`。 | 安装 stable Rust 工具链。 | 完整输出和 `rustup show`。 |
