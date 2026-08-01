@@ -18,12 +18,15 @@ test("M8 manual acceptance guides expose the same executable contract", () => {
 		"acceptance-record",
 	];
 	const commands = [
+		"Node.js 24",
+		"pnpm@11.18.0",
 		"adaq-component new model",
 		"adaq-component new strategy",
 		"--template composed",
 		"adaq-component build",
 		"adaq-component verify",
 		"python -m unittest test_adapter.py",
+		"kronos_fixture_reaches_import_evaluation_and_dataset_first_backtest",
 		"cargo test --workspace",
 		"cargo check --workspace",
 		"pnpm exec jest --watchman=false --runInBand",
@@ -35,6 +38,8 @@ test("M8 manual acceptance guides expose the same executable contract", () => {
 			expect(guide).toContain(`<!-- m8-acceptance:${checkpoint} -->`);
 		}
 		for (const command of commands) expect(guide).toContain(command);
+		expect(guide).toContain("Get-FileHash -Algorithm SHA256");
+		expect(guide).toContain("sha256sum");
 	}
 });
 
