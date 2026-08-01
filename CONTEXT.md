@@ -174,9 +174,41 @@ _Avoid_: Factor copy, Component alias
 An independently packaged Component that consumes host-supplied values and emits a complete Target Decision for one Strategy Instance.
 _Avoid_: Order executor, broker plugin
 
+**Model Component**:
+An independently packaged inference Component that consumes host-supplied Prediction Batches and emits Forecast Batches under a declared Model Scope. Its training engine is not part of the runtime contract.
+_Avoid_: Training framework, Strategy Component, Signal Component
+
+**Model Instance**:
+A configured inference resource created from one Model Component, its frozen Feature Slots, and a host-provided Inference Seed. It may retain only past causal context across ordered Prediction Batches, must produce bit-identical finite outputs for the same Package, Plan, Snapshot, parameters, Seed, and engine identity regardless of host chunk boundaries, and is rebuilt at Bar Gaps and Model Producer Segment boundaries.
+_Avoid_: Model Artifact, training process, whole-history mutable predictor
+
+**Model Scope**:
+The declared Instrument cardinality a Model requires for one inference unit. M8 executes Single-Instrument Models; Cross-Sectional Models are a future scope over the same batch identities.
+_Avoid_: Asset Class, Strategy Instance, training universe
+
+**Prediction Batch**:
+An ordered table of inference rows keyed by Instrument ID and Prediction Time with dense values matching a Model Component's Feature Slots. M8 restricts each Batch to one Instrument without removing row identity from the contract.
+_Avoid_: Strategy Feature Frame, anonymous tensor, training Dataset
+
+**Forecast Batch**:
+The ordered optional Forecast Signal Frames returned one-for-one for a Prediction Batch, preserving every Instrument ID, Prediction Time, and row position. The host attaches each Frame's Available At boundary; Multi-horizon predictions remain Signals on the originating row rather than generated future rows.
+_Avoid_: Forecast Signal Dataset, arbitrary model response
+
+**Available At**:
+The earliest timestamp at which a Forecast Signal Frame may legally be consumed by a Strategy. It is separate from Prediction Time, does not change Dataset row identity, and prevents a forecast from being used before its required inputs and inference schedule make it available. M8 native Closed-Bar inference uses the input Bar's close boundary for both Prediction Time and Available At, with execution no earlier than the next Bar.
+_Avoid_: Prediction Time, file creation time, unrestricted execution time
+
+**Forecast Path Artifact**:
+A generated future time-series path such as predicted OHLCV Bars. It is distinct from Forecast Signals and is outside M8.
+_Avoid_: Forecast Batch, realized market data, synthetic input rows
+
 **Composed Strategy**:
-A Strategy Component that embeds its own factor logic; it is a product label rather than a distinct Component contract.
+A Strategy Component that embeds its own analytical, model, or signal logic; it is a product label rather than a distinct Component contract.
 _Avoid_: Trading Combo Component, third component type
+
+**Strategy Architecture**:
+A derived UI description of a Strategy's actual Feature sources: Signal-driven consumes only Forecast Signals, Composed consumes Market, Indicator, or Factor Features without Forecast Signals, and Hybrid consumes Forecast Signals together with at least one of those other Feature sources. It is computed from Component Meta for a Package and from the frozen Feature Plan for a Run; it is not an author-declared Manifest field or a distinct Strategy ABI.
+_Avoid_: Strategy kind, manifest architecture flag, compatibility mode
 
 **Component Package**:
 An immutable installable bundle containing a Component binary and its authoritative Component Meta. Validation Reports and trust records remain separate and reference the exact package hash.
@@ -190,8 +222,16 @@ _Avoid_: Backtest result, performance claim
 Historical evidence associated with an exact Component Package hash, data snapshot, configuration, period, and validation method; it does not guarantee future performance.
 _Avoid_: Component Meta, profitability guarantee
 
+**Forecast Evaluation Report**:
+Immutable evidence of Forecast Signal quality bound to the exact Model Producer Segments, Forecast Signal Dataset, Market Data Snapshot, Forecast Targets, inference trust state, evaluation window, and evaluation configuration. It labels its Evidence State as Out-of-sample, Overlapping, or Unknown from the recorded training, fitting, and normalization windows; it evaluates predictions rather than Strategy decisions or profitability.
+_Avoid_: Validation Report, Backtest result, profitability claim
+
+**Evaluation Evidence State**:
+The relationship between a Forecast Evaluation window and the Model's recorded training, fitting, and normalization reference windows. Out-of-sample requires complete evidence and no overlap, Overlapping records known reuse of evaluation observations, and Unknown preserves incomplete provenance without inventing an out-of-sample claim.
+_Avoid_: Model trust state, performance grade, automatic validation
+
 **Component Dependency Mode**:
-The origin and lifecycle of a Strategy input: Built-in is free host functionality, Embedded is compiled into the Strategy Component, and External is a separately packaged Factor Component.
+The origin and lifecycle of a Component input: Built-in is free host functionality, Embedded is compiled into the consuming Component, and External is a separately packaged Factor or Model Component resolved by the host.
 _Avoid_: Component-to-component call, automatic runtime download
 
 **Component Lock**:
@@ -199,7 +239,7 @@ The immutable record of the exact Component packages, hashes, contracts, and tru
 _Avoid_: Latest version, floating dependency
 
 **Feature Slot**:
-A stable, uniquely named, ordered input declared by a Strategy Component together with its exact Market Field, Indicator, or Factor source requirement and bound by the host to one finite analytical scalar before a Run. Users may configure only declared parameters and dependencies; they cannot add, rename, remove, reorder, or arbitrarily replace the Strategy Component's slots.
+A stable, uniquely named, ordered input declared by a Model or Strategy Component together with its exact Market Field, Indicator, Factor, or Forecast Signal semantic requirement and bound by the host to one finite analytical scalar before execution. A Strategy Forecast Signal Slot declares the required Prediction Kind, Forecast Target, horizon, and value contract rather than a Model or Dataset identity; the frozen Feature Plan records the selected Dataset, Signal name, and producing Model provenance. A Model cannot consume another Model's Forecast Signal in M8; a Strategy may consume several Signal Datasets. Users may configure only declared parameters and compatible bindings; they cannot add, rename, remove, reorder, or arbitrarily replace the Component's slots.
 _Avoid_: JSON feature map, dynamic lookup
 
 ### Research and Execution
@@ -220,20 +260,88 @@ _Avoid_: Initial allocation, Venue account equity
 The exposure constraint selected for a Strategy Instance: Long Only permits targets from zero through one, while Long–Short permits targets from negative one through one.
 _Avoid_: Trade direction, signal type
 
-**Indicator Plan**:
-The fully validated, immutable pre-Run resolution of a Strategy Component's Feature Slots to their exact declared Market Fields, Indicator outputs, or Factor outputs for one Strategy Instance, including parameters and exact warmup requirements.
-_Avoid_: Runtime indicator request
+**Feature Plan**:
+The fully validated, immutable pre-execution resolution of Feature Slots and their exact Market, Indicator, Factor, or Forecast Signal Dataset sources, including parameters and exact Warmup requirements. Model inference and Strategy Backtest each freeze their own Plan; a modular Backtest references an already finalized Forecast Signal Dataset and never invokes its producing Model implicitly.
+_Avoid_: Indicator Plan, runtime feature lookup
 
 **Warmup**:
-The exact leading Closed Bars in each Continuous Bar Segment that prepare all bound analytical sources before a Strategy Instance may be invoked. It marks output availability rather than statistical convergence; a Bar Gap starts a new segment and therefore restarts Warmup.
+The exact leading Closed Bars in each Continuous Bar Segment that prepare all bound analytical sources and Model contexts before a Strategy Instance may be invoked. Upstream Feature Warmup and Model Warmup compose without synthetic values; a Bar Gap starts a new segment and therefore rebuilds analytical state and restarts Warmup.
 _Avoid_: Optional startup delay, approximate lookback
 
 **Market Data Snapshot**:
 An immutable identity for the exact Closed Bar dataset used by a reproducible Run.
 _Avoid_: Latest market data, mutable cache
 
+**Model Artifact**:
+The immutable fitted result of a reproducible model-training process, bound to its exact training evidence and provenance. It may be exported as a Model Component but is not itself a deployable Component.
+_Avoid_: Model Component, mutable checkpoint, training project
+
+**Model Provenance**:
+The traceable origin and formation record of a Model Artifact, including exact source revisions, weight and preprocessing identities, runtime and Adapter versions, licence, and known training, fitting, validation, and normalization-reference windows. Unknown facts remain explicitly unknown.
+_Avoid_: Model performance, inferred training claim, Package marketing
+
+**Forecast Signal**:
+A named, finite numeric prediction with a declared Prediction Kind, Forecast Value Scale, positive Bar horizon, and machine-readable Forecast Target, produced for one Instrument from information available at its prediction time. It is evidence consumed by a Strategy, not a Target Decision, position, or order.
+_Avoid_: Target Exposure, buy signal, order instruction
+
+**Forecast Signal Frame**:
+The ordered set of one through 64 Forecast Signals emitted by one Model Component for the same Instrument and Prediction Time, with one host-controlled Available At boundary shared by the Frame.
+_Avoid_: Feature Frame, Target Decision, arbitrary prediction object
+
+**Forecast Signal Dataset**:
+An immutable collection of Forecast Signal Frames with one stable Signal contract, bound through ordered Model Producer Segments to one or more exact Model Artifacts and to an exact Market Data Snapshot, prediction, availability, and Seed configuration, and inference trust state. Its row identity is Instrument ID plus Prediction Time; Available At is a required consumption boundary rather than part of that identity. A modular Backtest may consume a time subset but must use the same Snapshot identity, Instrument, Venue, and Bar Interval; AdaQ never silently resamples, fills, or approximately joins Signal rows.
+_Avoid_: Mutable prediction file, Model Component, live Signal Feed
+
+**Dataset Generation Attempt**:
+A mutable lifecycle record for creating one Forecast Signal Dataset, progressing through Pending, Running, and exactly one terminal state: Completed, Failed, or Cancelled. Only a Completed Attempt may atomically publish an immutable Dataset; failed or partial rows remain diagnostic evidence and cannot enter Evaluation or Backtest.
+_Avoid_: Forecast Signal Dataset, resumable Model state, partial research evidence
+
+**Model Producer Segment**:
+A non-overlapping Prediction Time range assigning Forecast Signal rows to one exact Model Artifact and its inference provenance. One Dataset may contain several ordered Segments for walk-forward retraining while retaining one unchanged Signal contract; M8's ordinary static-model case contains one Segment.
+_Avoid_: Per-row repeated Artifact metadata, overlapping model ownership, mutable deployment pointer
+
+**Forecast Signal Archive**:
+The portable `.adaq-signals` container for one Forecast Signal Dataset, containing its canonical Manifest and Parquet evidence. Producer and trust state belong in the Manifest rather than the file extension.
+_Avoid_: Component Package, source-specific extension, editable CSV
+
+**External Model Adapter**:
+A local integration that converts inference from a non-AdaQ runtime into a canonical Forecast Signal Dataset without making that runtime part of the AdaQ Component ABI.
+_Avoid_: Model Component, arbitrary in-app Python execution, training engine ABI
+
+**Externally Generated Signal Dataset**:
+A Forecast Signal Dataset produced outside an AdaQ-controlled inference runtime. It remains usable research evidence, but AdaQ does not claim that its inference was reproduced or free of lookahead.
+_Avoid_: Verified Model inference, Marketplace-ready Model Package
+
+**Forecast Target**:
+The stable, versioned Binary or Continuous outcome that a Forecast Signal claims to predict. A Built-in Forecast Target is host-verifiable, while a Custom Forecast Target preserves non-standard semantics without claiming standard evaluation.
+_Avoid_: Target Exposure, free-form label, training note
+
+**Built-in Forecast Target**:
+A Forecast Target from AdaQ's versioned Catalog whose realized value the host derives within one Continuous Bar Segment. `Future Close Return@1` is `futureClose / originClose - 1`, while `Future Close Up@1` is one only when the future close is greater than the origin close; neither includes trading costs.
+_Avoid_: Custom Forecast Target, user-defined expression
+
+**Custom Forecast Target**:
+A non-standard Forecast Target with a stable ID, version, description, and Binary or Continuous value type. A Model may emit it and a Strategy may consume it, but AdaQ does not report target-specific metrics unless verifiable realized labels are available.
+_Avoid_: Built-in Forecast Target, automatically verified label
+
+**Prediction Kind**:
+The declared interpretation of a Forecast Signal's finite numeric value. Built-in kinds are Score, Probability, and Expected Value: Probability requires a Binary Forecast Target, Expected Value requires a Continuous Target, and Score accepts either; other semantics use a Custom Prediction Kind.
+_Avoid_: Forecast Target, output name, numeric storage type
+
+**Forecast Value Scale**:
+The declared numeric representation required for safe Signal substitution. Probability is fixed to zero through one, Expected Value uses its Forecast Target's native unit, and Score must declare Percentile, Z-score, or a Custom Scale. The Model or External Model Adapter emits values in the final declared Scale and records its causal normalization reference; AdaQ validates but does not silently standardize them. A Strategy Forecast Signal Slot requires the same Scale contract as its bound Dataset Signal.
+_Avoid_: Prediction Kind, display formatting, inferred normalization
+
+**Custom Forecast Value Scale**:
+A non-standard Signal scale with a stable ID, version, description, and optional finite bounds. It preserves raw Qlib or other engine-specific scores without claiming compatibility with Percentile, Z-score, or another Custom Scale.
+_Avoid_: Undocumented raw score, automatic standardization
+
+**Custom Prediction Kind**:
+A non-standard Prediction Kind with a stable ID, version, description, and Custom Forecast Value Scale. AdaQ records and replays its finite values but reports no kind-specific metrics without a matching evaluator.
+_Avoid_: Undocumented custom value, Built-in Prediction Kind
+
 **Backtest Run**:
-An immutable execution record binding a Market Data Snapshot, Component Lock, Strategy parameters, Indicator Plan, Execution Profile, engine version, and seed.
+An immutable execution record binding a Market Data Snapshot, Component Lock, Strategy parameters, Feature Plan, Execution Profile, engine version, and seed.
 _Avoid_: Editable backtest session
 
 **Target Exposure**:
@@ -245,7 +353,7 @@ The complete Target Exposure emitted by a Strategy Instance for one Closed Bar; 
 _Avoid_: Buy signal, sell signal, optional decision
 
 **Run Pause**:
-The recorded absence of a Target Decision while a Run is warming up or lacks a required input; missing data is never replaced with a synthetic analytical value. A Run Pause does not mean flat or close, produces no new order intention, and leaves the current exposure unchanged.
+The recorded absence of a Target Decision while a Run is warming up or lacks a required Feature or Forecast Signal; missing data is never replaced with a synthetic analytical value. A Run Pause does not mean flat or close, produces no new order intention, and leaves the current exposure unchanged.
 _Avoid_: Zero signal, implicit skip
 
 **Execution Profile**:

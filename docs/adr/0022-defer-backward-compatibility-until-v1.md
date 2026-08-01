@@ -1,0 +1,3 @@
+# Defer backward compatibility until v1
+
+AdaQ is an internal pre-v1 product, so backward compatibility with earlier local databases, research artifacts, Component Packages, SDK or ABI contracts, Plan schemas, and unpublished APIs is not a product requirement. Before `v1.0.0`, a new design replaces the obsolete path directly rather than adding dual readers, migration layers, compatibility flags, or legacy-only tests; development data may be reset after the exact destructive scope is disclosed. The first stable compatibility baseline begins with the public `v1.0.0` release, after which breaking changes require explicit versioning and migration policy.
