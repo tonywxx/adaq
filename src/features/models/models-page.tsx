@@ -1101,7 +1101,10 @@ export function ModelsPage() {
 														/>
 														<EvaluationMetric
 															definition={EVALUATION_METRIC_DEFINITIONS.quantiles}
-															value="Five-quantile realized Target evidence"
+															value={
+																report.metrics.undefinedMetrics?.quantiles ??
+																"Five-quantile realized Target evidence"
+															}
 														/>
 													</>
 												) : evaluationMetricKind(report.signalContract) === "custom" ? (

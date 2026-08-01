@@ -61,4 +61,5 @@ test("Forecast Evaluation presentation keeps partial evidence and native exports
 	expect(source).toMatch(/Custom Prediction Kind or Custom Target recorded/);
 	expect(source).toMatch(/Single-Instrument time-series evidence/);
 	expect(source).toMatch(/Five-quantile realized Target evidence/);
+	expect(source).toMatch(/undefinedMetrics\?\.quantiles/);
 });
