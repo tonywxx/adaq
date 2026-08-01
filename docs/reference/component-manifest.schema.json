@@ -21,10 +21,86 @@
       ],
       "type": "object"
     },
+    "forecastTarget": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "builtin"
+            },
+            "target": {
+              "enum": [
+                "future-close-return",
+                "future-close-up"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "kind": {
+              "const": "custom"
+            },
+            "valueType": {
+              "enum": [
+                "binary",
+                "continuous"
+              ]
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "version",
+            "description",
+            "valueType"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "identifier": {
       "maxLength": 64,
       "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
       "type": "string"
+    },
+    "identity": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "description"
+      ],
+      "type": "object"
     },
     "parameter": {
       "additionalProperties": false,
@@ -56,6 +132,51 @@
         "defaultValue"
       ],
       "type": "object"
+    },
+    "predictionKind": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "score",
+                "probability",
+                "expected-value"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "kind": {
+              "const": "custom"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "version",
+            "description"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "slot": {
       "additionalProperties": false,
@@ -142,6 +263,74 @@
         "source"
       ],
       "type": "object"
+    },
+    "valueScale": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "probability",
+                "native",
+                "percentile"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "z-score"
+            },
+            "method": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "method"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "kind": {
+              "const": "custom"
+            },
+            "maximum": {
+              "type": "number"
+            },
+            "minimum": {
+              "type": "number"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "version",
+            "description"
+          ],
+          "type": "object"
+        }
+      ]
     }
   },
   "$id": "https://adaq.dev/schema/component-manifest-1.0.0.json",
@@ -187,8 +376,32 @@
       }
     },
     {
-      "if": {"properties": {"kind": {"const": "model"}}},
-      "then": {"required": ["featureSlots", "modelScope", "modelArtifact", "modelOutputs"], "properties": {"featureSlots": {"minItems": 1}, "outputNames": {"maxItems": 0}, "modelScope": {"const": "single-instrument"}}}
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "model"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "featureSlots": {
+            "minItems": 1
+          },
+          "modelScope": {
+            "const": "single-instrument"
+          },
+          "outputNames": {
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "featureSlots",
+          "modelScope",
+          "modelArtifact",
+          "modelOutputs"
+        ]
+      }
     }
   ],
   "description": "The machine-readable Manifest 1.0.0 contract for ADAQ Factor, Strategy, and Model Components.",
@@ -230,6 +443,64 @@
       "const": "1.0.0",
       "description": "Manifest contract version."
     },
+    "modelArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "provenance": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "modelOutputs": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "forecastTarget": {
+            "$ref": "#/$defs/forecastTarget"
+          },
+          "horizonBars": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "name": {
+            "$ref": "#/$defs/identifier"
+          },
+          "predictionKind": {
+            "$ref": "#/$defs/predictionKind"
+          },
+          "valueScale": {
+            "$ref": "#/$defs/valueScale"
+          }
+        },
+        "required": [
+          "name",
+          "predictionKind",
+          "forecastTarget",
+          "valueScale",
+          "horizonBars"
+        ],
+        "type": "object"
+      },
+      "maxItems": 64,
+      "minItems": 1,
+      "type": "array"
+    },
+    "modelScope": {
+      "enum": [
+        "single-instrument"
+      ]
+    },
     "name": {
       "description": "Human-readable Component name.",
       "minLength": 1,
@@ -263,9 +534,6 @@
       "minimum": 0,
       "type": "integer"
     },
-    "modelScope": {"enum": ["single-instrument"]},
-    "modelArtifact": {"type": "object", "additionalProperties": false, "required": ["sha256"], "properties": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "provenance": {"type": "object", "additionalProperties": {"type": "string"}}}},
-    "modelOutputs": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "object", "additionalProperties": false, "required": ["name", "predictionKind", "forecastTarget", "valueScale", "horizonBars"], "properties": {"name": {"$ref": "#/$defs/identifier"}, "predictionKind": {"type": "object"}, "forecastTarget": {"type": "object"}, "valueScale": {"type": "object"}, "horizonBars": {"type": "integer", "minimum": 1}}}},
     "wasmSha256": {
       "description": "SHA-256 of component.wasm; set during packaging.",
       "pattern": "^[a-f0-9]{64}$",
