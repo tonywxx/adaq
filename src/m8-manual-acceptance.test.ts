@@ -19,7 +19,7 @@ test("M8 manual acceptance guides expose the same executable contract", () => {
 	];
 	const commands = [
 		"Node.js 24",
-		"pnpm@11.18.0",
+		"pnpm 11.18.0",
 		"adaq-component new model",
 		"adaq-component new strategy",
 		"--template composed",
