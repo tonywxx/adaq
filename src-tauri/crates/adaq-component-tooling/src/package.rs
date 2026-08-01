@@ -21,6 +21,63 @@ const MAX_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
 pub enum ComponentKind {
     Factor,
     Strategy,
+    Model,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelScope { SingleInstrument }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PredictionKind {
+    Score,
+    Probability,
+    ExpectedValue,
+    Custom { id: String, version: Version, description: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ForecastTargetValueType { Binary, Continuous }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ForecastTarget {
+    Builtin { target: BuiltinForecastTarget },
+    Custom { id: String, version: Version, description: String, value_type: ForecastTargetValueType },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BuiltinForecastTarget { FutureCloseReturn, FutureCloseUp }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ForecastValueScale {
+    Probability,
+    Native,
+    Percentile,
+    ZScore { method: String },
+    Custom { id: String, version: Version, description: String, minimum: Option<f64>, maximum: Option<f64> },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelOutput {
+    pub name: String,
+    pub prediction_kind: PredictionKind,
+    pub forecast_target: ForecastTarget,
+    pub value_scale: ForecastValueScale,
+    pub horizon_bars: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelArtifact {
+    pub sha256: String,
+    #[serde(default)]
+    pub provenance: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,7 +107,7 @@ pub struct ComponentDependency {
     pub alias: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComponentManifest {
     pub manifest_schema_version: Version,
@@ -72,6 +129,12 @@ pub struct ComponentManifest {
     pub dependencies: Vec<ComponentDependency>,
     #[serde(default)]
     pub warmup_bars: u32,
+    #[serde(default)]
+    pub model_scope: Option<ModelScope>,
+    #[serde(default)]
+    pub model_outputs: Vec<ModelOutput>,
+    #[serde(default)]
+    pub model_artifact: Option<ModelArtifact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,7 +181,7 @@ pub enum MarketField {
     QuoteVolume,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ComponentPackage {
     pub manifest: ComponentManifest,
     pub wasm: Vec<u8>,
@@ -192,6 +255,10 @@ pub fn pack_component(
     wasm: &[u8],
 ) -> Result<Vec<u8>, PackageError> {
     manifest.wasm_sha256 = sha256(wasm);
+    if let Some(artifact) = &mut manifest.model_artifact {
+        // Native Models have no sidecar weight loader: the artifact is embedded in component.wasm.
+        artifact.sha256.clone_from(&manifest.wasm_sha256);
+    }
     validate_manifest(&manifest, wasm)?;
     let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(error)?;
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
@@ -229,9 +296,11 @@ pub fn check_manifest_compatibility(
         || previous.dependencies != current.dependencies
         || previous.warmup_bars != current.warmup_bars
         || !current.parameters.starts_with(&previous.parameters)
-        || !current.output_names.starts_with(&previous.output_names);
+        || !current.output_names.starts_with(&previous.output_names)
+        || !current.model_outputs.starts_with(&previous.model_outputs)
+        || current.model_scope != previous.model_scope;
     let additive = current.parameters.len() > previous.parameters.len()
-        || (current.kind == ComponentKind::Factor
+        || ((current.kind == ComponentKind::Factor || current.kind == ComponentKind::Model)
             && current.output_names.len() > previous.output_names.len());
 
     if breaking && current.version.major == previous.version.major {
@@ -307,6 +376,17 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
                 "Strategy manifests cannot declare Factor outputs".into(),
             ));
         }
+        ComponentKind::Model if manifest.feature_slots.is_empty() || !manifest.output_names.is_empty() => {
+            return Err(PackageError("Model manifests require Feature Slots and use modelOutputs instead of Factor outputs".into()));
+        }
+        ComponentKind::Model if manifest.model_scope != Some(ModelScope::SingleInstrument)
+            || manifest.model_artifact.is_none() => {
+            return Err(PackageError("Model manifests require Single-Instrument scope and an embedded Model Artifact".into()));
+        }
+        ComponentKind::Factor | ComponentKind::Strategy if manifest.model_scope.is_some()
+            || !manifest.model_outputs.is_empty() || manifest.model_artifact.is_some() => {
+            return Err(PackageError("Only Model manifests may declare Model contracts".into()));
+        }
         _ => {}
     }
     unique_identifiers(
@@ -319,6 +399,7 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
         ));
     }
     unique_identifiers(manifest.output_names.iter().map(String::as_str), "output")?;
+    validate_model_contract(manifest)?;
     unique_identifiers(
         manifest
             .dependencies
@@ -367,6 +448,52 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
         }
         if !valid_default {
             return Err(PackageError("Parameter default value is invalid".into()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_model_contract(manifest: &ComponentManifest) -> Result<(), PackageError> {
+    if manifest.kind != ComponentKind::Model { return Ok(()); }
+    if !(1..=64).contains(&manifest.model_outputs.len()) {
+        return Err(PackageError("Model Components must declare one through 64 outputs".into()));
+    }
+    unique_identifiers(manifest.model_outputs.iter().map(|output| output.name.as_str()), "Model output")?;
+    let artifact = manifest.model_artifact.as_ref().expect("validated above");
+    if artifact.sha256 != manifest.wasm_sha256 {
+        return Err(PackageError("Model Artifact identity must match the embedded component.wasm SHA-256".into()));
+    }
+    for output in &manifest.model_outputs {
+        let target_type = match output.forecast_target {
+            ForecastTarget::Builtin { target: BuiltinForecastTarget::FutureCloseUp } => ForecastTargetValueType::Binary,
+            ForecastTarget::Builtin { target: BuiltinForecastTarget::FutureCloseReturn } => ForecastTargetValueType::Continuous,
+            ForecastTarget::Custom { value_type, .. } => value_type,
+        };
+        if output.horizon_bars == 0 { return Err(PackageError("Model output horizonBars must be positive".into())); }
+        let custom_identity = |id: &str, description: &str| is_lower_kebab(id) && !description.trim().is_empty();
+        match (&output.prediction_kind, &output.value_scale) {
+            (PredictionKind::Probability, _) if target_type != ForecastTargetValueType::Binary => return Err(PackageError("Probability requires a Binary Forecast Target".into())),
+            (PredictionKind::ExpectedValue, _) if target_type != ForecastTargetValueType::Continuous => return Err(PackageError("Expected Value requires a Continuous Forecast Target".into())),
+            (PredictionKind::Probability, ForecastValueScale::Probability) => {},
+            (PredictionKind::Probability, _) => return Err(PackageError("Probability requires the Probability Value Scale".into())),
+            (PredictionKind::ExpectedValue, ForecastValueScale::Native) => {},
+            (PredictionKind::ExpectedValue, _) => return Err(PackageError("Expected Value requires the native Forecast Value Scale".into())),
+            (PredictionKind::Score, ForecastValueScale::Percentile | ForecastValueScale::ZScore { .. } | ForecastValueScale::Custom { .. }) => {},
+            (PredictionKind::Score, _) => return Err(PackageError("Score requires Percentile, Z-score, or Custom Forecast Value Scale".into())),
+            (PredictionKind::Custom { id, description, .. }, ForecastValueScale::Custom { .. }) if custom_identity(id, description) => {},
+            (PredictionKind::Custom { .. }, _) => return Err(PackageError("Custom Prediction Kind requires an identified Custom Forecast Value Scale".into())),
+        }
+        if let ForecastTarget::Custom { id, description, .. } = &output.forecast_target {
+            if !custom_identity(id, description) { return Err(PackageError("Custom Forecast Target identity is invalid".into())); }
+        }
+        match &output.value_scale {
+            ForecastValueScale::ZScore { method } if method.trim().is_empty() => return Err(PackageError("Z-score Forecast Value Scale requires a method".into())),
+            ForecastValueScale::Custom { id, description, minimum, maximum, .. } => {
+                if !custom_identity(id, description) || minimum.is_some_and(|value| !value.is_finite()) || maximum.is_some_and(|value| !value.is_finite()) || minimum.zip(*maximum).is_some_and(|(minimum, maximum)| minimum > maximum) {
+                    return Err(PackageError("Custom Forecast Value Scale is invalid".into()));
+                }
+            }
+            _ => {},
         }
     }
     Ok(())
@@ -449,6 +576,9 @@ mod tests {
             output_names: vec!["value".into()],
             dependencies: vec![],
             warmup_bars: 0,
+            model_scope: None,
+            model_outputs: vec![],
+            model_artifact: None,
         }
     }
 
@@ -607,5 +737,28 @@ mod tests {
         }];
         strategy.wasm_sha256 = sha256(wasm);
         assert!(validate_manifest(&strategy, wasm).is_err());
+    }
+
+    #[test]
+    fn model_contract_requires_a_valid_aligned_forecast_definition() {
+        let wasm = b"\0asm\x0d\0\x01\0";
+        let mut model = manifest();
+        model.kind = ComponentKind::Model;
+        model.output_names.clear();
+        model.feature_slots = vec![FeatureSlotDefinition { name: "close".into(), source: FeatureSlotSource::Market { field: MarketField::Close } }];
+        model.model_scope = Some(ModelScope::SingleInstrument);
+        model.model_artifact = Some(ModelArtifact {
+            sha256: sha256(wasm),
+            provenance: BTreeMap::new(),
+        });
+        model.model_outputs = vec![ModelOutput {
+            name: "close-up".into(), prediction_kind: PredictionKind::Probability,
+            forecast_target: ForecastTarget::Builtin { target: BuiltinForecastTarget::FutureCloseUp },
+            value_scale: ForecastValueScale::Probability, horizon_bars: 1,
+        }];
+        model.wasm_sha256 = sha256(wasm);
+        assert!(validate_manifest(&model, wasm).is_ok());
+        model.model_outputs[0].forecast_target = ForecastTarget::Builtin { target: BuiltinForecastTarget::FutureCloseReturn };
+        assert_eq!(validate_manifest(&model, wasm).unwrap_err().0, "Probability requires a Binary Forecast Target");
     }
 }

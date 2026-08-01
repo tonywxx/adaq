@@ -77,6 +77,22 @@ pub mod strategy {
     }
 }
 
+#[cfg(feature = "model")]
+pub mod model {
+    pub mod bindings {
+        wit_bindgen::generate!({
+            path: "wit/model",
+            world: "model",
+            pub_export_macro: true,
+            export_macro_name: "export_model",
+        });
+    }
+
+    pub use bindings::exports::adaq::model::api::{
+        FeatureSlot, ForecastRow, Guest, GuestInstance, Instance, ParameterValue, PredictionRow,
+    };
+}
+
 #[cfg(feature = "host")]
 pub mod host {
     pub mod factor_abi {
@@ -90,6 +106,13 @@ pub mod host {
         wasmtime::component::bindgen!({
             path: "wit/strategy",
             world: "strategy",
+        });
+    }
+
+    pub mod model_abi {
+        wasmtime::component::bindgen!({
+            path: "wit/model",
+            world: "model",
         });
     }
 }

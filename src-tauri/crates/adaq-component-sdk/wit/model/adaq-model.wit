@@ -1,0 +1,36 @@
+package adaq:model@1.0.0;
+
+interface api {
+    variant parameter-value {
+        decimal(string),
+        integer(s64),
+        boolean(bool),
+        text(string),
+    }
+
+    record feature-slot { name: string }
+
+    record prediction-row {
+        instrument-id: string,
+        prediction-time-ms: s64,
+        /// Dense values match create(feature-slots) exactly.
+        values: list<f64>,
+    }
+
+    record forecast-row {
+        instrument-id: string,
+        prediction-time-ms: s64,
+        /// Dense values match the ordered Model manifest outputs exactly.
+        values: list<f64>,
+    }
+
+    resource instance {
+        /// Input and output are ordered. State continues across calls.
+        process: func(rows: list<prediction-row>) -> result<list<option<forecast-row>>, string>;
+    }
+
+    create: func(feature-slots: list<feature-slot>, parameters: list<parameter-value>, seed: u64)
+        -> result<instance, string>;
+}
+
+world model { export api; }

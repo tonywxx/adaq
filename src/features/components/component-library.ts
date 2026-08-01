@@ -5,7 +5,7 @@ export type LibraryComponent = {
 	sdkVersion: string;
 	abiVersion: string;
 	name: string;
-	kind: "factor" | "strategy";
+	kind: "factor" | "strategy" | "model";
 	archiveSha256: string;
 	wasmSha256: string;
 	parameters: Array<{
@@ -21,6 +21,15 @@ export type LibraryComponent = {
 	outputNames: string[];
 	dependencies: Array<{ componentId: string; version: string; alias: string }>;
 	warmupBars: number;
+	modelScope?: "single-instrument";
+	modelOutputs?: Array<{
+		name: string;
+		predictionKind: Record<string, unknown> & { kind: string };
+		forecastTarget: Record<string, unknown> & { kind: string };
+		valueScale: Record<string, unknown> & { kind: string };
+		horizonBars: number;
+	}>;
+	modelArtifact?: { sha256: string; provenance: Record<string, string> };
 	compatible: boolean;
 	compatibilityError?: string;
 	lockedByRunIds: string[];

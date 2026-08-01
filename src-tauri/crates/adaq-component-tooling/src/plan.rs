@@ -1081,6 +1081,9 @@ mod tests {
             output_names: vec![],
             dependencies: vec![],
             warmup_bars: 0,
+            model_scope: None,
+            model_outputs: vec![],
+            model_artifact: None,
         }
     }
 

@@ -1,0 +1,14 @@
+{
+  "manifestSchemaVersion": "1.0.0",
+  "componentId": "3cb4f36c-ddc9-4506-921a-44815d6f7641",
+  "version": "0.1.0",
+  "name": "Close Score Model",
+  "kind": "model",
+  "sdkVersion": "0.1.0",
+  "abiVersion": "1.0.0",
+  "featureSlots": [{"name":"close","source":{"kind":"market","field":"close"}}],
+  "modelScope": "single-instrument",
+  "modelOutputs": [{"name":"next-close-score","predictionKind":{"kind":"score"},"forecastTarget":{"kind":"builtin","target":"future-close-return"},"valueScale":{"kind":"z-score","method":"training-frozen"},"horizonBars":1}],
+  "modelArtifact": {"sha256":"0000000000000000000000000000000000000000000000000000000000000000","provenance":{"sourceRevision":"example-v1","weights":"embedded"}},
+  "warmupBars": 0
+}

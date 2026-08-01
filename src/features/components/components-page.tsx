@@ -196,7 +196,7 @@ export function ComponentsPage() {
 	return (
 		<Workspace
 			title="Component Library"
-			description="Audit and manage this User's verified local Factor and Strategy packages."
+			description="Audit and manage this User's verified local Factor, Strategy, and Model packages."
 		>
 			<Card>
 				<CardHeader>
@@ -377,6 +377,11 @@ function ComponentDetail({
 						<Detail label="SDK" value={component.sdkVersion || "Unavailable"} />
 						<Detail label="Warmup" value={`${component.warmupBars} Closed Bars`} />
 					</dl>
+					{component.modelScope && (
+						<p className="mt-3 text-sm text-muted-foreground">
+							Model scope: Single Instrument
+						</p>
+					)}
 				</DetailSection>
 
 				<DetailSection title="Exact hashes">
@@ -441,12 +446,26 @@ function ComponentDetail({
 				</DetailSection>
 
 				<DetailSection title="Outputs">
-					<p className="text-sm text-muted-foreground">
-						{component.outputNames.length
-							? component.outputNames.join(", ")
-							: "No named outputs declared."}
-					</p>
+					{component.modelOutputs?.length ? (
+						<ul className="space-y-2">
+							{component.modelOutputs.map((output) => (
+								<li className="rounded-md border p-3 text-sm" key={output.name}>
+									<p className="font-medium">{output.name}</p>
+									<p className="text-muted-foreground">{readableModelKind(output.predictionKind.kind)} · {output.horizonBars} Bar horizon</p>
+									<p className="text-muted-foreground">Target: {readableModelKind(String(output.forecastTarget.target ?? output.forecastTarget.id ?? output.forecastTarget.kind))} · Scale: {readableModelKind(String(output.valueScale.kind))}</p>
+									<pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">{JSON.stringify({ predictionKind: output.predictionKind, target: output.forecastTarget, scale: output.valueScale }, null, 2)}</pre>
+								</li>
+							))}
+						</ul>
+					) : <p className="text-sm text-muted-foreground">{component.outputNames.length ? component.outputNames.join(", ") : "No named outputs declared."}</p>}
 				</DetailSection>
+
+				{component.modelArtifact && (
+					<DetailSection title="Embedded Model Artifact">
+						<HashValue label="Artifact SHA-256" value={component.modelArtifact.sha256} />
+						<pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">{JSON.stringify(component.modelArtifact.provenance, null, 2)}</pre>
+					</DetailSection>
+				)}
 
 				<DetailSection title="Run-lock state">
 					{locked ? (
@@ -491,6 +510,10 @@ function ComponentDetail({
 			</CardContent>
 		</Card>
 	);
+}
+
+function readableModelKind(value: string) {
+	return value.replace(/-/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function CompatibilityBadge({ component }: { component: LibraryComponent }) {

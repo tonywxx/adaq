@@ -11,7 +11,7 @@ use crate::{
     create_project, pack_component, verify_package,
 };
 
-const USAGE: &str = "usage:\n  adaq-component new <factor|strategy> <name>\n  adaq-component build\n  adaq-component verify <package.adaq> [--previous <manifest.json>]";
+const USAGE: &str = "usage:\n  adaq-component new <factor|strategy|model> <name>\n  adaq-component build\n  adaq-component verify <package.adaq> [--previous <manifest.json>]";
 
 pub fn run_cli(arguments: &[String], cwd: &Path) -> Result<(), String> {
     match arguments {

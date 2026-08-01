@@ -1,0 +1,11 @@
+[package]
+name = "model-close-score"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+adaq-component-sdk = { path = "../../../src-tauri/crates/adaq-component-sdk", features = ["model"] }

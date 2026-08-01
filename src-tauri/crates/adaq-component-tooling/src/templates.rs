@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub enum ComponentTemplate {
     Factor,
     Strategy,
+    Model,
 }
 
 impl ComponentTemplate {
@@ -16,7 +17,8 @@ impl ComponentTemplate {
         match value {
             "factor" => Ok(Self::Factor),
             "strategy" => Ok(Self::Strategy),
-            _ => Err("Component kind must be factor or strategy".into()),
+            "model" => Ok(Self::Model),
+            _ => Err("Component kind must be factor, strategy, or model".into()),
         }
     }
 
@@ -24,6 +26,7 @@ impl ComponentTemplate {
         match self {
             Self::Factor => "factor",
             Self::Strategy => "strategy",
+            Self::Model => "model",
         }
     }
 }
@@ -74,14 +77,17 @@ pub fn create_project(
             .replace("{{component_id}}", &component_id)
             .replace("{{sdk_dependency}}", &dependency)
             .replace("{{sdk_version}}", adaq_component_sdk::SDK_VERSION)
+            .replace("{{artifact_sha256}}", &"0".repeat(64))
     };
     let source = match kind {
         ComponentTemplate::Factor => include_str!("../templates/factor/lib.rs"),
         ComponentTemplate::Strategy => include_str!("../templates/strategy/lib.rs"),
+        ComponentTemplate::Model => include_str!("../templates/model/lib.rs"),
     };
     let manifest = match kind {
         ComponentTemplate::Factor => include_str!("../templates/factor/manifest.json"),
         ComponentTemplate::Strategy => include_str!("../templates/strategy/manifest.json"),
+        ComponentTemplate::Model => include_str!("../templates/model/manifest.json"),
     };
     fs::write(
         root.join("Cargo.toml"),
@@ -124,7 +130,7 @@ mod tests {
     fn creates_both_project_kinds_without_overwriting() {
         let root = tempfile::tempdir().unwrap();
         let sdk = Path::new("/tmp/adaq-component-sdk");
-        for kind in [ComponentTemplate::Factor, ComponentTemplate::Strategy] {
+        for kind in [ComponentTemplate::Factor, ComponentTemplate::Strategy, ComponentTemplate::Model] {
             let project = create_project(kind, kind.name(), root.path(), Some(sdk)).unwrap();
             let cargo = fs::read_to_string(project.join("Cargo.toml")).unwrap();
             let manifest = fs::read_to_string(project.join("manifest.json")).unwrap();

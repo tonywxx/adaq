@@ -185,9 +185,13 @@
           }
         }
       }
+    },
+    {
+      "if": {"properties": {"kind": {"const": "model"}}},
+      "then": {"required": ["featureSlots", "modelScope", "modelArtifact", "modelOutputs"], "properties": {"featureSlots": {"minItems": 1}, "outputNames": {"maxItems": 0}, "modelScope": {"const": "single-instrument"}}}
     }
   ],
-  "description": "The machine-readable Manifest 1.0.0 contract for ADAQ Factor and Strategy Components.",
+  "description": "The machine-readable Manifest 1.0.0 contract for ADAQ Factor, Strategy, and Model Components.",
   "properties": {
     "abiVersion": {
       "const": "1.0.0",
@@ -218,7 +222,8 @@
       "description": "Component ABI kind.",
       "enum": [
         "factor",
-        "strategy"
+        "strategy",
+        "model"
       ]
     },
     "manifestSchemaVersion": {
@@ -258,6 +263,9 @@
       "minimum": 0,
       "type": "integer"
     },
+    "modelScope": {"enum": ["single-instrument"]},
+    "modelArtifact": {"type": "object", "additionalProperties": false, "required": ["sha256"], "properties": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "provenance": {"type": "object", "additionalProperties": {"type": "string"}}}},
+    "modelOutputs": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "object", "additionalProperties": false, "required": ["name", "predictionKind", "forecastTarget", "valueScale", "horizonBars"], "properties": {"name": {"$ref": "#/$defs/identifier"}, "predictionKind": {"type": "object"}, "forecastTarget": {"type": "object"}, "valueScale": {"type": "object"}, "horizonBars": {"type": "integer", "minimum": 1}}}},
     "wasmSha256": {
       "description": "SHA-256 of component.wasm; set during packaging.",
       "pattern": "^[a-f0-9]{64}$",

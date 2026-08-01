@@ -12,13 +12,13 @@ use adaq_backtest_core::{
     ExecutionProfile, MarketDataSnapshot, SnapshotStore, SpotSimulator,
     TargetDecision as SimulationDecision,
 };
-use adaq_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
 use adaq_component_tooling::{
     ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
     ComponentParameterValue, FactorInstancePlanInput, FeatureSlotDefinition, FrozenIndicatorPlan,
-    ParameterDefinition, RunLimits, component_parameters, native_engine_identity,
-    validate_and_freeze_with_factors_and_parameters, verify_package,
+    ModelArtifact, ModelOutput, ModelScope, ParameterDefinition, RunLimits, component_parameters,
+    native_engine_identity, validate_and_freeze_with_factors_and_parameters, verify_package,
 };
+use adaq_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -92,6 +92,9 @@ pub struct LibraryComponent {
     output_names: Vec<String>,
     dependencies: Vec<ComponentDependency>,
     warmup_bars: u32,
+    model_scope: Option<ModelScope>,
+    model_outputs: Vec<ModelOutput>,
+    model_artifact: Option<ModelArtifact>,
     compatible: bool,
     compatibility_error: Option<String>,
     locked_by_run_ids: Vec<String>,
@@ -311,6 +314,9 @@ impl M3State {
             output_names: package.manifest.output_names,
             dependencies: package.manifest.dependencies,
             warmup_bars: package.manifest.warmup_bars,
+            model_scope: package.manifest.model_scope,
+            model_outputs: package.manifest.model_outputs,
+            model_artifact: package.manifest.model_artifact,
             compatible: true,
             compatibility_error: None,
             locked_by_run_ids: vec![],
@@ -452,6 +458,9 @@ impl M3State {
                             output_names: package.manifest.output_names,
                             dependencies: package.manifest.dependencies,
                             warmup_bars: package.manifest.warmup_bars,
+                            model_scope: package.manifest.model_scope,
+                            model_outputs: package.manifest.model_outputs,
+                            model_artifact: package.manifest.model_artifact,
                             compatible: true,
                             compatibility_error: None,
                         }),
@@ -474,6 +483,9 @@ impl M3State {
                             output_names: vec![],
                             dependencies: vec![],
                             warmup_bars: 0,
+                            model_scope: None,
+                            model_outputs: vec![],
+                            model_artifact: None,
                             compatible: false,
                             compatibility_error: Some(format!(
                                 "Incompatible Component Package: {error}"

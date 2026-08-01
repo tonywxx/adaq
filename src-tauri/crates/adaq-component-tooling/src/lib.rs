@@ -8,8 +8,9 @@ mod templates;
 pub use cli::{build_project, run_cli};
 pub use conformance::{component_parameters, verify_package};
 pub use package::{
-    ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotDefinition,
+    BuiltinForecastTarget, ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotDefinition,
     FeatureSlotSource, MarketField, PackageError, ParameterDefinition, ParameterType,
+    ForecastTarget, ForecastTargetValueType, ForecastValueScale, ModelArtifact, ModelOutput, ModelScope, PredictionKind,
     check_manifest_compatibility, pack_component,
 };
 pub use plan::{

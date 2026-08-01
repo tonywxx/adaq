@@ -11,6 +11,7 @@ readme = "README.md"
 default = []
 factor = ["dep:wit-bindgen"]
 strategy = ["dep:wit-bindgen"]
+model = ["dep:wit-bindgen"]
 host = ["dep:wasmtime"]
 
 [dependencies]

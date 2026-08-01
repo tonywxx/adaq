@@ -1,6 +1,6 @@
 use std::{fs, path::Path, sync::Mutex};
 
-use adaq_component_sdk::host::{factor_abi, strategy_abi};
+use adaq_component_sdk::host::{factor_abi, model_abi, strategy_abi};
 use wasmtime::{
     Config, Engine, Store, StoreLimits, StoreLimitsBuilder,
     component::{Component, Linker, ResourceAny},
@@ -51,10 +51,17 @@ struct LoadedStrategy {
     instance: ResourceAny,
 }
 
+struct LoadedModel {
+    store: Store<ComponentStore>,
+    bindings: model_abi::Model,
+    instance: ResourceAny,
+}
+
 #[derive(Default)]
 pub struct WasmLoader {
     factor: Mutex<Option<LoadedFactor>>,
     strategy: Mutex<Option<LoadedStrategy>>,
+    model: Mutex<Option<LoadedModel>>,
     limits: RunLimits,
 }
 
@@ -63,6 +70,7 @@ impl WasmLoader {
         Self {
             factor: Mutex::default(),
             strategy: Mutex::default(),
+            model: Mutex::default(),
             limits,
         }
     }
@@ -240,6 +248,41 @@ impl WasmLoader {
             .map_err(string)?
             .map_err(|error| format!("Strategy process failed: {error}"))
     }
+
+    pub fn load_model_bytes(
+        &self,
+        wasm: &[u8],
+        feature_slots: Vec<model_abi::exports::adaq::model::api::FeatureSlot>,
+        parameters: &[ComponentParameterValue],
+        seed: u64,
+    ) -> Result<(), String> {
+        let engine = component_engine()?;
+        let component = Component::new(&engine, wasm).map_err(string)?;
+        let linker = Linker::new(&engine);
+        let mut store = component_store(&engine, self.limits)?;
+        let bindings = model_abi::Model::instantiate(&mut store, &component, &linker).map_err(string)?;
+        reset_component_fuel(&mut store, self.limits)?;
+        let instance = bindings.adaq_model_api().call_create(
+            &mut store, &feature_slots, &parameters.iter().map(model_parameter).collect::<Vec<_>>(), seed,
+        ).map_err(string)?.map_err(|error| format!("Model create failed: {error}"))?;
+        let mut model = self.model.lock().map_err(string)?;
+        if let Some(mut previous) = model.replace(LoadedModel { store, bindings, instance }) {
+            reset_component_fuel(&mut previous.store, self.limits)?;
+            previous.instance.resource_drop(&mut previous.store).map_err(string)?;
+        }
+        Ok(())
+    }
+
+    pub fn process_model(
+        &self,
+        rows: Vec<model_abi::exports::adaq::model::api::PredictionRow>,
+    ) -> Result<Vec<Option<model_abi::exports::adaq::model::api::ForecastRow>>, String> {
+        let mut model = self.model.lock().map_err(string)?;
+        let LoadedModel { store, bindings, instance } = model.as_mut().ok_or_else(|| "Model component is not loaded".to_owned())?;
+        reset_component_fuel(store, self.limits)?;
+        bindings.adaq_model_api().instance().call_process(store, *instance, &rows)
+            .map_err(string)?.map_err(|error| format!("Model process failed: {error}"))
+    }
 }
 
 struct ComponentStore {
@@ -262,6 +305,18 @@ fn strategy_parameter(
     value: &ComponentParameterValue,
 ) -> strategy_abi::exports::adaq::strategy::api::ParameterValue {
     use strategy_abi::exports::adaq::strategy::api::ParameterValue;
+    match value {
+        ComponentParameterValue::Decimal(value) => ParameterValue::Decimal(value.clone()),
+        ComponentParameterValue::Integer(value) => ParameterValue::Integer(*value),
+        ComponentParameterValue::Boolean(value) => ParameterValue::Boolean(*value),
+        ComponentParameterValue::String(value) => ParameterValue::Text(value.clone()),
+    }
+}
+
+fn model_parameter(
+    value: &ComponentParameterValue,
+) -> model_abi::exports::adaq::model::api::ParameterValue {
+    use model_abi::exports::adaq::model::api::ParameterValue;
     match value {
         ComponentParameterValue::Decimal(value) => ParameterValue::Decimal(value.clone()),
         ComponentParameterValue::Integer(value) => ParameterValue::Integer(*value),

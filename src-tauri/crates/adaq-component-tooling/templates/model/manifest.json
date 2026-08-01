@@ -1,0 +1,20 @@
+{
+  "manifestSchemaVersion": "1.0.0",
+  "componentId": "{{component_id}}",
+  "version": "0.1.0",
+  "name": "{{display_name}}",
+  "kind": "model",
+  "sdkVersion": "{{sdk_version}}",
+  "abiVersion": "1.0.0",
+  "featureSlots": [{"name":"close","source":{"kind":"market","field":"close"}}],
+  "modelScope": "single-instrument",
+  "modelOutputs": [{
+    "name":"next-close-score",
+    "predictionKind":{"kind":"score"},
+    "forecastTarget":{"kind":"builtin","target":"future-close-return"},
+    "valueScale":{"kind":"z-score","method":"training-frozen"},
+    "horizonBars":1
+  }],
+  "modelArtifact": {"sha256":"{{artifact_sha256}}","provenance":{"sourceRevision":"unknown","weights":"embedded"}},
+  "warmupBars": 0
+}
