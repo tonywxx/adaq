@@ -500,7 +500,10 @@ pub fn run() {
             m8::signal_dataset_get,
             m8::signal_dataset_rows,
             m8::signal_dataset_import,
-            m8::signal_dataset_export
+            m8::signal_dataset_export,
+            m8::forecast_evaluation_create,
+            m8::forecast_evaluation_list,
+            m8::forecast_evaluation_export
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

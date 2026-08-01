@@ -130,7 +130,11 @@ mod tests {
     fn creates_both_project_kinds_without_overwriting() {
         let root = tempfile::tempdir().unwrap();
         let sdk = Path::new("/tmp/adaq-component-sdk");
-        for kind in [ComponentTemplate::Factor, ComponentTemplate::Strategy, ComponentTemplate::Model] {
+        for kind in [
+            ComponentTemplate::Factor,
+            ComponentTemplate::Strategy,
+            ComponentTemplate::Model,
+        ] {
             let project = create_project(kind, kind.name(), root.path(), Some(sdk)).unwrap();
             let cargo = fs::read_to_string(project.join("Cargo.toml")).unwrap();
             let manifest = fs::read_to_string(project.join("manifest.json")).unwrap();

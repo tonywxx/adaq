@@ -194,6 +194,16 @@ impl M3State {
                 dataset_id TEXT NOT NULL,
                 PRIMARY KEY(user_id, dataset_id),
                 FOREIGN KEY(dataset_id) REFERENCES signal_dataset_content(dataset_id)
+             );
+             CREATE TABLE IF NOT EXISTS forecast_evaluation_content (
+                report_id TEXT PRIMARY KEY,
+                report_json TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS forecast_evaluation_access (
+                user_id TEXT NOT NULL,
+                report_id TEXT NOT NULL,
+                PRIMARY KEY(user_id, report_id),
+                FOREIGN KEY(report_id) REFERENCES forecast_evaluation_content(report_id)
              );",
             )
             .map_err(string)?;
@@ -3283,6 +3293,13 @@ fn reset_all(database: &mut Connection, user_id: &str, root: &Path) -> Result<()
                 [user_id],
             )
             .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM forecast_evaluation_access WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction.execute("DELETE FROM forecast_evaluation_content WHERE NOT EXISTS(SELECT 1 FROM forecast_evaluation_access a WHERE a.report_id = forecast_evaluation_content.report_id)", []).map_err(string)?;
         transaction
             .execute(
                 "DELETE FROM signal_dataset_access WHERE user_id = ?1",

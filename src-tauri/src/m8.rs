@@ -18,6 +18,7 @@ use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::ArrowWriter;
 use rusqlite::{OptionalExtension, params};
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::Manager;
@@ -171,6 +172,76 @@ struct ExternalRow {
     status: String,
     values: Option<Vec<f64>>,
     unavailable_reason: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForecastEvaluationRequest {
+    pub user_id: String,
+    pub dataset_id: String,
+    pub snapshot_id: String,
+    pub signal_name: String,
+    pub horizon_bars: u32,
+    pub evaluation_start_time_ms: i64,
+    pub evaluation_end_time_ms: i64,
+    pub stability_window_bars: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DistributionMetrics {
+    count: usize,
+    minimum: f64,
+    maximum: f64,
+    mean: f64,
+    standard_deviation: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpectedValueMetrics {
+    evaluation_row_count: usize,
+    aligned_count: usize,
+    unavailable_prediction_count: usize,
+    unavailable_label_count: usize,
+    coverage: f64,
+    missingness: f64,
+    prediction_distribution: DistributionMetrics,
+    realized_distribution: DistributionMetrics,
+    mae: f64,
+    rmse: f64,
+    mean_bias: f64,
+    pearson_correlation: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EvaluationEvidenceState {
+    summary: String,
+    segment_states: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForecastEvaluationReport {
+    report_id: String,
+    dataset_id: String,
+    snapshot_id: String,
+    signal_name: String,
+    signal_contract: adaq_component_tooling::ModelOutput,
+    evaluation_start_time_ms: i64,
+    evaluation_end_time_ms: i64,
+    stability_window_bars: usize,
+    metrics: ExpectedValueMetrics,
+    stability_windows: Vec<serde_json::Value>,
+    evidence_state: EvaluationEvidenceState,
+    unavailable_rows: Vec<serde_json::Value>,
+    producer_segments: Vec<serde_json::Value>,
+    trust_state: String,
+    metric_versions: BTreeMap<String, String>,
+    engine_identity: adaq_component_tooling::EngineIdentity,
+    schema_identity: String,
+    dataset_parquet_sha256: String,
 }
 
 const SIGNAL_ROW_PAGE_SIZE: usize = 10;
@@ -1320,6 +1391,540 @@ fn write_rows(
     Ok(())
 }
 
+fn realize_future_close_returns(
+    bars: &[adaq_data_core::OhlcvBar],
+    gaps: &[adaq_data_core::BarGap],
+    horizon_bars: u32,
+) -> Result<Vec<Option<f64>>, String> {
+    if horizon_bars == 0 {
+        return Err("forecast-evaluation-horizon-must-be-positive".into());
+    }
+    let horizon = usize::try_from(horizon_bars).map_err(string)?;
+    Ok(bars
+        .iter()
+        .enumerate()
+        .map(|(index, origin)| {
+            let future = bars.get(index.checked_add(horizon)?)?;
+            if gaps.iter().any(|gap| {
+                gap.start_time_ms > origin.open_time_ms && gap.end_time_ms <= future.open_time_ms
+            }) {
+                return None;
+            }
+            let origin = origin.close.to_f64()?;
+            let future = future.close.to_f64()?;
+            (origin.is_finite() && future.is_finite() && origin > 0.0 && future > 0.0)
+                .then_some(future / origin - 1.0)
+        })
+        .collect())
+}
+
+fn distribution(values: &[f64]) -> Result<DistributionMetrics, String> {
+    if values.is_empty() || values.iter().any(|value| !value.is_finite()) {
+        return Err("forecast-evaluation-has-no-aligned-finite-rows".into());
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let variance = values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / values.len() as f64;
+    Ok(DistributionMetrics {
+        count: values.len(),
+        minimum: values.iter().copied().fold(f64::INFINITY, f64::min),
+        maximum: values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        mean,
+        standard_deviation: variance.sqrt(),
+    })
+}
+
+fn pearson(pairs: &[(f64, f64)]) -> Option<f64> {
+    if pairs.len() < 2 {
+        return None;
+    }
+    let prediction_mean = pairs.iter().map(|pair| pair.0).sum::<f64>() / pairs.len() as f64;
+    let realized_mean = pairs.iter().map(|pair| pair.1).sum::<f64>() / pairs.len() as f64;
+    let numerator = pairs
+        .iter()
+        .map(|pair| (pair.0 - prediction_mean) * (pair.1 - realized_mean))
+        .sum::<f64>();
+    let prediction_sum = pairs
+        .iter()
+        .map(|pair| (pair.0 - prediction_mean).powi(2))
+        .sum::<f64>();
+    let realized_sum = pairs
+        .iter()
+        .map(|pair| (pair.1 - realized_mean).powi(2))
+        .sum::<f64>();
+    let denominator = (prediction_sum * realized_sum).sqrt();
+    (denominator > 0.0).then_some(numerator / denominator)
+}
+
+fn expected_value_metrics(
+    pairs: &[(f64, f64)],
+    evaluation_row_count: usize,
+    unavailable_prediction_count: usize,
+) -> Result<ExpectedValueMetrics, String> {
+    if evaluation_row_count == 0
+        || pairs.len() > evaluation_row_count
+        || unavailable_prediction_count > evaluation_row_count
+        || pairs
+            .iter()
+            .any(|pair| !pair.0.is_finite() || !pair.1.is_finite())
+    {
+        return Err("forecast-evaluation-metric-input-is-invalid".into());
+    }
+    let predictions = pairs.iter().map(|pair| pair.0).collect::<Vec<_>>();
+    let realized = pairs.iter().map(|pair| pair.1).collect::<Vec<_>>();
+    let errors = pairs.iter().map(|pair| pair.0 - pair.1).collect::<Vec<_>>();
+    let count = pairs.len() as f64;
+    let coverage = pairs.len() as f64 / evaluation_row_count as f64;
+    Ok(ExpectedValueMetrics {
+        evaluation_row_count,
+        aligned_count: pairs.len(),
+        unavailable_prediction_count,
+        unavailable_label_count: evaluation_row_count
+            .saturating_sub(pairs.len() + unavailable_prediction_count),
+        coverage,
+        missingness: 1.0 - coverage,
+        prediction_distribution: distribution(&predictions)?,
+        realized_distribution: distribution(&realized)?,
+        mae: errors.iter().map(|value| value.abs()).sum::<f64>() / count,
+        rmse: (errors.iter().map(|value| value.powi(2)).sum::<f64>() / count).sqrt(),
+        mean_bias: errors.iter().sum::<f64>() / count,
+        pearson_correlation: pearson(pairs),
+    })
+}
+
+fn classify_evidence_state(
+    evaluation_start_time_ms: i64,
+    evaluation_end_time_ms: i64,
+    segment_windows: &[Vec<Option<(i64, i64)>>],
+) -> EvaluationEvidenceState {
+    let segment_states = segment_windows
+        .iter()
+        .map(|windows| {
+            if windows.len() != 3 || windows.iter().any(Option::is_none) {
+                "unknown"
+            } else if windows.iter().flatten().any(|(start, end)| {
+                *start <= evaluation_end_time_ms && *end >= evaluation_start_time_ms
+            }) {
+                "overlapping"
+            } else {
+                "out-of-sample"
+            }
+            .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let summary = if segment_states.is_empty() {
+        "unknown"
+    } else if segment_states.iter().any(|state| state == "overlapping") {
+        "overlapping"
+    } else if segment_states.iter().any(|state| state == "unknown") {
+        "unknown"
+    } else {
+        "out-of-sample"
+    };
+    EvaluationEvidenceState {
+        summary: summary.into(),
+        segment_states,
+    }
+}
+
+fn parse_provenance_window(value: Option<&serde_json::Value>) -> Option<(i64, i64)> {
+    let value = value?.as_str()?.trim();
+    if value.eq_ignore_ascii_case("unknown") || value.is_empty() {
+        return None;
+    }
+    if let Ok(object) = serde_json::from_str::<serde_json::Value>(value) {
+        let start = object.get("startTimeMs")?.as_i64()?;
+        let end = object.get("endTimeMs")?.as_i64()?;
+        return (start <= end).then_some((start, end));
+    }
+    let (start, end) = value.split_once("..")?;
+    let range = (start.parse().ok()?, end.parse().ok()?);
+    (range.0 <= range.1).then_some(range)
+}
+
+fn forecast_evaluation_identity(content: &serde_json::Value) -> Result<String, String> {
+    serde_json::to_vec(content)
+        .map(|canonical| hash(&canonical))
+        .map_err(string)
+}
+
+fn dataset_outputs(
+    dataset: &SignalDataset,
+) -> Result<Vec<adaq_component_tooling::ModelOutput>, String> {
+    if !dataset.model_outputs.is_empty() {
+        return Ok(dataset.model_outputs.clone());
+    }
+    let manifest = dataset
+        .archive_manifest_json
+        .as_deref()
+        .ok_or("forecast-evaluation-dataset-has-no-signal-contract")?;
+    let manifest: ExternalSignalManifest = serde_json::from_str(manifest).map_err(string)?;
+    serde_json::from_value(
+        manifest
+            .signal_contract
+            .get("outputs")
+            .cloned()
+            .ok_or("forecast-evaluation-dataset-has-no-signal-contract")?,
+    )
+    .map_err(string)
+}
+
+fn producer_segment_values(dataset: &SignalDataset) -> Result<Vec<serde_json::Value>, String> {
+    if let Some(segments) = &dataset.external_producer_segments {
+        return Ok(segments.clone());
+    }
+    dataset
+        .producer_segments
+        .iter()
+        .map(|segment| serde_json::to_value(segment).map_err(string))
+        .collect()
+}
+
+fn segment_evidence(
+    segments: &[serde_json::Value],
+    evaluation_start_time_ms: i64,
+    evaluation_end_time_ms: i64,
+) -> EvaluationEvidenceState {
+    let segment_states = segments
+        .iter()
+        .filter_map(|segment| {
+            let start = segment
+                .get("startPredictionTimeMs")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(evaluation_start_time_ms);
+            let end = segment
+                .get("endPredictionTimeMs")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(evaluation_end_time_ms);
+            if start > evaluation_end_time_ms || end < evaluation_start_time_ms {
+                return None;
+            }
+            let provenance = segment
+                .get("provenance")
+                .or_else(|| segment.get("modelArtifact")?.get("provenance"));
+            let windows = ["trainingWindow", "fittingWindow", "normalizationWindow"]
+                .iter()
+                .map(|field| parse_provenance_window(provenance?.get(field)))
+                .collect::<Vec<_>>();
+            Some(
+                classify_evidence_state(
+                    start.max(evaluation_start_time_ms),
+                    end.min(evaluation_end_time_ms),
+                    &[windows],
+                )
+                .summary,
+            )
+        })
+        .collect::<Vec<_>>();
+    let summary = if segment_states.is_empty() {
+        "unknown"
+    } else if segment_states.iter().any(|state| state == "overlapping") {
+        "overlapping"
+    } else if segment_states.iter().any(|state| state == "unknown") {
+        "unknown"
+    } else {
+        "out-of-sample"
+    };
+    EvaluationEvidenceState {
+        summary: summary.into(),
+        segment_states,
+    }
+}
+
+fn evaluate_forecast(
+    state: &M3State,
+    request: &ForecastEvaluationRequest,
+) -> Result<ForecastEvaluationReport, String> {
+    validate_user(&request.user_id)?;
+    if request.evaluation_start_time_ms > request.evaluation_end_time_ms
+        || request.stability_window_bars == 0
+    {
+        return Err("forecast-evaluation-window-is-invalid".into());
+    }
+    let (metadata_json, parquet_path): (String, String) = state
+        .database
+        .lock()
+        .map_err(string)?
+        .query_row(
+            "SELECT c.metadata_json, c.parquet_path FROM signal_dataset_content c JOIN signal_dataset_access a USING(dataset_id) WHERE c.dataset_id = ?1 AND a.user_id = ?2",
+            params![request.dataset_id, request.user_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "forecast-evaluation-dataset-is-not-available-to-user".to_owned())?;
+    let dataset: SignalDataset = serde_json::from_str(&metadata_json).map_err(string)?;
+    if request.snapshot_id != dataset.snapshot_id {
+        return Err("forecast-evaluation-snapshot-mismatch".into());
+    }
+    let outputs = dataset_outputs(&dataset)?;
+    let (signal_index, signal) = outputs
+        .iter()
+        .enumerate()
+        .find(|(_, output)| output.name == request.signal_name)
+        .ok_or("forecast-evaluation-signal-was-not-found")?;
+    if !matches!(
+        signal.prediction_kind,
+        adaq_component_tooling::PredictionKind::ExpectedValue
+    ) || !matches!(
+        signal.forecast_target,
+        adaq_component_tooling::ForecastTarget::Builtin {
+            target: adaq_component_tooling::BuiltinForecastTarget::FutureCloseReturn
+        }
+    ) || !matches!(
+        signal.value_scale,
+        adaq_component_tooling::ForecastValueScale::Native
+    ) || signal.horizon_bars == 0
+    {
+        return Err("forecast-evaluation-signal-contract-is-incompatible".into());
+    }
+    if request.horizon_bars != signal.horizon_bars {
+        return Err("forecast-evaluation-horizon-mismatch".into());
+    }
+    let (snapshot, bars) = state.snapshot_for_user(&request.user_id, &dataset.snapshot_id)?;
+    if snapshot.snapshot_id != dataset.snapshot_id
+        || snapshot.src != dataset.src
+        || snapshot.code != dataset.code
+        || snapshot.interval.as_str() != dataset.interval
+    {
+        return Err("forecast-evaluation-dataset-snapshot-mismatch".into());
+    }
+    let parquet = fs::read(parquet_path).map_err(string)?;
+    if hash(&parquet) != dataset.parquet_sha256 {
+        return Err("forecast-evaluation-dataset-content-hash-mismatch".into());
+    }
+    let rows = read_external_rows(&parquet)?;
+    if rows.len() != bars.len() {
+        return Err("forecast-evaluation-dataset-row-count-mismatch".into());
+    }
+    let gaps = snapshot
+        .gaps
+        .iter()
+        .map(|gap| adaq_data_core::BarGap {
+            start_time_ms: gap.start_time_ms,
+            end_time_ms: gap.end_time_ms,
+        })
+        .collect::<Vec<_>>();
+    let labels = realize_future_close_returns(&bars, &gaps, signal.horizon_bars)?;
+    let selected = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            row.prediction_time_ms >= request.evaluation_start_time_ms
+                && row.prediction_time_ms <= request.evaluation_end_time_ms
+        })
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Err("forecast-evaluation-window-has-no-dataset-rows".into());
+    }
+    let mut aligned = Vec::new();
+    let mut aligned_times = Vec::new();
+    let mut unavailable_rows = Vec::new();
+    let mut unavailable_prediction_count = 0usize;
+    for (index, row) in selected.iter().copied() {
+        match (
+            row.values
+                .as_ref()
+                .and_then(|values| values.get(signal_index)),
+            labels[index],
+        ) {
+            (Some(prediction), Some(realized)) if prediction.is_finite() => {
+                aligned.push((*prediction, realized));
+                aligned_times.push(row.prediction_time_ms);
+            }
+            (None, _) => {
+                unavailable_prediction_count += 1;
+                unavailable_rows.push(serde_json::json!({
+                    "predictionTimeMs": row.prediction_time_ms,
+                    "reason": row.unavailable_reason.as_deref().unwrap_or("prediction-unavailable")
+                }));
+            }
+            (_, None) => unavailable_rows.push(serde_json::json!({
+                "predictionTimeMs": row.prediction_time_ms,
+                "reason": "future-close-return-unavailable"
+            })),
+            _ => return Err("forecast-evaluation-prediction-is-non-finite".into()),
+        }
+    }
+    let metrics = expected_value_metrics(&aligned, selected.len(), unavailable_prediction_count)?;
+    let stability_windows = aligned
+        .chunks(request.stability_window_bars)
+        .enumerate()
+        .map(|(window, pairs)| {
+            let start = window * request.stability_window_bars;
+            let metrics = expected_value_metrics(pairs, pairs.len(), 0)?;
+            Ok(serde_json::json!({
+                "startPredictionTimeMs": aligned_times[start],
+                "endPredictionTimeMs": aligned_times[start + pairs.len() - 1],
+                "alignedCount": metrics.aligned_count,
+                "mae": metrics.mae,
+                "rmse": metrics.rmse,
+                "meanBias": metrics.mean_bias,
+                "pearsonCorrelation": metrics.pearson_correlation,
+            }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let producer_segments = producer_segment_values(&dataset)?;
+    let evidence_state = segment_evidence(
+        &producer_segments,
+        request.evaluation_start_time_ms,
+        request.evaluation_end_time_ms,
+    );
+    let metric_versions: BTreeMap<String, String> = BTreeMap::from([
+        ("coverage".into(), "coverage@1".into()),
+        ("distribution".into(), "distribution@1".into()),
+        ("expectedValue".into(), "expected-value@1".into()),
+        (
+            "timeWindowStability".into(),
+            "non-overlapping-windows@1".into(),
+        ),
+    ]);
+    let content = serde_json::json!({
+        "datasetId": dataset.dataset_id,
+        "snapshotId": dataset.snapshot_id,
+        "signalName": request.signal_name,
+        "signalContract": signal,
+        "evaluationStartTimeMs": request.evaluation_start_time_ms,
+        "evaluationEndTimeMs": request.evaluation_end_time_ms,
+        "stabilityWindowBars": request.stability_window_bars,
+        "metrics": metrics,
+        "stabilityWindows": stability_windows,
+        "evidenceState": evidence_state,
+        "unavailableRows": unavailable_rows,
+        "producerSegments": producer_segments,
+        "trustState": dataset.trust,
+        "metricVersions": metric_versions,
+        "engineIdentity": dataset.engine_identity,
+        "schemaIdentity": "forecast-evaluation-report@1",
+        "datasetParquetSha256": dataset.parquet_sha256,
+    });
+    let report_id = forecast_evaluation_identity(&content)?;
+    let mut report = content;
+    report
+        .as_object_mut()
+        .expect("evaluation content is an object")
+        .insert("reportId".into(), report_id.into());
+    serde_json::from_value(report).map_err(string)
+}
+
+fn save_forecast_evaluation(
+    state: &M3State,
+    request: &ForecastEvaluationRequest,
+) -> Result<ForecastEvaluationReport, String> {
+    let report = evaluate_forecast(state, request)?;
+    let report_json = serde_json::to_string(&report).map_err(string)?;
+    let mut database = state.database.lock().map_err(string)?;
+    let transaction = database.transaction().map_err(string)?;
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO forecast_evaluation_content(report_id, report_json) VALUES (?1, ?2)",
+            params![report.report_id, report_json],
+        )
+        .map_err(string)?;
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO forecast_evaluation_access(user_id, report_id) VALUES (?1, ?2)",
+            params![request.user_id, report.report_id],
+        )
+        .map_err(string)?;
+    transaction.commit().map_err(string)?;
+    Ok(report)
+}
+
+#[tauri::command]
+pub async fn forecast_evaluation_create(
+    request: ForecastEvaluationRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<ForecastEvaluationReport, String> {
+    save_forecast_evaluation(&state, &request)
+}
+
+#[tauri::command]
+pub async fn forecast_evaluation_list(
+    user_id: String,
+    state: tauri::State<'_, M3State>,
+) -> Result<Vec<ForecastEvaluationReport>, String> {
+    list_forecast_evaluations(&state, &user_id)
+}
+
+fn list_forecast_evaluations(
+    state: &M3State,
+    user_id: &str,
+) -> Result<Vec<ForecastEvaluationReport>, String> {
+    validate_user(&user_id)?;
+    state
+        .database
+        .lock()
+        .map_err(string)?
+        .prepare("SELECT c.report_json FROM forecast_evaluation_content c JOIN forecast_evaluation_access a USING(report_id) WHERE a.user_id = ?1 ORDER BY c.report_id")
+        .map_err(string)?
+        .query_map([user_id], |row| row.get::<_, String>(0))
+        .map_err(string)?
+        .map(|row| serde_json::from_str(&row.map_err(string)?).map_err(string))
+        .collect()
+}
+
+#[tauri::command]
+pub fn forecast_evaluation_export(
+    report_id: String,
+    user_id: String,
+    format: String,
+    state: tauri::State<'_, M3State>,
+) -> Result<String, String> {
+    export_forecast_evaluation(&state, &user_id, &report_id, &format)
+}
+
+fn export_forecast_evaluation(
+    state: &M3State,
+    user_id: &str,
+    report_id: &str,
+    format: &str,
+) -> Result<String, String> {
+    validate_user(&user_id)?;
+    let report_json: String = state
+        .database
+        .lock()
+        .map_err(string)?
+        .query_row(
+            "SELECT c.report_json FROM forecast_evaluation_content c JOIN forecast_evaluation_access a USING(report_id) WHERE c.report_id = ?1 AND a.user_id = ?2",
+            params![report_id, user_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Forecast Evaluation Report was not found".to_owned())?;
+    let report: ForecastEvaluationReport = serde_json::from_str(&report_json).map_err(string)?;
+    match format {
+        "json" => serde_json::to_string_pretty(&report).map_err(string),
+        "markdown" => Ok(forecast_evaluation_markdown(&report)),
+        _ => Err("Forecast Evaluation export format is invalid".into()),
+    }
+}
+
+fn forecast_evaluation_markdown(report: &ForecastEvaluationReport) -> String {
+    format!(
+        "# Forecast Evaluation Report\n\n- Report ID: `{}`\n- Dataset ID: `{}`\n- Snapshot ID: `{}`\n- Signal: `{}`\n- Evaluation window: `{}` to `{}`\n- Evidence state: `{}`\n- Trust state: `{}`\n- Schema: `{}`\n\n## Expected Value metrics\n\n- Coverage: {}\n- Missingness: {}\n- MAE: {}\n- RMSE: {}\n- Mean bias: {}\n- Pearson correlation: {}\n\n## Authoritative evidence\n\n```json\n{}\n```\n",
+        report.report_id,
+        report.dataset_id,
+        report.snapshot_id,
+        report.signal_name,
+        report.evaluation_start_time_ms,
+        report.evaluation_end_time_ms,
+        report.evidence_state.summary,
+        report.trust_state,
+        report.schema_identity,
+        report.metrics.coverage,
+        report.metrics.missingness,
+        report.metrics.mae,
+        report.metrics.rmse,
+        report.metrics.mean_bias,
+        report
+            .metrics
+            .pearson_correlation
+            .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+        serde_json::to_string_pretty(report).expect("report serializes"),
+    )
+}
+
 fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -1504,6 +2109,226 @@ mod tests {
             close_time(adaq_data_core::BarInterval::OneMonth, 1_704_067_200_000),
             Ok(1_706_745_600_000),
         );
+    }
+
+    #[test]
+    fn future_close_return_uses_exact_horizon_and_stops_at_gaps() {
+        let bars = [(0, 1), (1, 2), (2, 4), (6, 8), (7, 16)]
+            .into_iter()
+            .map(|(minute, close)| OhlcvBar {
+                open_time_ms: minute * 60_000,
+                open: Decimal::from(close),
+                high: Decimal::from(close),
+                low: Decimal::from(close),
+                close: Decimal::from(close),
+                base_volume: Decimal::ONE,
+                quote_volume: Decimal::ONE,
+            })
+            .collect::<Vec<_>>();
+        let gaps = [BarGap {
+            start_time_ms: 180_000,
+            end_time_ms: 360_000,
+        }];
+        assert_eq!(
+            realize_future_close_returns(&bars, &gaps, 2).unwrap(),
+            [Some(3.0), None, None, None, None]
+        );
+        assert_eq!(
+            realize_future_close_returns(&bars, &gaps, 0).unwrap_err(),
+            "forecast-evaluation-horizon-must-be-positive"
+        );
+    }
+
+    #[test]
+    fn expected_value_metrics_preserve_unavailable_rows_and_edge_cases() {
+        let metrics = expected_value_metrics(&[(1.0, 2.0), (3.0, 4.0)], 5, 2).unwrap();
+        assert_eq!(metrics.aligned_count, 2);
+        assert_eq!(metrics.coverage, 0.4);
+        assert_eq!(metrics.missingness, 0.6);
+        assert_eq!(metrics.mae, 1.0);
+        assert_eq!(metrics.rmse, 1.0);
+        assert_eq!(metrics.mean_bias, -1.0);
+        assert_eq!(metrics.pearson_correlation, Some(1.0));
+        assert_eq!(metrics.prediction_distribution.minimum, 1.0);
+        assert_eq!(metrics.realized_distribution.maximum, 4.0);
+        assert_eq!(
+            expected_value_metrics(&[(1.0, 2.0)], 1, 0)
+                .unwrap()
+                .pearson_correlation,
+            None
+        );
+    }
+
+    #[test]
+    fn evaluation_evidence_uses_the_most_conservative_segment_state() {
+        let out = classify_evidence_state(
+            100,
+            200,
+            &[
+                vec![Some((0, 99)), Some((0, 50)), Some((0, 75))],
+                vec![Some((0, 120)), Some((0, 50)), Some((0, 75))],
+            ],
+        );
+        assert_eq!(out.segment_states, ["out-of-sample", "overlapping"]);
+        assert_eq!(out.summary, "overlapping");
+        let unknown = classify_evidence_state(100, 200, &[vec![None, Some((0, 50)), None]]);
+        assert_eq!(unknown.summary, "unknown");
+    }
+
+    #[test]
+    fn forecast_evaluation_identity_reuses_exact_evidence_only() {
+        let content = serde_json::json!({
+            "datasetId": "dataset",
+            "signalName": "return",
+            "evaluationStartTimeMs": 1,
+            "evaluationEndTimeMs": 2,
+            "metricVersions": {"expectedValue": "expected-value@1"},
+            "unavailableRows": [{"predictionTimeMs": 2, "reason": "future-label-unavailable"}]
+        });
+        let first = forecast_evaluation_identity(&content).unwrap();
+        assert_eq!(first, forecast_evaluation_identity(&content).unwrap());
+        let mut changed = content;
+        changed["evaluationEndTimeMs"] = 3.into();
+        assert_ne!(first, forecast_evaluation_identity(&changed).unwrap());
+    }
+
+    #[test]
+    fn forecast_evaluation_rejects_incompatible_signal_before_metrics() {
+        let (root, state, request) = setup("valid", "evaluation-incompatible");
+        let attempt = running_attempt(&state, &request);
+        let pending = generate(&request, &state, &AtomicBool::new(false), &attempt).unwrap();
+        let dataset_id = pending.metadata.dataset_id.clone();
+        publish_dataset(&state, "alice", &attempt, &AtomicBool::new(false), pending).unwrap();
+        let error = evaluate_forecast(
+            &state,
+            &ForecastEvaluationRequest {
+                user_id: "alice".into(),
+                dataset_id,
+                snapshot_id: request.snapshot_id.clone(),
+                signal_name: "next-close-score".into(),
+                horizon_bars: 1,
+                evaluation_start_time_ms: 3_600_000,
+                evaluation_end_time_ms: 9 * 3_600_000,
+                stability_window_bars: 2,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "forecast-evaluation-signal-contract-is-incompatible");
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn forecast_evaluation_is_immutable_user_scoped_and_exportable() {
+        let (root, state, request) = setup("valid", "evaluation-report");
+        let (snapshot, bars) = state
+            .snapshot_for_user("alice", &request.snapshot_id)
+            .unwrap();
+        let records = bars
+            .iter()
+            .enumerate()
+            .map(|(index, bar)| {
+                Ok((
+                    "okx:BTC-USDT".to_owned(),
+                    close_time(snapshot.interval, bar.open_time_ms)?,
+                    close_time(snapshot.interval, bar.open_time_ms)?,
+                    Some(vec![index as f64 / 10.0]),
+                    None,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .unwrap();
+        let parquet_path = root.join("evaluation-source.parquet");
+        write_rows(&parquet_path, &records).unwrap();
+        let parquet = fs::read(&parquet_path).unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_slice(&external_manifest(
+            &request.snapshot_id,
+            &parquet,
+            3_600_000,
+            9 * 3_600_000,
+        ))
+        .unwrap();
+        manifest["signalContract"]["outputs"][0] = serde_json::json!({
+            "name": "future-return",
+            "predictionKind": {"kind": "expected-value"},
+            "forecastTarget": {"kind": "builtin", "target": "future-close-return"},
+            "valueScale": {"kind": "native"},
+            "horizonBars": 1
+        });
+        for field in ["trainingWindow", "fittingWindow", "normalizationWindow"] {
+            manifest["producerSegments"][0]["provenance"][field] = "0..0".into();
+        }
+        let manifest = serde_json::to_vec(&manifest).unwrap();
+        let archive = pack_signal_archive(&manifest, &parquet).unwrap();
+        let dataset = import_signal_archive(&state, "alice", &archive).unwrap();
+        let request = ForecastEvaluationRequest {
+            user_id: "alice".into(),
+            dataset_id: dataset["datasetId"].as_str().unwrap().into(),
+            snapshot_id: request.snapshot_id.clone(),
+            signal_name: "future-return".into(),
+            horizon_bars: 1,
+            evaluation_start_time_ms: 3_600_000,
+            evaluation_end_time_ms: 9 * 3_600_000,
+            stability_window_bars: 2,
+        };
+        let mut mismatch = request.clone();
+        mismatch.snapshot_id = "different-snapshot".into();
+        assert_eq!(
+            evaluate_forecast(&state, &mismatch).unwrap_err(),
+            "forecast-evaluation-snapshot-mismatch"
+        );
+        mismatch = request.clone();
+        mismatch.horizon_bars = 2;
+        assert_eq!(
+            evaluate_forecast(&state, &mismatch).unwrap_err(),
+            "forecast-evaluation-horizon-mismatch"
+        );
+        let first = save_forecast_evaluation(&state, &request).unwrap();
+        let replay = save_forecast_evaluation(&state, &request).unwrap();
+        assert_eq!(first.report_id, replay.report_id);
+        assert_eq!(first.metrics.aligned_count, 4);
+        assert_eq!(first.metrics.unavailable_label_count, 2);
+        assert_eq!(first.evidence_state.summary, "out-of-sample");
+        assert_eq!(first.unavailable_rows.len(), 2);
+        assert_eq!(list_forecast_evaluations(&state, "alice").unwrap().len(), 1);
+        assert!(list_forecast_evaluations(&state, "bob").unwrap().is_empty());
+        assert!(
+            export_forecast_evaluation(&state, "bob", &first.report_id, "json")
+                .unwrap_err()
+                .contains("not found")
+        );
+        let json = export_forecast_evaluation(&state, "alice", &first.report_id, "json").unwrap();
+        assert!(json.contains("\"unavailableRows\""));
+        assert!(json.contains("\"expectedValue\": \"expected-value@1\""));
+        let markdown =
+            export_forecast_evaluation(&state, "alice", &first.report_id, "markdown").unwrap();
+        assert!(markdown.contains("## Authoritative evidence"));
+        assert!(markdown.contains(&first.report_id));
+        let mut changed = request.clone();
+        changed.evaluation_end_time_ms = 8 * 3_600_000;
+        assert_ne!(
+            save_forecast_evaluation(&state, &changed)
+                .unwrap()
+                .report_id,
+            first.report_id
+        );
+        let stored_path: String = state
+            .database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT parquet_path FROM signal_dataset_content WHERE dataset_id = ?1",
+                [&request.dataset_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        fs::write(stored_path, b"tampered").unwrap();
+        assert_eq!(
+            evaluate_forecast(&state, &request).unwrap_err(),
+            "forecast-evaluation-dataset-content-hash-mismatch"
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn dataset_identity_is_content_addressed() {

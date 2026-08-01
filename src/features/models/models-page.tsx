@@ -12,6 +12,9 @@ import { useCallback, useEffect, useState } from "react";
 import {
 	datasetGenerationRequest,
 	datasetStatusSummary,
+	evaluationExportFilename,
+	evaluationReportSummary,
+	evaluationRequest,
 	formatModelError,
 	signalRowPageRequest,
 	signalRowSummary,
@@ -71,6 +74,63 @@ type RowPage = {
 	page: number;
 	pageSize: number;
 };
+type ModelOutput = {
+	name: string;
+	predictionKind: { kind: string };
+	forecastTarget: { kind: string; target?: string };
+	valueScale: { kind: string };
+	horizonBars: number;
+};
+type EvaluationReport = {
+	reportId: string;
+	datasetId: string;
+	snapshotId: string;
+	signalName: string;
+	signalContract: ModelOutput;
+	evaluationStartTimeMs: number;
+	evaluationEndTimeMs: number;
+	stabilityWindowBars: number;
+	metrics: {
+		evaluationRowCount: number;
+		alignedCount: number;
+		unavailablePredictionCount: number;
+		unavailableLabelCount: number;
+		coverage: number;
+		missingness: number;
+		predictionDistribution: Record<string, number>;
+		realizedDistribution: Record<string, number>;
+		mae: number;
+		rmse: number;
+		meanBias: number;
+		pearsonCorrelation?: number;
+	};
+	stabilityWindows: Array<Record<string, unknown>>;
+	evidenceState: { summary: string; segmentStates: string[] };
+	unavailableRows: Array<Record<string, unknown>>;
+	producerSegments: Array<Record<string, unknown>>;
+	trustState: string;
+	metricVersions: Record<string, string>;
+	engineIdentity: Record<string, string>;
+	schemaIdentity: string;
+	datasetParquetSha256: string;
+};
+
+const datasetOutputs = (dataset?: Dataset): ModelOutput[] => {
+	if (!dataset) return [];
+	if (dataset.modelOutputs.length) return dataset.modelOutputs as ModelOutput[];
+	if (!dataset.archiveManifestJson) return [];
+	return (JSON.parse(dataset.archiveManifestJson).signalContract?.outputs ??
+		[]) as ModelOutput[];
+};
+
+const datasetEvaluationBounds = (dataset?: Dataset) => {
+	const segments =
+		dataset?.externalProducerSegments ?? dataset?.producerSegments ?? [];
+	return {
+		start: Number(segments[0]?.startPredictionTimeMs ?? 0),
+		end: Number(segments.at(-1)?.endPredictionTimeMs ?? 0),
+	};
+};
 
 const afterPaint = () =>
 	new Promise<void>((resolve) =>
@@ -83,12 +143,16 @@ export function ModelsPage() {
 	const [components, setComponents] = useState<LibraryComponent[]>([]);
 	const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
 	const [datasets, setDatasets] = useState<Dataset[]>([]);
+	const [evaluationReports, setEvaluationReports] = useState<EvaluationReport[]>(
+		[],
+	);
 	const [datasetRows, setDatasetRows] = useState<Record<string, RowPage>>({});
 	const [rowsLoading, setRowsLoading] = useState("");
 	const [componentsLoading, setComponentsLoading] = useState(true);
 	const [snapshotsLoading, setSnapshotsLoading] = useState(true);
 	const [attemptsLoading, setAttemptsLoading] = useState(true);
 	const [datasetsLoading, setDatasetsLoading] = useState(false);
+	const [evaluationsLoading, setEvaluationsLoading] = useState(false);
 	const [attempts, setAttempts] = useState<Attempt[]>([]);
 	const [compatibleFactors, setCompatibleFactors] = useState<
 		Record<string, string[]>
@@ -101,6 +165,11 @@ export function ModelsPage() {
 	const [busy, setBusy] = useState(false);
 	const [evidence, setEvidence] = useState("");
 	const [activeAttempt, setActiveAttempt] = useState("");
+	const [evaluationDataset, setEvaluationDataset] = useState("");
+	const [evaluationSignal, setEvaluationSignal] = useState("");
+	const [evaluationStart, setEvaluationStart] = useState(0);
+	const [evaluationEnd, setEvaluationEnd] = useState(0);
+	const [stabilityWindowBars, setStabilityWindowBars] = useState(20);
 	const [tab, setTab] = useHistoryTab("models", "create");
 	const refreshComponents = useCallback(
 		async (isActive: () => boolean = () => true) => {
@@ -178,6 +247,23 @@ export function ModelsPage() {
 		},
 		[userId],
 	);
+	const refreshEvaluations = useCallback(
+		async (isActive: () => boolean = () => true) => {
+			if (!userId) return;
+			setEvaluationsLoading(true);
+			await afterPaint();
+			if (!isActive()) return;
+			try {
+				const items = await invoke<EvaluationReport[]>("forecast_evaluation_list", {
+					userId,
+				});
+				if (isActive()) setEvaluationReports(items);
+			} finally {
+				if (isActive()) setEvaluationsLoading(false);
+			}
+		},
+		[userId],
+	);
 	const refresh = useCallback(
 		(isActive: () => boolean = () => true) =>
 			Promise.all([
@@ -215,15 +301,39 @@ export function ModelsPage() {
 		};
 	}, [refreshAttempts]);
 	useEffect(() => {
-		if (tab !== "datasets") return;
+		if (tab !== "datasets" && tab !== "evaluations") return;
 		let active = true;
-		void refreshDatasets(() => active).catch(
-			(error) => active && setEvidence(formatModelError(error)),
-		);
+		void Promise.all([
+			refreshDatasets(() => active),
+			tab === "evaluations" ? refreshEvaluations(() => active) : Promise.resolve(),
+		]).catch((error) => active && setEvidence(formatModelError(error)));
 		return () => {
 			active = false;
 		};
-	}, [refreshDatasets, tab]);
+	}, [refreshDatasets, refreshEvaluations, tab]);
+	useEffect(() => {
+		if (!datasets.length || evaluationDataset) return;
+		const dataset = datasets.find((item) =>
+			datasetOutputs(item).some(
+				(output) =>
+					output.predictionKind.kind === "expected-value" &&
+					output.forecastTarget.target === "future-close-return" &&
+					output.valueScale.kind === "native",
+			),
+		);
+		if (!dataset) return;
+		const bounds = datasetEvaluationBounds(dataset);
+		const signal = datasetOutputs(dataset).find(
+			(output) =>
+				output.predictionKind.kind === "expected-value" &&
+				output.forecastTarget.target === "future-close-return" &&
+				output.valueScale.kind === "native",
+		);
+		setEvaluationDataset(dataset.datasetId);
+		setEvaluationSignal(signal?.name ?? "");
+		setEvaluationStart(bounds.start);
+		setEvaluationEnd(bounds.end);
+	}, [datasets, evaluationDataset]);
 	useEffect(() => {
 		setCompatibleFactors({});
 		if (!userId || !model) return;
@@ -337,7 +447,10 @@ export function ModelsPage() {
 				defaultPath: `${datasetId}.adaq-signals`,
 				filters: [{ name: "AdaQ Signals", extensions: ["adaq-signals"] }],
 			});
-			if (!path) return;
+			if (!path) {
+				setEvidence("Signal Dataset export cancelled.");
+				return;
+			}
 			const file = await open(path, { write: true, createNew: true });
 			try {
 				await file.write(new Uint8Array(archive));
@@ -384,6 +497,80 @@ export function ModelsPage() {
 			setBusy(false);
 		}
 	};
+	const createEvaluation = async () => {
+		if (!userId || !evaluationDataset || !evaluationSignal || busy) return;
+		setBusy(true);
+		setEvidence("Evaluating aligned predictions and realized labels…");
+		await afterPaint();
+		try {
+			const dataset = datasets.find(
+				(item) => item.datasetId === evaluationDataset,
+			);
+			const signal = datasetOutputs(dataset).find(
+				(output) => output.name === evaluationSignal,
+			);
+			if (!dataset || !signal)
+				throw new Error("Select compatible evaluation evidence.");
+			const report = await invoke<EvaluationReport>("forecast_evaluation_create", {
+				request: evaluationRequest(
+					userId,
+					evaluationDataset,
+					dataset.snapshotId,
+					evaluationSignal,
+					signal.horizonBars,
+					evaluationStart,
+					evaluationEnd,
+					stabilityWindowBars,
+				),
+			});
+			setEvidence(`Forecast Evaluation Report ${report.reportId} created.`);
+			await refreshEvaluations();
+		} catch (error) {
+			setEvidence(formatModelError(error));
+		} finally {
+			setBusy(false);
+		}
+	};
+	const exportEvaluation = async (
+		reportId: string,
+		format: "json" | "markdown",
+	) => {
+		if (!userId || busy) return;
+		setBusy(true);
+		setEvidence(`Preparing authoritative ${format} export…`);
+		await afterPaint();
+		try {
+			const content = await invoke<string>("forecast_evaluation_export", {
+				reportId,
+				userId,
+				format,
+			});
+			const path = await save({
+				defaultPath: evaluationExportFilename(reportId, format),
+				filters: [
+					{
+						name: format === "json" ? "JSON" : "Markdown",
+						extensions: [format === "json" ? "json" : "md"],
+					},
+				],
+			});
+			if (!path) {
+				setEvidence("Forecast Evaluation export cancelled.");
+				return;
+			}
+			const file = await open(path, { write: true, createNew: true });
+			try {
+				await file.write(new TextEncoder().encode(content));
+			} finally {
+				await file.close();
+			}
+			setEvidence(`Forecast Evaluation Report exported to ${path}`);
+		} catch (error) {
+			setEvidence(formatModelError(error));
+		} finally {
+			setBusy(false);
+		}
+	};
 	return (
 		<main className="mx-auto w-full max-w-6xl p-4 sm:p-6" aria-busy={busy}>
 			<header className="mb-6">
@@ -393,9 +580,10 @@ export function ModelsPage() {
 				</p>
 			</header>
 			<Tabs value={tab} onValueChange={setTab}>
-				<TabsList>
+				<TabsList className="max-w-full overflow-x-auto">
 					<TabsTrigger value="create">Create Dataset</TabsTrigger>
 					<TabsTrigger value="datasets">Signal Datasets</TabsTrigger>
+					<TabsTrigger value="evaluations">Evaluation Reports</TabsTrigger>
 				</TabsList>
 				<TabsContent value="create">
 					<Card>
@@ -730,7 +918,279 @@ export function ModelsPage() {
 						</CardContent>
 					</Card>
 				</TabsContent>
+				<TabsContent value="evaluations">
+					<div className="grid gap-4 lg:grid-cols-[minmax(18rem,24rem)_1fr]">
+						<Card>
+							<CardHeader>
+								<CardTitle>Create Forecast Evaluation</CardTitle>
+							</CardHeader>
+							<CardContent className="grid gap-3">
+								<label className="grid gap-1 text-sm">
+									Signal Dataset
+									<select
+										className="min-w-0 rounded border bg-background p-2"
+										value={evaluationDataset}
+										onChange={(event) => {
+											const dataset = datasets.find(
+												(item) => item.datasetId === event.target.value,
+											);
+											const outputs = datasetOutputs(dataset).filter(
+												(output) =>
+													output.predictionKind.kind === "expected-value" &&
+													output.forecastTarget.target === "future-close-return" &&
+													output.valueScale.kind === "native",
+											);
+											const bounds = datasetEvaluationBounds(dataset);
+											setEvaluationDataset(event.target.value);
+											setEvaluationSignal(outputs[0]?.name ?? "");
+											setEvaluationStart(bounds.start);
+											setEvaluationEnd(bounds.end);
+										}}
+									>
+										<option value="">Select compatible evidence</option>
+										{datasets
+											.filter((item) =>
+												datasetOutputs(item).some(
+													(output) =>
+														output.predictionKind.kind === "expected-value" &&
+														output.forecastTarget.target === "future-close-return" &&
+														output.valueScale.kind === "native",
+												),
+											)
+											.map((item) => (
+												<option key={item.datasetId} value={item.datasetId}>
+													{item.code} {item.interval} — {item.datasetId}
+												</option>
+											))}
+									</select>
+								</label>
+								<label className="grid gap-1 text-sm">
+									Expected Value Signal
+									<select
+										className="rounded border bg-background p-2"
+										value={evaluationSignal}
+										onChange={(event) => setEvaluationSignal(event.target.value)}
+									>
+										{datasetOutputs(
+											datasets.find((item) => item.datasetId === evaluationDataset),
+										)
+											.filter(
+												(output) =>
+													output.predictionKind.kind === "expected-value" &&
+													output.forecastTarget.target === "future-close-return" &&
+													output.valueScale.kind === "native",
+											)
+											.map((output) => (
+												<option key={output.name} value={output.name}>
+													{output.name} · horizon {output.horizonBars}
+												</option>
+											))}
+									</select>
+								</label>
+								<label className="grid gap-1 text-sm">
+									Evaluation start (ms)
+									<input
+										type="number"
+										className="rounded border bg-background p-2"
+										value={evaluationStart}
+										onChange={(event) => setEvaluationStart(event.target.valueAsNumber)}
+									/>
+								</label>
+								<label className="grid gap-1 text-sm">
+									Evaluation end (ms)
+									<input
+										type="number"
+										className="rounded border bg-background p-2"
+										value={evaluationEnd}
+										onChange={(event) => setEvaluationEnd(event.target.valueAsNumber)}
+									/>
+								</label>
+								<label className="grid gap-1 text-sm">
+									Stability window (Bars)
+									<input
+										type="number"
+										min={1}
+										className="rounded border bg-background p-2"
+										value={stabilityWindowBars}
+										onChange={(event) =>
+											setStabilityWindowBars(event.target.valueAsNumber)
+										}
+									/>
+								</label>
+								<Button
+									loading={busy}
+									loadingText="Evaluating…"
+									disabled={
+										busy ||
+										!evaluationDataset ||
+										!evaluationSignal ||
+										!Number.isFinite(evaluationStart) ||
+										!Number.isFinite(evaluationEnd) ||
+										evaluationStart > evaluationEnd ||
+										!Number.isInteger(stabilityWindowBars) ||
+										stabilityWindowBars < 1
+									}
+									onClick={() => void createEvaluation()}
+								>
+									Create Report
+								</Button>
+								{evidence && (
+									<pre
+										className="max-h-40 overflow-auto rounded bg-muted p-3 text-xs whitespace-pre-wrap"
+										aria-live="polite"
+									>
+										{evidence}
+									</pre>
+								)}
+								<p className="text-xs text-muted-foreground">
+									Forecast accuracy only. These metrics are not Strategy profitability,
+									fees, turnover, or a trading recommendation.
+								</p>
+							</CardContent>
+						</Card>
+						<div className="grid min-w-0 gap-3">
+							{evaluationsLoading ? (
+								<LoadingState label="Loading Forecast Evaluation Reports…" />
+							) : evaluationReports.length ? (
+								evaluationReports.map((report) => (
+									<Card key={report.reportId}>
+										<CardHeader>
+											<CardTitle className="break-all text-base">
+												{evaluationReportSummary(report)}
+											</CardTitle>
+										</CardHeader>
+										<CardContent className="grid gap-3 text-sm">
+											{report.evidenceState.summary !== "out-of-sample" && (
+												<p
+													className="rounded border border-amber-500/50 bg-amber-500/10 p-2"
+													role="alert"
+												>
+													{report.evidenceState.summary === "overlapping"
+														? "Known training, fitting, or normalization evidence overlaps this evaluation window."
+														: "Complete training, fitting, or normalization boundaries are unavailable; this report is not proven out-of-sample."}
+												</p>
+											)}
+											<div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+												<EvaluationMetric
+													label="MAE"
+													value={String(report.metrics.mae)}
+													help="Mean absolute error in the Forecast Target's native simple-return units; lower is better; range starts at zero."
+												/>
+												<EvaluationMetric
+													label="RMSE"
+													value={String(report.metrics.rmse)}
+													help="Root mean squared error in Target-native units; lower is better and larger errors receive more weight."
+												/>
+												<EvaluationMetric
+													label="Mean bias"
+													value={String(report.metrics.meanBias)}
+													help="Mean prediction minus realized Target; zero is unbiased, with no universal investment-quality threshold."
+												/>
+												<EvaluationMetric
+													label="Pearson correlation"
+													value={
+														report.metrics.pearsonCorrelation == null
+															? "Unavailable"
+															: String(report.metrics.pearsonCorrelation)
+													}
+													help="Linear correlation of aligned predictions and realized labels; range -1 to 1 and undefined for insufficient or constant evidence."
+												/>
+											</div>
+											<details>
+												<summary className="cursor-pointer font-medium">Evidence</summary>
+												<pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap select-text">
+													{JSON.stringify(
+														{
+															metrics: report.metrics,
+															stabilityWindows: report.stabilityWindows,
+															unavailableRows: report.unavailableRows,
+														},
+														null,
+														2,
+													)}
+												</pre>
+											</details>
+											<details>
+												<summary className="cursor-pointer font-medium">Provenance</summary>
+												<pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap select-text">
+													{JSON.stringify(
+														{
+															reportId: report.reportId,
+															datasetId: report.datasetId,
+															snapshotId: report.snapshotId,
+															signalContract: report.signalContract,
+															producerSegments: report.producerSegments,
+															evidenceState: report.evidenceState,
+															trustState: report.trustState,
+															metricVersions: report.metricVersions,
+															engineIdentity: report.engineIdentity,
+															schemaIdentity: report.schemaIdentity,
+															datasetParquetSha256: report.datasetParquetSha256,
+														},
+														null,
+														2,
+													)}
+												</pre>
+											</details>
+											<div className="flex flex-wrap gap-2">
+												<Button
+													variant="outline"
+													disabled={busy}
+													onClick={() => void exportEvaluation(report.reportId, "json")}
+												>
+													Export JSON
+												</Button>
+												<Button
+													variant="outline"
+													disabled={busy}
+													onClick={() => void exportEvaluation(report.reportId, "markdown")}
+												>
+													Export Markdown
+												</Button>
+											</div>
+										</CardContent>
+									</Card>
+								))
+							) : (
+								<p className="rounded border p-4 text-sm text-muted-foreground">
+									No Forecast Evaluation Reports yet. Choose compatible immutable
+									Expected Value evidence to create one.
+								</p>
+							)}
+						</div>
+					</div>
+				</TabsContent>
 			</Tabs>
 		</main>
+	);
+}
+
+function EvaluationMetric({
+	label,
+	value,
+	help,
+}: {
+	label: string;
+	value: string;
+	help: string;
+}) {
+	return (
+		<div className="rounded border p-3">
+			<div className="flex items-center gap-1 text-muted-foreground">
+				<span>{label}</span>
+				<details className="relative inline-block">
+					<summary
+						className="cursor-help list-none rounded px-1 underline decoration-dotted"
+						aria-label={`${label} definition`}
+					>
+						ⓘ
+					</summary>
+					<p className="absolute right-0 z-10 mt-1 w-64 rounded border bg-popover p-2 text-xs text-popover-foreground shadow">
+						{help}
+					</p>
+				</details>
+			</div>
+			<p className="break-all font-medium select-text">{value}</p>
+		</div>
 	);
 }

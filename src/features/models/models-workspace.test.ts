@@ -5,6 +5,9 @@ import {
 	formatModelError,
 	signalRowPageRequest,
 	signalRowSummary,
+	evaluationRequest,
+	evaluationReportSummary,
+	evaluationExportFilename,
 } from "./models-workspace";
 
 const component = (value: Partial<LibraryComponent>): LibraryComponent => ({
@@ -91,4 +94,32 @@ test("maps persisted Dataset statuses to readable inspection evidence", () => {
 	expect(
 		datasetStatusSummary({ "missing-input": 2, "model-warmup": 4, present: 8 }),
 	).toBe("missing-input: 2, model-warmup: 4, present: 8");
+});
+
+test("maps Forecast Evaluation requests, summaries, and authoritative filenames", () => {
+	expect(
+		evaluationRequest("user", "dataset", "snapshot", "return", 1, 10, 20, 5),
+	).toEqual({
+		userId: "user",
+		datasetId: "dataset",
+		snapshotId: "snapshot",
+		signalName: "return",
+		horizonBars: 1,
+		evaluationStartTimeMs: 10,
+		evaluationEndTimeMs: 20,
+		stabilityWindowBars: 5,
+	});
+	expect(
+		evaluationReportSummary({
+			reportId: "report",
+			evidenceState: { summary: "unknown" },
+			metrics: { alignedCount: 8, coverage: 0.8, missingness: 0.2 },
+		}),
+	).toBe("8 aligned · 80.00% coverage · 20.00% missing · unknown · report");
+	expect(evaluationExportFilename("report", "json")).toBe(
+		"forecast-evaluation-report-report.json",
+	);
+	expect(evaluationExportFilename("report", "markdown")).toBe(
+		"forecast-evaluation-report-report.md",
+	);
 });

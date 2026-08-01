@@ -54,3 +54,38 @@ export function signalRowSummary(row: {
 }) {
 	return `${row.predictionTimeMs} · available ${row.availableAtMs} · ${row.status} · ${row.values?.join(", ") ?? row.unavailableReason ?? "unavailable"}`;
 }
+
+export const evaluationRequest = (
+	userId: string,
+	datasetId: string,
+	snapshotId: string,
+	signalName: string,
+	horizonBars: number,
+	evaluationStartTimeMs: number,
+	evaluationEndTimeMs: number,
+	stabilityWindowBars: number,
+) => ({
+	userId,
+	datasetId,
+	snapshotId,
+	signalName,
+	horizonBars,
+	evaluationStartTimeMs,
+	evaluationEndTimeMs,
+	stabilityWindowBars,
+});
+
+export function evaluationReportSummary(report: {
+	reportId: string;
+	evidenceState: { summary: string };
+	metrics: { alignedCount: number; coverage: number; missingness: number };
+}) {
+	return `${report.metrics.alignedCount} aligned · ${(report.metrics.coverage * 100).toFixed(2)}% coverage · ${(report.metrics.missingness * 100).toFixed(2)}% missing · ${report.evidenceState.summary} · ${report.reportId}`;
+}
+
+export function evaluationExportFilename(
+	reportId: string,
+	format: "json" | "markdown",
+) {
+	return `forecast-evaluation-report-${reportId}.${format === "json" ? "json" : "md"}`;
+}

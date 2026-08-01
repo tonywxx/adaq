@@ -26,7 +26,9 @@ pub enum ComponentKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ModelScope { SingleInstrument }
+pub enum ModelScope {
+    SingleInstrument,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
@@ -34,23 +36,40 @@ pub enum PredictionKind {
     Score,
     Probability,
     ExpectedValue,
-    Custom { id: String, version: Version, description: String },
+    Custom {
+        id: String,
+        version: Version,
+        description: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ForecastTargetValueType { Binary, Continuous }
+pub enum ForecastTargetValueType {
+    Binary,
+    Continuous,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ForecastTarget {
-    Builtin { target: BuiltinForecastTarget },
-    Custom { id: String, version: Version, description: String, value_type: ForecastTargetValueType },
+    Builtin {
+        target: BuiltinForecastTarget,
+    },
+    Custom {
+        id: String,
+        version: Version,
+        description: String,
+        value_type: ForecastTargetValueType,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum BuiltinForecastTarget { FutureCloseReturn, FutureCloseUp }
+pub enum BuiltinForecastTarget {
+    FutureCloseReturn,
+    FutureCloseUp,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
@@ -58,8 +77,16 @@ pub enum ForecastValueScale {
     Probability,
     Native,
     Percentile,
-    ZScore { method: String },
-    Custom { id: String, version: Version, description: String, minimum: Option<f64>, maximum: Option<f64> },
+    ZScore {
+        method: String,
+    },
+    Custom {
+        id: String,
+        version: Version,
+        description: String,
+        minimum: Option<f64>,
+        maximum: Option<f64>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -376,16 +403,28 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
                 "Strategy manifests cannot declare Factor outputs".into(),
             ));
         }
-        ComponentKind::Model if manifest.feature_slots.is_empty() || !manifest.output_names.is_empty() => {
+        ComponentKind::Model
+            if manifest.feature_slots.is_empty() || !manifest.output_names.is_empty() =>
+        {
             return Err(PackageError("Model manifests require Feature Slots and use modelOutputs instead of Factor outputs".into()));
         }
-        ComponentKind::Model if manifest.model_scope != Some(ModelScope::SingleInstrument)
-            || manifest.model_artifact.is_none() => {
-            return Err(PackageError("Model manifests require Single-Instrument scope and an embedded Model Artifact".into()));
+        ComponentKind::Model
+            if manifest.model_scope != Some(ModelScope::SingleInstrument)
+                || manifest.model_artifact.is_none() =>
+        {
+            return Err(PackageError(
+                "Model manifests require Single-Instrument scope and an embedded Model Artifact"
+                    .into(),
+            ));
         }
-        ComponentKind::Factor | ComponentKind::Strategy if manifest.model_scope.is_some()
-            || !manifest.model_outputs.is_empty() || manifest.model_artifact.is_some() => {
-            return Err(PackageError("Only Model manifests may declare Model contracts".into()));
+        ComponentKind::Factor | ComponentKind::Strategy
+            if manifest.model_scope.is_some()
+                || !manifest.model_outputs.is_empty()
+                || manifest.model_artifact.is_some() =>
+        {
+            return Err(PackageError(
+                "Only Model manifests may declare Model contracts".into(),
+            ));
         }
         _ => {}
     }
@@ -454,50 +493,130 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
 }
 
 fn validate_model_contract(manifest: &ComponentManifest) -> Result<(), PackageError> {
-    if manifest.kind != ComponentKind::Model { return Ok(()); }
+    if manifest.kind != ComponentKind::Model {
+        return Ok(());
+    }
     let artifact = manifest.model_artifact.as_ref().expect("validated above");
     if artifact.sha256 != manifest.wasm_sha256 {
-        return Err(PackageError("Model Artifact identity must match the embedded component.wasm SHA-256".into()));
+        return Err(PackageError(
+            "Model Artifact identity must match the embedded component.wasm SHA-256".into(),
+        ));
     }
     validate_model_outputs(&manifest.model_outputs)
 }
 
 pub fn validate_model_outputs(outputs: &[ModelOutput]) -> Result<(), PackageError> {
     if !(1..=64).contains(&outputs.len()) {
-        return Err(PackageError("Model Components must declare one through 64 outputs".into()));
+        return Err(PackageError(
+            "Model Components must declare one through 64 outputs".into(),
+        ));
     }
-    unique_identifiers(outputs.iter().map(|output| output.name.as_str()), "Model output")?;
+    unique_identifiers(
+        outputs.iter().map(|output| output.name.as_str()),
+        "Model output",
+    )?;
     for output in outputs {
         let target_type = match output.forecast_target {
-            ForecastTarget::Builtin { target: BuiltinForecastTarget::FutureCloseUp } => ForecastTargetValueType::Binary,
-            ForecastTarget::Builtin { target: BuiltinForecastTarget::FutureCloseReturn } => ForecastTargetValueType::Continuous,
+            ForecastTarget::Builtin {
+                target: BuiltinForecastTarget::FutureCloseUp,
+            } => ForecastTargetValueType::Binary,
+            ForecastTarget::Builtin {
+                target: BuiltinForecastTarget::FutureCloseReturn,
+            } => ForecastTargetValueType::Continuous,
             ForecastTarget::Custom { value_type, .. } => value_type,
         };
-        if output.horizon_bars == 0 { return Err(PackageError("Model output horizonBars must be positive".into())); }
-        let custom_identity = |id: &str, description: &str| is_lower_kebab(id) && !description.trim().is_empty();
-        match (&output.prediction_kind, &output.value_scale) {
-            (PredictionKind::Probability, _) if target_type != ForecastTargetValueType::Binary => return Err(PackageError("Probability requires a Binary Forecast Target".into())),
-            (PredictionKind::ExpectedValue, _) if target_type != ForecastTargetValueType::Continuous => return Err(PackageError("Expected Value requires a Continuous Forecast Target".into())),
-            (PredictionKind::Probability, ForecastValueScale::Probability) => {},
-            (PredictionKind::Probability, _) => return Err(PackageError("Probability requires the Probability Value Scale".into())),
-            (PredictionKind::ExpectedValue, ForecastValueScale::Native) => {},
-            (PredictionKind::ExpectedValue, _) => return Err(PackageError("Expected Value requires the native Forecast Value Scale".into())),
-            (PredictionKind::Score, ForecastValueScale::Percentile | ForecastValueScale::ZScore { .. } | ForecastValueScale::Custom { .. }) => {},
-            (PredictionKind::Score, _) => return Err(PackageError("Score requires Percentile, Z-score, or Custom Forecast Value Scale".into())),
-            (PredictionKind::Custom { id, description, .. }, ForecastValueScale::Custom { .. }) if custom_identity(id, description) => {},
-            (PredictionKind::Custom { .. }, _) => return Err(PackageError("Custom Prediction Kind requires an identified Custom Forecast Value Scale".into())),
+        if output.horizon_bars == 0 {
+            return Err(PackageError(
+                "Model output horizonBars must be positive".into(),
+            ));
         }
-        if let ForecastTarget::Custom { id, description, .. } = &output.forecast_target {
-            if !custom_identity(id, description) { return Err(PackageError("Custom Forecast Target identity is invalid".into())); }
+        let custom_identity =
+            |id: &str, description: &str| is_lower_kebab(id) && !description.trim().is_empty();
+        match (&output.prediction_kind, &output.value_scale) {
+            (PredictionKind::Probability, _) if target_type != ForecastTargetValueType::Binary => {
+                return Err(PackageError(
+                    "Probability requires a Binary Forecast Target".into(),
+                ));
+            }
+            (PredictionKind::ExpectedValue, _)
+                if target_type != ForecastTargetValueType::Continuous =>
+            {
+                return Err(PackageError(
+                    "Expected Value requires a Continuous Forecast Target".into(),
+                ));
+            }
+            (PredictionKind::Probability, ForecastValueScale::Probability) => {}
+            (PredictionKind::Probability, _) => {
+                return Err(PackageError(
+                    "Probability requires the Probability Value Scale".into(),
+                ));
+            }
+            (PredictionKind::ExpectedValue, ForecastValueScale::Native) => {}
+            (PredictionKind::ExpectedValue, _) => {
+                return Err(PackageError(
+                    "Expected Value requires the native Forecast Value Scale".into(),
+                ));
+            }
+            (
+                PredictionKind::Score,
+                ForecastValueScale::Percentile
+                | ForecastValueScale::ZScore { .. }
+                | ForecastValueScale::Custom { .. },
+            ) => {}
+            (PredictionKind::Score, _) => {
+                return Err(PackageError(
+                    "Score requires Percentile, Z-score, or Custom Forecast Value Scale".into(),
+                ));
+            }
+            (
+                PredictionKind::Custom {
+                    id, description, ..
+                },
+                ForecastValueScale::Custom { .. },
+            ) if custom_identity(id, description) => {}
+            (PredictionKind::Custom { .. }, _) => {
+                return Err(PackageError(
+                    "Custom Prediction Kind requires an identified Custom Forecast Value Scale"
+                        .into(),
+                ));
+            }
+        }
+        if let ForecastTarget::Custom {
+            id, description, ..
+        } = &output.forecast_target
+        {
+            if !custom_identity(id, description) {
+                return Err(PackageError(
+                    "Custom Forecast Target identity is invalid".into(),
+                ));
+            }
         }
         match &output.value_scale {
-            ForecastValueScale::ZScore { method } if method.trim().is_empty() => return Err(PackageError("Z-score Forecast Value Scale requires a method".into())),
-            ForecastValueScale::Custom { id, description, minimum, maximum, .. } => {
-                if !custom_identity(id, description) || minimum.is_some_and(|value| !value.is_finite()) || maximum.is_some_and(|value| !value.is_finite()) || minimum.zip(*maximum).is_some_and(|(minimum, maximum)| minimum > maximum) {
-                    return Err(PackageError("Custom Forecast Value Scale is invalid".into()));
+            ForecastValueScale::ZScore { method } if method.trim().is_empty() => {
+                return Err(PackageError(
+                    "Z-score Forecast Value Scale requires a method".into(),
+                ));
+            }
+            ForecastValueScale::Custom {
+                id,
+                description,
+                minimum,
+                maximum,
+                ..
+            } => {
+                if !custom_identity(id, description)
+                    || minimum.is_some_and(|value| !value.is_finite())
+                    || maximum.is_some_and(|value| !value.is_finite())
+                    || minimum
+                        .zip(*maximum)
+                        .is_some_and(|(minimum, maximum)| minimum > maximum)
+                {
+                    return Err(PackageError(
+                        "Custom Forecast Value Scale is invalid".into(),
+                    ));
                 }
             }
-            _ => {},
+            _ => {}
         }
     }
     Ok(())
@@ -749,20 +868,34 @@ mod tests {
         let mut model = manifest();
         model.kind = ComponentKind::Model;
         model.output_names.clear();
-        model.feature_slots = vec![FeatureSlotDefinition { name: "close".into(), source: FeatureSlotSource::Market { field: MarketField::Close } }];
+        model.feature_slots = vec![FeatureSlotDefinition {
+            name: "close".into(),
+            source: FeatureSlotSource::Market {
+                field: MarketField::Close,
+            },
+        }];
         model.model_scope = Some(ModelScope::SingleInstrument);
         model.model_artifact = Some(ModelArtifact {
             sha256: sha256(wasm),
             provenance: BTreeMap::new(),
         });
         model.model_outputs = vec![ModelOutput {
-            name: "close-up".into(), prediction_kind: PredictionKind::Probability,
-            forecast_target: ForecastTarget::Builtin { target: BuiltinForecastTarget::FutureCloseUp },
-            value_scale: ForecastValueScale::Probability, horizon_bars: 1,
+            name: "close-up".into(),
+            prediction_kind: PredictionKind::Probability,
+            forecast_target: ForecastTarget::Builtin {
+                target: BuiltinForecastTarget::FutureCloseUp,
+            },
+            value_scale: ForecastValueScale::Probability,
+            horizon_bars: 1,
         }];
         model.wasm_sha256 = sha256(wasm);
         assert!(validate_manifest(&model, wasm).is_ok());
-        model.model_outputs[0].forecast_target = ForecastTarget::Builtin { target: BuiltinForecastTarget::FutureCloseReturn };
-        assert_eq!(validate_manifest(&model, wasm).unwrap_err().0, "Probability requires a Binary Forecast Target");
+        model.model_outputs[0].forecast_target = ForecastTarget::Builtin {
+            target: BuiltinForecastTarget::FutureCloseReturn,
+        };
+        assert_eq!(
+            validate_manifest(&model, wasm).unwrap_err().0,
+            "Probability requires a Binary Forecast Target"
+        );
     }
 }

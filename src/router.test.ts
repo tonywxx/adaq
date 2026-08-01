@@ -31,7 +31,7 @@ test("Models switches immediately and keeps loading inside its controls", () => 
 	expect(routerSource).toMatch(/path: "\/models",\s*component: ModelsPage/);
 	expect(routerSource).not.toMatch(/const ModelsPage = lazy/);
 	expect(pageSource).toMatch(
-		/if \(tab !== "datasets"\) return;[\s\S]*?refreshDatasets\(\)/,
+		/if \(tab !== "datasets" && tab !== "evaluations"\) return;[\s\S]*?refreshDatasets/,
 	);
 	expect(pageSource).toMatch(/Loading Model Packages/);
 	expect(pageSource).toMatch(/Loading Market Data Snapshots/);
