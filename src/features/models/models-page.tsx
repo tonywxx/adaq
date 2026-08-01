@@ -15,6 +15,7 @@ import {
 	evaluationExportFilename,
 	evaluationReportSummary,
 	formatModelError,
+	isCompatibleEvaluationSignal,
 	signalRowPageRequest,
 	signalRowSummary,
 } from "./models-workspace";
@@ -76,7 +77,7 @@ type RowPage = {
 type ModelOutput = {
 	name: string;
 	predictionKind: { kind: string };
-	forecastTarget: { kind: string; target?: string };
+	forecastTarget: { kind: string; target?: string; valueType?: string };
 	valueScale: { kind: string };
 	horizonBars: number;
 };
@@ -102,6 +103,11 @@ type EvaluationReport = {
 		rmse?: number;
 		meanBias?: number;
 		pearsonCorrelation?: number;
+		brierScore?: number;
+		logLoss?: number;
+		rocAuc?: number;
+		calibration?: Array<Record<string, unknown>>;
+		undefinedMetrics?: Record<string, string>;
 	};
 	stabilityWindows: Array<Record<string, unknown>>;
 	evidenceState: { summary: string; segmentStates: string[] };
@@ -112,12 +118,9 @@ type EvaluationReport = {
 	engineIdentity: Record<string, string>;
 	schemaIdentity: string;
 	datasetParquetSha256: string;
+	componentLock: Array<{ alias: string; archiveSha256: string }>;
+	featurePlanHash: string;
 };
-
-const isExpectedValueReturn = (output: ModelOutput) =>
-	output.predictionKind.kind === "expected-value" &&
-	output.forecastTarget.target === "future-close-return" &&
-	output.valueScale.kind === "native";
 
 const metricValue = (value?: number) =>
 	value == null ? "Unavailable" : String(value);
@@ -321,11 +324,11 @@ export function ModelsPage() {
 	useEffect(() => {
 		if (!datasets.length || evaluationDataset) return;
 		const dataset = datasets.find((item) =>
-			datasetOutputs(item).some(isExpectedValueReturn),
+			datasetOutputs(item).some(isCompatibleEvaluationSignal),
 		);
 		if (!dataset) return;
 		const bounds = datasetEvaluationBounds(dataset);
-		const signal = datasetOutputs(dataset).find(isExpectedValueReturn);
+		const signal = datasetOutputs(dataset).find(isCompatibleEvaluationSignal);
 		setEvaluationDataset(dataset.datasetId);
 		setEvaluationSignal(signal?.name ?? "");
 		setEvaluationStart(bounds.start);
@@ -932,7 +935,7 @@ export function ModelsPage() {
 												(item) => item.datasetId === event.target.value,
 											);
 											const outputs = datasetOutputs(dataset).filter(
-												isExpectedValueReturn,
+												isCompatibleEvaluationSignal,
 											);
 											const bounds = datasetEvaluationBounds(dataset);
 											setEvaluationDataset(event.target.value);
@@ -943,7 +946,9 @@ export function ModelsPage() {
 									>
 										<option value="">Select compatible evidence</option>
 										{datasets
-											.filter((item) => datasetOutputs(item).some(isExpectedValueReturn))
+											.filter((item) =>
+												datasetOutputs(item).some(isCompatibleEvaluationSignal),
+											)
 											.map((item) => (
 												<option key={item.datasetId} value={item.datasetId}>
 													{item.code} {item.interval} — {item.datasetId}
@@ -952,7 +957,7 @@ export function ModelsPage() {
 									</select>
 								</label>
 								<label className="grid gap-1 text-sm">
-									Expected Value Signal
+									Forecast Signal
 									<select
 										className="rounded border bg-background p-2"
 										value={evaluationSignal}
@@ -961,7 +966,7 @@ export function ModelsPage() {
 										{datasetOutputs(
 											datasets.find((item) => item.datasetId === evaluationDataset),
 										)
-											.filter(isExpectedValueReturn)
+											.filter(isCompatibleEvaluationSignal)
 											.map((output) => (
 												<option key={output.name} value={output.name}>
 													{output.name} · horizon {output.horizonBars}
@@ -1053,30 +1058,61 @@ export function ModelsPage() {
 												</p>
 											)}
 											<div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-												<EvaluationMetric
-													label="MAE"
-													value={metricValue(report.metrics.mae)}
-													help="Mean absolute error in the Forecast Target's native simple-return units; lower is better; range starts at zero."
-												/>
-												<EvaluationMetric
-													label="RMSE"
-													value={metricValue(report.metrics.rmse)}
-													help="Root mean squared error in Target-native units; lower is better and larger errors receive more weight."
-												/>
-												<EvaluationMetric
-													label="Mean bias"
-													value={metricValue(report.metrics.meanBias)}
-													help="Mean prediction minus realized Target; zero is unbiased, with no universal investment-quality threshold."
-												/>
-												<EvaluationMetric
-													label="Pearson correlation"
-													value={
-														report.metrics.pearsonCorrelation == null
-															? "Unavailable"
-															: metricValue(report.metrics.pearsonCorrelation)
-													}
-													help="Linear correlation of aligned predictions and realized labels; range -1 to 1 and undefined for insufficient or constant evidence."
-												/>
+												{report.signalContract.predictionKind.kind === "probability" ? (
+													<>
+														<EvaluationMetric
+															label="Brier Score"
+															value={metricValue(report.metrics.brierScore)}
+															help="Mean squared error between probability and the binary realized label; range 0 to 1 and lower is better, without a universal quality threshold."
+														/>
+														<EvaluationMetric
+															label="Log Loss"
+															value={metricValue(report.metrics.logLoss)}
+															help="Mean binary cross-entropy using probabilities clipped to 1e-15 through 1 - 1e-15; lower is better and confident errors are penalized more."
+														/>
+														<EvaluationMetric
+															label="ROC AUC"
+															value={metricValue(report.metrics.rocAuc)}
+															help="Probability that a positive label ranks above a negative label, with ties worth one half; range 0 to 1 and undefined because it requires both realized classes."
+														/>
+														<EvaluationMetric
+															label="Calibration"
+															value={
+																report.metrics.calibration
+																	? `${report.metrics.calibration.filter((bucket) => bucket.count).length} populated buckets`
+																	: "Unavailable"
+															}
+															help="Ten fixed equal-width probability buckets compare mean prediction with observed positive frequency; empty buckets remain explicit."
+														/>
+													</>
+												) : (
+													<>
+														<EvaluationMetric
+															label="MAE"
+															value={metricValue(report.metrics.mae)}
+															help="Mean absolute error in the Forecast Target's native simple-return units; lower is better; range starts at zero."
+														/>
+														<EvaluationMetric
+															label="RMSE"
+															value={metricValue(report.metrics.rmse)}
+															help="Root mean squared error in Target-native units; lower is better and larger errors receive more weight."
+														/>
+														<EvaluationMetric
+															label="Mean bias"
+															value={metricValue(report.metrics.meanBias)}
+															help="Mean prediction minus realized Target; zero is unbiased, with no universal investment-quality threshold."
+														/>
+														<EvaluationMetric
+															label="Pearson correlation"
+															value={
+																report.metrics.pearsonCorrelation == null
+																	? "Unavailable"
+																	: metricValue(report.metrics.pearsonCorrelation)
+															}
+															help="Linear correlation of aligned predictions and realized labels; range -1 to 1 and undefined for insufficient or constant evidence."
+														/>
+													</>
+												)}
 											</div>
 											<details>
 												<summary className="cursor-pointer font-medium">Evidence</summary>
@@ -1108,6 +1144,8 @@ export function ModelsPage() {
 															engineIdentity: report.engineIdentity,
 															schemaIdentity: report.schemaIdentity,
 															datasetParquetSha256: report.datasetParquetSha256,
+															componentLock: report.componentLock,
+															featurePlanHash: report.featurePlanHash,
 														},
 														null,
 														2,
@@ -1136,7 +1174,7 @@ export function ModelsPage() {
 							) : (
 								<p className="rounded border p-4 text-sm text-muted-foreground">
 									No Forecast Evaluation Reports yet. Choose compatible immutable
-									Expected Value evidence to create one.
+									Expected Value or Probability evidence to create one.
 								</p>
 							)}
 						</div>

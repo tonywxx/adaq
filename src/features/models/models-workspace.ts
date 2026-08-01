@@ -69,3 +69,25 @@ export function evaluationExportFilename(
 ) {
 	return `forecast-evaluation-report-${reportId}.${format === "json" ? "json" : "md"}`;
 }
+
+export function isCompatibleEvaluationSignal(output: {
+	predictionKind: { kind: string };
+	forecastTarget: { kind: string; target?: string; valueType?: string };
+	valueScale: { kind: string };
+	horizonBars: number;
+}) {
+	if (!Number.isInteger(output.horizonBars) || output.horizonBars < 1)
+		return false;
+	if (
+		output.predictionKind.kind === "expected-value" &&
+		output.forecastTarget.target === "future-close-return"
+	)
+		return output.valueScale.kind === "native";
+	return (
+		output.predictionKind.kind === "probability" &&
+		output.valueScale.kind === "probability" &&
+		(output.forecastTarget.target === "future-close-up" ||
+			(output.forecastTarget.kind === "custom" &&
+				output.forecastTarget.valueType === "binary"))
+	);
+}

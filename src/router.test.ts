@@ -56,4 +56,9 @@ test("Forecast Evaluation presentation keeps partial evidence and native exports
 	expect(source).toMatch(/max-w-full overflow-x-auto/);
 	expect(source).toMatch(/group-hover:block group-focus-within:block/);
 	expect(source).toMatch(/open\(path, \{ write: true, createNew: true \}\)/);
+	expect(source).toMatch(/Brier Score/);
+	expect(source).toMatch(/Log Loss/);
+	expect(source).toMatch(/ROC AUC/);
+	expect(source).toMatch(/Calibration/);
+	expect(source).toMatch(/requires both realized classes/);
 });

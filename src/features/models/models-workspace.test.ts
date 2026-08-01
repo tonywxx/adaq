@@ -7,6 +7,7 @@ import {
 	signalRowSummary,
 	evaluationReportSummary,
 	evaluationExportFilename,
+	isCompatibleEvaluationSignal,
 } from "./models-workspace";
 
 const component = (value: Partial<LibraryComponent>): LibraryComponent => ({
@@ -109,4 +110,44 @@ test("maps Forecast Evaluation summaries and authoritative filenames", () => {
 	expect(evaluationExportFilename("report", "markdown")).toBe(
 		"forecast-evaluation-report-report.md",
 	);
+});
+
+test("selects only host-evaluable Expected Value and Probability signals", () => {
+	const output = (
+		predictionKind: string,
+		target: string,
+		valueScale: string,
+	) => ({
+		name: "signal",
+		predictionKind: { kind: predictionKind },
+		forecastTarget: { kind: "builtin", target },
+		valueScale: { kind: valueScale },
+		horizonBars: 1,
+	});
+	expect(
+		isCompatibleEvaluationSignal(
+			output("expected-value", "future-close-return", "native"),
+		),
+	).toBe(true);
+	expect(
+		isCompatibleEvaluationSignal(
+			output("probability", "future-close-up", "probability"),
+		),
+	).toBe(true);
+	expect(
+		isCompatibleEvaluationSignal(
+			output("probability", "future-close-return", "probability"),
+		),
+	).toBe(false);
+	expect(
+		isCompatibleEvaluationSignal(
+			output("probability", "future-close-up", "native"),
+		),
+	).toBe(false);
+	expect(
+		isCompatibleEvaluationSignal({
+			...output("probability", "", "probability"),
+			forecastTarget: { kind: "custom", valueType: "binary" },
+		}),
+	).toBe(true);
 });

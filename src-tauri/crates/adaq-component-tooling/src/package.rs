@@ -42,7 +42,7 @@ pub enum PredictionKind {
 pub enum ForecastTargetValueType { Binary, Continuous }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum ForecastTarget {
     Builtin { target: BuiltinForecastTarget },
     Custom { id: String, version: Version, description: String, value_type: ForecastTargetValueType },
