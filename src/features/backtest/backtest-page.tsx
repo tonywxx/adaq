@@ -1680,6 +1680,16 @@ function mergeRange(
 	start: number,
 	end: number,
 ): BacktestRun {
+	const existingBars = current.bars.filter(
+		(bar) => bar.openTimeMs >= start && bar.openTimeMs < end,
+	);
+	if (
+		existingBars.length === view.bars.length &&
+		existingBars.every(
+			(bar, index) => bar.openTimeMs === view.bars[index]?.openTimeMs,
+		)
+	)
+		return current;
 	const replace = <T,>(
 		existing: T[],
 		incoming: T[],

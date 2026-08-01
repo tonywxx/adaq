@@ -582,7 +582,7 @@ export function ModelsPage() {
 				</p>
 			</header>
 			<Tabs value={tab} onValueChange={setTab}>
-				<TabsList className="max-w-full overflow-x-auto">
+				<TabsList className="max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
 					<TabsTrigger value="create">Create Dataset</TabsTrigger>
 					<TabsTrigger value="datasets">Signal Datasets</TabsTrigger>
 					<TabsTrigger value="evaluations">Evaluation Reports</TabsTrigger>

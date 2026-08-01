@@ -43,6 +43,11 @@ type ComponentPage = {
 };
 
 const COMPONENT_PAGE_SIZE = 10;
+const componentPageCache = new Map<string, ComponentPage>();
+
+function cacheKey(userId: string, page: number) {
+	return `${userId}:${page}`;
+}
 
 export function ComponentsPage() {
 	const userId = useMarketSessionStore((state) => state.userId);
@@ -83,6 +88,7 @@ export function ComponentsPage() {
 				activeUserId.current !== requestedUserId
 			)
 				return [];
+			componentPageCache.set(cacheKey(requestedUserId, page), result);
 			setItems(components);
 			setPackagesTotal(result.total);
 			setSelectedHash((current) =>
@@ -112,7 +118,17 @@ export function ComponentsPage() {
 			return;
 		}
 		let active = true;
-		setPackagesLoading(true);
+		const cached = componentPageCache.get(cacheKey(userId, packagesPage));
+		if (cached) {
+			setItems(cached.items);
+			setPackagesTotal(cached.total);
+			setSelectedHash((current) =>
+				cached.items.some((item) => item.archiveSha256 === current)
+					? current
+					: (cached.items[0]?.archiveSha256 ?? ""),
+			);
+			setPackagesLoading(false);
+		} else setPackagesLoading(true);
 		void refresh()
 			.catch((error) => {
 				if (active)

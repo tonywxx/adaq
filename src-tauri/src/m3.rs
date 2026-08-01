@@ -87,7 +87,7 @@ pub struct LocalDataResetRequest {
     pub kind: LocalDataResetKind,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryComponent {
     component_id: String,
@@ -130,6 +130,7 @@ impl M3State {
                 kind TEXT NOT NULL,
                 wasm_sha256 TEXT NOT NULL,
                 archive_path TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '',
                 UNIQUE(component_id, version)
              );
              CREATE TABLE IF NOT EXISTS component_access (
@@ -222,7 +223,11 @@ impl M3State {
              );",
             )
             .map_err(string)?;
-        for column in ["progress_completed", "progress_total"] {
+        for (column, definition) in [
+            ("request_hash", "TEXT NOT NULL DEFAULT ''"),
+            ("progress_completed", "INTEGER NOT NULL DEFAULT 0"),
+            ("progress_total", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
             let exists = database
                 .prepare("SELECT 1 FROM pragma_table_info('dataset_generation_attempts') WHERE name = ?1")
                 .map_err(string)?
@@ -231,13 +236,26 @@ impl M3State {
             if !exists {
                 database
                     .execute(
-                        &format!(
-                            "ALTER TABLE dataset_generation_attempts ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
-                        ),
+                        &format!("ALTER TABLE dataset_generation_attempts ADD COLUMN {column} {definition}"),
                         [],
                     )
                     .map_err(string)?;
             }
+        }
+        let component_metadata_exists = database
+            .prepare(
+                "SELECT 1 FROM pragma_table_info('component_content') WHERE name = 'metadata_json'",
+            )
+            .map_err(string)?
+            .exists([])
+            .map_err(string)?;
+        if !component_metadata_exists {
+            database
+                .execute(
+                    "ALTER TABLE component_content ADD COLUMN metadata_json TEXT NOT NULL DEFAULT ''",
+                    [],
+                )
+                .map_err(string)?;
         }
         database.execute(
             "UPDATE dataset_generation_attempts SET status = 'failed', diagnostic_json = 'generation-interrupted: application stopped before completion' WHERE status IN ('pending', 'running')",
@@ -376,30 +394,7 @@ impl M3State {
             fs::write(&path, bytes).map_err(string)?;
         }
         let transaction = database.transaction().map_err(string)?;
-        transaction
-            .execute(
-                "INSERT OR IGNORE INTO component_content
-             (archive_sha256, component_id, version, name, kind, wasm_sha256, archive_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    package.archive_sha256,
-                    component_id,
-                    version,
-                    package.manifest.name,
-                    kind,
-                    package.manifest.wasm_sha256,
-                    path.to_string_lossy()
-                ],
-            )
-            .map_err(string)?;
-        transaction
-            .execute(
-                "INSERT OR IGNORE INTO component_access(user_id, archive_sha256) VALUES (?1, ?2)",
-                params![user_id, package.archive_sha256],
-            )
-            .map_err(string)?;
-        transaction.commit().map_err(string)?;
-        Ok(LibraryComponent {
+        let component = LibraryComponent {
             component_id,
             version,
             manifest_schema_version: package.manifest.manifest_schema_version.to_string(),
@@ -421,7 +416,33 @@ impl M3State {
             compatible: true,
             compatibility_error: None,
             locked_by_run_ids: vec![],
-        })
+        };
+        let metadata_json = serde_json::to_string(&component).map_err(string)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO component_content
+             (archive_sha256, component_id, version, name, kind, wasm_sha256, archive_path, metadata_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    component.archive_sha256,
+                    component.component_id,
+                    component.version,
+                    component.name,
+                    component.kind,
+                    component.wasm_sha256,
+                    path.to_string_lossy(),
+                    metadata_json,
+                ],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO component_access(user_id, archive_sha256) VALUES (?1, ?2)",
+                params![user_id, component.archive_sha256],
+            )
+            .map_err(string)?;
+        transaction.commit().map_err(string)?;
+        Ok(component)
     }
 
     pub fn list_components(&self, user_id: &str) -> Result<Vec<LibraryComponent>, String> {
@@ -492,7 +513,7 @@ impl M3State {
         }
         let mut statement = database
             .prepare(
-                "SELECT c.component_id, c.version, c.name, c.kind, c.archive_sha256, c.wasm_sha256, c.archive_path
+                "SELECT c.component_id, c.version, c.name, c.kind, c.archive_sha256, c.wasm_sha256, c.archive_path, c.metadata_json
              FROM component_content c JOIN component_access a USING(archive_sha256)
              WHERE a.user_id = ?1 ORDER BY c.name, c.version, c.archive_sha256
              LIMIT ?2 OFFSET ?3",
@@ -508,6 +529,7 @@ impl M3State {
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
                 ))
             })
             .map_err(string)?
@@ -515,7 +537,33 @@ impl M3State {
             .map_err(string)?
             .into_iter()
             .map(
-                |(component_id, version, name, kind, archive_sha256, wasm_sha256, path)| {
+                |(
+                    component_id,
+                    version,
+                    name,
+                    kind,
+                    archive_sha256,
+                    wasm_sha256,
+                    path,
+                    metadata_json,
+                )| {
+                    if !metadata_json.is_empty() {
+                        return serde_json::from_str::<LibraryComponent>(&metadata_json)
+                            .map(|mut component| {
+                                component.component_id = component_id;
+                                component.version = version;
+                                component.name = name;
+                                component.kind = kind;
+                                component.archive_sha256 = archive_sha256.clone();
+                                component.wasm_sha256 = wasm_sha256;
+                                component.locked_by_run_ids = locked_by_hash
+                                    .get(&archive_sha256)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                component
+                            })
+                            .map_err(string);
+                    }
                     match fs::read(path)
                         .map_err(string)
                         .and_then(|bytes| ComponentPackage::read(&bytes).map_err(string))
@@ -838,16 +886,22 @@ impl M3State {
     ) -> Result<ComponentPackage, String> {
         validate_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
-        let path: String = database
+        let (path, archive_sha256, wasm_sha256): (String, String, String) = database
             .query_row(
-                "SELECT c.archive_path FROM component_content c
+                "SELECT c.archive_path, c.archive_sha256, c.wasm_sha256 FROM component_content c
                  JOIN component_access a USING(archive_sha256)
                  WHERE a.user_id = ?1 AND c.archive_sha256 = ?2",
                 params![user_id, hash],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|_| "Component Package is not available to this User".to_owned())?;
-        ComponentPackage::read(&fs::read(path).map_err(string)?).map_err(string)
+        drop(database);
+        let package = ComponentPackage::read(&fs::read(path).map_err(string)?).map_err(string)?;
+        verify_package(&package)?;
+        if package.archive_sha256 != archive_sha256 || package.manifest.wasm_sha256 != wasm_sha256 {
+            return Err("Component Package does not match stored identity or hashes".into());
+        }
+        Ok(package)
     }
 
     fn compatible_factors(
@@ -1782,9 +1836,14 @@ pub async fn component_list(
 #[tauri::command]
 pub async fn component_page(
     request: ComponentPageRequest,
-    state: tauri::State<'_, M3State>,
+    app: tauri::AppHandle,
 ) -> Result<ComponentPage, String> {
-    state.list_components_page(&request.user_id, request.page)
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<M3State>()
+            .list_components_page(&request.user_id, request.page)
+    })
+    .await
+    .map_err(string)?
 }
 
 #[tauri::command]
@@ -3937,7 +3996,7 @@ mod tests {
     }
 
     #[test]
-    fn upgrades_generation_attempts_with_progress_columns() {
+    fn upgrades_legacy_generation_attempt_columns() {
         let root = std::env::temp_dir().join(format!(
             "adaq-generation-attempt-migration-{}-{}",
             std::process::id(),
@@ -3952,7 +4011,6 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE dataset_generation_attempts (
                     attempt_id TEXT PRIMARY KEY,
-                    request_hash TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     dataset_id TEXT,
                     status TEXT NOT NULL,
@@ -3962,18 +4020,24 @@ mod tests {
                 );",
             )
             .unwrap();
+        database
+            .execute(
+                "INSERT INTO dataset_generation_attempts(attempt_id, user_id, status, request_json) VALUES ('legacy', 'alice', 'completed', '{}')",
+                [],
+            )
+            .unwrap();
         drop(database);
 
         let state = M3State::open(&root).unwrap();
         let database = state.database.lock().unwrap();
-        database
+        let columns: (String, i64, i64) = database
             .query_row(
-                "SELECT progress_completed, progress_total FROM dataset_generation_attempts LIMIT 1",
+                "SELECT request_hash, progress_completed, progress_total FROM dataset_generation_attempts WHERE attempt_id = 'legacy'",
                 [],
-                |_| Ok(()),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .optional()
             .unwrap();
+        assert_eq!(columns, ("".into(), 0, 0));
         drop(database);
         drop(state);
         fs::remove_dir_all(root).unwrap();
@@ -3988,7 +4052,7 @@ mod tests {
         fs::write(&package, b"package").unwrap();
         let database = state.database.lock().unwrap();
         database.execute(
-			"INSERT INTO component_content VALUES ('hash', 'component', '1.0.0', 'Shared', 'factor', 'wasm', ?1)",
+			"INSERT INTO component_content(archive_sha256, component_id, version, name, kind, wasm_sha256, archive_path) VALUES ('hash', 'component', '1.0.0', 'Shared', 'factor', 'wasm', ?1)",
 			[package.to_string_lossy().as_ref()],
 		).unwrap();
         for user in ["alice", "bob"] {
@@ -4041,7 +4105,7 @@ mod tests {
         fs::write(&package, b"package").unwrap();
         let database = state.database.lock().unwrap();
         database.execute(
-			"INSERT INTO component_content VALUES ('hash', 'component', '1.0.0', 'Locked', 'factor', 'wasm', ?1)",
+			"INSERT INTO component_content(archive_sha256, component_id, version, name, kind, wasm_sha256, archive_path) VALUES ('hash', 'component', '1.0.0', 'Locked', 'factor', 'wasm', ?1)",
 			[package.to_string_lossy().as_ref()],
 		).unwrap();
         database
@@ -4085,7 +4149,7 @@ mod tests {
             fs::write(&path, b"invalid package").unwrap();
             database
                 .execute(
-                    "INSERT INTO component_content VALUES (?1, ?2, '1.0.0', ?3, 'factor', ?4, ?5)",
+                    "INSERT INTO component_content(archive_sha256, component_id, version, name, kind, wasm_sha256, archive_path) VALUES (?1, ?2, '1.0.0', ?3, 'factor', ?4, ?5)",
                     params![
                         archive_sha256,
                         format!("00000000-0000-4000-8000-{index:012}"),
@@ -4249,7 +4313,7 @@ mod tests {
         let database = state.database.lock().unwrap();
         database
             .execute(
-                "INSERT INTO component_content VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO component_content(archive_sha256, component_id, version, name, kind, wasm_sha256, archive_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     archive_hash,
                     "22222222-2222-4222-8222-222222222222",
@@ -4296,7 +4360,7 @@ mod tests {
     }
 
     #[test]
-    fn component_list_revalidates_stored_identity_and_hashes() {
+    fn component_list_uses_imported_metadata_without_rereading_the_archive() {
         let root = std::env::temp_dir().join(format!(
             "adaq-replaced-component-{}-{}",
             std::process::id(),
@@ -4321,12 +4385,12 @@ mod tests {
         .unwrap();
 
         let listed = state.list_components("alice").unwrap();
-        assert!(!listed[0].compatible);
+        assert!(listed[0].compatible);
+        assert_eq!(listed[0].archive_sha256, imported.archive_sha256);
         assert!(
-            listed[0]
-                .compatibility_error
-                .as_deref()
-                .unwrap()
+            state
+                .package_for_user("alice", &imported.archive_sha256)
+                .unwrap_err()
                 .contains("does not match stored identity or hashes")
         );
 
