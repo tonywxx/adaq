@@ -4245,10 +4245,19 @@ mod tests {
         let archive = fs::read(fixture_root.join("kronos-fixture.adaq-signals")).unwrap();
         let (manifest, parquet) = unpack_signal_archive(&archive).unwrap();
         let manifest: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
-        assert_eq!(manifest["producerSegments"][0]["inferenceConfiguration"]["seed"], 7);
-        assert_eq!(manifest["producerSegments"][0]["provenance"]["externallyGenerated"], true);
+        assert_eq!(
+            manifest["producerSegments"][0]["inferenceConfiguration"]["seed"],
+            7
+        );
+        assert_eq!(
+            manifest["producerSegments"][0]["provenance"]["externallyGenerated"],
+            true
+        );
         let fixture_rows = read_external_rows(&parquet).unwrap();
-        assert_eq!(fixture_rows[0].unavailable_reason.as_deref(), Some("warmup"));
+        assert_eq!(
+            fixture_rows[0].unavailable_reason.as_deref(),
+            Some("warmup")
+        );
         assert_eq!(fixture_rows[1].values, Some(vec![0.01, 0.02]));
         let dataset = import_signal_archive(&state, "alice", &archive).unwrap();
         assert_eq!(dataset["trust"], "externally-generated");

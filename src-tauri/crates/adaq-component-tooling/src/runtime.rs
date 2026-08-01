@@ -260,15 +260,30 @@ impl WasmLoader {
         let component = Component::new(&engine, wasm).map_err(string)?;
         let linker = Linker::new(&engine);
         let mut store = component_store(&engine, self.limits)?;
-        let bindings = model_abi::Model::instantiate(&mut store, &component, &linker).map_err(string)?;
+        let bindings =
+            model_abi::Model::instantiate(&mut store, &component, &linker).map_err(string)?;
         reset_component_fuel(&mut store, self.limits)?;
-        let instance = bindings.adaq_model_api().call_create(
-            &mut store, &feature_slots, &parameters.iter().map(model_parameter).collect::<Vec<_>>(), seed,
-        ).map_err(string)?.map_err(|error| format!("Model create failed: {error}"))?;
+        let instance = bindings
+            .adaq_model_api()
+            .call_create(
+                &mut store,
+                &feature_slots,
+                &parameters.iter().map(model_parameter).collect::<Vec<_>>(),
+                seed,
+            )
+            .map_err(string)?
+            .map_err(|error| format!("Model create failed: {error}"))?;
         let mut model = self.model.lock().map_err(string)?;
-        if let Some(mut previous) = model.replace(LoadedModel { store, bindings, instance }) {
+        if let Some(mut previous) = model.replace(LoadedModel {
+            store,
+            bindings,
+            instance,
+        }) {
             reset_component_fuel(&mut previous.store, self.limits)?;
-            previous.instance.resource_drop(&mut previous.store).map_err(string)?;
+            previous
+                .instance
+                .resource_drop(&mut previous.store)
+                .map_err(string)?;
         }
         Ok(())
     }
@@ -278,10 +293,20 @@ impl WasmLoader {
         rows: Vec<model_abi::exports::adaq::model::api::PredictionRow>,
     ) -> Result<Vec<Option<model_abi::exports::adaq::model::api::ForecastRow>>, String> {
         let mut model = self.model.lock().map_err(string)?;
-        let LoadedModel { store, bindings, instance } = model.as_mut().ok_or_else(|| "Model component is not loaded".to_owned())?;
+        let LoadedModel {
+            store,
+            bindings,
+            instance,
+        } = model
+            .as_mut()
+            .ok_or_else(|| "Model component is not loaded".to_owned())?;
         reset_component_fuel(store, self.limits)?;
-        bindings.adaq_model_api().instance().call_process(store, *instance, &rows)
-            .map_err(string)?.map_err(|error| format!("Model process failed: {error}"))
+        bindings
+            .adaq_model_api()
+            .instance()
+            .call_process(store, *instance, &rows)
+            .map_err(string)?
+            .map_err(|error| format!("Model process failed: {error}"))
     }
 }
 
