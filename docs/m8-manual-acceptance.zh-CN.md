@@ -60,12 +60,17 @@ Windows 使用 PowerShell、`py -3.12 -m venv .venv`、`.\.venv\Scripts\Activate
 
 | 精确操作 | 预期结果 | 失败时保留 |
 | --- | --- | --- |
-| 在 `examples/external-models/kronos` 创建文档规定的 Python 3.10–3.12 环境并运行 `python -m unittest test_adapter.py`。 | 两个确定性 fixture tests 通过，不下载模型且不需要 GPU；golden `.adaq-signals` transformation 保持逐字节稳定。 | Python/platform 版本、`python -m pip freeze`、命令、完整 traceback 和 fixture SHA-256。 |
+| 在 `examples/external-models/kronos` 运行 `python3.12 -m venv .venv`（Windows：`py -3.12 -m venv .venv`）。 | 创建隔离且受支持的 Python environment。 | Python/platform version、命令与完整错误。 |
+| 激活该 environment，再运行 `python -m pip install -r requirements.txt`。 | 安装精确 Adapter dependencies。 | `python -m pip freeze`、命令与完整错误。 |
+| 运行 `python -m unittest test_adapter.py`。 | 两个确定性 fixture tests 通过，不下载模型且不需要 GPU；golden `.adaq-signals` transformation 保持逐字节稳定。 | Python/platform versions、完整 traceback 与 fixture SHA-256。 |
 | 在 `src-tauri` 运行 `cargo test kronos_fixture_reaches_import_evaluation_and_dataset_first_backtest --lib`。 | committed deterministic fixture 被 import、按 Unknown evaluation、绑定 compatible Strategy、执行 Dataset-first Backtest，并保留在 Run Dataset Lock 中。 | 完整输出、失败 stage/test、fixture archive SHA-256 与可用时的 backtrace。 |
-| 按[外部 Kronos Adapter](../examples/external-models/kronos/README.zh-CN.md)取得固定 revision 的 `Kronos-small`，记录 licence 与 weight/config hashes。 | 精确 inference Model Artifact 可检查，且未公开 credentials。 | Command、revision/URL、licence、HTTP error、size 与 hashes。 |
-| 取得固定 revision 的 `Kronos-Tokenizer-base`，记录 licence 与 weight/config hashes。 | 精确 Tokenizer Artifact 可用，且不被描述为 inference model。 | Command、revision/URL、licence、HTTP error、size 与 hashes。 |
-| 用第 3 节精确 Snapshot、Seed `7` 和明确选择的 CPU/MPS/CUDA device 运行 Adapter 一次。 | 生成与 Snapshot 对齐的 `kronos-small.adaq-signals`。如果硬件/网络阻止这项可选真实权重操作，保留指南要求的完整 unavailable evidence，不声称已经运行。 | Runtime/config、Seed、device、peak memory、elapsed time、完整 traceback，且不含 credentials/private data。 |
-| 在 **Models → Signal Datasets** 选择 **Import .adaq-signals** 并选中生成的 archive，检查后用 **Export .adaq-signals** 保存到新路径。 | Import 完整验证并原子发布精确 external Dataset；证据保持 **Externally Generated**，保留 Producer Segment、Artifact/weight/Tokenizer/Adapter/preprocessing hashes、unknown training evidence、Snapshot alignment、availability policy 与相同 authoritative export identity。 | Archive SHA-256/size、检查过的 Manifest、精确 typed error、是否出现 Dataset、Dataset ID 和 export path/error。 |
+| 运行 `hf download NeoQuasar/Kronos-small --revision 901c26c1332695a2a8f243eb2f37243a37bea320 --local-dir artifacts/Kronos-small`。 | 下载精确 inference Model Artifact。 | Command、revision/URL、HTTP error、size 与 file listing。 |
+| 运行 `hf download NeoQuasar/Kronos-Tokenizer-base --revision 0e0117387f39004a9016484a186a908917e22426 --local-dir artifacts/Kronos-Tokenizer-base`。 | 下载精确 Tokenizer Artifact，且它保持与 inference model 分离。 | Command、revision/URL、HTTP error、size 与 file listing。 |
+| 检查 licences，并对 model weights、Tokenizer weights 与固定 preprocessing source 执行第 1 节的平台 SHA-256 命令。 | 记录 licence/source/revision 与精确 Artifact hashes，且不含 credentials。 | Paths、licence text/location 与 hash-command output。 |
+| 执行[外部 Kronos Adapter](../examples/external-models/kronos/README.zh-CN.md)中 **Forecast configuration and deterministic Seed** 下的单条 Adapter 命令，代入第 3 节 database/User/Snapshot 值，保留 `--seed 7` 并明确一个 `--device`。 | 生成与 Snapshot 对齐的 `kronos-small.adaq-signals`。若硬件/网络阻止这项可选真实权重操作，保留指南完整 unavailable evidence，不声称已经运行。 | 精确命令、runtime/config、Seed、device、peak memory、elapsed time、完整 traceback，且不含 credentials/private data。 |
+| 在 **Models → Signal Datasets** 选择 **Import .adaq-signals**，且只选择生成的 archive。 | Import 完整验证并把 external Dataset 原子发布为 **Externally Generated**。 | Archive SHA-256/size、精确 typed error 与前后 Dataset list。 |
+| 选择一次新导入的 external Dataset，并展开 **Provenance**。 | Producer Segment、Artifact/weight/Tokenizer/Adapter/preprocessing hashes、unknown training evidence、Snapshot alignment 与 availability policy 可检查。 | Dataset ID、检查过的 Manifest、失败字段与截图。 |
+| 选择一次 **Export .adaq-signals** 并指定新路径。 | 权威 external evidence 导出，不改变 Dataset identity，也不覆盖文件。 | Dataset ID、export path、archive hash 与精确错误。 |
 
 <!-- m8-acceptance:evaluation -->
 ## 5. Expected Value、Probability 与 Score 评估
@@ -92,10 +97,19 @@ Windows 使用 PowerShell、`py -3.12 -m venv .venv`、`.\.venv\Scripts\Activate
 
 | 精确操作 | 预期结果 | 失败时保留 |
 | --- | --- | --- |
-| 在 **Backtest → Strategy** 选择 Strategy。Signal-driven/Hybrid 的 `forecast-probability` 只能绑定兼容的原生 `up-probability` Dataset Signal；Composed Strategy 保持生成的 Market slots。 | Architecture 显示 Signal-driven、Hybrid 或 Composed；不兼容 Dataset Signals 不出现；Backtest 不会调用 Model。 | Strategy/package hash、slot、available candidates、Dataset/Signal contract 与 gate message。 |
-| 选择 **Execution**，allocation 设为 `10000`，Seed 为 `48`，使用完整默认 Spot Execution Profile，设置有效 Dataset subset window，选择 **Validate inputs** 并检查 **Authoritative inputs**，再选择 **Run Backtest**。 | 一个确定性不可变 Run 完成。只有 `availableAt <= decisionTime` 才消费 Signal；fill 不早于 next Bar；对齐但不可用的值生成 `Run Pause::MissingInput`。 | Preflight、typed error、Snapshot/Dataset/Signal binding、已创建时的 Run ID，以及 status/pauses。 |
-| 检查 **Overview**、**Decisions**、**Execution** 与 **Provenance**，操作所有 metric information controls，再选择 **Use as new configuration**。 | Results、decisions/pauses、orders/fills/fees、精确 Feature Plan、Architecture、Component/Dataset Locks、Evidence State、Producer provenance、engine identities、seed 与 run window 均存在；copy-as-new 不修改历史 Run。 | Run ID、失败 tab/control、截图、复制的值与技术详情。 |
-| 在 **Validation** 选择每个 completed Run，确认它能创建新的 immutable Protocol，且不改变 Snapshot 或 Signal evidence。 | Signal-driven、Hybrid 和 Composed Runs 均可作为 Validation evidence 复用，并保留原始不可变 identity。 | Run/Protocol ID、Snapshot ID、mismatch message 和技术详情。 |
+| 在 **Backtest → Strategy** 精确选择三个 Strategy 之一。 | 显示的 Architecture 由权威 Slots 推导为 Signal-driven、Hybrid 或 Composed。 | Strategy/package hash、expected/actual Architecture 与截图。 |
+| 对 Signal-driven/Hybrid Strategy，把 `forecast-probability` 只绑定到原生 `up-probability` Dataset Signal；对 Composed，保持生成的 Market Slots。 | 只能选择语义兼容 Dataset evidence，且不会调用 Model。 | Slot、candidate list、Dataset/Signal contract 与 gate message。 |
+| 在 **Execution** 设置 allocation `10000`、Seed `48`、默认 Spot Execution Profile 与一个有效 Dataset subset window。 | 预期精确 execution configuration 可见、可编辑。 | 输入值、Snapshot/Dataset binding 与 validation message。 |
+| 选择一次 **Validate inputs**。 | Preflight 成功，或在 execution 前返回一个精确 typed gate。 | 完整 typed error 与 selected identities。 |
+| 检查一次 **Authoritative inputs**。 | 精确 Feature Plan inputs、Package、Snapshot、Dataset Signal、Producer、schema/Catalog/engine identities 与 window 被冻结供复核。 | 复制的 preflight JSON 与缺失/错误字段。 |
+| 选择一次 **Run Backtest**。 | 一个确定性不可变 Run 完成；执行 `availableAt`，fill 不早于 next Bar，不可用对齐值以 MissingInput pause。 | 已创建时的 Run ID、status、typed error 与 pauses。 |
+| 打开一次 **Overview**，并逐个操作每个相邻 metric information control。 | Results 与 accessible metric explanations 渲染，且不改变权威值。 | Run ID、metric、interaction mode、截图与错误。 |
+| 打开一次 **Decisions**。 | Target Decisions、Signal evidence 与 Run Pauses 可检查。 | Run ID、失败 row 与技术详情。 |
+| 打开一次 **Execution**。 | Orders、fills、fees 与 next-Bar timing 可检查。 | Run ID、失败 row 与技术详情。 |
+| 打开一次 **Provenance**。 | Feature Plan、Architecture、Component/Dataset Locks、Evidence State、Producer provenance、engine identities、Seed 与 run window 可复制。 | Run ID、失败字段、截图与技术详情。 |
+| 选择一次 **Use as new configuration**。 | 历史 Run 保持不可变，并填充新的 editable configuration。 | 原 Run ID、复制值与意外 mutation/error。 |
+| 在 **Validation** 精确选择一个 completed Run。 | 其原始 Snapshot 与 Signal evidence 填入 Protocol form。 | Run ID、Snapshot ID 与 mismatch message。 |
+| 选择一次 **Freeze Validation Protocol**。 | 创建新的 immutable Protocol，且不改变 source Run。 | Run/Protocol IDs 与技术错误。 |
 
 <!-- m8-acceptance:negative-paths -->
 ## 7. 必须执行的负向路径
@@ -123,10 +137,19 @@ Windows 使用 PowerShell、`py -3.12 -m venv .venv`、`.\.venv\Scripts\Activate
 
 | 精确操作 | 预期结果 | 失败时保留 |
 | --- | --- | --- |
-| 将应用窗口设为 1024 px 宽，用键盘依次访问 Dashboard、market-data views、Components、Models 三个 tabs、Backtest、Validation 和全部 Settings sections。 | 内容可用且操作不被裁切；focus 可见；tabs、controls、tables/cards、pagination、status、warnings 与 errors 均可键盘操作，并使用文字/图标而非仅颜色表达含义。 | OS/display scale、page/tab、截图、focused element 与 accessibility text。 |
+| 把 app content area 调整为 1024 px 宽。 | Narrow acceptance viewport 生效，且未强制 page zoom。 | OS/display scale、measured width 与截图。 |
+| 用键盘访问一次 **Dashboard**。 | Content/actions 可见，focus 与非颜色含义保持。 | 截图、focused element 与 accessibility text。 |
+| 用键盘访问一次 market-data view。 | Chart/list/status content 可用，focused controls 可见。 | Route、截图、focused element 与技术错误。 |
+| 用键盘访问一次 **Components**。 | Import、list/detail、pagination、status 与 errors 在 1024 px 可用。 | 截图、focused element 与 accessibility text。 |
+| 用键盘分别访问每个 **Models** top-level tab。 | Create Dataset、Signal Datasets、Evaluation Reports 操作不被裁切。 | Tab、截图、focused element 与 accessibility text。 |
+| 用键盘访问一次 **Backtest**。 | Stages、forms、results tabs、status 与 errors 在 1024 px 可用。 | Stage/tab、截图、focused element 与技术错误。 |
+| 用键盘访问一次 **Validation**。 | Protocol/Report forms、tabs、exports、status 与 errors 在 1024 px 可用。 | Tab、截图、focused element 与技术错误。 |
+| 用键盘分别访问每个 **Settings** section。 | 全部 controls、confirmations、status 与 data summaries 在 1024 px 可用。 | Section、截图、focused element 与 accessibility text。 |
 | 使用 titlebar Back/Forward 穿过 Models tabs 与 Backtest/Validation；访问其他页面后再返回。 | Route history 与 tab restoration 返回预期业务 page/tab，不显示 initialization。 | 精确 navigation sequence、expected/actual route/tab、截图和 console/technical error。 |
-| Sign out，换另一个测试 User 登录，再访问 Components、Models、Backtest、Validation、Settings summary 和 market-data views。 | 用户范围内的 Components、Attempts、Datasets、Reports、Runs 与 Snapshot access 不泄漏；只有第二个 User 合法可访问的 evidence 才保持相同 immutable IDs。 | 两个经过隐藏处理的 User IDs、page、leaked/missing record ID、截图和技术详情。 |
-| 检查 root Documentation table 列出的 README、SDK、Component、archive、Metric、external-model 和两份 manual-acceptance 文档。 | Delivered M8 scope 一致，且都不声称 training、embedded Qlib/Python、Cross-sectional inference、live trading、Portfolio Optimization、OMS/EMS、Marketplace publishing 或 future profitability。 | File/link、冲突原文与期望 scope statement。 |
+| 执行一次 Sign out。 | Authenticated research shell 关闭，且不暴露 prior User data。 | Redacted User ID、route、截图与技术错误。 |
+| 以另一个测试 User 执行一次 Sign in。 | 出现第二个 User 的新 authenticated shell。 | Redacted User ID、route 与可见/技术错误。 |
+| 对 Components、Models、Backtest、Validation、Settings summary 和 market-data views 分别重新访问一次。 | Components、Attempts、Datasets、Reports、Runs 与 Snapshot access 不跨 Users 泄漏。 | Surface、两个 redacted User IDs、leaked/missing record ID、截图与技术详情。 |
+| 检查以下精确中英文配对：[`README`](../README.md)/[`README.zh-CN`](../README.zh-CN.md)、[SDK](../src-tauri/crates/adaq-component-sdk/README.md)/[SDK zh-CN](../src-tauri/crates/adaq-component-sdk/README.zh-CN.md)、[Component](components/developing-components.md)/[Component zh-CN](components/developing-components.zh-CN.md)、[archive/Manifest](reference/component-manifest.md)/[archive/Manifest zh-CN](reference/component-manifest.zh-CN.md)、[Metric](reference/research-metrics.md)/[Metric zh-CN](reference/research-metrics.zh-CN.md)、[external model](../examples/external-models/kronos/README.md)/[external model zh-CN](../examples/external-models/kronos/README.zh-CN.md)，以及这两份 manual guides。 | Delivered M8 scope 语义等价，且都不声称 training、embedded Qlib/Python、Cross-sectional inference、live trading、Portfolio Optimization、OMS/EMS、Marketplace publishing 或 future profitability。 | 精确 file/link、冲突原文与期望 scope statement。 |
 
 <!-- m8-acceptance:automated-gates -->
 ## 9. 自动 release gates 与 CI
