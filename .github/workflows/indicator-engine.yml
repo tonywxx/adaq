@@ -45,7 +45,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for fixture in strategy factor external-strategy mixed-strategy multi-output-factor repeated-factor-strategy; do
+          for fixture in strategy factor model external-strategy mixed-strategy multi-output-factor repeated-factor-strategy; do
             cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
           done
       - name: Build and verify public Component examples

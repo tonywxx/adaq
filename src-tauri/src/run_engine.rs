@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use adaq_data_core::{BarGap, OhlcvBar};
 use adaq_component_sdk::{decimal_to_f64, host::strategy_abi};
 use adaq_component_tooling::{
-    ComponentParameterValue, FrozenBuiltInParameter, FrozenIndicatorPlan, FrozenSourceView,
+    ComponentParameterValue, FrozenBuiltInParameter, FrozenFeaturePlan, FrozenSourceView,
     MarketField, RunLimits, WasmLoader, builtin_engine_market_field,
 };
+use adaq_data_core::{BarGap, OhlcvBar};
 use adaq_indicator_engine::{
     EngineError, IndicatorColumn, IndicatorEngine, IndicatorRequest, OhlcvSegment, ParameterValue,
 };
@@ -28,7 +28,7 @@ pub(crate) struct RunRequest<'a> {
     pub factors: &'a [FactorRunRequest<'a>],
     pub bars: &'a [OhlcvBar],
     pub gaps: &'a [BarGap],
-    pub plan: &'a FrozenIndicatorPlan,
+    pub plan: &'a FrozenFeaturePlan,
     pub position_mode: PositionMode,
     pub limits: RunLimits,
 }
@@ -37,6 +37,98 @@ pub(crate) struct RunRequest<'a> {
 pub(crate) struct FactorRunRequest<'a> {
     pub alias: &'a str,
     pub path: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MaterializedFeatureRow {
+    Warmup,
+    MissingInput { slot: String, source: String },
+    Present(Vec<f64>),
+}
+
+pub(crate) fn materialize_feature_segment(
+    plan: &FrozenFeaturePlan,
+    factors: &[FactorRunRequest<'_>],
+    bars: &[OhlcvBar],
+    limits: RunLimits,
+) -> Result<Vec<MaterializedFeatureRow>, RunError> {
+    let request = RunRequest {
+        strategy_path: "",
+        strategy_parameters: &[],
+        factors,
+        bars,
+        gaps: &[],
+        plan,
+        position_mode: PositionMode::LongOnly,
+        limits,
+    };
+    let builtin_values = evaluate_builtins(&request, bars)?;
+    let factor_values = evaluate_factors(&request, bars)
+        .map_err(|error| RunError::host("factor-evaluation-failed", RunStage::Factor, error))?;
+    bars.iter()
+        .enumerate()
+        .map(|(index, bar)| {
+            if index < plan.effective_warmup_bars() as usize {
+                return Ok(MaterializedFeatureRow::Warmup);
+            }
+            let mut values = Vec::with_capacity(plan.slot_names().len());
+            for (slot, source) in plan.slot_names().zip(plan.sources()) {
+                let value = match source {
+                    FrozenSourceView::Market(field) => {
+                        market_value(field, bar).map_err(|error| {
+                            RunError::host("invalid-market-input", RunStage::FeatureFrame, error)
+                                .at_bar(bar.open_time_ms)
+                                .for_slot(slot, format!("market:{field:?}"))
+                        })?
+                    }
+                    FrozenSourceView::External {
+                        dependency_alias,
+                        output,
+                    } => {
+                        let Some(value) = factor_values
+                            .get(dependency_alias)
+                            .and_then(|rows| rows[index].as_ref())
+                            .and_then(|row| row.get(output).copied())
+                        else {
+                            return Ok(MaterializedFeatureRow::MissingInput {
+                                slot: slot.into(),
+                                source: format!("external:{dependency_alias}:{output}"),
+                            });
+                        };
+                        value
+                    }
+                    FrozenSourceView::BuiltIn {
+                        indicator,
+                        output,
+                        real_inputs,
+                        parameters,
+                    } => {
+                        let key = builtin_key(indicator, output, real_inputs, parameters);
+                        let Some(value) =
+                            builtin_values.values.get(&key).and_then(|rows| rows[index])
+                        else {
+                            return Ok(MaterializedFeatureRow::MissingInput {
+                                slot: slot.into(),
+                                source: format!("builtin:{indicator}:{output}"),
+                            });
+                        };
+                        value
+                    }
+                };
+                if !value.is_finite() {
+                    return Err(RunError::host(
+                        "non-finite-feature-slot",
+                        RunStage::FeatureFrame,
+                        "Feature Slot contains a non-finite value",
+                    )
+                    .at_bar(bar.open_time_ms)
+                    .for_slot(slot, source_name(source)));
+                }
+                values.push(value);
+            }
+            Ok(MaterializedFeatureRow::Present(values))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -767,7 +859,7 @@ fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
     }
     let mut slots = HashSet::new();
     if request.plan.slot_names().any(|name| !slots.insert(name)) {
-        return Err("Frozen Indicator Plan contains duplicate Feature Slots".into());
+        return Err("Frozen Feature Plan contains duplicate Feature Slots".into());
     }
     Ok(())
 }
@@ -801,8 +893,8 @@ mod tests {
     use std::{path::PathBuf, str::FromStr};
 
     use adaq_component_tooling::{
-        ComponentManifest, FactorInstancePlanInput, native_engine_identity, validate_and_freeze,
-        validate_and_freeze_with_factors,
+        ComponentManifest, FactorInstancePlanInput, native_engine_identity,
+        validate_and_freeze_feature_plan, validate_and_freeze_feature_plan_with_factors,
     };
 
     use super::*;
@@ -848,7 +940,7 @@ mod tests {
         }
     }
 
-    fn plan() -> FrozenIndicatorPlan {
+    fn plan() -> FrozenFeaturePlan {
         let manifest = serde_json::from_str::<ComponentManifest>(
             r#"{
             "manifestSchemaVersion":"1.0.0",
@@ -865,7 +957,7 @@ mod tests {
         }"#,
         )
         .unwrap();
-        validate_and_freeze(
+        validate_and_freeze_feature_plan(
             &manifest,
             &"a".repeat(64),
             &native_engine_identity().unwrap(),
@@ -979,7 +1071,7 @@ mod tests {
         ))
         .unwrap();
         let factor_parameters = vec![ComponentParameterValue::Integer(1)];
-        let plan = validate_and_freeze_with_factors(
+        let plan = validate_and_freeze_feature_plan_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
             &native_engine_identity().unwrap(),
@@ -997,6 +1089,11 @@ mod tests {
             path: &factor,
         }];
         let bars = vec![bar(1, "10", "1"), bar(2, "11", "1"), bar(3, "9", "1")];
+        let features =
+            materialize_feature_segment(&plan, &factors, &bars, RunLimits::default()).unwrap();
+        assert_eq!(features[0], MaterializedFeatureRow::Warmup);
+        assert!(matches!(features[1], MaterializedFeatureRow::Present(_)));
+        assert!(matches!(features[2], MaterializedFeatureRow::Present(_)));
         let result = RunEngine::execute(&RunRequest {
             strategy_path: &strategy,
             strategy_parameters: &[],
@@ -1040,7 +1137,7 @@ mod tests {
             "../fixtures/factor/manifest.json"
         ))
         .unwrap();
-        let plan = validate_and_freeze_with_factors(
+        let plan = validate_and_freeze_feature_plan_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
             &native_engine_identity().unwrap(),
@@ -1110,7 +1207,7 @@ mod tests {
             "../fixtures/factor/manifest.json"
         ))
         .unwrap();
-        let plan = validate_and_freeze_with_factors(
+        let plan = validate_and_freeze_feature_plan_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
             &native_engine_identity().unwrap(),
@@ -1154,7 +1251,7 @@ mod tests {
             "../fixtures/factor/manifest.json"
         ))
         .unwrap();
-        let plan = validate_and_freeze_with_factors(
+        let plan = validate_and_freeze_feature_plan_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
             &native_engine_identity().unwrap(),
@@ -1256,7 +1353,7 @@ mod tests {
             "../fixtures/factor/manifest.json"
         ))
         .unwrap();
-        let plan = validate_and_freeze_with_factors(
+        let plan = validate_and_freeze_feature_plan_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
             &native_engine_identity().unwrap(),
@@ -1298,7 +1395,7 @@ mod tests {
             "../fixtures/factor/manifest.json"
         ))
         .unwrap();
-        let plan = validate_and_freeze_with_factors(
+        let plan = validate_and_freeze_feature_plan_with_factors(
             &strategy_manifest,
             &"a".repeat(64),
             &native_engine_identity().unwrap(),
@@ -1355,7 +1452,7 @@ mod tests {
                 {"name":"close","source":{"kind":"builtin","indicator":"ema","output":"value","inputs":{"real-0":"close"},"parameters":{"time-period":1}}}
             ]
         }"#).unwrap();
-        let plan = validate_and_freeze(
+        let plan = validate_and_freeze_feature_plan(
             &manifest,
             &"a".repeat(64),
             &native_engine_identity().unwrap(),
@@ -1396,7 +1493,7 @@ mod tests {
                 {"name":"histogram","source":{"kind":"builtin","indicator":"macd","output":"histogram","inputs":{"real-0":"close"}}}
             ]
         }"#).unwrap();
-        let plan = validate_and_freeze(
+        let plan = validate_and_freeze_feature_plan(
             &manifest,
             &"a".repeat(64),
             &native_engine_identity().unwrap(),
@@ -1430,7 +1527,7 @@ mod tests {
                 {"name":"close","source":{"kind":"builtin","indicator":"rsi","output":"value","inputs":{"real-0":"close"},"parameters":{"time-period":2}}}
             ]
         }"#).unwrap();
-        let plan = validate_and_freeze(
+        let plan = validate_and_freeze_feature_plan(
             &manifest,
             &"a".repeat(64),
             &native_engine_identity().unwrap(),
@@ -1490,7 +1587,7 @@ mod tests {
                 {"name":"close","source":{"kind":"builtin","indicator":"macd","output":"signal","inputs":{"real-0":"close"},"parameters":{"fast-period":2,"slow-period":3,"signal-period":2}}}
             ]
         }"#).unwrap();
-        let plan = validate_and_freeze(
+        let plan = validate_and_freeze_feature_plan(
             &manifest,
             &"a".repeat(64),
             &native_engine_identity().unwrap(),

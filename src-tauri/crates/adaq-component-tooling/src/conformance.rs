@@ -5,7 +5,8 @@ use rust_decimal::Decimal;
 
 use crate::{
     ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue, FeatureSlotSource,
-    MarketField, ParameterType, WasmLoader, native_engine_identity, validate_and_freeze,
+    MarketField, ParameterType, WasmLoader, native_engine_identity,
+    validate_and_freeze_feature_plan,
 };
 
 pub fn verify_package(package: &ComponentPackage) -> Result<(), String> {
@@ -17,26 +18,58 @@ pub fn verify_package(package: &ComponentPackage) -> Result<(), String> {
     }
 }
 
-fn verify_model(package: &ComponentPackage, parameters: &[ComponentParameterValue]) -> Result<(), String> {
-    let slots = package.manifest.feature_slots.iter().map(|slot| model_abi::exports::adaq::model::api::FeatureSlot { name: slot.name.clone() }).collect::<Vec<_>>();
-    let rows = (0..7).map(|index| model_abi::exports::adaq::model::api::PredictionRow {
-        instrument_id: "BTC-USDT".into(), prediction_time_ms: index, values: vec![index as f64; slots.len()],
-    }).collect::<Vec<_>>();
+fn verify_model(
+    package: &ComponentPackage,
+    parameters: &[ComponentParameterValue],
+) -> Result<(), String> {
+    let slots = package
+        .manifest
+        .feature_slots
+        .iter()
+        .map(|slot| model_abi::exports::adaq::model::api::FeatureSlot {
+            name: slot.name.clone(),
+        })
+        .collect::<Vec<_>>();
+    let rows = (0..7)
+        .map(
+            |index| model_abi::exports::adaq::model::api::PredictionRow {
+                instrument_id: "BTC-USDT".into(),
+                prediction_time_ms: index,
+                values: vec![index as f64; slots.len()],
+            },
+        )
+        .collect::<Vec<_>>();
     let run = |chunks: &[usize]| -> Result<_, String> {
         let loader = WasmLoader::default();
         loader.load_model_bytes(&package.wasm, slots.clone(), parameters, 7)?;
-        let mut output = Vec::new(); let mut start = 0;
-        for end in chunks { output.extend(loader.process_model(rows[start..*end].to_vec())?); start = *end; }
+        let mut output = Vec::new();
+        let mut start = 0;
+        for end in chunks {
+            output.extend(loader.process_model(rows[start..*end].to_vec())?);
+            start = *end;
+        }
         Ok(output)
     };
     let whole = run(&[rows.len()])?;
     let replay = run(&[rows.len()])?;
     let chunked = run(&[3, rows.len()])?;
-    if !model_results_equal(&whole, &replay) || !model_results_equal(&whole, &chunked) || whole.len() != rows.len() { return Err("Model is not deterministic or chunk-boundary independent".into()); }
+    if !model_results_equal(&whole, &replay)
+        || !model_results_equal(&whole, &chunked)
+        || whole.len() != rows.len()
+    {
+        return Err("Model is not deterministic or chunk-boundary independent".into());
+    }
     for (input, output) in rows.iter().zip(&whole) {
         if let Some(output) = output {
-            if output.instrument_id != input.instrument_id || output.prediction_time_ms != input.prediction_time_ms || output.values.len() != package.manifest.model_outputs.len() || output.values.iter().any(|value| !value.is_finite()) {
-                return Err("Model output does not preserve row identity, order, or finite output contract".into());
+            if output.instrument_id != input.instrument_id
+                || output.prediction_time_ms != input.prediction_time_ms
+                || output.values.len() != package.manifest.model_outputs.len()
+                || output.values.iter().any(|value| !value.is_finite())
+            {
+                return Err(
+                    "Model output does not preserve row identity, order, or finite output contract"
+                        .into(),
+                );
             }
         }
     }
@@ -47,14 +80,24 @@ fn model_results_equal(
     left: &[Option<model_abi::exports::adaq::model::api::ForecastRow>],
     right: &[Option<model_abi::exports::adaq::model::api::ForecastRow>],
 ) -> bool {
-    left.len() == right.len() && left.iter().zip(right).all(|(left, right)| match (left, right) {
-        (None, None) => true,
-        (Some(left), Some(right)) => left.instrument_id == right.instrument_id
-            && left.prediction_time_ms == right.prediction_time_ms
-            && left.values.len() == right.values.len()
-            && left.values.iter().zip(&right.values).all(|(left, right)| left.to_bits() == right.to_bits()),
-        _ => false,
-    })
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| match (left, right) {
+                (None, None) => true,
+                (Some(left), Some(right)) => {
+                    left.instrument_id == right.instrument_id
+                        && left.prediction_time_ms == right.prediction_time_ms
+                        && left.values.len() == right.values.len()
+                        && left
+                            .values
+                            .iter()
+                            .zip(&right.values)
+                            .all(|(left, right)| left.to_bits() == right.to_bits())
+                }
+                _ => false,
+            })
 }
 
 pub fn component_parameters(
@@ -149,12 +192,12 @@ fn verify_strategy(
         }
     }
     conformance_manifest.dependencies.clear();
-    let plan = validate_and_freeze(
+    let plan = validate_and_freeze_feature_plan(
         &conformance_manifest,
         &package.archive_sha256,
         &native_engine_identity().map_err(|error| error.to_string())?,
     )
-    .map_err(|error| format!("Indicator Plan validation failed: {:?}", error.issues))?;
+    .map_err(|error| format!("Feature Plan validation failed: {:?}", error.issues))?;
     let slots = plan
         .slot_names()
         .map(

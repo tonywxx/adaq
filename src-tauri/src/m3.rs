@@ -14,9 +14,10 @@ use adaq_backtest_core::{
 };
 use adaq_component_tooling::{
     ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
-    ComponentParameterValue, FactorInstancePlanInput, FeatureSlotDefinition, FrozenIndicatorPlan,
+    ComponentParameterValue, FactorInstancePlanInput, FeatureSlotDefinition, FrozenFeaturePlan,
     ModelArtifact, ModelOutput, ModelScope, ParameterDefinition, RunLimits, component_parameters,
-    native_engine_identity, validate_and_freeze_with_factors_and_parameters, verify_package,
+    native_engine_identity, validate_and_freeze_feature_plan_with_factors_and_parameters,
+    verify_package,
 };
 use adaq_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -30,10 +31,11 @@ const SNAPSHOT_PAGE_SIZE: usize = 10;
 const COMPONENT_PAGE_SIZE: usize = 10;
 
 pub struct M3State {
-    root: PathBuf,
+    pub(crate) root: PathBuf,
     snapshots: SnapshotStore,
-    database: Mutex<Connection>,
+    pub(crate) database: Mutex<Connection>,
     downloads: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    pub(crate) generation_attempts: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 #[derive(Serialize)]
@@ -49,6 +51,9 @@ pub struct LocalDataSummary {
     run_count: u64,
     protocol_count: u64,
     report_count: u64,
+    generation_attempt_count: u64,
+    model_artifact_count: u64,
+    signal_dataset_count: u64,
     component_blocking_run_count: u64,
     market_data_blocking_record_count: u64,
 }
@@ -165,14 +170,42 @@ impl M3State {
                 user_id TEXT NOT NULL,
                 report_json TEXT NOT NULL,
                 FOREIGN KEY(protocol_id) REFERENCES validation_protocols(protocol_id)
+             );
+             CREATE TABLE IF NOT EXISTS dataset_generation_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                request_hash TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                dataset_id TEXT,
+                status TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                diagnostic_json TEXT,
+                progress_completed INTEGER NOT NULL DEFAULT 0,
+                progress_total INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );
+             CREATE TABLE IF NOT EXISTS signal_dataset_content (
+                dataset_id TEXT PRIMARY KEY,
+                metadata_json TEXT NOT NULL,
+                parquet_path TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS signal_dataset_access (
+                user_id TEXT NOT NULL,
+                dataset_id TEXT NOT NULL,
+                PRIMARY KEY(user_id, dataset_id),
+                FOREIGN KEY(dataset_id) REFERENCES signal_dataset_content(dataset_id)
              );",
             )
             .map_err(string)?;
+        database.execute(
+            "UPDATE dataset_generation_attempts SET status = 'failed', diagnostic_json = 'generation-interrupted: application stopped before completion' WHERE status IN ('pending', 'running')",
+            [],
+        ).map_err(string)?;
         Ok(Self {
             root,
             snapshots,
             database: Mutex::new(database),
             downloads: Mutex::new(HashMap::new()),
+            generation_attempts: Mutex::new(HashMap::new()),
         })
     }
 
@@ -222,15 +255,26 @@ impl M3State {
             run_count: count("SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1")?,
             protocol_count: count("SELECT COUNT(*) FROM validation_protocols WHERE user_id = ?1")?,
             report_count: count("SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1")?,
+            generation_attempt_count: count(
+                "SELECT COUNT(*) FROM dataset_generation_attempts WHERE user_id = ?1",
+            )?,
+            model_artifact_count: count(
+                "SELECT COUNT(*) FROM component_content c JOIN component_access a USING(archive_sha256) WHERE a.user_id = ?1 AND c.kind = 'model'",
+            )?,
+            signal_dataset_count: count(
+                "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1",
+            )?,
             component_blocking_run_count: count(
-                "SELECT COUNT(DISTINCT r.run_id) FROM backtest_runs r
+                "SELECT (SELECT COUNT(DISTINCT r.run_id) FROM backtest_runs r
 				 JOIN backtest_run_components rc USING(run_id)
 				 JOIN component_access a USING(archive_sha256)
-				 WHERE r.user_id = ?1 AND a.user_id = ?1",
+				 WHERE r.user_id = ?1 AND a.user_id = ?1)
+                 + (SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1)",
             )?,
             market_data_blocking_record_count: count(
                 "SELECT (SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1)
-				 + (SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1)",
+				 + (SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1)
+                 + (SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1)",
             )?,
         })
     }
@@ -238,6 +282,19 @@ impl M3State {
     pub fn reset_local_data(&self, user_id: &str, kind: LocalDataResetKind) -> Result<(), String> {
         validate_user(user_id)?;
         let mut database = self.database.lock().map_err(string)?;
+        if matches!(kind, LocalDataResetKind::All) {
+            let attempt_ids = strings(
+                &database,
+                "SELECT attempt_id FROM dataset_generation_attempts WHERE user_id = ?1 AND status IN ('pending', 'running')",
+                user_id,
+            )?;
+            let attempts = self.generation_attempts.lock().map_err(string)?;
+            for attempt_id in attempt_ids {
+                if let Some(cancelled) = attempts.get(&attempt_id) {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            }
+        }
         match kind {
             LocalDataResetKind::Watchlist => reset_watchlist(&mut database, user_id),
             LocalDataResetKind::Components => reset_components(&mut database, user_id, &self.root),
@@ -693,7 +750,11 @@ impl M3State {
             .map_err(string)
     }
 
-    fn package_for_user(&self, user_id: &str, hash: &str) -> Result<ComponentPackage, String> {
+    pub(crate) fn package_for_user(
+        &self,
+        user_id: &str,
+        hash: &str,
+    ) -> Result<ComponentPackage, String> {
         validate_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
         let path: String = database
@@ -711,11 +772,14 @@ impl M3State {
     fn compatible_factors(
         &self,
         user_id: &str,
-        strategy_archive_sha256: &str,
+        consumer_archive_sha256: &str,
     ) -> Result<BTreeMap<String, Vec<String>>, String> {
-        let strategy = self.package_for_user(user_id, strategy_archive_sha256)?;
-        if strategy.manifest.kind != ComponentKind::Strategy {
-            return Err("Backtest requires a Strategy Component".into());
+        let consumer = self.package_for_user(user_id, consumer_archive_sha256)?;
+        if !matches!(
+            consumer.manifest.kind,
+            ComponentKind::Strategy | ComponentKind::Model
+        ) {
+            return Err("Compatible Factors require a Strategy or Model Component".into());
         }
         let components = self.list_components(user_id)?;
         let packages = components
@@ -726,10 +790,10 @@ impl M3State {
                     .map(|package| (component, package))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(compatible_factor_hashes(&strategy.manifest, &packages))
+        Ok(compatible_factor_hashes(&consumer.manifest, &packages))
     }
 
-    fn snapshot_for_user(
+    pub(crate) fn snapshot_for_user(
         &self,
         user_id: &str,
         snapshot_id: &str,
@@ -751,7 +815,7 @@ impl M3State {
         Ok((snapshot, bars))
     }
 
-    fn runtime_component(&self, package: &ComponentPackage) -> Result<PathBuf, String> {
+    pub(crate) fn runtime_component(&self, package: &ComponentPackage) -> Result<PathBuf, String> {
         let directory = self.root.join("runtime");
         fs::create_dir_all(&directory).map_err(string)?;
         let path = directory.join(format!("{}.wasm", package.manifest.wasm_sha256));
@@ -1195,7 +1259,7 @@ pub struct BacktestPreflight {
     pub reuses_existing_run: bool,
     pub snapshot: MarketDataSnapshot,
     pub normalized_request: NormalizedBacktestRunRequest,
-    pub indicator_plan: serde_json::Value,
+    pub feature_plan: serde_json::Value,
     pub component_lock: Vec<ComponentLockEntry>,
 }
 
@@ -1203,7 +1267,7 @@ struct PreparedBacktest {
     strategy: ComponentPackage,
     strategy_parameters: Vec<ComponentParameterValue>,
     factor_packages: Vec<ComponentPackage>,
-    plan: FrozenIndicatorPlan,
+    plan: FrozenFeaturePlan,
     provenance: BacktestRunProvenance,
     component_lock: Vec<ComponentLockEntry>,
     run_id: String,
@@ -1263,8 +1327,8 @@ pub struct BacktestRunView {
 #[serde(rename_all = "camelCase")]
 pub struct BacktestRunProvenance {
     pub normalized_request: NormalizedBacktestRunRequest,
-    pub indicator_plan_json: String,
-    pub indicator_plan_hash: String,
+    pub feature_plan_json: String,
+    pub feature_plan_hash: String,
     pub component_lock: Vec<ComponentLockEntry>,
     pub indicator_engine_build_identity: IndicatorEngineBuildIdentity,
     pub backtest_engine_version: String,
@@ -1746,7 +1810,7 @@ pub fn backtest_preflight(
         reuses_existing_run: state.load_run(&request.user_id, &prepared.run_id).is_ok(),
         snapshot: prepared.snapshot,
         normalized_request: prepared.provenance.normalized_request,
-        indicator_plan: serde_json::from_str(&prepared.provenance.indicator_plan_json)
+        feature_plan: serde_json::from_str(&prepared.provenance.feature_plan_json)
             .map_err(string)?,
         component_lock: prepared.component_lock,
     })
@@ -1896,14 +1960,14 @@ fn prepare_backtest(
         })
         .collect::<Vec<_>>();
     let engine_identity = native_engine_identity().map_err(|error| error.to_string())?;
-    let plan = validate_and_freeze_with_factors_and_parameters(
+    let plan = validate_and_freeze_feature_plan_with_factors_and_parameters(
         &strategy.manifest,
         &strategy.archive_sha256,
         &engine_identity,
         &factor_inputs,
         &frozen_strategy_parameters,
     )
-    .map_err(|error| format!("Indicator Plan validation failed: {:?}", error.issues))?;
+    .map_err(|error| format!("Feature Plan validation failed: {:?}", error.issues))?;
     let mut factor_instances = factor_packages
         .iter()
         .zip(&factor_parameters)
@@ -1941,8 +2005,8 @@ fn prepare_backtest(
             execution_profile: request.execution_profile.clone(),
             seed: request.seed,
         },
-        indicator_plan_json: String::from_utf8(plan.to_json()).map_err(string)?,
-        indicator_plan_hash: plan.plan_hash().into(),
+        feature_plan_json: String::from_utf8(plan.to_json()).map_err(string)?,
+        feature_plan_hash: plan.plan_hash().into(),
         component_lock: component_lock.clone(),
         indicator_engine_build_identity: IndicatorEngineBuildIdentity {
             engine_version: engine_identity.engine_version,
@@ -2743,16 +2807,16 @@ fn validate_provenance(provenance: &BacktestRunProvenance) -> Result<(), String>
             .clone(),
     };
     let frozen_plan =
-        FrozenIndicatorPlan::load_for_engine(provenance.indicator_plan_json.as_bytes(), &identity)
-            .map_err(|_| "Backtest Run provenance has an invalid frozen Indicator Plan")?;
+        FrozenFeaturePlan::load_for_engine(provenance.feature_plan_json.as_bytes(), &identity)
+            .map_err(|_| "Backtest Run provenance has an invalid frozen Feature Plan")?;
     let plan: serde_json::Value =
-        serde_json::from_str(&provenance.indicator_plan_json).map_err(string)?;
-    let content = plan.as_object().ok_or("Indicator Plan is invalid")?;
+        serde_json::from_str(&provenance.feature_plan_json).map_err(string)?;
+    let content = plan.as_object().ok_or("Feature Plan is invalid")?;
     if content.get("planHash").and_then(serde_json::Value::as_str)
-        != Some(&provenance.indicator_plan_hash)
-        || frozen_plan.plan_hash() != provenance.indicator_plan_hash
+        != Some(&provenance.feature_plan_hash)
+        || frozen_plan.plan_hash() != provenance.feature_plan_hash
         || content
-            .get("strategyPackageSha256")
+            .get("consumerPackageSha256")
             .and_then(serde_json::Value::as_str)
             != Some(&provenance.normalized_request.strategy_archive_sha256)
         || content
@@ -2779,13 +2843,13 @@ fn validate_provenance(provenance: &BacktestRunProvenance) -> Result<(), String>
     let mut plan_aliases = content
         .get("factors")
         .and_then(serde_json::Value::as_array)
-        .ok_or("Indicator Plan is missing Factor bindings")?
+        .ok_or("Feature Plan is missing Factor bindings")?
         .iter()
         .map(|factor| {
             factor
                 .get("alias")
                 .and_then(serde_json::Value::as_str)
-                .ok_or("Indicator Plan has an invalid Factor binding")
+                .ok_or("Feature Plan has an invalid Factor binding")
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut request_aliases = provenance
@@ -2961,7 +3025,7 @@ fn aggregate_equity(
         .collect()
 }
 
-fn validate_user(user_id: &str) -> Result<(), String> {
+pub(crate) fn validate_user(user_id: &str) -> Result<(), String> {
     if user_id.trim().is_empty() || user_id.len() > 128 {
         Err("User ID is invalid".into())
     } else {
@@ -3019,10 +3083,11 @@ fn insert_default_watchlist(database: &Connection, user_id: &str) -> Result<(), 
 fn reset_components(database: &mut Connection, user_id: &str, root: &Path) -> Result<(), String> {
     let blocking: i64 = database
         .query_row(
-            "SELECT COUNT(DISTINCT r.run_id) FROM backtest_runs r
+            "SELECT (SELECT COUNT(DISTINCT r.run_id) FROM backtest_runs r
              JOIN backtest_run_components rc USING(run_id)
              JOIN component_access a USING(archive_sha256)
-             WHERE r.user_id = ?1 AND a.user_id = ?1",
+             WHERE r.user_id = ?1 AND a.user_id = ?1)
+             + (SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1)",
             [user_id],
             |row| row.get(0),
         )
@@ -3068,7 +3133,8 @@ fn reset_market_data(database: &mut Connection, user_id: &str, root: &Path) -> R
     let blocking: i64 = database
         .query_row(
             "SELECT (SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1)
-             + (SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1)",
+             + (SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1)
+             + (SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1)",
             [user_id],
             |row| row.get(0),
         )
@@ -3145,7 +3211,15 @@ fn reset_all(database: &mut Connection, user_id: &str, root: &Path) -> Result<()
             .into_iter()
             .map(|snapshot| snapshot.parquet_path),
     );
-    let staged = stage_files(paths, root)?;
+    let dataset_paths = strings(
+        database,
+        "SELECT c.parquet_path FROM signal_dataset_content c JOIN signal_dataset_access a USING(dataset_id) WHERE a.user_id = ?1 AND NOT EXISTS(SELECT 1 FROM signal_dataset_access other WHERE other.dataset_id = c.dataset_id AND other.user_id <> ?1)",
+        user_id,
+    )?;
+    let staged = stage_files(
+        paths.chain(dataset_paths.into_iter().map(PathBuf::from)),
+        root,
+    )?;
     let result = (|| {
         let transaction = database.transaction().map_err(string)?;
         transaction
@@ -3154,6 +3228,19 @@ fn reset_all(database: &mut Connection, user_id: &str, root: &Path) -> Result<()
                 [user_id],
             )
             .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM dataset_generation_attempts WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM signal_dataset_access WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction.execute("DELETE FROM signal_dataset_content WHERE NOT EXISTS(SELECT 1 FROM signal_dataset_access a WHERE a.dataset_id = signal_dataset_content.dataset_id)", []).map_err(string)?;
         transaction
             .execute(
                 "DELETE FROM validation_protocols WHERE user_id = ?1",
@@ -3320,6 +3407,24 @@ mod tests {
                 .execute("INSERT INTO component_access VALUES (?1, 'hash')", [user])
                 .unwrap();
         }
+        let dataset = root.join("m3/signal-datasets/shared.parquet");
+        fs::create_dir_all(dataset.parent().unwrap()).unwrap();
+        fs::write(&dataset, b"parquet").unwrap();
+        database
+            .execute(
+                "INSERT INTO signal_dataset_content VALUES ('dataset', '{}', ?1)",
+                [dataset.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        for user in ["alice", "bob"] {
+            database
+                .execute(
+                    "INSERT INTO signal_dataset_access VALUES (?1, 'dataset')",
+                    [user],
+                )
+                .unwrap();
+        }
+        database.execute("INSERT INTO dataset_generation_attempts(attempt_id, request_hash, user_id, status, request_json) VALUES ('attempt', 'request', 'alice', 'failed', '{}')", []).unwrap();
         drop(database);
 
         state
@@ -3330,9 +3435,13 @@ mod tests {
         let bob = state.local_data_summary("bob").unwrap();
         assert_eq!(alice.watchlist_count, 3);
         assert_eq!(alice.component_count, 0);
+        assert_eq!(alice.generation_attempt_count, 0);
+        assert_eq!(alice.signal_dataset_count, 0);
         assert_eq!(bob.watchlist_count, 3);
         assert_eq!(bob.component_count, 1);
+        assert_eq!(bob.signal_dataset_count, 1);
         assert!(package.is_file());
+        assert!(dataset.is_file());
     }
 
     #[test]
@@ -3729,7 +3838,7 @@ mod tests {
                 .initial_quote_allocation,
             rust_decimal::Decimal::from(10_000),
         );
-        assert!(preview.provenance.indicator_plan_json.contains("\"slots\""));
+        assert!(preview.provenance.feature_plan_json.contains("\"slots\""));
 
         let first = execute_backtest(request(), &state).unwrap();
         let second = execute_backtest(request(), &state).unwrap();
@@ -3883,13 +3992,13 @@ mod tests {
             provenance.normalized_request.snapshot_id,
             snapshot.snapshot_id
         );
-        assert_eq!(provenance.indicator_plan_hash, first.plan_hash);
+        assert_eq!(provenance.feature_plan_hash, first.plan_hash);
         assert_eq!(provenance.component_lock, first.component_lock);
         assert_eq!(
             state.load_run("alice", &first.run_id).unwrap().provenance,
             first.provenance
         );
-        assert!(provenance.indicator_plan_json.contains("\"slots\""));
+        assert!(provenance.feature_plan_json.contains("\"slots\""));
         assert_eq!(
             provenance.normalized_request.initial_quote_allocation,
             rust_decimal::Decimal::from(10_000),
@@ -3912,8 +4021,8 @@ mod tests {
         inconsistent.normalized_request.factor_instances[0].alias = "other".into();
         assert!(validate_provenance(&inconsistent).is_err());
         let mut inconsistent = provenance.clone();
-        inconsistent.indicator_plan_json = inconsistent
-            .indicator_plan_json
+        inconsistent.feature_plan_json = inconsistent
+            .feature_plan_json
             .replacen("momentum", "tampered", 1);
         assert!(validate_provenance(&inconsistent).is_err());
         assert_eq!(first.component_lock.len(), 2);

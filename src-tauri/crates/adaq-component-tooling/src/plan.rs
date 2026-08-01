@@ -31,7 +31,7 @@ pub struct FactorInstancePlanInput<'a> {
     pub parameters: Vec<ComponentParameterValue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineIdentity {
     pub engine_version: String,
     pub ta_lib_version: String,
@@ -79,7 +79,7 @@ impl std::fmt::Display for PlanValidationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "Indicator Plan validation failed with {} issue(s)",
+            "Feature Plan validation failed with {} issue(s)",
             self.issues.len()
         )
     }
@@ -112,7 +112,7 @@ struct PlanDocument {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlanContent {
     plan_schema_version: String,
-    strategy_package_sha256: String,
+    consumer_package_sha256: String,
     catalog_version: String,
     engine_version: String,
     ta_lib_version: String,
@@ -121,10 +121,19 @@ struct PlanContent {
     target_triple: String,
     compiler_and_flags_sha256: String,
     engine_build_id: String,
+    consumer_parameters: Vec<FrozenConsumerParameter>,
+    consumer_warmup_bars: u32,
     slots: Vec<FrozenSlot>,
     #[serde(default)]
     factors: Vec<FrozenFactor>,
     effective_warmup_bars: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FrozenConsumerParameter {
+    name: String,
+    value: ComponentParameterValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,9 +186,9 @@ struct ResolvedBuiltIn {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrozenIndicatorPlan(PlanDocument);
+pub struct FrozenFeaturePlan(PlanDocument);
 
-impl FrozenIndicatorPlan {
+impl FrozenFeaturePlan {
     pub fn plan_hash(&self) -> &str {
         &self.0.plan_hash
     }
@@ -238,7 +247,7 @@ impl FrozenIndicatorPlan {
     }
 
     pub fn to_json(&self) -> Vec<u8> {
-        canonical_json(&self.0).expect("a validated Indicator Plan fits the canonical size limit")
+        canonical_json(&self.0).expect("a validated Feature Plan fits the canonical size limit")
     }
 
     pub fn load(bytes: &[u8]) -> Result<Self, PlanLoadError> {
@@ -266,7 +275,7 @@ impl FrozenIndicatorPlan {
             || document.content.catalog_version != CATALOG_VERSION
             || document.content.engine_version != ENGINE_VERSION
             || document.content.ta_lib_version != TA_LIB_VERSION
-            || !is_sha256(&document.content.strategy_package_sha256)
+            || !is_sha256(&document.content.consumer_package_sha256)
             || document.content.slots.is_empty()
             || document.content.slots.len() > MAX_FEATURE_SLOTS
             || document.content.factors.len() > MAX_FACTOR_INSTANCES
@@ -379,45 +388,48 @@ pub struct FrozenFactorView<'a> {
     pub warmup_bars: u32,
 }
 
-pub fn validate_and_freeze(
+pub fn validate_and_freeze_feature_plan(
     manifest: &ComponentManifest,
-    strategy_package_sha256: &str,
+    consumer_package_sha256: &str,
     identity: &EngineIdentity,
-) -> Result<FrozenIndicatorPlan, PlanValidationError> {
-    validate_and_freeze_with_factors_and_parameters(
+) -> Result<FrozenFeaturePlan, PlanValidationError> {
+    validate_and_freeze_feature_plan_with_factors_and_parameters(
         manifest,
-        strategy_package_sha256,
+        consumer_package_sha256,
         identity,
         &[],
         &BTreeMap::new(),
     )
 }
 
-pub fn validate_and_freeze_with_factors(
+pub fn validate_and_freeze_feature_plan_with_factors(
     manifest: &ComponentManifest,
-    strategy_package_sha256: &str,
+    consumer_package_sha256: &str,
     identity: &EngineIdentity,
     factor_inputs: &[FactorInstancePlanInput<'_>],
-) -> Result<FrozenIndicatorPlan, PlanValidationError> {
-    validate_and_freeze_with_factors_and_parameters(
+) -> Result<FrozenFeaturePlan, PlanValidationError> {
+    validate_and_freeze_feature_plan_with_factors_and_parameters(
         manifest,
-        strategy_package_sha256,
+        consumer_package_sha256,
         identity,
         factor_inputs,
         &BTreeMap::new(),
     )
 }
 
-pub fn validate_and_freeze_with_factors_and_parameters(
+pub fn validate_and_freeze_feature_plan_with_factors_and_parameters(
     manifest: &ComponentManifest,
-    strategy_package_sha256: &str,
+    consumer_package_sha256: &str,
     identity: &EngineIdentity,
     factor_inputs: &[FactorInstancePlanInput<'_>],
-    strategy_parameters: &BTreeMap<String, String>,
-) -> Result<FrozenIndicatorPlan, PlanValidationError> {
+    consumer_parameters: &BTreeMap<String, String>,
+) -> Result<FrozenFeaturePlan, PlanValidationError> {
     let mut issues = Vec::new();
-    if manifest.kind != ComponentKind::Strategy {
-        issues.push(issue("not-a-strategy", None, None, None));
+    if !matches!(
+        manifest.kind,
+        ComponentKind::Strategy | ComponentKind::Model
+    ) {
+        issues.push(issue("not-a-feature-consumer", None, None, None));
     }
     if manifest.manifest_schema_version.to_string() != PLAN_SCHEMA_VERSION {
         issues.push(issue(
@@ -427,12 +439,12 @@ pub fn validate_and_freeze_with_factors_and_parameters(
             Some("manifest-schema-version"),
         ));
     }
-    if !is_sha256(strategy_package_sha256) {
+    if !is_sha256(consumer_package_sha256) {
         issues.push(issue(
-            "invalid-strategy-package-hash",
+            "invalid-consumer-package-hash",
             None,
             None,
-            Some("strategy-package-sha256"),
+            Some("consumer-package-sha256"),
         ));
     }
     if !valid_engine_identity(identity) {
@@ -449,6 +461,42 @@ pub fn validate_and_freeze_with_factors_and_parameters(
     if manifest.feature_slots.len() > MAX_FEATURE_SLOTS {
         issues.push(issue("too-many-feature-slots", None, None, None));
     }
+    if consumer_parameters
+        .keys()
+        .any(|name| !manifest.parameters.iter().any(|item| &item.name == name))
+    {
+        issues.push(issue(
+            "unknown-consumer-parameter",
+            None,
+            None,
+            Some("consumer-parameters"),
+        ));
+    }
+    let parameter_overrides = consumer_parameters
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    let frozen_consumer_parameters =
+        match crate::component_parameters(manifest, Some(&parameter_overrides)) {
+            Ok(values) => manifest
+                .parameters
+                .iter()
+                .zip(values)
+                .map(|(definition, value)| FrozenConsumerParameter {
+                    name: definition.name.clone(),
+                    value,
+                })
+                .collect(),
+            Err(_) => {
+                issues.push(issue(
+                    "invalid-consumer-parameter",
+                    None,
+                    None,
+                    Some("consumer-parameters"),
+                ));
+                vec![]
+            }
+        };
 
     if factor_inputs.len() > MAX_FACTOR_INSTANCES {
         issues.push(issue(
@@ -551,7 +599,7 @@ pub fn validate_and_freeze_with_factors_and_parameters(
                     output,
                     inputs,
                     parameters,
-                    strategy_parameters,
+                    consumer_parameters,
                 ) {
                     Ok(resolved) => slots.push(FrozenSlot {
                         name: slot.name.clone(),
@@ -630,7 +678,7 @@ pub fn validate_and_freeze_with_factors_and_parameters(
 
     let content = PlanContent {
         plan_schema_version: PLAN_SCHEMA_VERSION.into(),
-        strategy_package_sha256: strategy_package_sha256.into(),
+        consumer_package_sha256: consumer_package_sha256.into(),
         catalog_version: CATALOG_VERSION.into(),
         engine_version: ENGINE_VERSION.into(),
         ta_lib_version: TA_LIB_VERSION.into(),
@@ -639,6 +687,8 @@ pub fn validate_and_freeze_with_factors_and_parameters(
         target_triple: identity.target_triple.clone(),
         compiler_and_flags_sha256: identity.compiler_and_flags_sha256.clone(),
         engine_build_id: identity.engine_build_id.clone(),
+        consumer_parameters: frozen_consumer_parameters,
+        consumer_warmup_bars: manifest.warmup_bars,
         effective_warmup_bars: slots.iter().map(|slot| slot.warmup_bars).max().unwrap_or(0),
         slots,
         factors: {
@@ -675,7 +725,7 @@ pub fn validate_and_freeze_with_factors_and_parameters(
             issues: vec![issue("plan-json-too-large", None, None, None)],
         });
     }
-    Ok(FrozenIndicatorPlan(document))
+    Ok(FrozenFeaturePlan(document))
 }
 
 fn valid_engine_identity(identity: &EngineIdentity) -> bool {
@@ -1107,8 +1157,8 @@ mod tests {
         let identity = identity();
         let package_hash = "a".repeat(64);
 
-        let first = validate_and_freeze(&manifest, &package_hash, &identity).unwrap();
-        let replay = validate_and_freeze(&manifest, &package_hash, &identity).unwrap();
+        let first = validate_and_freeze_feature_plan(&manifest, &package_hash, &identity).unwrap();
+        let replay = validate_and_freeze_feature_plan(&manifest, &package_hash, &identity).unwrap();
 
         assert_eq!(first.plan_hash(), replay.plan_hash());
         assert!(is_sha256(first.plan_hash()));
@@ -1121,28 +1171,28 @@ mod tests {
             [MarketField::QuoteVolume, MarketField::Close]
         );
         assert_eq!(first.effective_warmup_bars(), 0);
-        assert_eq!(FrozenIndicatorPlan::load(&first.to_json()).unwrap(), first);
+        assert_eq!(FrozenFeaturePlan::load(&first.to_json()).unwrap(), first);
 
         let padded = [b" ".as_slice(), first.to_json().as_slice()].concat();
         assert_eq!(
-            FrozenIndicatorPlan::load(&padded).unwrap_err().code,
+            FrozenFeaturePlan::load(&padded).unwrap_err().code,
             "non-canonical-plan-json"
         );
 
         let mut tampered = String::from_utf8(first.to_json()).unwrap();
         tampered = tampered.replace("quote-volume", "base-volume");
         assert_eq!(
-            FrozenIndicatorPlan::load(tampered.as_bytes())
+            FrozenFeaturePlan::load(tampered.as_bytes())
                 .unwrap_err()
                 .code,
             "plan-hash-mismatch"
         );
 
         let mut oversized: serde_json::Value = serde_json::from_slice(&first.to_json()).unwrap();
-        oversized["strategyPackageSha256"] =
+        oversized["consumerPackageSha256"] =
             serde_json::json!("a".repeat(MAX_CANONICAL_PLAN_JSON_BYTES));
         assert_eq!(
-            FrozenIndicatorPlan::load(&serde_json::to_vec(&oversized).unwrap())
+            FrozenFeaturePlan::load(&serde_json::to_vec(&oversized).unwrap())
                 .unwrap_err()
                 .code,
             "plan-json-too-large"
@@ -1169,7 +1219,8 @@ mod tests {
                 },
             },
         ]);
-        let error = validate_and_freeze(&manifest, &"a".repeat(64), &identity()).unwrap_err();
+        let error =
+            validate_and_freeze_feature_plan(&manifest, &"a".repeat(64), &identity()).unwrap_err();
         assert_eq!(
             error.issues,
             [issue(
@@ -1202,7 +1253,7 @@ mod tests {
             default_value: "2".into(),
             allowed_values: vec![],
         }];
-        let plan = validate_and_freeze_with_factors_and_parameters(
+        let plan = validate_and_freeze_feature_plan_with_factors_and_parameters(
             &manifest,
             &"a".repeat(64),
             &identity(),
@@ -1212,6 +1263,42 @@ mod tests {
         .unwrap();
         assert_eq!(plan.effective_warmup_bars(), 2);
         assert_eq!(plan.slot_names().collect::<Vec<_>>(), ["ema"]);
+    }
+
+    #[test]
+    fn model_feature_plan_freezes_selected_parameter_values() {
+        let mut manifest = manifest(vec![FeatureSlotDefinition {
+            name: "ema".into(),
+            source: FeatureSlotSource::BuiltIn {
+                indicator: "ema".into(),
+                output: "value".into(),
+                inputs: [("real-0".into(), serde_json::json!("close"))].into(),
+                parameters: [(
+                    "time-period".into(),
+                    serde_json::json!({"strategyParameter":"period"}),
+                )]
+                .into(),
+            },
+        }]);
+        manifest.kind = ComponentKind::Model;
+        manifest.parameters = vec![ParameterDefinition {
+            name: "period".into(),
+            parameter_type: ParameterType::Integer,
+            default_value: "2".into(),
+            allowed_values: vec![],
+        }];
+        let selected = validate_and_freeze_feature_plan_with_factors_and_parameters(
+            &manifest,
+            &"a".repeat(64),
+            &identity(),
+            &[],
+            &[("period".into(), "3".into())].into(),
+        )
+        .unwrap();
+        let default =
+            validate_and_freeze_feature_plan(&manifest, &"a".repeat(64), &identity()).unwrap();
+        assert_eq!(selected.effective_warmup_bars(), 2);
+        assert_ne!(selected.plan_hash(), default.plan_hash());
     }
 
     #[test]
@@ -1225,7 +1312,8 @@ mod tests {
                 parameters: BTreeMap::new(),
             },
         }]);
-        let error = validate_and_freeze(&manifest, &"a".repeat(64), &identity()).unwrap_err();
+        let error =
+            validate_and_freeze_feature_plan(&manifest, &"a".repeat(64), &identity()).unwrap_err();
         assert_eq!(
             error.issues,
             [issue(
@@ -1248,7 +1336,8 @@ mod tests {
                 parameters: [("time-period".into(), serde_json::json!(2))].into(),
             },
         }]);
-        let plan = validate_and_freeze(&manifest, &"a".repeat(64), &identity()).unwrap();
+        let plan =
+            validate_and_freeze_feature_plan(&manifest, &"a".repeat(64), &identity()).unwrap();
         let mut document = plan.0;
         let FrozenSource::BuiltIn { indicator, .. } = &mut document.content.slots[0].source else {
             unreachable!()
@@ -1257,7 +1346,7 @@ mod tests {
         document.plan_hash = hash(&canonical_json(&document.content).unwrap());
 
         assert_eq!(
-            FrozenIndicatorPlan::load(&canonical_json(&document).unwrap())
+            FrozenFeaturePlan::load(&canonical_json(&document).unwrap())
                 .unwrap_err()
                 .code,
             "invalid-plan-contract"
@@ -1266,7 +1355,7 @@ mod tests {
 
     #[test]
     fn loading_rejects_a_plan_for_a_different_engine_build() {
-        let plan = validate_and_freeze(
+        let plan = validate_and_freeze_feature_plan(
             &manifest(vec![market("close", MarketField::Close)]),
             &"a".repeat(64),
             &identity(),
@@ -1275,7 +1364,7 @@ mod tests {
         let mut other = identity();
         other.engine_build_id = "b".repeat(64);
         assert_eq!(
-            FrozenIndicatorPlan::load_for_engine(&plan.to_json(), &other)
+            FrozenFeaturePlan::load_for_engine(&plan.to_json(), &other)
                 .unwrap_err()
                 .code,
             "unsupported-engine-identity"
@@ -1289,7 +1378,7 @@ mod tests {
                 _ => unreachable!(),
             }
             assert_eq!(
-                FrozenIndicatorPlan::load_for_engine(&plan.to_json(), &other)
+                FrozenFeaturePlan::load_for_engine(&plan.to_json(), &other)
                     .unwrap_err()
                     .code,
                 "unsupported-engine-identity"
@@ -1312,8 +1401,9 @@ mod tests {
         };
         let identity = identity();
         let omitted =
-            validate_and_freeze(&make(BTreeMap::new()), &"a".repeat(64), &identity).unwrap();
-        let explicit_defaults = validate_and_freeze(
+            validate_and_freeze_feature_plan(&make(BTreeMap::new()), &"a".repeat(64), &identity)
+                .unwrap();
+        let explicit_defaults = validate_and_freeze_feature_plan(
             &make(
                 [
                     ("time-period".into(), serde_json::json!(5)),
@@ -1327,7 +1417,7 @@ mod tests {
             &identity,
         )
         .unwrap();
-        let equivalent_spelling = validate_and_freeze(
+        let equivalent_spelling = validate_and_freeze_feature_plan(
             &make(
                 [
                     ("time-period".into(), serde_json::json!(5)),
@@ -1456,7 +1546,9 @@ mod tests {
             ),
         ];
         let manifest = manifest(slots);
-        let freeze = || validate_and_freeze(&manifest, &"a".repeat(64), &identity()).unwrap_err();
+        let freeze = || {
+            validate_and_freeze_feature_plan(&manifest, &"a".repeat(64), &identity()).unwrap_err()
+        };
         let first = freeze();
         let replay = freeze();
         assert_eq!(first, replay);
@@ -1512,7 +1604,7 @@ mod tests {
                 },
             },
         ]);
-        assert!(validate_and_freeze(&valid, &"a".repeat(64), &identity()).is_ok());
+        assert!(validate_and_freeze_feature_plan(&valid, &"a".repeat(64), &identity()).is_ok());
 
         let invalid = manifest(vec![FeatureSlotDefinition {
             name: "obv".into(),
@@ -1527,7 +1619,8 @@ mod tests {
                 parameters: BTreeMap::new(),
             },
         }]);
-        let error = validate_and_freeze(&invalid, &"a".repeat(64), &identity()).unwrap_err();
+        let error =
+            validate_and_freeze_feature_plan(&invalid, &"a".repeat(64), &identity()).unwrap_err();
         assert_eq!(error.issues[0].code, "invalid-indicator-input");
         assert_eq!(error.issues[0].field.as_deref(), Some("volume"));
     }
@@ -1553,7 +1646,8 @@ mod tests {
             default_value: "2.0".into(),
             allowed_values: vec![],
         }];
-        let error = validate_and_freeze(&manifest, &"a".repeat(64), &identity()).unwrap_err();
+        let error =
+            validate_and_freeze_feature_plan(&manifest, &"a".repeat(64), &identity()).unwrap_err();
         assert_eq!(error.issues[0].code, "mistyped-indicator-parameter");
         assert_eq!(error.issues[0].field.as_deref(), Some("deviations-up"));
     }
@@ -1564,7 +1658,8 @@ mod tests {
             .map(|index| market(&format!("slot-{index}"), MarketField::Close))
             .collect();
         let error =
-            validate_and_freeze(&manifest(slots), &"a".repeat(64), &identity()).unwrap_err();
+            validate_and_freeze_feature_plan(&manifest(slots), &"a".repeat(64), &identity())
+                .unwrap_err();
         assert!(
             error
                 .issues

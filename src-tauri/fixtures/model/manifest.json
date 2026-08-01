@@ -1,0 +1,21 @@
+{
+  "manifestSchemaVersion": "1.0.0",
+  "componentId": "88888888-8888-4888-8888-888888888888",
+  "version": "1.0.0",
+  "name": "Stateful Model Fixture",
+  "kind": "model",
+  "sdkVersion": "0.1.0",
+  "abiVersion": "1.0.0",
+  "parameters": [{"name":"mode","parameterType":"string","defaultValue":"valid","allowedValues":["valid","non-finite","wrong-time"]}],
+  "featureSlots": [{"name":"close","source":{"kind":"market","field":"close"}}],
+  "modelScope": "single-instrument",
+  "modelOutputs": [{
+    "name":"next-close-score",
+    "predictionKind":{"kind":"score"},
+    "forecastTarget":{"kind":"builtin","target":"future-close-return"},
+    "valueScale":{"kind":"z-score","method":"fixture"},
+    "horizonBars":1
+  }],
+  "modelArtifact": {"sha256":"0000000000000000000000000000000000000000000000000000000000000000","provenance":{"sourceRevision":"fixture","weights":"embedded"}},
+  "warmupBars": 2
+}

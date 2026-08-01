@@ -46,6 +46,9 @@ rust_decimal = "1"
 sha2 = "0.11"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+arrow-array = "59.1"
+arrow-schema = "59.1"
+parquet = { version = "59.1", default-features = false, features = ["arrow", "snap"] }
 
 [dev-dependencies]
 zip = { version = "8", default-features = false, features = ["deflate"] }

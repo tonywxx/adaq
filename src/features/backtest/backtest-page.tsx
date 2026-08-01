@@ -103,8 +103,8 @@ type Metrics = Record<
 > & { fillCount: number; realizedTradeCount: number };
 type Provenance = {
 	normalizedRequest: NormalizedRunConfiguration;
-	indicatorPlanJson: string;
-	indicatorPlanHash: string;
+	featurePlanJson: string;
+	featurePlanHash: string;
 	componentLock: Array<{
 		componentId: string;
 		version: string;
@@ -158,7 +158,7 @@ type BacktestPreflight = {
 	reusesExistingRun: boolean;
 	snapshot: Snapshot;
 	normalizedRequest: Record<string, unknown>;
-	indicatorPlan: Record<string, unknown>;
+	featurePlan: Record<string, unknown>;
 	componentLock: Array<Record<string, unknown>>;
 };
 const EXECUTION_PAGE_SIZE = 100;
@@ -1273,10 +1273,7 @@ function ProvenanceView({
 					<>
 						<Evidence label="Run ID" value={run.runId} />
 						<Evidence label="Snapshot ID" value={run.snapshot.snapshotId} />
-						<Evidence
-							label="Indicator Plan hash"
-							value={provenance.indicatorPlanHash}
-						/>
+						<Evidence label="Feature Plan hash" value={provenance.featurePlanHash} />
 						<Evidence label="Seed" value={String(provenance.seed)} />
 						<Evidence
 							label="Strategy Package"
@@ -1314,7 +1311,7 @@ function ProvenanceView({
 							label="Component Packages"
 							value={JSON.stringify(provenance.componentLock, null, 2)}
 						/>
-						<Evidence label="Indicator Plan" value={provenance.indicatorPlanJson} />
+						<Evidence label="Feature Plan" value={provenance.featurePlanJson} />
 						<Evidence
 							label="Indicator Engine identity"
 							value={JSON.stringify(provenance.indicatorEngineBuildIdentity, null, 2)}

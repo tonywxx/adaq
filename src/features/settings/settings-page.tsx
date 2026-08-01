@@ -79,6 +79,9 @@ type LocalDataSummary = {
 	runCount: number;
 	protocolCount: number;
 	reportCount: number;
+	generationAttemptCount: number;
+	modelArtifactCount: number;
+	signalDatasetCount: number;
 	componentBlockingRunCount: number;
 	marketDataBlockingRecordCount: number;
 };
@@ -627,7 +630,7 @@ function DataStorageSettings() {
 						<ResetAction
 							kind="all"
 							title="Reset All Local Research Data"
-							description="Remove this User's Watchlist, Components, Market Data, Runs, Protocols, and Reports."
+							description="Remove this User's Watchlist, Components, Model Artifacts, Market Data, Generation Attempts, Signal Datasets, Runs, Protocols, and Reports."
 							summary={summary}
 							userId={user?.id}
 						/>
@@ -779,6 +782,15 @@ function ResetDetails({
 			<li key="runs">Backtest Runs: {summary.runCount}</li>,
 			<li key="protocols">Validation Protocols: {summary.protocolCount}</li>,
 			<li key="reports">Validation Reports: {summary.reportCount}</li>,
+			<li key="attempts">
+				Generation Attempts: {summary.generationAttemptCount}
+			</li>,
+			<li key="artifacts">
+				Model Artifact registrations: {summary.modelArtifactCount}
+			</li>,
+			<li key="datasets">
+				Forecast Signal Datasets: {summary.signalDatasetCount}
+			</li>,
 		);
 	return (
 		<div className="rounded-lg border bg-muted/30 p-4 text-sm">

@@ -934,7 +934,7 @@ fn detect_bar_gaps(interval: BarInterval, bars: &[OhlcvBar]) -> Result<Vec<BarGa
     Ok(gaps)
 }
 
-fn next_bar_open_time_ms(open_time_ms: i64, interval: BarInterval) -> Result<i64, DataError> {
+pub fn next_bar_open_time_ms(open_time_ms: i64, interval: BarInterval) -> Result<i64, DataError> {
     let fixed_seconds = match interval {
         BarInterval::OneSecond => Some(1),
         BarInterval::OneMinute => Some(60),

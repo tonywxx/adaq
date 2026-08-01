@@ -1,15 +1,16 @@
 mod m3;
+mod m8;
 #[allow(dead_code)] // M2 is host-only until Backtest orchestration consumes it.
 mod run_engine;
 mod watchlist;
 
+#[cfg(test)]
+use adaq_component_sdk::host::{factor_abi, strategy_abi};
+use adaq_component_tooling::{FactorSchema, WasmLoader};
 use adaq_data_core::{
     BarInterval, BarSeries, BarStreamEvent, BarSubscription, DataError, HistoricalBarRange,
     InstrumentStatus, OkxClient, SpotInstrument, TickerSnapshot, TickerStreamEvent,
 };
-#[cfg(test)]
-use adaq_component_sdk::host::{factor_abi, strategy_abi};
-use adaq_component_tooling::{FactorSchema, WasmLoader};
 use std::{
     path::{Path, PathBuf},
     sync::Mutex,
@@ -490,7 +491,13 @@ pub fn run() {
             m3::validation_protocol_list,
             m3::validation_report_run,
             m3::validation_report_list,
-            m3::validation_report_export
+            m3::validation_report_export,
+            m8::dataset_generation_start,
+            m8::dataset_generation_retry,
+            m8::dataset_generation_list,
+            m8::dataset_generation_cancel,
+            m8::signal_dataset_list,
+            m8::signal_dataset_get
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

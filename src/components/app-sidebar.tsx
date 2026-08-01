@@ -32,14 +32,19 @@ const data = {
 			icon: <LayoutDashboardIcon />,
 		},
 		{
-			title: "Backtest",
-			url: "/backtest",
-			icon: <ChartBarIcon />,
-		},
-		{
 			title: "Components",
 			url: "/components",
 			icon: <ListIcon />,
+		},
+		{
+			title: "Models",
+			url: "/models",
+			icon: <CommandIcon />,
+		},
+		{
+			title: "Backtest",
+			url: "/backtest",
+			icon: <ChartBarIcon />,
 		},
 		{
 			title: "Validation",

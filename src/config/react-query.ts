@@ -2,7 +2,7 @@
 // 3. React Query 配置 (config/react-query.ts)
 // ============================================
 
-import { QueryClient, DefaultOptions } from "@tanstack/react-query";
+import { QueryClient, type DefaultOptions } from "@tanstack/react-query";
 
 const queryConfig: DefaultOptions = {
 	queries: {
