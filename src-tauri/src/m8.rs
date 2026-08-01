@@ -1936,22 +1936,44 @@ pub(crate) fn backtest_signal_datasets(
     state: &M3State,
     user_id: &str,
     include_rows: bool,
+    dataset_ids: Option<&[String]>,
 ) -> Result<Vec<BacktestSignalDataset>, String> {
     validate_user(user_id)?;
     let database = state.database.lock().map_err(string)?;
-    let mut statement = database
-        .prepare(
-            "SELECT c.metadata_json, c.parquet_path FROM signal_dataset_content c JOIN signal_dataset_access a USING(dataset_id) WHERE a.user_id = ?1 ORDER BY c.dataset_id",
-        )
-        .map_err(string)?;
-    let stored = statement
-        .query_map([user_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(string)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(string)?;
-    drop(statement);
+    let stored = if let Some(dataset_ids) = dataset_ids {
+        let mut statement = database
+            .prepare(
+                "SELECT c.metadata_json, c.parquet_path FROM signal_dataset_content c JOIN signal_dataset_access a USING(dataset_id) WHERE a.user_id = ?1 AND c.dataset_id = ?2",
+            )
+            .map_err(string)?;
+        dataset_ids
+            .iter()
+            .map(|dataset_id| {
+                statement
+                    .query_row(params![user_id, dataset_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .optional()
+                    .map_err(string)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect()
+    } else {
+        let mut statement = database
+            .prepare(
+                "SELECT c.metadata_json, c.parquet_path FROM signal_dataset_content c JOIN signal_dataset_access a USING(dataset_id) WHERE a.user_id = ?1 ORDER BY c.dataset_id",
+            )
+            .map_err(string)?;
+        statement
+            .query_map([user_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(string)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(string)?
+    };
     drop(database);
     stored
         .into_iter()

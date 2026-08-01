@@ -5,7 +5,7 @@ use adaq_component_tooling::{
     ComponentParameterValue, FrozenBuiltInParameter, FrozenFeaturePlan, FrozenSourceView,
     MarketField, RunLimits, WasmLoader, builtin_engine_market_field,
 };
-use adaq_data_core::{BarGap, OhlcvBar};
+use adaq_data_core::{BarGap, BarInterval, OhlcvBar, next_bar_open_time_ms};
 use adaq_indicator_engine::{
     EngineError, IndicatorColumn, IndicatorEngine, IndicatorRequest, OhlcvSegment, ParameterValue,
 };
@@ -39,6 +39,7 @@ pub(crate) struct SignalRunRequest<'a> {
     pub slot: &'a str,
     pub dataset_id: &'a str,
     pub signal_name: &'a str,
+    pub interval: BarInterval,
     pub rows: &'a [SignalRunRow],
 }
 
@@ -368,14 +369,26 @@ fn execute_segment(
                                 && binding.signal_name == signal_name
                         })
                         .expect("Signal Run bindings were validated");
+                    let decision_time_ms =
+                        next_bar_open_time_ms(bar.open_time_ms, binding.interval).map_err(
+                            |error| {
+                                RunError::host(
+                                    "invalid-signal-decision-time",
+                                    RunStage::FeatureFrame,
+                                    error.to_string(),
+                                )
+                                .at_bar(bar.open_time_ms)
+                                .for_slot(slot, format!("signal:{dataset_id}:{signal_name}"))
+                            },
+                        )?;
                     match binding
                         .rows
-                        .binary_search_by_key(&bar.open_time_ms, |row| row.prediction_time_ms)
+                        .binary_search_by_key(&decision_time_ms, |row| row.prediction_time_ms)
                         .ok()
                         .map(|index| &binding.rows[index])
                     {
                         Some(row)
-                            if row.available_at_ms <= bar.open_time_ms && row.value.is_some() =>
+                            if row.available_at_ms <= decision_time_ms && row.value.is_some() =>
                         {
                             row.value.expect("checked above")
                         }
@@ -1206,25 +1219,25 @@ mod tests {
         signal_inputs[0].dataset_id = &quote_dataset_id;
         let quote_rows = [
             SignalRunRow {
-                prediction_time_ms: 1,
-                available_at_ms: 1,
+                prediction_time_ms: 60_000,
+                available_at_ms: 60_000,
                 value: Some(0.2),
             },
             SignalRunRow {
-                prediction_time_ms: 2,
-                available_at_ms: 2,
+                prediction_time_ms: 120_000,
+                available_at_ms: 120_000,
                 value: Some(0.8),
             },
         ];
         let close_rows = [
             SignalRunRow {
-                prediction_time_ms: 1,
-                available_at_ms: 1,
+                prediction_time_ms: 60_000,
+                available_at_ms: 60_000,
                 value: Some(0.9),
             },
             SignalRunRow {
-                prediction_time_ms: 2,
-                available_at_ms: 3,
+                prediction_time_ms: 120_000,
+                available_at_ms: 120_001,
                 value: Some(0.1),
             },
         ];
@@ -1233,16 +1246,18 @@ mod tests {
                 slot: "quote-volume",
                 dataset_id: signal_inputs[0].dataset_id,
                 signal_name: "quote-volume",
+                interval: BarInterval::OneMinute,
                 rows: &quote_rows,
             },
             SignalRunRequest {
                 slot: "close",
                 dataset_id: signal_inputs[1].dataset_id,
                 signal_name: "close",
+                interval: BarInterval::OneMinute,
                 rows: &close_rows,
             },
         ];
-        let bars = [bar(1, "10", "5"), bar(2, "11", "20")];
+        let bars = [bar(0, "10", "5"), bar(60_000, "11", "20")];
         let result = RunEngine::execute(&RunRequest {
             strategy_path: &fixture(),
             strategy_parameters: &[],
@@ -1256,11 +1271,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(result.decisions.len(), 1);
-        assert_eq!(result.decisions[0].open_time_ms, 1);
+        assert_eq!(result.decisions[0].open_time_ms, 0);
         assert_eq!(
             result.pauses,
             [RunPause {
-                open_time_ms: 2,
+                open_time_ms: 60_000,
                 reason: RunPauseReason::MissingInput {
                     slot: "close".into(),
                     source: format!("signal:{}:close", signal_inputs[1].dataset_id),

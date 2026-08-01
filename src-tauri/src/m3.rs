@@ -1785,7 +1785,7 @@ pub fn backtest_compatible_signals(
         return Err("Compatible Signals require a Strategy Component".into());
     }
     let (snapshot, _) = state.snapshot_for_user(&request.user_id, &request.snapshot_id)?;
-    let datasets = backtest_signal_datasets(&state, &request.user_id, false)?;
+    let datasets = backtest_signal_datasets(&state, &request.user_id, false, None)?;
     Ok(compatible_signal_candidates(
         &strategy.manifest,
         &snapshot,
@@ -2071,6 +2071,7 @@ fn execute_backtest(
             slot: &signal.slot,
             dataset_id: &signal.dataset_id,
             signal_name: &signal.signal_name,
+            interval: snapshot.interval,
             rows: &signal.rows,
         })
         .collect::<Vec<_>>();
@@ -2198,7 +2199,6 @@ fn prepare_backtest(
             parameters: parameters.clone(),
         })
         .collect::<Vec<_>>();
-    let datasets = backtest_signal_datasets(state, &request.user_id, true)?;
     let declared_signal_slots = strategy
         .manifest
         .feature_slots
@@ -2217,6 +2217,15 @@ fn prepare_backtest(
     {
         return Err("Signal bindings must match declared Forecast Signal Slots exactly".into());
     }
+    let mut selected_dataset_ids = request
+        .signal_instances
+        .iter()
+        .map(|binding| binding.dataset_id.clone())
+        .collect::<Vec<_>>();
+    selected_dataset_ids.sort();
+    selected_dataset_ids.dedup();
+    let datasets =
+        backtest_signal_datasets(state, &request.user_id, true, Some(&selected_dataset_ids))?;
     let selected_signals = declared_signal_slots
         .iter()
         .map(|slot| {
@@ -2567,11 +2576,10 @@ fn run_validation_report(
     let mut windows = Vec::with_capacity(protocol.windows.len());
     for window in &protocol.windows {
         let (sample_in, sample_out) = split_snapshot(&state, &protocol.user_id, window)?;
-        let mut sample_in_request = protocol.run.clone();
-        sample_in_request.user_id = protocol.user_id.clone();
-        sample_in_request.snapshot_id = sample_in.snapshot_id.clone();
-        let mut sample_out_request = sample_in_request.clone();
-        sample_out_request.snapshot_id = sample_out.snapshot_id.clone();
+        let (sample_in_request, sample_out_request) =
+            validation_window_run_requests(&protocol, &sample_in, &sample_out);
+        let sample_in_snapshot_id = sample_in_request.snapshot_id.clone();
+        let sample_out_snapshot_id = sample_out_request.snapshot_id.clone();
         match (
             execute_backtest(sample_in_request, &state),
             execute_backtest(sample_out_request, &state),
@@ -2579,8 +2587,8 @@ fn run_validation_report(
             (Ok(sample_in_run), Ok(sample_out_run)) => windows.push(ValidationWindowReport {
                 sample_out_start_time_ms: window.sample_out_start_time_ms,
                 sample_out_end_time_ms: window.sample_out_end_time_ms,
-                sample_in_snapshot_id: sample_in.snapshot_id,
-                sample_out_snapshot_id: sample_out.snapshot_id,
+                sample_in_snapshot_id,
+                sample_out_snapshot_id,
                 sample_in_run_id: Some(sample_in_run.run_id),
                 sample_out_run_id: Some(sample_out_run.run_id),
                 sample_in_metrics: Some(sample_in_run.result.metrics),
@@ -2592,8 +2600,8 @@ fn run_validation_report(
             (sample_in_result, sample_out_result) => windows.push(ValidationWindowReport {
                 sample_out_start_time_ms: window.sample_out_start_time_ms,
                 sample_out_end_time_ms: window.sample_out_end_time_ms,
-                sample_in_snapshot_id: sample_in.snapshot_id,
-                sample_out_snapshot_id: sample_out.snapshot_id,
+                sample_in_snapshot_id,
+                sample_out_snapshot_id,
                 sample_in_run_id: sample_in_result.as_ref().ok().map(|run| run.run_id.clone()),
                 sample_out_run_id: sample_out_result
                     .as_ref()
@@ -2644,6 +2652,30 @@ fn run_validation_report(
     report.report_id = content_id(&report)?;
     state.save_report(&report)?;
     Ok(report)
+}
+
+fn validation_window_run_requests(
+    protocol: &ValidationProtocol,
+    sample_in: &MarketDataSnapshot,
+    sample_out: &MarketDataSnapshot,
+) -> (BacktestRunRequest, BacktestRunRequest) {
+    let mut sample_in_request = protocol.run.clone();
+    sample_in_request.user_id = protocol.user_id.clone();
+    let mut sample_out_request = sample_in_request.clone();
+    if protocol.run.signal_instances.is_empty() {
+        sample_in_request.snapshot_id = sample_in.snapshot_id.clone();
+        sample_in_request.run_start_time_ms = None;
+        sample_in_request.run_end_time_ms = None;
+        sample_out_request.snapshot_id = sample_out.snapshot_id.clone();
+        sample_out_request.run_start_time_ms = None;
+        sample_out_request.run_end_time_ms = None;
+    } else {
+        sample_in_request.run_start_time_ms = Some(sample_in.start_time_ms);
+        sample_in_request.run_end_time_ms = Some(sample_in.end_time_ms);
+        sample_out_request.run_start_time_ms = Some(sample_out.start_time_ms);
+        sample_out_request.run_end_time_ms = Some(sample_out.end_time_ms);
+    }
+    (sample_in_request, sample_out_request)
 }
 
 fn run_cross_market_validation(
@@ -4635,6 +4667,26 @@ mod tests {
         let sample_report = {
             let (sample_in, sample_out) =
                 split_snapshot(&state, "alice", &validation.windows[0]).unwrap();
+            let (composed_in, composed_out) =
+                validation_window_run_requests(&protocol, &sample_in, &sample_out);
+            assert_eq!(composed_in.snapshot_id, sample_in.snapshot_id);
+            assert_eq!(composed_out.snapshot_id, sample_out.snapshot_id);
+            assert_eq!(composed_in.run_start_time_ms, None);
+            assert_eq!(composed_out.run_end_time_ms, None);
+            let mut signal_protocol = protocol.clone();
+            signal_protocol.run.signal_instances = vec![SignalInstanceRequest {
+                slot: "forecast".into(),
+                dataset_id: "dataset".into(),
+                signal_name: "up".into(),
+            }];
+            let (signal_in, signal_out) =
+                validation_window_run_requests(&signal_protocol, &sample_in, &sample_out);
+            assert_eq!(signal_in.snapshot_id, protocol.run.snapshot_id);
+            assert_eq!(signal_out.snapshot_id, protocol.run.snapshot_id);
+            assert_eq!(signal_in.run_start_time_ms, Some(sample_in.start_time_ms));
+            assert_eq!(signal_in.run_end_time_ms, Some(sample_in.end_time_ms));
+            assert_eq!(signal_out.run_start_time_ms, Some(sample_out.start_time_ms));
+            assert_eq!(signal_out.run_end_time_ms, Some(sample_out.end_time_ms));
             let mut sample_in_request = validation.run.clone();
             sample_in_request.snapshot_id = sample_in.snapshot_id.clone();
             let mut sample_out_request = sample_in_request.clone();

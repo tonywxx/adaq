@@ -113,7 +113,7 @@ export function subtractBarIntervals(
 	);
 }
 
-function nextOpenTimeMs(openTimeMs: number, interval: BarInterval) {
+export function nextOpenTimeMs(openTimeMs: number, interval: BarInterval) {
 	const fixed = FIXED_INTERVAL_MS[interval];
 	if (fixed) return openTimeMs + fixed;
 

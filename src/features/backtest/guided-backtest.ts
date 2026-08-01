@@ -1,4 +1,9 @@
 import type { LibraryComponent } from "@/features/components/component-library";
+import {
+	BAR_INTERVALS,
+	nextOpenTimeMs,
+	type BarInterval,
+} from "@/lib/market-chart-adapter";
 
 export const defaultExecutionProfile = {
 	makerFeeRate: "0.0008",
@@ -122,6 +127,7 @@ export function decisionSignalEvidence(
 					dataset_id?: string;
 					signal_name?: string;
 					evidence_state?: string;
+					bar_interval?: string;
 					artifact_provenance?: unknown;
 					component_lock?: unknown;
 					producer_segments?: Array<
@@ -136,11 +142,17 @@ export function decisionSignalEvidence(
 		const evidence = (plan.slots ?? []).flatMap((slot) => {
 			const source = slot.source;
 			if (source?.kind !== "signal") return [];
+			const predictionTimeMs = BAR_INTERVALS.includes(
+				source.bar_interval as BarInterval,
+			)
+				? nextOpenTimeMs(decisionTimeMs, source.bar_interval as BarInterval)
+				: decisionTimeMs;
 			const producerSegment = source.producer_segments?.find(
 				(segment) =>
 					(segment.startPredictionTimeMs ?? Number.MIN_SAFE_INTEGER) <=
-						decisionTimeMs &&
-					(segment.endPredictionTimeMs ?? Number.MAX_SAFE_INTEGER) >= decisionTimeMs,
+						predictionTimeMs &&
+					(segment.endPredictionTimeMs ?? Number.MAX_SAFE_INTEGER) >=
+						predictionTimeMs,
 			);
 			return [
 				{

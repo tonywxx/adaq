@@ -142,10 +142,11 @@ test("maps each decision to its exact Dataset and Producer Segment evidence", ()
 							dataset_id: "dataset",
 							signal_name: "up",
 							evidence_state: "unknown",
+							bar_interval: "1m",
 							producer_segments: [
 								{
-									startPredictionTimeMs: 10,
-									endPredictionTimeMs: 20,
+									startPredictionTimeMs: 60_010,
+									endPredictionTimeMs: 60_020,
 									modelArtifact: { sha256: "artifact" },
 								},
 							],
@@ -155,5 +156,5 @@ test("maps each decision to its exact Dataset and Producer Segment evidence", ()
 			}),
 			15,
 		),
-	).toContain('"datasetId":"dataset"');
+	).toContain('"modelArtifact":{"sha256":"artifact"}');
 });
