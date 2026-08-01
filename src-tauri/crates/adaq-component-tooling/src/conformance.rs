@@ -185,7 +185,10 @@ fn verify_strategy(
 ) -> Result<(), String> {
     let mut conformance_manifest = package.manifest.clone();
     for slot in &mut conformance_manifest.feature_slots {
-        if matches!(slot.source, FeatureSlotSource::External { .. }) {
+        if matches!(
+            slot.source,
+            FeatureSlotSource::External { .. } | FeatureSlotSource::Signal { .. }
+        ) {
             slot.source = FeatureSlotSource::Market {
                 field: MarketField::Close,
             };

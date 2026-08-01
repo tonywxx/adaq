@@ -4199,4 +4199,147 @@ mod tests {
         drop(state);
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn kronos_fixture_reaches_import_evaluation_and_dataset_first_backtest() {
+        let root = root("kronos-external-path");
+        let state = M3State::open(&root).unwrap();
+        let fixture_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../examples/external-models/kronos/fixtures");
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture_root.join("snapshot.json")).unwrap()).unwrap();
+        let bars = fixture["bars"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|bar| OhlcvBar {
+                open_time_ms: bar["openTimeMs"].as_i64().unwrap(),
+                open: bar["open"].as_str().unwrap().parse().unwrap(),
+                high: bar["high"].as_str().unwrap().parse().unwrap(),
+                low: bar["low"].as_str().unwrap().parse().unwrap(),
+                close: bar["close"].as_str().unwrap().parse().unwrap(),
+                base_volume: bar["baseVolume"].as_str().unwrap().parse().unwrap(),
+                quote_volume: bar["quoteVolume"].as_str().unwrap().parse().unwrap(),
+            })
+            .collect::<Vec<_>>();
+        let snapshot = state
+            .persist_snapshot(&BarSeries {
+                src: "okx".into(),
+                code: "BTC-USDT".into(),
+                interval: BarInterval::OneHour,
+                bars: bars.clone(),
+                gaps: vec![],
+            })
+            .unwrap();
+        state
+            .database
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('alice', ?1)",
+                [&snapshot.snapshot_id],
+            )
+            .unwrap();
+
+        assert_eq!(fixture["snapshotId"], snapshot.snapshot_id);
+        let archive = fs::read(fixture_root.join("kronos-fixture.adaq-signals")).unwrap();
+        let (manifest, parquet) = unpack_signal_archive(&archive).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+        assert_eq!(manifest["producerSegments"][0]["inferenceConfiguration"]["seed"], 7);
+        assert_eq!(manifest["producerSegments"][0]["provenance"]["externallyGenerated"], true);
+        let fixture_rows = read_external_rows(&parquet).unwrap();
+        assert_eq!(fixture_rows[0].unavailable_reason.as_deref(), Some("warmup"));
+        assert_eq!(fixture_rows[1].values, Some(vec![0.01, 0.02]));
+        let dataset = import_signal_archive(&state, "alice", &archive).unwrap();
+        assert_eq!(dataset["trust"], "externally-generated");
+        let backtest_dataset = backtest_signal_datasets(
+            &state,
+            "alice",
+            true,
+            Some(&[dataset["datasetId"].as_str().unwrap().into()]),
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        assert!(is_sha256(&backtest_dataset.dataset_id));
+        assert_eq!(
+            backtest_dataset.outputs[0].name,
+            "expected-close-return-1-bar"
+        );
+        assert_eq!(backtest_dataset.producer_segments.len(), 1);
+
+        let evaluation = save_forecast_evaluation(
+            &state,
+            &ForecastEvaluationRequest {
+                user_id: "alice".into(),
+                dataset_id: dataset["datasetId"].as_str().unwrap().into(),
+                snapshot_id: snapshot.snapshot_id.clone(),
+                signal_name: "expected-close-return-1-bar".into(),
+                horizon_bars: 1,
+                evaluation_start_time_ms: 3_600_000,
+                evaluation_end_time_ms: 14_400_000,
+                stability_window_bars: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(evaluation.evidence_state.summary, "unknown");
+        assert_eq!(evaluation.trust_state, "externally-generated");
+
+        let wasm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "fixtures/external-strategy/target/wasm32-unknown-unknown/debug/m5_external_strategy_fixture.wasm",
+        );
+        let wasm = fs::read(wasm_path).unwrap();
+        let mut strategy: ComponentManifest = serde_json::from_value(serde_json::json!({
+            "manifestSchemaVersion":"1.0.0",
+            "componentId":"47474747-4747-4747-8747-474747474747",
+            "version":"1.0.0",
+            "name":"Kronos Fixture Signal Strategy",
+            "kind":"strategy",
+            "sdkVersion":"0.1.0",
+            "abiVersion":"1.0.0",
+            "featureSlots":[{"name":"close-change","source":{"kind":"signal","predictionKind":{"kind":"expected-value"},"forecastTarget":{"kind":"builtin","target":"future-close-return"},"valueScale":{"kind":"native"},"horizonBars":1}}]
+        }))
+        .unwrap();
+        strategy.wasm_sha256 = hash(&wasm);
+        let strategy = pack_component(strategy, &wasm).unwrap();
+        let strategy_archive_sha256 = ComponentPackage::read(&strategy).unwrap().archive_sha256;
+        state.import_component("alice", &strategy).unwrap();
+        let run = crate::m3::execute_backtest(
+            crate::m3::BacktestRunRequest {
+                user_id: "alice".into(),
+                snapshot_id: snapshot.snapshot_id,
+                run_start_time_ms: None,
+                run_end_time_ms: None,
+                factor_instances: vec![],
+                signal_instances: vec![crate::m3::SignalInstanceRequest {
+                    slot: "close-change".into(),
+                    dataset_id: dataset["datasetId"].as_str().unwrap().into(),
+                    signal_name: "expected-close-return-1-bar".into(),
+                }],
+                strategy_archive_sha256,
+                strategy_parameters: HashMap::new(),
+                initial_quote_allocation: 10_000.into(),
+                execution_profile: adaq_backtest_core::ExecutionProfile {
+                    maker_fee_rate: Decimal::ZERO,
+                    taker_fee_rate: Decimal::ZERO,
+                    adverse_slippage_rate: Decimal::ZERO,
+                    rebalance_threshold: Decimal::ZERO,
+                    price_increment: Decimal::ONE,
+                    quantity_increment: Decimal::new(1, 4),
+                    minimum_quantity: Decimal::new(1, 4),
+                    risk_free_rate: Decimal::ZERO,
+                    fill_policy: adaq_backtest_core::FillPolicy::Taker,
+                },
+                seed: 0,
+            },
+            &state,
+        )
+        .unwrap();
+        let run_provenance = run.provenance.unwrap();
+        assert_eq!(run_provenance.dataset_lock.len(), 1);
+        assert_eq!(run_provenance.dataset_lock[0].evidence_state, "unknown");
+        assert_eq!(format!("{:?}", run_provenance.architecture), "SignalDriven");
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

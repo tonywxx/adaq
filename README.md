@@ -15,6 +15,7 @@ AdaQ V1 is a local-first research, backtesting, and simulation desktop app. It d
 - Immutable, verifiable `.adaq` Component Packages
 - Host-owned TA-Lib Indicator Catalog and frozen Feature Slots
 - Deterministic Spot simulation with immutable Backtest Runs
+- Native Model Components plus externally generated Forecast Signal Datasets
 
 ## Screenshots
 
@@ -35,8 +36,9 @@ AdaQ V1 is a local-first research, backtesting, and simulation desktop app. It d
 | M5 | TA-Lib Indicator Engine, Indicator Catalog, and Feature Slots. The host pins official C TA-Lib v0.7.1, exposes `adaq-indicator-catalog@1.0.0` with 160 Indicators and 179 outputs, freezes canonical Indicator Plans with `planHash`, supports Market, Built-in, and External Factor Slot sources, evaluates by Continuous Bar Segment, resets analytical state at Bar Gaps, and enforces typed Plan/Run errors plus fixed resource ceilings. |
 | M6 | Executable Components and Research Validation. Bilingual executable Factor and Strategy examples teach the supported SDK and CLI workflow; replay-grade Backtest Run provenance preserves every authoritative input; immutable Validation Protocols and Reports support chronological holdout, walk-forward, and cross-market research with traceable evidence and JSON/Markdown exports. |
 | M7 | Research Workspace Productization. Components, Backtest, and Validation provide guided, auditable desktop workflows over immutable local evidence; the [bilingual manual acceptance guides](docs/m7-manual-acceptance.md) cover the complete from-empty-project path. |
+| M8 | Model research and Dataset-first Backtests. Native Model Components and external `.adaq-signals` evidence produce immutable Forecast Signal Datasets, Forecast Evaluation Reports, and compatible Signal-driven or Hybrid Strategy Runs. The [external Kronos Adapter guide](examples/external-models/kronos/README.md) documents the complete `Kronos-small` + `Kronos-Tokenizer-base` path. |
 
-Together, M1-M6 provide the current closed loop: develop a Component, package and verify it, import it into the local Component Library, freeze exact market data and Indicator Plans, run a sandboxed Strategy Backtest, inspect persisted decisions, fills, metrics, and charts, and produce immutable research-validation evidence.
+Together, M1-M8 provide the current closed loop: develop or import a Component, freeze exact market data and Feature Plans, produce or import immutable Forecast Signal evidence, evaluate predictions, run a Dataset-first sandboxed Strategy Backtest, inspect persisted provenance and results, and produce research-validation evidence.
 
 ## Develop a Component
 
@@ -71,3 +73,6 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 | [Executable Examples](examples/components/README.md) | [可执行示例中文](examples/components/README.zh-CN.md) | End-to-end Factor and Strategy SDK/CLI tutorial |
 | [Test Fixtures](src-tauri/fixtures/README.md) | [测试固件中文](src-tauri/fixtures/README.zh-CN.md) | WASM component build examples for integration tests |
 | [M7 Manual Acceptance](docs/m7-manual-acceptance.md) | [M7 人工验收中文](docs/m7-manual-acceptance.zh-CN.md) | Complete human-reviewed research-workspace acceptance path |
+| [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | External `Kronos-small` inference, canonical Forecast Signals, evaluation, and Dataset-first Backtest |
+
+Microsoft Qlib integration is future work and will use the same External Model Adapter boundary. M8 does not include training, an embedded or controlled Python Runner, Verified external inference, or Marketplace publishing.

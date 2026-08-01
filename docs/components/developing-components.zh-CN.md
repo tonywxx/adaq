@@ -33,10 +33,17 @@ adaq-component verify dist/close-change-0.1.0.adaq --previous ../close-change-0.
 - `market` 绑定一个原始 OHLCV 字段，预热（Warmup）为零。
 - `builtin` 绑定一个已文档化的目录指标输出。输入选择允许的 OHLCV 字段；参数是类型化的字面量或直接策略参数引用。省略的参数使用目录默认值。
 - `external` 绑定 `dependencies` 中唯一命名的因子别名的输出。某个 K 线可能缺少因子；ADAQ 在所有槽位都存在之前不会调用策略。
+- `signal` 声明 Forecast Signal 的语义要求：Prediction Kind、Forecast Target、horizon 与 Value Scale。Strategy 不固定 Model 或 Dataset；Backtest 配置绑定完全兼容的已完成 Dataset signal。
 
 所有传递的槽位值均为有限的 `f64`。它们仅是分析值：不要将其视为权威金融值，也不接受 NaN/无穷大。使用 `SlotIndexes` 绑定名称一次，然后处理有序的帧值。
 
 预热（Warmup）指第一个有可用输出的 K 线，而非数值收敛。[指标目录参考](../reference/indicator-catalog.zh-CN.md)报告了上游的`不稳定期`标志；它不添加隐藏历史。K线缺口（Bar Gap）会启动新的连续 K 线段，并重新创建因子和策略，因此预热重新开始。
+
+## Model、Signal 与外部研究运行时
+
+AdaQ Model Component 是确定性的沙箱化 WASM 推理包；其训练引擎不属于 Component ABI。模块化 Strategy 消费已完成的 Forecast Signal Dataset，绝不会隐式调用其生产 Model。冻结的 Backtest Feature Plan 与 Dataset Lock 保留所选 Dataset、signal contract、Producer provenance 与 evidence state。
+
+大型 Python/PyTorch 模型使用[外部 Kronos Adapter 边界](../../examples/external-models/kronos/README.zh-CN.md)：推理在 AdaQ 之外运行，桌面应用只导入规范 `.adaq-signals` 证据。未来 Microsoft Qlib 可以通过相同边界训练或准备 Artifact。M8 不内嵌 Python 或 Qlib，不提供训练或受控 Python Runner，不宣称 Verified external inference，也不把外部 Artifact 发布到 Marketplace。
 
 ## 因子
 

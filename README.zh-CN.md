@@ -15,6 +15,7 @@ AdaQ V1 是本地优先的研究、回测与模拟桌面应用。它不执行真
 - 不可变、可验证的 `.adaq` 组件包
 - 主机拥有的 TA-Lib Indicator Catalog 与冻结 Feature Slots
 - 带不可变 Backtest Run 的确定性 Spot 模拟
+- 原生 Model Component 与外部生成的 Forecast Signal Dataset
 
 ## 截图预览
 
@@ -35,8 +36,9 @@ AdaQ V1 是本地优先的研究、回测与模拟桌面应用。它不执行真
 | M5 | TA-Lib Indicator Engine、Indicator Catalog 与 Feature Slots。主机固定官方 C TA-Lib v0.7.1，暴露含 160 个 Indicators、179 个输出的 `adaq-indicator-catalog@1.0.0`，用 `planHash` 冻结 canonical Indicator Plans，支持 Market、Built-in、External Factor 三类 Slot source，按 Continuous Bar Segment 执行，在 Bar Gaps 重置分析状态，并执行 typed Plan/Run errors 与固定资源上限。 |
 | M6 | 可执行组件与研究验证。双语可执行 Factor 和 Strategy 示例讲解受支持的 SDK 与 CLI 工作流；可重放级 Backtest Run provenance 保留全部权威输入；不可变 Validation Protocol 与 Validation Report 支持时间顺序留出、滚动前推和跨市场研究，并提供可追溯证据及 JSON/Markdown 导出。 |
 | M7 | 研究工作区产品化。Components、Backtest 和 Validation 在不可变本地证据之上提供引导式、可审计的桌面工作流；[双语人工验收指南](docs/m7-manual-acceptance.zh-CN.md)覆盖从空项目开始的完整路径。 |
+| M8 | Model 研究与 Dataset-first Backtest。原生 Model Component 和外部 `.adaq-signals` 证据生成不可变 Forecast Signal Dataset、Forecast Evaluation Report，以及兼容的 Signal-driven 或 Hybrid Strategy Run。[外部 Kronos Adapter 指南](examples/external-models/kronos/README.zh-CN.md)记录完整的 `Kronos-small` + `Kronos-Tokenizer-base` 路径。 |
 
-M1-M6 合起来形成当前可用闭环：开发 Component，打包并验证，导入本地 Component Library，冻结精确市场数据和 Indicator Plans，运行沙箱化 Strategy Backtest，查看持久化的决策、成交、指标和图表，并生成不可变的研究验证证据。
+M1-M8 合起来形成当前可用闭环：开发或导入 Component，冻结精确市场数据与 Feature Plan，生成或导入不可变 Forecast Signal 证据，评估预测，运行 Dataset-first 沙箱化 Strategy Backtest，检查持久化 provenance 与结果，并生成研究验证证据。
 
 ## 开发组件
 
@@ -66,3 +68,6 @@ adaq-component verify dist/my-factor-0.1.0.adaq
 | English | 简体中文 | 说明 |
 | --- | --- | --- |
 | [M7 Manual Acceptance](docs/m7-manual-acceptance.md) | [M7 人工验收](docs/m7-manual-acceptance.zh-CN.md) | 完整、需人工复核的研究工作区验收路径 |
+| [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | 外部 `Kronos-small` 推理、规范 Forecast Signals、评估与 Dataset-first Backtest |
+
+Microsoft Qlib 集成属于未来工作，并将使用同一 External Model Adapter 边界。M8 不包含训练、内嵌或受控 Python Runner、Verified external inference 或 Marketplace 发布。

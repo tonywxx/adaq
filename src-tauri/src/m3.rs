@@ -2025,7 +2025,7 @@ pub fn backtest_preflight(
     })
 }
 
-fn execute_backtest(
+pub(crate) fn execute_backtest(
     request: BacktestRunRequest,
     state: &M3State,
 ) -> Result<BacktestRunView, String> {

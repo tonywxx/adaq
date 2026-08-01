@@ -33,10 +33,17 @@ adaq-component verify dist/close-change-0.1.0.adaq --previous ../close-change-0.
 - `market` binds one raw OHLCV field and has zero Warmup.
 - `builtin` binds a documented Catalog Indicator output. Inputs select allowed OHLCV fields; parameters are typed literals or direct Strategy parameter references. Omitted parameters use Catalog defaults.
 - `external` binds an output of the uniquely named Factor alias in `dependencies`. A Factor may be absent for a Bar; ADAQ does not invoke the Strategy until every Slot is present.
+- `signal` declares a semantic Forecast Signal requirement: Prediction Kind, Forecast Target, horizon, and Value Scale. The Strategy does not pin a Model or Dataset; Backtest configuration binds an exactly compatible finalized Dataset signal.
 
 All delivered Slot values are finite `f64`. They are analytical values only: do not treat them as authoritative financial values or accept NaN/infinity. Use `SlotIndexes` to bind a name once, then process the ordered frame values.
 
 Warmup means the first Bar with an available output, not numerical convergence. The [Indicator Catalog reference](../reference/indicator-catalog.md) reports the upstream `Unstable Period` flag; it does not add hidden history. A Bar Gap starts a new Continuous Bar Segment and recreates Factors and the Strategy, so Warmup starts again.
+
+## Models, Signals, and external research runtimes
+
+An AdaQ Model Component is a deterministic sandboxed WASM inference package; its training engine is outside the Component ABI. A modular Strategy consumes an already finalized Forecast Signal Dataset and never invokes its producing Model implicitly. The frozen Backtest Feature Plan and Dataset Lock preserve the selected Dataset, signal contract, Producer provenance, and evidence state.
+
+Large Python/PyTorch models use the [External Kronos Adapter boundary](../../examples/external-models/kronos/README.md): inference runs outside AdaQ and only canonical `.adaq-signals` evidence is imported. Microsoft Qlib may later train or prepare Artifacts through the same boundary. M8 does not embed Python or Qlib, provide training or a controlled Python Runner, claim Verified external inference, or publish external Artifacts to a Marketplace.
 
 ## Factors
 
