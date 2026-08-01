@@ -97,11 +97,11 @@ type EvaluationReport = {
 		unavailableLabelCount: number;
 		coverage: number;
 		missingness: number;
-		predictionDistribution: Record<string, number>;
-		realizedDistribution: Record<string, number>;
-		mae: number;
-		rmse: number;
-		meanBias: number;
+		predictionDistribution?: Record<string, number>;
+		realizedDistribution?: Record<string, number>;
+		mae?: number;
+		rmse?: number;
+		meanBias?: number;
 		pearsonCorrelation?: number;
 	};
 	stabilityWindows: Array<Record<string, unknown>>;
@@ -114,6 +114,14 @@ type EvaluationReport = {
 	schemaIdentity: string;
 	datasetParquetSha256: string;
 };
+
+const isExpectedValueReturn = (output: ModelOutput) =>
+	output.predictionKind.kind === "expected-value" &&
+	output.forecastTarget.target === "future-close-return" &&
+	output.valueScale.kind === "native";
+
+const metricValue = (value?: number) =>
+	value == null ? "Unavailable" : String(value);
 
 const datasetOutputs = (dataset?: Dataset): ModelOutput[] => {
 	if (!dataset) return [];
@@ -314,21 +322,11 @@ export function ModelsPage() {
 	useEffect(() => {
 		if (!datasets.length || evaluationDataset) return;
 		const dataset = datasets.find((item) =>
-			datasetOutputs(item).some(
-				(output) =>
-					output.predictionKind.kind === "expected-value" &&
-					output.forecastTarget.target === "future-close-return" &&
-					output.valueScale.kind === "native",
-			),
+			datasetOutputs(item).some(isExpectedValueReturn),
 		);
 		if (!dataset) return;
 		const bounds = datasetEvaluationBounds(dataset);
-		const signal = datasetOutputs(dataset).find(
-			(output) =>
-				output.predictionKind.kind === "expected-value" &&
-				output.forecastTarget.target === "future-close-return" &&
-				output.valueScale.kind === "native",
-		);
+		const signal = datasetOutputs(dataset).find(isExpectedValueReturn);
 		setEvaluationDataset(dataset.datasetId);
 		setEvaluationSignal(signal?.name ?? "");
 		setEvaluationStart(bounds.start);
@@ -512,16 +510,16 @@ export function ModelsPage() {
 			if (!dataset || !signal)
 				throw new Error("Select compatible evaluation evidence.");
 			const report = await invoke<EvaluationReport>("forecast_evaluation_create", {
-				request: evaluationRequest(
+				request: evaluationRequest({
 					userId,
-					evaluationDataset,
-					dataset.snapshotId,
-					evaluationSignal,
-					signal.horizonBars,
-					evaluationStart,
-					evaluationEnd,
+					datasetId: evaluationDataset,
+					snapshotId: dataset.snapshotId,
+					signalName: evaluationSignal,
+					horizonBars: signal.horizonBars,
+					evaluationStartTimeMs: evaluationStart,
+					evaluationEndTimeMs: evaluationEnd,
 					stabilityWindowBars,
-				),
+				}),
 			});
 			setEvidence(`Forecast Evaluation Report ${report.reportId} created.`);
 			await refreshEvaluations();
@@ -935,10 +933,7 @@ export function ModelsPage() {
 												(item) => item.datasetId === event.target.value,
 											);
 											const outputs = datasetOutputs(dataset).filter(
-												(output) =>
-													output.predictionKind.kind === "expected-value" &&
-													output.forecastTarget.target === "future-close-return" &&
-													output.valueScale.kind === "native",
+												isExpectedValueReturn,
 											);
 											const bounds = datasetEvaluationBounds(dataset);
 											setEvaluationDataset(event.target.value);
@@ -949,14 +944,7 @@ export function ModelsPage() {
 									>
 										<option value="">Select compatible evidence</option>
 										{datasets
-											.filter((item) =>
-												datasetOutputs(item).some(
-													(output) =>
-														output.predictionKind.kind === "expected-value" &&
-														output.forecastTarget.target === "future-close-return" &&
-														output.valueScale.kind === "native",
-												),
-											)
+											.filter((item) => datasetOutputs(item).some(isExpectedValueReturn))
 											.map((item) => (
 												<option key={item.datasetId} value={item.datasetId}>
 													{item.code} {item.interval} — {item.datasetId}
@@ -974,12 +962,7 @@ export function ModelsPage() {
 										{datasetOutputs(
 											datasets.find((item) => item.datasetId === evaluationDataset),
 										)
-											.filter(
-												(output) =>
-													output.predictionKind.kind === "expected-value" &&
-													output.forecastTarget.target === "future-close-return" &&
-													output.valueScale.kind === "native",
-											)
+											.filter(isExpectedValueReturn)
 											.map((output) => (
 												<option key={output.name} value={output.name}>
 													{output.name} · horizon {output.horizonBars}
@@ -1073,17 +1056,17 @@ export function ModelsPage() {
 											<div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
 												<EvaluationMetric
 													label="MAE"
-													value={String(report.metrics.mae)}
+													value={metricValue(report.metrics.mae)}
 													help="Mean absolute error in the Forecast Target's native simple-return units; lower is better; range starts at zero."
 												/>
 												<EvaluationMetric
 													label="RMSE"
-													value={String(report.metrics.rmse)}
+													value={metricValue(report.metrics.rmse)}
 													help="Root mean squared error in Target-native units; lower is better and larger errors receive more weight."
 												/>
 												<EvaluationMetric
 													label="Mean bias"
-													value={String(report.metrics.meanBias)}
+													value={metricValue(report.metrics.meanBias)}
 													help="Mean prediction minus realized Target; zero is unbiased, with no universal investment-quality threshold."
 												/>
 												<EvaluationMetric
@@ -1091,7 +1074,7 @@ export function ModelsPage() {
 													value={
 														report.metrics.pearsonCorrelation == null
 															? "Unavailable"
-															: String(report.metrics.pearsonCorrelation)
+															: metricValue(report.metrics.pearsonCorrelation)
 													}
 													help="Linear correlation of aligned predictions and realized labels; range -1 to 1 and undefined for insufficient or constant evidence."
 												/>
@@ -1178,14 +1161,14 @@ function EvaluationMetric({
 		<div className="rounded border p-3">
 			<div className="flex items-center gap-1 text-muted-foreground">
 				<span>{label}</span>
-				<details className="relative inline-block">
+				<details className="group relative inline-block">
 					<summary
 						className="cursor-help list-none rounded px-1 underline decoration-dotted"
 						aria-label={`${label} definition`}
 					>
 						ⓘ
 					</summary>
-					<p className="absolute right-0 z-10 mt-1 w-64 rounded border bg-popover p-2 text-xs text-popover-foreground shadow">
+					<p className="absolute right-0 z-10 mt-1 hidden w-64 rounded border bg-popover p-2 text-xs text-popover-foreground shadow group-open:block group-hover:block group-focus-within:block">
 						{help}
 					</p>
 				</details>

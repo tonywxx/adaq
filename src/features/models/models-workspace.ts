@@ -55,25 +55,16 @@ export function signalRowSummary(row: {
 	return `${row.predictionTimeMs} · available ${row.availableAtMs} · ${row.status} · ${row.values?.join(", ") ?? row.unavailableReason ?? "unavailable"}`;
 }
 
-export const evaluationRequest = (
-	userId: string,
-	datasetId: string,
-	snapshotId: string,
-	signalName: string,
-	horizonBars: number,
-	evaluationStartTimeMs: number,
-	evaluationEndTimeMs: number,
-	stabilityWindowBars: number,
-) => ({
-	userId,
-	datasetId,
-	snapshotId,
-	signalName,
-	horizonBars,
-	evaluationStartTimeMs,
-	evaluationEndTimeMs,
-	stabilityWindowBars,
-});
+export const evaluationRequest = (request: {
+	userId: string;
+	datasetId: string;
+	snapshotId: string;
+	signalName: string;
+	horizonBars: number;
+	evaluationStartTimeMs: number;
+	evaluationEndTimeMs: number;
+	stabilityWindowBars: number;
+}) => request;
 
 export function evaluationReportSummary(report: {
 	reportId: string;

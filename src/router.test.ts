@@ -41,3 +41,19 @@ test("Models switches immediately and keeps loading inside its controls", () => 
 	);
 	expect(pageSource).not.toMatch(/Loading Models workspace/);
 });
+
+test("Forecast Evaluation presentation keeps partial evidence and native exports inspectable", () => {
+	const source = readFileSync(
+		new URL("./features/models/models-page.tsx", import.meta.url),
+		"utf8",
+	);
+
+	expect(source).toMatch(/TabsTrigger value="evaluations">Evaluation Reports/);
+	expect(source).toMatch(/No Forecast Evaluation Reports yet/);
+	expect(source).toMatch(/not proven out-of-sample/);
+	expect(source).toMatch(/metrics: report\.metrics,[\s\S]*?unavailableRows/);
+	expect(source).toMatch(/aria-live="polite"/);
+	expect(source).toMatch(/max-w-full overflow-x-auto/);
+	expect(source).toMatch(/group-hover:block group-focus-within:block/);
+	expect(source).toMatch(/open\(path, \{ write: true, createNew: true \}\)/);
+});

@@ -98,7 +98,16 @@ test("maps persisted Dataset statuses to readable inspection evidence", () => {
 
 test("maps Forecast Evaluation requests, summaries, and authoritative filenames", () => {
 	expect(
-		evaluationRequest("user", "dataset", "snapshot", "return", 1, 10, 20, 5),
+		evaluationRequest({
+			userId: "user",
+			datasetId: "dataset",
+			snapshotId: "snapshot",
+			signalName: "return",
+			horizonBars: 1,
+			evaluationStartTimeMs: 10,
+			evaluationEndTimeMs: 20,
+			stabilityWindowBars: 5,
+		}),
 	).toEqual({
 		userId: "user",
 		datasetId: "dataset",

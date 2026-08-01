@@ -206,11 +206,11 @@ struct ExpectedValueMetrics {
     unavailable_label_count: usize,
     coverage: f64,
     missingness: f64,
-    prediction_distribution: DistributionMetrics,
-    realized_distribution: DistributionMetrics,
-    mae: f64,
-    rmse: f64,
-    mean_bias: f64,
+    prediction_distribution: Option<DistributionMetrics>,
+    realized_distribution: Option<DistributionMetrics>,
+    mae: Option<f64>,
+    rmse: Option<f64>,
+    mean_bias: Option<f64>,
     pearson_correlation: Option<f64>,
 }
 
@@ -1476,8 +1476,15 @@ fn expected_value_metrics(
     let predictions = pairs.iter().map(|pair| pair.0).collect::<Vec<_>>();
     let realized = pairs.iter().map(|pair| pair.1).collect::<Vec<_>>();
     let errors = pairs.iter().map(|pair| pair.0 - pair.1).collect::<Vec<_>>();
-    let count = pairs.len() as f64;
     let coverage = pairs.len() as f64 / evaluation_row_count as f64;
+    let errors = (!pairs.is_empty()).then(|| {
+        let count = pairs.len() as f64;
+        (
+            errors.iter().map(|value| value.abs()).sum::<f64>() / count,
+            (errors.iter().map(|value| value.powi(2)).sum::<f64>() / count).sqrt(),
+            errors.iter().sum::<f64>() / count,
+        )
+    });
     Ok(ExpectedValueMetrics {
         evaluation_row_count,
         aligned_count: pairs.len(),
@@ -1486,11 +1493,15 @@ fn expected_value_metrics(
             .saturating_sub(pairs.len() + unavailable_prediction_count),
         coverage,
         missingness: 1.0 - coverage,
-        prediction_distribution: distribution(&predictions)?,
-        realized_distribution: distribution(&realized)?,
-        mae: errors.iter().map(|value| value.abs()).sum::<f64>() / count,
-        rmse: (errors.iter().map(|value| value.powi(2)).sum::<f64>() / count).sqrt(),
-        mean_bias: errors.iter().sum::<f64>() / count,
+        prediction_distribution: (!predictions.is_empty())
+            .then(|| distribution(&predictions))
+            .transpose()?,
+        realized_distribution: (!realized.is_empty())
+            .then(|| distribution(&realized))
+            .transpose()?,
+        mae: errors.map(|metrics| metrics.0),
+        rmse: errors.map(|metrics| metrics.1),
+        mean_bias: errors.map(|metrics| metrics.2),
         pearson_correlation: pearson(pairs),
     })
 }
@@ -1515,18 +1526,21 @@ fn classify_evidence_state(
             .to_owned()
         })
         .collect::<Vec<_>>();
-    let summary = if segment_states.is_empty() {
+    EvaluationEvidenceState {
+        summary: conservative_evidence_state(&segment_states).into(),
+        segment_states,
+    }
+}
+
+fn conservative_evidence_state(states: &[String]) -> &'static str {
+    if states.is_empty() {
         "unknown"
-    } else if segment_states.iter().any(|state| state == "overlapping") {
+    } else if states.iter().any(|state| state == "overlapping") {
         "overlapping"
-    } else if segment_states.iter().any(|state| state == "unknown") {
+    } else if states.iter().any(|state| state == "unknown") {
         "unknown"
     } else {
         "out-of-sample"
-    };
-    EvaluationEvidenceState {
-        summary: summary.into(),
-        segment_states,
     }
 }
 
@@ -1619,17 +1633,8 @@ fn segment_evidence(
             )
         })
         .collect::<Vec<_>>();
-    let summary = if segment_states.is_empty() {
-        "unknown"
-    } else if segment_states.iter().any(|state| state == "overlapping") {
-        "overlapping"
-    } else if segment_states.iter().any(|state| state == "unknown") {
-        "unknown"
-    } else {
-        "out-of-sample"
-    };
     EvaluationEvidenceState {
-        summary: summary.into(),
+        summary: conservative_evidence_state(&segment_states).into(),
         segment_states,
     }
 }
@@ -1719,7 +1724,6 @@ fn evaluate_forecast(
         return Err("forecast-evaluation-window-has-no-dataset-rows".into());
     }
     let mut aligned = Vec::new();
-    let mut aligned_times = Vec::new();
     let mut unavailable_rows = Vec::new();
     let mut unavailable_prediction_count = 0usize;
     for (index, row) in selected.iter().copied() {
@@ -1731,7 +1735,6 @@ fn evaluate_forecast(
         ) {
             (Some(prediction), Some(realized)) if prediction.is_finite() => {
                 aligned.push((*prediction, realized));
-                aligned_times.push(row.prediction_time_ms);
             }
             (None, _) => {
                 unavailable_prediction_count += 1;
@@ -1748,20 +1751,29 @@ fn evaluate_forecast(
         }
     }
     let metrics = expected_value_metrics(&aligned, selected.len(), unavailable_prediction_count)?;
-    let stability_windows = aligned
+    let stability_windows = selected
         .chunks(request.stability_window_bars)
-        .enumerate()
-        .map(|(window, pairs)| {
-            let start = window * request.stability_window_bars;
-            let metrics = expected_value_metrics(pairs, pairs.len(), 0)?;
+        .map(|window| {
+            let pairs = window
+                .iter()
+                .filter_map(|(index, row)| {
+                    row.values
+                        .as_ref()
+                        .and_then(|values| values.get(signal_index))
+                        .zip(labels[*index])
+                        .map(|(prediction, realized)| (*prediction, realized))
+                })
+                .collect::<Vec<_>>();
+            let unavailable_predictions = window
+                .iter()
+                .filter(|(_, row)| row.values.is_none())
+                .count();
+            let metrics =
+                expected_value_metrics(&pairs, window.len(), unavailable_predictions)?;
             Ok(serde_json::json!({
-                "startPredictionTimeMs": aligned_times[start],
-                "endPredictionTimeMs": aligned_times[start + pairs.len() - 1],
-                "alignedCount": metrics.aligned_count,
-                "mae": metrics.mae,
-                "rmse": metrics.rmse,
-                "meanBias": metrics.mean_bias,
-                "pearsonCorrelation": metrics.pearson_correlation,
+                "startPredictionTimeMs": window.first().expect("window is non-empty").1.prediction_time_ms,
+                "endPredictionTimeMs": window.last().expect("window is non-empty").1.prediction_time_ms,
+                "metrics": metrics,
             }))
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -1914,9 +1926,18 @@ fn forecast_evaluation_markdown(report: &ForecastEvaluationReport) -> String {
         report.schema_identity,
         report.metrics.coverage,
         report.metrics.missingness,
-        report.metrics.mae,
-        report.metrics.rmse,
-        report.metrics.mean_bias,
+        report
+            .metrics
+            .mae
+            .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+        report
+            .metrics
+            .rmse
+            .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+        report
+            .metrics
+            .mean_bias
+            .map_or_else(|| "unavailable".into(), |value| value.to_string()),
         report
             .metrics
             .pearson_correlation
@@ -2145,12 +2166,12 @@ mod tests {
         assert_eq!(metrics.aligned_count, 2);
         assert_eq!(metrics.coverage, 0.4);
         assert_eq!(metrics.missingness, 0.6);
-        assert_eq!(metrics.mae, 1.0);
-        assert_eq!(metrics.rmse, 1.0);
-        assert_eq!(metrics.mean_bias, -1.0);
+        assert_eq!(metrics.mae, Some(1.0));
+        assert_eq!(metrics.rmse, Some(1.0));
+        assert_eq!(metrics.mean_bias, Some(-1.0));
         assert_eq!(metrics.pearson_correlation, Some(1.0));
-        assert_eq!(metrics.prediction_distribution.minimum, 1.0);
-        assert_eq!(metrics.realized_distribution.maximum, 4.0);
+        assert_eq!(metrics.prediction_distribution.unwrap().minimum, 1.0);
+        assert_eq!(metrics.realized_distribution.unwrap().maximum, 4.0);
         assert_eq!(
             expected_value_metrics(&[(1.0, 2.0)], 1, 0)
                 .unwrap()
@@ -2183,13 +2204,20 @@ mod tests {
             "evaluationStartTimeMs": 1,
             "evaluationEndTimeMs": 2,
             "metricVersions": {"expectedValue": "expected-value@1"},
+            "producerSegments": [{"modelArtifact": {"sha256": "a".repeat(64)}}],
             "unavailableRows": [{"predictionTimeMs": 2, "reason": "future-label-unavailable"}]
         });
         let first = forecast_evaluation_identity(&content).unwrap();
         assert_eq!(first, forecast_evaluation_identity(&content).unwrap());
-        let mut changed = content;
+        let mut changed = content.clone();
         changed["evaluationEndTimeMs"] = 3.into();
         assert_ne!(first, forecast_evaluation_identity(&changed).unwrap());
+        let mut changed_reference = content;
+        changed_reference["producerSegments"][0]["modelArtifact"]["sha256"] = "b".repeat(64).into();
+        assert_ne!(
+            first,
+            forecast_evaluation_identity(&changed_reference).unwrap()
+        );
     }
 
     #[test]
@@ -2288,6 +2316,8 @@ mod tests {
         assert_eq!(first.report_id, replay.report_id);
         assert_eq!(first.metrics.aligned_count, 4);
         assert_eq!(first.metrics.unavailable_label_count, 2);
+        assert_eq!(first.stability_windows.len(), 3);
+        assert_eq!(first.stability_windows[1]["metrics"]["coverage"], 0.5);
         assert_eq!(first.evidence_state.summary, "out-of-sample");
         assert_eq!(first.unavailable_rows.len(), 2);
         assert_eq!(list_forecast_evaluations(&state, "alice").unwrap().len(), 1);
@@ -2312,6 +2342,15 @@ mod tests {
                 .report_id,
             first.report_id
         );
+        let mut unavailable = request.clone();
+        unavailable.evaluation_start_time_ms = 9 * 3_600_000;
+        let unavailable = save_forecast_evaluation(&state, &unavailable).unwrap();
+        assert_eq!(unavailable.metrics.aligned_count, 0);
+        assert_eq!(unavailable.metrics.coverage, 0.0);
+        assert_eq!(unavailable.metrics.missingness, 1.0);
+        assert!(unavailable.metrics.prediction_distribution.is_none());
+        assert!(unavailable.metrics.mae.is_none());
+        assert_eq!(unavailable.unavailable_rows.len(), 1);
         let stored_path: String = state
             .database
             .lock()
