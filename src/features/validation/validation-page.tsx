@@ -14,6 +14,7 @@ import type { BacktestRun } from "@/features/backtest/backtest-page";
 import { formatDecimal } from "@/features/backtest/format-decimal";
 import type { LibraryComponent } from "@/features/components/component-library";
 import { Workspace } from "@/features/components/components-page";
+import { ResearchMetric } from "@/features/research/metric-info";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { useHistoryTab } from "@/lib/navigation-history";
 import { invoke } from "@tauri-apps/api/core";
@@ -497,25 +498,32 @@ export function ValidationPage() {
 							<LoadingState label="Loading Completed Runs…" />
 						) : (
 							runs.map((item) => (
-								<Button
+								<div
 									key={item.runId}
-									type="button"
-									variant={source?.runId === item.runId ? "default" : "outline"}
-									className="h-auto justify-start whitespace-normal p-3 text-left"
-									aria-pressed={source?.runId === item.runId}
-									loading={loadingRunId === item.runId}
-									loadingText="Loading Run…"
-									disabled={Boolean(loadingRunId)}
-									onClick={() => void selectRun(item.runId)}
+									className="grid items-center gap-2 rounded-md border p-2 sm:grid-cols-[minmax(0,1fr)_auto]"
 								>
-									<span>
-										{item.code} · {item.interval} · {item.barCount} Bars · return{" "}
-										{percent(item.totalReturn)}
-									</span>
-									<span className="block break-all font-mono text-xs opacity-75">
-										Run {item.runId}
-									</span>
-								</Button>
+									<Button
+										type="button"
+										variant={source?.runId === item.runId ? "default" : "outline"}
+										className="h-auto justify-start whitespace-normal p-3 text-left"
+										aria-pressed={source?.runId === item.runId}
+										loading={loadingRunId === item.runId}
+										loadingText="Loading Run…"
+										disabled={Boolean(loadingRunId)}
+										onClick={() => void selectRun(item.runId)}
+									>
+										<span>
+											{item.code} · {item.interval} · {item.barCount} Bars
+										</span>
+										<span className="block break-all font-mono text-xs opacity-75">
+											Run {item.runId}
+										</span>
+									</Button>
+									<ResearchMetric
+										metricId="strategy.total-return"
+										value={percent(item.totalReturn)}
+									/>
+								</div>
 							))
 						)}
 						{!runsLoading && runs.length === 0 && (
@@ -1079,32 +1087,46 @@ function ReportViews({
 		<>
 			<TabsContent value="summary" className="space-y-3">
 				<div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-					<Metric
-						label="Completed"
+					<ResearchMetric
+						metricId="validation.completed"
 						value={String(report.aggregate.completedWindows)}
+						className="rounded-md border p-3"
 					/>
-					<Metric label="Failed" value={String(report.aggregate.failedWindows)} />
-					<Metric
-						label="Average sample-out return"
+					<ResearchMetric
+						metricId="validation.failed"
+						value={String(report.aggregate.failedWindows)}
+						className="rounded-md border p-3"
+					/>
+					<ResearchMetric
+						metricId="validation.average-sample-out-return"
 						value={percent(report.aggregate.averageSampleOutReturn)}
+						className="rounded-md border p-3"
 					/>
-					<Metric
-						label="Average sample-in return"
+					<ResearchMetric
+						metricId="validation.average-sample-in-return"
 						value={percent(report.aggregate.averageSampleInReturn)}
+						className="rounded-md border p-3"
 					/>
-					<Metric
-						label="Worst drawdown"
+					<ResearchMetric
+						metricId="validation.worst-sample-out-drawdown"
 						value={percent(report.aggregate.worstSampleOutDrawdown)}
+						className="rounded-md border p-3"
 					/>
-					<Metric
-						label="Average Sharpe"
+					<ResearchMetric
+						metricId="validation.average-sample-out-sharpe"
 						value={formatDecimal(report.aggregate.averageSampleOutSharpe)}
+						className="rounded-md border p-3"
 					/>
-					<Metric
-						label="Total fees"
+					<ResearchMetric
+						metricId="validation.total-fees"
 						value={formatDecimal(report.aggregate.totalFees)}
+						className="rounded-md border p-3"
 					/>
-					<Metric label="Trades" value={String(report.aggregate.totalTrades)} />
+					<ResearchMetric
+						metricId="validation.realized-trade-count"
+						value={String(report.aggregate.totalTrades)}
+						className="rounded-md border p-3"
+					/>
 				</div>
 				{report.walkForward && (
 					<p className="rounded-md border p-3 text-sm">
@@ -1116,13 +1138,23 @@ function ReportViews({
 					</p>
 				)}
 				{report.crossMarketEvidence && (
-					<p className="rounded-md border p-3 text-sm" role="status">
-						Cross-market dispersion: {report.crossMarketEvidence.completedMarkets}{" "}
-						completed market
-						{report.crossMarketEvidence.completedMarkets === 1 ? "" : "s"} · total
-						return spread {percent(report.crossMarketEvidence.totalReturnSpread)}.
-						Historical evidence only; it is not a profitability guarantee.
-					</p>
+					<div
+						className="grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-2"
+						role="status"
+					>
+						<ResearchMetric
+							metricId="validation.completed"
+							value={String(report.crossMarketEvidence.completedMarkets)}
+						/>
+						<ResearchMetric
+							metricId="validation.cross-market-return-spread"
+							value={percent(report.crossMarketEvidence.totalReturnSpread)}
+						/>
+						<p className="text-muted-foreground sm:col-span-2">
+							Historical cross-market evidence only; it is not a profitability
+							guarantee.
+						</p>
+					</div>
 				)}
 				<div className="flex gap-2">
 					<Button
@@ -1166,11 +1198,7 @@ function ReportViews({
 								Failure: {context.failure}
 							</pre>
 						) : (
-							<p className="mt-2">
-								Return {percent(context.metrics?.totalReturn ?? "0")} · drawdown{" "}
-								{percent(context.metrics?.maxDrawdown ?? "0")} · Sharpe{" "}
-								{formatDecimal(context.metrics?.sharpe ?? "0")}
-							</p>
+							<StrategyEvidenceMetrics metrics={context.metrics} />
 						)}
 						<p className="mt-2">Run Pauses</p>
 						{context.pauses.length ? (
@@ -1213,11 +1241,7 @@ function ReportViews({
 								Failure: {window.failure}
 							</pre>
 						) : (
-							<p className="mt-2">
-								Return {percent(window.sampleOutMetrics?.totalReturn ?? "0")} · drawdown{" "}
-								{percent(window.sampleOutMetrics?.maxDrawdown ?? "0")} · Sharpe{" "}
-								{formatDecimal(window.sampleOutMetrics?.sharpe ?? "0")}
-							</p>
+							<StrategyEvidenceMetrics metrics={window.sampleOutMetrics} />
 						)}
 						<p className="mt-2">Run Pauses</p>
 						{[...window.sampleInPauses, ...window.sampleOutPauses].length ? (
@@ -1294,14 +1318,25 @@ function ReportViews({
 	);
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function StrategyEvidenceMetrics({ metrics }: { metrics?: Metrics }) {
 	return (
-		<div className="rounded-md border p-3">
-			<p className="text-muted-foreground">{label}</p>
-			<p className="font-medium">{value}</p>
+		<div className="mt-2 grid gap-2 sm:grid-cols-3">
+			<ResearchMetric
+				metricId="strategy.total-return"
+				value={percent(metrics?.totalReturn ?? "0")}
+			/>
+			<ResearchMetric
+				metricId="strategy.max-drawdown"
+				value={percent(metrics?.maxDrawdown ?? "0")}
+			/>
+			<ResearchMetric
+				metricId="strategy.sharpe"
+				value={formatDecimal(metrics?.sharpe ?? "0")}
+			/>
 		</div>
 	);
 }
+
 function Feedback({
 	feedback,
 }: {

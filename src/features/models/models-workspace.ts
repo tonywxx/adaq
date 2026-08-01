@@ -8,144 +8,6 @@ export type EvaluationSignalContract = {
 	horizonBars: number;
 };
 
-export type EvaluationMetricDefinition = {
-	label: string;
-	meaning: string;
-	formula: string;
-	direction: string;
-	range: string;
-	caveat: string;
-	reference: string;
-};
-
-const FORECAST_METRICS_REFERENCE =
-	"https://github.com/tonywxx/adaq/blob/main/docs/reference/forecast-evaluation-metrics.md";
-
-export const EVALUATION_METRIC_DEFINITIONS = {
-	mae: {
-		label: "MAE",
-		meaning: "Mean absolute error in Forecast Target-native units.",
-		formula: "mean(|prediction - realized|)",
-		direction: "Lower is better.",
-		range: "[0, +∞)",
-		caveat: "Scale depends on the Target; it is not Strategy profitability.",
-		reference: `${FORECAST_METRICS_REFERENCE}#mae`,
-	},
-	rmse: {
-		label: "RMSE",
-		meaning: "Root mean squared error in Forecast Target-native units.",
-		formula: "sqrt(mean((prediction - realized)²))",
-		direction: "Lower is better; larger errors receive more weight.",
-		range: "[0, +∞)",
-		caveat: "Scale depends on the Target; it is not Strategy profitability.",
-		reference: `${FORECAST_METRICS_REFERENCE}#rmse`,
-	},
-	meanBias: {
-		label: "Mean bias",
-		meaning: "Average signed prediction error.",
-		formula: "mean(prediction - realized)",
-		direction: "Closer to zero means less average signed bias.",
-		range: "(-∞, +∞)",
-		caveat:
-			"Positive and negative errors can cancel; there is no universal quality threshold.",
-		reference: `${FORECAST_METRICS_REFERENCE}#mean-bias`,
-	},
-	pearsonCorrelation: {
-		label: "Pearson correlation",
-		meaning:
-			"Linear association between aligned predictions and realized labels.",
-		formula: "cov(prediction, realized) / (σprediction × σrealized)",
-		direction: "Interpret sign and magnitude in research context.",
-		range: "[-1, 1]",
-		caveat:
-			"Undefined for insufficient or constant evidence; no universal quality threshold applies.",
-		reference: `${FORECAST_METRICS_REFERENCE}#pearson-correlation`,
-	},
-	brierScore: {
-		label: "Brier Score",
-		meaning: "Mean squared error between probability and binary realized label.",
-		formula: "mean((probability - label)²)",
-		direction: "Lower is better.",
-		range: "[0, 1]",
-		caveat:
-			"Interpret against class balance and calibration context; there is no universal quality threshold.",
-		reference: `${FORECAST_METRICS_REFERENCE}#brier-score`,
-	},
-	logLoss: {
-		label: "Log Loss",
-		meaning: "Mean binary cross-entropy of probability forecasts.",
-		formula: "-mean(label×ln(p) + (1-label)×ln(1-p))",
-		direction: "Lower is better; confident errors receive a larger penalty.",
-		range: "Approximately [0, 34.539] with p clipped to [1e-15, 1-1e-15].",
-		caveat:
-			"Interpret against class balance; there is no universal quality threshold.",
-		reference: `${FORECAST_METRICS_REFERENCE}#log-loss`,
-	},
-	rocAuc: {
-		label: "ROC AUC",
-		meaning:
-			"Probability that a positive label ranks above a negative label, with ties worth one half.",
-		formula:
-			"(concordant positive-negative pairs + 0.5×ties) / all positive-negative pairs",
-		direction: "Higher means stronger ranking separation.",
-		range: "[0, 1]",
-		caveat:
-			"Undefined unless both realized classes are present; there is no universal quality threshold.",
-		reference: `${FORECAST_METRICS_REFERENCE}#roc-auc`,
-	},
-	calibration: {
-		label: "Calibration",
-		meaning:
-			"Mean prediction versus observed positive frequency in ten fixed equal-width buckets.",
-		formula: "For each bucket: mean(probability) compared with mean(label)",
-		direction: "Closer agreement indicates better calibration.",
-		range: "Both bucket means are in [0, 1].",
-		caveat:
-			"Empty buckets remain explicit and small bucket counts are weak evidence.",
-		reference: `${FORECAST_METRICS_REFERENCE}#calibration`,
-	},
-	pearsonIc: {
-		label: "Time-series Pearson IC",
-		meaning: "Linear association between Score predictions and realized Targets.",
-		formula: "cov(score, target) / (σscore × σtarget)",
-		direction: "Interpret sign and magnitude in research context.",
-		range: "[-1, 1]",
-		caveat:
-			"Single-Instrument time-series evidence only; this is not cross-sectional IC or a universal quality score.",
-		reference: `${FORECAST_METRICS_REFERENCE}#time-series-pearson-ic`,
-	},
-	spearmanRankIc: {
-		label: "Time-series Spearman Rank IC",
-		meaning: "Rank association between Score predictions and realized Targets, preserving ties.",
-		formula: "Pearson correlation of average ranks",
-		direction: "Interpret sign and magnitude in research context.",
-		range: "[-1, 1]",
-		caveat:
-			"Single-Instrument time-series evidence only; this is not future cross-sectional IC.",
-		reference: `${FORECAST_METRICS_REFERENCE}#time-series-spearman-rank-ic`,
-	},
-	windowIcir: {
-		label: "Window ICIR",
-		meaning: "Mean deterministic window Pearson IC divided by its population standard deviation.",
-		formula: "mean(window IC) / population σ(window IC)",
-		direction: "Interpret only with the ordered window evidence and sample count.",
-		range: "(-∞, +∞)",
-		caveat:
-			"Single-Instrument stability evidence; this is not Strategy profitability, turnover, or a universal quality score.",
-		reference: `${FORECAST_METRICS_REFERENCE}#window-ic-and-icir`,
-	},
-	quantiles: {
-		label: "Five quantiles",
-		meaning: "Realized Target evidence grouped by ascending Score, with tied Scores kept together.",
-		formula: "five deterministic rank buckets",
-		direction: "Inspect monotonicity and every bucket's sample count.",
-		range: "Five explicit buckets; some may be empty.",
-		caveat:
-			"Descriptive single-Instrument evidence only; it is not a portfolio return or trading recommendation.",
-		reference: `${FORECAST_METRICS_REFERENCE}#five-quantile-realized-target-evidence`,
-	},
-} satisfies Record<string, EvaluationMetricDefinition>;
-
 export function datasetGenerationRequest(
 	userId: string,
 	snapshotId: string,
@@ -204,11 +66,9 @@ export function signalRowSummary(row: {
 export function evaluationReportSummary(report: {
 	reportId: string;
 	evidenceState: { summary: string };
-	metrics: { alignedCount: number; coverage: number; missingness: number };
 }) {
-	return `${report.metrics.alignedCount} aligned · ${(report.metrics.coverage * 100).toFixed(2)}% coverage · ${(report.metrics.missingness * 100).toFixed(2)}% missing · ${report.evidenceState.summary} · ${report.reportId}`;
+	return `${report.evidenceState.summary} · ${report.reportId}`;
 }
-
 export function evaluationExportFilename(
 	reportId: string,
 	format: "json" | "markdown",

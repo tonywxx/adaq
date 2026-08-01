@@ -3106,7 +3106,7 @@ fn canonical_json(value: serde_json::Value) -> serde_json::Value {
 
 fn validation_markdown(report: &ValidationReport) -> String {
     format!(
-        "# Validation Report {}\n\n```json\n{}\n```\n",
+        "# Validation Report {}\n\n[Metric definitions](https://github.com/tonywxx/adaq/blob/main/docs/reference/research-metrics.md)\n\n```json\n{}\n```\n",
         report.report_id,
         serde_json::to_string_pretty(report).expect("Validation Report serializes")
     )
@@ -4735,6 +4735,7 @@ mod tests {
         assert_eq!(state.list_reports("alice").unwrap().len(), 1);
         assert!(state.list_reports("bob").unwrap().is_empty());
         assert!(validation_markdown(&report).contains(&report.protocol_id));
+        assert!(validation_markdown(&report).contains("research-metrics.md"));
         assert!(
             serde_json::to_string(&report)
                 .unwrap()

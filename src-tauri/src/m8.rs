@@ -2699,7 +2699,7 @@ fn forecast_evaluation_markdown(report: &ForecastEvaluationReport) -> String {
         }
     };
     format!(
-        "# Forecast Evaluation Report\n\n- Report ID: `{}`\n- Dataset ID: `{}`\n- Snapshot ID: `{}`\n- Signal: `{}`\n- Evaluation window: `{}` to `{}`\n- Evidence state: `{}`\n- Trust state: `{}`\n- Schema: `{}`\n\n## Common metrics\n\n- Coverage: {}\n- Missingness: {}\n\n{}\n## Authoritative evidence\n\n```json\n{}\n```\n",
+        "# Forecast Evaluation Report\n\n- Report ID: `{}`\n- Dataset ID: `{}`\n- Snapshot ID: `{}`\n- Signal: `{}`\n- Evaluation window: `{}` to `{}`\n- Evidence state: `{}`\n- Trust state: `{}`\n- Schema: `{}`\n\n[Metric definitions](https://github.com/tonywxx/adaq/blob/main/docs/reference/research-metrics.md)\n\n## Common metrics\n\n- Coverage: {}\n- Missingness: {}\n\n{}\n## Authoritative evidence\n\n```json\n{}\n```\n",
         report.report_id,
         report.dataset_id,
         report.snapshot_id,
@@ -3383,6 +3383,7 @@ mod tests {
         let markdown =
             export_forecast_evaluation(&state, "alice", &first.report_id, "markdown").unwrap();
         assert!(markdown.contains("## Authoritative evidence"));
+        assert!(markdown.contains("research-metrics.md"));
         assert!(markdown.contains(&first.report_id));
         let mut probability_request = request.clone();
         probability_request.signal_name = "future-up".into();

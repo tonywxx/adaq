@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LoadingState } from "@/components/loading-state";
 import type { LibraryComponent } from "@/features/components/component-library";
+import { ResearchMetric } from "@/features/research/metric-info";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { useHistoryTab } from "@/lib/navigation-history";
 import { invoke } from "@tauri-apps/api/core";
@@ -12,7 +13,6 @@ import { useCallback, useEffect, useState } from "react";
 import {
 	datasetGenerationRequest,
 	datasetStatusSummary,
-	EVALUATION_METRIC_DEFINITIONS,
 	evaluationMetricKind,
 	evaluationExportFilename,
 	evaluationReportSummary,
@@ -20,7 +20,6 @@ import {
 	isCompatibleEvaluationSignal,
 	signalRowPageRequest,
 	signalRowSummary,
-	type EvaluationMetricDefinition,
 	type EvaluationSignalContract,
 } from "./models-workspace";
 
@@ -1062,49 +1061,72 @@ export function ModelsPage() {
 												</p>
 											)}
 											<div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+												<ResearchMetric
+													metricId="forecast.aligned-count"
+													value={String(report.metrics.alignedCount)}
+													className="rounded border p-3"
+												/>
+												<ResearchMetric
+													metricId="forecast.coverage"
+													value={`${(report.metrics.coverage * 100).toFixed(2)}%`}
+													className="rounded border p-3"
+												/>
+												<ResearchMetric
+													metricId="forecast.missingness"
+													value={`${(report.metrics.missingness * 100).toFixed(2)}%`}
+													className="rounded border p-3"
+												/>
 												{evaluationMetricKind(report.signalContract) === "probability" ? (
 													<>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.brierScore}
+														<ResearchMetric
+															metricId="forecast.brier-score"
 															value={metricValue(report.metrics.brierScore)}
+															className="rounded border p-3"
 														/>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.logLoss}
+														<ResearchMetric
+															metricId="forecast.log-loss"
 															value={metricValue(report.metrics.logLoss)}
+															className="rounded border p-3"
 														/>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.rocAuc}
+														<ResearchMetric
+															metricId="forecast.roc-auc"
 															value={metricValue(report.metrics.rocAuc)}
+															className="rounded border p-3"
 														/>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.calibration}
+														<ResearchMetric
+															metricId="forecast.calibration"
 															value={
 																report.metrics.calibration
 																	? `${report.metrics.calibration.filter((bucket) => bucket.count).length} populated buckets`
 																	: "Unavailable"
 															}
+															className="rounded border p-3"
 														/>
 													</>
 												) : evaluationMetricKind(report.signalContract) === "score" ? (
 													<>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.pearsonIc}
+														<ResearchMetric
+															metricId="forecast.pearson-ic"
 															value={metricValue(report.metrics.pearsonIc)}
+															className="rounded border p-3"
 														/>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.spearmanRankIc}
+														<ResearchMetric
+															metricId="forecast.spearman-rank-ic"
 															value={metricValue(report.metrics.spearmanRankIc)}
+															className="rounded border p-3"
 														/>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.windowIcir}
+														<ResearchMetric
+															metricId="forecast.window-icir"
 															value={metricValue(report.metrics.windowIcir)}
+															className="rounded border p-3"
 														/>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.quantiles}
+														<ResearchMetric
+															metricId="forecast.five-quantiles"
 															value={
 																report.metrics.undefinedMetrics?.quantiles ??
 																"Five-quantile realized Target evidence"
 															}
+															className="rounded border p-3"
 														/>
 													</>
 												) : evaluationMetricKind(report.signalContract) === "custom" ? (
@@ -1119,25 +1141,29 @@ export function ModelsPage() {
 													</p>
 												) : (
 													<>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.mae}
+														<ResearchMetric
+															metricId="forecast.mae"
 															value={metricValue(report.metrics.mae)}
+															className="rounded border p-3"
 														/>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.rmse}
+														<ResearchMetric
+															metricId="forecast.rmse"
 															value={metricValue(report.metrics.rmse)}
+															className="rounded border p-3"
 														/>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.meanBias}
+														<ResearchMetric
+															metricId="forecast.mean-bias"
 															value={metricValue(report.metrics.meanBias)}
+															className="rounded border p-3"
 														/>
-														<EvaluationMetric
-															definition={EVALUATION_METRIC_DEFINITIONS.pearsonCorrelation}
+														<ResearchMetric
+															metricId="forecast.pearson-correlation"
 															value={
 																report.metrics.pearsonCorrelation == null
 																	? "Unavailable"
 																	: metricValue(report.metrics.pearsonCorrelation)
 															}
+															className="rounded border p-3"
 														/>
 													</>
 												)}
@@ -1165,8 +1191,8 @@ export function ModelsPage() {
 															datasetId: report.datasetId,
 															snapshotId: report.snapshotId,
 															signalContract: report.signalContract,
-																	producerSegments: report.producerSegments,
-																	scaleProvenance: report.scaleProvenance,
+															producerSegments: report.producerSegments,
+															scaleProvenance: report.scaleProvenance,
 															evidenceState: report.evidenceState,
 															trustState: report.trustState,
 															metricVersions: report.metricVersions,
@@ -1202,8 +1228,8 @@ export function ModelsPage() {
 								))
 							) : (
 								<p className="rounded border p-4 text-sm text-muted-foreground">
-									No Forecast Evaluation Reports yet. Choose compatible immutable
-									Score, Expected Value, Probability, or Custom evidence to create one.
+									No Forecast Evaluation Reports yet. Choose compatible immutable Score,
+									Expected Value, Probability, or Custom evidence to create one.
 								</p>
 							)}
 						</div>
@@ -1211,46 +1237,5 @@ export function ModelsPage() {
 				</TabsContent>
 			</Tabs>
 		</main>
-	);
-}
-
-function EvaluationMetric({
-	definition,
-	value,
-}: {
-	definition: EvaluationMetricDefinition;
-	value: string;
-}) {
-	const { label } = definition;
-	return (
-		<div className="rounded border p-3">
-			<div className="flex items-center gap-1 text-muted-foreground">
-				<span>{label}</span>
-				<details className="group relative inline-block">
-					<summary
-						className="cursor-help list-none rounded px-1 underline decoration-dotted"
-						aria-label={`${label} definition`}
-					>
-						ⓘ
-					</summary>
-					<div className="absolute right-0 z-10 mt-1 hidden w-72 rounded border bg-popover p-2 text-xs text-popover-foreground shadow group-open:block group-hover:block group-focus-within:block">
-						<p>{definition.meaning}</p>
-						<p>Formula: {definition.formula}</p>
-						<p>Direction: {definition.direction}</p>
-						<p>Range: {definition.range}</p>
-						<p>Caveat: {definition.caveat}</p>
-						<a
-							className="underline"
-							href={definition.reference}
-							target="_blank"
-							rel="noreferrer"
-						>
-							Reference documentation
-						</a>
-					</div>
-				</details>
-			</div>
-			<p className="break-all font-medium select-text">{value}</p>
-		</div>
 	);
 }

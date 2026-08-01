@@ -2,7 +2,6 @@ import type { LibraryComponent } from "@/features/components/component-library";
 import {
 	datasetGenerationRequest,
 	datasetStatusSummary,
-	EVALUATION_METRIC_DEFINITIONS,
 	formatModelError,
 	signalRowPageRequest,
 	signalRowSummary,
@@ -103,9 +102,8 @@ test("maps Forecast Evaluation summaries and authoritative filenames", () => {
 		evaluationReportSummary({
 			reportId: "report",
 			evidenceState: { summary: "unknown" },
-			metrics: { alignedCount: 8, coverage: 0.8, missingness: 0.2 },
 		}),
-	).toBe("8 aligned · 80.00% coverage · 20.00% missing · unknown · report");
+	).toBe("unknown · report");
 	expect(evaluationExportFilename("report", "json")).toBe(
 		"forecast-evaluation-report-report.json",
 	);
@@ -158,20 +156,4 @@ test("maps reportable signals to Target-specific metric presentations", () => {
 	const score = output("score", "future-close-return", "percentile");
 	expect(isCompatibleEvaluationSignal(score)).toBe(true);
 	expect(evaluationMetricKind(score)).toBe("score");
-	expect(EVALUATION_METRIC_DEFINITIONS.pearsonIc.caveat).toContain(
-		"Single-Instrument time-series",
-	);
-	expect(EVALUATION_METRIC_DEFINITIONS.windowIcir.caveat).toContain(
-		"not Strategy profitability",
-	);
-	expect(EVALUATION_METRIC_DEFINITIONS.logLoss.range).toContain("34.539");
-	expect(EVALUATION_METRIC_DEFINITIONS.rocAuc.caveat).toContain(
-		"both realized classes",
-	);
-	expect(EVALUATION_METRIC_DEFINITIONS.calibration.caveat).toContain(
-		"weak evidence",
-	);
-	expect(EVALUATION_METRIC_DEFINITIONS.rocAuc.reference).toMatch(
-		/forecast-evaluation-metrics\.md#roc-auc$/,
-	);
 });

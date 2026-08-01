@@ -15,6 +15,7 @@ import {
 	Workspace,
 	type LibraryComponent,
 } from "@/features/components/components-page";
+import { MetricInfo, ResearchMetric } from "@/features/research/metric-info";
 import {
 	BAR_INTERVALS,
 	type BarInterval,
@@ -1111,42 +1112,66 @@ export function BacktestPage() {
 					<TabsContent value="overview" className="space-y-4">
 						<Card>
 							<CardContent className="grid grid-cols-2 gap-4 py-4 md:grid-cols-4 lg:grid-cols-6">
-								<Metric
-									label="Total return"
+								<ResearchMetric
+									metricId="strategy.total-return"
 									value={percent(run.result.metrics.totalReturn)}
+									valueClassName="font-mono text-lg"
 								/>
-								<Metric label="CAGR" value={percent(run.result.metrics.cagr)} />
-								<Metric
-									label="Max drawdown"
+								<ResearchMetric
+									metricId="strategy.cagr"
+									value={percent(run.result.metrics.cagr)}
+									valueClassName="font-mono text-lg"
+								/>
+								<ResearchMetric
+									metricId="strategy.max-drawdown"
 									value={percent(run.result.metrics.maxDrawdown)}
+									valueClassName="font-mono text-lg"
 								/>
-								<Metric
-									label="Sharpe"
+								<ResearchMetric
+									metricId="strategy.sharpe"
 									value={formatDecimal(run.result.metrics.sharpe)}
+									valueClassName="font-mono text-lg"
 								/>
-								<Metric
-									label="Sortino"
+								<ResearchMetric
+									metricId="strategy.sortino"
 									value={formatDecimal(run.result.metrics.sortino)}
+									valueClassName="font-mono text-lg"
 								/>
-								<Metric
-									label="Excess return"
+								<ResearchMetric
+									metricId="strategy.excess-return"
 									value={percent(run.result.metrics.excessReturn)}
+									valueClassName="font-mono text-lg"
 								/>
-								<Metric
-									label="Final equity"
+								<ResearchMetric
+									metricId="strategy.final-equity"
 									value={formatDecimal(run.result.metrics.finalEquity)}
+									valueClassName="font-mono text-lg"
 								/>
-								<Metric
-									label="Realized P&L"
+								<ResearchMetric
+									metricId="strategy.realized-pnl"
 									value={formatDecimal(run.result.metrics.realizedPnl)}
+									valueClassName="font-mono text-lg"
 								/>
-								<Metric
-									label="Unrealized P&L"
+								<ResearchMetric
+									metricId="strategy.unrealized-pnl"
 									value={formatDecimal(run.result.metrics.unrealizedPnl)}
+									valueClassName="font-mono text-lg"
 								/>
-								<Metric label="Fees" value={formatDecimal(run.result.totalFees)} />
-								<Metric label="Win rate" value={percent(run.result.metrics.winRate)} />
-								<Metric label="Fills" value={String(run.result.metrics.fillCount)} />
+								<ResearchMetric
+									metricId="strategy.total-fees"
+									value={formatDecimal(run.result.totalFees)}
+									valueClassName="font-mono text-lg"
+								/>
+								<ResearchMetric
+									metricId="strategy.win-rate"
+									value={percent(run.result.metrics.winRate)}
+									valueClassName="font-mono text-lg"
+								/>
+								<ResearchMetric
+									metricId="strategy.fill-count"
+									value={String(run.result.metrics.fillCount)}
+									valueClassName="font-mono text-lg"
+								/>
 							</CardContent>
 						</Card>
 						<Card>
@@ -1212,9 +1237,15 @@ export function BacktestPage() {
 										{item.code} · {item.interval}
 									</span>
 									<span className="ml-3 text-muted-foreground">
-										{item.barCount} Bars · {percent(item.totalReturn)}
+										{item.barCount} Bars
 									</span>
 								</button>
+								<ResearchMetric
+									metricId="strategy.total-return"
+									value={percent(item.totalReturn)}
+									className="ml-3"
+									valueClassName="text-sm font-medium"
+								/>
 							</div>
 						))}
 					{!historyLoading && history.length === 0 && (
@@ -1521,8 +1552,16 @@ function ExecutionTables({
 			<CardHeader className="flex-row items-center justify-between">
 				<CardTitle>Orders and fills</CardTitle>
 				<div className="flex items-center gap-2 text-xs text-muted-foreground">
-					<span>Orders: {page?.totalOrders ?? 0}</span>
-					<span>Fills: {page?.totalFills ?? 0}</span>
+					<ResearchMetric
+						metricId="execution.order-count"
+						value={String(page?.totalOrders ?? 0)}
+						valueClassName="font-medium"
+					/>
+					<ResearchMetric
+						metricId="strategy.fill-count"
+						value={String(page?.totalFills ?? 0)}
+						valueClassName="font-medium"
+					/>
 					<Button
 						size="sm"
 						variant="outline"
@@ -1560,8 +1599,12 @@ function ExecutionTables({
 						<tr>
 							<th>Time</th>
 							<th>Side</th>
-							<th>Qty</th>
-							<th>Limit</th>
+							<th>
+								<MetricInfo metricId="execution.order-quantity" />
+							</th>
+							<th>
+								<MetricInfo metricId="execution.limit-price" />
+							</th>
 							<th>Status</th>
 						</tr>
 					</thead>
@@ -1589,9 +1632,20 @@ function ExecutionTables({
 						<tr>
 							<th>Time</th>
 							<th>Side</th>
-							<th>Filled / Requested @ Price</th>
+							<th>
+								<div className="grid gap-1">
+									<MetricInfo metricId="execution.fill-quantity" />
+									<MetricInfo metricId="execution.requested-quantity" />
+									<MetricInfo metricId="execution.fill-price" />
+								</div>
+							</th>
 							<th>Role</th>
-							<th>Fee / P&amp;L</th>
+							<th>
+								<div className="grid gap-1">
+									<MetricInfo metricId="execution.fill-fee" />
+									<MetricInfo metricId="execution.fill-realized-pnl" />
+								</div>
+							</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -1662,14 +1716,6 @@ function mergeRange(
 			),
 		},
 	};
-}
-function Metric({ label, value }: { label: string; value: string }) {
-	return (
-		<div>
-			<p className="text-xs text-muted-foreground">{label}</p>
-			<p className="font-mono text-lg">{value}</p>
-		</div>
-	);
 }
 function percent(value: string) {
 	const number = Number(value);
