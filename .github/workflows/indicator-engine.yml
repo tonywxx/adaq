@@ -4,12 +4,16 @@ on:
   pull_request:
     paths:
       - '.github/workflows/indicator-engine.yml'
+      - 'docs/reference/component-manifest.md'
+      - 'docs/reference/component-manifest.schema.json'
       - 'examples/components/**'
       - 'src-tauri/**'
   push:
     branches: [main]
     paths:
       - '.github/workflows/indicator-engine.yml'
+      - 'docs/reference/component-manifest.md'
+      - 'docs/reference/component-manifest.schema.json'
       - 'examples/components/**'
       - 'src-tauri/**'
 
