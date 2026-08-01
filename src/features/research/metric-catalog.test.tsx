@@ -78,10 +78,15 @@ test.each(["pointer", "focus", "click"])(
 		) as HTMLButtonElement | null;
 		if (!trigger) throw new Error(container.innerHTML);
 		expect(trigger.className).toContain("focus-visible:ring-2");
+		expect(trigger.className).toContain("border-b");
+		expect(trigger.className).not.toContain("border-y");
+		expect(trigger.className).toContain("border-dashed");
+		expect(trigger.textContent).toBe("Sharpe");
+		expect(trigger.textContent).not.toContain("ⓘ");
 
 		await act(async () => {
 			if (mode === "pointer") {
-				trigger.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+				trigger.dispatchEvent(new MouseEvent("mouseenter"));
 			} else if (mode === "focus") {
 				trigger.focus();
 			} else {
@@ -92,10 +97,13 @@ test.each(["pointer", "focus", "click"])(
 
 		expect(document.body.textContent).toContain("Formula:");
 		expect(document.body.textContent).toContain("Undefined:");
-		const reference = document.body.querySelector(
-			'a[href*="research-metrics.md#strategy-sharpe"]',
-		) as HTMLAnchorElement | null;
-		expect(reference?.textContent).toBe("Reference documentation");
+		expect(document.body.textContent).toContain("strategy.sharpe@1.0.0");
+		const content = document.body.querySelector(
+			'[data-slot="tooltip-content"]',
+		) as HTMLElement | null;
+		expect(content?.className).toContain("bg-popover");
+		expect(content?.className).toContain("text-popover-foreground");
+		expect(content?.parentElement?.className).toContain("z-50");
 
 		await act(async () => root.unmount());
 		container.remove();

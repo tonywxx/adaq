@@ -51,6 +51,10 @@ test("Forecast Evaluation presentation keeps partial evidence and native exports
 		new URL("./features/research/metric-info.tsx", import.meta.url),
 		"utf8",
 	);
+	const tooltipSource = readFileSync(
+		new URL("./components/ui/tooltip.tsx", import.meta.url),
+		"utf8",
+	);
 
 	expect(source).toMatch(/TabsTrigger value="evaluations">Evaluation Reports/);
 	expect(source).toMatch(/No Forecast Evaluation Reports yet/);
@@ -58,12 +62,15 @@ test("Forecast Evaluation presentation keeps partial evidence and native exports
 	expect(source).toMatch(/metrics: report\.metrics,[\s\S]*?unavailableRows/);
 	expect(source).toMatch(/aria-live="polite"/);
 	expect(source).toMatch(/max-w-full overflow-x-auto/);
-	expect(metricSource).toMatch(/onMouseEnter=/);
-	expect(metricSource).toMatch(/onFocus=/);
-	expect(metricSource).toMatch(/className="max-w-full rounded-md border/);
+	expect(metricSource).toMatch(/<Tooltip open=\{open\}/);
+	expect(metricSource).toMatch(/border-b border-dashed/);
+	expect(metricSource).not.toMatch(/border-y/);
+	expect(metricSource).toMatch(/align="start"/);
+	expect(metricSource).not.toMatch(/ⓘ/);
 	expect(source).toMatch(/open\(path, \{ write: true, createNew: true \}\)/);
 	expect(metricSource).toMatch(/Formula: \{definition\.formula\}/);
-	expect(metricSource).toMatch(/Reference documentation/);
+	expect(metricSource).toMatch(/TooltipContent/);
+	expect(tooltipSource).not.toMatch(/TooltipPrimitive\.Arrow/);
 	expect(source).toMatch(/Custom Prediction Kind or Custom Target recorded/);
 	expect(source).toMatch(/Single-Instrument time-series evidence/);
 	expect(source).toMatch(/Five-quantile realized Target evidence/);
