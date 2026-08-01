@@ -14,7 +14,6 @@ import {
 	datasetStatusSummary,
 	evaluationExportFilename,
 	evaluationReportSummary,
-	evaluationRequest,
 	formatModelError,
 	signalRowPageRequest,
 	signalRowSummary,
@@ -510,7 +509,7 @@ export function ModelsPage() {
 			if (!dataset || !signal)
 				throw new Error("Select compatible evaluation evidence.");
 			const report = await invoke<EvaluationReport>("forecast_evaluation_create", {
-				request: evaluationRequest({
+				request: {
 					userId,
 					datasetId: evaluationDataset,
 					snapshotId: dataset.snapshotId,
@@ -519,7 +518,7 @@ export function ModelsPage() {
 					evaluationStartTimeMs: evaluationStart,
 					evaluationEndTimeMs: evaluationEnd,
 					stabilityWindowBars,
-				}),
+				},
 			});
 			setEvidence(`Forecast Evaluation Report ${report.reportId} created.`);
 			await refreshEvaluations();

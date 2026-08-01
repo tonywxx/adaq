@@ -5,7 +5,6 @@ import {
 	formatModelError,
 	signalRowPageRequest,
 	signalRowSummary,
-	evaluationRequest,
 	evaluationReportSummary,
 	evaluationExportFilename,
 } from "./models-workspace";
@@ -96,28 +95,7 @@ test("maps persisted Dataset statuses to readable inspection evidence", () => {
 	).toBe("missing-input: 2, model-warmup: 4, present: 8");
 });
 
-test("maps Forecast Evaluation requests, summaries, and authoritative filenames", () => {
-	expect(
-		evaluationRequest({
-			userId: "user",
-			datasetId: "dataset",
-			snapshotId: "snapshot",
-			signalName: "return",
-			horizonBars: 1,
-			evaluationStartTimeMs: 10,
-			evaluationEndTimeMs: 20,
-			stabilityWindowBars: 5,
-		}),
-	).toEqual({
-		userId: "user",
-		datasetId: "dataset",
-		snapshotId: "snapshot",
-		signalName: "return",
-		horizonBars: 1,
-		evaluationStartTimeMs: 10,
-		evaluationEndTimeMs: 20,
-		stabilityWindowBars: 5,
-	});
+test("maps Forecast Evaluation summaries and authoritative filenames", () => {
 	expect(
 		evaluationReportSummary({
 			reportId: "report",
