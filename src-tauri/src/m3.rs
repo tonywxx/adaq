@@ -197,6 +197,23 @@ impl M3State {
              );",
             )
             .map_err(string)?;
+        for column in ["progress_completed", "progress_total"] {
+            let exists = database
+                .prepare("SELECT 1 FROM pragma_table_info('dataset_generation_attempts') WHERE name = ?1")
+                .map_err(string)?
+                .exists([column])
+                .map_err(string)?;
+            if !exists {
+                database
+                    .execute(
+                        &format!(
+                            "ALTER TABLE dataset_generation_attempts ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                        ),
+                        [],
+                    )
+                    .map_err(string)?;
+            }
+        }
         database.execute(
             "UPDATE dataset_generation_attempts SET status = 'failed', diagnostic_json = 'generation-interrupted: application stopped before completion' WHERE status IN ('pending', 'running')",
             [],
@@ -3420,6 +3437,49 @@ mod tests {
         let state = M3State::open(&root).unwrap();
         let watchlist = WatchlistDb::open(&root.join("adaq.db")).unwrap();
         (root, state, watchlist)
+    }
+
+    #[test]
+    fn upgrades_generation_attempts_with_progress_columns() {
+        let root = std::env::temp_dir().join(format!(
+            "adaq-generation-attempt-migration-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let database = Connection::open(root.join("adaq.db")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE dataset_generation_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    request_hash TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    dataset_id TEXT,
+                    status TEXT NOT NULL,
+                    request_json TEXT NOT NULL,
+                    diagnostic_json TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );",
+            )
+            .unwrap();
+        drop(database);
+
+        let state = M3State::open(&root).unwrap();
+        let database = state.database.lock().unwrap();
+        database
+            .query_row(
+                "SELECT progress_completed, progress_total FROM dataset_generation_attempts LIMIT 1",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .unwrap();
+        drop(database);
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
