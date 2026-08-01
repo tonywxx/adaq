@@ -497,7 +497,10 @@ pub fn run() {
             m8::dataset_generation_list,
             m8::dataset_generation_cancel,
             m8::signal_dataset_list,
-            m8::signal_dataset_get
+            m8::signal_dataset_get,
+            m8::signal_dataset_rows,
+            m8::signal_dataset_import,
+            m8::signal_dataset_export
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

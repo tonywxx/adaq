@@ -38,3 +38,19 @@ export function datasetStatusSummary(statusCounts: Record<string, number>) {
 		.map(([status, count]) => `${status}: ${count}`)
 		.join(", ");
 }
+
+export const signalRowPageRequest = (
+	datasetId: string,
+	userId: string,
+	page: number,
+) => ({ datasetId, userId, page });
+
+export function signalRowSummary(row: {
+	predictionTimeMs: number;
+	availableAtMs: number;
+	status: string;
+	values?: number[];
+	unavailableReason?: string;
+}) {
+	return `${row.predictionTimeMs} · available ${row.availableAtMs} · ${row.status} · ${row.values?.join(", ") ?? row.unavailableReason ?? "unavailable"}`;
+}

@@ -12,7 +12,7 @@ pub use package::{
     FeatureSlotDefinition, FeatureSlotSource, ForecastTarget, ForecastTargetValueType,
     ForecastValueScale, MarketField, ModelArtifact, ModelOutput, ModelScope, PackageError,
     ParameterDefinition, ParameterType, PredictionKind, check_manifest_compatibility,
-    pack_component,
+    pack_component, validate_model_outputs,
 };
 pub use plan::{
     EngineIdentity, FactorInstancePlanInput, FrozenBuiltInParameter, FrozenFactorView,

@@ -6,11 +6,15 @@ import type { LibraryComponent } from "@/features/components/component-library";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { useHistoryTab } from "@/lib/navigation-history";
 import { invoke } from "@tauri-apps/api/core";
+import { open as chooseFile, save } from "@tauri-apps/plugin-dialog";
+import { open, readFile } from "@tauri-apps/plugin-fs";
 import { useCallback, useEffect, useState } from "react";
 import {
 	datasetGenerationRequest,
 	datasetStatusSummary,
 	formatModelError,
+	signalRowPageRequest,
+	signalRowSummary,
 } from "./models-workspace";
 
 type Snapshot = {
@@ -44,6 +48,8 @@ type Dataset = {
 	continuousBarSegments: number;
 	barGapRule: string;
 	parquetSha256: string;
+	archiveManifestJson?: string;
+	externalProducerSegments?: Array<Record<string, unknown>>;
 };
 type Attempt = {
 	attemptId: string;
@@ -52,6 +58,18 @@ type Attempt = {
 	diagnosticEvidence?: string;
 	progressCompleted: number;
 	progressTotal: number;
+};
+type RowPage = {
+	items: Array<{
+		predictionTimeMs: number;
+		availableAtMs: number;
+		status: string;
+		values?: number[];
+		unavailableReason?: string;
+	}>;
+	total: number;
+	page: number;
+	pageSize: number;
 };
 
 const afterPaint = () =>
@@ -65,6 +83,8 @@ export function ModelsPage() {
 	const [components, setComponents] = useState<LibraryComponent[]>([]);
 	const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
 	const [datasets, setDatasets] = useState<Dataset[]>([]);
+	const [datasetRows, setDatasetRows] = useState<Record<string, RowPage>>({});
+	const [rowsLoading, setRowsLoading] = useState("");
 	const [componentsLoading, setComponentsLoading] = useState(true);
 	const [snapshotsLoading, setSnapshotsLoading] = useState(true);
 	const [attemptsLoading, setAttemptsLoading] = useState(true);
@@ -281,6 +301,72 @@ export function ModelsPage() {
 			setEvidence(formatModelError(error));
 		}
 	};
+	const importDataset = async () => {
+		if (!userId || busy) return;
+		const path = await chooseFile({
+			multiple: false,
+			filters: [{ name: "AdaQ Signals", extensions: ["adaq-signals"] }],
+		});
+		if (!path || Array.isArray(path)) return;
+		setBusy(true);
+		setEvidence("");
+		await afterPaint();
+		try {
+			await invoke("signal_dataset_import", {
+				userId,
+				archive: Array.from(await readFile(path)),
+			});
+			setEvidence("External Signal Dataset imported.");
+			await refreshDatasets();
+		} catch (error) {
+			setEvidence(formatModelError(error));
+		} finally {
+			setBusy(false);
+		}
+	};
+	const exportDataset = async (datasetId: string) => {
+		if (!userId || busy) return;
+		setBusy(true);
+		await afterPaint();
+		try {
+			const archive = await invoke<number[]>("signal_dataset_export", {
+				datasetId,
+				userId,
+			});
+			const path = await save({
+				defaultPath: `${datasetId}.adaq-signals`,
+				filters: [{ name: "AdaQ Signals", extensions: ["adaq-signals"] }],
+			});
+			if (!path) return;
+			const file = await open(path, { write: true, createNew: true });
+			try {
+				await file.write(new Uint8Array(archive));
+			} finally {
+				await file.close();
+			}
+			setEvidence(`Signal Dataset exported to ${path}`);
+		} catch (error) {
+			setEvidence(formatModelError(error));
+		} finally {
+			setBusy(false);
+		}
+	};
+	const inspectRows = async (datasetId: string, page = 1) => {
+		if (!userId || rowsLoading) return;
+		setRowsLoading(datasetId);
+		await afterPaint();
+		try {
+			const result = await invoke<RowPage>(
+				"signal_dataset_rows",
+				signalRowPageRequest(datasetId, userId, page),
+			);
+			setDatasetRows((current) => ({ ...current, [datasetId]: result }));
+		} catch (error) {
+			setEvidence(formatModelError(error));
+		} finally {
+			setRowsLoading("");
+		}
+	};
 	const retry = async (attemptId: string) => {
 		if (!userId || busy) return;
 		setBusy(true);
@@ -443,7 +529,17 @@ export function ModelsPage() {
 				<TabsContent value="datasets">
 					<Card>
 						<CardHeader>
-							<CardTitle>Signal Datasets</CardTitle>
+							<div className="flex items-center justify-between gap-3">
+								<CardTitle>Signal Datasets</CardTitle>
+								<Button
+									variant="outline"
+									loading={busy}
+									disabled={busy}
+									onClick={() => void importDataset()}
+								>
+									Import .adaq-signals
+								</Button>
+							</div>
 						</CardHeader>
 						<CardContent className="grid gap-3">
 							{datasetsLoading ? (
@@ -453,6 +549,7 @@ export function ModelsPage() {
 									<article
 										key={item.datasetId}
 										className="grid gap-2 rounded border p-3"
+										aria-busy={rowsLoading === item.datasetId}
 									>
 										<p className="font-medium">
 											{item.code} {item.interval} · {item.rowCount} rows
@@ -465,6 +562,16 @@ export function ModelsPage() {
 													{item.unavailableCount} unavailable
 												</dd>
 											</div>
+											{item.archiveManifestJson && (
+												<Button
+													size="sm"
+													variant="outline"
+													disabled={busy}
+													onClick={() => void exportDataset(item.datasetId)}
+												>
+													Export .adaq-signals
+												</Button>
+											)}
 											<div>
 												<dt className="inline font-medium text-foreground">Statuses: </dt>
 												<dd className="inline select-text">
@@ -484,8 +591,9 @@ export function ModelsPage() {
 													Producer Segments:{" "}
 												</dt>
 												<dd className="inline">
-													{item.producerSegments.length} · {item.continuousBarSegments}{" "}
-													continuous · {item.barGapRule}
+													{item.externalProducerSegments?.length ??
+														item.producerSegments.length}{" "}
+													· {item.continuousBarSegments} continuous · {item.barGapRule}
 												</dd>
 											</div>
 											<div>
@@ -537,14 +645,79 @@ export function ModelsPage() {
 															sourceWarmupBars: item.sourceWarmupBars,
 															modelWarmupBars: item.modelWarmupBars,
 															producerSegments: item.producerSegments,
+															externalProducerSegments: item.externalProducerSegments,
 															predictionSource: item.predictionSource,
 															engineIdentity: item.engineIdentity,
 															featurePlan: JSON.parse(item.featurePlanJson),
+															archiveManifest:
+																item.archiveManifestJson &&
+																JSON.parse(item.archiveManifestJson),
 														},
 														null,
 														2,
 													)}
 												</pre>
+											</details>
+											<details
+												onToggle={(event) =>
+													event.currentTarget.open &&
+													!datasetRows[item.datasetId] &&
+													void inspectRows(item.datasetId)
+												}
+											>
+												<summary className="cursor-pointer font-medium text-foreground">
+													Rows
+												</summary>
+												{rowsLoading === item.datasetId && (
+													<p aria-live="polite">Loading Signal rows…</p>
+												)}
+												{datasetRows[item.datasetId] && (
+													<div className="mt-2 grid gap-2">
+														{datasetRows[item.datasetId].items.map((row) => (
+															<code
+																key={`${row.predictionTimeMs}:${row.status}`}
+																className="select-text whitespace-pre-wrap"
+															>
+																{signalRowSummary(row)}
+															</code>
+														))}
+														<div className="flex gap-2">
+															<Button
+																size="sm"
+																variant="outline"
+																disabled={
+																	Boolean(rowsLoading) || datasetRows[item.datasetId].page === 1
+																}
+																onClick={() =>
+																	void inspectRows(
+																		item.datasetId,
+																		datasetRows[item.datasetId].page - 1,
+																	)
+																}
+															>
+																Previous
+															</Button>
+															<Button
+																size="sm"
+																variant="outline"
+																disabled={
+																	Boolean(rowsLoading) ||
+																	datasetRows[item.datasetId].page *
+																		datasetRows[item.datasetId].pageSize >=
+																		datasetRows[item.datasetId].total
+																}
+																onClick={() =>
+																	void inspectRows(
+																		item.datasetId,
+																		datasetRows[item.datasetId].page + 1,
+																	)
+																}
+															>
+																Next
+															</Button>
+														</div>
+													</div>
+												)}
 											</details>
 										</dl>
 									</article>

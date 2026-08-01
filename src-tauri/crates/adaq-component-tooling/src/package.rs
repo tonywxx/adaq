@@ -455,15 +455,19 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
 
 fn validate_model_contract(manifest: &ComponentManifest) -> Result<(), PackageError> {
     if manifest.kind != ComponentKind::Model { return Ok(()); }
-    if !(1..=64).contains(&manifest.model_outputs.len()) {
-        return Err(PackageError("Model Components must declare one through 64 outputs".into()));
-    }
-    unique_identifiers(manifest.model_outputs.iter().map(|output| output.name.as_str()), "Model output")?;
     let artifact = manifest.model_artifact.as_ref().expect("validated above");
     if artifact.sha256 != manifest.wasm_sha256 {
         return Err(PackageError("Model Artifact identity must match the embedded component.wasm SHA-256".into()));
     }
-    for output in &manifest.model_outputs {
+    validate_model_outputs(&manifest.model_outputs)
+}
+
+pub fn validate_model_outputs(outputs: &[ModelOutput]) -> Result<(), PackageError> {
+    if !(1..=64).contains(&outputs.len()) {
+        return Err(PackageError("Model Components must declare one through 64 outputs".into()));
+    }
+    unique_identifiers(outputs.iter().map(|output| output.name.as_str()), "Model output")?;
+    for output in outputs {
         let target_type = match output.forecast_target {
             ForecastTarget::Builtin { target: BuiltinForecastTarget::FutureCloseUp } => ForecastTargetValueType::Binary,
             ForecastTarget::Builtin { target: BuiltinForecastTarget::FutureCloseReturn } => ForecastTargetValueType::Continuous,

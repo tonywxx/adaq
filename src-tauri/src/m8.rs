@@ -1,24 +1,27 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::{Cursor, Read, Write},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
+use adaq_backtest_core::MarketDataSnapshot;
 use adaq_component_sdk::host::model_abi;
 use adaq_component_tooling::{
     ComponentKind, FactorInstancePlanInput, RunLimits, WasmLoader, component_parameters,
     native_engine_identity, validate_and_freeze_feature_plan_with_factors_and_parameters,
 };
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::ArrowWriter;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::Manager;
+use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
     m3::{M3State, validate_user},
@@ -27,6 +30,9 @@ use crate::{
 
 const DATASET_ENGINE: &str = "closed-bar@1";
 const CHUNK_SIZE: usize = 256;
+const SIGNAL_ARCHIVE_SCHEMA_VERSION: u32 = 1;
+const MAX_SIGNAL_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SIGNAL_MANIFEST_BYTES: usize = 1024 * 1024;
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -52,7 +58,7 @@ pub struct DatasetFactorInstance {
     pub parameters: std::collections::HashMap<String, String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DatasetGenerationAttempt {
     attempt_id: String,
@@ -91,6 +97,36 @@ struct SignalDataset {
     unavailable_count: usize,
     status_counts: BTreeMap<String, usize>,
     parquet_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    archive_manifest_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    external_producer_segments: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExternalSignalManifest {
+    schema_version: u32,
+    snapshot_id: String,
+    src: String,
+    code: String,
+    interval: String,
+    parquet_sha256: String,
+    signal_contract: serde_json::Value,
+    producer_segments: Vec<ExternalProducerSegment>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExternalProducerSegment {
+    start_prediction_time_ms: i64,
+    end_prediction_time_ms: i64,
+    model_artifact: serde_json::Value,
+    inference_configuration: serde_json::Value,
+    availability_policy: serde_json::Value,
+    provenance: serde_json::Value,
+    #[serde(default)]
+    signal_contract: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -124,6 +160,332 @@ struct PendingDataset {
 struct PreparedAttempt {
     attempt: DatasetGenerationAttempt,
     should_start: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalRow {
+    instrument_id: String,
+    prediction_time_ms: i64,
+    available_at_ms: i64,
+    status: String,
+    values: Option<Vec<f64>>,
+    unavailable_reason: Option<String>,
+}
+
+const SIGNAL_ROW_PAGE_SIZE: usize = 10;
+
+fn unpack_signal_archive(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    if bytes.is_empty() || bytes.len() > MAX_SIGNAL_ARCHIVE_BYTES {
+        return Err("signal-archive-size-is-invalid".into());
+    }
+    let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(string)?;
+    if archive.len() != 2 {
+        return Err("signal-archive-must-contain-only-manifest-json-and-signals-parquet".into());
+    }
+    let mut names = (0..archive.len())
+        .map(|index| {
+            archive
+                .by_index(index)
+                .map(|file| file.name().to_owned())
+                .map_err(string)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort();
+    if names != ["manifest.json", "signals.parquet"] {
+        return Err("signal-archive-layout-is-invalid".into());
+    }
+    let mut read = |name: &str, maximum: usize| -> Result<Vec<u8>, String> {
+        let mut file = archive.by_name(name).map_err(string)?;
+        if file.size() > maximum as u64 {
+            return Err(format!("{name}-is-too-large"));
+        }
+        let mut content = Vec::with_capacity(file.size() as usize);
+        file.read_to_end(&mut content).map_err(string)?;
+        if content.len() > maximum {
+            return Err(format!("{name}-is-too-large"));
+        }
+        Ok(content)
+    };
+    Ok((
+        read("manifest.json", MAX_SIGNAL_MANIFEST_BYTES)?,
+        read("signals.parquet", MAX_SIGNAL_ARCHIVE_BYTES)?,
+    ))
+}
+
+fn pack_signal_archive(manifest: &[u8], parquet: &[u8]) -> Result<Vec<u8>, String> {
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+    writer
+        .start_file("manifest.json", options)
+        .map_err(string)?;
+    writer.write_all(manifest).map_err(string)?;
+    writer
+        .start_file("signals.parquet", options)
+        .map_err(string)?;
+    writer.write_all(parquet).map_err(string)?;
+    Ok(writer.finish().map_err(string)?.into_inner())
+}
+
+fn validate_external_manifest(manifest: &ExternalSignalManifest) -> Result<(), String> {
+    if manifest.snapshot_id.is_empty()
+        || manifest.src.is_empty()
+        || manifest.code.is_empty()
+        || manifest.interval.is_empty()
+        || !is_sha256(&manifest.parquet_sha256)
+        || !manifest.signal_contract.is_object()
+        || manifest.producer_segments.is_empty()
+    {
+        return Err("invalid-signal-manifest-contract".into());
+    }
+    let outputs = manifest
+        .signal_contract
+        .get("outputs")
+        .cloned()
+        .ok_or("signal-contract-must-declare-outputs")
+        .and_then(|value| {
+            serde_json::from_value::<Vec<adaq_component_tooling::ModelOutput>>(value)
+                .map_err(|_| "invalid-signal-contract".into())
+        })?;
+    if !(1..=64).contains(&outputs.len()) {
+        return Err("invalid-signal-contract".into());
+    }
+    adaq_component_tooling::validate_model_outputs(&outputs)
+        .map_err(|error| format!("invalid-signal-contract: {error}"))?;
+    if outputs.iter().any(|output| {
+        matches!(
+            output.prediction_kind,
+            adaq_component_tooling::PredictionKind::Score
+        ) && !matches!(
+            output.value_scale,
+            adaq_component_tooling::ForecastValueScale::Custom { .. }
+        )
+    }) {
+        return Err("external-score-requires-stable-custom-value-scale".into());
+    }
+    let mut previous_end = None;
+    for segment in &manifest.producer_segments {
+        if segment.start_prediction_time_ms > segment.end_prediction_time_ms
+            || previous_end.is_some_and(|end| segment.start_prediction_time_ms <= end)
+            || !segment.model_artifact.get("sha256").is_some_and(|value| {
+                value
+                    .as_str()
+                    .is_some_and(|value| value == "unknown" || is_sha256(value))
+            })
+            || !segment
+                .inference_configuration
+                .as_object()
+                .is_some_and(|value| !value.is_empty())
+            || !segment
+                .availability_policy
+                .get("kind")
+                .is_some_and(|value| value.is_string())
+            || !segment.provenance.is_object()
+        {
+            return Err("invalid-or-overlapping-producer-segments".into());
+        }
+        if let Some(contract) = &segment.signal_contract {
+            if contract != &manifest.signal_contract {
+                return Err("producer-segments-must-share-one-signal-contract".into());
+            }
+        }
+        match segment.availability_policy["kind"].as_str() {
+            Some("closed-bar@1") => {}
+            Some("delayed@1")
+                if segment
+                    .availability_policy
+                    .get("delayMs")
+                    .is_some_and(|value| value.as_i64().is_some_and(|value| value >= 0)) => {}
+            _ => return Err("invalid-availability-policy".into()),
+        }
+        for field in [
+            "sourceRevision",
+            "weightHash",
+            "tokenizerHash",
+            "normalizerHash",
+            "featureProcessorHash",
+            "architecture",
+            "frameworkRuntime",
+            "adapterVersion",
+            "licence",
+            "source",
+            "trainingWindow",
+            "fittingWindow",
+            "validationWindow",
+            "normalizationWindow",
+        ] {
+            if !segment
+                .provenance
+                .get(field)
+                .is_some_and(|value| value.as_str().is_some_and(|value| !value.trim().is_empty()))
+            {
+                return Err(format!("producer-provenance-missing-{field}"));
+            }
+        }
+        previous_end = Some(segment.end_prediction_time_ms);
+    }
+    Ok(())
+}
+
+fn read_external_rows(parquet: &[u8]) -> Result<Vec<ExternalRow>, String> {
+    let builder = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        bytes::Bytes::copy_from_slice(parquet),
+    )
+    .map_err(|_| "invalid-signals-parquet".to_owned())?;
+    let names = builder
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| (field.name().as_str(), field.data_type()))
+        .collect::<Vec<_>>();
+    let expected = [
+        ("instrument_id", DataType::Utf8),
+        ("prediction_time_ms", DataType::Int64),
+        ("available_at_ms", DataType::Int64),
+        ("status", DataType::Utf8),
+        ("forecast_json", DataType::Utf8),
+        ("unavailable_reason", DataType::Utf8),
+    ];
+    if names.len() != expected.len()
+        || names.iter().zip(expected.iter()).any(
+            |((name, kind), (expected_name, expected_kind))| {
+                *name != *expected_name || *kind != expected_kind
+            },
+        )
+    {
+        return Err("signal-parquet-schema-mismatch".into());
+    }
+    let batches = builder.build().map_err(string)?;
+    let mut rows = Vec::new();
+    for batch in batches {
+        let batch = batch.map_err(string)?;
+        let instrument = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("signal-parquet-schema-mismatch")?;
+        let prediction = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or("signal-parquet-schema-mismatch")?;
+        let available = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or("signal-parquet-schema-mismatch")?;
+        let status = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("signal-parquet-schema-mismatch")?;
+        let forecast = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("signal-parquet-schema-mismatch")?;
+        let reason = batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("signal-parquet-schema-mismatch")?;
+        for index in 0..batch.num_rows() {
+            let values = if forecast.is_null(index) {
+                None
+            } else {
+                Some(
+                    serde_json::from_str::<Vec<f64>>(forecast.value(index))
+                        .map_err(|_| "invalid-signal-forecast-json")?,
+                )
+            };
+            rows.push(ExternalRow {
+                instrument_id: instrument.value(index).into(),
+                prediction_time_ms: prediction.value(index),
+                available_at_ms: available.value(index),
+                status: status.value(index).into(),
+                values,
+                unavailable_reason: (!reason.is_null(index)).then(|| reason.value(index).into()),
+            });
+        }
+    }
+    Ok(rows)
+}
+
+fn validate_external_rows(
+    rows: &[ExternalRow],
+    manifest: &ExternalSignalManifest,
+    snapshot: &MarketDataSnapshot,
+    bars: &[adaq_data_core::OhlcvBar],
+) -> Result<(), String> {
+    let output_count = manifest.signal_contract["outputs"]
+        .as_array()
+        .ok_or("invalid-signal-contract")?
+        .len();
+    if rows.len() != bars.len() {
+        return Err("signal-rows-do-not-exactly-align-with-snapshot".into());
+    }
+    let instrument = format!("{}:{}", manifest.src, manifest.code);
+    for (index, row) in rows.iter().enumerate() {
+        let expected_time = close_time(snapshot.interval, bars[index].open_time_ms)?;
+        if row.instrument_id != instrument
+            || row.prediction_time_ms != expected_time
+            || row.available_at_ms < row.prediction_time_ms
+            || index > 0 && rows[index - 1].prediction_time_ms >= row.prediction_time_ms
+        {
+            return Err("signal-row-identity-or-availability-is-invalid".into());
+        }
+        match (&row.status[..], &row.values, &row.unavailable_reason) {
+            ("present", Some(values), None)
+                if values.len() == output_count && values.iter().all(|value| value.is_finite()) =>
+            {
+                if manifest
+                    .producer_segments
+                    .iter()
+                    .filter(|segment| {
+                        row.prediction_time_ms >= segment.start_prediction_time_ms
+                            && row.prediction_time_ms <= segment.end_prediction_time_ms
+                    })
+                    .count()
+                    != 1
+                {
+                    return Err(
+                        "present-signal-row-must-resolve-to-exactly-one-producer-segment".into(),
+                    );
+                }
+                let policy = manifest
+                    .producer_segments
+                    .iter()
+                    .find(|segment| {
+                        row.prediction_time_ms >= segment.start_prediction_time_ms
+                            && row.prediction_time_ms <= segment.end_prediction_time_ms
+                    })
+                    .expect("validated above");
+                let minimum = if policy.availability_policy["kind"] == "closed-bar@1" {
+                    row.prediction_time_ms
+                } else {
+                    row.prediction_time_ms
+                        .checked_add(
+                            policy.availability_policy["delayMs"]
+                                .as_i64()
+                                .expect("validated policy"),
+                        )
+                        .ok_or("signal-availability-overflow")?
+                };
+                if row.available_at_ms != minimum {
+                    return Err("signal-row-violates-availability-policy".into());
+                }
+            }
+            ("unavailable", None, Some(_)) => {}
+            _ => return Err("signal-row-status-contract-is-invalid".into()),
+        }
+    }
+    Ok(())
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[tauri::command]
@@ -348,6 +710,182 @@ pub fn signal_dataset_get(
         )
         .map_err(|_| "Forecast Signal Dataset is not available to this User".to_owned())?;
     serde_json::from_str(&json).map_err(string)
+}
+
+#[tauri::command]
+pub fn signal_dataset_rows(
+    dataset_id: String,
+    user_id: String,
+    page: usize,
+    state: tauri::State<'_, M3State>,
+) -> Result<serde_json::Value, String> {
+    signal_rows_page(&state, &user_id, &dataset_id, page)
+}
+
+fn signal_rows_page(
+    state: &M3State,
+    user_id: &str,
+    dataset_id: &str,
+    page: usize,
+) -> Result<serde_json::Value, String> {
+    validate_user(user_id)?;
+    if page == 0 {
+        return Err("Signal row page must be positive".into());
+    }
+    let path: String = state.database.lock().map_err(string)?.query_row(
+        "SELECT c.parquet_path FROM signal_dataset_content c JOIN signal_dataset_access a USING(dataset_id) WHERE c.dataset_id = ?1 AND a.user_id = ?2",
+        params![dataset_id, user_id], |row| row.get(0),
+    ).map_err(|_| "Forecast Signal Dataset is not available to this User".to_owned())?;
+    let rows = read_external_rows(&fs::read(path).map_err(string)?)?;
+    let total = rows.len();
+    let start = (page - 1).saturating_mul(SIGNAL_ROW_PAGE_SIZE).min(total);
+    Ok(
+        serde_json::json!({ "items": rows.into_iter().skip(start).take(SIGNAL_ROW_PAGE_SIZE).collect::<Vec<_>>(), "total": total, "page": page, "pageSize": SIGNAL_ROW_PAGE_SIZE }),
+    )
+}
+
+#[tauri::command]
+pub fn signal_dataset_import(
+    user_id: String,
+    archive: Vec<u8>,
+    state: tauri::State<'_, M3State>,
+) -> Result<serde_json::Value, String> {
+    import_signal_archive(&state, &user_id, &archive)
+}
+
+#[tauri::command]
+pub fn signal_dataset_export(
+    dataset_id: String,
+    user_id: String,
+    state: tauri::State<'_, M3State>,
+) -> Result<Vec<u8>, String> {
+    export_signal_archive(&state, &user_id, &dataset_id)
+}
+
+fn export_signal_archive(
+    state: &M3State,
+    user_id: &str,
+    dataset_id: &str,
+) -> Result<Vec<u8>, String> {
+    validate_user(&user_id)?;
+    let database = state.database.lock().map_err(string)?;
+    let (metadata_json, parquet_path): (String, String) = database.query_row(
+        "SELECT c.metadata_json, c.parquet_path FROM signal_dataset_content c JOIN signal_dataset_access a USING(dataset_id) WHERE c.dataset_id = ?1 AND a.user_id = ?2",
+        params![dataset_id, user_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(|_| "Forecast Signal Dataset is not available to this User".to_owned())?;
+    drop(database);
+    let metadata: SignalDataset = serde_json::from_str(&metadata_json).map_err(string)?;
+    let manifest = metadata
+        .archive_manifest_json
+        .ok_or("Only externally generated Signal Datasets can be exported as .adaq-signals")?;
+    let parquet = fs::read(parquet_path).map_err(string)?;
+    if hash(&parquet) != metadata.parquet_sha256 {
+        return Err("stored-signal-parquet-hash-mismatch".into());
+    }
+    pack_signal_archive(manifest.as_bytes(), &parquet)
+}
+
+fn import_signal_archive(
+    state: &M3State,
+    user_id: &str,
+    archive_bytes: &[u8],
+) -> Result<serde_json::Value, String> {
+    validate_user(user_id)?;
+    let (manifest_json, parquet) = unpack_signal_archive(archive_bytes)?;
+    let manifest: ExternalSignalManifest = serde_json::from_slice(&manifest_json)
+        .map_err(|error| format!("invalid-signal-manifest: {error}"))?;
+    if manifest.schema_version != SIGNAL_ARCHIVE_SCHEMA_VERSION {
+        return Err("unsupported-signal-archive-schema-version".into());
+    }
+    if hash(&parquet) != manifest.parquet_sha256 {
+        return Err("signal-parquet-hash-mismatch".into());
+    }
+    validate_external_manifest(&manifest)?;
+    let (snapshot, bars) = state.snapshot_for_user(user_id, &manifest.snapshot_id)?;
+    if snapshot.src != manifest.src
+        || snapshot.code != manifest.code
+        || snapshot.interval.as_str() != manifest.interval
+    {
+        return Err("signal-snapshot-instrument-venue-or-interval-mismatch".into());
+    }
+    let rows = read_external_rows(&parquet)?;
+    validate_external_rows(&rows, &manifest, &snapshot, &bars)?;
+    let dataset_id = hash(&[manifest_json.as_slice(), parquet.as_slice()].concat());
+    let directory = state.root.join("signal-datasets");
+    fs::create_dir_all(&directory).map_err(string)?;
+    let temporary_path = directory.join(format!(".{dataset_id}.import.tmp"));
+    fs::write(&temporary_path, &parquet).map_err(string)?;
+    let final_path = directory.join(format!("{dataset_id}.parquet"));
+    let unavailable_count = rows.iter().filter(|row| row.values.is_none()).count();
+    let status_counts = rows.iter().fold(BTreeMap::new(), |mut counts, row| {
+        *counts.entry(row.status.clone()).or_insert(0) += 1;
+        counts
+    });
+    let external_producer_segments = serde_json::to_value(&manifest.producer_segments)
+        .map_err(string)?
+        .as_array()
+        .cloned();
+    let metadata = SignalDataset {
+        dataset_id: dataset_id.clone(),
+        snapshot_id: manifest.snapshot_id,
+        src: manifest.src,
+        code: manifest.code,
+        interval: manifest.interval,
+        prediction_source: "external-import@1".into(),
+        model_artifact: None,
+        model_outputs: vec![],
+        model_parameters: BTreeMap::new(),
+        source_warmup_bars: 0,
+        model_warmup_bars: 0,
+        model_archive_sha256: "external".into(),
+        trust: "externally-generated".into(),
+        component_lock: vec![],
+        feature_plan_json: "{}".into(),
+        feature_plan_hash: "external".into(),
+        seed: 0,
+        engine_identity: native_engine_identity().map_err(string)?,
+        producer_segments: vec![],
+        continuous_bar_segments: 0,
+        bar_gap_rule: "external-evidence@1".into(),
+        row_count: rows.len(),
+        unavailable_count,
+        status_counts,
+        parquet_sha256: manifest.parquet_sha256,
+        archive_manifest_json: Some(String::from_utf8(manifest_json).map_err(string)?),
+        external_producer_segments,
+    };
+    let metadata_json = serde_json::to_string(&metadata).map_err(string)?;
+    let mut database = state.database.lock().map_err(string)?;
+    let transaction = database.transaction().map_err(string)?;
+    let mut created_final = false;
+    let result = (|| -> Result<(), String> {
+        if final_path.exists() {
+            if hash(&fs::read(&final_path).map_err(string)?) != metadata.parquet_sha256 {
+                return Err("existing-dataset-content-hash-mismatch".into());
+            }
+            fs::remove_file(&temporary_path).map_err(string)?;
+        } else {
+            fs::rename(&temporary_path, &final_path).map_err(string)?;
+            created_final = true;
+        }
+        transaction.execute("INSERT OR IGNORE INTO signal_dataset_content(dataset_id, metadata_json, parquet_path) VALUES (?1, ?2, ?3)", params![dataset_id, metadata_json, final_path.to_string_lossy()]).map_err(string)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO signal_dataset_access(user_id, dataset_id) VALUES (?1, ?2)",
+                params![user_id, metadata.dataset_id],
+            )
+            .map_err(string)?;
+        transaction.commit().map_err(string)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+        if created_final {
+            let _ = fs::remove_file(&final_path);
+        }
+    }
+    result?;
+    serde_json::to_value(metadata).map_err(string)
 }
 
 fn publish_dataset(
@@ -719,6 +1257,8 @@ fn generate(
         unavailable_count,
         status_counts,
         parquet_sha256,
+        archive_manifest_json: None,
+        external_producer_segments: None,
     };
     Ok(PendingDataset {
         metadata,
@@ -1348,6 +1888,293 @@ mod tests {
                 })
                 .unwrap(),
             0,
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn external_manifest(snapshot_id: &str, parquet: &[u8], start: i64, end: i64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "snapshotId": snapshot_id,
+            "src": "okx",
+            "code": "BTC-USDT",
+            "interval": "1h",
+            "parquetSha256": hash(parquet),
+            "signalContract": { "outputs": [{ "name": "qlib-score", "predictionKind": { "kind": "score" }, "forecastTarget": { "kind": "builtin", "target": "future-close-return" }, "valueScale": { "kind": "custom", "id": "qlib-score", "version": "1.0.0", "description": "External Qlib score", "minimum": null, "maximum": null }, "horizonBars": 1 }] },
+            "producerSegments": [{
+                "startPredictionTimeMs": start,
+                "endPredictionTimeMs": end,
+                "modelArtifact": { "sha256": "a".repeat(64) },
+                "inferenceConfiguration": { "batchSize": 256 },
+                "availabilityPolicy": { "kind": "closed-bar@1" },
+                "provenance": {
+                    "sourceRevision": "unknown", "weightHash": "unknown", "tokenizerHash": "unknown", "normalizerHash": "unknown", "featureProcessorHash": "unknown", "architecture": "unknown", "frameworkRuntime": "unknown", "adapterVersion": "unknown", "licence": "unknown", "source": "unknown", "trainingWindow": "unknown", "fittingWindow": "unknown", "validationWindow": "unknown", "normalizationWindow": "unknown"
+                }
+            }]
+        })).unwrap()
+    }
+
+    #[test]
+    fn external_signal_archive_is_validated_published_and_round_trips() {
+        let (root, state, request) = setup("valid", "external-archive");
+        let attempt = running_attempt(&state, &request);
+        let pending = generate(&request, &state, &AtomicBool::new(false), &attempt).unwrap();
+        let parquet = fs::read(&pending.temporary_path).unwrap();
+        let mut manifest_value: serde_json::Value = serde_json::from_slice(&external_manifest(
+            &request.snapshot_id,
+            &parquet,
+            3_600_000,
+            9 * 3_600_000,
+        ))
+        .unwrap();
+        manifest_value["producerSegments"][0]["modelArtifact"]["sha256"] =
+            request.model_archive_sha256.clone().into();
+        let manifest = serde_json::to_vec(&manifest_value).unwrap();
+        let archive = pack_signal_archive(&manifest, &parquet).unwrap();
+        let imported = import_signal_archive(&state, "alice", &archive).unwrap();
+        assert_eq!(imported["trust"], "externally-generated");
+        assert_eq!(imported["predictionSource"], "external-import@1");
+        let (stored_manifest, stored_parquet) = unpack_signal_archive(
+            &export_signal_archive(&state, "alice", imported["datasetId"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored_manifest, manifest);
+        assert_eq!(stored_parquet, parquet);
+        let page =
+            signal_rows_page(&state, "alice", imported["datasetId"].as_str().unwrap(), 1).unwrap();
+        assert_eq!(page["total"], 6);
+        assert_eq!(page["items"][0]["availableAtMs"], 3_600_000);
+        assert_eq!(
+            signal_rows_page(&state, "alice", imported["datasetId"].as_str().unwrap(), 2).unwrap()
+                ["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            signal_rows_page(&state, "alice", imported["datasetId"].as_str().unwrap(), 0)
+                .unwrap_err(),
+            "Signal row page must be positive"
+        );
+        assert!(
+            signal_rows_page(&state, "bob", imported["datasetId"].as_str().unwrap(), 1)
+                .unwrap_err()
+                .contains("not available")
+        );
+        assert!(
+            state
+                .delete_component("alice", &request.model_archive_sha256)
+                .unwrap_err()
+                .contains("immutable Signal Dataset")
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn external_signal_archive_rejects_hashes_layout_and_segment_gaps() {
+        let malformed = {
+            let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+            writer
+                .start_file("manifest.json", SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"{}").unwrap();
+            writer
+                .start_file("../signals.parquet", SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"x").unwrap();
+            writer.finish().unwrap().into_inner()
+        };
+        assert_eq!(
+            unpack_signal_archive(&malformed).unwrap_err(),
+            "signal-archive-layout-is-invalid"
+        );
+        let manifest: ExternalSignalManifest =
+            serde_json::from_slice(&external_manifest("snapshot", b"parquet", 10, 9)).unwrap();
+        assert_eq!(
+            validate_external_manifest(&manifest).unwrap_err(),
+            "invalid-or-overlapping-producer-segments"
+        );
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&external_manifest("snapshot", b"parquet", 1, 2)).unwrap();
+        let duplicate = value["producerSegments"][0].clone();
+        value["producerSegments"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        let manifest: ExternalSignalManifest = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            validate_external_manifest(&manifest).unwrap_err(),
+            "invalid-or-overlapping-producer-segments"
+        );
+        let oversized = vec![0; MAX_SIGNAL_ARCHIVE_BYTES + 1];
+        assert_eq!(
+            unpack_signal_archive(&oversized).unwrap_err(),
+            "signal-archive-size-is-invalid"
+        );
+        let archive =
+            pack_signal_archive(&external_manifest("snapshot", b"wrong", 1, 2), b"parquet")
+                .unwrap();
+        let (manifest, parquet) = unpack_signal_archive(&archive).unwrap();
+        let manifest: ExternalSignalManifest = serde_json::from_slice(&manifest).unwrap();
+        assert_ne!(hash(&parquet), manifest.parquet_sha256);
+    }
+
+    #[test]
+    fn external_rows_reject_schema_order_and_availability_violations() {
+        let (root, state, request) = setup("valid", "external-rejections");
+        let attempt = running_attempt(&state, &request);
+        let pending = generate(&request, &state, &AtomicBool::new(false), &attempt).unwrap();
+        let parquet = fs::read(&pending.temporary_path).unwrap();
+        assert_eq!(
+            read_external_rows(b"not parquet").unwrap_err(),
+            "invalid-signals-parquet"
+        );
+        let wrong_schema = root.join("wrong-schema.parquet");
+        let schema = std::sync::Arc::new(Schema::new(vec![Field::new(
+            "wrong",
+            DataType::Utf8,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![std::sync::Arc::new(StringArray::from_iter_values(["x"]))],
+        )
+        .unwrap();
+        let mut writer =
+            ArrowWriter::try_new(fs::File::create(&wrong_schema).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        assert_eq!(
+            read_external_rows(&fs::read(&wrong_schema).unwrap()).unwrap_err(),
+            "signal-parquet-schema-mismatch"
+        );
+        let manifest: ExternalSignalManifest = serde_json::from_slice(&external_manifest(
+            &request.snapshot_id,
+            &parquet,
+            3_600_000,
+            9 * 3_600_000,
+        ))
+        .unwrap();
+        let mut rows = read_external_rows(&parquet).unwrap();
+        rows[1].prediction_time_ms = rows[0].prediction_time_ms;
+        let (snapshot, bars) = state
+            .snapshot_for_user("alice", &request.snapshot_id)
+            .unwrap();
+        assert_eq!(
+            validate_external_rows(&rows, &manifest, &snapshot, &bars).unwrap_err(),
+            "signal-row-identity-or-availability-is-invalid"
+        );
+        let mut rows = read_external_rows(&parquet).unwrap();
+        rows[2].available_at_ms += 1;
+        assert_eq!(
+            validate_external_rows(&rows, &manifest, &snapshot, &bars).unwrap_err(),
+            "signal-row-violates-availability-policy"
+        );
+        let mut rows = read_external_rows(&parquet).unwrap();
+        rows[2].values = Some(vec![0.1, 0.2]);
+        assert_eq!(
+            validate_external_rows(&rows, &manifest, &snapshot, &bars).unwrap_err(),
+            "signal-row-status-contract-is-invalid"
+        );
+        let mut contract: serde_json::Value = serde_json::from_slice(&external_manifest(
+            &request.snapshot_id,
+            &parquet,
+            3_600_000,
+            9 * 3_600_000,
+        ))
+        .unwrap();
+        contract["signalContract"]["outputs"][0]["valueScale"] =
+            serde_json::json!({ "kind": "percentile" });
+        assert_eq!(
+            validate_external_manifest(&serde_json::from_value(contract).unwrap()).unwrap_err(),
+            "external-score-requires-stable-custom-value-scale"
+        );
+        let mut contract: serde_json::Value = serde_json::from_slice(&external_manifest(
+            &request.snapshot_id,
+            &parquet,
+            3_600_000,
+            9 * 3_600_000,
+        ))
+        .unwrap();
+        contract["signalContract"]["outputs"][0]["valueScale"] = serde_json::json!({ "kind": "custom", "id": "", "version": "1.0.0", "description": "", "minimum": 3.0, "maximum": 2.0 });
+        assert!(
+            validate_external_manifest(&serde_json::from_value(contract).unwrap())
+                .unwrap_err()
+                .starts_with("invalid-signal-contract:")
+        );
+        let mut manifest: ExternalSignalManifest = serde_json::from_slice(&external_manifest(
+            &request.snapshot_id,
+            &parquet,
+            3_600_000,
+            3_600_000,
+        ))
+        .unwrap();
+        manifest.producer_segments[0].end_prediction_time_ms = 3_600_000;
+        assert_eq!(
+            validate_external_rows(
+                &read_external_rows(&parquet).unwrap(),
+                &manifest,
+                &snapshot,
+                &bars
+            )
+            .unwrap_err(),
+            "present-signal-row-must-resolve-to-exactly-one-producer-segment"
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_external_import_is_atomic() {
+        let (root, state, request) = setup("valid", "external-atomic-failure");
+        let attempt = running_attempt(&state, &request);
+        let pending = generate(&request, &state, &AtomicBool::new(false), &attempt).unwrap();
+        let parquet = fs::read(&pending.temporary_path).unwrap();
+        let manifest = external_manifest(&request.snapshot_id, &parquet, 3_600_000, 9 * 3_600_000);
+        let archive = pack_signal_archive(&manifest, &parquet).unwrap();
+        let dataset_id = hash(&[manifest.as_slice(), parquet.as_slice()].concat());
+        state.database.lock().unwrap().execute_batch("CREATE TRIGGER reject_external_access BEFORE INSERT ON signal_dataset_access BEGIN SELECT RAISE(ABORT, 'forced publication failure'); END;").unwrap();
+        assert!(
+            import_signal_archive(&state, "alice", &archive)
+                .unwrap_err()
+                .contains("forced publication failure")
+        );
+        assert_eq!(
+            state
+                .database
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM signal_dataset_content", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(
+            !state
+                .root
+                .join("signal-datasets")
+                .join(format!("{dataset_id}.parquet"))
+                .exists()
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn datasets_lock_their_component_artifacts() {
+        let (root, state, request) = setup("valid", "dataset-lock");
+        let attempt = running_attempt(&state, &request);
+        let pending = generate(&request, &state, &AtomicBool::new(false), &attempt).unwrap();
+        publish_dataset(&state, "alice", &attempt, &AtomicBool::new(false), pending).unwrap();
+        assert!(
+            state
+                .delete_component("alice", &request.model_archive_sha256)
+                .unwrap_err()
+                .contains("immutable Signal Dataset")
         );
         drop(state);
         fs::remove_dir_all(root).unwrap();

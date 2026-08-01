@@ -591,6 +591,28 @@ impl M3State {
                 locked_by_run_ids.join(", ")
             ));
         }
+        let locked_by_dataset_ids = database
+            .prepare(
+                "SELECT c.dataset_id FROM signal_dataset_content c
+                 JOIN signal_dataset_access a USING(dataset_id)
+                 WHERE a.user_id = ?1 AND (
+                    json_extract(c.metadata_json, '$.modelArchiveSha256') = ?2
+                    OR EXISTS(SELECT 1 FROM json_each(c.metadata_json, '$.componentLock') WHERE json_extract(value, '$.archiveSha256') = ?2)
+                    OR EXISTS(SELECT 1 FROM json_each(c.metadata_json, '$.externalProducerSegments') WHERE json_extract(value, '$.modelArtifact.sha256') = ?2)
+                 )
+                 ORDER BY c.dataset_id",
+            )
+            .map_err(string)?
+            .query_map(params![user_id, hash], |row| row.get::<_, String>(0))
+            .map_err(string)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(string)?;
+        if !locked_by_dataset_ids.is_empty() {
+            return Err(format!(
+                "Component Package is locked by immutable Signal Dataset(s): {}",
+                locked_by_dataset_ids.join(", ")
+            ));
+        }
         let transaction = database.transaction().map_err(string)?;
         transaction
             .execute(

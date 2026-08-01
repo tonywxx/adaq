@@ -13,6 +13,7 @@ dependencies = [
  "adaq-indicator-engine",
  "arrow-array",
  "arrow-schema",
+ "bytes",
  "parquet",
  "rusqlite",
  "rust_decimal",

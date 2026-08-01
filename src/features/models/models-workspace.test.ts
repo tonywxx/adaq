@@ -3,6 +3,8 @@ import {
 	datasetGenerationRequest,
 	datasetStatusSummary,
 	formatModelError,
+	signalRowPageRequest,
+	signalRowSummary,
 } from "./models-workspace";
 
 const component = (value: Partial<LibraryComponent>): LibraryComponent => ({
@@ -23,6 +25,30 @@ const component = (value: Partial<LibraryComponent>): LibraryComponent => ({
 	compatible: true,
 	lockedByRunIds: [],
 	...value,
+});
+
+test("maps paged external rows to exact copyable evidence", () => {
+	expect(signalRowPageRequest("dataset", "user", 2)).toEqual({
+		datasetId: "dataset",
+		userId: "user",
+		page: 2,
+	});
+	expect(
+		signalRowSummary({
+			predictionTimeMs: 10,
+			availableAtMs: 20,
+			status: "present",
+			values: [0.25],
+		}),
+	).toBe("10 · available 20 · present · 0.25");
+	expect(
+		signalRowSummary({
+			predictionTimeMs: 10,
+			availableAtMs: 10,
+			status: "unavailable",
+			unavailableReason: "warmup",
+		}),
+	).toContain("unavailable · warmup");
 });
 
 test("freezes exact ordered Factor bindings for Dataset generation", () => {
