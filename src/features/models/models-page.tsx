@@ -12,12 +12,16 @@ import { useCallback, useEffect, useState } from "react";
 import {
 	datasetGenerationRequest,
 	datasetStatusSummary,
+	EVALUATION_METRIC_DEFINITIONS,
+	evaluationMetricKind,
 	evaluationExportFilename,
 	evaluationReportSummary,
 	formatModelError,
 	isCompatibleEvaluationSignal,
 	signalRowPageRequest,
 	signalRowSummary,
+	type EvaluationMetricDefinition,
+	type EvaluationSignalContract,
 } from "./models-workspace";
 
 type Snapshot = {
@@ -74,13 +78,7 @@ type RowPage = {
 	page: number;
 	pageSize: number;
 };
-type ModelOutput = {
-	name: string;
-	predictionKind: { kind: string };
-	forecastTarget: { kind: string; target?: string; valueType?: string };
-	valueScale: { kind: string };
-	horizonBars: number;
-};
+type ModelOutput = EvaluationSignalContract;
 type EvaluationReport = {
 	reportId: string;
 	datasetId: string;
@@ -1058,58 +1056,61 @@ export function ModelsPage() {
 												</p>
 											)}
 											<div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-												{report.signalContract.predictionKind.kind === "probability" ? (
+												{evaluationMetricKind(report.signalContract) === "probability" ? (
 													<>
 														<EvaluationMetric
-															label="Brier Score"
+															definition={EVALUATION_METRIC_DEFINITIONS.brierScore}
 															value={metricValue(report.metrics.brierScore)}
-															help="Mean squared error between probability and the binary realized label; range 0 to 1 and lower is better, without a universal quality threshold."
 														/>
 														<EvaluationMetric
-															label="Log Loss"
+															definition={EVALUATION_METRIC_DEFINITIONS.logLoss}
 															value={metricValue(report.metrics.logLoss)}
-															help="Mean binary cross-entropy using probabilities clipped to 1e-15 through 1 - 1e-15; lower is better and confident errors are penalized more."
 														/>
 														<EvaluationMetric
-															label="ROC AUC"
+															definition={EVALUATION_METRIC_DEFINITIONS.rocAuc}
 															value={metricValue(report.metrics.rocAuc)}
-															help="Probability that a positive label ranks above a negative label, with ties worth one half; range 0 to 1 and undefined because it requires both realized classes."
 														/>
 														<EvaluationMetric
-															label="Calibration"
+															definition={EVALUATION_METRIC_DEFINITIONS.calibration}
 															value={
 																report.metrics.calibration
 																	? `${report.metrics.calibration.filter((bucket) => bucket.count).length} populated buckets`
 																	: "Unavailable"
 															}
-															help="Ten fixed equal-width probability buckets compare mean prediction with observed positive frequency; empty buckets remain explicit."
 														/>
 													</>
+												) : evaluationMetricKind(report.signalContract) ===
+													"custom-binary" ? (
+													<p className="col-span-full rounded border p-3" role="status">
+														Custom Binary Target recorded. Target-specific probability metrics
+														are unavailable because no matching host evaluator and verifiable
+														realized labels exist. Evidence:{" "}
+														<code>
+															{report.metrics.undefinedMetrics?.probabilityMetrics ??
+																"requires-verifiable-realized-labels"}
+														</code>
+													</p>
 												) : (
 													<>
 														<EvaluationMetric
-															label="MAE"
+															definition={EVALUATION_METRIC_DEFINITIONS.mae}
 															value={metricValue(report.metrics.mae)}
-															help="Mean absolute error in the Forecast Target's native simple-return units; lower is better; range starts at zero."
 														/>
 														<EvaluationMetric
-															label="RMSE"
+															definition={EVALUATION_METRIC_DEFINITIONS.rmse}
 															value={metricValue(report.metrics.rmse)}
-															help="Root mean squared error in Target-native units; lower is better and larger errors receive more weight."
 														/>
 														<EvaluationMetric
-															label="Mean bias"
+															definition={EVALUATION_METRIC_DEFINITIONS.meanBias}
 															value={metricValue(report.metrics.meanBias)}
-															help="Mean prediction minus realized Target; zero is unbiased, with no universal investment-quality threshold."
 														/>
 														<EvaluationMetric
-															label="Pearson correlation"
+															definition={EVALUATION_METRIC_DEFINITIONS.pearsonCorrelation}
 															value={
 																report.metrics.pearsonCorrelation == null
 																	? "Unavailable"
 																	: metricValue(report.metrics.pearsonCorrelation)
 															}
-															help="Linear correlation of aligned predictions and realized labels; range -1 to 1 and undefined for insufficient or constant evidence."
 														/>
 													</>
 												)}
@@ -1186,14 +1187,13 @@ export function ModelsPage() {
 }
 
 function EvaluationMetric({
-	label,
+	definition,
 	value,
-	help,
 }: {
-	label: string;
+	definition: EvaluationMetricDefinition;
 	value: string;
-	help: string;
 }) {
+	const { label } = definition;
 	return (
 		<div className="rounded border p-3">
 			<div className="flex items-center gap-1 text-muted-foreground">
@@ -1205,9 +1205,21 @@ function EvaluationMetric({
 					>
 						ⓘ
 					</summary>
-					<p className="absolute right-0 z-10 mt-1 hidden w-64 rounded border bg-popover p-2 text-xs text-popover-foreground shadow group-open:block group-hover:block group-focus-within:block">
-						{help}
-					</p>
+					<div className="absolute right-0 z-10 mt-1 hidden w-72 rounded border bg-popover p-2 text-xs text-popover-foreground shadow group-open:block group-hover:block group-focus-within:block">
+						<p>{definition.meaning}</p>
+						<p>Formula: {definition.formula}</p>
+						<p>Direction: {definition.direction}</p>
+						<p>Range: {definition.range}</p>
+						<p>Caveat: {definition.caveat}</p>
+						<a
+							className="underline"
+							href={definition.reference}
+							target="_blank"
+							rel="noreferrer"
+						>
+							Reference documentation
+						</a>
+					</div>
 				</details>
 			</div>
 			<p className="break-all font-medium select-text">{value}</p>

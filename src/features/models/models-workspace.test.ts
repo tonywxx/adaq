@@ -2,11 +2,13 @@ import type { LibraryComponent } from "@/features/components/component-library";
 import {
 	datasetGenerationRequest,
 	datasetStatusSummary,
+	EVALUATION_METRIC_DEFINITIONS,
 	formatModelError,
 	signalRowPageRequest,
 	signalRowSummary,
 	evaluationReportSummary,
 	evaluationExportFilename,
+	evaluationMetricKind,
 	isCompatibleEvaluationSignal,
 } from "./models-workspace";
 
@@ -112,7 +114,7 @@ test("maps Forecast Evaluation summaries and authoritative filenames", () => {
 	);
 });
 
-test("selects only host-evaluable Expected Value and Probability signals", () => {
+test("maps reportable signals to Target-specific metric presentations", () => {
 	const output = (
 		predictionKind: string,
 		target: string,
@@ -135,6 +137,9 @@ test("selects only host-evaluable Expected Value and Probability signals", () =>
 		),
 	).toBe(true);
 	expect(
+		evaluationMetricKind(output("probability", "future-close-up", "probability")),
+	).toBe("probability");
+	expect(
 		isCompatibleEvaluationSignal(
 			output("probability", "future-close-return", "probability"),
 		),
@@ -144,10 +149,17 @@ test("selects only host-evaluable Expected Value and Probability signals", () =>
 			output("probability", "future-close-up", "native"),
 		),
 	).toBe(false);
-	expect(
-		isCompatibleEvaluationSignal({
-			...output("probability", "", "probability"),
-			forecastTarget: { kind: "custom", valueType: "binary" },
-		}),
-	).toBe(true);
+	const custom = {
+		...output("probability", "", "probability"),
+		forecastTarget: { kind: "custom", valueType: "binary" },
+	};
+	expect(isCompatibleEvaluationSignal(custom)).toBe(true);
+	expect(evaluationMetricKind(custom)).toBe("custom-binary");
+	expect(EVALUATION_METRIC_DEFINITIONS.logLoss.range).toContain("34.539");
+	expect(EVALUATION_METRIC_DEFINITIONS.rocAuc.caveat).toContain(
+		"both realized classes",
+	);
+	expect(EVALUATION_METRIC_DEFINITIONS.calibration.caveat).toContain(
+		"weak evidence",
+	);
 });

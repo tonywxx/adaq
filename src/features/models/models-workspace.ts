@@ -1,5 +1,111 @@
 import type { LibraryComponent } from "@/features/components/component-library";
 
+export type EvaluationSignalContract = {
+	name: string;
+	predictionKind: { kind: string };
+	forecastTarget: { kind: string; target?: string; valueType?: string };
+	valueScale: { kind: string };
+	horizonBars: number;
+};
+
+export type EvaluationMetricDefinition = {
+	label: string;
+	meaning: string;
+	formula: string;
+	direction: string;
+	range: string;
+	caveat: string;
+	reference: string;
+};
+
+const FORECAST_METRICS_REFERENCE =
+	"https://github.com/tonywxx/adaq/blob/main/docs/adr/0021-keep-model-inference-engine-neutral-and-single-instrument-first.md";
+
+export const EVALUATION_METRIC_DEFINITIONS = {
+	mae: {
+		label: "MAE",
+		meaning: "Mean absolute error in Forecast Target-native units.",
+		formula: "mean(|prediction - realized|)",
+		direction: "Lower is better.",
+		range: "[0, +∞)",
+		caveat: "Scale depends on the Target; it is not Strategy profitability.",
+		reference: FORECAST_METRICS_REFERENCE,
+	},
+	rmse: {
+		label: "RMSE",
+		meaning: "Root mean squared error in Forecast Target-native units.",
+		formula: "sqrt(mean((prediction - realized)²))",
+		direction: "Lower is better; larger errors receive more weight.",
+		range: "[0, +∞)",
+		caveat: "Scale depends on the Target; it is not Strategy profitability.",
+		reference: FORECAST_METRICS_REFERENCE,
+	},
+	meanBias: {
+		label: "Mean bias",
+		meaning: "Average signed prediction error.",
+		formula: "mean(prediction - realized)",
+		direction: "Closer to zero means less average signed bias.",
+		range: "(-∞, +∞)",
+		caveat:
+			"Positive and negative errors can cancel; there is no universal quality threshold.",
+		reference: FORECAST_METRICS_REFERENCE,
+	},
+	pearsonCorrelation: {
+		label: "Pearson correlation",
+		meaning:
+			"Linear association between aligned predictions and realized labels.",
+		formula: "cov(prediction, realized) / (σprediction × σrealized)",
+		direction: "Interpret sign and magnitude in research context.",
+		range: "[-1, 1]",
+		caveat:
+			"Undefined for insufficient or constant evidence; no universal quality threshold applies.",
+		reference: FORECAST_METRICS_REFERENCE,
+	},
+	brierScore: {
+		label: "Brier Score",
+		meaning: "Mean squared error between probability and binary realized label.",
+		formula: "mean((probability - label)²)",
+		direction: "Lower is better.",
+		range: "[0, 1]",
+		caveat:
+			"Interpret against class balance and calibration context; there is no universal quality threshold.",
+		reference: FORECAST_METRICS_REFERENCE,
+	},
+	logLoss: {
+		label: "Log Loss",
+		meaning: "Mean binary cross-entropy of probability forecasts.",
+		formula: "-mean(label×ln(p) + (1-label)×ln(1-p))",
+		direction: "Lower is better; confident errors receive a larger penalty.",
+		range: "Approximately [0, 34.539] with p clipped to [1e-15, 1-1e-15].",
+		caveat:
+			"Interpret against class balance; there is no universal quality threshold.",
+		reference: FORECAST_METRICS_REFERENCE,
+	},
+	rocAuc: {
+		label: "ROC AUC",
+		meaning:
+			"Probability that a positive label ranks above a negative label, with ties worth one half.",
+		formula:
+			"(concordant positive-negative pairs + 0.5×ties) / all positive-negative pairs",
+		direction: "Higher means stronger ranking separation.",
+		range: "[0, 1]",
+		caveat:
+			"Undefined unless both realized classes are present; there is no universal quality threshold.",
+		reference: FORECAST_METRICS_REFERENCE,
+	},
+	calibration: {
+		label: "Calibration",
+		meaning:
+			"Mean prediction versus observed positive frequency in ten fixed equal-width buckets.",
+		formula: "For each bucket: mean(probability) compared with mean(label)",
+		direction: "Closer agreement indicates better calibration.",
+		range: "Both bucket means are in [0, 1].",
+		caveat:
+			"Empty buckets remain explicit and small bucket counts are weak evidence.",
+		reference: FORECAST_METRICS_REFERENCE,
+	},
+} satisfies Record<string, EvaluationMetricDefinition>;
+
 export function datasetGenerationRequest(
 	userId: string,
 	snapshotId: string,
@@ -70,12 +176,7 @@ export function evaluationExportFilename(
 	return `forecast-evaluation-report-${reportId}.${format === "json" ? "json" : "md"}`;
 }
 
-export function isCompatibleEvaluationSignal(output: {
-	predictionKind: { kind: string };
-	forecastTarget: { kind: string; target?: string; valueType?: string };
-	valueScale: { kind: string };
-	horizonBars: number;
-}) {
+export function isCompatibleEvaluationSignal(output: EvaluationSignalContract) {
 	if (!Number.isInteger(output.horizonBars) || output.horizonBars < 1)
 		return false;
 	if (
@@ -90,4 +191,13 @@ export function isCompatibleEvaluationSignal(output: {
 			(output.forecastTarget.kind === "custom" &&
 				output.forecastTarget.valueType === "binary"))
 	);
+}
+
+export function evaluationMetricKind(
+	output: EvaluationSignalContract,
+): "expected-value" | "probability" | "custom-binary" {
+	if (output.forecastTarget.kind === "custom") return "custom-binary";
+	return output.forecastTarget.target === "future-close-up"
+		? "probability"
+		: "expected-value";
 }
