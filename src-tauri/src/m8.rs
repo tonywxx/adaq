@@ -3873,7 +3873,7 @@ mod tests {
     #[test]
     fn reset_all_cancels_pending_publication() {
         let (root, state, request) = setup("valid", "reset-race");
-        let _watchlist = crate::watchlist::WatchlistDb::open(&root.join("adaq.db")).unwrap();
+        let watchlist = crate::watchlist::WatchlistDb::open(&root.join("adaq.db")).unwrap();
         let attempt_id = running_attempt(&state, &request);
         let cancelled = Arc::new(AtomicBool::new(false));
         state
@@ -3902,6 +3902,7 @@ mod tests {
                 .unwrap(),
             0,
         );
+        drop(watchlist);
         drop(state);
         fs::remove_dir_all(root).unwrap();
     }
