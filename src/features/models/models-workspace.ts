@@ -19,7 +19,7 @@ export type EvaluationMetricDefinition = {
 };
 
 const FORECAST_METRICS_REFERENCE =
-	"https://github.com/tonywxx/adaq/blob/main/docs/adr/0021-keep-model-inference-engine-neutral-and-single-instrument-first.md";
+	"https://github.com/tonywxx/adaq/blob/main/docs/reference/forecast-evaluation-metrics.md";
 
 export const EVALUATION_METRIC_DEFINITIONS = {
 	mae: {
@@ -29,7 +29,7 @@ export const EVALUATION_METRIC_DEFINITIONS = {
 		direction: "Lower is better.",
 		range: "[0, +∞)",
 		caveat: "Scale depends on the Target; it is not Strategy profitability.",
-		reference: FORECAST_METRICS_REFERENCE,
+		reference: `${FORECAST_METRICS_REFERENCE}#mae`,
 	},
 	rmse: {
 		label: "RMSE",
@@ -38,7 +38,7 @@ export const EVALUATION_METRIC_DEFINITIONS = {
 		direction: "Lower is better; larger errors receive more weight.",
 		range: "[0, +∞)",
 		caveat: "Scale depends on the Target; it is not Strategy profitability.",
-		reference: FORECAST_METRICS_REFERENCE,
+		reference: `${FORECAST_METRICS_REFERENCE}#rmse`,
 	},
 	meanBias: {
 		label: "Mean bias",
@@ -48,7 +48,7 @@ export const EVALUATION_METRIC_DEFINITIONS = {
 		range: "(-∞, +∞)",
 		caveat:
 			"Positive and negative errors can cancel; there is no universal quality threshold.",
-		reference: FORECAST_METRICS_REFERENCE,
+		reference: `${FORECAST_METRICS_REFERENCE}#mean-bias`,
 	},
 	pearsonCorrelation: {
 		label: "Pearson correlation",
@@ -59,7 +59,7 @@ export const EVALUATION_METRIC_DEFINITIONS = {
 		range: "[-1, 1]",
 		caveat:
 			"Undefined for insufficient or constant evidence; no universal quality threshold applies.",
-		reference: FORECAST_METRICS_REFERENCE,
+		reference: `${FORECAST_METRICS_REFERENCE}#pearson-correlation`,
 	},
 	brierScore: {
 		label: "Brier Score",
@@ -69,7 +69,7 @@ export const EVALUATION_METRIC_DEFINITIONS = {
 		range: "[0, 1]",
 		caveat:
 			"Interpret against class balance and calibration context; there is no universal quality threshold.",
-		reference: FORECAST_METRICS_REFERENCE,
+		reference: `${FORECAST_METRICS_REFERENCE}#brier-score`,
 	},
 	logLoss: {
 		label: "Log Loss",
@@ -79,7 +79,7 @@ export const EVALUATION_METRIC_DEFINITIONS = {
 		range: "Approximately [0, 34.539] with p clipped to [1e-15, 1-1e-15].",
 		caveat:
 			"Interpret against class balance; there is no universal quality threshold.",
-		reference: FORECAST_METRICS_REFERENCE,
+		reference: `${FORECAST_METRICS_REFERENCE}#log-loss`,
 	},
 	rocAuc: {
 		label: "ROC AUC",
@@ -91,7 +91,7 @@ export const EVALUATION_METRIC_DEFINITIONS = {
 		range: "[0, 1]",
 		caveat:
 			"Undefined unless both realized classes are present; there is no universal quality threshold.",
-		reference: FORECAST_METRICS_REFERENCE,
+		reference: `${FORECAST_METRICS_REFERENCE}#roc-auc`,
 	},
 	calibration: {
 		label: "Calibration",
@@ -102,7 +102,7 @@ export const EVALUATION_METRIC_DEFINITIONS = {
 		range: "Both bucket means are in [0, 1].",
 		caveat:
 			"Empty buckets remain explicit and small bucket counts are weak evidence.",
-		reference: FORECAST_METRICS_REFERENCE,
+		reference: `${FORECAST_METRICS_REFERENCE}#calibration`,
 	},
 } satisfies Record<string, EvaluationMetricDefinition>;
 

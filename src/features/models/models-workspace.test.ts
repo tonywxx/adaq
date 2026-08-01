@@ -162,4 +162,7 @@ test("maps reportable signals to Target-specific metric presentations", () => {
 	expect(EVALUATION_METRIC_DEFINITIONS.calibration.caveat).toContain(
 		"weak evidence",
 	);
+	expect(EVALUATION_METRIC_DEFINITIONS.rocAuc.reference).toMatch(
+		/forecast-evaluation-metrics\.md#roc-auc$/,
+	);
 });
