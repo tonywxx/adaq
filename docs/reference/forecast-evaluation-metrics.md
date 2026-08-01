@@ -41,9 +41,29 @@ ROC AUC is `(concordant positive-negative pairs + 0.5 × tied pairs) / all posit
 
 Calibration uses ten fixed equal-width probability buckets: `[0.0, 0.1)`, ..., `[0.9, 1.0]`. Each bucket records its boundaries, count, mean prediction, and observed positive frequency. Empty buckets remain explicit with unavailable means; small populated buckets remain weak evidence.
 
-## Custom Binary Targets
+## Time-series Pearson IC
 
-A Custom Binary Target without a matching host evaluator and verifiable realized labels retains prediction distribution, missingness, provenance, and unavailable-row evidence. AdaQ records no Brier Score, Log Loss, ROC AUC, calibration, or other Target-specific metric claim and reports `requires-verifiable-realized-labels`.
+Time-series Pearson IC is the Pearson correlation between aligned Score values and realized Targets for one Instrument. It is unavailable with typed reason `requires-two-non-constant-series` for fewer than two aligned rows or when either series is constant. It is not cross-sectional IC and has no universal investment-quality threshold.
+
+## Time-series Spearman Rank IC
+
+Time-series Spearman Rank IC is the Pearson correlation of deterministic average ranks for aligned Score values and realized Targets. Equal values receive the same average rank. The same insufficient-sample and constant-series rule applies. This is single-Instrument time-series evidence, not future cross-sectional IC.
+
+## Window IC and ICIR
+
+Evaluation rows are kept in Prediction Time order and partitioned into consecutive, non-overlapping windows. Each window records its own time-series Pearson IC. ICIR is `mean(valid window IC) / population standard deviation(valid window IC)` and is unavailable with typed reason `requires-two-non-constant-window-ics` unless at least two window IC values exist and vary. It is stability evidence, not Strategy profitability or turnover.
+
+## Five-quantile realized Target evidence
+
+Aligned rows are sorted by Score and assigned to five deterministic buckets. Equal Scores remain together in the bucket selected by their first rank, so some buckets may be empty. Every bucket records count, Score bounds and mean, and the realized Target distribution and mean. This descriptive evidence does not represent portfolio returns.
+
+## Score scale provenance
+
+Percentile values are finite and bounded to `[0, 1]`; Z-score and Custom Scale values are finite and Custom bounds are enforced when declared. Percentile and Z-score evidence must retain an exact `scaleProvenance`: either a training-frozen reference distribution identity and parameters, or a past-only rolling transform identity with a positive `windowBars` parameter. The declared Z-score method must match the provenance transform identity. AdaQ does not normalize a completed history after the fact; unproven raw engine scores use an identified Custom Scale.
+
+## Custom Prediction Kinds and Targets
+
+A Custom Prediction Kind or Custom Target without a matching host evaluator and verifiable realized labels retains coverage, prediction distribution, stability, provenance, and unavailable-row evidence. AdaQ records no invented Target- or Prediction-specific metric claim and reports `requires-verifiable-realized-labels`.
 
 ## Versions
 
@@ -52,4 +72,7 @@ A Custom Binary Target without a matching host evaluator and verifiable realized
 - Expected Value metrics: `expected-value@1`
 - Probability metrics: `binary-probability@1`
 - Calibration: `equal-width-10-buckets@1`
+- Single-Instrument Score metrics: `single-instrument-score@1`
+- Window ICIR: `non-overlapping-window-icir@1`
+- Five quantiles: `tie-preserving-five-quantiles@1`
 - Stability windows: `non-overlapping-windows@1`

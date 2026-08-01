@@ -9,6 +9,6 @@
   "featureSlots": [{"name":"close","source":{"kind":"market","field":"close"}}],
   "modelScope": "single-instrument",
   "modelOutputs": [{"name":"next-close-score","predictionKind":{"kind":"score"},"forecastTarget":{"kind":"builtin","target":"future-close-return"},"valueScale":{"kind":"z-score","method":"training-frozen"},"horizonBars":1}],
-  "modelArtifact": {"sha256":"0000000000000000000000000000000000000000000000000000000000000000","provenance":{"sourceRevision":"example-v1","weights":"embedded"}},
+  "modelArtifact": {"sha256":"0000000000000000000000000000000000000000000000000000000000000000","provenance":{"sourceRevision":"example-v1","weights":"embedded","scaleProvenance":"{\"kind\":\"training-frozen\",\"transformId\":\"training-frozen\",\"referenceDistributionId\":\"example-training-distribution-v1\",\"parameters\":{\"ddof\":0}}"}},
   "warmupBars": 0
 }

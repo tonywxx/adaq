@@ -210,6 +210,18 @@ struct CalibrationBucket {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ScoreQuantile {
+    quantile: usize,
+    count: usize,
+    minimum_prediction: Option<f64>,
+    maximum_prediction: Option<f64>,
+    mean_prediction: Option<f64>,
+    mean_realized_target: Option<f64>,
+    realized_target_distribution: Option<DistributionMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ForecastMetrics {
     evaluation_row_count: usize,
     aligned_count: usize,
@@ -231,6 +243,14 @@ struct ForecastMetrics {
     roc_auc: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     calibration: Option<Vec<CalibrationBucket>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pearson_ic: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    spearman_rank_ic: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window_icir: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quantiles: Option<Vec<ScoreQuantile>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     undefined_metrics: BTreeMap<String, String>,
 }
@@ -258,6 +278,8 @@ pub struct ForecastEvaluationReport {
     evidence_state: EvaluationEvidenceState,
     unavailable_rows: Vec<serde_json::Value>,
     producer_segments: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scale_provenance: Vec<serde_json::Value>,
     trust_state: String,
     metric_versions: BTreeMap<String, String>,
     engine_identity: adaq_component_tooling::EngineIdentity,
@@ -350,17 +372,6 @@ fn validate_external_manifest(manifest: &ExternalSignalManifest) -> Result<(), S
     }
     adaq_component_tooling::validate_model_outputs(&outputs)
         .map_err(|error| format!("invalid-signal-contract: {error}"))?;
-    if outputs.iter().any(|output| {
-        matches!(
-            output.prediction_kind,
-            adaq_component_tooling::PredictionKind::Score
-        ) && !matches!(
-            output.value_scale,
-            adaq_component_tooling::ForecastValueScale::Custom { .. }
-        )
-    }) {
-        return Err("external-score-requires-stable-custom-value-scale".into());
-    }
     let mut previous_end = None;
     for segment in &manifest.producer_segments {
         if segment.start_prediction_time_ms > segment.end_prediction_time_ms
@@ -421,6 +432,16 @@ fn validate_external_manifest(manifest: &ExternalSignalManifest) -> Result<(), S
             }
         }
         previous_end = Some(segment.end_prediction_time_ms);
+    }
+    let segments = manifest
+        .producer_segments
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(string)?;
+    for output in &outputs {
+        score_scale_provenance(output, &segments)
+            .map_err(|_| "external-score-scale-provenance-is-unproven".to_owned())?;
     }
     Ok(())
 }
@@ -1553,8 +1574,126 @@ fn expected_value_metrics(
         log_loss: None,
         roc_auc: None,
         calibration: None,
+        pearson_ic: None,
+        spearman_rank_ic: None,
+        window_icir: None,
+        quantiles: None,
         undefined_metrics: BTreeMap::new(),
     })
+}
+
+fn average_ranks(values: &[f64]) -> Vec<f64> {
+    let mut order = (0..values.len()).collect::<Vec<_>>();
+    order.sort_by(|left, right| values[*left].total_cmp(&values[*right]));
+    let mut ranks = vec![0.0; values.len()];
+    let mut start = 0;
+    while start < order.len() {
+        let mut end = start + 1;
+        while end < order.len() && values[order[start]] == values[order[end]] {
+            end += 1;
+        }
+        let rank = (start + 1 + end) as f64 / 2.0;
+        for index in &order[start..end] {
+            ranks[*index] = rank;
+        }
+        start = end;
+    }
+    ranks
+}
+
+fn score_quantiles(pairs: &[(f64, f64)]) -> Result<Vec<ScoreQuantile>, String> {
+    let mut ranked = pairs.to_vec();
+    ranked.sort_by(|left, right| left.0.total_cmp(&right.0).then(left.1.total_cmp(&right.1)));
+    let mut buckets = vec![Vec::new(); 5];
+    let mut start = 0;
+    while start < ranked.len() {
+        let mut end = start + 1;
+        while end < ranked.len() && ranked[start].0 == ranked[end].0 {
+            end += 1;
+        }
+        let bucket = (start * 5 / ranked.len()).min(4);
+        buckets[bucket].extend_from_slice(&ranked[start..end]);
+        start = end;
+    }
+    buckets
+        .into_iter()
+        .enumerate()
+        .map(|(index, values)| {
+            let predictions = values.iter().map(|pair| pair.0).collect::<Vec<_>>();
+            let realized = values.iter().map(|pair| pair.1).collect::<Vec<_>>();
+            let count = values.len();
+            Ok(ScoreQuantile {
+                quantile: index + 1,
+                count,
+                minimum_prediction: predictions.first().copied(),
+                maximum_prediction: predictions.last().copied(),
+                mean_prediction: (count > 0)
+                    .then(|| predictions.iter().sum::<f64>() / count as f64),
+                mean_realized_target: (count > 0)
+                    .then(|| realized.iter().sum::<f64>() / count as f64),
+                realized_target_distribution: (count > 0)
+                    .then(|| distribution(&realized))
+                    .transpose()?,
+            })
+        })
+        .collect()
+}
+
+fn score_metrics(
+    pairs: &[(f64, f64)],
+    evaluation_row_count: usize,
+    unavailable_prediction_count: usize,
+    window_ics: &[Option<f64>],
+) -> Result<ForecastMetrics, String> {
+    let mut metrics =
+        expected_value_metrics(pairs, evaluation_row_count, unavailable_prediction_count)?;
+    metrics.mae = None;
+    metrics.rmse = None;
+    metrics.mean_bias = None;
+    metrics.pearson_correlation = None;
+    metrics.pearson_ic = pearson(pairs);
+    let prediction_ranks = average_ranks(&pairs.iter().map(|pair| pair.0).collect::<Vec<_>>());
+    let target_ranks = average_ranks(&pairs.iter().map(|pair| pair.1).collect::<Vec<_>>());
+    let rank_pairs = prediction_ranks
+        .into_iter()
+        .zip(target_ranks)
+        .collect::<Vec<_>>();
+    metrics.spearman_rank_ic = pearson(&rank_pairs);
+    metrics.quantiles = Some(score_quantiles(pairs)?);
+    if metrics.pearson_ic.is_none() {
+        metrics.undefined_metrics.insert(
+            "pearsonIc".into(),
+            "requires-two-non-constant-series".into(),
+        );
+    }
+    if metrics.spearman_rank_ic.is_none() {
+        metrics.undefined_metrics.insert(
+            "spearmanRankIc".into(),
+            "requires-two-non-constant-series".into(),
+        );
+    }
+    if !window_ics.is_empty() {
+        let values = window_ics.iter().flatten().copied().collect::<Vec<_>>();
+        if values.len() >= 2 {
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            let deviation = (values
+                .iter()
+                .map(|value| (value - mean).powi(2))
+                .sum::<f64>()
+                / values.len() as f64)
+                .sqrt();
+            if deviation > 0.0 {
+                metrics.window_icir = Some(mean / deviation);
+            }
+        }
+        if metrics.window_icir.is_none() {
+            metrics.undefined_metrics.insert(
+                "windowIcir".into(),
+                "requires-two-non-constant-window-ics".into(),
+            );
+        }
+    }
+    Ok(metrics)
 }
 
 fn probability_metrics(
@@ -1795,10 +1934,11 @@ fn segment_evidence(
 enum ForecastEvaluator {
     ExpectedValue,
     Probability,
-    CustomBinary,
+    Score,
+    Custom,
 }
 
-fn custom_binary_metrics(
+fn custom_metrics(
     predictions: &[f64],
     evaluation_row_count: usize,
     unavailable_prediction_count: usize,
@@ -1808,6 +1948,113 @@ fn custom_binary_metrics(
         .then(|| distribution(predictions))
         .transpose()?;
     Ok(metrics)
+}
+
+fn segment_provenance(segment: &serde_json::Value) -> Option<&serde_json::Value> {
+    segment
+        .get("provenance")
+        .or_else(|| segment.get("modelArtifact")?.get("provenance"))
+}
+
+fn score_scale_provenance(
+    signal: &adaq_component_tooling::ModelOutput,
+    segments: &[serde_json::Value],
+) -> Result<Vec<serde_json::Value>, String> {
+    if !matches!(
+        signal.prediction_kind,
+        adaq_component_tooling::PredictionKind::Score
+    ) || matches!(
+        signal.value_scale,
+        adaq_component_tooling::ForecastValueScale::Custom { .. }
+    ) {
+        return Ok(Vec::new());
+    }
+    let expected_transform = match &signal.value_scale {
+        adaq_component_tooling::ForecastValueScale::ZScore { method } => Some(method.as_str()),
+        adaq_component_tooling::ForecastValueScale::Percentile => None,
+        _ => return Err("forecast-evaluation-score-scale-is-invalid".into()),
+    };
+    segments
+        .iter()
+        .map(|segment| {
+            let raw = segment_provenance(segment)
+                .and_then(|value| value.get("scaleProvenance"))
+                .ok_or("forecast-evaluation-score-scale-provenance-is-unproven")?;
+            let value = match raw.as_str() {
+                Some(raw) => serde_json::from_str(raw).map_err(|_| {
+                    "forecast-evaluation-score-scale-provenance-is-unproven".to_owned()
+                })?,
+                None => raw.clone(),
+            };
+            let value = value.get(&signal.name).cloned().unwrap_or(value);
+            let object = value
+                .as_object()
+                .ok_or("forecast-evaluation-score-scale-provenance-is-unproven")?;
+            let identified = |field: &str| {
+                object
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty() && value != "unknown")
+            };
+            let parameters = object
+                .get("parameters")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|parameters| !parameters.is_empty());
+            let transform_matches = expected_transform.is_none_or(|expected| {
+                object
+                    .get("transformId")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(expected)
+            });
+            let causal = match object.get("kind").and_then(serde_json::Value::as_str) {
+                Some("training-frozen") => identified("referenceDistributionId"),
+                Some("past-only-rolling") => object
+                    .get("parameters")
+                    .and_then(|parameters| parameters.get("windowBars"))
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|window| window > 0),
+                _ => false,
+            };
+            if !identified("transformId") || !parameters || !transform_matches || !causal {
+                return Err("forecast-evaluation-score-scale-provenance-is-unproven".into());
+            }
+            Ok(value)
+        })
+        .collect()
+}
+
+fn validate_prediction_scale(
+    signal: &adaq_component_tooling::ModelOutput,
+    prediction: f64,
+) -> Result<(), String> {
+    if !prediction.is_finite() {
+        return Err("forecast-evaluation-prediction-is-non-finite".into());
+    }
+    let valid = match signal.value_scale {
+        adaq_component_tooling::ForecastValueScale::Probability
+        | adaq_component_tooling::ForecastValueScale::Percentile => {
+            (0.0..=1.0).contains(&prediction)
+        }
+        adaq_component_tooling::ForecastValueScale::Custom {
+            minimum, maximum, ..
+        } => {
+            minimum.is_none_or(|minimum| prediction >= minimum)
+                && maximum.is_none_or(|maximum| prediction <= maximum)
+        }
+        _ => true,
+    };
+    valid.then_some(()).ok_or_else(|| {
+        match signal.value_scale {
+            adaq_component_tooling::ForecastValueScale::Probability => {
+                "forecast-evaluation-probability-is-out-of-bounds"
+            }
+            adaq_component_tooling::ForecastValueScale::Percentile => {
+                "forecast-evaluation-percentile-is-out-of-bounds"
+            }
+            _ => "forecast-evaluation-custom-scale-is-out-of-bounds",
+        }
+        .into()
+    })
 }
 
 fn evaluate_forecast(
@@ -1860,13 +2107,16 @@ fn evaluate_forecast(
             adaq_component_tooling::ForecastValueScale::Probability,
         ) => ForecastEvaluator::Probability,
         (
-            adaq_component_tooling::PredictionKind::Probability,
-            adaq_component_tooling::ForecastTarget::Custom {
-                value_type: adaq_component_tooling::ForecastTargetValueType::Binary,
-                ..
-            },
-            adaq_component_tooling::ForecastValueScale::Probability,
-        ) => ForecastEvaluator::CustomBinary,
+            adaq_component_tooling::PredictionKind::Score,
+            adaq_component_tooling::ForecastTarget::Builtin { .. },
+            adaq_component_tooling::ForecastValueScale::Percentile
+            | adaq_component_tooling::ForecastValueScale::ZScore { .. }
+            | adaq_component_tooling::ForecastValueScale::Custom { .. },
+        ) => ForecastEvaluator::Score,
+        (adaq_component_tooling::PredictionKind::Custom { .. }, _, _)
+        | (_, adaq_component_tooling::ForecastTarget::Custom { .. }, _) => {
+            ForecastEvaluator::Custom
+        }
         _ => {
             return Err("forecast-evaluation-signal-contract-is-incompatible".into());
         }
@@ -1899,16 +2149,7 @@ fn evaluate_forecast(
             return Err("forecast-evaluation-dataset-signal-contract-mismatch".into());
         }
         let prediction = values[signal_index];
-        if !prediction.is_finite() {
-            return Err("forecast-evaluation-prediction-is-non-finite".into());
-        }
-        if matches!(
-            evaluator,
-            ForecastEvaluator::Probability | ForecastEvaluator::CustomBinary
-        ) && !(0.0..=1.0).contains(&prediction)
-        {
-            return Err("forecast-evaluation-probability-is-out-of-bounds".into());
-        }
+        validate_prediction_scale(signal, prediction)?;
     }
     let gaps = snapshot
         .gaps
@@ -1925,7 +2166,16 @@ fn evaluate_forecast(
         ForecastEvaluator::Probability => {
             realize_future_close_up(&bars, &gaps, signal.horizon_bars)?
         }
-        ForecastEvaluator::CustomBinary => vec![None; bars.len()],
+        ForecastEvaluator::Score => match signal.forecast_target {
+            adaq_component_tooling::ForecastTarget::Builtin {
+                target: adaq_component_tooling::BuiltinForecastTarget::FutureCloseReturn,
+            } => realize_future_close_returns(&bars, &gaps, signal.horizon_bars)?,
+            adaq_component_tooling::ForecastTarget::Builtin {
+                target: adaq_component_tooling::BuiltinForecastTarget::FutureCloseUp,
+            } => realize_future_close_up(&bars, &gaps, signal.horizon_bars)?,
+            _ => unreachable!("custom targets use the common evaluator"),
+        },
+        ForecastEvaluator::Custom => vec![None; bars.len()],
     };
     let selected = rows
         .iter()
@@ -1960,7 +2210,8 @@ fn evaluate_forecast(
                     "reason": match evaluator {
                         ForecastEvaluator::ExpectedValue => "future-close-return-unavailable",
                         ForecastEvaluator::Probability => "future-close-up-unavailable",
-                        ForecastEvaluator::CustomBinary => "target-specific-evaluator-unavailable",
+                        ForecastEvaluator::Score => "score-target-unavailable",
+                        ForecastEvaluator::Custom => "target-specific-evaluator-unavailable",
                     }
                 }));
             }
@@ -1974,14 +2225,17 @@ fn evaluate_forecast(
             _ => return Err("forecast-evaluation-prediction-is-non-finite".into()),
         }
     }
-    let metrics = match evaluator {
+    let mut metrics = match evaluator {
         ForecastEvaluator::ExpectedValue => {
             expected_value_metrics(&aligned, selected.len(), unavailable_prediction_count)?
         }
         ForecastEvaluator::Probability => {
             probability_metrics(&aligned, selected.len(), unavailable_prediction_count)?
         }
-        ForecastEvaluator::CustomBinary => custom_binary_metrics(
+        ForecastEvaluator::Score => {
+            score_metrics(&aligned, selected.len(), unavailable_prediction_count, &[])?
+        }
+        ForecastEvaluator::Custom => custom_metrics(
             &available_predictions,
             selected.len(),
             unavailable_prediction_count,
@@ -2020,8 +2274,11 @@ fn evaluate_forecast(
                 ForecastEvaluator::Probability => {
                     probability_metrics(&pairs, window.len(), unavailable_predictions)?
                 }
-                ForecastEvaluator::CustomBinary => {
-                    custom_binary_metrics(&predictions, window.len(), unavailable_predictions)?
+                ForecastEvaluator::Score => {
+                    score_metrics(&pairs, window.len(), unavailable_predictions, &[])?
+                }
+                ForecastEvaluator::Custom => {
+                    custom_metrics(&predictions, window.len(), unavailable_predictions)?
                 }
             };
             Ok(serde_json::json!({
@@ -2032,6 +2289,19 @@ fn evaluate_forecast(
         })
         .collect::<Result<Vec<_>, String>>()?;
     let producer_segments = producer_segment_values(&dataset)?;
+    let scale_provenance = score_scale_provenance(signal, &producer_segments)?;
+    if matches!(evaluator, ForecastEvaluator::Score) {
+        let window_ics = stability_windows
+            .iter()
+            .map(|window| window["metrics"]["pearsonIc"].as_f64())
+            .collect::<Vec<_>>();
+        metrics = score_metrics(
+            &aligned,
+            selected.len(),
+            unavailable_prediction_count,
+            &window_ics,
+        )?;
+    }
     let evidence_state = segment_evidence(
         &producer_segments,
         request.evaluation_start_time_ms,
@@ -2053,7 +2323,12 @@ fn evaluate_forecast(
             metric_versions.insert("probability".into(), "binary-probability@1".into());
             metric_versions.insert("calibration".into(), "equal-width-10-buckets@1".into());
         }
-        ForecastEvaluator::CustomBinary => {}
+        ForecastEvaluator::Score => {
+            metric_versions.insert("score".into(), "single-instrument-score@1".into());
+            metric_versions.insert("quantiles".into(), "tie-preserving-five-quantiles@1".into());
+            metric_versions.insert("windowIcir".into(), "non-overlapping-window-icir@1".into());
+        }
+        ForecastEvaluator::Custom => {}
     }
     let content = serde_json::json!({
         "datasetId": dataset.dataset_id,
@@ -2068,6 +2343,7 @@ fn evaluate_forecast(
         "evidenceState": evidence_state,
         "unavailableRows": unavailable_rows,
         "producerSegments": producer_segments,
+        "scaleProvenance": scale_provenance,
         "trustState": dataset.trust,
         "metricVersions": metric_versions,
         "engineIdentity": dataset.engine_identity,
@@ -2216,7 +2492,24 @@ fn forecast_evaluation_markdown(report: &ForecastEvaluationReport) -> String {
             serde_json::to_string(&report.metrics.undefined_metrics)
                 .expect("diagnostics serialize"),
         ),
-        _ => String::new(),
+        adaq_component_tooling::PredictionKind::Score => format!(
+            "## Single-Instrument time-series Score metrics\n\n- Pearson IC: {}\n- Spearman Rank IC: {}\n- Window ICIR: {}\n- Five-quantile realized Target evidence: {}\n\nThese are not cross-sectional IC, Strategy profitability, turnover, or a universal investment-quality score.\n",
+            report
+                .metrics
+                .pearson_ic
+                .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+            report
+                .metrics
+                .spearman_rank_ic
+                .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+            report
+                .metrics
+                .window_icir
+                .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+            serde_json::to_string(&report.metrics.quantiles).expect("quantiles serialize"),
+        ),
+        adaq_component_tooling::PredictionKind::Custom { .. } =>
+            "## Custom evidence\n\nCommon coverage, distribution, stability, and provenance are retained. No specialized evaluator is claimed.\n".into(),
     };
     format!(
         "# Forecast Evaluation Report\n\n- Report ID: `{}`\n- Dataset ID: `{}`\n- Snapshot ID: `{}`\n- Signal: `{}`\n- Evaluation window: `{}` to `{}`\n- Evidence state: `{}`\n- Trust state: `{}`\n- Schema: `{}`\n\n## Common metrics\n\n- Coverage: {}\n- Missingness: {}\n\n{}\n## Authoritative evidence\n\n```json\n{}\n```\n",
@@ -2571,6 +2864,99 @@ mod tests {
     }
 
     #[test]
+    fn score_metrics_cover_ties_constants_windows_icir_and_quantiles() {
+        let pairs = [(0.1, 1.0), (0.1, 2.0), (0.5, 4.0), (0.9, 8.0), (1.0, 16.0)];
+        let metrics = score_metrics(&pairs, 5, 0, &[Some(0.5), Some(1.0)]).unwrap();
+        assert!(metrics.pearson_ic.is_some());
+        assert!(metrics.spearman_rank_ic.is_some());
+        assert_eq!(metrics.quantiles.as_ref().unwrap().len(), 5);
+        assert_eq!(metrics.quantiles.as_ref().unwrap()[0].count, 2);
+        assert!(metrics.window_icir.is_some());
+
+        let constant = score_metrics(&[(1.0, 0.0), (1.0, 1.0)], 2, 0, &[None]).unwrap();
+        assert_eq!(constant.pearson_ic, None);
+        assert_eq!(constant.spearman_rank_ic, None);
+        assert_eq!(
+            constant
+                .undefined_metrics
+                .get("pearsonIc")
+                .map(String::as_str),
+            Some("requires-two-non-constant-series")
+        );
+        assert_eq!(
+            constant
+                .undefined_metrics
+                .get("windowIcir")
+                .map(String::as_str),
+            Some("requires-two-non-constant-window-ics")
+        );
+    }
+
+    #[test]
+    fn score_scale_requires_exact_causal_provenance() {
+        let output = adaq_component_tooling::ModelOutput {
+            name: "score".into(),
+            prediction_kind: adaq_component_tooling::PredictionKind::Score,
+            forecast_target: adaq_component_tooling::ForecastTarget::Builtin {
+                target: adaq_component_tooling::BuiltinForecastTarget::FutureCloseReturn,
+            },
+            value_scale: adaq_component_tooling::ForecastValueScale::ZScore {
+                method: "training-zscore-v1".into(),
+            },
+            horizon_bars: 1,
+        };
+        let proven = serde_json::json!({
+            "provenance": {
+                "scaleProvenance": {
+                    "kind": "training-frozen",
+                    "transformId": "training-zscore-v1",
+                    "referenceDistributionId": "train-2025-v1",
+                    "parameters": {"ddof": 0}
+                }
+            }
+        });
+        assert_eq!(score_scale_provenance(&output, &[proven]).unwrap().len(), 1);
+        assert_eq!(
+            score_scale_provenance(&output, &[serde_json::json!({"provenance": {}})]).unwrap_err(),
+            "forecast-evaluation-score-scale-provenance-is-unproven"
+        );
+    }
+
+    #[test]
+    fn score_values_enforce_percentile_and_declared_custom_bounds() {
+        let mut output = adaq_component_tooling::ModelOutput {
+            name: "score".into(),
+            prediction_kind: adaq_component_tooling::PredictionKind::Score,
+            forecast_target: adaq_component_tooling::ForecastTarget::Builtin {
+                target: adaq_component_tooling::BuiltinForecastTarget::FutureCloseReturn,
+            },
+            value_scale: adaq_component_tooling::ForecastValueScale::Percentile,
+            horizon_bars: 1,
+        };
+        assert!(validate_prediction_scale(&output, 0.0).is_ok());
+        assert!(validate_prediction_scale(&output, 1.0).is_ok());
+        assert_eq!(
+            validate_prediction_scale(&output, 1.01).unwrap_err(),
+            "forecast-evaluation-percentile-is-out-of-bounds"
+        );
+        output.value_scale = adaq_component_tooling::ForecastValueScale::Custom {
+            id: "bounded".into(),
+            version: "1.0.0".parse().unwrap(),
+            description: "Bounded custom scale".into(),
+            minimum: Some(-1.0),
+            maximum: Some(1.0),
+        };
+        assert_eq!(
+            validate_prediction_scale(&output, -1.1).unwrap_err(),
+            "forecast-evaluation-custom-scale-is-out-of-bounds"
+        );
+        assert_eq!(
+            validate_prediction_scale(&output, f64::NAN).unwrap_err(),
+            "forecast-evaluation-prediction-is-non-finite"
+        );
+    }
+
+    #[test]
     fn forecast_evaluation_identity_reuses_exact_evidence_only() {
         let content = serde_json::json!({
             "datasetId": "dataset",
@@ -2599,13 +2985,13 @@ mod tests {
     }
 
     #[test]
-    fn forecast_evaluation_rejects_incompatible_signal_before_metrics() {
+    fn forecast_evaluation_accepts_proven_native_score_evidence() {
         let (root, state, request) = setup("valid", "evaluation-incompatible");
         let attempt = running_attempt(&state, &request);
         let pending = generate(&request, &state, &AtomicBool::new(false), &attempt).unwrap();
         let dataset_id = pending.metadata.dataset_id.clone();
         publish_dataset(&state, "alice", &attempt, &AtomicBool::new(false), pending).unwrap();
-        let error = evaluate_forecast(
+        let report = evaluate_forecast(
             &state,
             &ForecastEvaluationRequest {
                 user_id: "alice".into(),
@@ -2618,8 +3004,14 @@ mod tests {
                 stability_window_bars: 2,
             },
         )
-        .unwrap_err();
-        assert_eq!(error, "forecast-evaluation-signal-contract-is-incompatible");
+        .unwrap();
+        assert_eq!(report.signal_name, "next-close-score");
+        assert_eq!(report.metric_versions["score"], "single-instrument-score@1");
+        assert_eq!(report.scale_provenance.len(), 1);
+        assert_eq!(
+            report.metrics.undefined_metrics["pearsonIc"],
+            "requires-two-non-constant-series"
+        );
         drop(state);
         fs::remove_dir_all(root).unwrap();
     }
@@ -2638,7 +3030,15 @@ mod tests {
                     "okx:BTC-USDT".to_owned(),
                     close_time(snapshot.interval, bar.open_time_ms)?,
                     close_time(snapshot.interval, bar.open_time_ms)?,
-                    Some(vec![index as f64 / 10.0, index as f64 / 10.0, 0.5]),
+                    Some(vec![
+                        index as f64 / 10.0,
+                        index as f64 / 10.0,
+                        0.5,
+                        index as f64 / 10.0,
+                        index as f64 - 2.5,
+                        index as f64,
+                        index as f64,
+                    ]),
                     None,
                 ))
             })
@@ -2681,11 +3081,51 @@ mod tests {
                 },
                 "valueScale": {"kind": "probability"},
                 "horizonBars": 1
+            },
+            {
+                "name": "return-score",
+                "predictionKind": {"kind": "score"},
+                "forecastTarget": {"kind": "builtin", "target": "future-close-return"},
+                "valueScale": {"kind": "percentile"},
+                "horizonBars": 1
+            },
+            {
+                "name": "up-score",
+                "predictionKind": {"kind": "score"},
+                "forecastTarget": {"kind": "builtin", "target": "future-close-up"},
+                "valueScale": {"kind": "z-score", "method": "evaluation-zscore-v1"},
+                "horizonBars": 1
+            },
+            {
+                "name": "custom-score",
+                "predictionKind": {"kind": "score"},
+                "forecastTarget": {
+                    "kind": "custom",
+                    "id": "custom-continuous",
+                    "version": "1.0.0",
+                    "description": "Externally realized continuous target",
+                    "valueType": "continuous"
+                },
+                "valueScale": {"kind": "custom", "id": "raw-score", "version": "1.0.0", "description": "Stable raw score", "minimum": null, "maximum": null},
+                "horizonBars": 1
+            },
+            {
+                "name": "custom-prediction",
+                "predictionKind": {"kind": "custom", "id": "custom-prediction", "version": "1.0.0", "description": "Inspectable custom prediction"},
+                "forecastTarget": {"kind": "builtin", "target": "future-close-return"},
+                "valueScale": {"kind": "custom", "id": "raw-score", "version": "1.0.0", "description": "Stable raw score", "minimum": null, "maximum": null},
+                "horizonBars": 1
             }
         ]);
         for field in ["trainingWindow", "fittingWindow", "normalizationWindow"] {
             manifest["producerSegments"][0]["provenance"][field] = "0..0".into();
         }
+        manifest["producerSegments"][0]["provenance"]["scaleProvenance"] = serde_json::json!({
+            "kind": "training-frozen",
+            "transformId": "evaluation-zscore-v1",
+            "referenceDistributionId": "evaluation-training-v1",
+            "parameters": {"ddof": 0}
+        });
         let manifest = serde_json::to_vec(&manifest).unwrap();
         let archive = pack_signal_archive(&manifest, &parquet).unwrap();
         let dataset = import_signal_archive(&state, "alice", &archive).unwrap();
@@ -2756,6 +3196,30 @@ mod tests {
                 .unwrap();
         assert!(probability_markdown.contains("## Probability metrics"));
 
+        let mut score_request = request.clone();
+        score_request.signal_name = "return-score".into();
+        let score = save_forecast_evaluation(&state, &score_request).unwrap();
+        assert!(score.metrics.pearson_ic.is_some());
+        assert!(score.metrics.spearman_rank_ic.is_some());
+        assert_eq!(score.metrics.quantiles.as_ref().unwrap().len(), 5);
+        assert_eq!(score.scale_provenance.len(), 1);
+        assert_eq!(score.metric_versions["score"], "single-instrument-score@1");
+        let score_markdown =
+            export_forecast_evaluation(&state, "alice", &score.report_id, "markdown").unwrap();
+        assert!(score_markdown.contains("Single-Instrument time-series Score metrics"));
+
+        score_request.signal_name = "up-score".into();
+        let binary_score = save_forecast_evaluation(&state, &score_request).unwrap();
+        assert_eq!(binary_score.metrics.pearson_ic, None);
+        assert_eq!(
+            binary_score
+                .metrics
+                .undefined_metrics
+                .get("pearsonIc")
+                .map(String::as_str),
+            Some("requires-two-non-constant-series")
+        );
+
         let mut custom_request = request.clone();
         custom_request.signal_name = "custom-binary".into();
         let custom = save_forecast_evaluation(&state, &custom_request).unwrap();
@@ -2775,7 +3239,16 @@ mod tests {
                 .iter()
                 .all(|row| { row["reason"] == "target-specific-evaluator-unavailable" })
         );
-        assert_eq!(list_forecast_evaluations(&state, "alice").unwrap().len(), 3);
+        let mut custom_score_request = request.clone();
+        custom_score_request.signal_name = "custom-score".into();
+        let custom_score = save_forecast_evaluation(&state, &custom_score_request).unwrap();
+        assert!(custom_score.metrics.prediction_distribution.is_some());
+        assert!(custom_score.metrics.pearson_ic.is_none());
+        custom_score_request.signal_name = "custom-prediction".into();
+        let custom_prediction = save_forecast_evaluation(&state, &custom_score_request).unwrap();
+        assert!(custom_prediction.metrics.prediction_distribution.is_some());
+        assert!(custom_prediction.metrics.pearson_ic.is_none());
+        assert_eq!(list_forecast_evaluations(&state, "alice").unwrap().len(), 7);
 
         let mut invalid_records = records.clone();
         invalid_records[0].3.as_mut().unwrap()[1] = 1.1;
@@ -3416,9 +3889,16 @@ mod tests {
         contract["signalContract"]["outputs"][0]["valueScale"] =
             serde_json::json!({ "kind": "percentile" });
         assert_eq!(
-            validate_external_manifest(&serde_json::from_value(contract).unwrap()).unwrap_err(),
-            "external-score-requires-stable-custom-value-scale"
+            validate_external_manifest(&serde_json::from_value(contract.clone()).unwrap())
+                .unwrap_err(),
+            "external-score-scale-provenance-is-unproven"
         );
+        contract["producerSegments"][0]["provenance"]["scaleProvenance"] = serde_json::json!({
+            "kind": "past-only-rolling",
+            "transformId": "rolling-percentile-v1",
+            "parameters": {"windowBars": 252, "minimumBars": 60}
+        });
+        assert!(validate_external_manifest(&serde_json::from_value(contract).unwrap()).is_ok());
         let mut contract: serde_json::Value = serde_json::from_slice(&external_manifest(
             &request.snapshot_id,
             &parquet,

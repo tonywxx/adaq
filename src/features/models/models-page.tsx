@@ -105,12 +105,17 @@ type EvaluationReport = {
 		logLoss?: number;
 		rocAuc?: number;
 		calibration?: Array<Record<string, unknown>>;
+		pearsonIc?: number;
+		spearmanRankIc?: number;
+		windowIcir?: number;
+		quantiles?: Array<Record<string, unknown>>;
 		undefinedMetrics?: Record<string, string>;
 	};
 	stabilityWindows: Array<Record<string, unknown>>;
 	evidenceState: { summary: string; segmentStates: string[] };
 	unavailableRows: Array<Record<string, unknown>>;
 	producerSegments: Array<Record<string, unknown>>;
+	scaleProvenance?: Array<Record<string, unknown>>;
 	trustState: string;
 	metricVersions: Record<string, string>;
 	engineIdentity: Record<string, string>;
@@ -1028,8 +1033,9 @@ export function ModelsPage() {
 									</pre>
 								)}
 								<p className="text-xs text-muted-foreground">
-									Forecast accuracy only. These metrics are not Strategy profitability,
-									fees, turnover, or a trading recommendation.
+									Single-Instrument time-series evidence only. These statistics are not
+									cross-sectional IC, Strategy profitability, fees, turnover, a universal
+									investment-quality score, or a trading recommendation.
 								</p>
 							</CardContent>
 						</Card>
@@ -1079,12 +1085,30 @@ export function ModelsPage() {
 															}
 														/>
 													</>
-												) : evaluationMetricKind(report.signalContract) ===
-													"custom-binary" ? (
+												) : evaluationMetricKind(report.signalContract) === "score" ? (
+													<>
+														<EvaluationMetric
+															definition={EVALUATION_METRIC_DEFINITIONS.pearsonIc}
+															value={metricValue(report.metrics.pearsonIc)}
+														/>
+														<EvaluationMetric
+															definition={EVALUATION_METRIC_DEFINITIONS.spearmanRankIc}
+															value={metricValue(report.metrics.spearmanRankIc)}
+														/>
+														<EvaluationMetric
+															definition={EVALUATION_METRIC_DEFINITIONS.windowIcir}
+															value={metricValue(report.metrics.windowIcir)}
+														/>
+														<EvaluationMetric
+															definition={EVALUATION_METRIC_DEFINITIONS.quantiles}
+															value="Five-quantile realized Target evidence"
+														/>
+													</>
+												) : evaluationMetricKind(report.signalContract) === "custom" ? (
 													<p className="col-span-full rounded border p-3" role="status">
-														Custom Binary Target recorded. Target-specific probability metrics
-														are unavailable because no matching host evaluator and verifiable
-														realized labels exist. Evidence:{" "}
+														Custom Prediction Kind or Custom Target recorded. Common coverage,
+														distribution, stability, and provenance remain inspectable; no
+														specialized evaluator is invented. Evidence:{" "}
 														<code>
 															{report.metrics.undefinedMetrics?.probabilityMetrics ??
 																"requires-verifiable-realized-labels"}
@@ -1138,7 +1162,8 @@ export function ModelsPage() {
 															datasetId: report.datasetId,
 															snapshotId: report.snapshotId,
 															signalContract: report.signalContract,
-															producerSegments: report.producerSegments,
+																	producerSegments: report.producerSegments,
+																	scaleProvenance: report.scaleProvenance,
 															evidenceState: report.evidenceState,
 															trustState: report.trustState,
 															metricVersions: report.metricVersions,
@@ -1175,7 +1200,7 @@ export function ModelsPage() {
 							) : (
 								<p className="rounded border p-4 text-sm text-muted-foreground">
 									No Forecast Evaluation Reports yet. Choose compatible immutable
-									Expected Value or Probability evidence to create one.
+									Score, Expected Value, Probability, or Custom evidence to create one.
 								</p>
 							)}
 						</div>

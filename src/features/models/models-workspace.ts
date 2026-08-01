@@ -4,7 +4,7 @@ export type EvaluationSignalContract = {
 	name: string;
 	predictionKind: { kind: string };
 	forecastTarget: { kind: string; target?: string; valueType?: string };
-	valueScale: { kind: string };
+	valueScale: { kind: string; minimum?: number; maximum?: number };
 	horizonBars: number;
 };
 
@@ -104,6 +104,46 @@ export const EVALUATION_METRIC_DEFINITIONS = {
 			"Empty buckets remain explicit and small bucket counts are weak evidence.",
 		reference: `${FORECAST_METRICS_REFERENCE}#calibration`,
 	},
+	pearsonIc: {
+		label: "Time-series Pearson IC",
+		meaning: "Linear association between Score predictions and realized Targets.",
+		formula: "cov(score, target) / (σscore × σtarget)",
+		direction: "Interpret sign and magnitude in research context.",
+		range: "[-1, 1]",
+		caveat:
+			"Single-Instrument time-series evidence only; this is not cross-sectional IC or a universal quality score.",
+		reference: `${FORECAST_METRICS_REFERENCE}#time-series-pearson-ic`,
+	},
+	spearmanRankIc: {
+		label: "Time-series Spearman Rank IC",
+		meaning: "Rank association between Score predictions and realized Targets, preserving ties.",
+		formula: "Pearson correlation of average ranks",
+		direction: "Interpret sign and magnitude in research context.",
+		range: "[-1, 1]",
+		caveat:
+			"Single-Instrument time-series evidence only; this is not future cross-sectional IC.",
+		reference: `${FORECAST_METRICS_REFERENCE}#time-series-spearman-rank-ic`,
+	},
+	windowIcir: {
+		label: "Window ICIR",
+		meaning: "Mean deterministic window Pearson IC divided by its population standard deviation.",
+		formula: "mean(window IC) / population σ(window IC)",
+		direction: "Interpret only with the ordered window evidence and sample count.",
+		range: "(-∞, +∞)",
+		caveat:
+			"Single-Instrument stability evidence; this is not Strategy profitability, turnover, or a universal quality score.",
+		reference: `${FORECAST_METRICS_REFERENCE}#window-ic-and-icir`,
+	},
+	quantiles: {
+		label: "Five quantiles",
+		meaning: "Realized Target evidence grouped by ascending Score, with tied Scores kept together.",
+		formula: "five deterministic rank buckets",
+		direction: "Inspect monotonicity and every bucket's sample count.",
+		range: "Five explicit buckets; some may be empty.",
+		caveat:
+			"Descriptive single-Instrument evidence only; it is not a portfolio return or trading recommendation.",
+		reference: `${FORECAST_METRICS_REFERENCE}#five-quantile-realized-target-evidence`,
+	},
 } satisfies Record<string, EvaluationMetricDefinition>;
 
 export function datasetGenerationRequest(
@@ -179,24 +219,41 @@ export function evaluationExportFilename(
 export function isCompatibleEvaluationSignal(output: EvaluationSignalContract) {
 	if (!Number.isInteger(output.horizonBars) || output.horizonBars < 1)
 		return false;
+	const targetType =
+		output.forecastTarget.kind === "custom"
+			? output.forecastTarget.valueType
+			: output.forecastTarget.target === "future-close-up"
+				? "binary"
+				: output.forecastTarget.target === "future-close-return"
+					? "continuous"
+					: undefined;
+	if (!targetType) return false;
+	if (output.predictionKind.kind === "score")
+		return ["percentile", "z-score", "custom"].includes(output.valueScale.kind);
+	if (output.predictionKind.kind === "custom")
+		return output.valueScale.kind === "custom";
 	if (
 		output.predictionKind.kind === "expected-value" &&
-		output.forecastTarget.target === "future-close-return"
+		targetType === "continuous" &&
+		output.forecastTarget.kind !== "custom"
 	)
 		return output.valueScale.kind === "native";
 	return (
 		output.predictionKind.kind === "probability" &&
 		output.valueScale.kind === "probability" &&
-		(output.forecastTarget.target === "future-close-up" ||
-			(output.forecastTarget.kind === "custom" &&
-				output.forecastTarget.valueType === "binary"))
+		targetType === "binary"
 	);
 }
 
 export function evaluationMetricKind(
 	output: EvaluationSignalContract,
-): "expected-value" | "probability" | "custom-binary" {
-	if (output.forecastTarget.kind === "custom") return "custom-binary";
+): "expected-value" | "probability" | "score" | "custom" {
+	if (
+		output.predictionKind.kind === "custom" ||
+		output.forecastTarget.kind === "custom"
+	)
+		return "custom";
+	if (output.predictionKind.kind === "score") return "score";
 	return output.forecastTarget.target === "future-close-up"
 		? "probability"
 		: "expected-value";

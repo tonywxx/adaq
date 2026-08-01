@@ -16,6 +16,6 @@
     "valueScale":{"kind":"z-score","method":"fixture"},
     "horizonBars":1
   }],
-  "modelArtifact": {"sha256":"0000000000000000000000000000000000000000000000000000000000000000","provenance":{"sourceRevision":"fixture","weights":"embedded"}},
+  "modelArtifact": {"sha256":"0000000000000000000000000000000000000000000000000000000000000000","provenance":{"sourceRevision":"fixture","weights":"embedded","scaleProvenance":"{\"kind\":\"training-frozen\",\"transformId\":\"fixture\",\"referenceDistributionId\":\"fixture-training-distribution-v1\",\"parameters\":{\"ddof\":0}}"}},
   "warmupBars": 2
 }

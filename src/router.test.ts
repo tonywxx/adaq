@@ -58,5 +58,7 @@ test("Forecast Evaluation presentation keeps partial evidence and native exports
 	expect(source).toMatch(/open\(path, \{ write: true, createNew: true \}\)/);
 	expect(source).toMatch(/Formula: \{definition\.formula\}/);
 	expect(source).toMatch(/Reference documentation/);
-	expect(source).toMatch(/Custom Binary Target recorded/);
+	expect(source).toMatch(/Custom Prediction Kind or Custom Target recorded/);
+	expect(source).toMatch(/Single-Instrument time-series evidence/);
+	expect(source).toMatch(/Five-quantile realized Target evidence/);
 });

@@ -154,7 +154,16 @@ test("maps reportable signals to Target-specific metric presentations", () => {
 		forecastTarget: { kind: "custom", valueType: "binary" },
 	};
 	expect(isCompatibleEvaluationSignal(custom)).toBe(true);
-	expect(evaluationMetricKind(custom)).toBe("custom-binary");
+	expect(evaluationMetricKind(custom)).toBe("custom");
+	const score = output("score", "future-close-return", "percentile");
+	expect(isCompatibleEvaluationSignal(score)).toBe(true);
+	expect(evaluationMetricKind(score)).toBe("score");
+	expect(EVALUATION_METRIC_DEFINITIONS.pearsonIc.caveat).toContain(
+		"Single-Instrument time-series",
+	);
+	expect(EVALUATION_METRIC_DEFINITIONS.windowIcir.caveat).toContain(
+		"not Strategy profitability",
+	);
 	expect(EVALUATION_METRIC_DEFINITIONS.logLoss.range).toContain("34.539");
 	expect(EVALUATION_METRIC_DEFINITIONS.rocAuc.caveat).toContain(
 		"both realized classes",
