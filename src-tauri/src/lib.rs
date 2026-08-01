@@ -471,6 +471,7 @@ pub fn run() {
             m3::component_import,
             m3::component_list,
             m3::component_page,
+            m3::component_is_imported,
             m3::backtest_compatible_factors,
             m3::backtest_compatible_signals,
             m3::component_delete,

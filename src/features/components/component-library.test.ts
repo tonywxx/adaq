@@ -2,6 +2,7 @@ import {
 	deleteComponentPackage,
 	formatComponentError,
 	importComponentPackage,
+	isComponentPackageImported,
 	type LibraryComponent,
 } from "./component-library";
 
@@ -40,6 +41,17 @@ test("successful import refreshes the user-scoped Component Library", async () =
 	});
 	expect(refresh).toHaveBeenCalledTimes(1);
 	expect(imported.name).toBe("Momentum Strategy");
+});
+
+test("existing packages are detected by archive hash before import", async () => {
+	const invoke = jest.fn().mockResolvedValue(true);
+
+	await expect(
+		isComponentPackageImported("alice", "a".repeat(64), invoke),
+	).resolves.toBe(true);
+	expect(invoke).toHaveBeenCalledWith("component_is_imported", {
+		request: { userId: "alice", archiveSha256: "a".repeat(64) },
+	});
 });
 
 test("deletion is confirmed and locked Components never reach the command", async () => {

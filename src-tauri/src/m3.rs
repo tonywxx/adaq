@@ -699,6 +699,19 @@ impl M3State {
         Ok(())
     }
 
+    pub fn component_is_imported(&self, user_id: &str, hash: &str) -> Result<bool, String> {
+        validate_user(user_id)?;
+        self.database
+            .lock()
+            .map_err(string)?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM component_access WHERE user_id = ?1 AND archive_sha256 = ?2)",
+                params![user_id, hash],
+                |row| row.get(0),
+            )
+            .map_err(string)
+    }
+
     pub fn persist_snapshot(
         &self,
         series: &adaq_data_core::BarSeries,
@@ -1221,6 +1234,13 @@ pub struct ComponentImportRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComponentDeleteRequest {
+    pub user_id: String,
+    pub archive_sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentArchiveRequest {
     pub user_id: String,
     pub archive_sha256: String,
 }
@@ -1765,6 +1785,14 @@ pub async fn component_page(
     state: tauri::State<'_, M3State>,
 ) -> Result<ComponentPage, String> {
     state.list_components_page(&request.user_id, request.page)
+}
+
+#[tauri::command]
+pub fn component_is_imported(
+    request: ComponentArchiveRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<bool, String> {
+    state.component_is_imported(&request.user_id, &request.archive_sha256)
 }
 
 #[tauri::command]

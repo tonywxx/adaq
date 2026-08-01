@@ -41,6 +41,25 @@ type ComponentInvoke = (
 	args: Record<string, unknown>,
 ) => Promise<unknown>;
 
+export async function archiveSha256(bytes: Uint8Array) {
+	const input = new Uint8Array(bytes.byteLength);
+	input.set(bytes);
+	const digest = await crypto.subtle.digest("SHA-256", input.buffer);
+	return Array.from(new Uint8Array(digest), (byte) =>
+		byte.toString(16).padStart(2, "0"),
+	).join("");
+}
+
+export async function isComponentPackageImported(
+	userId: string,
+	archiveSha256: string,
+	invoke: ComponentInvoke,
+) {
+	return (await invoke("component_is_imported", {
+		request: { userId, archiveSha256 },
+	})) as boolean;
+}
+
 export async function importComponentPackage(
 	userId: string,
 	bytes: number[],

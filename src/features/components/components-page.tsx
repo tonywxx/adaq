@@ -17,11 +17,14 @@ import {
 } from "@/components/ui/pagination";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { invoke } from "@tauri-apps/api/core";
+import { LoaderCircleIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+	archiveSha256,
 	deleteComponentPackage,
 	formatComponentError,
 	importComponentPackage,
+	isComponentPackageImported,
 	type LibraryComponent,
 } from "./component-library";
 
@@ -131,9 +134,24 @@ export function ComponentsPage() {
 		setImporting(true);
 		setImportFeedback(undefined);
 		try {
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			const hash = await archiveSha256(bytes);
+			if (
+				await isComponentPackageImported(userId, hash, (command, args) =>
+					invoke(command, args),
+				)
+			) {
+				if (activeUserId.current !== userId) return;
+				setSelectedHash(hash);
+				setImportFeedback({
+					tone: "success",
+					summary: `${file.name} is already imported.`,
+				});
+				return;
+			}
 			const imported = await importComponentPackage(
 				userId,
-				Array.from(new Uint8Array(await file.arrayBuffer())),
+				Array.from(bytes),
 				(command, args) => invoke(command, args),
 				() => refresh(1),
 			);
@@ -219,7 +237,11 @@ export function ComponentsPage() {
 						onChange={(event) => void importPackage(event.target.files?.[0])}
 					/>
 					{importing && (
-						<p className="text-sm" role="status">
+						<p className="flex items-center gap-2 text-sm" role="status">
+							<LoaderCircleIcon
+								className="size-4 animate-spin"
+								aria-hidden="true"
+							/>
 							Validating package…
 						</p>
 					)}
