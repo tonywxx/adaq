@@ -34,6 +34,7 @@ import {
 } from "./backtest-data";
 import {
 	copyRunConfiguration,
+	decisionSignalEvidence,
 	defaultExecutionProfile,
 	matchingFactors,
 	type NormalizedRunConfiguration,
@@ -111,6 +112,13 @@ type Provenance = {
 		archiveSha256: string;
 		wasmSha256: string;
 	}>;
+	datasetLock: Array<{
+		slot: string;
+		datasetId: string;
+		signalName: string;
+		evidenceState: string;
+	}>;
+	architecture: "signal-driven" | "composed" | "hybrid";
 	indicatorEngineBuildIdentity: Record<string, string>;
 	backtestEngineVersion: string;
 	seed: number;
@@ -161,6 +169,12 @@ type BacktestPreflight = {
 	featurePlan: Record<string, unknown>;
 	componentLock: Array<Record<string, unknown>>;
 };
+type SignalCandidate = {
+	slot: string;
+	datasetId: string;
+	signalName: string;
+	evidenceState: string;
+};
 const EXECUTION_PAGE_SIZE = 100;
 const RUN_HISTORY_PAGE_SIZE = 10;
 const SNAPSHOT_PAGE_SIZE = 10;
@@ -173,6 +187,12 @@ export function BacktestPage() {
 	const [factorSelections, setFactorSelections] = useState<
 		Record<string, string>
 	>({});
+	const [signalSelections, setSignalSelections] = useState<
+		Record<string, string>
+	>({});
+	const [compatibleSignals, setCompatibleSignals] = useState<SignalCandidate[]>(
+		[],
+	);
 	const [strategy, setStrategy] = useState("");
 	const [factorParameters, setFactorParameters] = useState<
 		Record<string, Record<string, string>>
@@ -202,6 +222,10 @@ export function BacktestPage() {
 	);
 	const [interval, setInterval] = useState<BarInterval>("1h");
 	const [snapshot, setSnapshot] = useState<Snapshot>();
+	const [runWindow, setRunWindow] = useState<{
+		startTimeMs: number;
+		endTimeMs: number;
+	}>();
 	const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
 	const [snapshotsPage, setSnapshotsPage] = useState(1);
 	const [snapshotsTotal, setSnapshotsTotal] = useState(0);
@@ -336,6 +360,10 @@ export function BacktestPage() {
 	const selectedStrategy = strategies.find(
 		(item) => item.archiveSha256 === strategy,
 	);
+	const signalSlots =
+		selectedStrategy?.featureSlots.filter(
+			(slot) => slot.source.kind === "signal",
+		) ?? [];
 	useEffect(() => {
 		setCompatibleFactors({});
 		setPreflight(undefined);
@@ -346,6 +374,20 @@ export function BacktestPage() {
 			.then(setCompatibleFactors)
 			.catch((error) => setMessage(String(error)));
 	}, [strategy, userId]);
+	useEffect(() => {
+		setCompatibleSignals([]);
+		setPreflight(undefined);
+		if (!userId || !strategy || !snapshot) return;
+		void invoke<SignalCandidate[]>("backtest_compatible_signals", {
+			request: {
+				userId,
+				strategyArchiveSha256: strategy,
+				snapshotId: snapshot.snapshotId,
+			},
+		})
+			.then(setCompatibleSignals)
+			.catch((error) => setMessage(String(error)));
+	}, [snapshot, strategy, userId]);
 	const selectStage = async (
 		next: "data" | "strategy" | "execution" | "results",
 	) => {
@@ -359,6 +401,8 @@ export function BacktestPage() {
 				strategy: selectedStrategy,
 				dependencies: selectedStrategy?.dependencies ?? [],
 				factorSelections,
+				signalSlots,
+				signalSelections,
 				running,
 			});
 			if (gate) {
@@ -425,6 +469,8 @@ export function BacktestPage() {
 				onEvent,
 			});
 			setSnapshot(value);
+			setRunWindow(undefined);
+			setSignalSelections({});
 			void refreshSnapshots(snapshotsPage);
 			setMessage(`${value.barCount} Bars frozen.`);
 		} catch (error) {
@@ -437,8 +483,10 @@ export function BacktestPage() {
 		}
 	};
 	const buildRunRequest = (snapshotId: string) => ({
-		userId: userId!,
+		userId: userId ?? "",
 		snapshotId,
+		runStartTimeMs: runWindow?.startTimeMs ?? snapshot?.startTimeMs,
+		runEndTimeMs: runWindow?.endTimeMs ?? snapshot?.endTimeMs,
 		factorInstances:
 			selectedStrategy?.dependencies
 				.map((dependency) => ({
@@ -447,6 +495,10 @@ export function BacktestPage() {
 					parameters: factorParameters[dependency.alias] ?? {},
 				}))
 				.filter((factor) => factor.archiveSha256) ?? [],
+		signalInstances: Object.entries(signalSelections).map(([slot, selection]) => {
+			const [datasetId, signalName] = selection.split(":", 2);
+			return { slot, datasetId, signalName };
+		}),
 		strategyArchiveSha256: strategy,
 		strategyParameters,
 		initialQuoteAllocation,
@@ -463,6 +515,8 @@ export function BacktestPage() {
 			strategy: selectedStrategy,
 			dependencies: selectedStrategy?.dependencies ?? [],
 			factorSelections,
+			signalSlots,
+			signalSelections,
 			running,
 		});
 		if (gate) {
@@ -556,10 +610,15 @@ export function BacktestPage() {
 			source.provenance.normalizedRequest,
 		);
 		setSnapshot(source.snapshot);
+		setRunWindow({
+			startTimeMs: configuration.runStartTimeMs ?? source.snapshot.startTimeMs,
+			endTimeMs: configuration.runEndTimeMs ?? source.snapshot.endTimeMs,
+		});
 		setStrategy(configuration.strategy);
 		setStrategyParameters(configuration.strategyParameters);
 		setFactorSelections(configuration.factorSelections);
 		setFactorParameters(configuration.factorParameters);
+		setSignalSelections(configuration.signalSelections);
 		setInitialQuoteAllocation(configuration.initialQuoteAllocation);
 		setExecutionProfile(configuration.executionProfile);
 		setSeed(configuration.seed);
@@ -606,6 +665,8 @@ export function BacktestPage() {
 										setHistoryPage(1);
 										setSnapshotsPage(1);
 										setSnapshot(undefined);
+										setRunWindow(undefined);
+										setSignalSelections({});
 									}}
 								>
 									{instruments.map((item) => (
@@ -624,6 +685,8 @@ export function BacktestPage() {
 										setInterval(event.target.value as BarInterval);
 										setSnapshotsPage(1);
 										setSnapshot(undefined);
+										setRunWindow(undefined);
+										setSignalSelections({});
 									}}
 								>
 									{BAR_INTERVALS.map((value) => (
@@ -667,6 +730,7 @@ export function BacktestPage() {
 										setStrategy(e.target.value);
 										setFactorSelections({});
 										setFactorParameters({});
+										setSignalSelections({});
 										setStrategyParameters({});
 									}}
 								>
@@ -702,6 +766,38 @@ export function BacktestPage() {
 									</select>
 								</Field>
 							))}
+							{signalSlots.map((slot) => (
+								<Field key={slot.name} label={`Signal · ${slot.name}`}>
+									<select
+										className="h-9 rounded-md border bg-background px-3"
+										value={signalSelections[slot.name] ?? ""}
+										onChange={(event) =>
+											setSignalSelections((current) => ({
+												...current,
+												[slot.name]: event.target.value,
+											}))
+										}
+									>
+										<option value="">Select compatible Dataset Signal</option>
+										{compatibleSignals
+											.filter((candidate) => candidate.slot === slot.name)
+											.map((candidate) => (
+												<option
+													key={`${candidate.datasetId}:${candidate.signalName}`}
+													value={`${candidate.datasetId}:${candidate.signalName}`}
+												>
+													{candidate.signalName} · {candidate.datasetId.slice(0, 12)} ·{" "}
+													{candidate.evidenceState}
+												</option>
+											))}
+									</select>
+								</Field>
+							))}
+							{selectedStrategy?.architecture && (
+								<p className="self-end text-sm text-muted-foreground">
+									Architecture · {selectedStrategy.architecture}
+								</p>
+							)}
 							{selectedStrategy?.dependencies.flatMap((dependency) => {
 								const component = factors.find(
 									(item) => item.archiveSha256 === factorSelections[dependency.alias],
@@ -796,6 +892,8 @@ export function BacktestPage() {
 												className="h-auto justify-start whitespace-normal p-3 text-left"
 												onClick={() => {
 													setSnapshot(reuseSnapshot(snapshots, item.snapshotId));
+													setRunWindow(undefined);
+													setSignalSelections({});
 													setSnapshotTechnicalError("");
 												}}
 											>
@@ -860,6 +958,38 @@ export function BacktestPage() {
 						<CardTitle>Execution and pre-Run review</CardTitle>
 					</CardHeader>
 					<CardContent className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+						<Field label="Run start · UTC" id="backtest-run-start">
+							<Input
+								id="backtest-run-start"
+								type="datetime-local"
+								value={utcInput(runWindow?.startTimeMs ?? snapshot.startTimeMs)}
+								onChange={(event) => {
+									const startTimeMs = parseUtcInput(event.target.value);
+									if (!Number.isFinite(startTimeMs)) return;
+									setRunWindow((current) => ({
+										startTimeMs,
+										endTimeMs: current?.endTimeMs ?? snapshot.endTimeMs,
+									}));
+									setPreflight(undefined);
+								}}
+							/>
+						</Field>
+						<Field label="Run end · UTC" id="backtest-run-end">
+							<Input
+								id="backtest-run-end"
+								type="datetime-local"
+								value={utcInput(runWindow?.endTimeMs ?? snapshot.endTimeMs)}
+								onChange={(event) => {
+									const endTimeMs = parseUtcInput(event.target.value);
+									if (!Number.isFinite(endTimeMs)) return;
+									setRunWindow((current) => ({
+										startTimeMs: current?.startTimeMs ?? snapshot.startTimeMs,
+										endTimeMs,
+									}));
+									setPreflight(undefined);
+								}}
+							/>
+						</Field>
 						<Field label="Initial quote allocation" id="backtest-allocation">
 							<Input
 								id="backtest-allocation"
@@ -1140,6 +1270,12 @@ function Field({
 		</div>
 	);
 }
+function utcInput(timeMs: number) {
+	return new Date(timeMs).toISOString().slice(0, 16);
+}
+function parseUtcInput(value: string) {
+	return Date.parse(`${value}:00Z`);
+}
 function ParameterField({
 	label,
 	parameter,
@@ -1194,10 +1330,18 @@ function DecisionTable({ run }: { run: BacktestRun }) {
 		...run.decisions.map((decision) => ({
 			...decision,
 			type: "Target Decision" as const,
-			description:
+			description: `${
 				decision.targetExposure === "0"
 					? "Flat target exposure (not a Run Pause)"
-					: `Target exposure ${formatDecimal(decision.targetExposure)}`,
+					: `Target exposure ${formatDecimal(decision.targetExposure)}`
+			} · ${
+				run.provenance
+					? decisionSignalEvidence(
+							run.provenance.featurePlanJson,
+							decision.openTimeMs,
+						)
+					: "Legacy Run signal evidence is unavailable."
+			}`,
 		})),
 		...run.pauses.map((pause) => ({
 			...pause,
@@ -1243,7 +1387,8 @@ function DecisionTable({ run }: { run: BacktestRun }) {
 function pauseDescription(reason: string) {
 	if (reason === "warmup") return "Warmup — no Target Decision was invoked.";
 	if (reason.startsWith("missing-input:")) {
-		const [, slot, source] = reason.split(":", 3);
+		const [, slot, ...sourceParts] = reason.split(":");
+		const source = sourceParts.join(":");
 		return `Missing Input${slot ? ` — Slot ${slot}` : ""}${source ? ` from ${source}` : ""}; no Target Decision was invoked.`;
 	}
 	return `Run Pause — ${reason}; no Target Decision was invoked.`;
@@ -1274,6 +1419,7 @@ function ProvenanceView({
 						<Evidence label="Run ID" value={run.runId} />
 						<Evidence label="Snapshot ID" value={run.snapshot.snapshotId} />
 						<Evidence label="Feature Plan hash" value={provenance.featurePlanHash} />
+						<Evidence label="Architecture" value={provenance.architecture} />
 						<Evidence label="Seed" value={String(provenance.seed)} />
 						<Evidence
 							label="Strategy Package"
@@ -1294,6 +1440,18 @@ function ProvenanceView({
 								null,
 								2,
 							)}
+						/>
+						<Evidence
+							label="Dataset Signals"
+							value={JSON.stringify(
+								provenance.normalizedRequest.signalInstances,
+								null,
+								2,
+							)}
+						/>
+						<Evidence
+							label="Dataset Locks and Evidence State"
+							value={JSON.stringify(provenance.datasetLock, null, 2)}
 						/>
 						<Evidence
 							label="Initial quote allocation"

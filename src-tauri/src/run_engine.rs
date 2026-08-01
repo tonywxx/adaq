@@ -26,11 +26,27 @@ pub(crate) struct RunRequest<'a> {
     pub strategy_path: &'a str,
     pub strategy_parameters: &'a [ComponentParameterValue],
     pub factors: &'a [FactorRunRequest<'a>],
+    pub signals: &'a [SignalRunRequest<'a>],
     pub bars: &'a [OhlcvBar],
     pub gaps: &'a [BarGap],
     pub plan: &'a FrozenFeaturePlan,
     pub position_mode: PositionMode,
     pub limits: RunLimits,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SignalRunRequest<'a> {
+    pub slot: &'a str,
+    pub dataset_id: &'a str,
+    pub signal_name: &'a str,
+    pub rows: &'a [SignalRunRow],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SignalRunRow {
+    pub prediction_time_ms: i64,
+    pub available_at_ms: i64,
+    pub value: Option<f64>,
 }
 
 #[derive(Clone, Copy)]
@@ -56,6 +72,7 @@ pub(crate) fn materialize_feature_segment(
         strategy_path: "",
         strategy_parameters: &[],
         factors,
+        signals: &[],
         bars,
         gaps: &[],
         plan,
@@ -113,6 +130,12 @@ pub(crate) fn materialize_feature_segment(
                             });
                         };
                         value
+                    }
+                    FrozenSourceView::Signal { .. } => {
+                        return Ok(MaterializedFeatureRow::MissingInput {
+                            slot: slot.into(),
+                            source: "signal:not-available-during-model-inference".into(),
+                        });
                     }
                 };
                 if !value.is_finite() {
@@ -332,6 +355,39 @@ fn execute_segment(
                         }
                     }
                 }
+                FrozenSourceView::Signal {
+                    dataset_id,
+                    signal_name,
+                } => {
+                    let binding = request
+                        .signals
+                        .iter()
+                        .find(|binding| {
+                            binding.slot == slot
+                                && binding.dataset_id == dataset_id
+                                && binding.signal_name == signal_name
+                        })
+                        .expect("Signal Run bindings were validated");
+                    match binding
+                        .rows
+                        .binary_search_by_key(&bar.open_time_ms, |row| row.prediction_time_ms)
+                        .ok()
+                        .map(|index| &binding.rows[index])
+                    {
+                        Some(row)
+                            if row.available_at_ms <= bar.open_time_ms && row.value.is_some() =>
+                        {
+                            row.value.expect("checked above")
+                        }
+                        _ => {
+                            missing = Some((
+                                slot.to_owned(),
+                                format!("signal:{dataset_id}:{signal_name}"),
+                            ));
+                            break;
+                        }
+                    }
+                }
             };
             if !value.is_finite() {
                 return Err(RunError::host(
@@ -445,7 +501,9 @@ fn evaluate_factors(
                 dependency_alias,
                 output,
             } => Some((dependency_alias, output)),
-            FrozenSourceView::Market(_) | FrozenSourceView::BuiltIn { .. } => None,
+            FrozenSourceView::Market(_)
+            | FrozenSourceView::BuiltIn { .. }
+            | FrozenSourceView::Signal { .. } => None,
         })
         .fold(
             HashMap::<&str, HashSet<&str>>::new(),
@@ -780,6 +838,10 @@ fn source_name(source: FrozenSourceView<'_>) -> String {
         FrozenSourceView::BuiltIn {
             indicator, output, ..
         } => format!("builtin:{indicator}:{output}"),
+        FrozenSourceView::Signal {
+            dataset_id,
+            signal_name,
+        } => format!("signal:{dataset_id}:{signal_name}"),
     }
 }
 
@@ -861,6 +923,34 @@ fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
     if request.plan.slot_names().any(|name| !slots.insert(name)) {
         return Err("Frozen Feature Plan contains duplicate Feature Slots".into());
     }
+    if request.signals.iter().any(|binding| {
+        binding
+            .rows
+            .windows(2)
+            .any(|rows| rows[0].prediction_time_ms >= rows[1].prediction_time_ms)
+            || !request
+                .plan
+                .slot_names()
+                .zip(request.plan.sources())
+                .any(|(slot, source)| {
+                    matches!(
+                        source,
+                        FrozenSourceView::Signal { dataset_id, signal_name }
+                            if slot == binding.slot
+                                && dataset_id == binding.dataset_id
+                                && signal_name == binding.signal_name
+                    )
+                })
+    }) || request
+        .plan
+        .slot_names()
+        .zip(request.plan.sources())
+        .filter(|(_, source)| matches!(source, FrozenSourceView::Signal { .. }))
+        .count()
+        != request.signals.len()
+    {
+        return Err("Signal Run bindings must match Frozen Plan slots exactly".into());
+    }
     Ok(())
 }
 
@@ -890,11 +980,14 @@ fn validate_target(raw: &str, mode: PositionMode) -> Result<Decimal, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, str::FromStr};
+    use std::{collections::BTreeMap, path::PathBuf, str::FromStr};
 
     use adaq_component_tooling::{
-        ComponentManifest, FactorInstancePlanInput, native_engine_identity,
-        validate_and_freeze_feature_plan, validate_and_freeze_feature_plan_with_factors,
+        BuiltinForecastTarget, ComponentManifest, FactorInstancePlanInput, ForecastTarget,
+        ForecastValueScale, ModelOutput, PredictionKind, SignalPlanInput, native_engine_identity,
+        validate_and_freeze_feature_plan,
+        validate_and_freeze_feature_plan_with_bindings_and_parameters,
+        validate_and_freeze_feature_plan_with_factors,
     };
 
     use super::*;
@@ -975,6 +1068,7 @@ mod tests {
             strategy_parameters: &[],
             factors: &[],
             bars: &bars,
+            signals: &[],
             gaps: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
@@ -1000,6 +1094,182 @@ mod tests {
     }
 
     #[test]
+    fn signal_rows_require_exact_alignment_and_availability_without_synthetic_values() {
+        let contract = |name: &str| ModelOutput {
+            name: name.into(),
+            prediction_kind: PredictionKind::Probability,
+            forecast_target: ForecastTarget::Builtin {
+                target: BuiltinForecastTarget::FutureCloseUp,
+            },
+            value_scale: ForecastValueScale::Probability,
+            horizon_bars: 1,
+        };
+        let manifest: ComponentManifest = serde_json::from_value(serde_json::json!({
+            "manifestSchemaVersion": "1.0.0",
+            "componentId": "00000000-0000-4000-8000-000000000001",
+            "version": "1.0.0",
+            "name": "Signal Fixture",
+            "kind": "strategy",
+            "sdkVersion": "0.1.0",
+            "abiVersion": "1.0.0",
+            "featureSlots": [{
+                "name": "quote-volume",
+                "source": {
+                    "kind": "signal",
+                    "predictionKind": {"kind": "probability"},
+                    "forecastTarget": {"kind": "builtin", "target": "future-close-up"},
+                    "valueScale": {"kind": "probability"},
+                    "horizonBars": 1
+                }
+            }, {
+                "name": "close",
+                "source": {
+                    "kind": "signal",
+                    "predictionKind": {"kind": "probability"},
+                    "forecastTarget": {"kind": "builtin", "target": "future-close-up"},
+                    "valueScale": {"kind": "probability"},
+                    "horizonBars": 1
+                }
+            }]
+        }))
+        .unwrap();
+        let quote_dataset_id = "b".repeat(64);
+        let close_dataset_id = "c".repeat(64);
+        let mut signal_inputs = [
+            SignalPlanInput {
+                slot_name: "quote-volume",
+                dataset_id: &quote_dataset_id,
+                signal_name: "quote-volume",
+                snapshot_id: "snapshot",
+                instrument_id: "okx:BTC-USDT".into(),
+                venue: "okx",
+                bar_interval: "1m",
+                contract: contract("quote-volume"),
+                producer_segments: vec![serde_json::json!({"segment": 1})],
+                artifact_provenance: serde_json::json!({"sha256": "artifact"}),
+                evidence_state: "unknown",
+                component_lock: vec![],
+            },
+            SignalPlanInput {
+                slot_name: "close",
+                dataset_id: &close_dataset_id,
+                signal_name: "close",
+                snapshot_id: "snapshot",
+                instrument_id: "okx:BTC-USDT".into(),
+                venue: "okx",
+                bar_interval: "1m",
+                contract: contract("close"),
+                producer_segments: vec![serde_json::json!({"segment": 1})],
+                artifact_provenance: serde_json::json!({"sha256": "artifact"}),
+                evidence_state: "unknown",
+                component_lock: vec![],
+            },
+        ];
+        let plan = validate_and_freeze_feature_plan_with_bindings_and_parameters(
+            &manifest,
+            &"a".repeat(64),
+            &native_engine_identity().unwrap(),
+            &[],
+            &BTreeMap::new(),
+            &signal_inputs,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.architecture(),
+            adaq_component_tooling::StrategyArchitecture::SignalDriven
+        );
+        let frozen_json: serde_json::Value = serde_json::from_slice(&plan.to_json()).unwrap();
+        let frozen_source = &frozen_json["slots"][0]["source"];
+        for evidence in [
+            "dataset_id",
+            "signal_name",
+            "snapshot_id",
+            "producer_segments",
+            "artifact_provenance",
+            "evidence_state",
+            "component_lock",
+        ] {
+            assert!(frozen_source.get(evidence).is_some(), "missing {evidence}");
+        }
+        let alternate_dataset_id = "d".repeat(64);
+        signal_inputs[0].dataset_id = &alternate_dataset_id;
+        let alternate = validate_and_freeze_feature_plan_with_bindings_and_parameters(
+            &manifest,
+            &"a".repeat(64),
+            &native_engine_identity().unwrap(),
+            &[],
+            &BTreeMap::new(),
+            &signal_inputs,
+        )
+        .unwrap();
+        assert_ne!(plan.plan_hash(), alternate.plan_hash());
+        signal_inputs[0].dataset_id = &quote_dataset_id;
+        let quote_rows = [
+            SignalRunRow {
+                prediction_time_ms: 1,
+                available_at_ms: 1,
+                value: Some(0.2),
+            },
+            SignalRunRow {
+                prediction_time_ms: 2,
+                available_at_ms: 2,
+                value: Some(0.8),
+            },
+        ];
+        let close_rows = [
+            SignalRunRow {
+                prediction_time_ms: 1,
+                available_at_ms: 1,
+                value: Some(0.9),
+            },
+            SignalRunRow {
+                prediction_time_ms: 2,
+                available_at_ms: 3,
+                value: Some(0.1),
+            },
+        ];
+        let signals = [
+            SignalRunRequest {
+                slot: "quote-volume",
+                dataset_id: signal_inputs[0].dataset_id,
+                signal_name: "quote-volume",
+                rows: &quote_rows,
+            },
+            SignalRunRequest {
+                slot: "close",
+                dataset_id: signal_inputs[1].dataset_id,
+                signal_name: "close",
+                rows: &close_rows,
+            },
+        ];
+        let bars = [bar(1, "10", "5"), bar(2, "11", "20")];
+        let result = RunEngine::execute(&RunRequest {
+            strategy_path: &fixture(),
+            strategy_parameters: &[],
+            factors: &[],
+            signals: &signals,
+            bars: &bars,
+            gaps: &[],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits::default(),
+        })
+        .unwrap();
+        assert_eq!(result.decisions.len(), 1);
+        assert_eq!(result.decisions[0].open_time_ms, 1);
+        assert_eq!(
+            result.pauses,
+            [RunPause {
+                open_time_ms: 2,
+                reason: RunPauseReason::MissingInput {
+                    slot: "close".into(),
+                    source: format!("signal:{}:close", signal_inputs[1].dataset_id),
+                },
+            }]
+        );
+    }
+
+    #[test]
     fn identical_closed_bars_are_collapsed_but_conflicts_fail() {
         let plan = plan();
         let strategy = fixture();
@@ -1009,6 +1279,7 @@ mod tests {
             strategy_parameters: &[],
             factors: &[],
             bars: &[first.clone(), first.clone(), bar(2, "11", "20")],
+            signals: &[],
             gaps: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
@@ -1099,6 +1370,7 @@ mod tests {
             strategy_parameters: &[],
             factors: &factors,
             bars: &bars,
+            signals: &[],
             gaps: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
@@ -1166,6 +1438,7 @@ mod tests {
             factors: &factors,
             bars: &bars,
             gaps: &[],
+            signals: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
             limits: RunLimits::default(),
@@ -1231,6 +1504,7 @@ mod tests {
             strategy_parameters: &[],
             factors: &factors,
             bars: &[bar(1, "10", "1"), fatal],
+            signals: &[],
             gaps: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
@@ -1298,6 +1572,7 @@ mod tests {
             factors: &factors,
             bars: &bars,
             gaps: &[gap, second_gap],
+            signals: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
             limits: RunLimits::default(),
@@ -1375,6 +1650,7 @@ mod tests {
             strategy_parameters: &[],
             factors: &factors,
             bars: &[bar(1, "10", "1"), bar(2, "11", "0")],
+            signals: &[],
             gaps: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
@@ -1421,6 +1697,7 @@ mod tests {
             factors: &factors,
             bars: &bars,
             gaps: &[],
+            signals: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
             limits: RunLimits {
@@ -1467,6 +1744,7 @@ mod tests {
             factors: &[],
             bars: &bars,
             gaps: &[],
+            signals: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
             limits: RunLimits::default(),
@@ -1508,6 +1786,7 @@ mod tests {
             factors: &[],
             bars: &bars,
             gaps: &[],
+            signals: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
             limits: RunLimits::default(),
@@ -1544,6 +1823,7 @@ mod tests {
             factors: &[],
             bars: &bars,
             gaps: &[],
+            signals: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
             limits: RunLimits::default(),
@@ -1609,6 +1889,7 @@ mod tests {
             factors: &[],
             bars: &bars,
             gaps: &[],
+            signals: &[],
             plan: &plan,
             position_mode: PositionMode::LongOnly,
             limits: RunLimits::default(),

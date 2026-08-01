@@ -60,6 +60,9 @@ test("rebuilds the frozen normalized Run as a valid Validation request", () => {
 					parameters: [{ name: "length", value: "10" }],
 				},
 			],
+			signalInstances: [
+				{ slot: "forecast", datasetId: "dataset", signalName: "up" },
+			],
 			initialQuoteAllocation: "100",
 			executionProfile: { fillPolicy: "taker" },
 			seed: 7,
@@ -67,6 +70,9 @@ test("rebuilds the frozen normalized Run as a valid Validation request", () => {
 	).toMatchObject({
 		userId: "alice",
 		factorInstances: [{ parameters: { length: "10" } }],
+		signalInstances: [
+			{ slot: "forecast", datasetId: "dataset", signalName: "up" },
+		],
 	});
 });
 

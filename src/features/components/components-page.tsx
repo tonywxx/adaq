@@ -347,6 +347,14 @@ function ComponentDetail({
 				</div>
 			</CardHeader>
 			<CardContent className="space-y-6">
+				{component.architecture && (
+					<DetailSection title="Architecture">
+						<p className="text-sm">{component.architecture}</p>
+						<p className="text-sm text-muted-foreground">
+							Derived from authoritative Feature Slot sources.
+						</p>
+					</DetailSection>
+				)}
 				{!component.compatible && (
 					<div
 						className="rounded-lg border border-destructive/40 bg-destructive/10 p-3"
@@ -451,19 +459,53 @@ function ComponentDetail({
 							{component.modelOutputs.map((output) => (
 								<li className="rounded-md border p-3 text-sm" key={output.name}>
 									<p className="font-medium">{output.name}</p>
-									<p className="text-muted-foreground">{readableModelKind(output.predictionKind.kind)} · {output.horizonBars} Bar horizon</p>
-									<p className="text-muted-foreground">Target: {readableModelKind(String(output.forecastTarget.target ?? output.forecastTarget.id ?? output.forecastTarget.kind))} · Scale: {readableModelKind(String(output.valueScale.kind))}</p>
-									<pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">{JSON.stringify({ predictionKind: output.predictionKind, target: output.forecastTarget, scale: output.valueScale }, null, 2)}</pre>
+									<p className="text-muted-foreground">
+										{readableModelKind(output.predictionKind.kind)} · {output.horizonBars}{" "}
+										Bar horizon
+									</p>
+									<p className="text-muted-foreground">
+										Target:{" "}
+										{readableModelKind(
+											String(
+												output.forecastTarget.target ??
+													output.forecastTarget.id ??
+													output.forecastTarget.kind,
+											),
+										)}{" "}
+										· Scale: {readableModelKind(String(output.valueScale.kind))}
+									</p>
+									<pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">
+										{JSON.stringify(
+											{
+												predictionKind: output.predictionKind,
+												target: output.forecastTarget,
+												scale: output.valueScale,
+											},
+											null,
+											2,
+										)}
+									</pre>
 								</li>
 							))}
 						</ul>
-					) : <p className="text-sm text-muted-foreground">{component.outputNames.length ? component.outputNames.join(", ") : "No named outputs declared."}</p>}
+					) : (
+						<p className="text-sm text-muted-foreground">
+							{component.outputNames.length
+								? component.outputNames.join(", ")
+								: "No named outputs declared."}
+						</p>
+					)}
 				</DetailSection>
 
 				{component.modelArtifact && (
 					<DetailSection title="Embedded Model Artifact">
-						<HashValue label="Artifact SHA-256" value={component.modelArtifact.sha256} />
-						<pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">{JSON.stringify(component.modelArtifact.provenance, null, 2)}</pre>
+						<HashValue
+							label="Artifact SHA-256"
+							value={component.modelArtifact.sha256}
+						/>
+						<pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">
+							{JSON.stringify(component.modelArtifact.provenance, null, 2)}
+						</pre>
 					</DetailSection>
 				)}
 
@@ -513,7 +555,9 @@ function ComponentDetail({
 }
 
 function readableModelKind(value: string) {
-	return value.replace(/-/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+	return value
+		.replace(/-/g, " ")
+		.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function CompatibilityBadge({ component }: { component: LibraryComponent }) {

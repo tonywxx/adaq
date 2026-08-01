@@ -11,13 +11,15 @@ pub use package::{
     BuiltinForecastTarget, ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
     FeatureSlotDefinition, FeatureSlotSource, ForecastTarget, ForecastTargetValueType,
     ForecastValueScale, MarketField, ModelArtifact, ModelOutput, ModelScope, PackageError,
-    ParameterDefinition, ParameterType, PredictionKind, check_manifest_compatibility,
-    pack_component, validate_model_outputs,
+    ParameterDefinition, ParameterType, PredictionKind, StrategyArchitecture,
+    check_manifest_compatibility, pack_component, strategy_architecture, validate_model_outputs,
 };
 pub use plan::{
     EngineIdentity, FactorInstancePlanInput, FrozenBuiltInParameter, FrozenFactorView,
     FrozenFeaturePlan, FrozenSourceView, PlanIssue, PlanLoadError, PlanValidationError,
-    builtin_engine_market_field, native_engine_identity, validate_and_freeze_feature_plan,
+    SignalPlanInput, builtin_engine_market_field, native_engine_identity,
+    validate_and_freeze_feature_plan,
+    validate_and_freeze_feature_plan_with_bindings_and_parameters,
     validate_and_freeze_feature_plan_with_factors,
     validate_and_freeze_feature_plan_with_factors_and_parameters,
 };

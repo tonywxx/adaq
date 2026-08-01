@@ -6,7 +6,8 @@ use adaq_component_sdk::strategy::{
 struct Component;
 
 struct Instance {
-    signal: usize,
+    quote_volume: usize,
+    close: usize,
 }
 
 impl Guest for Component {
@@ -18,7 +19,8 @@ impl Guest for Component {
     ) -> Result<StrategyInstance, String> {
         let slots = SlotIndexes::bind(&feature_slots)?;
         Ok(StrategyInstance::new(Instance {
-            signal: slots.index("forecast-probability")?,
+            quote_volume: slots.index("quote-volume")?,
+            close: slots.index("close")?,
         }))
     }
 }
@@ -28,15 +30,17 @@ impl GuestInstance for Instance {
         frames
             .into_iter()
             .map(|frame| {
-                if frame.values.len() <= self.signal {
+                if frame.values.len() <= self.close.max(self.quote_volume) {
                     return Err("feature slot count mismatch".to_owned());
                 }
-                Ok(if frame.values[self.signal] >= 0.5 {
-                    "1"
-                } else {
-                    "0"
-                }
-                .to_owned())
+                Ok(
+                    if frame.values[self.close] > frame.values[self.quote_volume] {
+                        "1"
+                    } else {
+                        "0"
+                    }
+                    .to_owned(),
+                )
             })
             .collect()
     }

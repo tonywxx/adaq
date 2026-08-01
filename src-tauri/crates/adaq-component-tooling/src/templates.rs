@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub enum ComponentTemplate {
     Factor,
     Strategy,
+    ComposedStrategy,
     Model,
 }
 
@@ -22,10 +23,14 @@ impl ComponentTemplate {
         }
     }
 
+    pub fn composed_strategy() -> Self {
+        Self::ComposedStrategy
+    }
+
     fn name(self) -> &'static str {
         match self {
             Self::Factor => "factor",
-            Self::Strategy => "strategy",
+            Self::Strategy | Self::ComposedStrategy => "strategy",
             Self::Model => "model",
         }
     }
@@ -82,11 +87,17 @@ pub fn create_project(
     let source = match kind {
         ComponentTemplate::Factor => include_str!("../templates/factor/lib.rs"),
         ComponentTemplate::Strategy => include_str!("../templates/strategy/lib.rs"),
+        ComponentTemplate::ComposedStrategy => {
+            include_str!("../templates/strategy-composed/lib.rs")
+        }
         ComponentTemplate::Model => include_str!("../templates/model/lib.rs"),
     };
     let manifest = match kind {
         ComponentTemplate::Factor => include_str!("../templates/factor/manifest.json"),
         ComponentTemplate::Strategy => include_str!("../templates/strategy/manifest.json"),
+        ComponentTemplate::ComposedStrategy => {
+            include_str!("../templates/strategy-composed/manifest.json")
+        }
         ComponentTemplate::Model => include_str!("../templates/model/manifest.json"),
     };
     fs::write(
@@ -130,13 +141,32 @@ mod tests {
     fn creates_both_project_kinds_without_overwriting() {
         let root = tempfile::tempdir().unwrap();
         let sdk = Path::new("/tmp/adaq-component-sdk");
-        for kind in [ComponentTemplate::Factor, ComponentTemplate::Strategy, ComponentTemplate::Model] {
-            let project = create_project(kind, kind.name(), root.path(), Some(sdk)).unwrap();
+        for (kind, name) in [
+            (ComponentTemplate::Factor, "factor"),
+            (ComponentTemplate::Strategy, "strategy"),
+            (ComponentTemplate::ComposedStrategy, "composed-strategy"),
+            (ComponentTemplate::Model, "model"),
+        ] {
+            let project = create_project(kind, name, root.path(), Some(sdk)).unwrap();
             let cargo = fs::read_to_string(project.join("Cargo.toml")).unwrap();
             let manifest = fs::read_to_string(project.join("manifest.json")).unwrap();
             assert!(cargo.contains("adaq-component-sdk"));
             assert!(manifest.contains("\"sdkVersion\": \"0.1.0\""));
-            assert!(create_project(kind, kind.name(), root.path(), Some(sdk)).is_err());
+            if matches!(
+                kind,
+                ComponentTemplate::Strategy | ComponentTemplate::ComposedStrategy
+            ) {
+                let manifest: crate::ComponentManifest = serde_json::from_str(&manifest).unwrap();
+                assert_eq!(
+                    crate::strategy_architecture(&manifest),
+                    Some(if kind == ComponentTemplate::Strategy {
+                        crate::StrategyArchitecture::SignalDriven
+                    } else {
+                        crate::StrategyArchitecture::Composed
+                    })
+                );
+            }
+            assert!(create_project(kind, name, root.path(), Some(sdk)).is_err());
         }
     }
 }

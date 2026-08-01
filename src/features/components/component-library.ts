@@ -30,6 +30,7 @@ export type LibraryComponent = {
 		horizonBars: number;
 	}>;
 	modelArtifact?: { sha256: string; provenance: Record<string, string> };
+	architecture?: "signal-driven" | "composed" | "hybrid";
 	compatible: boolean;
 	compatibilityError?: string;
 	lockedByRunIds: string[];

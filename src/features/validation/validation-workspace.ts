@@ -135,6 +135,11 @@ export function validationRunRequest(
 			archiveSha256: string;
 			parameters: Array<{ name: string; value: string }>;
 		}>;
+		signalInstances?: Array<{
+			slot: string;
+			datasetId: string;
+			signalName: string;
+		}>;
 		initialQuoteAllocation: string;
 		executionProfile: unknown;
 		seed: number;

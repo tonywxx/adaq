@@ -26,6 +26,14 @@ pub enum ComponentKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum StrategyArchitecture {
+    SignalDriven,
+    Composed,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ModelScope {
     SingleInstrument,
 }
@@ -169,14 +177,14 @@ pub struct ComponentManifest {
     pub model_artifact: Option<ModelArtifact>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FeatureSlotDefinition {
     pub name: String,
     pub source: FeatureSlotSource,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "kebab-case",
@@ -200,6 +208,27 @@ pub enum FeatureSlotSource {
         dependency_alias: String,
         output: String,
     },
+    Signal {
+        prediction_kind: PredictionKind,
+        forecast_target: ForecastTarget,
+        value_scale: ForecastValueScale,
+        horizon_bars: u32,
+    },
+}
+
+pub fn strategy_architecture(manifest: &ComponentManifest) -> Option<StrategyArchitecture> {
+    (manifest.kind == ComponentKind::Strategy).then(|| {
+        let signals = manifest
+            .feature_slots
+            .iter()
+            .filter(|slot| matches!(slot.source, FeatureSlotSource::Signal { .. }))
+            .count();
+        match (signals, manifest.feature_slots.len()) {
+            (0, _) => StrategyArchitecture::Composed,
+            (signals, total) if signals == total => StrategyArchitecture::SignalDriven,
+            _ => StrategyArchitecture::Hybrid,
+        }
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -470,6 +499,26 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
                 ));
             }
             referenced_dependencies.insert(dependency_alias.as_str());
+        }
+        if let FeatureSlotSource::Signal {
+            prediction_kind,
+            forecast_target,
+            value_scale,
+            horizon_bars,
+        } = &slot.source
+        {
+            if manifest.kind != ComponentKind::Strategy {
+                return Err(PackageError(
+                    "Only Strategy manifests may declare Forecast Signal Slots".into(),
+                ));
+            }
+            validate_model_outputs(&[ModelOutput {
+                name: slot.name.clone(),
+                prediction_kind: prediction_kind.clone(),
+                forecast_target: forecast_target.clone(),
+                value_scale: value_scale.clone(),
+                horizon_bars: *horizon_bars,
+            }])?;
         }
     }
     if referenced_dependencies.len() != dependencies.len() {
@@ -772,6 +821,49 @@ mod tests {
         let manifest = serde_json::from_str::<ComponentManifest>(current).unwrap();
         assert_eq!(manifest.feature_slots[0].name, "quote-volume");
         assert_eq!(manifest.feature_slots[1].name, "close");
+    }
+
+    #[test]
+    fn strategy_signal_requirements_are_typed_and_architecture_is_derived() {
+        let wasm = b"\0asm\x0d\0\x01\0";
+        let signal = FeatureSlotDefinition {
+            name: "forecast-up".into(),
+            source: FeatureSlotSource::Signal {
+                prediction_kind: PredictionKind::Probability,
+                forecast_target: ForecastTarget::Builtin {
+                    target: BuiltinForecastTarget::FutureCloseUp,
+                },
+                value_scale: ForecastValueScale::Probability,
+                horizon_bars: 1,
+            },
+        };
+        let mut strategy = manifest();
+        strategy.kind = ComponentKind::Strategy;
+        strategy.output_names.clear();
+        strategy.feature_slots = vec![signal.clone()];
+        strategy.wasm_sha256 = sha256(wasm);
+        assert!(validate_manifest(&strategy, wasm).is_ok());
+        assert_eq!(
+            strategy_architecture(&strategy),
+            Some(StrategyArchitecture::SignalDriven)
+        );
+
+        strategy.feature_slots.push(FeatureSlotDefinition {
+            name: "close".into(),
+            source: FeatureSlotSource::Market {
+                field: MarketField::Close,
+            },
+        });
+        assert_eq!(
+            strategy_architecture(&strategy),
+            Some(StrategyArchitecture::Hybrid)
+        );
+        let FeatureSlotSource::Signal { horizon_bars, .. } = &mut strategy.feature_slots[0].source
+        else {
+            unreachable!()
+        };
+        *horizon_bars = 0;
+        assert!(validate_manifest(&strategy, wasm).is_err());
     }
 
     #[test]

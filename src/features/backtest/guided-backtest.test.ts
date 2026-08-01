@@ -1,6 +1,7 @@
 import type { LibraryComponent } from "@/features/components/component-library";
 import {
 	copyRunConfiguration,
+	decisionSignalEvidence,
 	defaultExecutionProfile,
 	matchingFactors,
 	runGate,
@@ -76,6 +77,16 @@ test("stage gates prevent incomplete and duplicate-ready submissions", () => {
 			strategy,
 			dependencies: [],
 			factorSelections: {},
+			signalSlots: [{ name: "forecast" }],
+			signalSelections: {},
+		}),
+	).toMatch(/Dataset Signal/);
+	expect(
+		runGate({
+			snapshotId: "snapshot",
+			strategy,
+			dependencies: [],
+			factorSelections: {},
 			running: true,
 		}),
 	).toMatch(/already running/);
@@ -86,6 +97,8 @@ test("copies frozen normalized settings into a new editable configuration", () =
 	expect(
 		copyRunConfiguration({
 			snapshotId: "snapshot",
+			runStartTimeMs: 1,
+			runEndTimeMs: 2,
 			strategyArchiveSha256: "strategy",
 			strategyParameters: { period: "20" },
 			factorInstances: [
@@ -95,18 +108,52 @@ test("copies frozen normalized settings into a new editable configuration", () =
 					parameters: [{ name: "length", value: "10" }],
 				},
 			],
+			signalInstances: [
+				{ slot: "forecast", datasetId: "dataset", signalName: "up" },
+			],
 			initialQuoteAllocation: "10000.00",
 			executionProfile: defaultExecutionProfile,
 			seed: 7,
 		}),
 	).toEqual({
 		snapshotId: "snapshot",
+		runStartTimeMs: 1,
+		runEndTimeMs: 2,
 		strategy: "strategy",
 		strategyParameters: { period: "20" },
 		factorSelections: { signal: "factor" },
 		factorParameters: { signal: { length: "10" } },
+		signalSelections: { forecast: "dataset:up" },
 		initialQuoteAllocation: "10000.00",
 		executionProfile: defaultExecutionProfile,
 		seed: "7",
 	});
+});
+
+test("maps each decision to its exact Dataset and Producer Segment evidence", () => {
+	expect(
+		decisionSignalEvidence(
+			JSON.stringify({
+				slots: [
+					{
+						name: "forecast",
+						source: {
+							kind: "signal",
+							dataset_id: "dataset",
+							signal_name: "up",
+							evidence_state: "unknown",
+							producer_segments: [
+								{
+									startPredictionTimeMs: 10,
+									endPredictionTimeMs: 20,
+									modelArtifact: { sha256: "artifact" },
+								},
+							],
+						},
+					},
+				],
+			}),
+			15,
+		),
+	).toContain('"datasetId":"dataset"');
 });

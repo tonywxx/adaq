@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::package::is_lower_kebab;
 use crate::{
     ComponentKind, ComponentManifest, ComponentParameterValue, FeatureSlotSource, MarketField,
-    ParameterType,
+    ModelOutput, ParameterType, StrategyArchitecture, validate_model_outputs,
 };
 
 const PLAN_SCHEMA_VERSION: &str = "1.0.0";
@@ -31,7 +31,23 @@ pub struct FactorInstancePlanInput<'a> {
     pub parameters: Vec<ComponentParameterValue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+pub struct SignalPlanInput<'a> {
+    pub slot_name: &'a str,
+    pub dataset_id: &'a str,
+    pub signal_name: &'a str,
+    pub snapshot_id: &'a str,
+    pub instrument_id: String,
+    pub venue: &'a str,
+    pub bar_interval: &'a str,
+    pub contract: ModelOutput,
+    pub producer_segments: Vec<serde_json::Value>,
+    pub artifact_provenance: serde_json::Value,
+    pub evidence_state: &'a str,
+    pub component_lock: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngineIdentity {
     pub engine_version: String,
     pub ta_lib_version: String,
@@ -100,7 +116,7 @@ impl std::fmt::Display for PlanLoadError {
 
 impl std::error::Error for PlanLoadError {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlanDocument {
     #[serde(flatten)]
@@ -108,7 +124,7 @@ struct PlanDocument {
     plan_hash: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlanContent {
     plan_schema_version: String,
@@ -129,14 +145,14 @@ struct PlanContent {
     effective_warmup_bars: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FrozenConsumerParameter {
     name: String,
     value: ComponentParameterValue,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FrozenSlot {
     name: String,
@@ -144,7 +160,7 @@ struct FrozenSlot {
     warmup_bars: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum FrozenSource {
     Market {
@@ -159,6 +175,19 @@ enum FrozenSource {
         output: String,
         real_inputs: Vec<MarketField>,
         parameters: BTreeMap<String, FrozenBuiltInParameter>,
+    },
+    Signal {
+        dataset_id: String,
+        signal_name: String,
+        snapshot_id: String,
+        instrument_id: String,
+        venue: String,
+        bar_interval: String,
+        contract: ModelOutput,
+        producer_segments: Vec<serde_json::Value>,
+        artifact_provenance: serde_json::Value,
+        evidence_state: String,
+        component_lock: Vec<serde_json::Value>,
     },
 }
 
@@ -185,7 +214,7 @@ struct ResolvedBuiltIn {
     warmup_bars: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FrozenFeaturePlan(PlanDocument);
 
 impl FrozenFeaturePlan {
@@ -202,6 +231,7 @@ impl FrozenFeaturePlan {
             FrozenSource::Market { field } => field,
             FrozenSource::External { .. } => panic!("external Feature Slot is not a Market Field"),
             FrozenSource::BuiltIn { .. } => panic!("builtin Feature Slot is not a Market Field"),
+            FrozenSource::Signal { .. } => panic!("signal Feature Slot is not a Market Field"),
         })
     }
 
@@ -226,7 +256,30 @@ impl FrozenFeaturePlan {
                 real_inputs,
                 parameters,
             },
+            FrozenSource::Signal {
+                dataset_id,
+                signal_name,
+                ..
+            } => FrozenSourceView::Signal {
+                dataset_id,
+                signal_name,
+            },
         })
+    }
+
+    pub fn architecture(&self) -> StrategyArchitecture {
+        let signals = self
+            .0
+            .content
+            .slots
+            .iter()
+            .filter(|slot| matches!(slot.source, FrozenSource::Signal { .. }))
+            .count();
+        match (signals, self.0.content.slots.len()) {
+            (0, _) => StrategyArchitecture::Composed,
+            (signals, total) if signals == total => StrategyArchitecture::SignalDriven,
+            _ => StrategyArchitecture::Hybrid,
+        }
     }
 
     pub fn factors(&self) -> impl ExactSizeIterator<Item = FrozenFactorView<'_>> {
@@ -349,6 +402,32 @@ impl FrozenFeaturePlan {
                     parameters,
                     slot.warmup_bars,
                 ),
+                FrozenSource::Signal {
+                    dataset_id,
+                    signal_name,
+                    snapshot_id,
+                    instrument_id,
+                    venue,
+                    bar_interval,
+                    contract,
+                    producer_segments,
+                    artifact_provenance,
+                    evidence_state,
+                    ..
+                } => {
+                    slot.warmup_bars != 0
+                        || !is_sha256(dataset_id)
+                        || !is_lower_kebab(signal_name)
+                        || contract.name != *signal_name
+                        || validate_model_outputs(std::slice::from_ref(contract)).is_err()
+                        || snapshot_id.is_empty()
+                        || instrument_id.is_empty()
+                        || venue.is_empty()
+                        || bar_interval.is_empty()
+                        || producer_segments.is_empty()
+                        || artifact_provenance.is_null()
+                        || evidence_state.is_empty()
+                }
             })
             || document.content.effective_warmup_bars
                 != document
@@ -377,6 +456,10 @@ pub enum FrozenSourceView<'a> {
         output: &'a str,
         real_inputs: &'a [MarketField],
         parameters: &'a BTreeMap<String, FrozenBuiltInParameter>,
+    },
+    Signal {
+        dataset_id: &'a str,
+        signal_name: &'a str,
     },
 }
 
@@ -423,6 +506,24 @@ pub fn validate_and_freeze_feature_plan_with_factors_and_parameters(
     identity: &EngineIdentity,
     factor_inputs: &[FactorInstancePlanInput<'_>],
     consumer_parameters: &BTreeMap<String, String>,
+) -> Result<FrozenFeaturePlan, PlanValidationError> {
+    validate_and_freeze_feature_plan_with_bindings_and_parameters(
+        manifest,
+        consumer_package_sha256,
+        identity,
+        factor_inputs,
+        consumer_parameters,
+        &[],
+    )
+}
+
+pub fn validate_and_freeze_feature_plan_with_bindings_and_parameters(
+    manifest: &ComponentManifest,
+    consumer_package_sha256: &str,
+    identity: &EngineIdentity,
+    factor_inputs: &[FactorInstancePlanInput<'_>],
+    consumer_parameters: &BTreeMap<String, String>,
+    signal_inputs: &[SignalPlanInput<'_>],
 ) -> Result<FrozenFeaturePlan, PlanValidationError> {
     let mut issues = Vec::new();
     if !matches!(
@@ -540,6 +641,18 @@ pub fn validate_and_freeze_feature_plan_with_factors_and_parameters(
         .iter()
         .map(|dependency| (dependency.alias.as_str(), dependency))
         .collect::<std::collections::HashMap<_, _>>();
+    let signals = signal_inputs
+        .iter()
+        .map(|input| (input.slot_name, input))
+        .collect::<std::collections::HashMap<_, _>>();
+    if signals.len() != signal_inputs.len() {
+        issues.push(issue(
+            "duplicate-signal-binding",
+            None,
+            Some("signal"),
+            None,
+        ));
+    }
     for input in factor_inputs {
         match dependencies.get(input.alias) {
             Some(dependency)
@@ -646,7 +759,55 @@ pub fn validate_and_freeze_feature_plan_with_factors_and_parameters(
                     Some(output),
                 )),
             },
+            FeatureSlotSource::Signal {
+                prediction_kind,
+                forecast_target,
+                value_scale,
+                horizon_bars,
+            } => match signals.get(slot.name.as_str()) {
+                Some(input)
+                    if input.contract.prediction_kind == *prediction_kind
+                        && input.contract.forecast_target == *forecast_target
+                        && input.contract.value_scale == *value_scale
+                        && input.contract.horizon_bars == *horizon_bars
+                        && input.contract.name == input.signal_name
+                        && is_sha256(input.dataset_id)
+                        && !input.producer_segments.is_empty() =>
+                {
+                    slots.push(FrozenSlot {
+                        name: slot.name.clone(),
+                        source: FrozenSource::Signal {
+                            dataset_id: input.dataset_id.into(),
+                            signal_name: input.signal_name.into(),
+                            snapshot_id: input.snapshot_id.into(),
+                            instrument_id: input.instrument_id.clone(),
+                            venue: input.venue.into(),
+                            bar_interval: input.bar_interval.into(),
+                            contract: input.contract.clone(),
+                            producer_segments: input.producer_segments.clone(),
+                            artifact_provenance: input.artifact_provenance.clone(),
+                            evidence_state: input.evidence_state.into(),
+                            component_lock: input.component_lock.clone(),
+                        },
+                        warmup_bars: 0,
+                    })
+                }
+                _ => issues.push(issue(
+                    "incompatible-signal-binding",
+                    Some(&slot.name),
+                    Some("signal"),
+                    None,
+                )),
+            },
         }
+    }
+    if signal_inputs.iter().any(|input| {
+        !manifest
+            .feature_slots
+            .iter()
+            .any(|slot| slot.name == input.slot_name)
+    }) {
+        issues.push(issue("unknown-signal-binding", None, Some("signal"), None));
     }
     if unique_builtin_request_count(&slots) > MAX_BUILTIN_REQUESTS {
         issues.push(issue(

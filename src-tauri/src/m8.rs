@@ -174,6 +174,28 @@ struct ExternalRow {
     unavailable_reason: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct BacktestSignalRow {
+    pub prediction_time_ms: i64,
+    pub available_at_ms: i64,
+    pub values: Option<Vec<f64>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BacktestSignalDataset {
+    pub dataset_id: String,
+    pub snapshot_id: String,
+    pub src: String,
+    pub code: String,
+    pub interval: String,
+    pub outputs: Vec<adaq_component_tooling::ModelOutput>,
+    pub producer_segments: Vec<serde_json::Value>,
+    pub artifact_provenance: serde_json::Value,
+    pub evidence_state: String,
+    pub component_lock: Vec<serde_json::Value>,
+    pub rows: Vec<BacktestSignalRow>,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForecastEvaluationRequest {
@@ -1908,6 +1930,104 @@ fn dataset_outputs(
             .ok_or("forecast-evaluation-dataset-has-no-signal-contract")?,
     )
     .map_err(string)
+}
+
+pub(crate) fn backtest_signal_datasets(
+    state: &M3State,
+    user_id: &str,
+    include_rows: bool,
+) -> Result<Vec<BacktestSignalDataset>, String> {
+    validate_user(user_id)?;
+    let database = state.database.lock().map_err(string)?;
+    let mut statement = database
+        .prepare(
+            "SELECT c.metadata_json, c.parquet_path FROM signal_dataset_content c JOIN signal_dataset_access a USING(dataset_id) WHERE a.user_id = ?1 ORDER BY c.dataset_id",
+        )
+        .map_err(string)?;
+    let stored = statement
+        .query_map([user_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(string)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(string)?;
+    drop(statement);
+    drop(database);
+    stored
+        .into_iter()
+        .map(|(metadata_json, path)| {
+            let dataset: SignalDataset = serde_json::from_str(&metadata_json).map_err(string)?;
+            let outputs = dataset_outputs(&dataset)?;
+            let producer_segments = producer_segment_values(&dataset)?;
+            let start = producer_segments
+                .iter()
+                .filter_map(|segment| segment.get("startPredictionTimeMs")?.as_i64())
+                .min()
+                .unwrap_or(i64::MIN);
+            let end = producer_segments
+                .iter()
+                .filter_map(|segment| segment.get("endPredictionTimeMs")?.as_i64())
+                .max()
+                .unwrap_or(i64::MAX);
+            let evidence_state = segment_evidence(&producer_segments, start, end).summary;
+            let artifact_provenance = dataset
+                .model_artifact
+                .as_ref()
+                .map(|artifact| serde_json::to_value(artifact).map_err(string))
+                .transpose()?
+                .unwrap_or_else(|| {
+                    serde_json::json!({
+                        "producerSegments": producer_segments,
+                        "predictionSource": dataset.prediction_source,
+                        "trust": dataset.trust,
+                    })
+                });
+            let component_lock = dataset
+                .component_lock
+                .iter()
+                .map(|entry| serde_json::to_value(entry).map_err(string))
+                .collect::<Result<Vec<_>, _>>()?;
+            let rows = if include_rows {
+                let parquet = fs::read(path).map_err(string)?;
+                if hash(&parquet) != dataset.parquet_sha256 {
+                    return Err("stored-signal-parquet-hash-mismatch".into());
+                }
+                let rows = read_external_rows(&parquet)?;
+                if rows.iter().any(|row| {
+                    row.values.as_ref().is_some_and(|values| {
+                        values.len() != outputs.len()
+                            || values.iter().zip(&outputs).any(|(value, output)| {
+                                validate_prediction_scale(output, *value).is_err()
+                            })
+                    })
+                }) {
+                    return Err("signal-dataset-has-invalid-present-values".into());
+                }
+                rows.into_iter()
+                    .map(|row| BacktestSignalRow {
+                        prediction_time_ms: row.prediction_time_ms,
+                        available_at_ms: row.available_at_ms,
+                        values: row.values,
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                vec![]
+            };
+            Ok(BacktestSignalDataset {
+                dataset_id: dataset.dataset_id,
+                snapshot_id: dataset.snapshot_id,
+                src: dataset.src,
+                code: dataset.code,
+                interval: dataset.interval,
+                outputs,
+                producer_segments,
+                artifact_provenance,
+                evidence_state,
+                component_lock,
+                rows,
+            })
+        })
+        .collect()
 }
 
 fn producer_segment_values(dataset: &SignalDataset) -> Result<Vec<serde_json::Value>, String> {

@@ -14,9 +14,10 @@ use adaq_backtest_core::{
 };
 use adaq_component_tooling::{
     ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
-    ComponentParameterValue, FactorInstancePlanInput, FeatureSlotDefinition, FrozenFeaturePlan,
-    ModelArtifact, ModelOutput, ModelScope, ParameterDefinition, RunLimits, component_parameters,
-    native_engine_identity, validate_and_freeze_feature_plan_with_factors_and_parameters,
+    ComponentParameterValue, FactorInstancePlanInput, FeatureSlotDefinition, FeatureSlotSource,
+    FrozenFeaturePlan, ModelArtifact, ModelOutput, ModelScope, ParameterDefinition, RunLimits,
+    SignalPlanInput, StrategyArchitecture, component_parameters, native_engine_identity,
+    strategy_architecture, validate_and_freeze_feature_plan_with_bindings_and_parameters,
     verify_package,
 };
 use adaq_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
@@ -25,7 +26,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::Manager;
 
-use crate::run_engine::{FactorRunRequest, PositionMode, RunEngine, RunRequest};
+use crate::{
+    m8::backtest_signal_datasets,
+    run_engine::{
+        FactorRunRequest, PositionMode, RunEngine, RunRequest, SignalRunRequest, SignalRunRow,
+    },
+};
 
 const RUN_HISTORY_PAGE_SIZE: usize = 10;
 const SNAPSHOT_PAGE_SIZE: usize = 10;
@@ -101,6 +107,7 @@ pub struct LibraryComponent {
     model_scope: Option<ModelScope>,
     model_outputs: Vec<ModelOutput>,
     model_artifact: Option<ModelArtifact>,
+    architecture: Option<StrategyArchitecture>,
     compatible: bool,
     compatibility_error: Option<String>,
     locked_by_run_ids: Vec<String>,
@@ -159,6 +166,14 @@ impl M3State {
                 PRIMARY KEY(run_id, archive_sha256),
                 FOREIGN KEY(run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
                 FOREIGN KEY(archive_sha256) REFERENCES component_content(archive_sha256)
+             );
+             CREATE TABLE IF NOT EXISTS backtest_run_signal_datasets (
+                run_id TEXT NOT NULL,
+                dataset_id TEXT NOT NULL,
+                signal_name TEXT NOT NULL,
+                PRIMARY KEY(run_id, dataset_id, signal_name),
+                FOREIGN KEY(run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
+                FOREIGN KEY(dataset_id) REFERENCES signal_dataset_content(dataset_id)
              );
              CREATE TABLE IF NOT EXISTS validation_protocols (
                 protocol_id TEXT PRIMARY KEY,
@@ -390,6 +405,7 @@ impl M3State {
             manifest_schema_version: package.manifest.manifest_schema_version.to_string(),
             sdk_version,
             abi_version: package.manifest.abi_version.to_string(),
+            architecture: strategy_architecture(&package.manifest),
             name: package.manifest.name,
             kind,
             archive_sha256: package.archive_sha256,
@@ -538,6 +554,7 @@ impl M3State {
                                 .unwrap_or_default(),
                             archive_sha256,
                             wasm_sha256,
+                            architecture: strategy_architecture(&package.manifest),
                             parameters: package.manifest.parameters,
                             feature_slots: package.manifest.feature_slots,
                             output_names: package.manifest.output_names,
@@ -571,6 +588,7 @@ impl M3State {
                             model_scope: None,
                             model_outputs: vec![],
                             model_artifact: None,
+                            architecture: None,
                             compatible: false,
                             compatibility_error: Some(format!(
                                 "Incompatible Component Package: {error}"
@@ -891,6 +909,14 @@ impl M3State {
                 "INSERT OR IGNORE INTO backtest_run_components(run_id, archive_sha256) VALUES (?1, ?2)",
                 params![run_id, component.archive_sha256],
             ).map_err(string)?;
+        }
+        if let Some(provenance) = &result.provenance {
+            for signal in &provenance.dataset_lock {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO backtest_run_signal_datasets(run_id, dataset_id, signal_name) VALUES (?1, ?2, ?3)",
+                    params![run_id, signal.dataset_id, signal.signal_name],
+                ).map_err(string)?;
+            }
         }
         transaction.commit().map_err(string)?;
         Ok(())
@@ -1284,7 +1310,13 @@ pub struct BacktestRunRequest {
     pub user_id: String,
     pub snapshot_id: String,
     #[serde(default)]
+    pub run_start_time_ms: Option<i64>,
+    #[serde(default)]
+    pub run_end_time_ms: Option<i64>,
+    #[serde(default)]
     pub factor_instances: Vec<FactorInstanceRequest>,
+    #[serde(default)]
+    pub signal_instances: Vec<SignalInstanceRequest>,
     pub strategy_archive_sha256: String,
     #[serde(default)]
     pub strategy_parameters: HashMap<String, String>,
@@ -1311,12 +1343,15 @@ pub struct BacktestPreflight {
     pub normalized_request: NormalizedBacktestRunRequest,
     pub feature_plan: serde_json::Value,
     pub component_lock: Vec<ComponentLockEntry>,
+    pub dataset_lock: Vec<SignalDatasetLock>,
+    pub architecture: StrategyArchitecture,
 }
 
 struct PreparedBacktest {
     strategy: ComponentPackage,
     strategy_parameters: Vec<ComponentParameterValue>,
     factor_packages: Vec<ComponentPackage>,
+    signals: Vec<PreparedSignal>,
     plan: FrozenFeaturePlan,
     provenance: BacktestRunProvenance,
     component_lock: Vec<ComponentLockEntry>,
@@ -1326,6 +1361,13 @@ struct PreparedBacktest {
     gaps: Vec<BarGap>,
 }
 
+struct PreparedSignal {
+    slot: String,
+    dataset_id: String,
+    signal_name: String,
+    rows: Vec<SignalRunRow>,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FactorInstanceRequest {
@@ -1333,6 +1375,14 @@ pub struct FactorInstanceRequest {
     pub archive_sha256: String,
     #[serde(default)]
     pub parameters: HashMap<String, FactorParameterBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalInstanceRequest {
+    pub slot: String,
+    pub dataset_id: String,
+    pub signal_name: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1380,6 +1430,10 @@ pub struct BacktestRunProvenance {
     pub feature_plan_json: String,
     pub feature_plan_hash: String,
     pub component_lock: Vec<ComponentLockEntry>,
+    #[serde(default)]
+    pub dataset_lock: Vec<SignalDatasetLock>,
+    #[serde(default = "composed_architecture")]
+    pub architecture: StrategyArchitecture,
     pub indicator_engine_build_identity: IndicatorEngineBuildIdentity,
     pub backtest_engine_version: String,
     pub seed: u64,
@@ -1389,13 +1443,32 @@ pub struct BacktestRunProvenance {
 #[serde(rename_all = "camelCase")]
 pub struct NormalizedBacktestRunRequest {
     pub snapshot_id: String,
+    #[serde(default)]
+    pub run_start_time_ms: Option<i64>,
+    #[serde(default)]
+    pub run_end_time_ms: Option<i64>,
     pub strategy_archive_sha256: String,
     pub strategy_parameters: BTreeMap<String, String>,
     pub factor_instances: Vec<NormalizedFactorInstance>,
+    #[serde(default)]
+    pub signal_instances: Vec<SignalInstanceRequest>,
     #[serde(with = "rust_decimal::serde::str")]
     pub initial_quote_allocation: rust_decimal::Decimal,
     pub execution_profile: ExecutionProfile,
     pub seed: u64,
+}
+
+fn composed_architecture() -> StrategyArchitecture {
+    StrategyArchitecture::Composed
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalDatasetLock {
+    pub slot: String,
+    pub dataset_id: String,
+    pub signal_name: String,
+    pub evidence_state: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1440,6 +1513,23 @@ pub struct ComponentLockEntry {
     pub version: String,
     pub archive_sha256: String,
     pub wasm_sha256: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestSignalCandidate {
+    slot: String,
+    dataset_id: String,
+    signal_name: String,
+    evidence_state: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestSignalCompatibilityRequest {
+    user_id: String,
+    strategy_archive_sha256: String,
+    snapshot_id: String,
 }
 
 #[derive(Deserialize)]
@@ -1685,6 +1775,64 @@ pub fn backtest_compatible_factors(
     state.compatible_factors(&request.user_id, &request.strategy_archive_sha256)
 }
 
+#[tauri::command]
+pub fn backtest_compatible_signals(
+    request: BacktestSignalCompatibilityRequest,
+    state: tauri::State<'_, M3State>,
+) -> Result<Vec<BacktestSignalCandidate>, String> {
+    let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
+    if strategy.manifest.kind != ComponentKind::Strategy {
+        return Err("Compatible Signals require a Strategy Component".into());
+    }
+    let (snapshot, _) = state.snapshot_for_user(&request.user_id, &request.snapshot_id)?;
+    let datasets = backtest_signal_datasets(&state, &request.user_id, false)?;
+    Ok(compatible_signal_candidates(
+        &strategy.manifest,
+        &snapshot,
+        &datasets,
+    ))
+}
+
+fn compatible_signal_candidates(
+    strategy: &ComponentManifest,
+    snapshot: &MarketDataSnapshot,
+    datasets: &[crate::m8::BacktestSignalDataset],
+) -> Vec<BacktestSignalCandidate> {
+    let mut candidates = Vec::new();
+    for slot in &strategy.feature_slots {
+        let FeatureSlotSource::Signal {
+            prediction_kind,
+            forecast_target,
+            value_scale,
+            horizon_bars,
+        } = &slot.source
+        else {
+            continue;
+        };
+        for dataset in datasets.iter().filter(|dataset| {
+            dataset.snapshot_id == snapshot.snapshot_id
+                && dataset.src == snapshot.src
+                && dataset.code == snapshot.code
+                && dataset.interval == snapshot.interval.as_str()
+        }) {
+            for output in dataset.outputs.iter().filter(|output| {
+                output.prediction_kind == *prediction_kind
+                    && output.forecast_target == *forecast_target
+                    && output.value_scale == *value_scale
+                    && output.horizon_bars == *horizon_bars
+            }) {
+                candidates.push(BacktestSignalCandidate {
+                    slot: slot.name.clone(),
+                    dataset_id: dataset.dataset_id.clone(),
+                    signal_name: output.name.clone(),
+                    evidence_state: dataset.evidence_state.clone(),
+                });
+            }
+        }
+    }
+    candidates
+}
+
 fn compatible_factor_hashes(
     strategy: &ComponentManifest,
     packages: &[(&LibraryComponent, ComponentPackage)],
@@ -1872,6 +2020,8 @@ pub fn backtest_preflight(
         feature_plan: serde_json::from_str(&prepared.provenance.feature_plan_json)
             .map_err(string)?,
         component_lock: prepared.component_lock,
+        dataset_lock: prepared.provenance.dataset_lock,
+        architecture: prepared.provenance.architecture,
     })
 }
 
@@ -1887,6 +2037,7 @@ fn execute_backtest(
         strategy,
         strategy_parameters,
         factor_packages,
+        signals,
         plan,
         provenance,
         component_lock,
@@ -1914,10 +2065,20 @@ fn execute_backtest(
             path,
         })
         .collect::<Vec<_>>();
+    let signal_runs = signals
+        .iter()
+        .map(|signal| SignalRunRequest {
+            slot: &signal.slot,
+            dataset_id: &signal.dataset_id,
+            signal_name: &signal.signal_name,
+            rows: &signal.rows,
+        })
+        .collect::<Vec<_>>();
     let engine_result = RunEngine::execute(&RunRequest {
         strategy_path: &strategy_path,
         strategy_parameters: &strategy_parameters,
         factors: &factors,
+        signals: &signal_runs,
         bars: &bars,
         gaps: &gaps,
         plan: &plan,
@@ -1986,6 +2147,25 @@ fn prepare_backtest(
         component_parameters(&strategy.manifest, Some(&request.strategy_parameters))?;
     let frozen_strategy_parameters =
         normalized_parameters(&strategy.manifest, &strategy_parameters);
+    let (snapshot, mut bars) = state.snapshot_for_user(&request.user_id, &request.snapshot_id)?;
+    let run_start_time_ms = request.run_start_time_ms.unwrap_or(snapshot.start_time_ms);
+    let run_end_time_ms = request.run_end_time_ms.unwrap_or(snapshot.end_time_ms);
+    if run_start_time_ms > run_end_time_ms {
+        return Err("Backtest Run window must be a valid inclusive Bar-open range".into());
+    }
+    if run_start_time_ms < snapshot.start_time_ms || run_end_time_ms > snapshot.end_time_ms {
+        return Err("Backtest Run window must be a subset of the exact Dataset Snapshot".into());
+    }
+    if ![run_start_time_ms, run_end_time_ms]
+        .into_iter()
+        .all(|boundary| bars.iter().any(|bar| bar.open_time_ms == boundary))
+    {
+        return Err("Backtest Run window boundaries must match exact Closed Bar open times".into());
+    }
+    bars.retain(|bar| bar.open_time_ms >= run_start_time_ms && bar.open_time_ms <= run_end_time_ms);
+    if bars.is_empty() {
+        return Err("Backtest Run window contains no Closed Bars".into());
+    }
     let factor_packages = request
         .factor_instances
         .iter()
@@ -2018,13 +2198,97 @@ fn prepare_backtest(
             parameters: parameters.clone(),
         })
         .collect::<Vec<_>>();
+    let datasets = backtest_signal_datasets(state, &request.user_id, true)?;
+    let declared_signal_slots = strategy
+        .manifest
+        .feature_slots
+        .iter()
+        .filter(|slot| matches!(slot.source, FeatureSlotSource::Signal { .. }))
+        .collect::<Vec<_>>();
+    if request.signal_instances.len() != declared_signal_slots.len()
+        || request.signal_instances.iter().any(|binding| {
+            request
+                .signal_instances
+                .iter()
+                .filter(|candidate| candidate.slot == binding.slot)
+                .count()
+                != 1
+        })
+    {
+        return Err("Signal bindings must match declared Forecast Signal Slots exactly".into());
+    }
+    let selected_signals = declared_signal_slots
+        .iter()
+        .map(|slot| {
+            let binding = request
+                .signal_instances
+                .iter()
+                .find(|binding| binding.slot == slot.name)
+                .ok_or("A Forecast Signal Slot is not bound")?;
+            let dataset = datasets
+                .iter()
+                .find(|dataset| dataset.dataset_id == binding.dataset_id)
+                .ok_or("Forecast Signal Dataset is not available to this User")?;
+            if dataset.snapshot_id != snapshot.snapshot_id
+                || dataset.src != snapshot.src
+                || dataset.code != snapshot.code
+                || dataset.interval != snapshot.interval.as_str()
+            {
+                return Err(
+                    "Signal Dataset Snapshot, Instrument, Venue, and Bar Interval must match exactly"
+                        .into(),
+                );
+            }
+            let output_index = dataset
+                .outputs
+                .iter()
+                .position(|output| output.name == binding.signal_name)
+                .ok_or("Selected Forecast Signal was not found in the Dataset")?;
+            let FeatureSlotSource::Signal {
+                prediction_kind,
+                forecast_target,
+                value_scale,
+                horizon_bars,
+            } = &slot.source
+            else {
+                unreachable!()
+            };
+            let output = &dataset.outputs[output_index];
+            if output.prediction_kind != *prediction_kind
+                || output.forecast_target != *forecast_target
+                || output.value_scale != *value_scale
+                || output.horizon_bars != *horizon_bars
+            {
+                return Err("Selected Forecast Signal is not semantically compatible".into());
+            }
+            Ok((binding, dataset, output_index))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let signal_inputs = selected_signals
+        .iter()
+        .map(|(binding, dataset, output_index)| SignalPlanInput {
+            slot_name: &binding.slot,
+            dataset_id: &dataset.dataset_id,
+            signal_name: &binding.signal_name,
+            snapshot_id: &dataset.snapshot_id,
+            instrument_id: format!("{}:{}", dataset.src, dataset.code),
+            venue: &dataset.src,
+            bar_interval: &dataset.interval,
+            contract: dataset.outputs[*output_index].clone(),
+            producer_segments: dataset.producer_segments.clone(),
+            artifact_provenance: dataset.artifact_provenance.clone(),
+            evidence_state: &dataset.evidence_state,
+            component_lock: dataset.component_lock.clone(),
+        })
+        .collect::<Vec<_>>();
     let engine_identity = native_engine_identity().map_err(|error| error.to_string())?;
-    let plan = validate_and_freeze_feature_plan_with_factors_and_parameters(
+    let plan = validate_and_freeze_feature_plan_with_bindings_and_parameters(
         &strategy.manifest,
         &strategy.archive_sha256,
         &engine_identity,
         &factor_inputs,
         &frozen_strategy_parameters,
+        &signal_inputs,
     )
     .map_err(|error| format!("Feature Plan validation failed: {:?}", error.issues))?;
     let mut factor_instances = factor_packages
@@ -2054,12 +2318,26 @@ fn prepare_backtest(
             )
         }))
         .collect::<Vec<_>>();
+    let mut signal_instances = request.signal_instances.clone();
+    signal_instances.sort_by(|left, right| left.slot.cmp(&right.slot));
+    let dataset_lock = selected_signals
+        .iter()
+        .map(|(binding, dataset, _)| SignalDatasetLock {
+            slot: binding.slot.clone(),
+            dataset_id: dataset.dataset_id.clone(),
+            signal_name: binding.signal_name.clone(),
+            evidence_state: dataset.evidence_state.clone(),
+        })
+        .collect::<Vec<_>>();
     let provenance = BacktestRunProvenance {
         normalized_request: NormalizedBacktestRunRequest {
             snapshot_id: request.snapshot_id.clone(),
+            run_start_time_ms: Some(run_start_time_ms),
+            run_end_time_ms: Some(run_end_time_ms),
             strategy_archive_sha256: strategy.archive_sha256.clone(),
             strategy_parameters: frozen_strategy_parameters,
             factor_instances,
+            signal_instances,
             initial_quote_allocation: request.initial_quote_allocation,
             execution_profile: request.execution_profile.clone(),
             seed: request.seed,
@@ -2067,6 +2345,8 @@ fn prepare_backtest(
         feature_plan_json: String::from_utf8(plan.to_json()).map_err(string)?,
         feature_plan_hash: plan.plan_hash().into(),
         component_lock: component_lock.clone(),
+        dataset_lock,
+        architecture: plan.architecture(),
         indicator_engine_build_identity: IndicatorEngineBuildIdentity {
             engine_version: engine_identity.engine_version,
             ta_lib_version: engine_identity.ta_lib_version,
@@ -2082,10 +2362,10 @@ fn prepare_backtest(
     };
     validate_provenance(&provenance)?;
     let run_id = fingerprint(&request.user_id, &provenance)?;
-    let (snapshot, bars) = state.snapshot_for_user(&request.user_id, &request.snapshot_id)?;
     let gaps = snapshot
         .gaps
         .iter()
+        .filter(|gap| gap.end_time_ms > run_start_time_ms && gap.start_time_ms <= run_end_time_ms)
         .map(|gap| BarGap {
             start_time_ms: gap.start_time_ms,
             end_time_ms: gap.end_time_ms,
@@ -2097,6 +2377,26 @@ fn prepare_backtest(
         factor_packages: factor_packages
             .into_iter()
             .map(|(_, package)| package)
+            .collect(),
+        signals: selected_signals
+            .into_iter()
+            .map(|(binding, dataset, output_index)| PreparedSignal {
+                slot: binding.slot.clone(),
+                dataset_id: dataset.dataset_id.clone(),
+                signal_name: binding.signal_name.clone(),
+                rows: dataset
+                    .rows
+                    .iter()
+                    .map(|row| SignalRunRow {
+                        prediction_time_ms: row.prediction_time_ms,
+                        available_at_ms: row.available_at_ms,
+                        value: row
+                            .values
+                            .as_ref()
+                            .and_then(|values| values.get(output_index).copied()),
+                    })
+                    .collect(),
+            })
             .collect(),
         plan,
         provenance,
@@ -2919,6 +3219,48 @@ fn validate_provenance(provenance: &BacktestRunProvenance) -> Result<(), String>
         .collect::<Vec<_>>();
     plan_aliases.sort_unstable();
     request_aliases.sort_unstable();
+    let mut planned_signals = content
+        .get("slots")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("Feature Plan is missing ordered Slots")?
+        .iter()
+        .filter_map(|slot| {
+            let source = slot.get("source")?;
+            (source.get("kind")?.as_str()? == "signal").then(|| {
+                Some((
+                    slot.get("name")?.as_str()?.to_owned(),
+                    source.get("dataset_id")?.as_str()?.to_owned(),
+                    source.get("signal_name")?.as_str()?.to_owned(),
+                ))
+            })?
+        })
+        .collect::<Vec<_>>();
+    let mut requested_signals = provenance
+        .normalized_request
+        .signal_instances
+        .iter()
+        .map(|signal| {
+            (
+                signal.slot.clone(),
+                signal.dataset_id.clone(),
+                signal.signal_name.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut locked_signals = provenance
+        .dataset_lock
+        .iter()
+        .map(|signal| {
+            (
+                signal.slot.clone(),
+                signal.dataset_id.clone(),
+                signal.signal_name.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    planned_signals.sort();
+    requested_signals.sort();
+    locked_signals.sort();
     let plan_factor_parameters = frozen_plan
         .factors()
         .map(|factor| {
@@ -2949,6 +3291,13 @@ fn validate_provenance(provenance: &BacktestRunProvenance) -> Result<(), String>
                     )
             })
         || locked_hashes.iter().any(|hash| !is_sha256(hash))
+        || planned_signals != requested_signals
+        || requested_signals != locked_signals
+        || provenance
+            .dataset_lock
+            .iter()
+            .any(|signal| !is_sha256(&signal.dataset_id) || signal.evidence_state.is_empty())
+        || frozen_plan.architecture() != provenance.architecture
         || provenance.seed != provenance.normalized_request.seed
     {
         return Err("Backtest Run provenance has inconsistent Component Locks or bindings".into());
@@ -3301,6 +3650,9 @@ fn reset_all(database: &mut Connection, user_id: &str, root: &Path) -> Result<()
             .map_err(string)?;
         transaction.execute("DELETE FROM forecast_evaluation_content WHERE NOT EXISTS(SELECT 1 FROM forecast_evaluation_access a WHERE a.report_id = forecast_evaluation_content.report_id)", []).map_err(string)?;
         transaction
+            .execute("DELETE FROM backtest_runs WHERE user_id = ?1", [user_id])
+            .map_err(string)?;
+        transaction
             .execute(
                 "DELETE FROM signal_dataset_access WHERE user_id = ?1",
                 [user_id],
@@ -3312,9 +3664,6 @@ fn reset_all(database: &mut Connection, user_id: &str, root: &Path) -> Result<()
                 "DELETE FROM validation_protocols WHERE user_id = ?1",
                 [user_id],
             )
-            .map_err(string)?;
-        transaction
-            .execute("DELETE FROM backtest_runs WHERE user_id = ?1", [user_id])
             .map_err(string)?;
         transaction
             .execute("DELETE FROM component_access WHERE user_id = ?1", [user_id])
@@ -3454,6 +3803,77 @@ mod tests {
         let state = M3State::open(&root).unwrap();
         let watchlist = WatchlistDb::open(&root.join("adaq.db")).unwrap();
         (root, state, watchlist)
+    }
+
+    #[test]
+    fn compatible_signal_selection_requires_exact_market_and_semantic_identity() {
+        let strategy: ComponentManifest = serde_json::from_value(serde_json::json!({
+            "manifestSchemaVersion": "1.0.0",
+            "componentId": "00000000-0000-4000-8000-000000000001",
+            "version": "1.0.0",
+            "name": "Signal Strategy",
+            "kind": "strategy",
+            "sdkVersion": "0.1.0",
+            "abiVersion": "1.0.0",
+            "featureSlots": [{
+                "name": "forecast-up",
+                "source": {
+                    "kind": "signal",
+                    "predictionKind": {"kind": "probability"},
+                    "forecastTarget": {"kind": "builtin", "target": "future-close-up"},
+                    "valueScale": {"kind": "probability"},
+                    "horizonBars": 1
+                }
+            }]
+        }))
+        .unwrap();
+        let snapshot = MarketDataSnapshot {
+            snapshot_id: "snapshot".into(),
+            src: "okx".into(),
+            code: "BTC-USDT".into(),
+            interval: BarInterval::OneHour,
+            start_time_ms: 0,
+            end_time_ms: 3_600_000,
+            bar_count: 1,
+            gaps: vec![],
+            parquet_path: PathBuf::new(),
+        };
+        let dataset = crate::m8::BacktestSignalDataset {
+            dataset_id: "a".repeat(64),
+            snapshot_id: snapshot.snapshot_id.clone(),
+            src: snapshot.src.clone(),
+            code: snapshot.code.clone(),
+            interval: snapshot.interval.as_str().into(),
+            outputs: vec![ModelOutput {
+                name: "up".into(),
+                prediction_kind: adaq_component_tooling::PredictionKind::Probability,
+                forecast_target: adaq_component_tooling::ForecastTarget::Builtin {
+                    target: adaq_component_tooling::BuiltinForecastTarget::FutureCloseUp,
+                },
+                value_scale: adaq_component_tooling::ForecastValueScale::Probability,
+                horizon_bars: 1,
+            }],
+            producer_segments: vec![serde_json::json!({"segment": 1})],
+            artifact_provenance: serde_json::json!({"sha256": "artifact"}),
+            evidence_state: "unknown".into(),
+            component_lock: vec![],
+            rows: vec![],
+        };
+        let mut wrong_snapshot = dataset.clone();
+        wrong_snapshot.dataset_id = "b".repeat(64);
+        wrong_snapshot.snapshot_id = "other".into();
+        let mut wrong_horizon = dataset.clone();
+        wrong_horizon.dataset_id = "c".repeat(64);
+        wrong_horizon.outputs[0].horizon_bars = 2;
+
+        let candidates = compatible_signal_candidates(
+            &strategy,
+            &snapshot,
+            &[dataset, wrong_snapshot, wrong_horizon],
+        );
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].slot, "forecast-up");
+        assert_eq!(candidates[0].signal_name, "up");
     }
 
     #[test]
@@ -3921,7 +4341,10 @@ mod tests {
         let request = || BacktestRunRequest {
             user_id: "alice".into(),
             snapshot_id: snapshot.snapshot_id.clone(),
+            run_start_time_ms: None,
+            run_end_time_ms: None,
             factor_instances: vec![],
+            signal_instances: vec![],
             strategy_archive_sha256: strategy_entry.archive_sha256.clone(),
             strategy_parameters: HashMap::new(),
             initial_quote_allocation: 10_000.into(),
@@ -3948,6 +4371,19 @@ mod tests {
             rust_decimal::Decimal::from(10_000),
         );
         assert!(preview.provenance.feature_plan_json.contains("\"slots\""));
+        let mut subset = request();
+        subset.run_start_time_ms = Some(3_600_000);
+        subset.run_end_time_ms = Some(snapshot.end_time_ms);
+        let subset_preview = prepare_backtest(&subset, &state).unwrap();
+        assert_eq!(subset_preview.bars.len(), 2);
+        assert_ne!(subset_preview.run_id, preview.run_id);
+        subset.run_start_time_ms = Some(snapshot.start_time_ms - 1);
+        assert!(
+            prepare_backtest(&subset, &state)
+                .err()
+                .unwrap()
+                .contains("subset")
+        );
 
         let first = execute_backtest(request(), &state).unwrap();
         let second = execute_backtest(request(), &state).unwrap();
@@ -4070,11 +4506,14 @@ mod tests {
         let request = || BacktestRunRequest {
             user_id: "alice".into(),
             snapshot_id: snapshot.snapshot_id.clone(),
+            run_start_time_ms: None,
+            run_end_time_ms: None,
             factor_instances: vec![FactorInstanceRequest {
                 alias: "momentum".into(),
                 archive_sha256: factor.archive_sha256.clone(),
                 parameters: HashMap::new(),
             }],
+            signal_instances: vec![],
             strategy_archive_sha256: strategy.archive_sha256.clone(),
             strategy_parameters: HashMap::new(),
             initial_quote_allocation: 10_000.into(),
@@ -4868,7 +5307,10 @@ mod tests {
         let run = |snapshot_id: &str| BacktestRunRequest {
             user_id: "alice".into(),
             snapshot_id: snapshot_id.into(),
+            run_start_time_ms: None,
+            run_end_time_ms: None,
             factor_instances: vec![],
+            signal_instances: vec![],
             strategy_archive_sha256: "strategy".into(),
             strategy_parameters: HashMap::new(),
             initial_quote_allocation: 1.into(),

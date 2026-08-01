@@ -7,7 +7,15 @@
   "sdkVersion": "{{sdk_version}}",
   "abiVersion": "1.0.0",
   "featureSlots": [
-    {"name": "quote-volume", "source": {"kind": "market", "field": "quote-volume"}},
-    {"name": "close", "source": {"kind": "market", "field": "close"}}
+    {
+      "name": "forecast-probability",
+      "source": {
+        "kind": "signal",
+        "predictionKind": {"kind": "probability"},
+        "forecastTarget": {"kind": "builtin", "target": "future-close-up"},
+        "valueScale": {"kind": "probability"},
+        "horizonBars": 1
+      }
+    }
   ]
 }

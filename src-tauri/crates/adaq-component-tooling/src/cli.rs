@@ -11,7 +11,7 @@ use crate::{
     create_project, pack_component, verify_package,
 };
 
-const USAGE: &str = "usage:\n  adaq-component new <factor|strategy|model> <name>\n  adaq-component build\n  adaq-component verify <package.adaq> [--previous <manifest.json>]";
+const USAGE: &str = "usage:\n  adaq-component new <factor|strategy|model> <name> [--template composed]\n  adaq-component build\n  adaq-component verify <package.adaq> [--previous <manifest.json>]";
 
 pub fn run_cli(arguments: &[String], cwd: &Path) -> Result<(), String> {
     match arguments {
@@ -19,6 +19,22 @@ pub fn run_cli(arguments: &[String], cwd: &Path) -> Result<(), String> {
             let sdk_path = env::var_os("ADAQ_COMPONENT_SDK_PATH").map(PathBuf::from);
             let path = create_project(
                 ComponentTemplate::parse(kind)?,
+                name,
+                cwd,
+                sdk_path.as_deref(),
+            )?;
+            println!("created {}", path.display());
+            Ok(())
+        }
+        [command, kind, name, flag, template]
+            if command == "new"
+                && kind == "strategy"
+                && flag == "--template"
+                && template == "composed" =>
+        {
+            let sdk_path = env::var_os("ADAQ_COMPONENT_SDK_PATH").map(PathBuf::from);
+            let path = create_project(
+                ComponentTemplate::composed_strategy(),
                 name,
                 cwd,
                 sdk_path.as_deref(),
@@ -163,5 +179,40 @@ mod tests {
     #[test]
     fn rejects_unknown_commands() {
         assert_eq!(run_cli(&["pack".into()], Path::new(".")), Err(USAGE.into()));
+    }
+
+    #[test]
+    fn new_strategy_defaults_to_signal_and_accepts_composed_template() {
+        let root = tempfile::tempdir().unwrap();
+        run_cli(
+            &["new".into(), "strategy".into(), "signal".into()],
+            root.path(),
+        )
+        .unwrap();
+        run_cli(
+            &[
+                "new".into(),
+                "strategy".into(),
+                "composed".into(),
+                "--template".into(),
+                "composed".into(),
+            ],
+            root.path(),
+        )
+        .unwrap();
+        let read = |name: &str| {
+            serde_json::from_slice::<ComponentManifest>(
+                &fs::read(root.path().join(name).join("manifest.json")).unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            crate::strategy_architecture(&read("signal")),
+            Some(crate::StrategyArchitecture::SignalDriven)
+        );
+        assert_eq!(
+            crate::strategy_architecture(&read("composed")),
+            Some(crate::StrategyArchitecture::Composed)
+        );
     }
 }

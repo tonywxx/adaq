@@ -472,6 +472,7 @@ pub fn run() {
             m3::component_list,
             m3::component_page,
             m3::backtest_compatible_factors,
+            m3::backtest_compatible_signals,
             m3::component_delete,
             m3::snapshot_create,
             m3::snapshot_download,
