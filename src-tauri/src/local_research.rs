@@ -37,7 +37,7 @@ const RUN_HISTORY_PAGE_SIZE: usize = 10;
 const SNAPSHOT_PAGE_SIZE: usize = 10;
 const COMPONENT_PAGE_SIZE: usize = 10;
 
-pub struct M3State {
+pub struct LocalResearchState {
     pub(crate) root: PathBuf,
     snapshots: SnapshotStore,
     pub(crate) database: Mutex<Connection>,
@@ -113,7 +113,7 @@ pub struct LibraryComponent {
     locked_by_run_ids: Vec<String>,
 }
 
-impl M3State {
+impl LocalResearchState {
     pub fn open(app_data: &Path) -> Result<Self, String> {
         let root = app_data.join("m3");
         fs::create_dir_all(root.join("components")).map_err(string)?;
@@ -1816,7 +1816,7 @@ pub struct RecommendedContext {
 #[tauri::command]
 pub fn component_import(
     request: ComponentImportRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<LibraryComponent, String> {
     state.import_component(&request.user_id, &request.bytes)
 }
@@ -1827,7 +1827,8 @@ pub async fn component_list(
     app: tauri::AppHandle,
 ) -> Result<Vec<LibraryComponent>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<M3State>().list_components(&request.user_id)
+        app.state::<LocalResearchState>()
+            .list_components(&request.user_id)
     })
     .await
     .map_err(string)?
@@ -1839,7 +1840,7 @@ pub async fn component_page(
     app: tauri::AppHandle,
 ) -> Result<ComponentPage, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<M3State>()
+        app.state::<LocalResearchState>()
             .list_components_page(&request.user_id, request.page)
     })
     .await
@@ -1849,7 +1850,7 @@ pub async fn component_page(
 #[tauri::command]
 pub fn component_is_imported(
     request: ComponentArchiveRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<bool, String> {
     state.component_is_imported(&request.user_id, &request.archive_sha256)
 }
@@ -1857,7 +1858,7 @@ pub fn component_is_imported(
 #[tauri::command]
 pub fn backtest_compatible_factors(
     request: BacktestDependencyRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<BTreeMap<String, Vec<String>>, String> {
     state.compatible_factors(&request.user_id, &request.strategy_archive_sha256)
 }
@@ -1865,7 +1866,7 @@ pub fn backtest_compatible_factors(
 #[tauri::command]
 pub fn backtest_compatible_signals(
     request: BacktestSignalCompatibilityRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<Vec<BacktestSignalCandidate>, String> {
     let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
     if strategy.manifest.kind != ComponentKind::Strategy {
@@ -1946,7 +1947,7 @@ fn compatible_factor_hashes(
 #[tauri::command]
 pub fn component_delete(
     request: ComponentDeleteRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<(), String> {
     state.delete_component(&request.user_id, &request.archive_sha256)
 }
@@ -1955,7 +1956,7 @@ pub fn component_delete(
 pub async fn snapshot_create(
     request: SnapshotCreateRequest,
     client: tauri::State<'_, OkxClient>,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<MarketDataSnapshot, String> {
     validate_snapshot_request(
         &request.user_id,
@@ -1986,7 +1987,7 @@ pub async fn snapshot_download(
     request: SnapshotDownloadRequest,
     on_event: tauri::ipc::Channel<SnapshotDownloadEvent>,
     client: tauri::State<'_, OkxClient>,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<MarketDataSnapshot, String> {
     validate_snapshot_request(
         &request.user_id,
@@ -2051,7 +2052,7 @@ pub async fn snapshot_download(
 #[tauri::command]
 pub async fn snapshot_list(
     request: SnapshotListRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<SnapshotPage, String> {
     state.list_snapshots(&request)
 }
@@ -2062,7 +2063,7 @@ pub async fn snapshot_list_readable(
     app: tauri::AppHandle,
 ) -> Result<Vec<MarketDataSnapshot>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<M3State>()
+        app.state::<LocalResearchState>()
             .list_readable_snapshots(&request.user_id)
     })
     .await
@@ -2072,7 +2073,7 @@ pub async fn snapshot_list_readable(
 #[tauri::command]
 pub fn snapshot_cancel(
     request: TaskRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<(), String> {
     if let Some(cancelled) = state
         .downloads
@@ -2088,7 +2089,7 @@ pub fn snapshot_cancel(
 #[tauri::command]
 pub fn backtest_run(
     request: BacktestRunRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<BacktestRunView, String> {
     execute_backtest(request, &state)
 }
@@ -2096,7 +2097,7 @@ pub fn backtest_run(
 #[tauri::command]
 pub fn backtest_preflight(
     request: BacktestRunRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<BacktestPreflight, String> {
     let prepared = prepare_backtest(&request, &state)?;
     Ok(BacktestPreflight {
@@ -2114,7 +2115,7 @@ pub fn backtest_preflight(
 
 pub(crate) fn execute_backtest(
     request: BacktestRunRequest,
-    state: &M3State,
+    state: &LocalResearchState,
 ) -> Result<BacktestRunView, String> {
     let prepared = prepare_backtest(&request, state)?;
     if let Ok(existing) = state.load_run(&request.user_id, &prepared.run_id) {
@@ -2220,7 +2221,7 @@ pub(crate) fn execute_backtest(
 
 fn prepare_backtest(
     request: &BacktestRunRequest,
-    state: &M3State,
+    state: &LocalResearchState,
 ) -> Result<PreparedBacktest, String> {
     SpotSimulator::validate_execution_inputs(
         request.initial_quote_allocation,
@@ -2507,7 +2508,7 @@ fn prepare_backtest(
 #[tauri::command]
 pub async fn backtest_list(
     request: BacktestListRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<BacktestRunPage, String> {
     state.list_runs_page(
         &request.user_id,
@@ -2520,7 +2521,7 @@ pub async fn backtest_list(
 #[tauri::command]
 pub fn backtest_get(
     request: BacktestRunIdRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<BacktestRunView, String> {
     state
         .load_run(&request.user_id, &request.run_id)
@@ -2530,7 +2531,7 @@ pub fn backtest_get(
 #[tauri::command]
 pub fn backtest_chart_data(
     request: BacktestChartRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<BacktestRunView, String> {
     if request.start_time_ms >= request.end_time_ms || !(100..=10_000).contains(&request.max_points)
     {
@@ -2551,7 +2552,7 @@ pub fn backtest_chart_data(
 #[tauri::command]
 pub fn backtest_execution_data(
     request: BacktestExecutionRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<BacktestExecutionPage, String> {
     if !(1..=1_000).contains(&request.limit) {
         return Err("Backtest execution page is invalid".into());
@@ -2588,7 +2589,7 @@ fn execution_page(
 #[tauri::command]
 pub fn backtest_delete(
     request: BacktestRunIdRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<(), String> {
     state.delete_run(&request.user_id, &request.run_id)
 }
@@ -2596,7 +2597,7 @@ pub fn backtest_delete(
 #[tauri::command]
 pub fn local_data_summary(
     request: LocalDataRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<LocalDataSummary, String> {
     state.local_data_summary(&request.user_id)
 }
@@ -2604,7 +2605,7 @@ pub fn local_data_summary(
 #[tauri::command]
 pub fn local_data_reset(
     request: LocalDataResetRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<(), String> {
     state.reset_local_data(&request.user_id, request.kind)
 }
@@ -2612,7 +2613,7 @@ pub fn local_data_reset(
 #[tauri::command]
 pub fn validation_protocol_create(
     request: ValidationProtocolCreateRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<ValidationProtocol, String> {
     validate_protocol(&request, &state)?;
     let windows = request
@@ -2639,7 +2640,7 @@ pub fn validation_protocol_create(
 #[tauri::command]
 pub async fn validation_protocol_list(
     request: ComponentUserRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<Vec<ValidationProtocol>, String> {
     state.list_protocols(&request.user_id)
 }
@@ -2647,14 +2648,14 @@ pub async fn validation_protocol_list(
 #[tauri::command]
 pub fn validation_report_run(
     request: ValidationProtocolIdRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<ValidationReport, String> {
     run_validation_report(&request, &state)
 }
 
 fn run_validation_report(
     request: &ValidationProtocolIdRequest,
-    state: &M3State,
+    state: &LocalResearchState,
 ) -> Result<ValidationReport, String> {
     let protocol = state.load_protocol(&request.user_id, &request.protocol_id)?;
     if let Some(cross_market) = &protocol.cross_market {
@@ -2768,7 +2769,7 @@ fn validation_window_run_requests(
 fn run_cross_market_validation(
     protocol: &ValidationProtocol,
     cross_market: &CrossMarketValidationRequest,
-    state: &M3State,
+    state: &LocalResearchState,
 ) -> Result<ValidationReport, String> {
     let contexts = cross_market
         .contexts
@@ -2838,7 +2839,7 @@ fn run_cross_market_validation(
 #[tauri::command]
 pub async fn validation_report_list(
     request: ComponentUserRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<Vec<ValidationReport>, String> {
     state.list_reports(&request.user_id)
 }
@@ -2847,7 +2848,7 @@ pub async fn validation_report_list(
 pub fn validation_report_export(
     request: ValidationProtocolIdRequest,
     format: String,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<String, String> {
     let report = state
         .list_reports(&request.user_id)?
@@ -2863,7 +2864,7 @@ pub fn validation_report_export(
 
 fn validate_protocol(
     request: &ValidationProtocolCreateRequest,
-    state: &M3State,
+    state: &LocalResearchState,
 ) -> Result<(), String> {
     validate_user(&request.user_id)?;
     if request.run.user_id != request.user_id
@@ -2907,7 +2908,7 @@ fn validate_protocol(
 fn validate_run_configuration(
     user_id: &str,
     run: &BacktestRunRequest,
-    state: &M3State,
+    state: &LocalResearchState,
 ) -> Result<(), String> {
     if run.user_id != user_id {
         return Err("Validation Run configuration belongs to another User".into());
@@ -2921,7 +2922,7 @@ fn validate_run_configuration(
 
 fn validate_cross_market(
     request: &ValidationProtocolCreateRequest,
-    state: &M3State,
+    state: &LocalResearchState,
 ) -> Result<(), String> {
     let contexts = &request
         .cross_market
@@ -2966,7 +2967,7 @@ fn validate_cross_market(
 }
 
 fn split_snapshot(
-    state: &M3State,
+    state: &LocalResearchState,
     user_id: &str,
     window: &ValidationWindowRequest,
 ) -> Result<(MarketDataSnapshot, MarketDataSnapshot), String> {
@@ -3001,7 +3002,7 @@ fn split_snapshot(
 }
 
 fn walk_forward_windows(
-    state: &M3State,
+    state: &LocalResearchState,
     user_id: &str,
     request: &WalkForwardValidationRequest,
 ) -> Result<Vec<ValidationWindowRequest>, String> {
@@ -3910,7 +3911,7 @@ mod tests {
     };
     use zip::{ZipWriter, write::SimpleFileOptions};
 
-    fn local_data_state(name: &str) -> (PathBuf, M3State, WatchlistDb) {
+    fn local_data_state(name: &str) -> (PathBuf, LocalResearchState, WatchlistDb) {
         let root = std::env::temp_dir().join(format!(
             "adaq-{name}-{}-{}",
             std::process::id(),
@@ -3919,7 +3920,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let watchlist = WatchlistDb::open(&root.join("adaq.db")).unwrap();
         (root, state, watchlist)
     }
@@ -4028,7 +4029,7 @@ mod tests {
             .unwrap();
         drop(database);
 
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let database = state.database.lock().unwrap();
         let columns: (String, i64, i64) = database
             .query_row(
@@ -4141,7 +4142,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let database = state.database.lock().unwrap();
         for index in 0..12 {
             let archive_sha256 = format!("{index:064x}");
@@ -4188,7 +4189,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let database = state.database.lock().unwrap();
         for index in 0..12 {
             let json = serde_json::json!({
@@ -4306,7 +4307,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let archive_hash = "a".repeat(64);
         let path = root.join("legacy.adaq");
         fs::write(&path, legacy_package()).unwrap();
@@ -4369,7 +4370,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let (factor, wasm) = fixture("factor");
         let imported = state
             .import_component("alice", &pack_component(factor, &wasm).unwrap())
@@ -4408,7 +4409,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let (factor, wasm) = fixture("factor");
         let bytes = pack_component(factor.clone(), &wasm).unwrap();
         let factor_entry = state.import_component("alice", &bytes).unwrap();
@@ -4557,7 +4558,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let factor = state
             .import_component("alice", &public_example_package("factor-close-momentum-5"))
             .unwrap();
@@ -5300,7 +5301,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let series = |open_time_ms| adaq_data_core::BarSeries {
             src: "okx".into(),
             code: "BTC-USDT".into(),
@@ -5395,7 +5396,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let series = |code: &str, open_time_ms| adaq_data_core::BarSeries {
             src: "okx".into(),
             code: code.into(),

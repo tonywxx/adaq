@@ -1,4 +1,4 @@
-mod m3;
+mod local_research;
 mod m8;
 #[allow(dead_code)] // M2 is host-only until Backtest orchestration consumes it.
 mod run_engine;
@@ -22,7 +22,7 @@ use tauri::{
 };
 use watchlist::{InstrumentRef, WatchlistDb, WatchlistState};
 
-use m3::M3State;
+use local_research::LocalResearchState;
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
 const CHECK_FOR_UPDATES_EVENT: &str = "adaq-check-for-updates";
@@ -395,7 +395,7 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
             let database_path = database_path(&app_data_dir)?;
-            app.manage(M3State::open(&app_data_dir).map_err(std::io::Error::other)?);
+            app.manage(LocalResearchState::open(&app_data_dir).map_err(std::io::Error::other)?);
             app.manage(WatchlistDb::open(&database_path).map_err(std::io::Error::other)?);
             let handle = app.handle();
             let app_menu = SubmenuBuilder::new(handle, "adaq")
@@ -468,32 +468,32 @@ pub fn run() {
             market_unsubscribe_ticker,
             market_subscribe_bars,
             market_unsubscribe_bar,
-            m3::component_import,
-            m3::component_list,
-            m3::component_page,
-            m3::component_is_imported,
-            m3::backtest_compatible_factors,
-            m3::backtest_compatible_signals,
-            m3::component_delete,
-            m3::snapshot_create,
-            m3::snapshot_download,
-            m3::snapshot_list,
-            m3::snapshot_list_readable,
-            m3::snapshot_cancel,
-            m3::backtest_preflight,
-            m3::backtest_run,
-            m3::backtest_list,
-            m3::backtest_get,
-            m3::backtest_chart_data,
-            m3::backtest_execution_data,
-            m3::backtest_delete,
-            m3::local_data_summary,
-            m3::local_data_reset,
-            m3::validation_protocol_create,
-            m3::validation_protocol_list,
-            m3::validation_report_run,
-            m3::validation_report_list,
-            m3::validation_report_export,
+            local_research::component_import,
+            local_research::component_list,
+            local_research::component_page,
+            local_research::component_is_imported,
+            local_research::backtest_compatible_factors,
+            local_research::backtest_compatible_signals,
+            local_research::component_delete,
+            local_research::snapshot_create,
+            local_research::snapshot_download,
+            local_research::snapshot_list,
+            local_research::snapshot_list_readable,
+            local_research::snapshot_cancel,
+            local_research::backtest_preflight,
+            local_research::backtest_run,
+            local_research::backtest_list,
+            local_research::backtest_get,
+            local_research::backtest_chart_data,
+            local_research::backtest_execution_data,
+            local_research::backtest_delete,
+            local_research::local_data_summary,
+            local_research::local_data_reset,
+            local_research::validation_protocol_create,
+            local_research::validation_protocol_list,
+            local_research::validation_report_run,
+            local_research::validation_report_list,
+            local_research::validation_report_export,
             m8::dataset_generation_start,
             m8::dataset_generation_retry,
             m8::dataset_generation_list,

@@ -25,7 +25,7 @@ use tauri::Manager;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    m3::{M3State, validate_user},
+    local_research::{LocalResearchState, validate_user},
     run_engine::{FactorRunRequest, MaterializedFeatureRow, materialize_feature_segment},
 };
 
@@ -650,7 +650,7 @@ fn is_sha256(value: &str) -> bool {
 pub fn dataset_generation_start(
     request: DatasetGenerationRequest,
     app: tauri::AppHandle,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<DatasetGenerationAttempt, String> {
     start_generation(request, app, &state)
 }
@@ -658,7 +658,7 @@ pub fn dataset_generation_start(
 fn start_generation(
     request: DatasetGenerationRequest,
     app: tauri::AppHandle,
-    state: &M3State,
+    state: &LocalResearchState,
 ) -> Result<DatasetGenerationAttempt, String> {
     validate_user(&request.user_id)?;
     let database = state.database.lock().map_err(string)?;
@@ -676,7 +676,7 @@ fn start_generation(
         .insert(attempt_id.clone(), cancelled.clone());
     let task_id = attempt_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<M3State>();
+        let state = app.state::<LocalResearchState>();
         let started = state
             .database
             .lock()
@@ -732,7 +732,7 @@ pub fn dataset_generation_retry(
     attempt_id: String,
     user_id: String,
     app: tauri::AppHandle,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<DatasetGenerationAttempt, String> {
     validate_user(&user_id)?;
     let request_json = state
@@ -756,7 +756,7 @@ pub async fn dataset_generation_list(
 ) -> Result<Vec<DatasetGenerationAttempt>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         validate_user(&user_id)?;
-        let state = app.state::<M3State>();
+        let state = app.state::<LocalResearchState>();
         let database = state.database.lock().map_err(string)?;
         database.prepare("SELECT attempt_id, dataset_id, status, diagnostic_json, progress_completed, progress_total FROM dataset_generation_attempts WHERE user_id = ?1 ORDER BY created_at DESC")
             .map_err(string)?.query_map([user_id], |row| Ok(DatasetGenerationAttempt { attempt_id: row.get(0)?, dataset_id: row.get(1)?, status: row.get(2)?, diagnostic_evidence: row.get(3)?, progress_completed: row.get(4)?, progress_total: row.get(5)? }))
@@ -770,7 +770,7 @@ pub async fn dataset_generation_list(
 pub fn dataset_generation_cancel(
     attempt_id: String,
     user_id: String,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<(), String> {
     validate_user(&user_id)?;
     let database = state.database.lock().map_err(string)?;
@@ -839,7 +839,7 @@ fn mark_cancelled(
 #[tauri::command]
 pub fn signal_dataset_list(
     user_id: String,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<Vec<serde_json::Value>, String> {
     validate_user(&user_id)?;
     let database = state.database.lock().map_err(string)?;
@@ -856,7 +856,7 @@ pub fn signal_dataset_list(
 pub fn signal_dataset_get(
     dataset_id: String,
     user_id: String,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<serde_json::Value, String> {
     validate_user(&user_id)?;
     let database = state.database.lock().map_err(string)?;
@@ -875,13 +875,13 @@ pub fn signal_dataset_rows(
     dataset_id: String,
     user_id: String,
     page: usize,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<serde_json::Value, String> {
     signal_rows_page(&state, &user_id, &dataset_id, page)
 }
 
 fn signal_rows_page(
-    state: &M3State,
+    state: &LocalResearchState,
     user_id: &str,
     dataset_id: &str,
     page: usize,
@@ -906,7 +906,7 @@ fn signal_rows_page(
 pub fn signal_dataset_import(
     user_id: String,
     archive: Vec<u8>,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<serde_json::Value, String> {
     import_signal_archive(&state, &user_id, &archive)
 }
@@ -915,13 +915,13 @@ pub fn signal_dataset_import(
 pub fn signal_dataset_export(
     dataset_id: String,
     user_id: String,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<Vec<u8>, String> {
     export_signal_archive(&state, &user_id, &dataset_id)
 }
 
 fn export_signal_archive(
-    state: &M3State,
+    state: &LocalResearchState,
     user_id: &str,
     dataset_id: &str,
 ) -> Result<Vec<u8>, String> {
@@ -945,7 +945,7 @@ fn export_signal_archive(
 }
 
 fn import_signal_archive(
-    state: &M3State,
+    state: &LocalResearchState,
     user_id: &str,
     archive_bytes: &[u8],
 ) -> Result<serde_json::Value, String> {
@@ -1047,7 +1047,7 @@ fn import_signal_archive(
 }
 
 fn publish_dataset(
-    state: &M3State,
+    state: &LocalResearchState,
     user_id: &str,
     attempt_id: &str,
     cancelled: &AtomicBool,
@@ -1104,7 +1104,7 @@ fn publish_dataset(
     publication
 }
 
-fn record_failure(state: &M3State, attempt_id: &str, error: &str) -> Result<(), String> {
+fn record_failure(state: &LocalResearchState, attempt_id: &str, error: &str) -> Result<(), String> {
     let evidence = error.chars().take(8_192).collect::<String>();
     state
         .database
@@ -1120,7 +1120,7 @@ fn record_failure(state: &M3State, attempt_id: &str, error: &str) -> Result<(), 
 
 fn generate(
     request: &DatasetGenerationRequest,
-    state: &M3State,
+    state: &LocalResearchState,
     cancelled: &AtomicBool,
     attempt_id: &str,
 ) -> Result<PendingDataset, String> {
@@ -1933,7 +1933,7 @@ fn dataset_outputs(
 }
 
 pub(crate) fn backtest_signal_datasets(
-    state: &M3State,
+    state: &LocalResearchState,
     user_id: &str,
     include_rows: bool,
     dataset_ids: Option<&[String]>,
@@ -2235,7 +2235,7 @@ fn validate_prediction_scale(
 }
 
 fn evaluate_forecast(
-    state: &M3State,
+    state: &LocalResearchState,
     request: &ForecastEvaluationRequest,
 ) -> Result<ForecastEvaluationReport, String> {
     validate_user(&request.user_id)?;
@@ -2536,7 +2536,7 @@ fn evaluate_forecast(
 }
 
 fn save_forecast_evaluation(
-    state: &M3State,
+    state: &LocalResearchState,
     request: &ForecastEvaluationRequest,
 ) -> Result<ForecastEvaluationReport, String> {
     let report = evaluate_forecast(state, request)?;
@@ -2562,7 +2562,7 @@ fn save_forecast_evaluation(
 #[tauri::command]
 pub async fn forecast_evaluation_create(
     request: ForecastEvaluationRequest,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<ForecastEvaluationReport, String> {
     save_forecast_evaluation(&state, &request)
 }
@@ -2570,13 +2570,13 @@ pub async fn forecast_evaluation_create(
 #[tauri::command]
 pub async fn forecast_evaluation_list(
     user_id: String,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<Vec<ForecastEvaluationReport>, String> {
     list_forecast_evaluations(&state, &user_id)
 }
 
 fn list_forecast_evaluations(
-    state: &M3State,
+    state: &LocalResearchState,
     user_id: &str,
 ) -> Result<Vec<ForecastEvaluationReport>, String> {
     validate_user(&user_id)?;
@@ -2597,13 +2597,13 @@ pub fn forecast_evaluation_export(
     report_id: String,
     user_id: String,
     format: String,
-    state: tauri::State<'_, M3State>,
+    state: tauri::State<'_, LocalResearchState>,
 ) -> Result<String, String> {
     export_forecast_evaluation(&state, &user_id, &report_id, &format)
 }
 
 fn export_forecast_evaluation(
-    state: &M3State,
+    state: &LocalResearchState,
     user_id: &str,
     report_id: &str,
     format: &str,
@@ -2817,9 +2817,16 @@ mod tests {
         pack_component(manifest, &wasm).unwrap()
     }
 
-    fn setup(mode: &str, name: &str) -> (std::path::PathBuf, M3State, DatasetGenerationRequest) {
+    fn setup(
+        mode: &str,
+        name: &str,
+    ) -> (
+        std::path::PathBuf,
+        LocalResearchState,
+        DatasetGenerationRequest,
+    ) {
         let root = root(name);
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let package = model_package();
         let model_archive_sha256 = ComponentPackage::read(&package).unwrap().archive_sha256;
         state.import_component("alice", &package).unwrap();
@@ -2874,7 +2881,7 @@ mod tests {
         )
     }
 
-    fn running_attempt(state: &M3State, request: &DatasetGenerationRequest) -> String {
+    fn running_attempt(state: &LocalResearchState, request: &DatasetGenerationRequest) -> String {
         let database = state.database.lock().unwrap();
         let prepared = prepare_attempt(&database, request).unwrap();
         assert!(prepared.should_start);
@@ -3630,7 +3637,7 @@ mod tests {
                 .unwrap()
                 .as_nanos(),
         ));
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let request = DatasetGenerationRequest {
             user_id: "user".into(),
             snapshot_id: "missing".into(),
@@ -3885,7 +3892,7 @@ mod tests {
         let temporary_path = pending.temporary_path.clone();
         let final_path = pending.final_path.clone();
         state
-            .reset_local_data("alice", crate::m3::LocalDataResetKind::All)
+            .reset_local_data("alice", crate::local_research::LocalDataResetKind::All)
             .unwrap();
         assert!(cancelled.load(Ordering::Relaxed));
         publish_dataset(&state, "alice", &attempt_id, &cancelled, pending).unwrap();
@@ -4204,7 +4211,7 @@ mod tests {
     #[test]
     fn kronos_fixture_reaches_import_evaluation_and_dataset_first_backtest() {
         let root = root("kronos-external-path");
-        let state = M3State::open(&root).unwrap();
+        let state = LocalResearchState::open(&root).unwrap();
         let fixture_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../examples/external-models/kronos/fixtures");
         let fixture: serde_json::Value =
@@ -4314,14 +4321,14 @@ mod tests {
         let strategy = pack_component(strategy, &wasm).unwrap();
         let strategy_archive_sha256 = ComponentPackage::read(&strategy).unwrap().archive_sha256;
         state.import_component("alice", &strategy).unwrap();
-        let run = crate::m3::execute_backtest(
-            crate::m3::BacktestRunRequest {
+        let run = crate::local_research::execute_backtest(
+            crate::local_research::BacktestRunRequest {
                 user_id: "alice".into(),
                 snapshot_id: snapshot.snapshot_id,
                 run_start_time_ms: None,
                 run_end_time_ms: None,
                 factor_instances: vec![],
-                signal_instances: vec![crate::m3::SignalInstanceRequest {
+                signal_instances: vec![crate::local_research::SignalInstanceRequest {
                     slot: "close-change".into(),
                     dataset_id: dataset["datasetId"].as_str().unwrap().into(),
                     signal_name: "expected-close-return-1-bar".into(),
