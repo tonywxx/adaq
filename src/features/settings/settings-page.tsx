@@ -107,10 +107,10 @@ export function SettingsPage() {
 	}, [navigate, params.section, section]);
 
 	return (
-		<div className="mx-auto flex min-h-full w-full max-w-6xl bg-background">
+		<div className="flex min-h-full w-full bg-background">
 			<SettingsNavigation section={section} />
 			<main className="min-w-0 flex-1 px-6 py-8 lg:px-10">
-				<div className="mx-auto max-w-3xl">
+				<div className="mx-auto w-full max-w-3xl">
 					{section === "general" && <GeneralSettings />}
 					{section === "profile" && <ProfileSettings />}
 					{section === "appearance" && <AppearanceSettings />}
@@ -130,7 +130,7 @@ function SettingsNavigation({ section }: { section: Section }) {
 	};
 
 	return (
-		<aside className="sticky top-0 h-[calc(100svh-3rem)] w-60 shrink-0 border-r bg-muted/25 px-3 py-5">
+		<aside className="sticky top-0 h-[calc(100svh-3rem)] w-72 shrink-0 border-r bg-muted/25 px-3 py-5">
 			<Button className="mb-5 justify-start" variant="ghost" onClick={backToApp}>
 				<ArrowLeftIcon />
 				Back to App

@@ -44,7 +44,7 @@ body {
 	--sidebar-foreground: #111111;
 	--sidebar-primary: #aadb85;
 	--sidebar-primary-foreground: #111111;
-	--sidebar-accent: #eaf8df;
+	--sidebar-accent: #aadb85;
 	--sidebar-accent-foreground: #214017;
 	--sidebar-border: #d8d8d8;
 	--sidebar-ring: #89c764;
@@ -89,8 +89,8 @@ body {
 	--sidebar-foreground: #f5f5f5;
 	--sidebar-primary: #aadb85;
 	--sidebar-primary-foreground: #111111;
-	--sidebar-accent: #35472b;
-	--sidebar-accent-foreground: #dff4ce;
+	--sidebar-accent: #aadb85;
+	--sidebar-accent-foreground: #111111;
 	--sidebar-border: #3c3c3c;
 	--sidebar-ring: #89c764;
 	--context-card-border: #3c3c3c;
