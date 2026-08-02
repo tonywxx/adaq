@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 
 test("workspace list commands do not block the Tauri main thread", () => {
 	const source = readFileSync(
-		new URL("../src-tauri/src/m3.rs", import.meta.url),
+		new URL("../src-tauri/src/local_research.rs", import.meta.url),
 		"utf8",
 	);
 
@@ -26,7 +26,7 @@ test("Models list commands run blocking work off the Tauri main thread", () => {
 	const sources = [
 		[
 			readFileSync(
-				new URL("../src-tauri/src/m3.rs", import.meta.url),
+				new URL("../src-tauri/src/local_research.rs", import.meta.url),
 				"utf8",
 			),
 			["component_list", "snapshot_list_readable"],

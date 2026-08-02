@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 use tauri::Manager;
 
 use crate::{
+    dataset_generation::AttemptStore,
     m8::backtest_signal_datasets,
     run_engine::{
         FactorRunRequest, PositionMode, RunEngine, RunRequest, SignalRunRequest, SignalRunRow,
@@ -188,18 +189,6 @@ impl LocalResearchState {
                 report_json TEXT NOT NULL,
                 FOREIGN KEY(protocol_id) REFERENCES validation_protocols(protocol_id)
              );
-             CREATE TABLE IF NOT EXISTS dataset_generation_attempts (
-                attempt_id TEXT PRIMARY KEY,
-                request_hash TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                dataset_id TEXT,
-                status TEXT NOT NULL,
-                request_json TEXT NOT NULL,
-                diagnostic_json TEXT,
-                progress_completed INTEGER NOT NULL DEFAULT 0,
-                progress_total INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-             );
              CREATE TABLE IF NOT EXISTS signal_dataset_content (
                 dataset_id TEXT PRIMARY KEY,
                 metadata_json TEXT NOT NULL,
@@ -223,25 +212,7 @@ impl LocalResearchState {
              );",
             )
             .map_err(string)?;
-        for (column, definition) in [
-            ("request_hash", "TEXT NOT NULL DEFAULT ''"),
-            ("progress_completed", "INTEGER NOT NULL DEFAULT 0"),
-            ("progress_total", "INTEGER NOT NULL DEFAULT 0"),
-        ] {
-            let exists = database
-                .prepare("SELECT 1 FROM pragma_table_info('dataset_generation_attempts') WHERE name = ?1")
-                .map_err(string)?
-                .exists([column])
-                .map_err(string)?;
-            if !exists {
-                database
-                    .execute(
-                        &format!("ALTER TABLE dataset_generation_attempts ADD COLUMN {column} {definition}"),
-                        [],
-                    )
-                    .map_err(string)?;
-            }
-        }
+        AttemptStore::new(&database).initialize()?;
         let component_metadata_exists = database
             .prepare(
                 "SELECT 1 FROM pragma_table_info('component_content') WHERE name = 'metadata_json'",
@@ -257,10 +228,6 @@ impl LocalResearchState {
                 )
                 .map_err(string)?;
         }
-        database.execute(
-            "UPDATE dataset_generation_attempts SET status = 'failed', diagnostic_json = 'generation-interrupted: application stopped before completion' WHERE status IN ('pending', 'running')",
-            [],
-        ).map_err(string)?;
         Ok(Self {
             root,
             snapshots,
@@ -316,9 +283,7 @@ impl LocalResearchState {
             run_count: count("SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1")?,
             protocol_count: count("SELECT COUNT(*) FROM validation_protocols WHERE user_id = ?1")?,
             report_count: count("SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1")?,
-            generation_attempt_count: count(
-                "SELECT COUNT(*) FROM dataset_generation_attempts WHERE user_id = ?1",
-            )?,
+            generation_attempt_count: AttemptStore::new(&database).count_for_user(user_id)?,
             model_artifact_count: count(
                 "SELECT COUNT(*) FROM component_content c JOIN component_access a USING(archive_sha256) WHERE a.user_id = ?1 AND c.kind = 'model'",
             )?,
@@ -344,11 +309,7 @@ impl LocalResearchState {
         validate_user(user_id)?;
         let mut database = self.database.lock().map_err(string)?;
         if matches!(kind, LocalDataResetKind::All) {
-            let attempt_ids = strings(
-                &database,
-                "SELECT attempt_id FROM dataset_generation_attempts WHERE user_id = ?1 AND status IN ('pending', 'running')",
-                user_id,
-            )?;
+            let attempt_ids = AttemptStore::new(&database).active_ids_for_user(user_id)?;
             let attempts = self.generation_attempts.lock().map_err(string)?;
             for attempt_id in attempt_ids {
                 if let Some(cancelled) = attempts.get(&attempt_id) {
@@ -3756,12 +3717,7 @@ fn reset_all(database: &mut Connection, user_id: &str, root: &Path) -> Result<()
                 [user_id],
             )
             .map_err(string)?;
-        transaction
-            .execute(
-                "DELETE FROM dataset_generation_attempts WHERE user_id = ?1",
-                [user_id],
-            )
-            .map_err(string)?;
+        AttemptStore::new(&transaction).delete_for_user(user_id)?;
         transaction
             .execute(
                 "DELETE FROM forecast_evaluation_access WHERE user_id = ?1",
@@ -3997,54 +3953,6 @@ mod tests {
     }
 
     #[test]
-    fn upgrades_legacy_generation_attempt_columns() {
-        let root = std::env::temp_dir().join(format!(
-            "adaq-generation-attempt-migration-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let database = Connection::open(root.join("adaq.db")).unwrap();
-        database
-            .execute_batch(
-                "CREATE TABLE dataset_generation_attempts (
-                    attempt_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    dataset_id TEXT,
-                    status TEXT NOT NULL,
-                    request_json TEXT NOT NULL,
-                    diagnostic_json TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );",
-            )
-            .unwrap();
-        database
-            .execute(
-                "INSERT INTO dataset_generation_attempts(attempt_id, user_id, status, request_json) VALUES ('legacy', 'alice', 'completed', '{}')",
-                [],
-            )
-            .unwrap();
-        drop(database);
-
-        let state = LocalResearchState::open(&root).unwrap();
-        let database = state.database.lock().unwrap();
-        let columns: (String, i64, i64) = database
-            .query_row(
-                "SELECT request_hash, progress_completed, progress_total FROM dataset_generation_attempts WHERE attempt_id = 'legacy'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(columns, ("".into(), 0, 0));
-        drop(database);
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn reset_all_is_user_scoped_and_restores_watchlist_defaults() {
         let (root, state, watchlist) = local_data_state("reset-all");
         watchlist.get("alice").unwrap();
@@ -4078,7 +3986,9 @@ mod tests {
                 )
                 .unwrap();
         }
-        database.execute("INSERT INTO dataset_generation_attempts(attempt_id, request_hash, user_id, status, request_json) VALUES ('attempt', 'request', 'alice', 'failed', '{}')", []).unwrap();
+        AttemptStore::new(&database)
+            .prepare("request", "alice", "{}", || "attempt".into())
+            .unwrap();
         drop(database);
 
         state

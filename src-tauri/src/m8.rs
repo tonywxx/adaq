@@ -25,6 +25,9 @@ use tauri::Manager;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
+    dataset_generation::{
+        Attempt as DatasetGenerationAttempt, AttemptStore, Diagnostic, PreparedAttempt,
+    },
     local_research::{LocalResearchState, validate_user},
     run_engine::{FactorRunRequest, MaterializedFeatureRow, materialize_feature_segment},
 };
@@ -57,17 +60,6 @@ pub struct DatasetFactorInstance {
     pub archive_sha256: String,
     #[serde(default)]
     pub parameters: std::collections::HashMap<String, String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DatasetGenerationAttempt {
-    attempt_id: String,
-    dataset_id: Option<String>,
-    status: String,
-    diagnostic_evidence: Option<String>,
-    progress_completed: i64,
-    progress_total: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -156,11 +148,6 @@ struct PendingDataset {
     metadata: SignalDataset,
     temporary_path: std::path::PathBuf,
     final_path: std::path::PathBuf,
-}
-
-struct PreparedAttempt {
-    attempt: DatasetGenerationAttempt,
-    should_start: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -681,15 +668,7 @@ fn start_generation(
             .database
             .lock()
             .map_err(string)
-            .and_then(|database| {
-                database
-                    .execute(
-                        "UPDATE dataset_generation_attempts SET status = 'running' WHERE attempt_id = ?1 AND status = 'pending'",
-                        [&task_id],
-                    )
-                    .map(|changed| changed == 1)
-                    .map_err(string)
-            })
+            .and_then(|database| AttemptStore::new(&database).mark_running(&task_id))
             .unwrap_or(false);
         if !started {
             if let Ok(mut attempts) = state.generation_attempts.lock() {
@@ -700,10 +679,8 @@ fn start_generation(
         let result = generate(&request, &state, &cancelled, &task_id);
         let final_result = (|| -> Result<(), String> {
             if cancelled.load(Ordering::Relaxed) {
-                state.database.lock().map_err(string)?.execute(
-                    "UPDATE dataset_generation_attempts SET status = 'cancelled' WHERE attempt_id = ?1 AND status IN ('pending', 'running')",
-                    [&task_id],
-                ).map_err(string)?;
+                let database = state.database.lock().map_err(string)?;
+                AttemptStore::new(&database).mark_cancelled(&task_id, &request.user_id)?;
                 return Ok(());
             }
             match result {
@@ -717,7 +694,7 @@ fn start_generation(
             }
         })();
         if let Err(error) = final_result {
-            let _ = record_failure(&state, &task_id, &error);
+            let _ = record_publication_failure(&state, &task_id, &error);
             eprintln!("Dataset Generation Attempt {task_id} finalization failed: {error}");
         }
         if let Ok(mut attempts) = state.generation_attempts.lock() {
@@ -735,16 +712,9 @@ pub fn dataset_generation_retry(
     state: tauri::State<'_, LocalResearchState>,
 ) -> Result<DatasetGenerationAttempt, String> {
     validate_user(&user_id)?;
-    let request_json = state
-        .database
-        .lock()
-        .map_err(string)?
-        .query_row(
-            "SELECT request_json FROM dataset_generation_attempts WHERE attempt_id = ?1 AND user_id = ?2 AND status IN ('failed', 'cancelled')",
-            params![attempt_id, user_id],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(|_| "Dataset Generation Attempt cannot be retried".to_owned())?;
+    let database = state.database.lock().map_err(string)?;
+    let request_json = AttemptStore::new(&database).retry_request(&attempt_id, &user_id)?;
+    drop(database);
     let request = serde_json::from_str(&request_json).map_err(string)?;
     start_generation(request, app, &state)
 }
@@ -758,9 +728,7 @@ pub async fn dataset_generation_list(
         validate_user(&user_id)?;
         let state = app.state::<LocalResearchState>();
         let database = state.database.lock().map_err(string)?;
-        database.prepare("SELECT attempt_id, dataset_id, status, diagnostic_json, progress_completed, progress_total FROM dataset_generation_attempts WHERE user_id = ?1 ORDER BY created_at DESC")
-            .map_err(string)?.query_map([user_id], |row| Ok(DatasetGenerationAttempt { attempt_id: row.get(0)?, dataset_id: row.get(1)?, status: row.get(2)?, diagnostic_evidence: row.get(3)?, progress_completed: row.get(4)?, progress_total: row.get(5)? }))
-            .map_err(string)?.collect::<Result<Vec<_>, _>>().map_err(string)
+        AttemptStore::new(&database).list(&user_id)
     })
     .await
     .map_err(string)?
@@ -774,7 +742,7 @@ pub fn dataset_generation_cancel(
 ) -> Result<(), String> {
     validate_user(&user_id)?;
     let database = state.database.lock().map_err(string)?;
-    if !mark_cancelled(&database, &attempt_id, &user_id)? {
+    if !AttemptStore::new(&database).mark_cancelled(&attempt_id, &user_id)? {
         return Err("Dataset Generation Attempt cannot be cancelled".into());
     }
     drop(database);
@@ -794,46 +762,12 @@ fn prepare_attempt(
     request: &DatasetGenerationRequest,
 ) -> Result<PreparedAttempt, String> {
     let request_hash = hash(&canonical_request(request)?);
-    if let Some((attempt_id, dataset_id, status, diagnostic, completed, total)) = database.query_row(
-        "SELECT attempt_id, dataset_id, status, diagnostic_json, progress_completed, progress_total FROM dataset_generation_attempts WHERE request_hash = ?1 AND user_id = ?2 AND status IN ('pending', 'running', 'completed') ORDER BY created_at DESC LIMIT 1",
-        params![request_hash, request.user_id],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?)),
-    ).optional().map_err(string)? {
-        return Ok(PreparedAttempt {
-            attempt: DatasetGenerationAttempt { attempt_id, dataset_id, status, diagnostic_evidence: diagnostic, progress_completed: completed, progress_total: total },
-            should_start: false,
-        });
-    }
-    let attempt_id = new_attempt_id(&request_hash);
-    database.execute(
-        "INSERT INTO dataset_generation_attempts(attempt_id, request_hash, user_id, status, request_json) VALUES (?1, ?2, ?3, 'pending', ?4)",
-        params![attempt_id, request_hash, request.user_id, serde_json::to_string(request).map_err(string)?],
-    ).map_err(string)?;
-    Ok(PreparedAttempt {
-        attempt: DatasetGenerationAttempt {
-            attempt_id,
-            dataset_id: None,
-            status: "pending".into(),
-            diagnostic_evidence: None,
-            progress_completed: 0,
-            progress_total: 0,
-        },
-        should_start: true,
-    })
-}
-
-fn mark_cancelled(
-    database: &rusqlite::Connection,
-    attempt_id: &str,
-    user_id: &str,
-) -> Result<bool, String> {
-    database
-        .execute(
-            "UPDATE dataset_generation_attempts SET status = 'cancelled' WHERE attempt_id = ?1 AND user_id = ?2 AND status IN ('pending', 'running')",
-            params![attempt_id, user_id],
-        )
-        .map(|changed| changed == 1)
-        .map_err(string)
+    AttemptStore::new(database).prepare(
+        &request_hash,
+        &request.user_id,
+        &serde_json::to_string(request).map_err(string)?,
+        || new_attempt_id(&request_hash),
+    )
 }
 
 #[tauri::command]
@@ -1056,13 +990,8 @@ fn publish_dataset(
     let mut database = state.database.lock().map_err(string)?;
     let transaction = database.transaction().map_err(string)?;
     if cancelled.load(Ordering::Relaxed)
-        || transaction
-            .execute(
-                "UPDATE dataset_generation_attempts SET status = 'completed', dataset_id = ?2 WHERE attempt_id = ?1 AND status = 'running'",
-                params![attempt_id, pending.metadata.dataset_id],
-            )
-            .map_err(string)?
-            == 0
+        || !AttemptStore::new(&transaction)
+            .mark_completed(attempt_id, &pending.metadata.dataset_id)?
     {
         transaction.commit().map_err(string)?;
         let _ = fs::remove_file(&pending.temporary_path);
@@ -1105,17 +1034,17 @@ fn publish_dataset(
 }
 
 fn record_failure(state: &LocalResearchState, attempt_id: &str, error: &str) -> Result<(), String> {
-    let evidence = error.chars().take(8_192).collect::<String>();
-    state
-        .database
-        .lock()
-        .map_err(string)?
-        .execute(
-            "UPDATE dataset_generation_attempts SET status = 'failed', diagnostic_json = ?2 WHERE attempt_id = ?1 AND status = 'running'",
-            params![attempt_id, evidence],
-        )
-        .map_err(string)?;
-    Ok(())
+    let database = state.database.lock().map_err(string)?;
+    AttemptStore::new(&database).record_failure(attempt_id, Diagnostic::generation_failed(error))
+}
+
+fn record_publication_failure(
+    state: &LocalResearchState,
+    attempt_id: &str,
+    error: &str,
+) -> Result<(), String> {
+    let database = state.database.lock().map_err(string)?;
+    AttemptStore::new(&database).record_failure(attempt_id, Diagnostic::publication_failed(error))
 }
 
 fn generate(
@@ -1187,18 +1116,12 @@ fn generate(
         })
         .collect::<Result<Vec<_>, String>>()?;
     let (snapshot, bars) = state.snapshot_for_user(&request.user_id, &request.snapshot_id)?;
-    state
-        .database
-        .lock()
-        .map_err(string)?
-        .execute(
-            "UPDATE dataset_generation_attempts SET progress_total = ?2 WHERE attempt_id = ?1",
-            params![
-                attempt_id,
-                i64::try_from(bars.len()).map_err(|_| "Dataset row count is too large")?
-            ],
-        )
-        .map_err(string)?;
+    let database = state.database.lock().map_err(string)?;
+    AttemptStore::new(&database).set_progress_total(
+        attempt_id,
+        i64::try_from(bars.len()).map_err(|_| "Dataset row count is too large")?,
+    )?;
+    drop(database);
     let slots = plan
         .slot_names()
         .map(|name| model_abi::exports::adaq::model::api::FeatureSlot { name: name.into() })
@@ -1272,17 +1195,19 @@ fn generate(
                 output[*index] = forecast;
             }
             if let Some((index, _)) = chunk.last() {
-                state.database.lock().map_err(string)?.execute(
-                    "UPDATE dataset_generation_attempts SET progress_completed = ?2 WHERE attempt_id = ?1",
-                    params![attempt_id, i64::try_from(index + 1).map_err(|_| "Dataset progress is too large")?],
-                ).map_err(string)?;
+                let database = state.database.lock().map_err(string)?;
+                AttemptStore::new(&database).set_progress_completed(
+                    attempt_id,
+                    i64::try_from(index + 1).map_err(|_| "Dataset progress is too large")?,
+                )?;
             }
         }
         start = end;
-        state.database.lock().map_err(string)?.execute(
-            "UPDATE dataset_generation_attempts SET progress_completed = ?2 WHERE attempt_id = ?1",
-            params![attempt_id, i64::try_from(end).map_err(|_| "Dataset progress is too large")?],
-        ).map_err(string)?;
+        let database = state.database.lock().map_err(string)?;
+        AttemptStore::new(&database).set_progress_completed(
+            attempt_id,
+            i64::try_from(end).map_err(|_| "Dataset progress is too large")?,
+        )?;
     }
     let records = output
         .into_iter()
@@ -2885,12 +2810,11 @@ mod tests {
         let database = state.database.lock().unwrap();
         let prepared = prepare_attempt(&database, request).unwrap();
         assert!(prepared.should_start);
-        database
-            .execute(
-                "UPDATE dataset_generation_attempts SET status = 'running' WHERE attempt_id = ?1",
-                [&prepared.attempt.attempt_id],
-            )
-            .unwrap();
+        assert!(
+            AttemptStore::new(&database)
+                .mark_running(&prepared.attempt.attempt_id)
+                .unwrap()
+        );
         prepared.attempt.attempt_id
     }
     #[test]
@@ -3664,24 +3588,26 @@ mod tests {
         assert!(first.should_start);
         assert!(!duplicate.should_start);
         assert_eq!(first.attempt.attempt_id, duplicate.attempt.attempt_id);
-        database
-            .execute(
-                "UPDATE dataset_generation_attempts SET status = 'failed', diagnostic_json = 'retained' WHERE attempt_id = ?1",
-                [&first.attempt.attempt_id],
+        let store = AttemptStore::new(&database);
+        assert!(store.mark_running(&first.attempt.attempt_id).unwrap());
+        store
+            .record_failure(
+                &first.attempt.attempt_id,
+                Diagnostic::generation_failed("retained"),
             )
             .unwrap();
         let retry = prepare_attempt(&database, &request).unwrap();
         assert!(retry.should_start);
         assert_ne!(first.attempt.attempt_id, retry.attempt.attempt_id);
+        let original = store
+            .list(&request.user_id)
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.attempt_id == first.attempt.attempt_id)
+            .unwrap();
         assert_eq!(
-            database
-                .query_row(
-                    "SELECT diagnostic_json FROM dataset_generation_attempts WHERE attempt_id = ?1",
-                    [&first.attempt.attempt_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .unwrap(),
-            "retained",
+            original.diagnostic_evidence.as_deref(),
+            Some("generation-failed: retained")
         );
         drop(database);
         drop(state);
@@ -3693,18 +3619,14 @@ mod tests {
         let (root, state, request) = setup("valid", "cancel-scope");
         let attempt_id = running_attempt(&state, &request);
         let database = state.database.lock().unwrap();
-        assert!(!mark_cancelled(&database, &attempt_id, "bob").unwrap());
+        let store = AttemptStore::new(&database);
+        assert!(!store.mark_cancelled(&attempt_id, "bob").unwrap());
+        let attempt = store.list("alice").unwrap().pop().unwrap();
         assert_eq!(
-            database
-                .query_row(
-                    "SELECT status FROM dataset_generation_attempts WHERE attempt_id = ?1",
-                    [&attempt_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .unwrap(),
-            "running",
+            attempt.status,
+            crate::dataset_generation::AttemptStatus::Running
         );
-        assert!(mark_cancelled(&database, &attempt_id, "alice").unwrap());
+        assert!(store.mark_cancelled(&attempt_id, "alice").unwrap());
         drop(database);
         drop(state);
         fs::remove_dir_all(root).unwrap();
@@ -3842,14 +3764,17 @@ mod tests {
         )
         .unwrap();
         let database = state.database.lock().unwrap();
-        let (status, evidence): (String, String) = database
-            .query_row(
-                "SELECT status, diagnostic_json FROM dataset_generation_attempts WHERE attempt_id = ?1",
-                [&attempt_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+        let attempt = AttemptStore::new(&database).list(&request.user_id).unwrap();
+        let attempt = attempt
+            .into_iter()
+            .find(|attempt| attempt.attempt_id == attempt_id)
             .unwrap();
-        assert_eq!(status, "failed");
+        assert_eq!(
+            attempt.status,
+            crate::dataset_generation::AttemptStatus::Failed
+        );
+        let evidence = attempt.diagnostic_evidence.unwrap();
+        assert!(evidence.starts_with("generation-failed: invalid-model-forecast:"));
         assert_eq!(evidence.chars().count(), 8_192);
         assert_eq!(
             database
