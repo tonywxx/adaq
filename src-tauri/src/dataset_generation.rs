@@ -383,12 +383,44 @@ impl<'a> AttemptStore<'a> {
             .map_err(string)
     }
 
-    pub(crate) fn mark_cancelled(&self, attempt_id: &str, user_id: &str) -> Result<bool, String> {
+    pub(crate) fn request_cancellation(
+        &self,
+        attempt_id: &str,
+        user_id: &str,
+    ) -> Result<bool, String> {
+        if self
+            .database
+            .execute(
+                "UPDATE dataset_generation_attempts SET status = 'cancelled'
+             WHERE attempt_id = ?1 AND user_id = ?2 AND status = 'pending'",
+                params![attempt_id, user_id],
+            )
+            .map_err(string)?
+            == 1
+        {
+            return Ok(true);
+        }
+        self.database
+            .query_row(
+                "SELECT status FROM dataset_generation_attempts
+             WHERE attempt_id = ?1 AND user_id = ?2",
+                params![attempt_id, user_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map(|status| matches!(status.as_deref(), Some("running" | "cancelled")))
+            .map_err(string)
+    }
+
+    pub(crate) fn mark_cancelled_after_exit(
+        &self,
+        attempt_id: &str,
+        user_id: &str,
+    ) -> Result<bool, String> {
         self.database
             .execute(
                 "UPDATE dataset_generation_attempts SET status = 'cancelled'
-             WHERE attempt_id = ?1 AND user_id = ?2
-               AND status IN ('pending', 'running')",
+             WHERE attempt_id = ?1 AND user_id = ?2 AND status = 'running'",
                 params![attempt_id, user_id],
             )
             .map(|changed| changed == 1)

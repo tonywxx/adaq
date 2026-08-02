@@ -709,9 +709,17 @@ pub fn dataset_generation_cancel(
     user_id: String,
     state: tauri::State<'_, LocalResearchState>,
 ) -> Result<(), String> {
-    validate_user(&user_id)?;
+    cancel_generation_attempt(&attempt_id, &user_id, &state)
+}
+
+fn cancel_generation_attempt(
+    attempt_id: &str,
+    user_id: &str,
+    state: &LocalResearchState,
+) -> Result<(), String> {
+    validate_user(user_id)?;
     let database = state.database.lock().map_err(string)?;
-    if !AttemptStore::new(&database).mark_cancelled(&attempt_id, &user_id)? {
+    if !AttemptStore::new(&database).request_cancellation(attempt_id, user_id)? {
         return Err("Dataset Generation Attempt cannot be cancelled".into());
     }
     drop(database);
@@ -719,7 +727,7 @@ pub fn dataset_generation_cancel(
         .generation_attempts
         .lock()
         .map_err(string)?
-        .get(&attempt_id)
+        .get(attempt_id)
     {
         cancelled.store(true, Ordering::Relaxed);
     }
@@ -949,22 +957,25 @@ fn import_signal_archive(
     serde_json::to_value(metadata).map_err(string)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PublicationResult {
+    Cancelled,
+    Published,
+}
+
 fn publish_dataset(
     state: &LocalResearchState,
     user_id: &str,
     attempt_id: &str,
     cancelled: &AtomicBool,
     pending: PendingDataset,
-) -> Result<(), String> {
+) -> Result<PublicationResult, String> {
     let mut database = state.database.lock().map_err(string)?;
     let transaction = database.transaction().map_err(string)?;
-    if cancelled.load(Ordering::Relaxed)
-        || !AttemptStore::new(&transaction)
-            .mark_completed(attempt_id, &pending.metadata.dataset_id)?
-    {
+    if cancelled.load(Ordering::Relaxed) {
         transaction.commit().map_err(string)?;
         let _ = fs::remove_file(&pending.temporary_path);
-        return Ok(());
+        return Ok(PublicationResult::Cancelled);
     }
 
     let metadata_json = serde_json::to_string(&pending.metadata).map_err(string)?;
@@ -991,6 +1002,11 @@ fn publish_dataset(
                 params![user_id, pending.metadata.dataset_id],
             )
             .map_err(string)?;
+        if !AttemptStore::new(&transaction)
+            .mark_completed(attempt_id, &pending.metadata.dataset_id)?
+        {
+            return Err("Dataset Generation Attempt cannot be published".into());
+        }
         transaction.commit().map_err(string)
     })();
     if publication.is_err() {
@@ -999,7 +1015,7 @@ fn publish_dataset(
             let _ = fs::remove_file(&pending.final_path);
         }
     }
-    publication
+    publication.map(|()| PublicationResult::Published)
 }
 
 fn record_failure(state: &LocalResearchState, attempt_id: &str, error: &str) -> Result<(), String> {
@@ -1111,15 +1127,77 @@ mod generation_runner {
         cancelled: &AtomicBool,
         attempt_id: &str,
     ) -> Result<(), String> {
-        let result = generate(request, state, cancelled, attempt_id);
-        if cancelled.load(Ordering::Relaxed) {
-            let database = state.database.lock().map_err(string)?;
-            AttemptStore::new(&database).mark_cancelled(attempt_id, &request.user_id)?;
-            return Ok(());
+        match generate(request, state, cancelled, attempt_id) {
+            Ok(dataset) => {
+                match publish_dataset(state, &request.user_id, attempt_id, cancelled, dataset) {
+                    Ok(PublicationResult::Cancelled) => {
+                        let database = state.database.lock().map_err(string)?;
+                        AttemptStore::new(&database)
+                            .mark_cancelled_after_exit(attempt_id, &request.user_id)?;
+                        Ok(())
+                    }
+                    Ok(PublicationResult::Published) => Ok(()),
+                    Err(error) => record_publication_failure(state, attempt_id, &error),
+                }
+            }
+            Err(error) => {
+                if cancelled.load(Ordering::Relaxed) {
+                    let database = state.database.lock().map_err(string)?;
+                    AttemptStore::new(&database)
+                        .mark_cancelled_after_exit(attempt_id, &request.user_id)?;
+                    Ok(())
+                } else {
+                    record_failure(state, attempt_id, &error)
+                }
+            }
         }
-        match result {
-            Ok(dataset) => publish_dataset(state, &request.user_id, attempt_id, cancelled, dataset),
-            Err(error) => record_failure(state, attempt_id, &error),
+    }
+
+    #[cfg(test)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(super) enum LifecycleCheckpoint {
+        AfterGeneration,
+        BeforePublication,
+        AfterPublicationCutover,
+    }
+
+    #[cfg(test)]
+    pub(super) fn run_attempt_with_lifecycle_checkpoint(
+        request: &DatasetGenerationRequest,
+        state: &LocalResearchState,
+        cancelled: &AtomicBool,
+        attempt_id: &str,
+        mut checkpoint: impl FnMut(LifecycleCheckpoint),
+    ) -> Result<(), String> {
+        match generate(request, state, cancelled, attempt_id) {
+            Ok(dataset) => {
+                checkpoint(LifecycleCheckpoint::AfterGeneration);
+                checkpoint(LifecycleCheckpoint::BeforePublication);
+                match publish_dataset(state, &request.user_id, attempt_id, cancelled, dataset) {
+                    Ok(PublicationResult::Cancelled) => {
+                        let database = state.database.lock().map_err(string)?;
+                        AttemptStore::new(&database)
+                            .mark_cancelled_after_exit(attempt_id, &request.user_id)?;
+                        Ok(())
+                    }
+                    Ok(PublicationResult::Published) => {
+                        checkpoint(LifecycleCheckpoint::AfterPublicationCutover);
+                        Ok(())
+                    }
+                    Err(error) => record_publication_failure(state, attempt_id, &error),
+                }
+            }
+            Err(error) => {
+                checkpoint(LifecycleCheckpoint::AfterGeneration);
+                if cancelled.load(Ordering::Relaxed) {
+                    let database = state.database.lock().map_err(string)?;
+                    AttemptStore::new(&database)
+                        .mark_cancelled_after_exit(attempt_id, &request.user_id)?;
+                    Ok(())
+                } else {
+                    record_failure(state, attempt_id, &error)
+                }
+            }
         }
     }
 
@@ -3697,13 +3775,207 @@ mod tests {
         let attempt_id = running_attempt(&state, &request);
         let database = state.database.lock().unwrap();
         let attempts = AttemptStore::new(&database);
-        assert!(!attempts.mark_cancelled(&attempt_id, "bob").unwrap());
+        assert!(!attempts.request_cancellation(&attempt_id, "bob").unwrap());
         let attempts_for_user = attempts.list("alice").unwrap();
         assert_eq!(attempts_for_user.len(), 1);
         assert_eq!(attempts_for_user[0].attempt_id, attempt_id);
         assert_eq!(attempts_for_user[0].status, AttemptStatus::Running);
-        assert!(attempts.mark_cancelled(&attempt_id, "alice").unwrap());
+        assert!(attempts.request_cancellation(&attempt_id, "alice").unwrap());
+        assert!(attempts.request_cancellation(&attempt_id, "alice").unwrap());
+        assert_eq!(
+            attempts.list("alice").unwrap()[0].status,
+            AttemptStatus::Running
+        );
         drop(database);
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_cancellation_is_immediate_and_prevents_starting() {
+        let (root, state, request) = setup("valid", "cancel-pending");
+        let started = generation_runner::start(&request, &state).unwrap();
+        let cancelled = started.cancelled.unwrap();
+        let attempt_id = started.attempt.attempt_id;
+        assert!(
+            AttemptStore::new(&state.database.lock().unwrap())
+                .request_cancellation(&attempt_id, "alice")
+                .unwrap()
+        );
+        generation_runner::run_started(&request, &state, &cancelled, &attempt_id).unwrap();
+        let attempt = AttemptStore::new(&state.database.lock().unwrap())
+            .list("alice")
+            .unwrap()
+            .remove(0);
+        assert_eq!(attempt.status, AttemptStatus::Cancelled);
+        assert!(attempt.dataset_id.is_none());
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_during_generation_stays_running_until_the_task_exits() {
+        let (root, state, request) = setup("valid", "cancel-running");
+        let attempt_id = running_attempt(&state, &request);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .generation_attempts
+            .lock()
+            .unwrap()
+            .insert(attempt_id.clone(), cancelled.clone());
+        {
+            cancel_generation_attempt(&attempt_id, "alice", &state).unwrap();
+            let database = state.database.lock().unwrap();
+            assert_eq!(
+                AttemptStore::new(&database).list("alice").unwrap()[0].status,
+                AttemptStatus::Running
+            );
+        }
+        generation_runner::run_attempt(&request, &state, &cancelled, &attempt_id).unwrap();
+        let attempt = AttemptStore::new(&state.database.lock().unwrap())
+            .list("alice")
+            .unwrap()
+            .remove(0);
+        assert_eq!(attempt.status, AttemptStatus::Cancelled);
+        assert!(attempt.dataset_id.is_none());
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_observed_after_generation_removes_temporary_output() {
+        let (root, state, request) = setup("valid", "cancel-after-generation");
+        let attempt_id = running_attempt(&state, &request);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .generation_attempts
+            .lock()
+            .unwrap()
+            .insert(attempt_id.clone(), cancelled.clone());
+        generation_runner::run_attempt_with_lifecycle_checkpoint(
+            &request,
+            &state,
+            &cancelled,
+            &attempt_id,
+            |checkpoint| {
+                if checkpoint == generation_runner::LifecycleCheckpoint::AfterGeneration {
+                    cancel_generation_attempt(&attempt_id, "alice", &state).unwrap();
+                }
+            },
+        )
+        .unwrap();
+        let attempt = AttemptStore::new(&state.database.lock().unwrap())
+            .list("alice")
+            .unwrap()
+            .remove(0);
+        assert_eq!(attempt.status, AttemptStatus::Cancelled);
+        assert!(attempt.dataset_id.is_none());
+        assert!(
+            fs::read_dir(state.root.join("signal-datasets"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_before_publication_cleans_temporary_output() {
+        let (root, state, request) = setup("valid", "cancel-before-publication");
+        let attempt_id = running_attempt(&state, &request);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .generation_attempts
+            .lock()
+            .unwrap()
+            .insert(attempt_id.clone(), cancelled.clone());
+        generation_runner::run_attempt_with_lifecycle_checkpoint(
+            &request,
+            &state,
+            &cancelled,
+            &attempt_id,
+            |checkpoint| {
+                if checkpoint == generation_runner::LifecycleCheckpoint::BeforePublication {
+                    cancel_generation_attempt(&attempt_id, "alice", &state).unwrap();
+                }
+            },
+        )
+        .unwrap();
+        let attempt = AttemptStore::new(&state.database.lock().unwrap())
+            .list("alice")
+            .unwrap()
+            .remove(0);
+        assert_eq!(attempt.status, AttemptStatus::Cancelled);
+        assert!(attempt.dataset_id.is_none());
+        assert!(
+            fs::read_dir(state.root.join("signal-datasets"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publication_cutover_wins_over_a_late_cancellation() {
+        let (root, state, request) = setup("valid", "publication-cutover");
+        let attempt_id = running_attempt(&state, &request);
+        let cancelled = AtomicBool::new(false);
+        let mut late_cancellation = None;
+        generation_runner::run_attempt_with_lifecycle_checkpoint(
+            &request,
+            &state,
+            &cancelled,
+            &attempt_id,
+            |checkpoint| {
+                if checkpoint == generation_runner::LifecycleCheckpoint::AfterPublicationCutover {
+                    late_cancellation =
+                        Some(cancel_generation_attempt(&attempt_id, "alice", &state).unwrap_err());
+                }
+            },
+        )
+        .unwrap();
+        let attempt = AttemptStore::new(&state.database.lock().unwrap())
+            .list("alice")
+            .unwrap()
+            .remove(0);
+        assert_eq!(attempt.status, AttemptStatus::Completed);
+        assert!(attempt.dataset_id.is_some());
+        assert_eq!(
+            late_cancellation.as_deref(),
+            Some("Dataset Generation Attempt cannot be cancelled")
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publication_failure_retains_no_dataset_and_records_its_cause() {
+        let (root, state, request) = setup("valid", "publication-failure");
+        let attempt_id = running_attempt(&state, &request);
+        state.database.lock().unwrap().execute_batch("CREATE TRIGGER reject_signal_dataset_access BEFORE INSERT ON signal_dataset_access BEGIN SELECT RAISE(ABORT, 'forced publication failure'); END;").unwrap();
+        generation_runner::run_attempt(&request, &state, &AtomicBool::new(false), &attempt_id)
+            .unwrap();
+        let attempt = AttemptStore::new(&state.database.lock().unwrap())
+            .list("alice")
+            .unwrap()
+            .remove(0);
+        assert_eq!(attempt.status, AttemptStatus::Failed);
+        assert!(attempt.dataset_id.is_none());
+        assert!(
+            attempt
+                .diagnostic_evidence
+                .unwrap()
+                .contains("publication-failed: forced publication failure")
+        );
+        assert!(
+            fs::read_dir(state.root.join("signal-datasets"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
         drop(state);
         fs::remove_dir_all(root).unwrap();
     }
