@@ -660,9 +660,19 @@ fn start_generation(
     app: tauri::AppHandle,
     state: &LocalResearchState,
 ) -> Result<DatasetGenerationAttempt, String> {
-    let started = dataset_generation::start(&request, state)?;
-    let attempt = started.attempt;
-    let Some(cancelled) = started.cancelled else {
+    start_started_generation(dataset_generation::start(&request, state)?, app)
+}
+
+fn start_started_generation(
+    started: dataset_generation::StartedGeneration,
+    app: tauri::AppHandle,
+) -> Result<DatasetGenerationAttempt, String> {
+    let dataset_generation::StartedGeneration {
+        attempt,
+        cancelled,
+        request,
+    } = started;
+    let Some(cancelled) = cancelled else {
         return Ok(attempt);
     };
     let task_id = attempt.attempt_id.clone();
@@ -687,19 +697,8 @@ pub fn dataset_generation_retry(
     app: tauri::AppHandle,
     state: tauri::State<'_, LocalResearchState>,
 ) -> Result<DatasetGenerationAttempt, String> {
-    validate_user(&user_id)?;
-    let request_json = state
-        .database
-        .lock()
-        .map_err(string)?
-        .query_row(
-            "SELECT request_json FROM dataset_generation_attempts WHERE attempt_id = ?1 AND user_id = ?2 AND status IN ('failed', 'cancelled')",
-            params![attempt_id, user_id],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(|_| "Dataset Generation Attempt cannot be retried".to_owned())?;
-    let request = serde_json::from_str(&request_json).map_err(string)?;
-    start_generation(request, app, &state)
+    let started = dataset_generation::retry(&attempt_id, &user_id, &state)?;
+    start_started_generation(started, app)
 }
 
 #[tauri::command]
@@ -765,6 +764,43 @@ fn prepare_attempt(
     Ok(PreparedAttempt {
         attempt: DatasetGenerationAttempt {
             attempt_id,
+            dataset_id: None,
+            status: "pending".into(),
+            diagnostic_evidence: None,
+            progress_completed: 0,
+            progress_total: 0,
+        },
+        should_start: true,
+    })
+}
+
+fn prepare_retry_attempt(
+    database: &rusqlite::Connection,
+    attempt_id: &str,
+    user_id: &str,
+) -> Result<PreparedAttempt, String> {
+    let request_json: String = database
+        .query_row(
+            "SELECT request_json FROM dataset_generation_attempts WHERE attempt_id = ?1 AND user_id = ?2 AND status IN ('failed', 'cancelled')",
+            params![attempt_id, user_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Dataset Generation Attempt cannot be retried".to_owned())?;
+    let request: DatasetGenerationRequest = serde_json::from_str(&request_json).map_err(string)?;
+    if request.user_id != user_id {
+        return Err("Dataset Generation Attempt cannot be retried".into());
+    }
+    let request_hash = hash(&canonical_request(&request)?);
+    let retry_attempt_id = new_attempt_id(&request_hash);
+    database
+        .execute(
+            "INSERT INTO dataset_generation_attempts(attempt_id, request_hash, user_id, status, request_json) VALUES (?1, ?2, ?3, 'pending', ?4)",
+            params![retry_attempt_id, request_hash, user_id, request_json],
+        )
+        .map_err(string)?;
+    Ok(PreparedAttempt {
+        attempt: DatasetGenerationAttempt {
+            attempt_id: retry_attempt_id,
             dataset_id: None,
             status: "pending".into(),
             diagnostic_evidence: None,
@@ -1077,6 +1113,7 @@ mod dataset_generation {
     pub(super) struct StartedGeneration {
         pub(super) attempt: DatasetGenerationAttempt,
         pub(super) cancelled: Option<Arc<AtomicBool>>,
+        pub(super) request: DatasetGenerationRequest,
     }
 
     pub(super) fn start(
@@ -1090,6 +1127,7 @@ mod dataset_generation {
             return Ok(StartedGeneration {
                 attempt: prepared.attempt,
                 cancelled: None,
+                request: request.clone(),
             });
         }
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -1101,6 +1139,36 @@ mod dataset_generation {
         Ok(StartedGeneration {
             attempt: prepared.attempt,
             cancelled: Some(cancelled),
+            request: request.clone(),
+        })
+    }
+
+    pub(super) fn retry(
+        attempt_id: &str,
+        user_id: &str,
+        state: &LocalResearchState,
+    ) -> Result<StartedGeneration, String> {
+        validate_user(user_id)?;
+        let database = state.database.lock().map_err(string)?;
+        let prepared = prepare_retry_attempt(&database, attempt_id, user_id)?;
+        let request_json: String = database
+            .query_row(
+                "SELECT request_json FROM dataset_generation_attempts WHERE attempt_id = ?1",
+                [&prepared.attempt.attempt_id],
+                |row| row.get(0),
+            )
+            .map_err(string)?;
+        let request = serde_json::from_str(&request_json).map_err(string)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .generation_attempts
+            .lock()
+            .map_err(string)?
+            .insert(prepared.attempt.attempt_id.clone(), cancelled.clone());
+        Ok(StartedGeneration {
+            attempt: prepared.attempt,
+            cancelled: Some(cancelled),
+            request,
         })
     }
 
@@ -1114,7 +1182,11 @@ mod dataset_generation {
             "UPDATE dataset_generation_attempts SET status = 'running' WHERE attempt_id = ?1 AND status = 'pending'", [attempt_id],
         ).map_err(string)? == 1;
         if started {
-            run_attempt(request, state, cancelled, attempt_id)
+            if reuse_completed_dataset(state, attempt_id)? {
+                Ok(())
+            } else {
+                run_attempt(request, state, cancelled, attempt_id)
+            }
         } else {
             Ok(())
         }
@@ -1453,6 +1525,47 @@ mod dataset_generation {
             final_path,
         })
     }
+}
+
+fn reuse_completed_dataset(state: &LocalResearchState, attempt_id: &str) -> Result<bool, String> {
+    let database = state.database.lock().map_err(string)?;
+    let reused = database
+        .query_row(
+            "SELECT prior.dataset_id, prior.progress_completed, prior.progress_total
+             FROM dataset_generation_attempts current
+             JOIN dataset_generation_attempts prior
+               ON prior.request_hash = current.request_hash
+              AND prior.user_id = current.user_id
+              AND prior.status = 'completed'
+              AND prior.dataset_id IS NOT NULL
+              AND prior.attempt_id != current.attempt_id
+             JOIN signal_dataset_access access
+               ON access.dataset_id = prior.dataset_id AND access.user_id = current.user_id
+             WHERE current.attempt_id = ?1 AND current.status = 'running'
+             ORDER BY prior.created_at DESC LIMIT 1",
+            [attempt_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(string)?;
+    let Some((dataset_id, progress_completed, progress_total)) = reused else {
+        return Ok(false);
+    };
+    database
+        .execute(
+            "UPDATE dataset_generation_attempts
+             SET status = 'completed', dataset_id = ?2, progress_completed = ?3, progress_total = ?4
+             WHERE attempt_id = ?1 AND status = 'running'",
+            params![attempt_id, dataset_id, progress_completed, progress_total],
+        )
+        .map_err(string)?;
+    Ok(true)
 }
 
 fn close_time(interval: adaq_data_core::BarInterval, open: i64) -> Result<i64, String> {
@@ -2787,22 +2900,24 @@ fn dataset_identity(
 }
 
 fn canonical_request(request: &DatasetGenerationRequest) -> Result<Vec<u8>, String> {
+    let mut factors = request
+        .factor_instances
+        .iter()
+        .map(|factor| {
+            (
+                &factor.alias,
+                &factor.archive_sha256,
+                factor.parameters.iter().collect::<BTreeMap<_, _>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    factors.sort();
     serde_json::to_vec(&(
         &request.user_id,
         &request.snapshot_id,
         &request.model_archive_sha256,
         request.model_parameters.iter().collect::<BTreeMap<_, _>>(),
-        request
-            .factor_instances
-            .iter()
-            .map(|factor| {
-                (
-                    &factor.alias,
-                    &factor.archive_sha256,
-                    factor.parameters.iter().collect::<BTreeMap<_, _>>(),
-                )
-            })
-            .collect::<Vec<_>>(),
+        factors,
         request.seed,
     ))
     .map_err(string)
@@ -3688,23 +3803,24 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_start_is_suppressed_and_retry_retains_terminal_evidence() {
+    fn start_suppresses_duplicates_and_restarts_after_terminal_evidence() {
         let (root, state, request) = setup("valid", "duplicate");
-        let database = state.database.lock().unwrap();
-        let first = prepare_attempt(&database, &request).unwrap();
-        let duplicate = prepare_attempt(&database, &request).unwrap();
-        assert!(first.should_start);
-        assert!(!duplicate.should_start);
+        let first = dataset_generation::start(&request, &state).unwrap();
+        let duplicate = dataset_generation::start(&request, &state).unwrap();
         assert_eq!(first.attempt.attempt_id, duplicate.attempt.attempt_id);
+        assert!(first.cancelled.is_some());
+        assert!(duplicate.cancelled.is_none());
+        let database = state.database.lock().unwrap();
         database
             .execute(
                 "UPDATE dataset_generation_attempts SET status = 'failed', diagnostic_json = 'retained' WHERE attempt_id = ?1",
                 [&first.attempt.attempt_id],
             )
             .unwrap();
-        let retry = prepare_attempt(&database, &request).unwrap();
-        assert!(retry.should_start);
-        assert_ne!(first.attempt.attempt_id, retry.attempt.attempt_id);
+        drop(database);
+        let restarted = dataset_generation::start(&request, &state).unwrap();
+        assert_ne!(first.attempt.attempt_id, restarted.attempt.attempt_id);
+        let database = state.database.lock().unwrap();
         assert_eq!(
             database
                 .query_row(
@@ -3887,6 +4003,77 @@ mod tests {
         assert_eq!(status, "completed");
         assert_eq!(completed, total);
         assert_eq!(datasets, 1);
+        drop(database);
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retry_is_user_scoped_and_reuses_completed_dataset_with_a_new_attempt() {
+        let (root, state, request) = setup("valid", "retry-reuse");
+        let completed = dataset_generation::start(&request, &state).unwrap();
+        let completed_id = completed.attempt.attempt_id.clone();
+        dataset_generation::run_started(
+            &completed.request,
+            &state,
+            completed.cancelled.as_ref().unwrap(),
+            &completed_id,
+        )
+        .unwrap();
+
+        let failed_id = new_attempt_id(&hash(&canonical_request(&request).unwrap()));
+        let database = state.database.lock().unwrap();
+        database
+            .execute(
+                "INSERT INTO dataset_generation_attempts(attempt_id, request_hash, user_id, status, request_json, diagnostic_json) VALUES (?1, ?2, ?3, 'failed', ?4, 'retained failure')",
+                params![failed_id, hash(&canonical_request(&request).unwrap()), request.user_id, serde_json::to_string(&request).unwrap()],
+            )
+            .unwrap();
+        drop(database);
+
+        assert_eq!(
+            dataset_generation::retry(&failed_id, "bob", &state)
+                .err()
+                .unwrap(),
+            "Dataset Generation Attempt cannot be retried"
+        );
+        let retried = dataset_generation::retry(&failed_id, "alice", &state).unwrap();
+        assert_ne!(retried.attempt.attempt_id, failed_id);
+        assert_eq!(retried.attempt.status, "pending");
+        assert_eq!(retried.attempt.progress_completed, 0);
+        assert_eq!(retried.attempt.progress_total, 0);
+        let retried_id = retried.attempt.attempt_id.clone();
+        dataset_generation::run_started(
+            &retried.request,
+            &state,
+            retried.cancelled.as_ref().unwrap(),
+            &retried_id,
+        )
+        .unwrap();
+
+        let database = state.database.lock().unwrap();
+        let (completed_dataset, retried_dataset, status, completed_progress, retried_progress, evidence):
+            (String, String, String, (i64, i64), (i64, i64), String) = database
+            .query_row(
+                "SELECT
+                    (SELECT dataset_id FROM dataset_generation_attempts WHERE attempt_id = ?1),
+                    (SELECT dataset_id FROM dataset_generation_attempts WHERE attempt_id = ?2),
+                    (SELECT status FROM dataset_generation_attempts WHERE attempt_id = ?2),
+                    (SELECT progress_completed FROM dataset_generation_attempts WHERE attempt_id = ?1),
+                    (SELECT progress_total FROM dataset_generation_attempts WHERE attempt_id = ?1),
+                    (SELECT progress_completed FROM dataset_generation_attempts WHERE attempt_id = ?2),
+                    (SELECT progress_total FROM dataset_generation_attempts WHERE attempt_id = ?2),
+                    (SELECT diagnostic_json FROM dataset_generation_attempts WHERE attempt_id = ?3)",
+                params![completed_id, retried_id, failed_id],
+                |row| Ok((
+                    row.get(0)?, row.get(1)?, row.get(2)?, (row.get(3)?, row.get(4)?), (row.get(5)?, row.get(6)?), row.get(7)?,
+                )),
+            )
+            .unwrap();
+        assert_eq!(status, "completed");
+        assert_eq!(retried_dataset, completed_dataset);
+        assert_eq!(retried_progress, completed_progress);
+        assert_eq!(evidence, "retained failure");
         drop(database);
         drop(state);
         fs::remove_dir_all(root).unwrap();
