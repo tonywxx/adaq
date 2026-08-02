@@ -152,7 +152,7 @@ struct ComponentLockEntry {
 }
 
 #[derive(Debug)]
-struct PendingDataset {
+pub(super) struct PendingDataset {
     metadata: SignalDataset,
     temporary_path: std::path::PathBuf,
     final_path: std::path::PathBuf,
@@ -660,62 +660,15 @@ fn start_generation(
     app: tauri::AppHandle,
     state: &LocalResearchState,
 ) -> Result<DatasetGenerationAttempt, String> {
-    validate_user(&request.user_id)?;
-    let database = state.database.lock().map_err(string)?;
-    let prepared = prepare_attempt(&database, &request)?;
-    if !prepared.should_start {
-        return Ok(prepared.attempt);
-    }
-    let attempt_id = prepared.attempt.attempt_id.clone();
-    drop(database);
-    let cancelled = Arc::new(AtomicBool::new(false));
-    state
-        .generation_attempts
-        .lock()
-        .map_err(string)?
-        .insert(attempt_id.clone(), cancelled.clone());
-    let task_id = attempt_id.clone();
+    let started = dataset_generation::start(&request, state)?;
+    let attempt = started.attempt;
+    let Some(cancelled) = started.cancelled else {
+        return Ok(attempt);
+    };
+    let task_id = attempt.attempt_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<LocalResearchState>();
-        let started = state
-            .database
-            .lock()
-            .map_err(string)
-            .and_then(|database| {
-                database
-                    .execute(
-                        "UPDATE dataset_generation_attempts SET status = 'running' WHERE attempt_id = ?1 AND status = 'pending'",
-                        [&task_id],
-                    )
-                    .map(|changed| changed == 1)
-                    .map_err(string)
-            })
-            .unwrap_or(false);
-        if !started {
-            if let Ok(mut attempts) = state.generation_attempts.lock() {
-                attempts.remove(&task_id);
-            }
-            return;
-        }
-        let result = generate(&request, &state, &cancelled, &task_id);
-        let final_result = (|| -> Result<(), String> {
-            if cancelled.load(Ordering::Relaxed) {
-                state.database.lock().map_err(string)?.execute(
-                    "UPDATE dataset_generation_attempts SET status = 'cancelled' WHERE attempt_id = ?1 AND status IN ('pending', 'running')",
-                    [&task_id],
-                ).map_err(string)?;
-                return Ok(());
-            }
-            match result {
-                Ok(dataset) => {
-                    publish_dataset(&state, &request.user_id, &task_id, &cancelled, dataset)
-                }
-                Err(error) => {
-                    record_failure(&state, &task_id, &error)?;
-                    Ok(())
-                }
-            }
-        })();
+        let final_result = dataset_generation::run_started(&request, &state, &cancelled, &task_id);
         if let Err(error) = final_result {
             let _ = record_failure(&state, &task_id, &error);
             eprintln!("Dataset Generation Attempt {task_id} finalization failed: {error}");
@@ -724,7 +677,7 @@ fn start_generation(
             attempts.remove(&task_id);
         }
     });
-    Ok(prepared.attempt)
+    Ok(attempt)
 }
 
 #[tauri::command]
@@ -1118,311 +1071,388 @@ fn record_failure(state: &LocalResearchState, attempt_id: &str, error: &str) -> 
     Ok(())
 }
 
-fn generate(
-    request: &DatasetGenerationRequest,
-    state: &LocalResearchState,
-    cancelled: &AtomicBool,
-    attempt_id: &str,
-) -> Result<PendingDataset, String> {
-    if cancelled.load(Ordering::Relaxed) {
-        return Err("Dataset Generation Attempt cancelled".into());
+mod dataset_generation {
+    use super::*;
+
+    pub(super) struct StartedGeneration {
+        pub(super) attempt: DatasetGenerationAttempt,
+        pub(super) cancelled: Option<Arc<AtomicBool>>,
     }
-    let model = state.package_for_user(&request.user_id, &request.model_archive_sha256)?;
-    if model.manifest.kind != ComponentKind::Model {
-        return Err("Dataset generation requires a Model Component".into());
+
+    pub(super) fn start(
+        request: &DatasetGenerationRequest,
+        state: &LocalResearchState,
+    ) -> Result<StartedGeneration, String> {
+        validate_user(&request.user_id)?;
+        let database = state.database.lock().map_err(string)?;
+        let prepared = prepare_attempt(&database, request)?;
+        if !prepared.should_start {
+            return Ok(StartedGeneration {
+                attempt: prepared.attempt,
+                cancelled: None,
+            });
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .generation_attempts
+            .lock()
+            .map_err(string)?
+            .insert(prepared.attempt.attempt_id.clone(), cancelled.clone());
+        Ok(StartedGeneration {
+            attempt: prepared.attempt,
+            cancelled: Some(cancelled),
+        })
     }
-    let parameters = component_parameters(&model.manifest, Some(&request.model_parameters))?;
-    let named_model_parameters = model
-        .manifest
-        .parameters
-        .iter()
-        .zip(parameters.iter().cloned())
-        .map(|(definition, value)| (definition.name.clone(), value))
-        .collect::<BTreeMap<_, _>>();
-    let model_warmup_bars = model.manifest.warmup_bars;
-    let factor_packages = request
-        .factor_instances
-        .iter()
-        .map(|factor| {
-            let package = state.package_for_user(&request.user_id, &factor.archive_sha256)?;
-            if package.manifest.kind != ComponentKind::Factor {
-                return Err("Model-to-Model dependencies are not supported".into());
-            }
-            let parameters = component_parameters(&package.manifest, Some(&factor.parameters))?;
-            Ok((factor, package, parameters))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let factor_inputs = factor_packages
-        .iter()
-        .map(|(factor, package, parameters)| FactorInstancePlanInput {
-            alias: &factor.alias,
-            manifest: &package.manifest,
-            parameters: parameters.clone(),
-        })
-        .collect::<Vec<_>>();
-    let identity = native_engine_identity().map_err(string)?;
-    let plan = validate_and_freeze_feature_plan_with_factors_and_parameters(
-        &model.manifest,
-        &model.archive_sha256,
-        &identity,
-        &factor_inputs,
-        &request
-            .model_parameters
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect(),
-    )
-    .map_err(|error| format!("Feature Plan validation failed: {:?}", error.issues))?;
-    let factor_paths = factor_packages
-        .iter()
-        .map(|(factor, package, _)| Ok((factor.alias.as_str(), state.runtime_component(package)?)))
-        .collect::<Result<Vec<_>, String>>()?;
-    let factor_runs = factor_paths
-        .iter()
-        .map(|(alias, path)| {
-            Ok(FactorRunRequest {
-                alias,
-                path: path.to_str().ok_or("Factor runtime path is invalid")?,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let (snapshot, bars) = state.snapshot_for_user(&request.user_id, &request.snapshot_id)?;
-    state
-        .database
-        .lock()
-        .map_err(string)?
-        .execute(
-            "UPDATE dataset_generation_attempts SET progress_total = ?2 WHERE attempt_id = ?1",
-            params![
-                attempt_id,
-                i64::try_from(bars.len()).map_err(|_| "Dataset row count is too large")?
-            ],
-        )
-        .map_err(string)?;
-    let slots = plan
-        .slot_names()
-        .map(|name| model_abi::exports::adaq::model::api::FeatureSlot { name: name.into() })
-        .collect::<Vec<_>>();
-    let loader = WasmLoader::with_limits(RunLimits::default());
-    let mut boundaries = snapshot
-        .gaps
-        .iter()
-        .filter_map(|gap| {
-            bars.iter()
-                .position(|bar| bar.open_time_ms >= gap.start_time_ms)
-        })
-        .collect::<Vec<_>>();
-    boundaries.push(bars.len());
-    boundaries.dedup();
-    let instrument_id = format!("{}:{}", snapshot.src, snapshot.code);
-    let mut rows = vec![None; bars.len()];
-    let mut output = vec![None; bars.len()];
-    let mut model_warmup = vec![false; bars.len()];
-    let mut unavailable_reasons = vec![None; bars.len()];
-    let mut start = 0;
-    for &end in &boundaries {
+
+    pub(super) fn run_started(
+        request: &DatasetGenerationRequest,
+        state: &LocalResearchState,
+        cancelled: &AtomicBool,
+        attempt_id: &str,
+    ) -> Result<(), String> {
+        let started = state.database.lock().map_err(string)?.execute(
+            "UPDATE dataset_generation_attempts SET status = 'running' WHERE attempt_id = ?1 AND status = 'pending'", [attempt_id],
+        ).map_err(string)? == 1;
+        if started {
+            run_attempt(request, state, cancelled, attempt_id)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn run_attempt(
+        request: &DatasetGenerationRequest,
+        state: &LocalResearchState,
+        cancelled: &AtomicBool,
+        attempt_id: &str,
+    ) -> Result<(), String> {
+        let result = generate(request, state, cancelled, attempt_id);
+        if cancelled.load(Ordering::Relaxed) {
+            state
+            .database
+            .lock()
+            .map_err(string)?
+            .execute(
+                "UPDATE dataset_generation_attempts SET status = 'cancelled' WHERE attempt_id = ?1 AND status IN ('pending', 'running')",
+                [attempt_id],
+            )
+            .map_err(string)?;
+            return Ok(());
+        }
+        match result {
+            Ok(dataset) => publish_dataset(state, &request.user_id, attempt_id, cancelled, dataset),
+            Err(error) => record_failure(state, attempt_id, &error),
+        }
+    }
+
+    pub(super) fn generate(
+        request: &DatasetGenerationRequest,
+        state: &LocalResearchState,
+        cancelled: &AtomicBool,
+        attempt_id: &str,
+    ) -> Result<PendingDataset, String> {
         if cancelled.load(Ordering::Relaxed) {
             return Err("Dataset Generation Attempt cancelled".into());
         }
-        let segment = &bars[start..end];
-        if segment.is_empty() {
-            continue;
+        let model = state.package_for_user(&request.user_id, &request.model_archive_sha256)?;
+        if model.manifest.kind != ComponentKind::Model {
+            return Err("Dataset generation requires a Model Component".into());
         }
-        let features =
-            materialize_feature_segment(&plan, &factor_runs, segment, RunLimits::default())
-                .map_err(|error| format!("Feature materialization failed: {error:?}"))?;
-        let mut present = Vec::new();
-        for (offset, feature) in features.into_iter().enumerate() {
-            let index = start + offset;
-            match feature {
-                MaterializedFeatureRow::Warmup => {
-                    unavailable_reasons[index] = Some("warmup".into())
+        let parameters = component_parameters(&model.manifest, Some(&request.model_parameters))?;
+        let named_model_parameters = model
+            .manifest
+            .parameters
+            .iter()
+            .zip(parameters.iter().cloned())
+            .map(|(definition, value)| (definition.name.clone(), value))
+            .collect::<BTreeMap<_, _>>();
+        let model_warmup_bars = model.manifest.warmup_bars;
+        let factor_packages = request
+            .factor_instances
+            .iter()
+            .map(|factor| {
+                let package = state.package_for_user(&request.user_id, &factor.archive_sha256)?;
+                if package.manifest.kind != ComponentKind::Factor {
+                    return Err("Model-to-Model dependencies are not supported".into());
                 }
-                MaterializedFeatureRow::MissingInput { slot, source } => {
-                    unavailable_reasons[index] = Some(format!("missing-input:{slot}:{source}"));
-                }
-                MaterializedFeatureRow::Present(values) => {
-                    let row = model_abi::exports::adaq::model::api::PredictionRow {
-                        instrument_id: instrument_id.clone(),
-                        prediction_time_ms: close_time(
-                            snapshot.interval,
-                            bars[index].open_time_ms,
-                        )?,
-                        values,
-                    };
-                    rows[index] = Some(row.clone());
-                    present.push((index, row));
-                }
-            }
-        }
-        loader.load_model_bytes(&model.wasm, slots.clone(), &parameters, request.seed)?;
-        let mut model_input_count = 0usize;
-        for chunk in present.chunks(CHUNK_SIZE) {
+                let parameters = component_parameters(&package.manifest, Some(&factor.parameters))?;
+                Ok((factor, package, parameters))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let factor_inputs = factor_packages
+            .iter()
+            .map(|(factor, package, parameters)| FactorInstancePlanInput {
+                alias: &factor.alias,
+                manifest: &package.manifest,
+                parameters: parameters.clone(),
+            })
+            .collect::<Vec<_>>();
+        let identity = native_engine_identity().map_err(string)?;
+        let plan = validate_and_freeze_feature_plan_with_factors_and_parameters(
+            &model.manifest,
+            &model.archive_sha256,
+            &identity,
+            &factor_inputs,
+            &request
+                .model_parameters
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        )
+        .map_err(|error| format!("Feature Plan validation failed: {:?}", error.issues))?;
+        let factor_paths = factor_packages
+            .iter()
+            .map(|(factor, package, _)| {
+                Ok((factor.alias.as_str(), state.runtime_component(package)?))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let factor_runs = factor_paths
+            .iter()
+            .map(|(alias, path)| {
+                Ok(FactorRunRequest {
+                    alias,
+                    path: path.to_str().ok_or("Factor runtime path is invalid")?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let (snapshot, bars) = state.snapshot_for_user(&request.user_id, &request.snapshot_id)?;
+        state
+            .database
+            .lock()
+            .map_err(string)?
+            .execute(
+                "UPDATE dataset_generation_attempts SET progress_total = ?2 WHERE attempt_id = ?1",
+                params![
+                    attempt_id,
+                    i64::try_from(bars.len()).map_err(|_| "Dataset row count is too large")?
+                ],
+            )
+            .map_err(string)?;
+        let slots = plan
+            .slot_names()
+            .map(|name| model_abi::exports::adaq::model::api::FeatureSlot { name: name.into() })
+            .collect::<Vec<_>>();
+        let loader = WasmLoader::with_limits(RunLimits::default());
+        let mut boundaries = snapshot
+            .gaps
+            .iter()
+            .filter_map(|gap| {
+                bars.iter()
+                    .position(|bar| bar.open_time_ms >= gap.start_time_ms)
+            })
+            .collect::<Vec<_>>();
+        boundaries.push(bars.len());
+        boundaries.dedup();
+        let instrument_id = format!("{}:{}", snapshot.src, snapshot.code);
+        let mut rows = vec![None; bars.len()];
+        let mut output = vec![None; bars.len()];
+        let mut model_warmup = vec![false; bars.len()];
+        let mut unavailable_reasons = vec![None; bars.len()];
+        let mut start = 0;
+        for &end in &boundaries {
             if cancelled.load(Ordering::Relaxed) {
                 return Err("Dataset Generation Attempt cancelled".into());
             }
-            let forecasts =
-                loader.process_model(chunk.iter().map(|(_, row)| row.clone()).collect())?;
-            if forecasts.len() != chunk.len() {
-                return Err("invalid-model-forecast-count".into());
+            let segment = &bars[start..end];
+            if segment.is_empty() {
+                continue;
             }
-            for ((index, _), forecast) in chunk.iter().zip(forecasts) {
-                model_warmup[*index] = model_input_count < model_warmup_bars as usize;
-                model_input_count += 1;
-                output[*index] = forecast;
+            let features =
+                materialize_feature_segment(&plan, &factor_runs, segment, RunLimits::default())
+                    .map_err(|error| format!("Feature materialization failed: {error:?}"))?;
+            let mut present = Vec::new();
+            for (offset, feature) in features.into_iter().enumerate() {
+                let index = start + offset;
+                match feature {
+                    MaterializedFeatureRow::Warmup => {
+                        unavailable_reasons[index] = Some("warmup".into())
+                    }
+                    MaterializedFeatureRow::MissingInput { slot, source } => {
+                        unavailable_reasons[index] = Some(format!("missing-input:{slot}:{source}"));
+                    }
+                    MaterializedFeatureRow::Present(values) => {
+                        let row = model_abi::exports::adaq::model::api::PredictionRow {
+                            instrument_id: instrument_id.clone(),
+                            prediction_time_ms: close_time(
+                                snapshot.interval,
+                                bars[index].open_time_ms,
+                            )?,
+                            values,
+                        };
+                        rows[index] = Some(row.clone());
+                        present.push((index, row));
+                    }
+                }
             }
-            if let Some((index, _)) = chunk.last() {
-                state.database.lock().map_err(string)?.execute(
+            loader.load_model_bytes(&model.wasm, slots.clone(), &parameters, request.seed)?;
+            let mut model_input_count = 0usize;
+            for chunk in present.chunks(CHUNK_SIZE) {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err("Dataset Generation Attempt cancelled".into());
+                }
+                let forecasts =
+                    loader.process_model(chunk.iter().map(|(_, row)| row.clone()).collect())?;
+                if forecasts.len() != chunk.len() {
+                    return Err("invalid-model-forecast-count".into());
+                }
+                for ((index, _), forecast) in chunk.iter().zip(forecasts) {
+                    model_warmup[*index] = model_input_count < model_warmup_bars as usize;
+                    model_input_count += 1;
+                    output[*index] = forecast;
+                }
+                if let Some((index, _)) = chunk.last() {
+                    state.database.lock().map_err(string)?.execute(
                     "UPDATE dataset_generation_attempts SET progress_completed = ?2 WHERE attempt_id = ?1",
                     params![attempt_id, i64::try_from(index + 1).map_err(|_| "Dataset progress is too large")?],
                 ).map_err(string)?;
+                }
             }
-        }
-        start = end;
-        state.database.lock().map_err(string)?.execute(
+            start = end;
+            state.database.lock().map_err(string)?.execute(
             "UPDATE dataset_generation_attempts SET progress_completed = ?2 WHERE attempt_id = ?1",
             params![attempt_id, i64::try_from(end).map_err(|_| "Dataset progress is too large")?],
         ).map_err(string)?;
-    }
-    let records = output
-        .into_iter()
-        .enumerate()
-        .map(|(index, forecast)| {
-            let prediction_time_ms = close_time(snapshot.interval, bars[index].open_time_ms)?;
-            let (values, unavailable_reason) = match (rows[index].as_ref(), forecast) {
-                (None, _) => (None, unavailable_reasons[index].clone()),
-                (Some(row), Some(value))
-                    if value.instrument_id != row.instrument_id
-                        || value.prediction_time_ms != prediction_time_ms
-                        || value.values.len() != model.manifest.model_outputs.len()
-                        || value.values.iter().any(|value| !value.is_finite()) =>
-                {
-                    return Err(
-                        "invalid-model-forecast: malformed or non-finite present output".into(),
-                    );
-                }
-                (Some(_), _) if model_warmup[index] => (None, Some("model-warmup".into())),
-                (Some(_), None) => (None, Some("model-unavailable".into())),
-                (Some(_), Some(value)) => (Some(value.values), None),
-            };
-            Ok((
-                instrument_id.clone(),
-                prediction_time_ms,
-                prediction_time_ms,
-                values,
-                unavailable_reason,
-            ))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    if cancelled.load(Ordering::Relaxed) {
-        return Err("Dataset Generation Attempt cancelled".into());
-    }
-    let directory = state.root.join("signal-datasets");
-    fs::create_dir_all(&directory).map_err(string)?;
-    let temporary_path = directory.join(format!(".{attempt_id}.parquet.tmp"));
-    if let Err(error) = write_rows(&temporary_path, &records) {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(error);
-    }
-    let parquet_sha256 = match fs::read(&temporary_path) {
-        Ok(bytes) => hash(&bytes),
-        Err(error) => {
-            let _ = fs::remove_file(&temporary_path);
-            return Err(string(error));
         }
-    };
-    let mut component_lock = request
-        .factor_instances
-        .iter()
-        .map(|factor| ComponentLockEntry {
-            alias: factor.alias.clone(),
-            archive_sha256: factor.archive_sha256.clone(),
-        })
-        .collect::<Vec<_>>();
-    component_lock.sort_by(|left, right| left.alias.cmp(&right.alias));
-    component_lock.insert(
-        0,
-        ComponentLockEntry {
-            alias: "model".into(),
-            archive_sha256: request.model_archive_sha256.clone(),
-        },
-    );
-    let dataset_id = dataset_identity(
-        &snapshot.snapshot_id,
-        plan.plan_hash(),
-        request.seed,
-        &identity,
-        &component_lock,
-        &parquet_sha256,
-    )
-    .map_err(|error| {
-        let _ = fs::remove_file(&temporary_path);
-        error
-    })?;
-    if cancelled.load(Ordering::Relaxed) {
-        let _ = fs::remove_file(&temporary_path);
-        return Err("Dataset Generation Attempt cancelled".into());
-    }
-    let final_path = directory.join(format!("{dataset_id}.parquet"));
-    let unavailable_count = records
-        .iter()
-        .filter(|(_, _, _, values, _)| values.is_none())
-        .count();
-    let status_counts = records.iter().fold(BTreeMap::new(), |mut counts, row| {
-        let status = match (&row.3, row.4.as_deref()) {
-            (Some(_), _) => "present",
-            (_, Some(reason)) if reason.starts_with("missing-input:") => "missing-input",
-            (_, Some(reason)) => reason,
-            _ => "unavailable",
+        let records = output
+            .into_iter()
+            .enumerate()
+            .map(|(index, forecast)| {
+                let prediction_time_ms = close_time(snapshot.interval, bars[index].open_time_ms)?;
+                let (values, unavailable_reason) = match (rows[index].as_ref(), forecast) {
+                    (None, _) => (None, unavailable_reasons[index].clone()),
+                    (Some(row), Some(value))
+                        if value.instrument_id != row.instrument_id
+                            || value.prediction_time_ms != prediction_time_ms
+                            || value.values.len() != model.manifest.model_outputs.len()
+                            || value.values.iter().any(|value| !value.is_finite()) =>
+                    {
+                        return Err(
+                            "invalid-model-forecast: malformed or non-finite present output".into(),
+                        );
+                    }
+                    (Some(_), _) if model_warmup[index] => (None, Some("model-warmup".into())),
+                    (Some(_), None) => (None, Some("model-unavailable".into())),
+                    (Some(_), Some(value)) => (Some(value.values), None),
+                };
+                Ok((
+                    instrument_id.clone(),
+                    prediction_time_ms,
+                    prediction_time_ms,
+                    values,
+                    unavailable_reason,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Dataset Generation Attempt cancelled".into());
+        }
+        let directory = state.root.join("signal-datasets");
+        fs::create_dir_all(&directory).map_err(string)?;
+        let temporary_path = directory.join(format!(".{attempt_id}.parquet.tmp"));
+        if let Err(error) = write_rows(&temporary_path, &records) {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(error);
+        }
+        let parquet_sha256 = match fs::read(&temporary_path) {
+            Ok(bytes) => hash(&bytes),
+            Err(error) => {
+                let _ = fs::remove_file(&temporary_path);
+                return Err(string(error));
+            }
         };
-        *counts.entry(status.to_owned()).or_insert(0) += 1;
-        counts
-    });
-    let producer_segments = vec![ModelProducerSegment {
-        start_prediction_time_ms: records.first().map(|row| row.1),
-        end_prediction_time_ms: records.last().map(|row| row.1),
-        model_archive_sha256: model.archive_sha256.clone(),
-        model_artifact: model.manifest.model_artifact.clone(),
-        model_parameters: named_model_parameters.clone(),
-        seed: request.seed,
-        trust: "verified-package".into(),
-        engine_identity: identity.clone(),
-        feature_plan_hash: plan.plan_hash().into(),
-    }];
-    let metadata = SignalDataset {
-        dataset_id,
-        snapshot_id: snapshot.snapshot_id,
-        src: snapshot.src,
-        code: snapshot.code,
-        interval: snapshot.interval.as_str().into(),
-        prediction_source: DATASET_ENGINE.into(),
-        model_artifact: model.manifest.model_artifact,
-        model_outputs: model.manifest.model_outputs,
-        model_parameters: named_model_parameters,
-        source_warmup_bars: plan.effective_warmup_bars(),
-        model_warmup_bars,
-        model_archive_sha256: model.archive_sha256,
-        trust: "verified-package".into(),
-        component_lock,
-        feature_plan_json: String::from_utf8(plan.to_json()).map_err(string)?,
-        feature_plan_hash: plan.plan_hash().into(),
-        seed: request.seed,
-        engine_identity: identity,
-        producer_segments,
-        continuous_bar_segments: boundaries.len(),
-        bar_gap_rule: "recreate-state-at-each-continuous-bar-segment@1".into(),
-        row_count: records.len(),
-        unavailable_count,
-        status_counts,
-        parquet_sha256,
-        archive_manifest_json: None,
-        external_producer_segments: None,
-    };
-    Ok(PendingDataset {
-        metadata,
-        temporary_path,
-        final_path,
-    })
+        let mut component_lock = request
+            .factor_instances
+            .iter()
+            .map(|factor| ComponentLockEntry {
+                alias: factor.alias.clone(),
+                archive_sha256: factor.archive_sha256.clone(),
+            })
+            .collect::<Vec<_>>();
+        component_lock.sort_by(|left, right| left.alias.cmp(&right.alias));
+        component_lock.insert(
+            0,
+            ComponentLockEntry {
+                alias: "model".into(),
+                archive_sha256: request.model_archive_sha256.clone(),
+            },
+        );
+        let dataset_id = dataset_identity(
+            &snapshot.snapshot_id,
+            plan.plan_hash(),
+            request.seed,
+            &identity,
+            &component_lock,
+            &parquet_sha256,
+        )
+        .map_err(|error| {
+            let _ = fs::remove_file(&temporary_path);
+            error
+        })?;
+        if cancelled.load(Ordering::Relaxed) {
+            let _ = fs::remove_file(&temporary_path);
+            return Err("Dataset Generation Attempt cancelled".into());
+        }
+        let final_path = directory.join(format!("{dataset_id}.parquet"));
+        let unavailable_count = records
+            .iter()
+            .filter(|(_, _, _, values, _)| values.is_none())
+            .count();
+        let status_counts = records.iter().fold(BTreeMap::new(), |mut counts, row| {
+            let status = match (&row.3, row.4.as_deref()) {
+                (Some(_), _) => "present",
+                (_, Some(reason)) if reason.starts_with("missing-input:") => "missing-input",
+                (_, Some(reason)) => reason,
+                _ => "unavailable",
+            };
+            *counts.entry(status.to_owned()).or_insert(0) += 1;
+            counts
+        });
+        let producer_segments = vec![ModelProducerSegment {
+            start_prediction_time_ms: records.first().map(|row| row.1),
+            end_prediction_time_ms: records.last().map(|row| row.1),
+            model_archive_sha256: model.archive_sha256.clone(),
+            model_artifact: model.manifest.model_artifact.clone(),
+            model_parameters: named_model_parameters.clone(),
+            seed: request.seed,
+            trust: "verified-package".into(),
+            engine_identity: identity.clone(),
+            feature_plan_hash: plan.plan_hash().into(),
+        }];
+        let metadata = SignalDataset {
+            dataset_id,
+            snapshot_id: snapshot.snapshot_id,
+            src: snapshot.src,
+            code: snapshot.code,
+            interval: snapshot.interval.as_str().into(),
+            prediction_source: DATASET_ENGINE.into(),
+            model_artifact: model.manifest.model_artifact,
+            model_outputs: model.manifest.model_outputs,
+            model_parameters: named_model_parameters,
+            source_warmup_bars: plan.effective_warmup_bars(),
+            model_warmup_bars,
+            model_archive_sha256: model.archive_sha256,
+            trust: "verified-package".into(),
+            component_lock,
+            feature_plan_json: String::from_utf8(plan.to_json()).map_err(string)?,
+            feature_plan_hash: plan.plan_hash().into(),
+            seed: request.seed,
+            engine_identity: identity,
+            producer_segments,
+            continuous_bar_segments: boundaries.len(),
+            bar_gap_rule: "recreate-state-at-each-continuous-bar-segment@1".into(),
+            row_count: records.len(),
+            unavailable_count,
+            status_counts,
+            parquet_sha256,
+            archive_manifest_json: None,
+            external_producer_segments: None,
+        };
+        Ok(PendingDataset {
+            metadata,
+            temporary_path,
+            final_path,
+        })
+    }
 }
 
 fn close_time(interval: adaq_data_core::BarInterval, open: i64) -> Result<i64, String> {
@@ -3203,7 +3233,9 @@ mod tests {
     fn forecast_evaluation_accepts_proven_native_score_evidence() {
         let (root, state, request) = setup("valid", "evaluation-incompatible");
         let attempt = running_attempt(&state, &request);
-        let pending = generate(&request, &state, &AtomicBool::new(false), &attempt).unwrap();
+        let pending =
+            dataset_generation::generate(&request, &state, &AtomicBool::new(false), &attempt)
+                .unwrap();
         let dataset_id = pending.metadata.dataset_id.clone();
         publish_dataset(&state, "alice", &attempt, &AtomicBool::new(false), pending).unwrap();
         let report = evaluate_forecast(
@@ -3648,7 +3680,7 @@ mod tests {
         };
         let cancelled = AtomicBool::new(true);
         assert_eq!(
-            generate(&request, &state, &cancelled, "attempt").unwrap_err(),
+            dataset_generation::generate(&request, &state, &cancelled, "attempt").unwrap_err(),
             "Dataset Generation Attempt cancelled",
         );
         drop(state);
@@ -3715,7 +3747,8 @@ mod tests {
         let (root, state, request) = setup("valid", "real-model");
         let attempt_id = running_attempt(&state, &request);
         let cancelled = AtomicBool::new(false);
-        let pending = generate(&request, &state, &cancelled, &attempt_id).unwrap();
+        let pending =
+            dataset_generation::generate(&request, &state, &cancelled, &attempt_id).unwrap();
         assert_eq!(pending.metadata.source_warmup_bars, 0);
         assert_eq!(pending.metadata.model_warmup_bars, 2);
         assert_eq!(pending.metadata.continuous_bar_segments, 2);
@@ -3796,8 +3829,13 @@ mod tests {
         let mut bob_request = request.clone();
         bob_request.user_id = "bob".into();
         let bob_attempt = running_attempt(&state, &bob_request);
-        let bob_pending =
-            generate(&bob_request, &state, &AtomicBool::new(false), &bob_attempt).unwrap();
+        let bob_pending = dataset_generation::generate(
+            &bob_request,
+            &state,
+            &AtomicBool::new(false),
+            &bob_attempt,
+        )
+        .unwrap();
         assert_eq!(bob_pending.metadata.dataset_id, dataset_id);
         publish_dataset(
             &state,
@@ -3830,10 +3868,37 @@ mod tests {
     }
 
     #[test]
+    fn dataset_generation_interface_publishes_a_completed_attempt() {
+        let (root, state, request) = setup("valid", "generation-interface");
+        let started = dataset_generation::start(&request, &state).unwrap();
+        let attempt_id = started.attempt.attempt_id;
+        let cancelled = started.cancelled.unwrap();
+
+        dataset_generation::run_started(&request, &state, &cancelled, &attempt_id).unwrap();
+
+        let database = state.database.lock().unwrap();
+        let (status, completed, total, datasets): (String, i64, i64, i64) = database
+            .query_row(
+                "SELECT a.status, a.progress_completed, a.progress_total, (SELECT COUNT(*) FROM signal_dataset_content) FROM dataset_generation_attempts a WHERE a.attempt_id = ?1",
+                [&attempt_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "completed");
+        assert_eq!(completed, total);
+        assert_eq!(datasets, 1);
+        drop(database);
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn malformed_model_failure_is_bounded_and_publishes_nothing() {
         let (root, state, request) = setup("non-finite", "failure");
         let attempt_id = running_attempt(&state, &request);
-        let error = generate(&request, &state, &AtomicBool::new(false), &attempt_id).unwrap_err();
+        let error =
+            dataset_generation::generate(&request, &state, &AtomicBool::new(false), &attempt_id)
+                .unwrap_err();
         assert!(error.starts_with("invalid-model-forecast:"));
         record_failure(
             &state,
@@ -3869,7 +3934,7 @@ mod tests {
         let (root, state, request) = setup("wrong-time", "future-revision");
         let attempt_id = running_attempt(&state, &request);
         assert!(
-            generate(&request, &state, &AtomicBool::new(false), &attempt_id,)
+            dataset_generation::generate(&request, &state, &AtomicBool::new(false), &attempt_id,)
                 .unwrap_err()
                 .starts_with("invalid-model-forecast:"),
         );
@@ -3888,7 +3953,8 @@ mod tests {
             .lock()
             .unwrap()
             .insert(attempt_id.clone(), cancelled.clone());
-        let pending = generate(&request, &state, &cancelled, &attempt_id).unwrap();
+        let pending =
+            dataset_generation::generate(&request, &state, &cancelled, &attempt_id).unwrap();
         let temporary_path = pending.temporary_path.clone();
         let final_path = pending.final_path.clone();
         state
@@ -3940,7 +4006,9 @@ mod tests {
     fn external_signal_archive_is_validated_published_and_round_trips() {
         let (root, state, request) = setup("valid", "external-archive");
         let attempt = running_attempt(&state, &request);
-        let pending = generate(&request, &state, &AtomicBool::new(false), &attempt).unwrap();
+        let pending =
+            dataset_generation::generate(&request, &state, &AtomicBool::new(false), &attempt)
+                .unwrap();
         let parquet = fs::read(&pending.temporary_path).unwrap();
         let mut manifest_value: serde_json::Value = serde_json::from_slice(&external_manifest(
             &request.snapshot_id,
@@ -4048,7 +4116,9 @@ mod tests {
     fn external_rows_reject_schema_order_and_availability_violations() {
         let (root, state, request) = setup("valid", "external-rejections");
         let attempt = running_attempt(&state, &request);
-        let pending = generate(&request, &state, &AtomicBool::new(false), &attempt).unwrap();
+        let pending =
+            dataset_generation::generate(&request, &state, &AtomicBool::new(false), &attempt)
+                .unwrap();
         let parquet = fs::read(&pending.temporary_path).unwrap();
         assert_eq!(
             read_external_rows(b"not parquet").unwrap_err(),
@@ -4160,7 +4230,9 @@ mod tests {
     fn failed_external_import_is_atomic() {
         let (root, state, request) = setup("valid", "external-atomic-failure");
         let attempt = running_attempt(&state, &request);
-        let pending = generate(&request, &state, &AtomicBool::new(false), &attempt).unwrap();
+        let pending =
+            dataset_generation::generate(&request, &state, &AtomicBool::new(false), &attempt)
+                .unwrap();
         let parquet = fs::read(&pending.temporary_path).unwrap();
         let manifest = external_manifest(&request.snapshot_id, &parquet, 3_600_000, 9 * 3_600_000);
         let archive = pack_signal_archive(&manifest, &parquet).unwrap();
@@ -4196,7 +4268,9 @@ mod tests {
     fn datasets_lock_their_component_artifacts() {
         let (root, state, request) = setup("valid", "dataset-lock");
         let attempt = running_attempt(&state, &request);
-        let pending = generate(&request, &state, &AtomicBool::new(false), &attempt).unwrap();
+        let pending =
+            dataset_generation::generate(&request, &state, &AtomicBool::new(false), &attempt)
+                .unwrap();
         publish_dataset(&state, "alice", &attempt, &AtomicBool::new(false), pending).unwrap();
         assert!(
             state
