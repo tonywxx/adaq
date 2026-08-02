@@ -6,6 +6,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use adaq_backtest_core::{
@@ -28,7 +29,7 @@ use tauri::Manager;
 
 use crate::{
     dataset_generation::AttemptStore,
-    m8::backtest_signal_datasets,
+    m8::{backtest_signal_datasets, stop_all_generation_for_user},
     run_engine::{
         FactorRunRequest, PositionMode, RunEngine, RunRequest, SignalRunRequest, SignalRunRow,
     },
@@ -44,6 +45,8 @@ pub struct LocalResearchState {
     pub(crate) database: Mutex<Connection>,
     downloads: Mutex<HashMap<String, Arc<AtomicBool>>>,
     pub(crate) generation_attempts: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    pub(crate) generation_reset_blocks: Mutex<HashSet<String>>,
+    pub(crate) reset_wait_timeout: Duration,
 }
 
 #[derive(Serialize)]
@@ -234,6 +237,8 @@ impl LocalResearchState {
             database: Mutex::new(database),
             downloads: Mutex::new(HashMap::new()),
             generation_attempts: Mutex::new(HashMap::new()),
+            generation_reset_blocks: Mutex::new(HashSet::new()),
+            reset_wait_timeout: Duration::from_secs(60),
         })
     }
 
@@ -307,16 +312,16 @@ impl LocalResearchState {
 
     pub fn reset_local_data(&self, user_id: &str, kind: LocalDataResetKind) -> Result<(), String> {
         validate_user(user_id)?;
+        let _reset_block = if matches!(kind, LocalDataResetKind::All) {
+            Some(stop_all_generation_for_user(
+                self,
+                user_id,
+                self.reset_wait_timeout,
+            )?)
+        } else {
+            None
+        };
         let mut database = self.database.lock().map_err(string)?;
-        if matches!(kind, LocalDataResetKind::All) {
-            let attempt_ids = AttemptStore::new(&database).active_ids_for_user(user_id)?;
-            let attempts = self.generation_attempts.lock().map_err(string)?;
-            for attempt_id in attempt_ids {
-                if let Some(cancelled) = attempts.get(&attempt_id) {
-                    cancelled.store(true, Ordering::Relaxed);
-                }
-            }
-        }
         match kind {
             LocalDataResetKind::Watchlist => reset_watchlist(&mut database, user_id),
             LocalDataResetKind::Components => reset_components(&mut database, user_id, &self.root),
@@ -2564,11 +2569,16 @@ pub fn local_data_summary(
 }
 
 #[tauri::command]
-pub fn local_data_reset(
+pub async fn local_data_reset(
     request: LocalDataResetRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.reset_local_data(&request.user_id, request.kind)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<LocalResearchState>();
+        state.reset_local_data(&request.user_id, request.kind)
+    })
+    .await
+    .map_err(string)?
 }
 
 #[tauri::command]

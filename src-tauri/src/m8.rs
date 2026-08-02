@@ -6,6 +6,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use adaq_backtest_core::MarketDataSnapshot;
@@ -734,6 +735,33 @@ fn cancel_generation_attempt(
     Ok(())
 }
 
+/// RAII guard holding one User's Dataset Generation start-restriction; Drop
+/// always releases it (success, failure, and panic paths).
+pub(crate) struct UserResetBlock<'a> {
+    state: &'a LocalResearchState,
+    user_id: String,
+}
+
+impl Drop for UserResetBlock<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut blocks) = self.state.generation_reset_blocks.lock() {
+            blocks.remove(&self.user_id);
+        }
+    }
+}
+
+/// Lifecycle barrier for a User-scoped Reset All: blocks new Start and Retry
+/// for one User, cancels that User's active Attempts, and waits for all of
+/// them to exit. Returns a guard that keeps the User's start-restriction in
+/// place until the caller's reset work is finished.
+pub(crate) fn stop_all_generation_for_user<'a>(
+    state: &'a LocalResearchState,
+    user_id: &'a str,
+    timeout: Duration,
+) -> Result<UserResetBlock<'a>, String> {
+    generation_runner::stop_all_for_user(state, user_id, timeout)
+}
+
 fn prepare_attempt(
     database: &rusqlite::Connection,
     request: &DatasetGenerationRequest,
@@ -1047,6 +1075,14 @@ mod generation_runner {
     ) -> Result<StartedGeneration, String> {
         validate_user(&request.user_id)?;
         let database = state.database.lock().map_err(string)?;
+        if state
+            .generation_reset_blocks
+            .lock()
+            .map_err(string)?
+            .contains(&request.user_id)
+        {
+            return Err("Dataset Generation is blocked while Reset All is in progress".into());
+        }
         let prepared = prepare_attempt(&database, request)?;
         if !prepared.should_start {
             return Ok(StartedGeneration {
@@ -1075,6 +1111,14 @@ mod generation_runner {
     ) -> Result<StartedGeneration, String> {
         validate_user(user_id)?;
         let database = state.database.lock().map_err(string)?;
+        if state
+            .generation_reset_blocks
+            .lock()
+            .map_err(string)?
+            .contains(user_id)
+        {
+            return Err("Dataset Generation is blocked while Reset All is in progress".into());
+        }
         let (prepared, request) = AttemptStore::new(&database).prepare_retry(
             attempt_id,
             user_id,
@@ -1100,10 +1144,60 @@ mod generation_runner {
         })
     }
 
+    /// Blocks new Start/Retry for one User, cancels active Attempts, and
+    /// waits for all to exit without holding the SQLite mutex.
+    pub(super) fn stop_all_for_user<'a>(
+        state: &'a LocalResearchState,
+        user_id: &'a str,
+        timeout: Duration,
+    ) -> Result<super::UserResetBlock<'a>, String> {
+        validate_user(user_id)?;
+        let database = state.database.lock().map_err(string)?;
+        state
+            .generation_reset_blocks
+            .lock()
+            .map_err(string)?
+            .insert(user_id.to_string());
+        let block = super::UserResetBlock {
+            state,
+            user_id: user_id.to_string(),
+        };
+        let attempt_ids = AttemptStore::new(&database).active_ids_for_user(user_id)?;
+        drop(database);
+        {
+            let attempts = state.generation_attempts.lock().map_err(string)?;
+            for attempt_id in &attempt_ids {
+                if let Some(cancelled) = attempts.get(attempt_id) {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = {
+                let attempts = state.generation_attempts.lock().map_err(string)?;
+                attempt_ids
+                    .iter()
+                    .filter(|attempt_id| attempts.contains_key(*attempt_id))
+                    .count()
+            };
+            if remaining == 0 {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(
+                    "Reset All could not stop Dataset Generation within the allowed time".into(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(block)
+    }
+
     pub(super) fn run_started(
         request: &DatasetGenerationRequest,
         state: &LocalResearchState,
-        cancelled: &AtomicBool,
+        cancelled: &Arc<AtomicBool>,
         attempt_id: &str,
     ) -> Result<(), String> {
         let database = state.database.lock().map_err(string)?;
@@ -4274,9 +4368,24 @@ mod tests {
             generation_runner::generate(&request, &state, &cancelled, &attempt_id).unwrap();
         let temporary_path = pending.temporary_path.clone();
         let final_path = pending.final_path.clone();
+        let state = Arc::new(state);
+        let observer_state = state.clone();
+        let observer_cancelled = cancelled.clone();
+        let observer_attempt_id = attempt_id.clone();
+        let observer = std::thread::spawn(move || {
+            while !observer_cancelled.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            observer_state
+                .generation_attempts
+                .lock()
+                .unwrap()
+                .remove(&observer_attempt_id);
+        });
         state
             .reset_local_data("alice", crate::local_research::LocalDataResetKind::All)
             .unwrap();
+        observer.join().unwrap();
         assert!(cancelled.load(Ordering::Relaxed));
         publish_dataset(&state, "alice", &attempt_id, &cancelled, pending).unwrap();
         assert!(!temporary_path.exists());
@@ -4289,6 +4398,309 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM signal_dataset_access", [], |row| {
                     row.get::<_, i64>(0)
                 })
+                .unwrap(),
+            0,
+        );
+        drop(watchlist);
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reset_all_blocks_start_and_retry_until_released() {
+        let (_root, state, request) = setup("valid", "reset-block");
+        let block = stop_all_generation_for_user(&state, "alice", Duration::from_secs(5)).unwrap();
+        let blocked = generation_runner::start(&request, &state).err().unwrap();
+        assert!(
+            blocked.contains("Reset All is in progress"),
+            "start must be blocked: {blocked}"
+        );
+        let blocked = generation_runner::retry("missing-attempt", "alice", &state)
+            .err()
+            .unwrap();
+        assert!(
+            blocked.contains("Reset All is in progress"),
+            "retry must be blocked: {blocked}"
+        );
+        let bob_request = DatasetGenerationRequest {
+            user_id: "bob".into(),
+            ..request.clone()
+        };
+        let bob_started = generation_runner::start(&bob_request, &state).unwrap();
+        if let Some(cancelled) = &bob_started.cancelled {
+            assert!(
+                !cancelled.load(Ordering::Relaxed),
+                "bob must not be blocked while alice is resetting"
+            );
+            state
+                .generation_attempts
+                .lock()
+                .unwrap()
+                .remove(&bob_started.attempt.attempt_id);
+        }
+        drop(block);
+        let alice_started = generation_runner::start(&request, &state).unwrap();
+        if let Some(cancelled) = &alice_started.cancelled {
+            assert!(
+                !cancelled.load(Ordering::Relaxed),
+                "alice must be able to start again after reset completes"
+            );
+            state
+                .generation_attempts
+                .lock()
+                .unwrap()
+                .remove(&alice_started.attempt.attempt_id);
+        }
+    }
+
+    #[test]
+    fn reset_all_waits_for_in_flight_attempt_before_deleting() {
+        let (root, state, request) = setup("valid", "reset-wait");
+        let watchlist = crate::watchlist::WatchlistDb::open(&root.join("adaq.db")).unwrap();
+        let attempt_id = running_attempt(&state, &request);
+        let state = Arc::new(state);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .generation_attempts
+            .lock()
+            .unwrap()
+            .insert(attempt_id.clone(), cancelled.clone());
+        let at_publication = Arc::new(AtomicBool::new(false));
+        let go = Arc::new(AtomicBool::new(false));
+        let task_state = state.clone();
+        let task_cancelled = cancelled.clone();
+        let task_at_publication = at_publication.clone();
+        let task_go = go.clone();
+        let task_request = request.clone();
+        let task_attempt_id = attempt_id.clone();
+        let task = std::thread::spawn(move || {
+            let result = generation_runner::run_attempt_with_lifecycle_checkpoint(
+                &task_request,
+                &task_state,
+                &task_cancelled,
+                &task_attempt_id,
+                |checkpoint| {
+                    if checkpoint == generation_runner::LifecycleCheckpoint::BeforePublication {
+                        task_at_publication.store(true, Ordering::SeqCst);
+                        while !task_go.load(Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    }
+                },
+            );
+            task_state
+                .generation_attempts
+                .lock()
+                .unwrap()
+                .remove(&task_attempt_id);
+            result
+        });
+        while !at_publication.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let reset_state = state.clone();
+        let reset = std::thread::spawn(move || {
+            reset_state.reset_local_data("alice", crate::local_research::LocalDataResetKind::All)
+        });
+        while !cancelled.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        go.store(true, Ordering::SeqCst);
+        assert!(
+            task.join().unwrap().is_ok(),
+            "the cancelled attempt must exit cleanly"
+        );
+        assert!(reset.join().unwrap().is_ok());
+        assert!(state.generation_reset_blocks.lock().unwrap().is_empty());
+        assert_eq!(
+            state
+                .database
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM signal_dataset_access", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0,
+        );
+        let signal_datasets = root.join("signal-datasets");
+        let leftover_temps: Vec<_> = fs::read_dir(&signal_datasets)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .ends_with(".parquet.tmp")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            leftover_temps.is_empty(),
+            "no temporary output may survive the reset: {leftover_temps:?}"
+        );
+        drop(watchlist);
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reset_all_fails_before_deletion_when_attempt_cannot_stop() {
+        let (root, mut state, request) = setup("valid", "reset-stuck");
+        let seed_attempt_id = running_attempt(&state, &request);
+        let seed_cancelled = Arc::new(AtomicBool::new(false));
+        let pending =
+            generation_runner::generate(&request, &state, &seed_cancelled, &seed_attempt_id)
+                .unwrap();
+        let final_path = pending.final_path.clone();
+        publish_dataset(&state, "alice", &seed_attempt_id, &seed_cancelled, pending).unwrap();
+        assert!(final_path.exists());
+        assert_eq!(
+            state
+                .database
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM signal_dataset_access", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1,
+        );
+        let stuck_request = DatasetGenerationRequest {
+            seed: 8,
+            ..request.clone()
+        };
+        let stuck_attempt_id = running_attempt(&state, &stuck_request);
+        let stuck_cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .generation_attempts
+            .lock()
+            .unwrap()
+            .insert(stuck_attempt_id, stuck_cancelled);
+        state.reset_wait_timeout = Duration::from_millis(100);
+        let err = state
+            .reset_local_data("alice", crate::local_research::LocalDataResetKind::All)
+            .unwrap_err();
+        assert!(err.contains("could not stop"), "{err}");
+        assert!(final_path.exists(), "reset must not delete data on failure");
+        assert_eq!(
+            state
+                .database
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM signal_dataset_access", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1,
+        );
+        assert!(
+            state.generation_reset_blocks.lock().unwrap().is_empty(),
+            "the start restriction must be released on failure"
+        );
+        assert!(
+            generation_runner::start(&request, &state).is_ok(),
+            "start must be allowed again after the failed reset"
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reset_all_does_not_disturb_another_users_generation() {
+        let (root, state, request) = setup("valid", "reset-isolation");
+        let watchlist = crate::watchlist::WatchlistDb::open(&root.join("adaq.db")).unwrap();
+        let package = model_package();
+        state.import_component("bob", &package).unwrap();
+        state
+            .database
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('bob', ?1)",
+                [&request.snapshot_id],
+            )
+            .unwrap();
+        let bob_request = DatasetGenerationRequest {
+            user_id: "bob".into(),
+            ..request.clone()
+        };
+        let bob_attempt_id = running_attempt(&state, &bob_request);
+        let state = Arc::new(state);
+        let bob_cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .generation_attempts
+            .lock()
+            .unwrap()
+            .insert(bob_attempt_id.clone(), bob_cancelled.clone());
+        let at_publication = Arc::new(AtomicBool::new(false));
+        let go = Arc::new(AtomicBool::new(false));
+        let task_state = state.clone();
+        let task_cancelled = bob_cancelled.clone();
+        let task_at_publication = at_publication.clone();
+        let task_go = go.clone();
+        let task_request = bob_request.clone();
+        let task_attempt_id = bob_attempt_id.clone();
+        let task = std::thread::spawn(move || {
+            let result = generation_runner::run_attempt_with_lifecycle_checkpoint(
+                &task_request,
+                &task_state,
+                &task_cancelled,
+                &task_attempt_id,
+                |checkpoint| {
+                    if checkpoint == generation_runner::LifecycleCheckpoint::BeforePublication {
+                        task_at_publication.store(true, Ordering::SeqCst);
+                        while !task_go.load(Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    }
+                },
+            );
+            task_state
+                .generation_attempts
+                .lock()
+                .unwrap()
+                .remove(&task_attempt_id);
+            result
+        });
+        while !at_publication.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        state
+            .reset_local_data("alice", crate::local_research::LocalDataResetKind::All)
+            .unwrap();
+        assert!(
+            !bob_cancelled.load(Ordering::Relaxed),
+            "bob's attempt must not be cancelled by alice's reset"
+        );
+        assert!(state.generation_reset_blocks.lock().unwrap().is_empty());
+        go.store(true, Ordering::SeqCst);
+        assert!(task.join().unwrap().is_ok(), "bob's attempt must publish");
+        assert_eq!(
+            state
+                .database
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1",
+                    ["bob"],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+        );
+        assert_eq!(
+            state
+                .database
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1",
+                    ["alice"],
+                    |row| row.get::<_, i64>(0),
+                )
                 .unwrap(),
             0,
         );
