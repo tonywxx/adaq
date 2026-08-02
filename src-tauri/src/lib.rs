@@ -1,3 +1,4 @@
+mod dataset_generation;
 mod local_research;
 mod m8;
 #[allow(dead_code)] // M2 is host-only until Backtest orchestration consumes it.
