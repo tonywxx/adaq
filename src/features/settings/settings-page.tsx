@@ -386,6 +386,45 @@ function KeyboardSettings() {
 					</kbd>
 				</CardContent>
 			</Card>
+			<Card>
+				<CardContent className="flex items-center justify-between">
+					<div>
+						<p className="font-medium">Reload Page</p>
+						<p className="text-sm text-muted-foreground">
+							Reload the current application window.
+						</p>
+					</div>
+					<kbd className="rounded-md border bg-muted px-2 py-1 font-mono text-xs">
+						⌘/Ctrl + R
+					</kbd>
+				</CardContent>
+			</Card>
+			<Card>
+				<CardContent className="flex items-center justify-between">
+					<div>
+						<p className="font-medium">Zoom In</p>
+						<p className="text-sm text-muted-foreground">
+							Increase the interface zoom level.
+						</p>
+					</div>
+					<kbd className="rounded-md border bg-muted px-2 py-1 font-mono text-xs">
+						⌘/Ctrl + +
+					</kbd>
+				</CardContent>
+			</Card>
+			<Card>
+				<CardContent className="flex items-center justify-between">
+					<div>
+						<p className="font-medium">Zoom Out</p>
+						<p className="text-sm text-muted-foreground">
+							Decrease the interface zoom level.
+						</p>
+					</div>
+					<kbd className="rounded-md border bg-muted px-2 py-1 font-mono text-xs">
+						⌘/Ctrl + -
+					</kbd>
+				</CardContent>
+			</Card>
 		</>
 	);
 }
