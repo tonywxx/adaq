@@ -386,6 +386,7 @@ function KeyboardSettings() {
 					</kbd>
 				</CardContent>
 			</Card>
+			<br />
 			<Card>
 				<CardContent className="flex items-center justify-between">
 					<div>
@@ -399,6 +400,7 @@ function KeyboardSettings() {
 					</kbd>
 				</CardContent>
 			</Card>
+			<br />
 			<Card>
 				<CardContent className="flex items-center justify-between">
 					<div>
@@ -412,6 +414,7 @@ function KeyboardSettings() {
 					</kbd>
 				</CardContent>
 			</Card>
+			<br />
 			<Card>
 				<CardContent className="flex items-center justify-between">
 					<div>
@@ -422,6 +425,20 @@ function KeyboardSettings() {
 					</div>
 					<kbd className="rounded-md border bg-muted px-2 py-1 font-mono text-xs">
 						⌘/Ctrl + -
+					</kbd>
+				</CardContent>
+			</Card>
+			<br />
+			<Card>
+				<CardContent className="flex items-center justify-between">
+					<div>
+						<p className="font-medium">Reset Zoom</p>
+						<p className="text-sm text-muted-foreground">
+							Restore the default interface zoom level.
+						</p>
+					</div>
+					<kbd className="rounded-md border bg-muted px-2 py-1 font-mono text-xs">
+						⌘/Ctrl + 0
 					</kbd>
 				</CardContent>
 			</Card>

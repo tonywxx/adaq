@@ -48,6 +48,12 @@ export function useAppShortcuts() {
 			if (key === "-") {
 				event.preventDefault();
 				setZoom(getZoom() - ZOOM_STEP);
+				return;
+			}
+
+			if (key === "0") {
+				event.preventDefault();
+				setZoom(1);
 			}
 		};
 
