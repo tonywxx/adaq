@@ -32,17 +32,14 @@ test("Models list commands run blocking work off the Tauri main thread", () => {
 			["component_list", "snapshot_list_readable"],
 		],
 		[
-			readFileSync(
-				new URL("../src-tauri/src/m8.rs", import.meta.url),
-				"utf8",
-			),
+			readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"),
 			["dataset_generation_list"],
 		],
 	] as const;
 
 	for (const [source, commands] of sources) {
 		for (const command of commands) {
-			const start = source.indexOf(`pub async fn ${command}(`);
+			const start = source.indexOf(`fn ${command}(`);
 			const end = source.indexOf("\n#[tauri::command]", start);
 			expect(source.slice(start, end)).toContain(
 				"tauri::async_runtime::spawn_blocking",

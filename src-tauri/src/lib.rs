@@ -28,14 +28,8 @@ use local_research::LocalResearchState;
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
 const CHECK_FOR_UPDATES_EVENT: &str = "adaq-check-for-updates";
 
-fn database_path(app_data_dir: &Path) -> Result<PathBuf, std::io::Error> {
-    let current = app_data_dir.join("adaq.db");
-    let legacy = app_data_dir.join("adaq.sqlite3");
-    // Remove the legacy branch after two releases containing this migration.
-    if !current.exists() && legacy.exists() {
-        std::fs::rename(legacy, &current)?;
-    }
-    Ok(current)
+fn database_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("adaq.db")
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -62,6 +56,48 @@ fn get_factor_schema(loader: State<'_, WasmLoader>) -> Result<FactorSchema, Stri
 #[serde(rename_all = "camelCase")]
 struct MarketSourceRequest {
     src: String,
+}
+
+/// Tauri Dataset Generation commands are thin adapters: they deserialize the
+/// existing contract, delegate to the Tauri-independent Dataset Generation
+/// lifecycle module, and serialize the result.
+#[tauri::command]
+fn dataset_generation_start(
+    request: dataset_generation::DatasetGenerationRequest,
+    state: State<'_, LocalResearchState>,
+) -> Result<dataset_generation::Attempt, String> {
+    state.generation.start(request)
+}
+
+#[tauri::command]
+fn dataset_generation_retry(
+    attempt_id: String,
+    user_id: String,
+    state: State<'_, LocalResearchState>,
+) -> Result<dataset_generation::Attempt, String> {
+    state.generation.retry(&attempt_id, &user_id)
+}
+
+#[tauri::command]
+async fn dataset_generation_list(
+    user_id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<dataset_generation::Attempt>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<LocalResearchState>();
+        state.generation.list(&user_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn dataset_generation_cancel(
+    attempt_id: String,
+    user_id: String,
+    state: State<'_, LocalResearchState>,
+) -> Result<(), String> {
+    state.generation.cancel(&attempt_id, &user_id)
 }
 
 #[derive(serde::Deserialize)]
@@ -395,7 +431,7 @@ pub fn run() {
             app.manage(BarStreamState::default());
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
-            let database_path = database_path(&app_data_dir)?;
+            let database_path = database_path(&app_data_dir);
             app.manage(LocalResearchState::open(&app_data_dir).map_err(std::io::Error::other)?);
             app.manage(WatchlistDb::open(&database_path).map_err(std::io::Error::other)?);
             let handle = app.handle();
@@ -495,10 +531,10 @@ pub fn run() {
             local_research::validation_report_run,
             local_research::validation_report_list,
             local_research::validation_report_export,
-            m8::dataset_generation_start,
-            m8::dataset_generation_retry,
-            m8::dataset_generation_list,
-            m8::dataset_generation_cancel,
+            dataset_generation_start,
+            dataset_generation_retry,
+            dataset_generation_list,
+            dataset_generation_cancel,
             m8::signal_dataset_list,
             m8::signal_dataset_get,
             m8::signal_dataset_rows,
@@ -514,39 +550,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{WasmLoader, database_path, factor_abi, strategy_abi};
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    #[test]
-    fn database_migration_renames_legacy_without_overwriting_current() {
-        let root = std::env::temp_dir().join(format!(
-            "adaq-database-migration-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let legacy = root.join("adaq.sqlite3");
-        let current = root.join("adaq.db");
-        fs::write(&legacy, b"legacy").unwrap();
-
-        assert_eq!(database_path(&root).unwrap(), current);
-        assert_eq!(fs::read(&current).unwrap(), b"legacy");
-        assert!(!legacy.exists());
-
-        fs::write(&legacy, b"stale legacy").unwrap();
-        fs::write(&current, b"current").unwrap();
-        assert_eq!(database_path(&root).unwrap(), current);
-        assert_eq!(fs::read(&current).unwrap(), b"current");
-        assert_eq!(fs::read(&legacy).unwrap(), b"stale legacy");
-        fs::remove_dir_all(root).unwrap();
-    }
+    use super::{WasmLoader, factor_abi, strategy_abi};
+    use std::path::PathBuf;
 
     fn fixture(name: &str) -> String {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

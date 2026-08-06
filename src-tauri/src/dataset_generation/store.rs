@@ -1,109 +1,10 @@
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
 
-const INCOMPATIBLE_SCHEMA: &str = "Incompatible pre-v1 Dataset Generation schema. Close AdaQ, remove its device-local app data directory, and reopen AdaQ. This deletes all Local Research Data for every User on this device.";
-const MAX_DIAGNOSTIC_EVIDENCE_CHARS: usize = 8_192;
+#[cfg(test)]
+use super::MAX_DIAGNOSTIC_EVIDENCE_CHARS;
+use super::{Attempt, AttemptStatus, Diagnostic, INCOMPATIBLE_SCHEMA};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum AttemptStatus {
-    Pending,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-impl TryFrom<&str> for AttemptStatus {
-    type Error = String;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "pending" => Ok(Self::Pending),
-            "running" => Ok(Self::Running),
-            "completed" => Ok(Self::Completed),
-            "failed" => Ok(Self::Failed),
-            "cancelled" => Ok(Self::Cancelled),
-            _ => Err(format!(
-                "unknown Dataset Generation Attempt status: {value}"
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum DiagnosticCode {
-    GenerationInterrupted,
-    GenerationFailed,
-    PublicationFailed,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Diagnostic {
-    code: DiagnosticCode,
-    details: String,
-}
-
-impl Diagnostic {
-    fn generation_interrupted(previous: Option<String>) -> Self {
-        let mut details = "application stopped before completion".to_owned();
-        if let Some(previous) = previous {
-            let previous = serde_json::from_str::<Self>(&previous)
-                .map(Self::evidence)
-                .unwrap_or(previous);
-            details.push_str("; previous diagnostic: ");
-            details.push_str(&previous);
-        }
-        Self {
-            code: DiagnosticCode::GenerationInterrupted,
-            details,
-        }
-    }
-
-    pub(crate) fn generation_failed(details: impl Into<String>) -> Self {
-        Self::bounded(DiagnosticCode::GenerationFailed, details)
-    }
-
-    pub(crate) fn publication_failed(details: impl Into<String>) -> Self {
-        Self::bounded(DiagnosticCode::PublicationFailed, details)
-    }
-
-    fn bounded(code: DiagnosticCode, details: impl Into<String>) -> Self {
-        let available =
-            MAX_DIAGNOSTIC_EVIDENCE_CHARS.saturating_sub(code.persisted().chars().count() + 2);
-        Self {
-            code,
-            details: details.into().chars().take(available).collect(),
-        }
-    }
-
-    fn evidence(self) -> String {
-        format!("{}: {}", self.code.persisted(), self.details)
-    }
-}
-
-impl DiagnosticCode {
-    fn persisted(self) -> &'static str {
-        match self {
-            Self::GenerationInterrupted => "generation-interrupted",
-            Self::GenerationFailed => "generation-failed",
-            Self::PublicationFailed => "publication-failed",
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Attempt {
-    pub(crate) attempt_id: String,
-    pub(crate) dataset_id: Option<String>,
-    pub(crate) status: AttemptStatus,
-    pub(crate) diagnostic_evidence: Option<String>,
-    pub(crate) progress_completed: i64,
-    pub(crate) progress_total: i64,
-}
-
+#[derive(Debug)]
 pub(crate) struct PreparedAttempt {
     pub(crate) attempt: Attempt,
     pub(crate) should_start: bool,
@@ -521,17 +422,6 @@ impl<'a> AttemptStore<'a> {
             "UPDATE dataset_generation_attempts SET progress_completed = ?2 WHERE attempt_id = ?1",
             params![attempt_id, completed],
         ).map(|_| ()).map_err(string)
-    }
-
-    pub(crate) fn count_for_user(&self, user_id: &str) -> Result<u64, String> {
-        self.database
-            .query_row(
-                "SELECT COUNT(*) FROM dataset_generation_attempts WHERE user_id = ?1",
-                [user_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|value| value.max(0) as u64)
-            .map_err(string)
     }
 
     pub(crate) fn active_ids_for_user(&self, user_id: &str) -> Result<Vec<String>, String> {

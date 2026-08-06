@@ -6,7 +6,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 use adaq_backtest_core::{
@@ -28,8 +27,8 @@ use sha2::{Digest, Sha256};
 use tauri::Manager;
 
 use crate::{
-    dataset_generation::AttemptStore,
-    m8::{backtest_signal_datasets, stop_all_generation_for_user},
+    dataset_generation::{DatasetGeneration, GenerationSource},
+    m8::backtest_signal_datasets,
     run_engine::{
         FactorRunRequest, PositionMode, RunEngine, RunRequest, SignalRunRequest, SignalRunRow,
     },
@@ -41,12 +40,11 @@ const COMPONENT_PAGE_SIZE: usize = 10;
 
 pub struct LocalResearchState {
     pub(crate) root: PathBuf,
-    snapshots: SnapshotStore,
-    pub(crate) database: Mutex<Connection>,
+    snapshots: Arc<SnapshotStore>,
+    pub(crate) database: Arc<Mutex<Connection>>,
     downloads: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    pub(crate) generation_attempts: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    pub(crate) generation_reset_blocks: Mutex<HashSet<String>>,
-    pub(crate) reset_wait_timeout: Duration,
+    source: Arc<LocalGenerationSource>,
+    pub(crate) generation: DatasetGeneration,
 }
 
 #[derive(Serialize)]
@@ -115,6 +113,81 @@ pub struct LibraryComponent {
     compatible: bool,
     compatibility_error: Option<String>,
     locked_by_run_ids: Vec<String>,
+}
+
+/// The concrete local dependencies composed into the Dataset Generation
+/// lifecycle module. Only database access, Component Package access, Market
+/// Data Snapshot access, runtime Component materialization, and the Signal
+/// Dataset directory are shared; the complete Local Research state is not.
+pub(crate) struct LocalGenerationSource {
+    database: Arc<Mutex<Connection>>,
+    snapshots: Arc<SnapshotStore>,
+    root: PathBuf,
+}
+
+impl GenerationSource for LocalGenerationSource {
+    fn database(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.database.lock().map_err(string)
+    }
+
+    fn package_for_user(&self, user_id: &str, hash: &str) -> Result<ComponentPackage, String> {
+        validate_user(user_id)?;
+        let database = self.database.lock().map_err(string)?;
+        let (path, archive_sha256, wasm_sha256): (String, String, String) = database
+            .query_row(
+                "SELECT c.archive_path, c.archive_sha256, c.wasm_sha256 FROM component_content c
+                 JOIN component_access a USING(archive_sha256)
+                 WHERE a.user_id = ?1 AND c.archive_sha256 = ?2",
+                params![user_id, hash],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|_| "Component Package is not available to this User".to_owned())?;
+        drop(database);
+        let package = ComponentPackage::read(&fs::read(path).map_err(string)?).map_err(string)?;
+        verify_package(&package)?;
+        if package.archive_sha256 != archive_sha256 || package.manifest.wasm_sha256 != wasm_sha256 {
+            return Err("Component Package does not match stored identity or hashes".into());
+        }
+        Ok(package)
+    }
+
+    fn snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
+        validate_user(user_id)?;
+        let database = self.database.lock().map_err(string)?;
+        let json: String = database
+            .query_row(
+                "SELECT s.metadata_json FROM market_data_snapshots s
+             JOIN market_data_snapshot_access a USING(snapshot_id)
+             WHERE a.user_id = ?1 AND s.snapshot_id = ?2",
+                params![user_id, snapshot_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Market Data Snapshot is not available to this User".to_owned())?;
+        drop(database);
+        let snapshot: MarketDataSnapshot = serde_json::from_str(&json).map_err(string)?;
+        let bars = self.snapshots.read(&snapshot).map_err(string)?;
+        Ok((snapshot, bars))
+    }
+
+    fn runtime_component(&self, package: &ComponentPackage) -> Result<PathBuf, String> {
+        let directory = self.root.join("runtime");
+        fs::create_dir_all(&directory).map_err(string)?;
+        let path = directory.join(format!("{}.wasm", package.manifest.wasm_sha256));
+        if !path.is_file() {
+            fs::write(&path, &package.wasm).map_err(string)?;
+        }
+        Ok(path)
+    }
+
+    fn dataset_directory(&self) -> Result<PathBuf, String> {
+        let directory = self.root.join("signal-datasets");
+        fs::create_dir_all(&directory).map_err(string)?;
+        Ok(directory)
+    }
 }
 
 impl LocalResearchState {
@@ -215,35 +288,27 @@ impl LocalResearchState {
              );",
             )
             .map_err(string)?;
-        AttemptStore::new(&database).initialize()?;
-        let component_metadata_exists = database
-            .prepare(
-                "SELECT 1 FROM pragma_table_info('component_content') WHERE name = 'metadata_json'",
-            )
-            .map_err(string)?
-            .exists([])
-            .map_err(string)?;
-        if !component_metadata_exists {
-            database
-                .execute(
-                    "ALTER TABLE component_content ADD COLUMN metadata_json TEXT NOT NULL DEFAULT ''",
-                    [],
-                )
-                .map_err(string)?;
-        }
+        let database = Arc::new(Mutex::new(database));
+        let snapshots = Arc::new(snapshots);
+        let source = Arc::new(LocalGenerationSource {
+            database: database.clone(),
+            snapshots: snapshots.clone(),
+            root: root.clone(),
+        });
+        let generation = DatasetGeneration::open(source.clone())?;
         Ok(Self {
             root,
             snapshots,
-            database: Mutex::new(database),
+            database,
             downloads: Mutex::new(HashMap::new()),
-            generation_attempts: Mutex::new(HashMap::new()),
-            generation_reset_blocks: Mutex::new(HashSet::new()),
-            reset_wait_timeout: Duration::from_secs(60),
+            source,
+            generation,
         })
     }
 
     pub fn local_data_summary(&self, user_id: &str) -> Result<LocalDataSummary, String> {
         validate_user(user_id)?;
+        let generation_attempt_count = self.generation.list(user_id)?.len() as u64;
         let database = self.database.lock().map_err(string)?;
         let count = |sql: &str| -> Result<u64, String> {
             database
@@ -288,7 +353,7 @@ impl LocalResearchState {
             run_count: count("SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1")?,
             protocol_count: count("SELECT COUNT(*) FROM validation_protocols WHERE user_id = ?1")?,
             report_count: count("SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1")?,
-            generation_attempt_count: AttemptStore::new(&database).count_for_user(user_id)?,
+            generation_attempt_count,
             model_artifact_count: count(
                 "SELECT COUNT(*) FROM component_content c JOIN component_access a USING(archive_sha256) WHERE a.user_id = ?1 AND c.kind = 'model'",
             )?,
@@ -313,11 +378,7 @@ impl LocalResearchState {
     pub fn reset_local_data(&self, user_id: &str, kind: LocalDataResetKind) -> Result<(), String> {
         validate_user(user_id)?;
         let _reset_block = if matches!(kind, LocalDataResetKind::All) {
-            Some(stop_all_generation_for_user(
-                self,
-                user_id,
-                self.reset_wait_timeout,
-            )?)
+            Some(self.generation.stop_all_for_user(user_id)?)
         } else {
             None
         };
@@ -326,7 +387,12 @@ impl LocalResearchState {
             LocalDataResetKind::Watchlist => reset_watchlist(&mut database, user_id),
             LocalDataResetKind::Components => reset_components(&mut database, user_id, &self.root),
             LocalDataResetKind::MarketData => reset_market_data(&mut database, user_id, &self.root),
-            LocalDataResetKind::All => reset_all(&mut database, user_id, &self.root),
+            LocalDataResetKind::All => reset_all(
+                &mut database,
+                user_id,
+                &self.root,
+                _reset_block.as_ref().unwrap(),
+            ),
         }
     }
 
@@ -850,24 +916,7 @@ impl LocalResearchState {
         user_id: &str,
         hash: &str,
     ) -> Result<ComponentPackage, String> {
-        validate_user(user_id)?;
-        let database = self.database.lock().map_err(string)?;
-        let (path, archive_sha256, wasm_sha256): (String, String, String) = database
-            .query_row(
-                "SELECT c.archive_path, c.archive_sha256, c.wasm_sha256 FROM component_content c
-                 JOIN component_access a USING(archive_sha256)
-                 WHERE a.user_id = ?1 AND c.archive_sha256 = ?2",
-                params![user_id, hash],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .map_err(|_| "Component Package is not available to this User".to_owned())?;
-        drop(database);
-        let package = ComponentPackage::read(&fs::read(path).map_err(string)?).map_err(string)?;
-        verify_package(&package)?;
-        if package.archive_sha256 != archive_sha256 || package.manifest.wasm_sha256 != wasm_sha256 {
-            return Err("Component Package does not match stored identity or hashes".into());
-        }
-        Ok(package)
+        self.source.package_for_user(user_id, hash)
     }
 
     fn compatible_factors(
@@ -899,31 +948,11 @@ impl LocalResearchState {
         user_id: &str,
         snapshot_id: &str,
     ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
-        validate_user(user_id)?;
-        let database = self.database.lock().map_err(string)?;
-        let json: String = database
-            .query_row(
-                "SELECT s.metadata_json FROM market_data_snapshots s
-             JOIN market_data_snapshot_access a USING(snapshot_id)
-             WHERE a.user_id = ?1 AND s.snapshot_id = ?2",
-                params![user_id, snapshot_id],
-                |row| row.get(0),
-            )
-            .map_err(|_| "Market Data Snapshot is not available to this User".to_owned())?;
-        drop(database);
-        let snapshot: MarketDataSnapshot = serde_json::from_str(&json).map_err(string)?;
-        let bars = self.snapshots.read(&snapshot).map_err(string)?;
-        Ok((snapshot, bars))
+        self.source.snapshot_for_user(user_id, snapshot_id)
     }
 
     pub(crate) fn runtime_component(&self, package: &ComponentPackage) -> Result<PathBuf, String> {
-        let directory = self.root.join("runtime");
-        fs::create_dir_all(&directory).map_err(string)?;
-        let path = directory.join(format!("{}.wasm", package.manifest.wasm_sha256));
-        if !path.is_file() {
-            fs::write(&path, &package.wasm).map_err(string)?;
-        }
-        Ok(path)
+        self.source.runtime_component(package)
     }
 
     fn save_run(&self, user_id: &str, run_id: &str, result: &BacktestRun) -> Result<(), String> {
@@ -3680,7 +3709,12 @@ fn reset_market_data(database: &mut Connection, user_id: &str, root: &Path) -> R
     finish_staged_files(staged, result)
 }
 
-fn reset_all(database: &mut Connection, user_id: &str, root: &Path) -> Result<(), String> {
+fn reset_all(
+    database: &mut Connection,
+    user_id: &str,
+    root: &Path,
+    reset_block: &crate::dataset_generation::UserResetBlock<'_>,
+) -> Result<(), String> {
     let component_paths = strings(
         database,
         "SELECT c.archive_path FROM component_content c
@@ -3727,7 +3761,7 @@ fn reset_all(database: &mut Connection, user_id: &str, root: &Path) -> Result<()
                 [user_id],
             )
             .map_err(string)?;
-        AttemptStore::new(&transaction).delete_for_user(user_id)?;
+        reset_block.delete_attempt_evidence(&transaction)?;
         transaction
             .execute(
                 "DELETE FROM forecast_evaluation_access WHERE user_id = ?1",
@@ -3996,8 +4030,13 @@ mod tests {
                 )
                 .unwrap();
         }
-        AttemptStore::new(&database)
-            .prepare("request", "alice", "{}", || "attempt".into())
+        database
+            .execute(
+                "INSERT INTO dataset_generation_attempts
+                 (attempt_id, request_hash, user_id, status, request_json)
+                 VALUES ('attempt', 'request', 'alice', 'pending', '{}')",
+                [],
+            )
             .unwrap();
         drop(database);
 

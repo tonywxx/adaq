@@ -2,19 +2,10 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{Cursor, Read, Write},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
 };
 
 use adaq_backtest_core::MarketDataSnapshot;
-use adaq_component_sdk::host::model_abi;
-use adaq_component_tooling::{
-    ComponentKind, FactorInstancePlanInput, RunLimits, WasmLoader, component_parameters,
-    native_engine_identity, validate_and_freeze_feature_plan_with_factors_and_parameters,
-};
+use adaq_component_tooling::native_engine_identity;
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::ArrowWriter;
@@ -22,79 +13,46 @@ use rusqlite::{OptionalExtension, params};
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::Manager;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-use crate::{
-    dataset_generation::{
-        Attempt as DatasetGenerationAttempt, AttemptStore, Diagnostic, PreparedAttempt,
-    },
-    local_research::{LocalResearchState, validate_user},
-    run_engine::{FactorRunRequest, MaterializedFeatureRow, materialize_feature_segment},
-};
+use crate::local_research::{LocalResearchState, validate_user};
 
-const DATASET_ENGINE: &str = "closed-bar@1";
-const CHUNK_SIZE: usize = 256;
 const SIGNAL_ARCHIVE_SCHEMA_VERSION: u32 = 1;
 const MAX_SIGNAL_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SIGNAL_MANIFEST_BYTES: usize = 1024 * 1024;
-static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DatasetGenerationRequest {
-    pub user_id: String,
-    pub snapshot_id: String,
-    pub model_archive_sha256: String,
-    #[serde(default)]
-    pub model_parameters: std::collections::HashMap<String, String>,
-    #[serde(default)]
-    pub factor_instances: Vec<DatasetFactorInstance>,
-    #[serde(default)]
-    pub seed: u64,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DatasetFactorInstance {
-    pub alias: String,
-    pub archive_sha256: String,
-    #[serde(default)]
-    pub parameters: std::collections::HashMap<String, String>,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SignalDataset {
-    dataset_id: String,
-    snapshot_id: String,
-    src: String,
-    code: String,
-    interval: String,
-    prediction_source: String,
-    model_artifact: Option<adaq_component_tooling::ModelArtifact>,
-    model_outputs: Vec<adaq_component_tooling::ModelOutput>,
-    model_parameters: BTreeMap<String, adaq_component_tooling::ComponentParameterValue>,
-    source_warmup_bars: u32,
-    model_warmup_bars: u32,
-    model_archive_sha256: String,
-    trust: String,
-    component_lock: Vec<ComponentLockEntry>,
-    feature_plan_json: String,
-    feature_plan_hash: String,
-    seed: u64,
-    engine_identity: adaq_component_tooling::EngineIdentity,
-    producer_segments: Vec<ModelProducerSegment>,
-    continuous_bar_segments: usize,
-    bar_gap_rule: String,
-    row_count: usize,
-    unavailable_count: usize,
-    status_counts: BTreeMap<String, usize>,
-    parquet_sha256: String,
+pub(crate) struct SignalDataset {
+    pub(crate) dataset_id: String,
+    pub(crate) snapshot_id: String,
+    pub(crate) src: String,
+    pub(crate) code: String,
+    pub(crate) interval: String,
+    pub(crate) prediction_source: String,
+    pub(crate) model_artifact: Option<adaq_component_tooling::ModelArtifact>,
+    pub(crate) model_outputs: Vec<adaq_component_tooling::ModelOutput>,
+    pub(crate) model_parameters: BTreeMap<String, adaq_component_tooling::ComponentParameterValue>,
+    pub(crate) source_warmup_bars: u32,
+    pub(crate) model_warmup_bars: u32,
+    pub(crate) model_archive_sha256: String,
+    pub(crate) trust: String,
+    pub(crate) component_lock: Vec<ComponentLockEntry>,
+    pub(crate) feature_plan_json: String,
+    pub(crate) feature_plan_hash: String,
+    pub(crate) seed: u64,
+    pub(crate) engine_identity: adaq_component_tooling::EngineIdentity,
+    pub(crate) producer_segments: Vec<ModelProducerSegment>,
+    pub(crate) continuous_bar_segments: usize,
+    pub(crate) bar_gap_rule: String,
+    pub(crate) row_count: usize,
+    pub(crate) unavailable_count: usize,
+    pub(crate) status_counts: BTreeMap<String, usize>,
+    pub(crate) parquet_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    archive_manifest_json: Option<String>,
+    pub(crate) archive_manifest_json: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    external_producer_segments: Option<Vec<serde_json::Value>>,
+    pub(crate) external_producer_segments: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -125,30 +83,23 @@ struct ExternalProducerSegment {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ModelProducerSegment {
-    start_prediction_time_ms: Option<i64>,
-    end_prediction_time_ms: Option<i64>,
-    model_archive_sha256: String,
-    model_artifact: Option<adaq_component_tooling::ModelArtifact>,
-    model_parameters: BTreeMap<String, adaq_component_tooling::ComponentParameterValue>,
-    seed: u64,
-    trust: String,
-    engine_identity: adaq_component_tooling::EngineIdentity,
-    feature_plan_hash: String,
+pub(crate) struct ModelProducerSegment {
+    pub(crate) start_prediction_time_ms: Option<i64>,
+    pub(crate) end_prediction_time_ms: Option<i64>,
+    pub(crate) model_archive_sha256: String,
+    pub(crate) model_artifact: Option<adaq_component_tooling::ModelArtifact>,
+    pub(crate) model_parameters: BTreeMap<String, adaq_component_tooling::ComponentParameterValue>,
+    pub(crate) seed: u64,
+    pub(crate) trust: String,
+    pub(crate) engine_identity: adaq_component_tooling::EngineIdentity,
+    pub(crate) feature_plan_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ComponentLockEntry {
-    alias: String,
-    archive_sha256: String,
-}
-
-#[derive(Debug)]
-pub(super) struct PendingDataset {
-    metadata: SignalDataset,
-    temporary_path: std::path::PathBuf,
-    final_path: std::path::PathBuf,
+pub(crate) struct ComponentLockEntry {
+    pub(crate) alias: String,
+    pub(crate) archive_sha256: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -635,147 +586,6 @@ fn is_sha256(value: &str) -> bool {
 }
 
 #[tauri::command]
-pub fn dataset_generation_start(
-    request: DatasetGenerationRequest,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, LocalResearchState>,
-) -> Result<DatasetGenerationAttempt, String> {
-    start_generation(request, app, &state)
-}
-
-fn start_generation(
-    request: DatasetGenerationRequest,
-    app: tauri::AppHandle,
-    state: &LocalResearchState,
-) -> Result<DatasetGenerationAttempt, String> {
-    start_started_generation(generation_runner::start(&request, state)?, app)
-}
-
-fn start_started_generation(
-    started: generation_runner::StartedGeneration,
-    app: tauri::AppHandle,
-) -> Result<DatasetGenerationAttempt, String> {
-    let generation_runner::StartedGeneration {
-        attempt,
-        cancelled,
-        request,
-    } = started;
-    let Some(cancelled) = cancelled else {
-        return Ok(attempt);
-    };
-    let task_id = attempt.attempt_id.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<LocalResearchState>();
-        let final_result = generation_runner::run_started(&request, &state, &cancelled, &task_id);
-        if let Err(error) = final_result {
-            let _ = record_publication_failure(&state, &task_id, &error);
-            eprintln!("Dataset Generation Attempt {task_id} finalization failed: {error}");
-        }
-        if let Ok(mut attempts) = state.generation_attempts.lock() {
-            attempts.remove(&task_id);
-        }
-    });
-    Ok(attempt)
-}
-
-#[tauri::command]
-pub fn dataset_generation_retry(
-    attempt_id: String,
-    user_id: String,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, LocalResearchState>,
-) -> Result<DatasetGenerationAttempt, String> {
-    let started = generation_runner::retry(&attempt_id, &user_id, &state)?;
-    start_started_generation(started, app)
-}
-
-#[tauri::command]
-pub async fn dataset_generation_list(
-    user_id: String,
-    app: tauri::AppHandle,
-) -> Result<Vec<DatasetGenerationAttempt>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        validate_user(&user_id)?;
-        let state = app.state::<LocalResearchState>();
-        let database = state.database.lock().map_err(string)?;
-        AttemptStore::new(&database).list(&user_id)
-    })
-    .await
-    .map_err(string)?
-}
-
-#[tauri::command]
-pub fn dataset_generation_cancel(
-    attempt_id: String,
-    user_id: String,
-    state: tauri::State<'_, LocalResearchState>,
-) -> Result<(), String> {
-    cancel_generation_attempt(&attempt_id, &user_id, &state)
-}
-
-fn cancel_generation_attempt(
-    attempt_id: &str,
-    user_id: &str,
-    state: &LocalResearchState,
-) -> Result<(), String> {
-    validate_user(user_id)?;
-    let database = state.database.lock().map_err(string)?;
-    if !AttemptStore::new(&database).request_cancellation(attempt_id, user_id)? {
-        return Err("Dataset Generation Attempt cannot be cancelled".into());
-    }
-    drop(database);
-    if let Some(cancelled) = state
-        .generation_attempts
-        .lock()
-        .map_err(string)?
-        .get(attempt_id)
-    {
-        cancelled.store(true, Ordering::Relaxed);
-    }
-    Ok(())
-}
-
-/// RAII guard holding one User's Dataset Generation start-restriction; Drop
-/// always releases it (success, failure, and panic paths).
-pub(crate) struct UserResetBlock<'a> {
-    state: &'a LocalResearchState,
-    user_id: String,
-}
-
-impl Drop for UserResetBlock<'_> {
-    fn drop(&mut self) {
-        if let Ok(mut blocks) = self.state.generation_reset_blocks.lock() {
-            blocks.remove(&self.user_id);
-        }
-    }
-}
-
-/// Lifecycle barrier for a User-scoped Reset All: blocks new Start and Retry
-/// for one User, cancels that User's active Attempts, and waits for all of
-/// them to exit. Returns a guard that keeps the User's start-restriction in
-/// place until the caller's reset work is finished.
-pub(crate) fn stop_all_generation_for_user<'a>(
-    state: &'a LocalResearchState,
-    user_id: &'a str,
-    timeout: Duration,
-) -> Result<UserResetBlock<'a>, String> {
-    generation_runner::stop_all_for_user(state, user_id, timeout)
-}
-
-fn prepare_attempt(
-    database: &rusqlite::Connection,
-    request: &DatasetGenerationRequest,
-) -> Result<PreparedAttempt, String> {
-    let request_hash = hash(&canonical_request(request)?);
-    AttemptStore::new(database).prepare(
-        &request_hash,
-        &request.user_id,
-        &serde_json::to_string(request).map_err(string)?,
-        || new_attempt_id(&request_hash),
-    )
-}
-
-#[tauri::command]
 pub fn signal_dataset_list(
     user_id: String,
     state: tauri::State<'_, LocalResearchState>,
@@ -985,622 +795,11 @@ fn import_signal_archive(
     serde_json::to_value(metadata).map_err(string)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PublicationResult {
-    Cancelled,
-    Published,
-}
-
-fn publish_dataset(
-    state: &LocalResearchState,
-    user_id: &str,
-    attempt_id: &str,
-    cancelled: &AtomicBool,
-    pending: PendingDataset,
-) -> Result<PublicationResult, String> {
-    let mut database = state.database.lock().map_err(string)?;
-    let transaction = database.transaction().map_err(string)?;
-    if cancelled.load(Ordering::Relaxed) {
-        transaction.commit().map_err(string)?;
-        let _ = fs::remove_file(&pending.temporary_path);
-        return Ok(PublicationResult::Cancelled);
-    }
-
-    let metadata_json = serde_json::to_string(&pending.metadata).map_err(string)?;
-    let mut created_final = false;
-    let publication = (|| -> Result<(), String> {
-        if pending.final_path.is_file() {
-            if hash(&fs::read(&pending.final_path).map_err(string)?)
-                != pending.metadata.parquet_sha256
-            {
-                return Err("existing-dataset-content-hash-mismatch".into());
-            }
-            fs::remove_file(&pending.temporary_path).map_err(string)?;
-        } else {
-            fs::rename(&pending.temporary_path, &pending.final_path).map_err(string)?;
-            created_final = true;
-        }
-        transaction.execute(
-            "INSERT OR IGNORE INTO signal_dataset_content(dataset_id, metadata_json, parquet_path) VALUES (?1, ?2, ?3)",
-            params![pending.metadata.dataset_id, metadata_json, pending.final_path.to_string_lossy()],
-        ).map_err(string)?;
-        transaction
-            .execute(
-                "INSERT OR IGNORE INTO signal_dataset_access(user_id, dataset_id) VALUES (?1, ?2)",
-                params![user_id, pending.metadata.dataset_id],
-            )
-            .map_err(string)?;
-        if !AttemptStore::new(&transaction)
-            .mark_completed(attempt_id, &pending.metadata.dataset_id)?
-        {
-            return Err("Dataset Generation Attempt cannot be published".into());
-        }
-        transaction.commit().map_err(string)
-    })();
-    if publication.is_err() {
-        let _ = fs::remove_file(&pending.temporary_path);
-        if created_final {
-            let _ = fs::remove_file(&pending.final_path);
-        }
-    }
-    publication.map(|()| PublicationResult::Published)
-}
-
-fn record_failure(state: &LocalResearchState, attempt_id: &str, error: &str) -> Result<(), String> {
-    let database = state.database.lock().map_err(string)?;
-    AttemptStore::new(&database).record_failure(attempt_id, Diagnostic::generation_failed(error))
-}
-
-fn record_publication_failure(
-    state: &LocalResearchState,
-    attempt_id: &str,
-    error: &str,
-) -> Result<(), String> {
-    let database = state.database.lock().map_err(string)?;
-    AttemptStore::new(&database).record_failure(attempt_id, Diagnostic::publication_failed(error))
-}
-
-mod generation_runner {
-    use super::*;
-
-    pub(super) struct StartedGeneration {
-        pub(super) attempt: DatasetGenerationAttempt,
-        pub(super) cancelled: Option<Arc<AtomicBool>>,
-        pub(super) request: DatasetGenerationRequest,
-    }
-
-    pub(super) fn start(
-        request: &DatasetGenerationRequest,
-        state: &LocalResearchState,
-    ) -> Result<StartedGeneration, String> {
-        validate_user(&request.user_id)?;
-        let database = state.database.lock().map_err(string)?;
-        if state
-            .generation_reset_blocks
-            .lock()
-            .map_err(string)?
-            .contains(&request.user_id)
-        {
-            return Err("Dataset Generation is blocked while Reset All is in progress".into());
-        }
-        let prepared = prepare_attempt(&database, request)?;
-        if !prepared.should_start {
-            return Ok(StartedGeneration {
-                attempt: prepared.attempt,
-                cancelled: None,
-                request: request.clone(),
-            });
-        }
-        let cancelled = Arc::new(AtomicBool::new(false));
-        state
-            .generation_attempts
-            .lock()
-            .map_err(string)?
-            .insert(prepared.attempt.attempt_id.clone(), cancelled.clone());
-        Ok(StartedGeneration {
-            attempt: prepared.attempt,
-            cancelled: Some(cancelled),
-            request: request.clone(),
-        })
-    }
-
-    pub(super) fn retry(
-        attempt_id: &str,
-        user_id: &str,
-        state: &LocalResearchState,
-    ) -> Result<StartedGeneration, String> {
-        validate_user(user_id)?;
-        let database = state.database.lock().map_err(string)?;
-        if state
-            .generation_reset_blocks
-            .lock()
-            .map_err(string)?
-            .contains(user_id)
-        {
-            return Err("Dataset Generation is blocked while Reset All is in progress".into());
-        }
-        let (prepared, request) = AttemptStore::new(&database).prepare_retry(
-            attempt_id,
-            user_id,
-            new_attempt_id,
-            |request_json| {
-                let request: DatasetGenerationRequest =
-                    serde_json::from_str(request_json).map_err(string)?;
-                (request.user_id == user_id)
-                    .then_some(request)
-                    .ok_or_else(|| "Dataset Generation Attempt cannot be retried".into())
-            },
-        )?;
-        let cancelled = Arc::new(AtomicBool::new(false));
-        state
-            .generation_attempts
-            .lock()
-            .map_err(string)?
-            .insert(prepared.attempt.attempt_id.clone(), cancelled.clone());
-        Ok(StartedGeneration {
-            attempt: prepared.attempt,
-            cancelled: Some(cancelled),
-            request,
-        })
-    }
-
-    /// Blocks new Start/Retry for one User, cancels active Attempts, and
-    /// waits for all to exit without holding the SQLite mutex.
-    pub(super) fn stop_all_for_user<'a>(
-        state: &'a LocalResearchState,
-        user_id: &'a str,
-        timeout: Duration,
-    ) -> Result<super::UserResetBlock<'a>, String> {
-        validate_user(user_id)?;
-        let database = state.database.lock().map_err(string)?;
-        state
-            .generation_reset_blocks
-            .lock()
-            .map_err(string)?
-            .insert(user_id.to_string());
-        let block = super::UserResetBlock {
-            state,
-            user_id: user_id.to_string(),
-        };
-        let attempt_ids = AttemptStore::new(&database).active_ids_for_user(user_id)?;
-        drop(database);
-        {
-            let attempts = state.generation_attempts.lock().map_err(string)?;
-            for attempt_id in &attempt_ids {
-                if let Some(cancelled) = attempts.get(attempt_id) {
-                    cancelled.store(true, Ordering::Relaxed);
-                }
-            }
-        }
-        let deadline = Instant::now() + timeout;
-        loop {
-            let remaining = {
-                let attempts = state.generation_attempts.lock().map_err(string)?;
-                attempt_ids
-                    .iter()
-                    .filter(|attempt_id| attempts.contains_key(*attempt_id))
-                    .count()
-            };
-            if remaining == 0 {
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err(
-                    "Reset All could not stop Dataset Generation within the allowed time".into(),
-                );
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        Ok(block)
-    }
-
-    pub(super) fn run_started(
-        request: &DatasetGenerationRequest,
-        state: &LocalResearchState,
-        cancelled: &Arc<AtomicBool>,
-        attempt_id: &str,
-    ) -> Result<(), String> {
-        let database = state.database.lock().map_err(string)?;
-        let attempts = AttemptStore::new(&database);
-        let started = attempts.mark_running(attempt_id)?;
-        if started {
-            if attempts.reuse_completed_dataset(attempt_id)? {
-                Ok(())
-            } else {
-                drop(database);
-                run_attempt(request, state, cancelled, attempt_id)
-            }
-        } else {
-            Ok(())
-        }
-    }
-
-    pub(super) fn run_attempt(
-        request: &DatasetGenerationRequest,
-        state: &LocalResearchState,
-        cancelled: &AtomicBool,
-        attempt_id: &str,
-    ) -> Result<(), String> {
-        match generate(request, state, cancelled, attempt_id) {
-            Ok(dataset) => {
-                match publish_dataset(state, &request.user_id, attempt_id, cancelled, dataset) {
-                    Ok(PublicationResult::Cancelled) => {
-                        let database = state.database.lock().map_err(string)?;
-                        AttemptStore::new(&database)
-                            .mark_cancelled_after_exit(attempt_id, &request.user_id)?;
-                        Ok(())
-                    }
-                    Ok(PublicationResult::Published) => Ok(()),
-                    Err(error) => record_publication_failure(state, attempt_id, &error),
-                }
-            }
-            Err(error) => {
-                if cancelled.load(Ordering::Relaxed) {
-                    let database = state.database.lock().map_err(string)?;
-                    AttemptStore::new(&database)
-                        .mark_cancelled_after_exit(attempt_id, &request.user_id)?;
-                    Ok(())
-                } else {
-                    record_failure(state, attempt_id, &error)
-                }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    pub(super) enum LifecycleCheckpoint {
-        AfterGeneration,
-        BeforePublication,
-        AfterPublicationCutover,
-    }
-
-    #[cfg(test)]
-    pub(super) fn run_attempt_with_lifecycle_checkpoint(
-        request: &DatasetGenerationRequest,
-        state: &LocalResearchState,
-        cancelled: &AtomicBool,
-        attempt_id: &str,
-        mut checkpoint: impl FnMut(LifecycleCheckpoint),
-    ) -> Result<(), String> {
-        match generate(request, state, cancelled, attempt_id) {
-            Ok(dataset) => {
-                checkpoint(LifecycleCheckpoint::AfterGeneration);
-                checkpoint(LifecycleCheckpoint::BeforePublication);
-                match publish_dataset(state, &request.user_id, attempt_id, cancelled, dataset) {
-                    Ok(PublicationResult::Cancelled) => {
-                        let database = state.database.lock().map_err(string)?;
-                        AttemptStore::new(&database)
-                            .mark_cancelled_after_exit(attempt_id, &request.user_id)?;
-                        Ok(())
-                    }
-                    Ok(PublicationResult::Published) => {
-                        checkpoint(LifecycleCheckpoint::AfterPublicationCutover);
-                        Ok(())
-                    }
-                    Err(error) => record_publication_failure(state, attempt_id, &error),
-                }
-            }
-            Err(error) => {
-                checkpoint(LifecycleCheckpoint::AfterGeneration);
-                if cancelled.load(Ordering::Relaxed) {
-                    let database = state.database.lock().map_err(string)?;
-                    AttemptStore::new(&database)
-                        .mark_cancelled_after_exit(attempt_id, &request.user_id)?;
-                    Ok(())
-                } else {
-                    record_failure(state, attempt_id, &error)
-                }
-            }
-        }
-    }
-
-    pub(super) fn generate(
-        request: &DatasetGenerationRequest,
-        state: &LocalResearchState,
-        cancelled: &AtomicBool,
-        attempt_id: &str,
-    ) -> Result<PendingDataset, String> {
-        if cancelled.load(Ordering::Relaxed) {
-            return Err("Dataset Generation Attempt cancelled".into());
-        }
-        let model = state.package_for_user(&request.user_id, &request.model_archive_sha256)?;
-        if model.manifest.kind != ComponentKind::Model {
-            return Err("Dataset generation requires a Model Component".into());
-        }
-        let parameters = component_parameters(&model.manifest, Some(&request.model_parameters))?;
-        let named_model_parameters = model
-            .manifest
-            .parameters
-            .iter()
-            .zip(parameters.iter().cloned())
-            .map(|(definition, value)| (definition.name.clone(), value))
-            .collect::<BTreeMap<_, _>>();
-        let model_warmup_bars = model.manifest.warmup_bars;
-        let factor_packages = request
-            .factor_instances
-            .iter()
-            .map(|factor| {
-                let package = state.package_for_user(&request.user_id, &factor.archive_sha256)?;
-                if package.manifest.kind != ComponentKind::Factor {
-                    return Err("Model-to-Model dependencies are not supported".into());
-                }
-                let parameters = component_parameters(&package.manifest, Some(&factor.parameters))?;
-                Ok((factor, package, parameters))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let factor_inputs = factor_packages
-            .iter()
-            .map(|(factor, package, parameters)| FactorInstancePlanInput {
-                alias: &factor.alias,
-                manifest: &package.manifest,
-                parameters: parameters.clone(),
-            })
-            .collect::<Vec<_>>();
-        let identity = native_engine_identity().map_err(string)?;
-        let plan = validate_and_freeze_feature_plan_with_factors_and_parameters(
-            &model.manifest,
-            &model.archive_sha256,
-            &identity,
-            &factor_inputs,
-            &request
-                .model_parameters
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        )
-        .map_err(|error| format!("Feature Plan validation failed: {:?}", error.issues))?;
-        let factor_paths = factor_packages
-            .iter()
-            .map(|(factor, package, _)| {
-                Ok((factor.alias.as_str(), state.runtime_component(package)?))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let factor_runs = factor_paths
-            .iter()
-            .map(|(alias, path)| {
-                Ok(FactorRunRequest {
-                    alias,
-                    path: path.to_str().ok_or("Factor runtime path is invalid")?,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let (snapshot, bars) = state.snapshot_for_user(&request.user_id, &request.snapshot_id)?;
-        let total = i64::try_from(bars.len()).map_err(|_| "Dataset row count is too large")?;
-        let database = state.database.lock().map_err(string)?;
-        AttemptStore::new(&database).set_progress_total(attempt_id, total)?;
-        drop(database);
-        let slots = plan
-            .slot_names()
-            .map(|name| model_abi::exports::adaq::model::api::FeatureSlot { name: name.into() })
-            .collect::<Vec<_>>();
-        let loader = WasmLoader::with_limits(RunLimits::default());
-        let mut boundaries = snapshot
-            .gaps
-            .iter()
-            .filter_map(|gap| {
-                bars.iter()
-                    .position(|bar| bar.open_time_ms >= gap.start_time_ms)
-            })
-            .collect::<Vec<_>>();
-        boundaries.push(bars.len());
-        boundaries.dedup();
-        let instrument_id = format!("{}:{}", snapshot.src, snapshot.code);
-        let mut rows = vec![None; bars.len()];
-        let mut output = vec![None; bars.len()];
-        let mut model_warmup = vec![false; bars.len()];
-        let mut unavailable_reasons = vec![None; bars.len()];
-        let mut start = 0;
-        for &end in &boundaries {
-            if cancelled.load(Ordering::Relaxed) {
-                return Err("Dataset Generation Attempt cancelled".into());
-            }
-            let segment = &bars[start..end];
-            if segment.is_empty() {
-                continue;
-            }
-            let features =
-                materialize_feature_segment(&plan, &factor_runs, segment, RunLimits::default())
-                    .map_err(|error| format!("Feature materialization failed: {error:?}"))?;
-            let mut present = Vec::new();
-            for (offset, feature) in features.into_iter().enumerate() {
-                let index = start + offset;
-                match feature {
-                    MaterializedFeatureRow::Warmup => {
-                        unavailable_reasons[index] = Some("warmup".into())
-                    }
-                    MaterializedFeatureRow::MissingInput { slot, source } => {
-                        unavailable_reasons[index] = Some(format!("missing-input:{slot}:{source}"));
-                    }
-                    MaterializedFeatureRow::Present(values) => {
-                        let row = model_abi::exports::adaq::model::api::PredictionRow {
-                            instrument_id: instrument_id.clone(),
-                            prediction_time_ms: close_time(
-                                snapshot.interval,
-                                bars[index].open_time_ms,
-                            )?,
-                            values,
-                        };
-                        rows[index] = Some(row.clone());
-                        present.push((index, row));
-                    }
-                }
-            }
-            loader.load_model_bytes(&model.wasm, slots.clone(), &parameters, request.seed)?;
-            let mut model_input_count = 0usize;
-            for chunk in present.chunks(CHUNK_SIZE) {
-                if cancelled.load(Ordering::Relaxed) {
-                    return Err("Dataset Generation Attempt cancelled".into());
-                }
-                let forecasts =
-                    loader.process_model(chunk.iter().map(|(_, row)| row.clone()).collect())?;
-                if forecasts.len() != chunk.len() {
-                    return Err("invalid-model-forecast-count".into());
-                }
-                for ((index, _), forecast) in chunk.iter().zip(forecasts) {
-                    model_warmup[*index] = model_input_count < model_warmup_bars as usize;
-                    model_input_count += 1;
-                    output[*index] = forecast;
-                }
-                if let Some((index, _)) = chunk.last() {
-                    let completed =
-                        i64::try_from(index + 1).map_err(|_| "Dataset progress is too large")?;
-                    let database = state.database.lock().map_err(string)?;
-                    AttemptStore::new(&database).set_progress_completed(attempt_id, completed)?;
-                }
-            }
-            start = end;
-            let completed = i64::try_from(end).map_err(|_| "Dataset progress is too large")?;
-            let database = state.database.lock().map_err(string)?;
-            AttemptStore::new(&database).set_progress_completed(attempt_id, completed)?;
-        }
-        let records = output
-            .into_iter()
-            .enumerate()
-            .map(|(index, forecast)| {
-                let prediction_time_ms = close_time(snapshot.interval, bars[index].open_time_ms)?;
-                let (values, unavailable_reason) = match (rows[index].as_ref(), forecast) {
-                    (None, _) => (None, unavailable_reasons[index].clone()),
-                    (Some(row), Some(value))
-                        if value.instrument_id != row.instrument_id
-                            || value.prediction_time_ms != prediction_time_ms
-                            || value.values.len() != model.manifest.model_outputs.len()
-                            || value.values.iter().any(|value| !value.is_finite()) =>
-                    {
-                        return Err(
-                            "invalid-model-forecast: malformed or non-finite present output".into(),
-                        );
-                    }
-                    (Some(_), _) if model_warmup[index] => (None, Some("model-warmup".into())),
-                    (Some(_), None) => (None, Some("model-unavailable".into())),
-                    (Some(_), Some(value)) => (Some(value.values), None),
-                };
-                Ok((
-                    instrument_id.clone(),
-                    prediction_time_ms,
-                    prediction_time_ms,
-                    values,
-                    unavailable_reason,
-                ))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        if cancelled.load(Ordering::Relaxed) {
-            return Err("Dataset Generation Attempt cancelled".into());
-        }
-        let directory = state.root.join("signal-datasets");
-        fs::create_dir_all(&directory).map_err(string)?;
-        let temporary_path = directory.join(format!(".{attempt_id}.parquet.tmp"));
-        if let Err(error) = write_rows(&temporary_path, &records) {
-            let _ = fs::remove_file(&temporary_path);
-            return Err(error);
-        }
-        let parquet_sha256 = match fs::read(&temporary_path) {
-            Ok(bytes) => hash(&bytes),
-            Err(error) => {
-                let _ = fs::remove_file(&temporary_path);
-                return Err(string(error));
-            }
-        };
-        let mut component_lock = request
-            .factor_instances
-            .iter()
-            .map(|factor| ComponentLockEntry {
-                alias: factor.alias.clone(),
-                archive_sha256: factor.archive_sha256.clone(),
-            })
-            .collect::<Vec<_>>();
-        component_lock.sort_by(|left, right| left.alias.cmp(&right.alias));
-        component_lock.insert(
-            0,
-            ComponentLockEntry {
-                alias: "model".into(),
-                archive_sha256: request.model_archive_sha256.clone(),
-            },
-        );
-        let dataset_id = dataset_identity(
-            &snapshot.snapshot_id,
-            plan.plan_hash(),
-            request.seed,
-            &identity,
-            &component_lock,
-            &parquet_sha256,
-        )
-        .map_err(|error| {
-            let _ = fs::remove_file(&temporary_path);
-            error
-        })?;
-        if cancelled.load(Ordering::Relaxed) {
-            let _ = fs::remove_file(&temporary_path);
-            return Err("Dataset Generation Attempt cancelled".into());
-        }
-        let final_path = directory.join(format!("{dataset_id}.parquet"));
-        let unavailable_count = records
-            .iter()
-            .filter(|(_, _, _, values, _)| values.is_none())
-            .count();
-        let status_counts = records.iter().fold(BTreeMap::new(), |mut counts, row| {
-            let status = match (&row.3, row.4.as_deref()) {
-                (Some(_), _) => "present",
-                (_, Some(reason)) if reason.starts_with("missing-input:") => "missing-input",
-                (_, Some(reason)) => reason,
-                _ => "unavailable",
-            };
-            *counts.entry(status.to_owned()).or_insert(0) += 1;
-            counts
-        });
-        let producer_segments = vec![ModelProducerSegment {
-            start_prediction_time_ms: records.first().map(|row| row.1),
-            end_prediction_time_ms: records.last().map(|row| row.1),
-            model_archive_sha256: model.archive_sha256.clone(),
-            model_artifact: model.manifest.model_artifact.clone(),
-            model_parameters: named_model_parameters.clone(),
-            seed: request.seed,
-            trust: "verified-package".into(),
-            engine_identity: identity.clone(),
-            feature_plan_hash: plan.plan_hash().into(),
-        }];
-        let metadata = SignalDataset {
-            dataset_id,
-            snapshot_id: snapshot.snapshot_id,
-            src: snapshot.src,
-            code: snapshot.code,
-            interval: snapshot.interval.as_str().into(),
-            prediction_source: DATASET_ENGINE.into(),
-            model_artifact: model.manifest.model_artifact,
-            model_outputs: model.manifest.model_outputs,
-            model_parameters: named_model_parameters,
-            source_warmup_bars: plan.effective_warmup_bars(),
-            model_warmup_bars,
-            model_archive_sha256: model.archive_sha256,
-            trust: "verified-package".into(),
-            component_lock,
-            feature_plan_json: String::from_utf8(plan.to_json()).map_err(string)?,
-            feature_plan_hash: plan.plan_hash().into(),
-            seed: request.seed,
-            engine_identity: identity,
-            producer_segments,
-            continuous_bar_segments: boundaries.len(),
-            bar_gap_rule: "recreate-state-at-each-continuous-bar-segment@1".into(),
-            row_count: records.len(),
-            unavailable_count,
-            status_counts,
-            parquet_sha256,
-            archive_manifest_json: None,
-            external_producer_segments: None,
-        };
-        Ok(PendingDataset {
-            metadata,
-            temporary_path,
-            final_path,
-        })
-    }
-}
-
-fn close_time(interval: adaq_data_core::BarInterval, open: i64) -> Result<i64, String> {
+pub(crate) fn close_time(interval: adaq_data_core::BarInterval, open: i64) -> Result<i64, String> {
     adaq_data_core::next_bar_open_time_ms(open, interval).map_err(string)
 }
 
-fn write_rows(
+pub(crate) fn write_rows(
     path: &std::path::Path,
     rows: &[(String, i64, i64, Option<Vec<f64>>, Option<String>)],
 ) -> Result<(), String> {
@@ -2887,69 +2086,13 @@ fn forecast_evaluation_markdown(report: &ForecastEvaluationReport) -> String {
     )
 }
 
-fn hash(bytes: &[u8]) -> String {
+pub(crate) fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
 
-fn new_attempt_id(request_hash: &str) -> String {
-    let nonce = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    hash(format!("{request_hash}:{now}:{nonce}").as_bytes())
-}
-
-fn dataset_identity(
-    snapshot_id: &str,
-    feature_plan_hash: &str,
-    seed: u64,
-    identity: &adaq_component_tooling::EngineIdentity,
-    component_lock: &[ComponentLockEntry],
-    parquet_sha256: &str,
-) -> Result<String, String> {
-    serde_json::to_vec(&(
-        snapshot_id,
-        feature_plan_hash,
-        seed,
-        identity,
-        DATASET_ENGINE,
-        "verified-package",
-        "recreate-state-at-each-continuous-bar-segment@1",
-        1usize,
-        component_lock,
-        parquet_sha256,
-    ))
-    .map(|canonical| hash(&canonical))
-    .map_err(string)
-}
-
-fn canonical_request(request: &DatasetGenerationRequest) -> Result<Vec<u8>, String> {
-    let mut factors = request
-        .factor_instances
-        .iter()
-        .map(|factor| {
-            (
-                &factor.alias,
-                &factor.archive_sha256,
-                factor.parameters.iter().collect::<BTreeMap<_, _>>(),
-            )
-        })
-        .collect::<Vec<_>>();
-    factors.sort();
-    serde_json::to_vec(&(
-        &request.user_id,
-        &request.snapshot_id,
-        &request.model_archive_sha256,
-        request.model_parameters.iter().collect::<BTreeMap<_, _>>(),
-        factors,
-        request.seed,
-    ))
-    .map_err(string)
-}
 fn string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -2957,12 +2100,14 @@ fn string(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataset_generation::AttemptStatus;
+    use crate::dataset_generation::{Attempt, AttemptStatus, DatasetGenerationRequest};
     use adaq_component_tooling::{ComponentManifest, ComponentPackage, pack_component};
     use adaq_data_core::{BarGap, BarInterval, BarSeries, OhlcvBar};
-    use arrow_array::Array;
     use rust_decimal::Decimal;
-    use std::collections::HashMap;
+    use std::{
+        collections::HashMap,
+        time::{Duration, Instant},
+    };
 
     fn root(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -3055,17 +2200,70 @@ mod tests {
         )
     }
 
-    fn running_attempt(state: &LocalResearchState, request: &DatasetGenerationRequest) -> String {
-        let database = state.database.lock().unwrap();
-        let prepared = prepare_attempt(&database, request).unwrap();
-        assert!(prepared.should_start);
-        assert!(
-            AttemptStore::new(&database)
-                .mark_running(&prepared.attempt.attempt_id)
-                .unwrap()
-        );
-        prepared.attempt.attempt_id
+    /// Starts generation through the lifecycle interface and waits for the
+    /// published Completed Attempt.
+    fn published_attempt(
+        state: &LocalResearchState,
+        request: &DatasetGenerationRequest,
+    ) -> Attempt {
+        let attempt = state.generation.start(request.clone()).unwrap();
+        wait_for_attempt(
+            state,
+            &request.user_id,
+            &attempt.attempt_id,
+            AttemptStatus::Completed,
+        )
     }
+
+    fn wait_for_attempt(
+        state: &LocalResearchState,
+        user_id: &str,
+        attempt_id: &str,
+        expected: AttemptStatus,
+    ) -> Attempt {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let attempt = state
+                .generation
+                .list(user_id)
+                .unwrap()
+                .into_iter()
+                .find(|attempt| attempt.attempt_id == attempt_id)
+                .unwrap();
+            if attempt.status == expected {
+                return attempt;
+            }
+            assert!(
+                !matches!(
+                    attempt.status,
+                    AttemptStatus::Completed | AttemptStatus::Failed | AttemptStatus::Cancelled
+                ),
+                "Attempt {attempt_id} reached {:?} before {expected:?}",
+                attempt.status
+            );
+            assert!(
+                Instant::now() < deadline,
+                "Attempt {attempt_id} did not reach {expected:?}: {:?}",
+                attempt.status
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn dataset_parquet(state: &LocalResearchState, dataset_id: &str) -> Vec<u8> {
+        let path: String = state
+            .database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT parquet_path FROM signal_dataset_content WHERE dataset_id = ?1",
+                [dataset_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        fs::read(path).unwrap()
+    }
+
     #[test]
     fn closed_bar_assigns_source_close_boundary() {
         assert_eq!(
@@ -3375,12 +2573,8 @@ mod tests {
     #[test]
     fn forecast_evaluation_accepts_proven_native_score_evidence() {
         let (root, state, request) = setup("valid", "evaluation-incompatible");
-        let attempt = running_attempt(&state, &request);
-        let pending =
-            generation_runner::generate(&request, &state, &AtomicBool::new(false), &attempt)
-                .unwrap();
-        let dataset_id = pending.metadata.dataset_id.clone();
-        publish_dataset(&state, "alice", &attempt, &AtomicBool::new(false), pending).unwrap();
+        let attempt = published_attempt(&state, &request);
+        let dataset_id = attempt.dataset_id.unwrap();
         let report = evaluate_forecast(
             &state,
             &ForecastEvaluationRequest {
@@ -3701,62 +2895,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn dataset_identity_is_content_addressed() {
-        let identity = native_engine_identity().unwrap();
-        let lock = |factor: &str| {
-            vec![
-                ComponentLockEntry {
-                    alias: "model".into(),
-                    archive_sha256: "a".repeat(64),
-                },
-                ComponentLockEntry {
-                    alias: "factor".into(),
-                    archive_sha256: factor.repeat(64),
-                },
-            ]
-        };
-        let first =
-            dataset_identity("snapshot", "plan", 7, &identity, &lock("b"), "parquet").unwrap();
-        assert_eq!(
-            first,
-            dataset_identity("snapshot", "plan", 7, &identity, &lock("b"), "parquet").unwrap(),
-        );
-        assert_ne!(
-            first,
-            dataset_identity("snapshot", "plan", 7, &identity, &lock("c"), "parquet").unwrap(),
-        );
-    }
-
-    #[test]
-    fn request_identity_is_order_independent_and_user_scoped() {
-        let request = |user: &str, parameters: HashMap<String, String>| DatasetGenerationRequest {
-            user_id: user.into(),
-            snapshot_id: "snapshot".into(),
-            model_archive_sha256: "model".into(),
-            model_parameters: parameters,
-            factor_instances: vec![],
-            seed: 7,
-        };
-        let first = request(
-            "user-1",
-            HashMap::from([("b".into(), "2".into()), ("a".into(), "1".into())]),
-        );
-        let reordered = request(
-            "user-1",
-            HashMap::from([("a".into(), "1".into()), ("b".into(), "2".into())]),
-        );
-        let other_user = request("user-2", reordered.model_parameters.clone());
-        assert_eq!(
-            canonical_request(&first).unwrap(),
-            canonical_request(&reordered).unwrap()
-        );
-        assert_ne!(
-            canonical_request(&first).unwrap(),
-            canonical_request(&other_user).unwrap()
-        );
-    }
-
-    #[test]
     fn parquet_publication_is_atomic_and_preserves_unavailable_evidence() {
         let path =
             std::env::temp_dir().join(format!("adaq-m8-{}-rows.parquet", std::process::id()));
@@ -3802,913 +2940,6 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
-    #[test]
-    fn cancellation_stops_before_component_or_snapshot_access() {
-        let root = std::env::temp_dir().join(format!(
-            "adaq-m8-{}-{}-cancel",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        ));
-        let state = LocalResearchState::open(&root).unwrap();
-        let request = DatasetGenerationRequest {
-            user_id: "user".into(),
-            snapshot_id: "missing".into(),
-            model_archive_sha256: "missing".into(),
-            model_parameters: HashMap::new(),
-            factor_instances: vec![],
-            seed: 0,
-        };
-        let cancelled = AtomicBool::new(true);
-        assert_eq!(
-            generation_runner::generate(&request, &state, &cancelled, "attempt").unwrap_err(),
-            "Dataset Generation Attempt cancelled",
-        );
-        drop(state);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn start_suppresses_duplicates_and_restarts_after_terminal_evidence() {
-        let (root, state, request) = setup("valid", "duplicate");
-        let first = generation_runner::start(&request, &state).unwrap();
-        let duplicate = generation_runner::start(&request, &state).unwrap();
-        assert_eq!(first.attempt.attempt_id, duplicate.attempt.attempt_id);
-        assert!(first.cancelled.is_some());
-        assert!(duplicate.cancelled.is_none());
-        let database = state.database.lock().unwrap();
-        let attempts = AttemptStore::new(&database);
-        assert!(attempts.mark_running(&first.attempt.attempt_id).unwrap());
-        attempts
-            .record_failure(
-                &first.attempt.attempt_id,
-                Diagnostic::generation_failed("retained"),
-            )
-            .unwrap();
-        drop(database);
-        let restarted = generation_runner::start(&request, &state).unwrap();
-        assert_ne!(first.attempt.attempt_id, restarted.attempt.attempt_id);
-        let database = state.database.lock().unwrap();
-        let original = AttemptStore::new(&database)
-            .list("alice")
-            .unwrap()
-            .into_iter()
-            .find(|attempt| attempt.attempt_id == first.attempt.attempt_id)
-            .unwrap();
-        assert!(original.diagnostic_evidence.unwrap().contains("retained"));
-        drop(database);
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn cancellation_authorization_is_user_scoped() {
-        let (root, state, request) = setup("valid", "cancel-scope");
-        let attempt_id = running_attempt(&state, &request);
-        let database = state.database.lock().unwrap();
-        let attempts = AttemptStore::new(&database);
-        assert!(!attempts.request_cancellation(&attempt_id, "bob").unwrap());
-        let attempts_for_user = attempts.list("alice").unwrap();
-        assert_eq!(attempts_for_user.len(), 1);
-        assert_eq!(attempts_for_user[0].attempt_id, attempt_id);
-        assert_eq!(attempts_for_user[0].status, AttemptStatus::Running);
-        assert!(attempts.request_cancellation(&attempt_id, "alice").unwrap());
-        assert!(attempts.request_cancellation(&attempt_id, "alice").unwrap());
-        assert_eq!(
-            attempts.list("alice").unwrap()[0].status,
-            AttemptStatus::Running
-        );
-        drop(database);
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn pending_cancellation_is_immediate_and_prevents_starting() {
-        let (root, state, request) = setup("valid", "cancel-pending");
-        let started = generation_runner::start(&request, &state).unwrap();
-        let cancelled = started.cancelled.unwrap();
-        let attempt_id = started.attempt.attempt_id;
-        assert!(
-            AttemptStore::new(&state.database.lock().unwrap())
-                .request_cancellation(&attempt_id, "alice")
-                .unwrap()
-        );
-        generation_runner::run_started(&request, &state, &cancelled, &attempt_id).unwrap();
-        let attempt = AttemptStore::new(&state.database.lock().unwrap())
-            .list("alice")
-            .unwrap()
-            .remove(0);
-        assert_eq!(attempt.status, AttemptStatus::Cancelled);
-        assert!(attempt.dataset_id.is_none());
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn cancellation_during_generation_stays_running_until_the_task_exits() {
-        let (root, state, request) = setup("valid", "cancel-running");
-        let attempt_id = running_attempt(&state, &request);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        state
-            .generation_attempts
-            .lock()
-            .unwrap()
-            .insert(attempt_id.clone(), cancelled.clone());
-        {
-            cancel_generation_attempt(&attempt_id, "alice", &state).unwrap();
-            let database = state.database.lock().unwrap();
-            assert_eq!(
-                AttemptStore::new(&database).list("alice").unwrap()[0].status,
-                AttemptStatus::Running
-            );
-        }
-        generation_runner::run_attempt(&request, &state, &cancelled, &attempt_id).unwrap();
-        let attempt = AttemptStore::new(&state.database.lock().unwrap())
-            .list("alice")
-            .unwrap()
-            .remove(0);
-        assert_eq!(attempt.status, AttemptStatus::Cancelled);
-        assert!(attempt.dataset_id.is_none());
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn cancellation_observed_after_generation_removes_temporary_output() {
-        let (root, state, request) = setup("valid", "cancel-after-generation");
-        let attempt_id = running_attempt(&state, &request);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        state
-            .generation_attempts
-            .lock()
-            .unwrap()
-            .insert(attempt_id.clone(), cancelled.clone());
-        generation_runner::run_attempt_with_lifecycle_checkpoint(
-            &request,
-            &state,
-            &cancelled,
-            &attempt_id,
-            |checkpoint| {
-                if checkpoint == generation_runner::LifecycleCheckpoint::AfterGeneration {
-                    cancel_generation_attempt(&attempt_id, "alice", &state).unwrap();
-                }
-            },
-        )
-        .unwrap();
-        let attempt = AttemptStore::new(&state.database.lock().unwrap())
-            .list("alice")
-            .unwrap()
-            .remove(0);
-        assert_eq!(attempt.status, AttemptStatus::Cancelled);
-        assert!(attempt.dataset_id.is_none());
-        assert!(
-            fs::read_dir(state.root.join("signal-datasets"))
-                .unwrap()
-                .next()
-                .is_none()
-        );
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn cancellation_before_publication_cleans_temporary_output() {
-        let (root, state, request) = setup("valid", "cancel-before-publication");
-        let attempt_id = running_attempt(&state, &request);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        state
-            .generation_attempts
-            .lock()
-            .unwrap()
-            .insert(attempt_id.clone(), cancelled.clone());
-        generation_runner::run_attempt_with_lifecycle_checkpoint(
-            &request,
-            &state,
-            &cancelled,
-            &attempt_id,
-            |checkpoint| {
-                if checkpoint == generation_runner::LifecycleCheckpoint::BeforePublication {
-                    cancel_generation_attempt(&attempt_id, "alice", &state).unwrap();
-                }
-            },
-        )
-        .unwrap();
-        let attempt = AttemptStore::new(&state.database.lock().unwrap())
-            .list("alice")
-            .unwrap()
-            .remove(0);
-        assert_eq!(attempt.status, AttemptStatus::Cancelled);
-        assert!(attempt.dataset_id.is_none());
-        assert!(
-            fs::read_dir(state.root.join("signal-datasets"))
-                .unwrap()
-                .next()
-                .is_none()
-        );
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn publication_cutover_wins_over_a_late_cancellation() {
-        let (root, state, request) = setup("valid", "publication-cutover");
-        let attempt_id = running_attempt(&state, &request);
-        let cancelled = AtomicBool::new(false);
-        let mut late_cancellation = None;
-        generation_runner::run_attempt_with_lifecycle_checkpoint(
-            &request,
-            &state,
-            &cancelled,
-            &attempt_id,
-            |checkpoint| {
-                if checkpoint == generation_runner::LifecycleCheckpoint::AfterPublicationCutover {
-                    late_cancellation =
-                        Some(cancel_generation_attempt(&attempt_id, "alice", &state).unwrap_err());
-                }
-            },
-        )
-        .unwrap();
-        let attempt = AttemptStore::new(&state.database.lock().unwrap())
-            .list("alice")
-            .unwrap()
-            .remove(0);
-        assert_eq!(attempt.status, AttemptStatus::Completed);
-        assert!(attempt.dataset_id.is_some());
-        assert_eq!(
-            late_cancellation.as_deref(),
-            Some("Dataset Generation Attempt cannot be cancelled")
-        );
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn publication_failure_retains_no_dataset_and_records_its_cause() {
-        let (root, state, request) = setup("valid", "publication-failure");
-        let attempt_id = running_attempt(&state, &request);
-        state.database.lock().unwrap().execute_batch("CREATE TRIGGER reject_signal_dataset_access BEFORE INSERT ON signal_dataset_access BEGIN SELECT RAISE(ABORT, 'forced publication failure'); END;").unwrap();
-        generation_runner::run_attempt(&request, &state, &AtomicBool::new(false), &attempt_id)
-            .unwrap();
-        let attempt = AttemptStore::new(&state.database.lock().unwrap())
-            .list("alice")
-            .unwrap()
-            .remove(0);
-        assert_eq!(attempt.status, AttemptStatus::Failed);
-        assert!(attempt.dataset_id.is_none());
-        assert!(
-            attempt
-                .diagnostic_evidence
-                .unwrap()
-                .contains("publication-failed: forced publication failure")
-        );
-        assert!(
-            fs::read_dir(state.root.join("signal-datasets"))
-                .unwrap()
-                .next()
-                .is_none()
-        );
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn real_model_generation_restarts_state_and_warmup_at_gaps() {
-        let (root, state, request) = setup("valid", "real-model");
-        let attempt_id = running_attempt(&state, &request);
-        let cancelled = AtomicBool::new(false);
-        let pending =
-            generation_runner::generate(&request, &state, &cancelled, &attempt_id).unwrap();
-        assert_eq!(pending.metadata.source_warmup_bars, 0);
-        assert_eq!(pending.metadata.model_warmup_bars, 2);
-        assert_eq!(pending.metadata.continuous_bar_segments, 2);
-        assert_eq!(pending.metadata.producer_segments.len(), 1);
-        assert_eq!(
-            pending.metadata.producer_segments[0].start_prediction_time_ms,
-            Some(3_600_000),
-        );
-        assert_eq!(
-            pending.metadata.producer_segments[0].end_prediction_time_ms,
-            Some(9 * 3_600_000),
-        );
-        assert_eq!(
-            pending.metadata.producer_segments[0].feature_plan_hash,
-            pending.metadata.feature_plan_hash,
-        );
-        assert_eq!(pending.metadata.status_counts["model-warmup"], 4);
-        assert_eq!(pending.metadata.status_counts["present"], 2);
-        assert!(
-            pending
-                .metadata
-                .feature_plan_json
-                .contains("consumerParameters")
-        );
-        let batches = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
-            fs::File::open(&pending.temporary_path).unwrap(),
-        )
-        .unwrap()
-        .build()
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-        let forecasts = batches[0]
-            .column(4)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(forecasts.value(2), "[5.0]");
-        assert_eq!(forecasts.value(5), "[8.0]");
-        let dataset_id = pending.metadata.dataset_id.clone();
-        let final_path = pending.final_path.clone();
-        publish_dataset(&state, "alice", &attempt_id, &cancelled, pending).unwrap();
-        assert!(final_path.is_file());
-        let database = state.database.lock().unwrap();
-        assert_eq!(
-            database
-                .query_row(
-                    "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = 'alice'",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap(),
-            1,
-        );
-        assert_eq!(
-            database
-                .query_row(
-                    "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = 'bob'",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap(),
-            0,
-        );
-        database
-            .execute(
-                "INSERT INTO component_access(user_id, archive_sha256) VALUES ('bob', ?1)",
-                [&request.model_archive_sha256],
-            )
-            .unwrap();
-        database
-            .execute(
-                "INSERT INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('bob', ?1)",
-                [&request.snapshot_id],
-            )
-            .unwrap();
-        drop(database);
-        let mut bob_request = request.clone();
-        bob_request.user_id = "bob".into();
-        let bob_attempt = running_attempt(&state, &bob_request);
-        let bob_pending = generation_runner::generate(
-            &bob_request,
-            &state,
-            &AtomicBool::new(false),
-            &bob_attempt,
-        )
-        .unwrap();
-        assert_eq!(bob_pending.metadata.dataset_id, dataset_id);
-        publish_dataset(
-            &state,
-            "bob",
-            &bob_attempt,
-            &AtomicBool::new(false),
-            bob_pending,
-        )
-        .unwrap();
-        let database = state.database.lock().unwrap();
-        assert_eq!(
-            database
-                .query_row("SELECT COUNT(*) FROM signal_dataset_content", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .unwrap(),
-            1,
-        );
-        assert_eq!(
-            database
-                .query_row("SELECT COUNT(*) FROM signal_dataset_access", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .unwrap(),
-            2,
-        );
-        drop(database);
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn dataset_generation_interface_publishes_a_completed_attempt() {
-        let (root, state, request) = setup("valid", "generation-interface");
-        let started = generation_runner::start(&request, &state).unwrap();
-        let attempt_id = started.attempt.attempt_id;
-        let cancelled = started.cancelled.unwrap();
-
-        generation_runner::run_started(&request, &state, &cancelled, &attempt_id).unwrap();
-
-        let database = state.database.lock().unwrap();
-        let attempt = AttemptStore::new(&database).list("alice").unwrap();
-        assert_eq!(attempt[0].status, AttemptStatus::Completed);
-        assert_eq!(attempt[0].progress_completed, attempt[0].progress_total);
-        let datasets = database
-            .query_row("SELECT COUNT(*) FROM signal_dataset_content", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .unwrap();
-        assert_eq!(datasets, 1);
-        drop(database);
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn retry_is_user_scoped_and_reuses_completed_dataset_with_a_new_attempt() {
-        let (root, state, request) = setup("valid", "retry-reuse");
-        let failed = generation_runner::start(&request, &state).unwrap();
-        let failed_id = failed.attempt.attempt_id;
-        let database = state.database.lock().unwrap();
-        let attempts = AttemptStore::new(&database);
-        assert!(attempts.mark_running(&failed_id).unwrap());
-        attempts
-            .record_failure(
-                &failed_id,
-                Diagnostic::generation_failed("retained failure"),
-            )
-            .unwrap();
-        drop(database);
-
-        assert_eq!(
-            generation_runner::retry(&failed_id, "bob", &state)
-                .err()
-                .unwrap(),
-            "Dataset Generation Attempt cannot be retried"
-        );
-        let completed = generation_runner::retry(&failed_id, "alice", &state).unwrap();
-        let completed_id = completed.attempt.attempt_id.clone();
-        generation_runner::run_started(
-            &completed.request,
-            &state,
-            completed.cancelled.as_ref().unwrap(),
-            &completed_id,
-        )
-        .unwrap();
-
-        let retried = generation_runner::retry(&failed_id, "alice", &state).unwrap();
-        assert_ne!(retried.attempt.attempt_id, failed_id);
-        assert_eq!(retried.attempt.status, AttemptStatus::Pending);
-        assert_eq!(retried.attempt.progress_completed, 0);
-        assert_eq!(retried.attempt.progress_total, 0);
-        let retried_id = retried.attempt.attempt_id.clone();
-        let concurrent = generation_runner::start(&request, &state).unwrap();
-        assert_eq!(concurrent.attempt.attempt_id, retried_id);
-        assert!(concurrent.cancelled.is_none());
-        generation_runner::run_started(
-            &retried.request,
-            &state,
-            retried.cancelled.as_ref().unwrap(),
-            &retried_id,
-        )
-        .unwrap();
-
-        let database = state.database.lock().unwrap();
-        let attempts = AttemptStore::new(&database).list("alice").unwrap();
-        let find = |id: &str| {
-            attempts
-                .iter()
-                .find(|attempt| attempt.attempt_id == id)
-                .unwrap()
-        };
-        let completed = find(&completed_id);
-        let retried = find(&retried_id);
-        let failed = find(&failed_id);
-        assert_eq!(retried.status, AttemptStatus::Completed);
-        assert_eq!(retried.dataset_id, completed.dataset_id);
-        assert_eq!(
-            (retried.progress_completed, retried.progress_total),
-            (completed.progress_completed, completed.progress_total)
-        );
-        assert!(
-            failed
-                .diagnostic_evidence
-                .as_ref()
-                .unwrap()
-                .contains("retained failure")
-        );
-        drop(database);
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn malformed_model_failure_is_bounded_and_publishes_nothing() {
-        let (root, state, request) = setup("non-finite", "failure");
-        let attempt_id = running_attempt(&state, &request);
-        let error =
-            generation_runner::generate(&request, &state, &AtomicBool::new(false), &attempt_id)
-                .unwrap_err();
-        assert!(error.starts_with("invalid-model-forecast:"));
-        record_failure(
-            &state,
-            &attempt_id,
-            &format!("{error}{}", "x".repeat(9_000)),
-        )
-        .unwrap();
-        let database = state.database.lock().unwrap();
-        let attempt = AttemptStore::new(&database).list("alice").unwrap();
-        assert_eq!(attempt[0].status, AttemptStatus::Failed);
-        assert_eq!(
-            attempt[0]
-                .diagnostic_evidence
-                .as_ref()
-                .unwrap()
-                .chars()
-                .count(),
-            8_192
-        );
-        assert_eq!(
-            database
-                .query_row("SELECT COUNT(*) FROM signal_dataset_content", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .unwrap(),
-            0,
-        );
-        drop(database);
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn future_row_revision_is_rejected() {
-        let (root, state, request) = setup("wrong-time", "future-revision");
-        let attempt_id = running_attempt(&state, &request);
-        assert!(
-            generation_runner::generate(&request, &state, &AtomicBool::new(false), &attempt_id,)
-                .unwrap_err()
-                .starts_with("invalid-model-forecast:"),
-        );
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn reset_all_cancels_pending_publication() {
-        let (root, state, request) = setup("valid", "reset-race");
-        let watchlist = crate::watchlist::WatchlistDb::open(&root.join("adaq.db")).unwrap();
-        let attempt_id = running_attempt(&state, &request);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        state
-            .generation_attempts
-            .lock()
-            .unwrap()
-            .insert(attempt_id.clone(), cancelled.clone());
-        let pending =
-            generation_runner::generate(&request, &state, &cancelled, &attempt_id).unwrap();
-        let temporary_path = pending.temporary_path.clone();
-        let final_path = pending.final_path.clone();
-        let state = Arc::new(state);
-        let observer_state = state.clone();
-        let observer_cancelled = cancelled.clone();
-        let observer_attempt_id = attempt_id.clone();
-        let observer = std::thread::spawn(move || {
-            while !observer_cancelled.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            observer_state
-                .generation_attempts
-                .lock()
-                .unwrap()
-                .remove(&observer_attempt_id);
-        });
-        state
-            .reset_local_data("alice", crate::local_research::LocalDataResetKind::All)
-            .unwrap();
-        observer.join().unwrap();
-        assert!(cancelled.load(Ordering::Relaxed));
-        publish_dataset(&state, "alice", &attempt_id, &cancelled, pending).unwrap();
-        assert!(!temporary_path.exists());
-        assert!(!final_path.exists());
-        assert_eq!(
-            state
-                .database
-                .lock()
-                .unwrap()
-                .query_row("SELECT COUNT(*) FROM signal_dataset_access", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .unwrap(),
-            0,
-        );
-        drop(watchlist);
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn reset_all_blocks_start_and_retry_until_released() {
-        let (_root, state, request) = setup("valid", "reset-block");
-        let block = stop_all_generation_for_user(&state, "alice", Duration::from_secs(5)).unwrap();
-        let blocked = generation_runner::start(&request, &state).err().unwrap();
-        assert!(
-            blocked.contains("Reset All is in progress"),
-            "start must be blocked: {blocked}"
-        );
-        let blocked = generation_runner::retry("missing-attempt", "alice", &state)
-            .err()
-            .unwrap();
-        assert!(
-            blocked.contains("Reset All is in progress"),
-            "retry must be blocked: {blocked}"
-        );
-        let bob_request = DatasetGenerationRequest {
-            user_id: "bob".into(),
-            ..request.clone()
-        };
-        let bob_started = generation_runner::start(&bob_request, &state).unwrap();
-        if let Some(cancelled) = &bob_started.cancelled {
-            assert!(
-                !cancelled.load(Ordering::Relaxed),
-                "bob must not be blocked while alice is resetting"
-            );
-            state
-                .generation_attempts
-                .lock()
-                .unwrap()
-                .remove(&bob_started.attempt.attempt_id);
-        }
-        drop(block);
-        let alice_started = generation_runner::start(&request, &state).unwrap();
-        if let Some(cancelled) = &alice_started.cancelled {
-            assert!(
-                !cancelled.load(Ordering::Relaxed),
-                "alice must be able to start again after reset completes"
-            );
-            state
-                .generation_attempts
-                .lock()
-                .unwrap()
-                .remove(&alice_started.attempt.attempt_id);
-        }
-    }
-
-    #[test]
-    fn reset_all_waits_for_in_flight_attempt_before_deleting() {
-        let (root, state, request) = setup("valid", "reset-wait");
-        let watchlist = crate::watchlist::WatchlistDb::open(&root.join("adaq.db")).unwrap();
-        let attempt_id = running_attempt(&state, &request);
-        let state = Arc::new(state);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        state
-            .generation_attempts
-            .lock()
-            .unwrap()
-            .insert(attempt_id.clone(), cancelled.clone());
-        let at_publication = Arc::new(AtomicBool::new(false));
-        let go = Arc::new(AtomicBool::new(false));
-        let task_state = state.clone();
-        let task_cancelled = cancelled.clone();
-        let task_at_publication = at_publication.clone();
-        let task_go = go.clone();
-        let task_request = request.clone();
-        let task_attempt_id = attempt_id.clone();
-        let task = std::thread::spawn(move || {
-            let result = generation_runner::run_attempt_with_lifecycle_checkpoint(
-                &task_request,
-                &task_state,
-                &task_cancelled,
-                &task_attempt_id,
-                |checkpoint| {
-                    if checkpoint == generation_runner::LifecycleCheckpoint::BeforePublication {
-                        task_at_publication.store(true, Ordering::SeqCst);
-                        while !task_go.load(Ordering::SeqCst) {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                    }
-                },
-            );
-            task_state
-                .generation_attempts
-                .lock()
-                .unwrap()
-                .remove(&task_attempt_id);
-            result
-        });
-        while !at_publication.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        let reset_state = state.clone();
-        let reset = std::thread::spawn(move || {
-            reset_state.reset_local_data("alice", crate::local_research::LocalDataResetKind::All)
-        });
-        while !cancelled.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        go.store(true, Ordering::SeqCst);
-        assert!(
-            task.join().unwrap().is_ok(),
-            "the cancelled attempt must exit cleanly"
-        );
-        assert!(reset.join().unwrap().is_ok());
-        assert!(state.generation_reset_blocks.lock().unwrap().is_empty());
-        assert_eq!(
-            state
-                .database
-                .lock()
-                .unwrap()
-                .query_row("SELECT COUNT(*) FROM signal_dataset_access", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .unwrap(),
-            0,
-        );
-        let signal_datasets = root.join("signal-datasets");
-        let leftover_temps: Vec<_> = fs::read_dir(&signal_datasets)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|entry| {
-                        entry
-                            .file_name()
-                            .to_string_lossy()
-                            .ends_with(".parquet.tmp")
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        assert!(
-            leftover_temps.is_empty(),
-            "no temporary output may survive the reset: {leftover_temps:?}"
-        );
-        drop(watchlist);
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn reset_all_fails_before_deletion_when_attempt_cannot_stop() {
-        let (root, mut state, request) = setup("valid", "reset-stuck");
-        let seed_attempt_id = running_attempt(&state, &request);
-        let seed_cancelled = Arc::new(AtomicBool::new(false));
-        let pending =
-            generation_runner::generate(&request, &state, &seed_cancelled, &seed_attempt_id)
-                .unwrap();
-        let final_path = pending.final_path.clone();
-        publish_dataset(&state, "alice", &seed_attempt_id, &seed_cancelled, pending).unwrap();
-        assert!(final_path.exists());
-        assert_eq!(
-            state
-                .database
-                .lock()
-                .unwrap()
-                .query_row("SELECT COUNT(*) FROM signal_dataset_access", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .unwrap(),
-            1,
-        );
-        let stuck_request = DatasetGenerationRequest {
-            seed: 8,
-            ..request.clone()
-        };
-        let stuck_attempt_id = running_attempt(&state, &stuck_request);
-        let stuck_cancelled = Arc::new(AtomicBool::new(false));
-        state
-            .generation_attempts
-            .lock()
-            .unwrap()
-            .insert(stuck_attempt_id, stuck_cancelled);
-        state.reset_wait_timeout = Duration::from_millis(100);
-        let err = state
-            .reset_local_data("alice", crate::local_research::LocalDataResetKind::All)
-            .unwrap_err();
-        assert!(err.contains("could not stop"), "{err}");
-        assert!(final_path.exists(), "reset must not delete data on failure");
-        assert_eq!(
-            state
-                .database
-                .lock()
-                .unwrap()
-                .query_row("SELECT COUNT(*) FROM signal_dataset_access", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .unwrap(),
-            1,
-        );
-        assert!(
-            state.generation_reset_blocks.lock().unwrap().is_empty(),
-            "the start restriction must be released on failure"
-        );
-        assert!(
-            generation_runner::start(&request, &state).is_ok(),
-            "start must be allowed again after the failed reset"
-        );
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn reset_all_does_not_disturb_another_users_generation() {
-        let (root, state, request) = setup("valid", "reset-isolation");
-        let watchlist = crate::watchlist::WatchlistDb::open(&root.join("adaq.db")).unwrap();
-        let package = model_package();
-        state.import_component("bob", &package).unwrap();
-        state
-            .database
-            .lock()
-            .unwrap()
-            .execute(
-                "INSERT INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('bob', ?1)",
-                [&request.snapshot_id],
-            )
-            .unwrap();
-        let bob_request = DatasetGenerationRequest {
-            user_id: "bob".into(),
-            ..request.clone()
-        };
-        let bob_attempt_id = running_attempt(&state, &bob_request);
-        let state = Arc::new(state);
-        let bob_cancelled = Arc::new(AtomicBool::new(false));
-        state
-            .generation_attempts
-            .lock()
-            .unwrap()
-            .insert(bob_attempt_id.clone(), bob_cancelled.clone());
-        let at_publication = Arc::new(AtomicBool::new(false));
-        let go = Arc::new(AtomicBool::new(false));
-        let task_state = state.clone();
-        let task_cancelled = bob_cancelled.clone();
-        let task_at_publication = at_publication.clone();
-        let task_go = go.clone();
-        let task_request = bob_request.clone();
-        let task_attempt_id = bob_attempt_id.clone();
-        let task = std::thread::spawn(move || {
-            let result = generation_runner::run_attempt_with_lifecycle_checkpoint(
-                &task_request,
-                &task_state,
-                &task_cancelled,
-                &task_attempt_id,
-                |checkpoint| {
-                    if checkpoint == generation_runner::LifecycleCheckpoint::BeforePublication {
-                        task_at_publication.store(true, Ordering::SeqCst);
-                        while !task_go.load(Ordering::SeqCst) {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                    }
-                },
-            );
-            task_state
-                .generation_attempts
-                .lock()
-                .unwrap()
-                .remove(&task_attempt_id);
-            result
-        });
-        while !at_publication.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        state
-            .reset_local_data("alice", crate::local_research::LocalDataResetKind::All)
-            .unwrap();
-        assert!(
-            !bob_cancelled.load(Ordering::Relaxed),
-            "bob's attempt must not be cancelled by alice's reset"
-        );
-        assert!(state.generation_reset_blocks.lock().unwrap().is_empty());
-        go.store(true, Ordering::SeqCst);
-        assert!(task.join().unwrap().is_ok(), "bob's attempt must publish");
-        assert_eq!(
-            state
-                .database
-                .lock()
-                .unwrap()
-                .query_row(
-                    "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1",
-                    ["bob"],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap(),
-            1,
-        );
-        assert_eq!(
-            state
-                .database
-                .lock()
-                .unwrap()
-                .query_row(
-                    "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1",
-                    ["alice"],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap(),
-            0,
-        );
-        drop(watchlist);
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
     fn external_manifest(snapshot_id: &str, parquet: &[u8], start: i64, end: i64) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 1,
@@ -4734,11 +2965,8 @@ mod tests {
     #[test]
     fn external_signal_archive_is_validated_published_and_round_trips() {
         let (root, state, request) = setup("valid", "external-archive");
-        let attempt = running_attempt(&state, &request);
-        let pending =
-            generation_runner::generate(&request, &state, &AtomicBool::new(false), &attempt)
-                .unwrap();
-        let parquet = fs::read(&pending.temporary_path).unwrap();
+        let attempt = published_attempt(&state, &request);
+        let parquet = dataset_parquet(&state, attempt.dataset_id.as_deref().unwrap());
         let mut manifest_value: serde_json::Value = serde_json::from_slice(&external_manifest(
             &request.snapshot_id,
             &parquet,
@@ -4844,11 +3072,8 @@ mod tests {
     #[test]
     fn external_rows_reject_schema_order_and_availability_violations() {
         let (root, state, request) = setup("valid", "external-rejections");
-        let attempt = running_attempt(&state, &request);
-        let pending =
-            generation_runner::generate(&request, &state, &AtomicBool::new(false), &attempt)
-                .unwrap();
-        let parquet = fs::read(&pending.temporary_path).unwrap();
+        let attempt = published_attempt(&state, &request);
+        let parquet = dataset_parquet(&state, attempt.dataset_id.as_deref().unwrap());
         assert_eq!(
             read_external_rows(b"not parquet").unwrap_err(),
             "invalid-signals-parquet"
@@ -4958,30 +3183,34 @@ mod tests {
     #[test]
     fn failed_external_import_is_atomic() {
         let (root, state, request) = setup("valid", "external-atomic-failure");
-        let attempt = running_attempt(&state, &request);
-        let pending =
-            generation_runner::generate(&request, &state, &AtomicBool::new(false), &attempt)
-                .unwrap();
-        let parquet = fs::read(&pending.temporary_path).unwrap();
+        let attempt = published_attempt(&state, &request);
+        let parquet = dataset_parquet(&state, attempt.dataset_id.as_deref().unwrap());
         let manifest = external_manifest(&request.snapshot_id, &parquet, 3_600_000, 9 * 3_600_000);
         let archive = pack_signal_archive(&manifest, &parquet).unwrap();
         let dataset_id = hash(&[manifest.as_slice(), parquet.as_slice()].concat());
+        let count_before: i64 = state
+            .database
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM signal_dataset_content", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         state.database.lock().unwrap().execute_batch("CREATE TRIGGER reject_external_access BEFORE INSERT ON signal_dataset_access BEGIN SELECT RAISE(ABORT, 'forced publication failure'); END;").unwrap();
         assert!(
             import_signal_archive(&state, "alice", &archive)
                 .unwrap_err()
                 .contains("forced publication failure")
         );
-        assert_eq!(
-            state
-                .database
-                .lock()
-                .unwrap()
-                .query_row("SELECT COUNT(*) FROM signal_dataset_content", [], |row| row
-                    .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
+        let count_after: i64 = state
+            .database
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM signal_dataset_content", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count_after, count_before);
         assert!(
             !state
                 .root
@@ -4996,11 +3225,7 @@ mod tests {
     #[test]
     fn datasets_lock_their_component_artifacts() {
         let (root, state, request) = setup("valid", "dataset-lock");
-        let attempt = running_attempt(&state, &request);
-        let pending =
-            generation_runner::generate(&request, &state, &AtomicBool::new(false), &attempt)
-                .unwrap();
-        publish_dataset(&state, "alice", &attempt, &AtomicBool::new(false), pending).unwrap();
+        published_attempt(&state, &request);
         assert!(
             state
                 .delete_component("alice", &request.model_archive_sha256)
