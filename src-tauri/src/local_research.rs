@@ -508,6 +508,7 @@ impl LocalResearchState {
         self.snapshots.persist_for_user(user_id, series)
     }
 
+    #[cfg(test)]
     pub(crate) fn grant_snapshot_for_user(
         &self,
         user_id: &str,

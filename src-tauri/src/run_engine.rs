@@ -18,6 +18,7 @@ const MAX_GUEST_CAUSE_BYTES: usize = 4 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PositionMode {
     LongOnly,
+    #[cfg(test)]
     LongShort,
 }
 
@@ -983,6 +984,7 @@ fn validate_target(raw: &str, mode: PositionMode) -> Result<Decimal, String> {
         .map_err(|error| format!("Invalid Target Exposure: {error}"))?;
     let minimum = match mode {
         PositionMode::LongOnly => Decimal::ZERO,
+        #[cfg(test)]
         PositionMode::LongShort => -Decimal::ONE,
     };
     if target < minimum || target > Decimal::ONE {

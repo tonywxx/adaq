@@ -358,6 +358,7 @@ impl MarketDataSnapshots {
 
     /// Grants one existing Snapshot to one more User. Granting is
     /// idempotent, matching the access table's INSERT OR IGNORE contract.
+    #[cfg(test)]
     pub(crate) fn grant_for_user(&self, user_id: &str, snapshot_id: &str) -> Result<(), String> {
         validate_user(user_id)?;
         let database = self.0.source.database()?;
