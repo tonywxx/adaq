@@ -3,22 +3,28 @@
 import { readFileSync } from "node:fs";
 
 test("workspace list commands do not block the Tauri main thread", () => {
-	const source = readFileSync(
-		new URL("../src-tauri/src/local_research.rs", import.meta.url),
-		"utf8",
-	);
+	const sources = [
+		[
+			readFileSync(
+				new URL("../src-tauri/src/local_research.rs", import.meta.url),
+				"utf8",
+			),
+			["component_list", "snapshot_list", "snapshot_list_readable", "backtest_list"],
+			"pub async fn",
+		],
+		[
+			readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"),
+			["validation_protocol_list", "validation_report_list"],
+			"async fn",
+		],
+	] as const;
 
-	for (const command of [
-		"component_list",
-		"snapshot_list",
-		"snapshot_list_readable",
-		"backtest_list",
-		"validation_protocol_list",
-		"validation_report_list",
-	]) {
-		expect(source).toMatch(
-			new RegExp(`#\\[tauri::command\\]\\s+pub async fn ${command}\\(`),
-		);
+	for (const [source, commands, signature] of sources) {
+		for (const command of commands) {
+			expect(source).toMatch(
+				new RegExp(`#\\[tauri::command\\]\\s+${signature} ${command}\\(`),
+			);
+		}
 	}
 });
 

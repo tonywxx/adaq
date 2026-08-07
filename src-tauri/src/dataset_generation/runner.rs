@@ -21,9 +21,9 @@ use super::{
     store::AttemptStore, string,
 };
 use crate::{
-    local_research::validate_user,
     m8::{ComponentLockEntry, ModelProducerSegment, SignalDataset, close_time, hash, write_rows},
     run_engine::{FactorRunRequest, MaterializedFeatureRow, materialize_feature_segment},
+    user::validate_user,
 };
 
 const DATASET_ENGINE: &str = "closed-bar@1";

@@ -1,9 +1,9 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -32,6 +32,8 @@ use crate::{
     run_engine::{
         FactorRunRequest, PositionMode, RunEngine, RunRequest, SignalRunRequest, SignalRunRow,
     },
+    user::validate_user,
+    validation::{ValidationRunOutcome, ValidationSource, ValidationStudies},
 };
 
 const RUN_HISTORY_PAGE_SIZE: usize = 10;
@@ -45,6 +47,7 @@ pub struct LocalResearchState {
     downloads: Mutex<HashMap<String, Arc<AtomicBool>>>,
     source: Arc<LocalGenerationSource>,
     pub(crate) generation: DatasetGeneration,
+    pub(crate) validation: ValidationStudies,
 }
 
 #[derive(Serialize)]
@@ -190,8 +193,70 @@ impl GenerationSource for LocalGenerationSource {
     }
 }
 
+/// The concrete local dependencies composed into the Validation Studies
+/// module. Only database access, Component Package access, Market Data
+/// Snapshot access and persistence, and Backtest Run execution are shared;
+/// the complete Local Research state is not. The state reference is bound
+/// after the composition root finishes constructing itself. The database
+/// handle is held directly because the module initializes its schema
+/// before the self-reference is bound.
+pub(crate) struct LocalValidationSource {
+    database: Arc<Mutex<Connection>>,
+    state: Mutex<Weak<LocalResearchState>>,
+}
+
+impl ValidationSource for LocalValidationSource {
+    fn database(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.database.lock().map_err(string)
+    }
+
+    fn package_for_user(
+        &self,
+        user_id: &str,
+        archive_sha256: &str,
+    ) -> Result<ComponentPackage, String> {
+        self.state()?.package_for_user(user_id, archive_sha256)
+    }
+
+    fn snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
+        self.state()?.snapshot_for_user(user_id, snapshot_id)
+    }
+
+    fn persist_snapshot_for_user(
+        &self,
+        user_id: &str,
+        series: &adaq_data_core::BarSeries,
+    ) -> Result<MarketDataSnapshot, String> {
+        self.state()?.persist_snapshot_for_user(user_id, series)
+    }
+
+    fn run_backtest(&self, request: BacktestRunRequest) -> Result<ValidationRunOutcome, String> {
+        let state = self.state()?;
+        let view = execute_backtest(request, &state)?;
+        Ok(ValidationRunOutcome {
+            run_id: view.run_id,
+            metrics: view.result.metrics,
+            pauses: view.pauses,
+        })
+    }
+}
+
+impl LocalValidationSource {
+    fn state(&self) -> Result<Arc<LocalResearchState>, String> {
+        self.state
+            .lock()
+            .map_err(string)?
+            .upgrade()
+            .ok_or_else(|| "Local Research state is not available".to_owned())
+    }
+}
+
 impl LocalResearchState {
-    pub fn open(app_data: &Path) -> Result<Self, String> {
+    pub fn open(app_data: &Path) -> Result<Arc<Self>, String> {
         let root = app_data.join("m3");
         fs::create_dir_all(root.join("components")).map_err(string)?;
         let snapshots = SnapshotStore::new(root.join("market-data")).map_err(string)?;
@@ -253,18 +318,6 @@ impl LocalResearchState {
                 FOREIGN KEY(run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
                 FOREIGN KEY(dataset_id) REFERENCES signal_dataset_content(dataset_id)
              );
-             CREATE TABLE IF NOT EXISTS validation_protocols (
-                protocol_id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                protocol_json TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS validation_reports (
-                report_id TEXT PRIMARY KEY,
-                protocol_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                report_json TEXT NOT NULL,
-                FOREIGN KEY(protocol_id) REFERENCES validation_protocols(protocol_id)
-             );
              CREATE TABLE IF NOT EXISTS signal_dataset_content (
                 dataset_id TEXT PRIMARY KEY,
                 metadata_json TEXT NOT NULL,
@@ -296,19 +349,32 @@ impl LocalResearchState {
             root: root.clone(),
         });
         let generation = DatasetGeneration::open(source.clone())?;
-        Ok(Self {
-            root,
-            snapshots,
-            database,
-            downloads: Mutex::new(HashMap::new()),
-            source,
-            generation,
-        })
+        let validation_source = Arc::new(LocalValidationSource {
+            database: database.clone(),
+            state: Mutex::new(Weak::new()),
+        });
+        let validation = ValidationStudies::open(validation_source.clone())?;
+        Ok(Arc::new_cyclic(|weak| {
+            *validation_source
+                .state
+                .lock()
+                .expect("validation source state binding is uncontended") = weak.clone();
+            Self {
+                root,
+                snapshots,
+                database,
+                downloads: Mutex::new(HashMap::new()),
+                source,
+                generation,
+                validation,
+            }
+        }))
     }
 
     pub fn local_data_summary(&self, user_id: &str) -> Result<LocalDataSummary, String> {
         validate_user(user_id)?;
         let generation_attempt_count = self.generation.list(user_id)?.len() as u64;
+        let validation = self.validation.summary_for_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
         let count = |sql: &str| -> Result<u64, String> {
             database
@@ -351,8 +417,8 @@ impl LocalResearchState {
                 "SELECT COUNT(*) FROM market_data_snapshot_access WHERE user_id = ?1",
             )?,
             run_count: count("SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1")?,
-            protocol_count: count("SELECT COUNT(*) FROM validation_protocols WHERE user_id = ?1")?,
-            report_count: count("SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1")?,
+            protocol_count: validation.protocol_count,
+            report_count: validation.report_count,
             generation_attempt_count,
             model_artifact_count: count(
                 "SELECT COUNT(*) FROM component_content c JOIN component_access a USING(archive_sha256) WHERE a.user_id = ?1 AND c.kind = 'model'",
@@ -369,9 +435,9 @@ impl LocalResearchState {
             )?,
             market_data_blocking_record_count: count(
                 "SELECT (SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1)
-				 + (SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1)
                  + (SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1)",
-            )?,
+            )?
+            .saturating_add(validation.report_count),
         })
     }
 
@@ -382,16 +448,26 @@ impl LocalResearchState {
         } else {
             None
         };
+        // Query the Validation module before locking the database mutex so
+        // the hook never re-enters a held lock.
+        let validation_report_count = if matches!(kind, LocalDataResetKind::MarketData) {
+            self.validation.summary_for_user(user_id)?.report_count
+        } else {
+            0
+        };
         let mut database = self.database.lock().map_err(string)?;
         match kind {
             LocalDataResetKind::Watchlist => reset_watchlist(&mut database, user_id),
             LocalDataResetKind::Components => reset_components(&mut database, user_id, &self.root),
-            LocalDataResetKind::MarketData => reset_market_data(&mut database, user_id, &self.root),
+            LocalDataResetKind::MarketData => {
+                reset_market_data(&mut database, user_id, &self.root, validation_report_count)
+            }
             LocalDataResetKind::All => reset_all(
                 &mut database,
                 user_id,
                 &self.root,
                 _reset_block.as_ref().unwrap(),
+                &self.validation,
             ),
         }
     }
@@ -1140,32 +1216,10 @@ impl LocalResearchState {
 
     fn delete_run(&self, user_id: &str, run_id: &str) -> Result<(), String> {
         validate_user(user_id)?;
-        let database = self.database.lock().map_err(string)?;
-        let mut statement = database
-            .prepare("SELECT report_json FROM validation_reports WHERE user_id = ?1")
-            .map_err(string)?;
-        let reports = statement
-            .query_map([user_id], |row| {
-                serde_json::from_str::<ValidationReport>(&row.get::<_, String>(0)?).map_err(
-                    |error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            0,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    },
-                )
-            })
-            .map_err(string)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(string)?;
-        if reports
-            .iter()
-            .any(|report| report_references_run(report, run_id))
-        {
+        if self.validation.references_run(user_id, run_id)? {
             return Err("Backtest Run is referenced by an immutable Validation Report".into());
         }
-        drop(statement);
+        let database = self.database.lock().map_err(string)?;
         let changed = database
             .execute(
                 "DELETE FROM backtest_runs WHERE user_id = ?1 AND run_id = ?2",
@@ -1177,77 +1231,6 @@ impl LocalResearchState {
         } else {
             Ok(())
         }
-    }
-
-    fn save_protocol(&self, protocol: &ValidationProtocol) -> Result<(), String> {
-        self.database.lock().map_err(string)?.execute(
-            "INSERT OR IGNORE INTO validation_protocols(protocol_id, user_id, protocol_json) VALUES (?1, ?2, ?3)",
-            params![protocol.protocol_id, protocol.user_id, serde_json::to_string(protocol).map_err(string)?],
-        ).map_err(string)?;
-        Ok(())
-    }
-
-    fn load_protocol(
-        &self,
-        user_id: &str,
-        protocol_id: &str,
-    ) -> Result<ValidationProtocol, String> {
-        validate_user(user_id)?;
-        self.database.lock().map_err(string)?.query_row(
-            "SELECT protocol_json FROM validation_protocols WHERE user_id = ?1 AND protocol_id = ?2",
-            params![user_id, protocol_id],
-            |row| serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))),
-        ).map_err(|_| "Validation Protocol was not found".to_owned())
-    }
-
-    fn list_protocols(&self, user_id: &str) -> Result<Vec<ValidationProtocol>, String> {
-        validate_user(user_id)?;
-        let database = self.database.lock().map_err(string)?;
-        let mut statement = database.prepare("SELECT protocol_json FROM validation_protocols WHERE user_id = ?1 ORDER BY rowid DESC").map_err(string)?;
-        statement
-            .query_map([user_id], |row| {
-                serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })
-            })
-            .map_err(string)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(string)
-    }
-
-    fn save_report(&self, report: &ValidationReport) -> Result<(), String> {
-        self.database.lock().map_err(string)?.execute(
-            "INSERT OR IGNORE INTO validation_reports(report_id, protocol_id, user_id, report_json) VALUES (?1, ?2, ?3, ?4)",
-            params![report.report_id, report.protocol_id, report.user_id, serde_json::to_string(report).map_err(string)?],
-        ).map_err(string)?;
-        Ok(())
-    }
-
-    fn list_reports(&self, user_id: &str) -> Result<Vec<ValidationReport>, String> {
-        validate_user(user_id)?;
-        let database = self.database.lock().map_err(string)?;
-        let mut statement = database
-            .prepare(
-                "SELECT report_json FROM validation_reports WHERE user_id = ?1 ORDER BY rowid DESC",
-            )
-            .map_err(string)?;
-        statement
-            .query_map([user_id], |row| {
-                serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })
-            })
-            .map_err(string)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(string)
     }
 }
 
@@ -1658,160 +1641,10 @@ pub struct BacktestRunPage {
     pub page_size: usize,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidationProtocolCreateRequest {
-    pub user_id: String,
-    pub run: BacktestRunRequest,
-    pub windows: Vec<ValidationWindowRequest>,
-    #[serde(default)]
-    pub walk_forward: Option<WalkForwardValidationRequest>,
-    #[serde(default)]
-    pub cross_market: Option<CrossMarketValidationRequest>,
-    pub method_version: String,
-    pub aggregation_rule_version: String,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CrossMarketValidationRequest {
-    pub contexts: Vec<CrossMarketValidationContextRequest>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CrossMarketValidationContextRequest {
-    pub snapshot_id: String,
-    #[serde(default)]
-    pub run_override: Option<BacktestRunRequest>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidationWindowRequest {
-    pub snapshot_id: String,
-    pub sample_out_start_time_ms: i64,
-    #[serde(default)]
-    pub sample_out_end_time_ms: Option<i64>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WalkForwardValidationRequest {
-    pub snapshot_id: String,
-    pub window_size_bars: usize,
-    pub step_size_bars: usize,
-    pub minimum_history_bars: usize,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidationProtocol {
-    pub protocol_id: String,
-    pub user_id: String,
-    pub run: BacktestRunRequest,
-    pub windows: Vec<ValidationWindowRequest>,
-    #[serde(default)]
-    pub walk_forward: Option<WalkForwardValidationRequest>,
-    #[serde(default)]
-    pub cross_market: Option<CrossMarketValidationRequest>,
-    pub method_version: String,
-    pub aggregation_rule_version: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidationProtocolIdRequest {
-    pub user_id: String,
-    pub protocol_id: String,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidationWindowReport {
-    pub sample_out_start_time_ms: i64,
-    #[serde(default)]
-    pub sample_out_end_time_ms: Option<i64>,
-    pub sample_in_snapshot_id: String,
-    pub sample_out_snapshot_id: String,
-    pub sample_in_run_id: Option<String>,
-    pub sample_out_run_id: Option<String>,
-    pub sample_in_metrics: Option<adaq_backtest_core::BacktestMetrics>,
-    pub sample_out_metrics: Option<adaq_backtest_core::BacktestMetrics>,
-    pub sample_in_pauses: Vec<RunPauseRecord>,
-    pub sample_out_pauses: Vec<RunPauseRecord>,
-    pub failure: Option<String>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidationAggregate {
-    pub completed_windows: usize,
-    pub failed_windows: usize,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub average_sample_in_return: rust_decimal::Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub average_sample_out_return: rust_decimal::Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub worst_sample_out_drawdown: rust_decimal::Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub average_sample_out_sharpe: rust_decimal::Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub total_fees: rust_decimal::Decimal,
-    pub total_trades: usize,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidationReport {
-    pub report_id: String,
-    pub protocol_id: String,
-    pub user_id: String,
-    pub method_version: String,
-    pub aggregation_rule_version: String,
-    #[serde(default)]
-    pub walk_forward: Option<WalkForwardValidationRequest>,
-    #[serde(default)]
-    pub cross_market: Vec<CrossMarketValidationReport>,
-    #[serde(default)]
-    pub recommended_contexts: Vec<RecommendedContext>,
-    #[serde(default)]
-    pub cross_market_evidence: Option<CrossMarketEvidence>,
-    pub windows: Vec<ValidationWindowReport>,
-    pub aggregate: ValidationAggregate,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CrossMarketValidationReport {
-    pub snapshot: MarketDataSnapshot,
-    pub run: BacktestRunRequest,
-    pub run_id: Option<String>,
-    pub metrics: Option<adaq_backtest_core::BacktestMetrics>,
-    pub pauses: Vec<RunPauseRecord>,
-    pub failure: Option<String>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CrossMarketEvidence {
-    pub completed_markets: usize,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub total_return_spread: rust_decimal::Decimal,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecommendedContext {
-    pub supporting_report_id: String,
-    pub snapshot: MarketDataSnapshot,
-    pub run: BacktestRunRequest,
-}
-
 #[tauri::command]
 pub fn component_import(
     request: ComponentImportRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<LibraryComponent, String> {
     state.import_component(&request.user_id, &request.bytes)
 }
@@ -1822,7 +1655,7 @@ pub async fn component_list(
     app: tauri::AppHandle,
 ) -> Result<Vec<LibraryComponent>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<LocalResearchState>()
+        app.state::<Arc<LocalResearchState>>()
             .list_components(&request.user_id)
     })
     .await
@@ -1835,7 +1668,7 @@ pub async fn component_page(
     app: tauri::AppHandle,
 ) -> Result<ComponentPage, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<LocalResearchState>()
+        app.state::<Arc<LocalResearchState>>()
             .list_components_page(&request.user_id, request.page)
     })
     .await
@@ -1845,7 +1678,7 @@ pub async fn component_page(
 #[tauri::command]
 pub fn component_is_imported(
     request: ComponentArchiveRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<bool, String> {
     state.component_is_imported(&request.user_id, &request.archive_sha256)
 }
@@ -1853,7 +1686,7 @@ pub fn component_is_imported(
 #[tauri::command]
 pub fn backtest_compatible_factors(
     request: BacktestDependencyRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<BTreeMap<String, Vec<String>>, String> {
     state.compatible_factors(&request.user_id, &request.strategy_archive_sha256)
 }
@@ -1861,7 +1694,7 @@ pub fn backtest_compatible_factors(
 #[tauri::command]
 pub fn backtest_compatible_signals(
     request: BacktestSignalCompatibilityRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<BacktestSignalCandidate>, String> {
     let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
     if strategy.manifest.kind != ComponentKind::Strategy {
@@ -1942,7 +1775,7 @@ fn compatible_factor_hashes(
 #[tauri::command]
 pub fn component_delete(
     request: ComponentDeleteRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
     state.delete_component(&request.user_id, &request.archive_sha256)
 }
@@ -1951,7 +1784,7 @@ pub fn component_delete(
 pub async fn snapshot_create(
     request: SnapshotCreateRequest,
     client: tauri::State<'_, OkxClient>,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<MarketDataSnapshot, String> {
     validate_snapshot_request(
         &request.user_id,
@@ -1982,7 +1815,7 @@ pub async fn snapshot_download(
     request: SnapshotDownloadRequest,
     on_event: tauri::ipc::Channel<SnapshotDownloadEvent>,
     client: tauri::State<'_, OkxClient>,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<MarketDataSnapshot, String> {
     validate_snapshot_request(
         &request.user_id,
@@ -2047,7 +1880,7 @@ pub async fn snapshot_download(
 #[tauri::command]
 pub async fn snapshot_list(
     request: SnapshotListRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<SnapshotPage, String> {
     state.list_snapshots(&request)
 }
@@ -2058,7 +1891,7 @@ pub async fn snapshot_list_readable(
     app: tauri::AppHandle,
 ) -> Result<Vec<MarketDataSnapshot>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<LocalResearchState>()
+        app.state::<Arc<LocalResearchState>>()
             .list_readable_snapshots(&request.user_id)
     })
     .await
@@ -2068,7 +1901,7 @@ pub async fn snapshot_list_readable(
 #[tauri::command]
 pub fn snapshot_cancel(
     request: TaskRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
     if let Some(cancelled) = state
         .downloads
@@ -2084,7 +1917,7 @@ pub fn snapshot_cancel(
 #[tauri::command]
 pub fn backtest_run(
     request: BacktestRunRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<BacktestRunView, String> {
     execute_backtest(request, &state)
 }
@@ -2092,7 +1925,7 @@ pub fn backtest_run(
 #[tauri::command]
 pub fn backtest_preflight(
     request: BacktestRunRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<BacktestPreflight, String> {
     let prepared = prepare_backtest(&request, &state)?;
     Ok(BacktestPreflight {
@@ -2503,7 +2336,7 @@ fn prepare_backtest(
 #[tauri::command]
 pub async fn backtest_list(
     request: BacktestListRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<BacktestRunPage, String> {
     state.list_runs_page(
         &request.user_id,
@@ -2516,7 +2349,7 @@ pub async fn backtest_list(
 #[tauri::command]
 pub fn backtest_get(
     request: BacktestRunIdRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<BacktestRunView, String> {
     state
         .load_run(&request.user_id, &request.run_id)
@@ -2526,7 +2359,7 @@ pub fn backtest_get(
 #[tauri::command]
 pub fn backtest_chart_data(
     request: BacktestChartRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<BacktestRunView, String> {
     if request.start_time_ms >= request.end_time_ms || !(100..=10_000).contains(&request.max_points)
     {
@@ -2547,7 +2380,7 @@ pub fn backtest_chart_data(
 #[tauri::command]
 pub fn backtest_execution_data(
     request: BacktestExecutionRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<BacktestExecutionPage, String> {
     if !(1..=1_000).contains(&request.limit) {
         return Err("Backtest execution page is invalid".into());
@@ -2584,7 +2417,7 @@ fn execution_page(
 #[tauri::command]
 pub fn backtest_delete(
     request: BacktestRunIdRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
     state.delete_run(&request.user_id, &request.run_id)
 }
@@ -2592,7 +2425,7 @@ pub fn backtest_delete(
 #[tauri::command]
 pub fn local_data_summary(
     request: LocalDataRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<LocalDataSummary, String> {
     state.local_data_summary(&request.user_id)
 }
@@ -2603,601 +2436,11 @@ pub async fn local_data_reset(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<LocalResearchState>();
+        let state = app.state::<Arc<LocalResearchState>>();
         state.reset_local_data(&request.user_id, request.kind)
     })
     .await
     .map_err(string)?
-}
-
-#[tauri::command]
-pub fn validation_protocol_create(
-    request: ValidationProtocolCreateRequest,
-    state: tauri::State<'_, LocalResearchState>,
-) -> Result<ValidationProtocol, String> {
-    validate_protocol(&request, &state)?;
-    let windows = request
-        .walk_forward
-        .as_ref()
-        .map(|walk_forward| walk_forward_windows(&state, &request.user_id, walk_forward))
-        .transpose()?
-        .unwrap_or(request.windows);
-    let mut protocol = ValidationProtocol {
-        protocol_id: String::new(),
-        user_id: request.user_id.clone(),
-        run: request.run,
-        windows,
-        walk_forward: request.walk_forward,
-        cross_market: request.cross_market,
-        method_version: request.method_version,
-        aggregation_rule_version: request.aggregation_rule_version,
-    };
-    protocol.protocol_id = content_id(&protocol)?;
-    state.save_protocol(&protocol)?;
-    state.load_protocol(&protocol.user_id, &protocol.protocol_id)
-}
-
-#[tauri::command]
-pub async fn validation_protocol_list(
-    request: ComponentUserRequest,
-    state: tauri::State<'_, LocalResearchState>,
-) -> Result<Vec<ValidationProtocol>, String> {
-    state.list_protocols(&request.user_id)
-}
-
-#[tauri::command]
-pub fn validation_report_run(
-    request: ValidationProtocolIdRequest,
-    state: tauri::State<'_, LocalResearchState>,
-) -> Result<ValidationReport, String> {
-    run_validation_report(&request, &state)
-}
-
-fn run_validation_report(
-    request: &ValidationProtocolIdRequest,
-    state: &LocalResearchState,
-) -> Result<ValidationReport, String> {
-    let protocol = state.load_protocol(&request.user_id, &request.protocol_id)?;
-    if let Some(cross_market) = &protocol.cross_market {
-        return run_cross_market_validation(&protocol, cross_market, state);
-    }
-    let mut windows = Vec::with_capacity(protocol.windows.len());
-    for window in &protocol.windows {
-        let (sample_in, sample_out) = split_snapshot(&state, &protocol.user_id, window)?;
-        let (sample_in_request, sample_out_request) =
-            validation_window_run_requests(&protocol, &sample_in, &sample_out);
-        let sample_in_snapshot_id = sample_in_request.snapshot_id.clone();
-        let sample_out_snapshot_id = sample_out_request.snapshot_id.clone();
-        match (
-            execute_backtest(sample_in_request, &state),
-            execute_backtest(sample_out_request, &state),
-        ) {
-            (Ok(sample_in_run), Ok(sample_out_run)) => windows.push(ValidationWindowReport {
-                sample_out_start_time_ms: window.sample_out_start_time_ms,
-                sample_out_end_time_ms: window.sample_out_end_time_ms,
-                sample_in_snapshot_id,
-                sample_out_snapshot_id,
-                sample_in_run_id: Some(sample_in_run.run_id),
-                sample_out_run_id: Some(sample_out_run.run_id),
-                sample_in_metrics: Some(sample_in_run.result.metrics),
-                sample_out_metrics: Some(sample_out_run.result.metrics),
-                sample_in_pauses: sample_in_run.pauses,
-                sample_out_pauses: sample_out_run.pauses,
-                failure: None,
-            }),
-            (sample_in_result, sample_out_result) => windows.push(ValidationWindowReport {
-                sample_out_start_time_ms: window.sample_out_start_time_ms,
-                sample_out_end_time_ms: window.sample_out_end_time_ms,
-                sample_in_snapshot_id,
-                sample_out_snapshot_id,
-                sample_in_run_id: sample_in_result.as_ref().ok().map(|run| run.run_id.clone()),
-                sample_out_run_id: sample_out_result
-                    .as_ref()
-                    .ok()
-                    .map(|run| run.run_id.clone()),
-                sample_in_metrics: sample_in_result
-                    .as_ref()
-                    .ok()
-                    .map(|run| run.result.metrics.clone()),
-                sample_out_metrics: sample_out_result
-                    .as_ref()
-                    .ok()
-                    .map(|run| run.result.metrics.clone()),
-                sample_in_pauses: sample_in_result
-                    .as_ref()
-                    .ok()
-                    .map(|run| run.pauses.clone())
-                    .unwrap_or_default(),
-                sample_out_pauses: sample_out_result
-                    .as_ref()
-                    .ok()
-                    .map(|run| run.pauses.clone())
-                    .unwrap_or_default(),
-                failure: Some(
-                    [sample_in_result.err(), sample_out_result.err()]
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                ),
-            }),
-        }
-    }
-    let aggregate = aggregate_validation(&windows);
-    let mut report = ValidationReport {
-        report_id: String::new(),
-        protocol_id: protocol.protocol_id,
-        user_id: protocol.user_id,
-        method_version: protocol.method_version,
-        aggregation_rule_version: protocol.aggregation_rule_version,
-        walk_forward: protocol.walk_forward,
-        cross_market: vec![],
-        recommended_contexts: vec![],
-        cross_market_evidence: None,
-        windows,
-        aggregate,
-    };
-    report.report_id = content_id(&report)?;
-    state.save_report(&report)?;
-    Ok(report)
-}
-
-fn validation_window_run_requests(
-    protocol: &ValidationProtocol,
-    sample_in: &MarketDataSnapshot,
-    sample_out: &MarketDataSnapshot,
-) -> (BacktestRunRequest, BacktestRunRequest) {
-    let mut sample_in_request = protocol.run.clone();
-    sample_in_request.user_id = protocol.user_id.clone();
-    let mut sample_out_request = sample_in_request.clone();
-    if protocol.run.signal_instances.is_empty() {
-        sample_in_request.snapshot_id = sample_in.snapshot_id.clone();
-        sample_in_request.run_start_time_ms = None;
-        sample_in_request.run_end_time_ms = None;
-        sample_out_request.snapshot_id = sample_out.snapshot_id.clone();
-        sample_out_request.run_start_time_ms = None;
-        sample_out_request.run_end_time_ms = None;
-    } else {
-        sample_in_request.run_start_time_ms = Some(sample_in.start_time_ms);
-        sample_in_request.run_end_time_ms = Some(sample_in.end_time_ms);
-        sample_out_request.run_start_time_ms = Some(sample_out.start_time_ms);
-        sample_out_request.run_end_time_ms = Some(sample_out.end_time_ms);
-    }
-    (sample_in_request, sample_out_request)
-}
-
-fn run_cross_market_validation(
-    protocol: &ValidationProtocol,
-    cross_market: &CrossMarketValidationRequest,
-    state: &LocalResearchState,
-) -> Result<ValidationReport, String> {
-    let contexts = cross_market
-        .contexts
-        .iter()
-        .map(|context| {
-            let (snapshot, _) = state.snapshot_for_user(&protocol.user_id, &context.snapshot_id)?;
-            let mut run = context
-                .run_override
-                .clone()
-                .unwrap_or_else(|| protocol.run.clone());
-            run.user_id = protocol.user_id.clone();
-            run.snapshot_id = snapshot.snapshot_id.clone();
-            match execute_backtest(run.clone(), state) {
-                Ok(result) => Ok(CrossMarketValidationReport {
-                    snapshot,
-                    run,
-                    run_id: Some(result.run_id),
-                    metrics: Some(result.result.metrics),
-                    pauses: result.pauses,
-                    failure: None,
-                }),
-                Err(error) => Ok(CrossMarketValidationReport {
-                    snapshot,
-                    run,
-                    run_id: None,
-                    metrics: None,
-                    pauses: vec![],
-                    failure: Some(error),
-                }),
-            }
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let aggregate = aggregate_cross_market(&contexts);
-    let evidence = cross_market_evidence(&contexts);
-    let mut report = ValidationReport {
-        report_id: String::new(),
-        protocol_id: protocol.protocol_id.clone(),
-        user_id: protocol.user_id.clone(),
-        method_version: protocol.method_version.clone(),
-        aggregation_rule_version: protocol.aggregation_rule_version.clone(),
-        walk_forward: None,
-        cross_market: contexts,
-        recommended_contexts: vec![],
-        cross_market_evidence: evidence,
-        windows: vec![],
-        aggregate,
-    };
-    report.recommended_contexts = report
-        .cross_market
-        .iter()
-        .enumerate()
-        .filter(|(_, context)| context.failure.is_none())
-        .map(|(_, context)| RecommendedContext {
-            supporting_report_id: report.report_id.clone(),
-            snapshot: context.snapshot.clone(),
-            run: context.run.clone(),
-        })
-        .collect();
-    report.report_id = validation_report_id(&report)?;
-    for context in &mut report.recommended_contexts {
-        context.supporting_report_id = report.report_id.clone();
-    }
-    state.save_report(&report)?;
-    Ok(report)
-}
-
-#[tauri::command]
-pub async fn validation_report_list(
-    request: ComponentUserRequest,
-    state: tauri::State<'_, LocalResearchState>,
-) -> Result<Vec<ValidationReport>, String> {
-    state.list_reports(&request.user_id)
-}
-
-#[tauri::command]
-pub fn validation_report_export(
-    request: ValidationProtocolIdRequest,
-    format: String,
-    state: tauri::State<'_, LocalResearchState>,
-) -> Result<String, String> {
-    let report = state
-        .list_reports(&request.user_id)?
-        .into_iter()
-        .find(|report| report.report_id == request.protocol_id)
-        .ok_or("Validation Report was not found")?;
-    match format.as_str() {
-        "json" => serde_json::to_string_pretty(&report).map_err(string),
-        "markdown" => Ok(validation_markdown(&report)),
-        _ => Err("Validation export format is invalid".into()),
-    }
-}
-
-fn validate_protocol(
-    request: &ValidationProtocolCreateRequest,
-    state: &LocalResearchState,
-) -> Result<(), String> {
-    validate_user(&request.user_id)?;
-    if request.run.user_id != request.user_id
-        || !request
-            .aggregation_rule_version
-            .starts_with("equal-window@")
-    {
-        return Err("Validation Protocol is invalid".into());
-    }
-    validate_run_configuration(&request.user_id, &request.run, state)?;
-    match request.method_version.as_str() {
-        "chronological-holdout@1"
-            if request.walk_forward.is_none() && !request.windows.is_empty() =>
-        {
-            for window in &request.windows {
-                split_snapshot(state, &request.user_id, window)?;
-            }
-        }
-        "walk-forward@1" if request.windows.is_empty() => {
-            let walk_forward = request
-                .walk_forward
-                .as_ref()
-                .ok_or("Walk-forward configuration is required")?;
-            if request.run.snapshot_id != walk_forward.snapshot_id {
-                return Err("Walk-forward must use the frozen Snapshot".into());
-            }
-            walk_forward_windows(state, &request.user_id, walk_forward)?;
-        }
-        "cross-market@1"
-            if request.windows.is_empty()
-                && request.walk_forward.is_none()
-                && request.cross_market.is_some() =>
-        {
-            validate_cross_market(request, state)?;
-        }
-        _ => return Err("Validation Protocol is invalid".into()),
-    }
-    Ok(())
-}
-
-fn validate_run_configuration(
-    user_id: &str,
-    run: &BacktestRunRequest,
-    state: &LocalResearchState,
-) -> Result<(), String> {
-    if run.user_id != user_id {
-        return Err("Validation Run configuration belongs to another User".into());
-    }
-    state.package_for_user(user_id, &run.strategy_archive_sha256)?;
-    for factor in &run.factor_instances {
-        state.package_for_user(user_id, &factor.archive_sha256)?;
-    }
-    Ok(())
-}
-
-fn validate_cross_market(
-    request: &ValidationProtocolCreateRequest,
-    state: &LocalResearchState,
-) -> Result<(), String> {
-    let contexts = &request
-        .cross_market
-        .as_ref()
-        .expect("validated above")
-        .contexts;
-    if contexts.len() < 2 {
-        return Err("Cross-market validation requires at least two markets".into());
-    }
-    let mut snapshots = HashSet::new();
-    let mut markets = HashSet::new();
-    let mut interval = None;
-    for context in contexts {
-        if !snapshots.insert(&context.snapshot_id) {
-            return Err("Cross-market validation contains a duplicate Snapshot".into());
-        }
-        let (snapshot, bars) = state.snapshot_for_user(&request.user_id, &context.snapshot_id)?;
-        if bars.is_empty() {
-            return Err("Cross-market validation requires market evidence".into());
-        }
-        if interval
-            .replace(snapshot.interval)
-            .is_some_and(|current| current != snapshot.interval)
-        {
-            return Err("Cross-market validation requires compatible Bar Intervals".into());
-        }
-        if !markets.insert((
-            snapshot.src.clone(),
-            snapshot.code.clone(),
-            snapshot.interval,
-        )) {
-            return Err("Cross-market validation contains a duplicate Instrument context".into());
-        }
-        if let Some(run) = &context.run_override {
-            if run.snapshot_id != context.snapshot_id {
-                return Err("Cross-market override must use its frozen Snapshot".into());
-            }
-            validate_run_configuration(&request.user_id, run, state)?;
-        }
-    }
-    Ok(())
-}
-
-fn split_snapshot(
-    state: &LocalResearchState,
-    user_id: &str,
-    window: &ValidationWindowRequest,
-) -> Result<(MarketDataSnapshot, MarketDataSnapshot), String> {
-    let (snapshot, bars) = state.snapshot_for_user(user_id, &window.snapshot_id)?;
-    let split = bars.partition_point(|bar| bar.open_time_ms < window.sample_out_start_time_ms);
-    let end = window
-        .sample_out_end_time_ms
-        .map(|end| bars.partition_point(|bar| bar.open_time_ms < end))
-        .unwrap_or(bars.len());
-    if split == 0 || split >= end {
-        return Err("Validation sample-out window must be non-empty and chronological".into());
-    }
-    let gaps = snapshot
-        .gaps
-        .iter()
-        .map(|gap| BarGap {
-            start_time_ms: gap.start_time_ms,
-            end_time_ms: gap.end_time_ms,
-        })
-        .collect::<Vec<_>>();
-    let series = |bars: Vec<OhlcvBar>| adaq_data_core::BarSeries {
-        src: snapshot.src.clone(),
-        code: snapshot.code.clone(),
-        interval: snapshot.interval,
-        bars,
-        gaps: gaps.clone(),
-    };
-    Ok((
-        state.persist_snapshot_for_user(user_id, &series(bars[..split].to_vec()))?,
-        state.persist_snapshot_for_user(user_id, &series(bars[split..end].to_vec()))?,
-    ))
-}
-
-fn walk_forward_windows(
-    state: &LocalResearchState,
-    user_id: &str,
-    request: &WalkForwardValidationRequest,
-) -> Result<Vec<ValidationWindowRequest>, String> {
-    if request.window_size_bars == 0
-        || request.step_size_bars == 0
-        || request.minimum_history_bars == 0
-    {
-        return Err("Walk-forward window sizes must be positive".into());
-    }
-    if request.step_size_bars < request.window_size_bars {
-        return Err("Walk-forward step must not overlap sample-out windows".into());
-    }
-    let (_, bars) = state.snapshot_for_user(user_id, &request.snapshot_id)?;
-    if request.minimum_history_bars >= bars.len() {
-        return Err("Walk-forward requires more history than the minimum".into());
-    }
-    let windows = (request.minimum_history_bars..bars.len())
-        .step_by(request.step_size_bars)
-        .take_while(|start| start.saturating_add(request.window_size_bars) <= bars.len())
-        .map(|start| ValidationWindowRequest {
-            snapshot_id: request.snapshot_id.clone(),
-            sample_out_start_time_ms: bars[start].open_time_ms,
-            sample_out_end_time_ms: bars
-                .get(start + request.window_size_bars)
-                .map(|bar| bar.open_time_ms),
-        })
-        .collect::<Vec<_>>();
-    if windows.is_empty() {
-        Err("Walk-forward history cannot produce a complete window".into())
-    } else {
-        Ok(windows)
-    }
-}
-
-fn aggregate_validation(windows: &[ValidationWindowReport]) -> ValidationAggregate {
-    let complete = windows
-        .iter()
-        .filter(|window| window.failure.is_none())
-        .collect::<Vec<_>>();
-    let count = rust_decimal::Decimal::from(complete.len().max(1));
-    let average = |metric: fn(&adaq_backtest_core::BacktestMetrics) -> rust_decimal::Decimal,
-                   sample_out: bool| {
-        complete
-            .iter()
-            .map(|window| {
-                metric(if sample_out {
-                    window.sample_out_metrics.as_ref().unwrap()
-                } else {
-                    window.sample_in_metrics.as_ref().unwrap()
-                })
-            })
-            .sum::<rust_decimal::Decimal>()
-            / count
-    };
-    ValidationAggregate {
-        completed_windows: complete.len(),
-        failed_windows: windows.len() - complete.len(),
-        average_sample_in_return: average(|metrics| metrics.total_return, false),
-        average_sample_out_return: average(|metrics| metrics.total_return, true),
-        worst_sample_out_drawdown: complete
-            .iter()
-            .map(|window| window.sample_out_metrics.as_ref().unwrap().max_drawdown)
-            .min()
-            .unwrap_or_default(),
-        average_sample_out_sharpe: average(|metrics| metrics.sharpe, true),
-        total_fees: complete
-            .iter()
-            .map(|window| {
-                window.sample_in_metrics.as_ref().unwrap().total_fees
-                    + window.sample_out_metrics.as_ref().unwrap().total_fees
-            })
-            .sum(),
-        total_trades: complete
-            .iter()
-            .map(|window| {
-                window
-                    .sample_in_metrics
-                    .as_ref()
-                    .unwrap()
-                    .realized_trade_count
-                    + window
-                        .sample_out_metrics
-                        .as_ref()
-                        .unwrap()
-                        .realized_trade_count
-            })
-            .sum(),
-    }
-}
-
-fn aggregate_cross_market(contexts: &[CrossMarketValidationReport]) -> ValidationAggregate {
-    let complete = contexts
-        .iter()
-        .filter_map(|context| context.metrics.as_ref())
-        .collect::<Vec<_>>();
-    let count = rust_decimal::Decimal::from(complete.len().max(1));
-    ValidationAggregate {
-        completed_windows: complete.len(),
-        failed_windows: contexts.len() - complete.len(),
-        average_sample_in_return: rust_decimal::Decimal::ZERO,
-        average_sample_out_return: complete
-            .iter()
-            .map(|metrics| metrics.total_return)
-            .sum::<rust_decimal::Decimal>()
-            / count,
-        worst_sample_out_drawdown: complete
-            .iter()
-            .map(|metrics| metrics.max_drawdown)
-            .min()
-            .unwrap_or_default(),
-        average_sample_out_sharpe: complete
-            .iter()
-            .map(|metrics| metrics.sharpe)
-            .sum::<rust_decimal::Decimal>()
-            / count,
-        total_fees: complete.iter().map(|metrics| metrics.total_fees).sum(),
-        total_trades: complete
-            .iter()
-            .map(|metrics| metrics.realized_trade_count)
-            .sum(),
-    }
-}
-
-fn cross_market_evidence(contexts: &[CrossMarketValidationReport]) -> Option<CrossMarketEvidence> {
-    let returns = contexts
-        .iter()
-        .filter_map(|context| context.metrics.as_ref().map(|metrics| metrics.total_return))
-        .collect::<Vec<_>>();
-    Some(CrossMarketEvidence {
-        completed_markets: returns.len(),
-        total_return_spread: returns
-            .iter()
-            .max()
-            .zip(returns.iter().min())
-            .map(|(max, min)| *max - *min)
-            .unwrap_or_default(),
-    })
-}
-
-fn content_id(value: &impl Serialize) -> Result<String, String> {
-    let value = canonical_json(serde_json::to_value(value).map_err(string)?);
-    Ok(Sha256::digest(serde_json::to_vec(&value).map_err(string)?)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
-}
-
-fn validation_report_id(report: &ValidationReport) -> Result<String, String> {
-    let mut value = serde_json::to_value(report).map_err(string)?;
-    let object = value
-        .as_object_mut()
-        .expect("Validation Report serializes as an object");
-    object.remove("reportId");
-    if let Some(serde_json::Value::Array(contexts)) = object.get_mut("recommendedContexts") {
-        for context in contexts {
-            context
-                .as_object_mut()
-                .expect("Recommended Context serializes as an object")
-                .remove("supportingReportId");
-        }
-    }
-    content_id(&value)
-}
-
-fn report_references_run(report: &ValidationReport, run_id: &str) -> bool {
-    report.windows.iter().any(|window| {
-        window.sample_in_run_id.as_deref() == Some(run_id)
-            || window.sample_out_run_id.as_deref() == Some(run_id)
-    }) || report
-        .cross_market
-        .iter()
-        .any(|context| context.run_id.as_deref() == Some(run_id))
-}
-
-fn canonical_json(value: serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Array(values) => {
-            serde_json::Value::Array(values.into_iter().map(canonical_json).collect())
-        }
-        serde_json::Value::Object(values) => serde_json::Value::Object(
-            values
-                .into_iter()
-                .map(|(key, value)| (key, canonical_json(value)))
-                .collect(),
-        ),
-        value => value,
-    }
-}
-
-fn validation_markdown(report: &ValidationReport) -> String {
-    format!(
-        "# Validation Report {}\n\n[Metric definitions](https://github.com/tonywxx/adaq/blob/main/docs/reference/research-metrics.md)\n\n```json\n{}\n```\n",
-        report.report_id,
-        serde_json::to_string_pretty(report).expect("Validation Report serializes")
-    )
 }
 
 fn fingerprint(user_id: &str, provenance: &BacktestRunProvenance) -> Result<String, String> {
@@ -3553,14 +2796,6 @@ fn aggregate_equity(
         .collect()
 }
 
-pub(crate) fn validate_user(user_id: &str) -> Result<(), String> {
-    if user_id.trim().is_empty() || user_id.len() > 128 {
-        Err("User ID is invalid".into())
-    } else {
-        Ok(())
-    }
-}
-
 fn validate_snapshot_request(
     user_id: &str,
     src: &str,
@@ -3657,16 +2892,21 @@ fn reset_components(database: &mut Connection, user_id: &str, root: &Path) -> Re
     finish_staged_files(staged, result)
 }
 
-fn reset_market_data(database: &mut Connection, user_id: &str, root: &Path) -> Result<(), String> {
+fn reset_market_data(
+    database: &mut Connection,
+    user_id: &str,
+    root: &Path,
+    validation_report_count: u64,
+) -> Result<(), String> {
     let blocking: i64 = database
         .query_row(
             "SELECT (SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1)
-             + (SELECT COUNT(*) FROM validation_reports WHERE user_id = ?1)
              + (SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1)",
             [user_id],
             |row| row.get(0),
         )
         .map_err(string)?;
+    let blocking = blocking.max(0) as u64 + validation_report_count;
     if blocking > 0 {
         return Err(format!(
             "Market Data reset is blocked by {blocking} immutable research record(s)"
@@ -3714,6 +2954,7 @@ fn reset_all(
     user_id: &str,
     root: &Path,
     reset_block: &crate::dataset_generation::UserResetBlock<'_>,
+    validation: &ValidationStudies,
 ) -> Result<(), String> {
     let component_paths = strings(
         database,
@@ -3755,12 +2996,7 @@ fn reset_all(
     )?;
     let result = (|| {
         let transaction = database.transaction().map_err(string)?;
-        transaction
-            .execute(
-                "DELETE FROM validation_reports WHERE user_id = ?1",
-                [user_id],
-            )
-            .map_err(string)?;
+        validation.reset_for_user(&transaction, user_id)?;
         reset_block.delete_attempt_evidence(&transaction)?;
         transaction
             .execute(
@@ -3779,12 +3015,6 @@ fn reset_all(
             )
             .map_err(string)?;
         transaction.execute("DELETE FROM signal_dataset_content WHERE NOT EXISTS(SELECT 1 FROM signal_dataset_access a WHERE a.dataset_id = signal_dataset_content.dataset_id)", []).map_err(string)?;
-        transaction
-            .execute(
-                "DELETE FROM validation_protocols WHERE user_id = ?1",
-                [user_id],
-            )
-            .map_err(string)?;
         transaction
             .execute("DELETE FROM component_access WHERE user_id = ?1", [user_id])
             .map_err(string)?;
@@ -3911,7 +3141,7 @@ mod tests {
     };
     use zip::{ZipWriter, write::SimpleFileOptions};
 
-    fn local_data_state(name: &str) -> (PathBuf, LocalResearchState, WatchlistDb) {
+    fn local_data_state(name: &str) -> (PathBuf, Arc<LocalResearchState>, WatchlistDb) {
         let root = std::env::temp_dir().join(format!(
             "adaq-{name}-{}-{}",
             std::process::id(),
@@ -4673,10 +3903,13 @@ mod tests {
         assert_ne!(first.run_id, changed.run_id);
         assert_eq!(state.list_runs("alice").unwrap().len(), 2);
 
-        let validation = ValidationProtocolCreateRequest {
+        // Validation Studies is a deep module: Protocols and Reports flow
+        // through its interface, and an immutable Report locks the Backtest
+        // Runs it references.
+        let validation = crate::validation::ValidationProtocolCreateRequest {
             user_id: "alice".into(),
             run: request(),
-            windows: vec![ValidationWindowRequest {
+            windows: vec![crate::validation::ValidationWindowRequest {
                 snapshot_id: snapshot.snapshot_id.clone(),
                 sample_out_start_time_ms: 25 * 3_600_000,
                 sample_out_end_time_ms: None,
@@ -4687,95 +3920,26 @@ mod tests {
             aggregation_rule_version: "equal-window@1".into(),
         };
         assert!(
-            validate_protocol(
-                &ValidationProtocolCreateRequest {
-                    windows: vec![ValidationWindowRequest {
+            state
+                .validation
+                .create_protocol(crate::validation::ValidationProtocolCreateRequest {
+                    windows: vec![crate::validation::ValidationWindowRequest {
                         snapshot_id: snapshot.snapshot_id.clone(),
                         sample_out_start_time_ms: 0,
                         sample_out_end_time_ms: None,
                     }],
                     ..validation.clone()
-                },
-                &state,
-            )
-            .is_err()
+                })
+                .is_err()
         );
-        let protocol = ValidationProtocol {
-            protocol_id: String::new(),
-            user_id: validation.user_id.clone(),
-            run: validation.run.clone(),
-            windows: validation.windows.clone(),
-            walk_forward: validation.walk_forward.clone(),
-            cross_market: validation.cross_market.clone(),
-            method_version: validation.method_version.clone(),
-            aggregation_rule_version: validation.aggregation_rule_version.clone(),
-        };
-        let protocol_id = content_id(&protocol).unwrap();
-        let protocol = ValidationProtocol {
-            protocol_id,
-            ..protocol
-        };
-        state.save_protocol(&protocol).unwrap();
-        let sample_report = {
-            let (sample_in, sample_out) =
-                split_snapshot(&state, "alice", &validation.windows[0]).unwrap();
-            let (composed_in, composed_out) =
-                validation_window_run_requests(&protocol, &sample_in, &sample_out);
-            assert_eq!(composed_in.snapshot_id, sample_in.snapshot_id);
-            assert_eq!(composed_out.snapshot_id, sample_out.snapshot_id);
-            assert_eq!(composed_in.run_start_time_ms, None);
-            assert_eq!(composed_out.run_end_time_ms, None);
-            let mut signal_protocol = protocol.clone();
-            signal_protocol.run.signal_instances = vec![SignalInstanceRequest {
-                slot: "forecast".into(),
-                dataset_id: "dataset".into(),
-                signal_name: "up".into(),
-            }];
-            let (signal_in, signal_out) =
-                validation_window_run_requests(&signal_protocol, &sample_in, &sample_out);
-            assert_eq!(signal_in.snapshot_id, protocol.run.snapshot_id);
-            assert_eq!(signal_out.snapshot_id, protocol.run.snapshot_id);
-            assert_eq!(signal_in.run_start_time_ms, Some(sample_in.start_time_ms));
-            assert_eq!(signal_in.run_end_time_ms, Some(sample_in.end_time_ms));
-            assert_eq!(signal_out.run_start_time_ms, Some(sample_out.start_time_ms));
-            assert_eq!(signal_out.run_end_time_ms, Some(sample_out.end_time_ms));
-            let mut sample_in_request = validation.run.clone();
-            sample_in_request.snapshot_id = sample_in.snapshot_id.clone();
-            let mut sample_out_request = sample_in_request.clone();
-            sample_out_request.snapshot_id = sample_out.snapshot_id.clone();
-            let sample_in_run = execute_backtest(sample_in_request, &state).unwrap();
-            let sample_out_run = execute_backtest(sample_out_request, &state).unwrap();
-            ValidationWindowReport {
-                sample_out_start_time_ms: validation.windows[0].sample_out_start_time_ms,
-                sample_out_end_time_ms: validation.windows[0].sample_out_end_time_ms,
-                sample_in_snapshot_id: sample_in.snapshot_id,
-                sample_out_snapshot_id: sample_out.snapshot_id,
-                sample_in_run_id: Some(sample_in_run.run_id),
-                sample_out_run_id: Some(sample_out_run.run_id),
-                sample_in_metrics: Some(sample_in_run.result.metrics),
-                sample_out_metrics: Some(sample_out_run.result.metrics),
-                sample_in_pauses: sample_in_run.pauses,
-                sample_out_pauses: sample_out_run.pauses,
-                failure: None,
-            }
-        };
-        let aggregate = aggregate_validation(&[sample_report.clone()]);
-        assert_eq!(aggregate.completed_windows, 1);
-        let mut report = ValidationReport {
-            report_id: String::new(),
-            protocol_id: protocol.protocol_id.clone(),
-            user_id: "alice".into(),
-            method_version: protocol.method_version.clone(),
-            aggregation_rule_version: protocol.aggregation_rule_version.clone(),
-            walk_forward: protocol.walk_forward.clone(),
-            cross_market: vec![],
-            recommended_contexts: vec![],
-            cross_market_evidence: None,
-            windows: vec![sample_report],
-            aggregate,
-        };
-        report.report_id = content_id(&report).unwrap();
-        state.save_report(&report).unwrap();
+        let protocol = state.validation.create_protocol(validation).unwrap();
+        let report = state
+            .validation
+            .run_report(&protocol.user_id, &protocol.protocol_id)
+            .unwrap();
+        assert_eq!(report.aggregate.completed_windows, 1);
+        assert_eq!(report.windows.len(), 1);
+        assert_eq!(report.windows[0].sample_out_start_time_ms, 25 * 3_600_000);
         assert!(
             state
                 .delete_run(
@@ -4784,447 +3948,14 @@ mod tests {
                 )
                 .is_err()
         );
-        assert_eq!(state.list_reports("alice").unwrap().len(), 1);
-        assert!(state.list_reports("bob").unwrap().is_empty());
-        assert!(validation_markdown(&report).contains(&report.protocol_id));
-        assert!(validation_markdown(&report).contains("research-metrics.md"));
-        assert!(
-            serde_json::to_string(&report)
-                .unwrap()
-                .contains(&report.report_id)
-        );
-        let changed_protocol = ValidationProtocol {
-            aggregation_rule_version: "equal-window@2".into(),
-            ..protocol.clone()
-        };
-        assert_ne!(
-            content_id(&protocol).unwrap(),
-            content_id(&changed_protocol).unwrap()
-        );
-        let failed = ValidationWindowReport {
-            sample_out_start_time_ms: 0,
-            sample_out_end_time_ms: None,
-            sample_in_snapshot_id: snapshot.snapshot_id.clone(),
-            sample_out_snapshot_id: snapshot.snapshot_id.clone(),
-            sample_in_run_id: Some(first.run_id.clone()),
-            sample_out_run_id: None,
-            sample_in_metrics: Some(first.result.metrics.clone()),
-            sample_out_metrics: None,
-            sample_in_pauses: first.pauses.clone(),
-            sample_out_pauses: vec![],
-            failure: Some("unavailable".into()),
-        };
-        assert_eq!(aggregate_validation(&[failed]).failed_windows, 1);
-
-        let walk_forward = WalkForwardValidationRequest {
-            snapshot_id: snapshot.snapshot_id.clone(),
-            window_size_bars: 5,
-            step_size_bars: 5,
-            minimum_history_bars: 10,
-        };
-        let generated_walk_forward_windows =
-            walk_forward_windows(&state, "alice", &walk_forward).unwrap();
-        assert_eq!(
-            generated_walk_forward_windows
-                .iter()
-                .map(|window| window.sample_out_start_time_ms)
-                .collect::<Vec<_>>(),
-            vec![
-                10 * 3_600_000,
-                15 * 3_600_000,
-                20 * 3_600_000,
-                30 * 3_600_000,
-                35 * 3_600_000,
-                40 * 3_600_000,
-                45 * 3_600_000,
-                50 * 3_600_000
-            ]
-        );
-        assert_eq!(
-            generated_walk_forward_windows[0].sample_out_end_time_ms,
-            Some(15 * 3_600_000)
-        );
-        let gap_window = generated_walk_forward_windows
-            .iter()
-            .find(|window| window.sample_out_start_time_ms == 30 * 3_600_000)
+        assert_eq!(state.validation.list_reports("alice").unwrap().len(), 1);
+        assert!(state.validation.list_reports("bob").unwrap().is_empty());
+        let markdown = state
+            .validation
+            .export_report("alice", &report.report_id, "markdown")
             .unwrap();
-        assert_eq!(
-            split_snapshot(&state, "alice", gap_window)
-                .unwrap()
-                .1
-                .bar_count,
-            5
-        );
-        assert!(
-            walk_forward_windows(
-                &state,
-                "alice",
-                &WalkForwardValidationRequest {
-                    minimum_history_bars: 50,
-                    ..walk_forward.clone()
-                },
-            )
-            .is_err()
-        );
-        assert!(
-            walk_forward_windows(
-                &state,
-                "alice",
-                &WalkForwardValidationRequest {
-                    step_size_bars: 4,
-                    ..walk_forward.clone()
-                },
-            )
-            .is_err()
-        );
-        let partial_tail_windows = walk_forward_windows(
-            &state,
-            "alice",
-            &WalkForwardValidationRequest {
-                window_size_bars: 6,
-                step_size_bars: 6,
-                ..walk_forward.clone()
-            },
-        )
-        .unwrap();
-        assert_eq!(partial_tail_windows.len(), 6);
-        assert_eq!(
-            partial_tail_windows
-                .last()
-                .unwrap()
-                .sample_out_start_time_ms,
-            45 * 3_600_000
-        );
-        let walk_forward_request = ValidationProtocolCreateRequest {
-            user_id: "alice".into(),
-            run: request(),
-            windows: vec![],
-            walk_forward: Some(walk_forward.clone()),
-            cross_market: None,
-            method_version: "walk-forward@1".into(),
-            aggregation_rule_version: "equal-window@1".into(),
-        };
-        validate_protocol(&walk_forward_request, &state).unwrap();
-        let mut walk_forward_protocol = ValidationProtocol {
-            protocol_id: String::new(),
-            user_id: walk_forward_request.user_id.clone(),
-            run: walk_forward_request.run.clone(),
-            windows: walk_forward_windows(&state, "alice", &walk_forward).unwrap(),
-            walk_forward: walk_forward_request.walk_forward.clone(),
-            cross_market: walk_forward_request.cross_market.clone(),
-            method_version: walk_forward_request.method_version.clone(),
-            aggregation_rule_version: walk_forward_request.aggregation_rule_version.clone(),
-        };
-        walk_forward_protocol.protocol_id = content_id(&walk_forward_protocol).unwrap();
-        let mut changed_walk_forward_protocol = walk_forward_protocol.clone();
-        changed_walk_forward_protocol
-            .walk_forward
-            .as_mut()
-            .unwrap()
-            .step_size_bars = 6;
-        assert_ne!(
-            content_id(&walk_forward_protocol).unwrap(),
-            content_id(&changed_walk_forward_protocol).unwrap()
-        );
-        state.save_protocol(&walk_forward_protocol).unwrap();
-        assert_eq!(
-            state
-                .load_protocol("alice", &walk_forward_protocol.protocol_id)
-                .unwrap()
-                .walk_forward
-                .as_ref()
-                .unwrap()
-                .minimum_history_bars,
-            10
-        );
-        let unavailable_walk_forward = WalkForwardValidationRequest {
-            minimum_history_bars: 40,
-            ..walk_forward.clone()
-        };
-        let mut unavailable_run = request();
-        unavailable_run.strategy_archive_sha256 = "0".repeat(64);
-        let mut unavailable_protocol = ValidationProtocol {
-            protocol_id: String::new(),
-            user_id: "alice".into(),
-            run: unavailable_run,
-            windows: walk_forward_windows(&state, "alice", &unavailable_walk_forward).unwrap(),
-            walk_forward: Some(unavailable_walk_forward),
-            cross_market: None,
-            method_version: "walk-forward@1".into(),
-            aggregation_rule_version: "equal-window@1".into(),
-        };
-        unavailable_protocol.protocol_id = content_id(&unavailable_protocol).unwrap();
-        state.save_protocol(&unavailable_protocol).unwrap();
-        let unavailable_report = run_validation_report(
-            &ValidationProtocolIdRequest {
-                user_id: "alice".into(),
-                protocol_id: unavailable_protocol.protocol_id,
-            },
-            &state,
-        )
-        .unwrap();
-        assert_eq!(unavailable_report.aggregate.failed_windows, 2);
-        assert!(
-            unavailable_report
-                .windows
-                .iter()
-                .all(|window| window.failure.is_some())
-        );
-        let resumable_walk_forward = WalkForwardValidationRequest {
-            minimum_history_bars: 45,
-            ..walk_forward
-        };
-        let mut resumable_protocol = ValidationProtocol {
-            protocol_id: String::new(),
-            user_id: "alice".into(),
-            run: request(),
-            windows: walk_forward_windows(&state, "alice", &resumable_walk_forward).unwrap(),
-            walk_forward: Some(resumable_walk_forward),
-            cross_market: None,
-            method_version: "walk-forward@1".into(),
-            aggregation_rule_version: "equal-window@1".into(),
-        };
-        resumable_protocol.protocol_id = content_id(&resumable_protocol).unwrap();
-        state.save_protocol(&resumable_protocol).unwrap();
-        let report_request = ValidationProtocolIdRequest {
-            user_id: "alice".into(),
-            protocol_id: resumable_protocol.protocol_id.clone(),
-        };
-        let first_report = run_validation_report(&report_request, &state).unwrap();
-        let run_count = state.list_runs("alice").unwrap().len();
-        let resumed_report = run_validation_report(&report_request, &state).unwrap();
-        assert_eq!(first_report.report_id, resumed_report.report_id);
-        assert_eq!(state.list_runs("alice").unwrap().len(), run_count);
-        assert_eq!(first_report.windows.len(), 1);
-        assert_eq!(
-            first_report.windows[0].sample_out_start_time_ms,
-            50 * 3_600_000
-        );
-        assert!(first_report.windows[0].sample_out_end_time_ms.is_none());
-        assert!(validation_markdown(&first_report).contains("walk-forward@1"));
-
-        let (_, source_bars) = state
-            .snapshot_for_user("alice", &snapshot.snapshot_id)
-            .unwrap();
-        let eth_snapshot = state
-            .persist_snapshot_for_user(
-                "alice",
-                &adaq_data_core::BarSeries {
-                    src: "okx".into(),
-                    code: "ETH-USDT".into(),
-                    interval: BarInterval::OneHour,
-                    bars: source_bars.clone(),
-                    gaps: vec![],
-                },
-            )
-            .unwrap();
-        let cross_market = CrossMarketValidationRequest {
-            contexts: vec![
-                CrossMarketValidationContextRequest {
-                    snapshot_id: snapshot.snapshot_id.clone(),
-                    run_override: None,
-                },
-                CrossMarketValidationContextRequest {
-                    snapshot_id: eth_snapshot.snapshot_id.clone(),
-                    run_override: None,
-                },
-            ],
-        };
-        let cross_market_request = ValidationProtocolCreateRequest {
-            user_id: "alice".into(),
-            run: request(),
-            windows: vec![],
-            walk_forward: None,
-            cross_market: Some(cross_market.clone()),
-            method_version: "cross-market@1".into(),
-            aggregation_rule_version: "equal-window@1".into(),
-        };
-        validate_protocol(&cross_market_request, &state).unwrap();
-        let mut cross_market_protocol = ValidationProtocol {
-            protocol_id: String::new(),
-            user_id: cross_market_request.user_id.clone(),
-            run: cross_market_request.run.clone(),
-            windows: vec![],
-            walk_forward: None,
-            cross_market: Some(cross_market.clone()),
-            method_version: cross_market_request.method_version.clone(),
-            aggregation_rule_version: cross_market_request.aggregation_rule_version.clone(),
-        };
-        cross_market_protocol.protocol_id = content_id(&cross_market_protocol).unwrap();
-        state.save_protocol(&cross_market_protocol).unwrap();
-        let cross_market_request_id = ValidationProtocolIdRequest {
-            user_id: "alice".into(),
-            protocol_id: cross_market_protocol.protocol_id.clone(),
-        };
-        let cross_market_report = run_validation_report(&cross_market_request_id, &state).unwrap();
-        assert_eq!(cross_market_report.cross_market.len(), 2);
-        assert_eq!(
-            cross_market_report.cross_market[0].snapshot.code,
-            "BTC-USDT"
-        );
-        assert_eq!(
-            cross_market_report.cross_market[1].snapshot.code,
-            "ETH-USDT"
-        );
-        assert_eq!(cross_market_report.aggregate.completed_windows, 2);
-        assert_eq!(
-            cross_market_report
-                .cross_market_evidence
-                .as_ref()
-                .unwrap()
-                .completed_markets,
-            2
-        );
-        assert!(
-            cross_market_report
-                .cross_market
-                .iter()
-                .all(|context| context.failure.is_none())
-        );
-        assert!(
-            cross_market_report
-                .recommended_contexts
-                .iter()
-                .all(|context| {
-                    context.supporting_report_id == cross_market_report.report_id
-                        && context.run.snapshot_id == context.snapshot.snapshot_id
-                })
-        );
-        assert_eq!(
-            validation_report_id(&cross_market_report).unwrap(),
-            cross_market_report.report_id
-        );
-        let cross_market_run_count = state.list_runs("alice").unwrap().len();
-        assert_eq!(
-            run_validation_report(&cross_market_request_id, &state)
-                .unwrap()
-                .report_id,
-            cross_market_report.report_id
-        );
-        assert_eq!(
-            state.list_runs("alice").unwrap().len(),
-            cross_market_run_count
-        );
-        assert!(
-            state
-                .list_reports("alice")
-                .unwrap()
-                .iter()
-                .any(|report| report.report_id == cross_market_report.report_id)
-        );
-        assert!(validation_markdown(&cross_market_report).contains("ETH-USDT"));
-        let mut invalid_override = request();
-        invalid_override.factor_instances.clear();
-        let mut failed_cross_market_protocol = ValidationProtocol {
-            protocol_id: String::new(),
-            user_id: "alice".into(),
-            run: request(),
-            windows: vec![],
-            walk_forward: None,
-            cross_market: Some(CrossMarketValidationRequest {
-                contexts: vec![
-                    CrossMarketValidationContextRequest {
-                        snapshot_id: snapshot.snapshot_id.clone(),
-                        run_override: None,
-                    },
-                    CrossMarketValidationContextRequest {
-                        snapshot_id: eth_snapshot.snapshot_id.clone(),
-                        run_override: Some(invalid_override),
-                    },
-                ],
-            }),
-            method_version: "cross-market@1".into(),
-            aggregation_rule_version: "equal-window@1".into(),
-        };
-        failed_cross_market_protocol.protocol_id =
-            content_id(&failed_cross_market_protocol).unwrap();
-        state.save_protocol(&failed_cross_market_protocol).unwrap();
-        let failed_cross_market_report = run_validation_report(
-            &ValidationProtocolIdRequest {
-                user_id: "alice".into(),
-                protocol_id: failed_cross_market_protocol.protocol_id,
-            },
-            &state,
-        )
-        .unwrap();
-        assert_eq!(failed_cross_market_report.aggregate.failed_windows, 1);
-        assert!(failed_cross_market_report.cross_market[1].failure.is_some());
-        assert_eq!(failed_cross_market_report.recommended_contexts.len(), 1);
-        assert!(
-            validate_protocol(
-                &ValidationProtocolCreateRequest {
-                    cross_market: Some(CrossMarketValidationRequest {
-                        contexts: vec![
-                            CrossMarketValidationContextRequest {
-                                snapshot_id: snapshot.snapshot_id.clone(),
-                                run_override: None,
-                            },
-                            CrossMarketValidationContextRequest {
-                                snapshot_id: "missing-snapshot".into(),
-                                run_override: None,
-                            },
-                        ],
-                    }),
-                    ..cross_market_request.clone()
-                },
-                &state
-            )
-            .is_err()
-        );
-        assert!(
-            validate_protocol(
-                &ValidationProtocolCreateRequest {
-                    cross_market: Some(CrossMarketValidationRequest {
-                        contexts: vec![
-                            CrossMarketValidationContextRequest {
-                                snapshot_id: snapshot.snapshot_id.clone(),
-                                run_override: None,
-                            },
-                            CrossMarketValidationContextRequest {
-                                snapshot_id: snapshot.snapshot_id.clone(),
-                                run_override: None,
-                            },
-                        ],
-                    }),
-                    ..cross_market_request.clone()
-                },
-                &state
-            )
-            .is_err()
-        );
-        let incompatible_snapshot = state
-            .persist_snapshot_for_user(
-                "alice",
-                &adaq_data_core::BarSeries {
-                    src: "okx".into(),
-                    code: "SOL-USDT".into(),
-                    interval: BarInterval::OneDay,
-                    bars: source_bars,
-                    gaps: vec![],
-                },
-            )
-            .unwrap();
-        assert!(
-            validate_protocol(
-                &ValidationProtocolCreateRequest {
-                    cross_market: Some(CrossMarketValidationRequest {
-                        contexts: vec![
-                            CrossMarketValidationContextRequest {
-                                snapshot_id: snapshot.snapshot_id.clone(),
-                                run_override: None,
-                            },
-                            CrossMarketValidationContextRequest {
-                                snapshot_id: incompatible_snapshot.snapshot_id,
-                                run_override: None,
-                            },
-                        ],
-                    }),
-                    ..cross_market_request
-                },
-                &state
-            )
-            .is_err()
-        );
+        assert!(markdown.contains(&report.protocol_id));
+        assert!(markdown.contains("research-metrics.md"));
 
         let mut legacy_json =
             serde_json::to_value(state.load_run("alice", &first.run_id).unwrap()).unwrap();
@@ -5394,131 +4125,5 @@ mod tests {
 
         drop(state);
         fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn cross_market_evidence_preserves_order_failures_dispersion_and_report_identity() {
-        let snapshot = |id: &str, code: &str| MarketDataSnapshot {
-            snapshot_id: id.into(),
-            src: "okx".into(),
-            code: code.into(),
-            interval: BarInterval::OneHour,
-            start_time_ms: 0,
-            end_time_ms: 3_600_000,
-            bar_count: 1,
-            gaps: vec![],
-            parquet_path: PathBuf::new(),
-        };
-        let run = |snapshot_id: &str| BacktestRunRequest {
-            user_id: "alice".into(),
-            snapshot_id: snapshot_id.into(),
-            run_start_time_ms: None,
-            run_end_time_ms: None,
-            factor_instances: vec![],
-            signal_instances: vec![],
-            strategy_archive_sha256: "strategy".into(),
-            strategy_parameters: HashMap::new(),
-            initial_quote_allocation: 1.into(),
-            execution_profile: ExecutionProfile {
-                maker_fee_rate: rust_decimal::Decimal::ZERO,
-                taker_fee_rate: rust_decimal::Decimal::ZERO,
-                adverse_slippage_rate: rust_decimal::Decimal::ZERO,
-                rebalance_threshold: rust_decimal::Decimal::ZERO,
-                price_increment: rust_decimal::Decimal::ONE,
-                quantity_increment: rust_decimal::Decimal::ONE,
-                minimum_quantity: rust_decimal::Decimal::ZERO,
-                risk_free_rate: rust_decimal::Decimal::ZERO,
-                fill_policy: adaq_backtest_core::FillPolicy::Taker,
-            },
-            seed: 0,
-        };
-        let metrics = |total_return| adaq_backtest_core::BacktestMetrics {
-            initial_equity: 1.into(),
-            final_equity: 1.into(),
-            total_return,
-            cagr: 0.into(),
-            annualized_volatility: 0.into(),
-            sharpe: 0.into(),
-            sortino: 0.into(),
-            max_drawdown: 0.into(),
-            calmar: 0.into(),
-            realized_pnl: 0.into(),
-            unrealized_pnl: 0.into(),
-            total_fees: 0.into(),
-            turnover: 0.into(),
-            fill_count: 0,
-            realized_trade_count: 0,
-            win_rate: 0.into(),
-            profit_factor: 0.into(),
-            average_win: 0.into(),
-            average_loss: 0.into(),
-            exposure_time: 0.into(),
-            benchmark_return: 0.into(),
-            excess_return: 0.into(),
-        };
-        let contexts = vec![
-            CrossMarketValidationReport {
-                snapshot: snapshot("btc", "BTC-USDT"),
-                run: run("btc"),
-                run_id: Some("run-btc".into()),
-                metrics: Some(metrics(rust_decimal::Decimal::new(20, 2))),
-                pauses: vec![],
-                failure: None,
-            },
-            CrossMarketValidationReport {
-                snapshot: snapshot("eth", "ETH-USDT"),
-                run: run("eth"),
-                run_id: None,
-                metrics: None,
-                pauses: vec![],
-                failure: Some("missing-input".into()),
-            },
-            CrossMarketValidationReport {
-                snapshot: snapshot("sol", "SOL-USDT"),
-                run: run("sol"),
-                run_id: Some("run-sol".into()),
-                metrics: Some(metrics(rust_decimal::Decimal::new(-10, 2))),
-                pauses: vec![],
-                failure: None,
-            },
-        ];
-        let aggregate = aggregate_cross_market(&contexts);
-        assert_eq!(aggregate.completed_windows, 2);
-        assert_eq!(aggregate.failed_windows, 1);
-        assert_eq!(
-            cross_market_evidence(&contexts)
-                .unwrap()
-                .total_return_spread,
-            rust_decimal::Decimal::new(30, 2)
-        );
-
-        let report = ValidationReport {
-            report_id: String::new(),
-            protocol_id: "protocol".into(),
-            user_id: "alice".into(),
-            method_version: "cross-market@1".into(),
-            aggregation_rule_version: "equal-window@1".into(),
-            walk_forward: None,
-            cross_market: contexts.clone(),
-            windows: vec![],
-            aggregate,
-            recommended_contexts: vec![RecommendedContext {
-                supporting_report_id: String::new(),
-                snapshot: contexts[0].snapshot.clone(),
-                run: contexts[0].run.clone(),
-            }],
-            cross_market_evidence: cross_market_evidence(&contexts),
-        };
-        let identity = validation_report_id(&report).unwrap();
-        let exported = serde_json::to_value(&report).unwrap();
-        assert_eq!(
-            exported["recommendedContexts"][0]["supportingReportId"],
-            serde_json::Value::String(String::new())
-        );
-        assert!(validation_markdown(&report).contains("crossMarketEvidence"));
-        assert!(validation_markdown(&report).contains("recommendedContexts"));
-        let mut reordered = report;
-        reordered.cross_market.reverse();
-        assert_ne!(identity, validation_report_id(&reordered).unwrap());
     }
 }

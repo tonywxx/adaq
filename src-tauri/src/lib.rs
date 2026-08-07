@@ -3,6 +3,8 @@ mod local_research;
 mod m8;
 #[allow(dead_code)] // M2 is host-only until Backtest orchestration consumes it.
 mod run_engine;
+mod user;
+mod validation;
 mod watchlist;
 
 #[cfg(test)]
@@ -14,7 +16,7 @@ use adaq_data_core::{
 };
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 use tauri::{
     Emitter, Manager, State,
@@ -64,7 +66,7 @@ struct MarketSourceRequest {
 #[tauri::command]
 fn dataset_generation_start(
     request: dataset_generation::DatasetGenerationRequest,
-    state: State<'_, LocalResearchState>,
+    state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<dataset_generation::Attempt, String> {
     state.generation.start(request)
 }
@@ -73,7 +75,7 @@ fn dataset_generation_start(
 fn dataset_generation_retry(
     attempt_id: String,
     user_id: String,
-    state: State<'_, LocalResearchState>,
+    state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<dataset_generation::Attempt, String> {
     state.generation.retry(&attempt_id, &user_id)
 }
@@ -84,7 +86,7 @@ async fn dataset_generation_list(
     app: tauri::AppHandle,
 ) -> Result<Vec<dataset_generation::Attempt>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<LocalResearchState>();
+        let state = app.state::<Arc<LocalResearchState>>();
         state.generation.list(&user_id)
     })
     .await
@@ -95,9 +97,58 @@ async fn dataset_generation_list(
 fn dataset_generation_cancel(
     attempt_id: String,
     user_id: String,
-    state: State<'_, LocalResearchState>,
+    state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
     state.generation.cancel(&attempt_id, &user_id)
+}
+
+/// Tauri Validation commands are thin adapters: they deserialize the
+/// existing contract, delegate to the Tauri-independent Validation Studies
+/// module, and serialize the result. Command names and camelCase shapes are
+/// frozen.
+#[tauri::command]
+fn validation_protocol_create(
+    request: validation::ValidationProtocolCreateRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<validation::ValidationProtocol, String> {
+    state.validation.create_protocol(request)
+}
+
+#[tauri::command]
+async fn validation_protocol_list(
+    request: local_research::ComponentUserRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<Vec<validation::ValidationProtocol>, String> {
+    state.validation.list_protocols(&request.user_id)
+}
+
+#[tauri::command]
+fn validation_report_run(
+    request: validation::ValidationProtocolIdRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<validation::ValidationReport, String> {
+    state
+        .validation
+        .run_report(&request.user_id, &request.protocol_id)
+}
+
+#[tauri::command]
+async fn validation_report_list(
+    request: local_research::ComponentUserRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<Vec<validation::ValidationReport>, String> {
+    state.validation.list_reports(&request.user_id)
+}
+
+#[tauri::command]
+fn validation_report_export(
+    request: validation::ValidationProtocolIdRequest,
+    format: String,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<String, String> {
+    state
+        .validation
+        .export_report(&request.user_id, &request.protocol_id, &format)
 }
 
 #[derive(serde::Deserialize)]
@@ -526,11 +577,11 @@ pub fn run() {
             local_research::backtest_delete,
             local_research::local_data_summary,
             local_research::local_data_reset,
-            local_research::validation_protocol_create,
-            local_research::validation_protocol_list,
-            local_research::validation_report_run,
-            local_research::validation_report_list,
-            local_research::validation_report_export,
+            validation_protocol_create,
+            validation_protocol_list,
+            validation_report_run,
+            validation_report_list,
+            validation_report_export,
             dataset_generation_start,
             dataset_generation_retry,
             dataset_generation_list,

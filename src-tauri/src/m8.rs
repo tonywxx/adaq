@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{Cursor, Read, Write},
+    sync::Arc,
 };
 
 use adaq_backtest_core::MarketDataSnapshot;
@@ -15,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-use crate::local_research::{LocalResearchState, validate_user};
+use crate::local_research::LocalResearchState;
+use crate::user::validate_user;
 
 const SIGNAL_ARCHIVE_SCHEMA_VERSION: u32 = 1;
 const MAX_SIGNAL_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
@@ -588,7 +590,7 @@ fn is_sha256(value: &str) -> bool {
 #[tauri::command]
 pub fn signal_dataset_list(
     user_id: String,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<serde_json::Value>, String> {
     validate_user(&user_id)?;
     let database = state.database.lock().map_err(string)?;
@@ -605,7 +607,7 @@ pub fn signal_dataset_list(
 pub fn signal_dataset_get(
     dataset_id: String,
     user_id: String,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<serde_json::Value, String> {
     validate_user(&user_id)?;
     let database = state.database.lock().map_err(string)?;
@@ -624,7 +626,7 @@ pub fn signal_dataset_rows(
     dataset_id: String,
     user_id: String,
     page: usize,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<serde_json::Value, String> {
     signal_rows_page(&state, &user_id, &dataset_id, page)
 }
@@ -655,7 +657,7 @@ fn signal_rows_page(
 pub fn signal_dataset_import(
     user_id: String,
     archive: Vec<u8>,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<serde_json::Value, String> {
     import_signal_archive(&state, &user_id, &archive)
 }
@@ -664,7 +666,7 @@ pub fn signal_dataset_import(
 pub fn signal_dataset_export(
     dataset_id: String,
     user_id: String,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<u8>, String> {
     export_signal_archive(&state, &user_id, &dataset_id)
 }
@@ -1932,7 +1934,7 @@ fn save_forecast_evaluation(
 #[tauri::command]
 pub async fn forecast_evaluation_create(
     request: ForecastEvaluationRequest,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<ForecastEvaluationReport, String> {
     save_forecast_evaluation(&state, &request)
 }
@@ -1940,7 +1942,7 @@ pub async fn forecast_evaluation_create(
 #[tauri::command]
 pub async fn forecast_evaluation_list(
     user_id: String,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<ForecastEvaluationReport>, String> {
     list_forecast_evaluations(&state, &user_id)
 }
@@ -1967,7 +1969,7 @@ pub fn forecast_evaluation_export(
     report_id: String,
     user_id: String,
     format: String,
-    state: tauri::State<'_, LocalResearchState>,
+    state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<String, String> {
     export_forecast_evaluation(&state, &user_id, &report_id, &format)
 }
@@ -2141,7 +2143,7 @@ mod tests {
         name: &str,
     ) -> (
         std::path::PathBuf,
-        LocalResearchState,
+        Arc<LocalResearchState>,
         DatasetGenerationRequest,
     ) {
         let root = root(name);

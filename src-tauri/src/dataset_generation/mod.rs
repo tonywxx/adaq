@@ -29,7 +29,7 @@ use adaq_data_core::OhlcvBar;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::local_research::validate_user;
+use crate::user::validate_user;
 
 const INCOMPATIBLE_SCHEMA: &str = "Incompatible pre-v1 Dataset Generation schema. Close AdaQ, remove its device-local app data directory, and reopen AdaQ. This deletes all Local Research Data for every User on this device.";
 const MAX_DIAGNOSTIC_EVIDENCE_CHARS: usize = 8_192;
@@ -354,7 +354,7 @@ pub(super) mod tests {
     pub(super) fn setup(
         mode: &str,
         name: &str,
-    ) -> (PathBuf, LocalResearchState, DatasetGenerationRequest) {
+    ) -> (PathBuf, Arc<LocalResearchState>, DatasetGenerationRequest) {
         let root = root(name);
         let state = LocalResearchState::open(&root).unwrap();
         let package = model_package();
