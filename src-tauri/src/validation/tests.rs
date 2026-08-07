@@ -76,8 +76,8 @@ fn harness(name: &str) -> Harness {
     let strategy_hash = adaq_component_tooling::ComponentPackage::read(&strategy_bytes)
         .unwrap()
         .archive_sha256;
-    state.import_component("alice", &factor_bytes).unwrap();
-    state.import_component("alice", &strategy_bytes).unwrap();
+    state.components.import("alice", &factor_bytes).unwrap();
+    state.components.import("alice", &strategy_bytes).unwrap();
     let bars = (0..50)
         .map(|index| {
             let close = Decimal::from(100 + index);

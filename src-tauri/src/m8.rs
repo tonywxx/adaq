@@ -2150,7 +2150,7 @@ mod tests {
         let state = LocalResearchState::open(&root).unwrap();
         let package = model_package();
         let model_archive_sha256 = ComponentPackage::read(&package).unwrap().archive_sha256;
-        state.import_component("alice", &package).unwrap();
+        state.components.import("alice", &package).unwrap();
         let bars = [0, 1, 2, 6, 7, 8]
             .into_iter()
             .enumerate()
@@ -3008,7 +3008,8 @@ mod tests {
         );
         assert!(
             state
-                .delete_component("alice", &request.model_archive_sha256)
+                .components
+                .delete("alice", &request.model_archive_sha256)
                 .unwrap_err()
                 .contains("immutable Signal Dataset")
         );
@@ -3224,7 +3225,8 @@ mod tests {
         published_attempt(&state, &request);
         assert!(
             state
-                .delete_component("alice", &request.model_archive_sha256)
+                .components
+                .delete("alice", &request.model_archive_sha256)
                 .unwrap_err()
                 .contains("immutable Signal Dataset")
         );
@@ -3338,7 +3340,7 @@ mod tests {
         strategy.wasm_sha256 = hash(&wasm);
         let strategy = pack_component(strategy, &wasm).unwrap();
         let strategy_archive_sha256 = ComponentPackage::read(&strategy).unwrap().archive_sha256;
-        state.import_component("alice", &strategy).unwrap();
+        state.components.import("alice", &strategy).unwrap();
         let run = state
             .backtests
             .run(crate::backtest::BacktestRunRequest {

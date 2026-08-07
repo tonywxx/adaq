@@ -1,4 +1,5 @@
 mod backtest;
+mod component_library;
 mod dataset_generation;
 mod local_research;
 mod m8;
@@ -54,6 +55,76 @@ fn load_factor_component(
 #[tauri::command]
 fn get_factor_schema(loader: State<'_, WasmLoader>) -> Result<FactorSchema, String> {
     loader.describe_factor()
+}
+
+/// Tauri Component Library commands are thin adapters: they deserialize
+/// the existing contract, delegate to the Tauri-independent Component
+/// Library module, and serialize the result. Command names and camelCase
+/// shapes are frozen.
+#[tauri::command]
+fn component_import(
+    request: component_library::ComponentImportRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<component_library::LibraryComponent, String> {
+    state.components.import(&request.user_id, &request.bytes)
+}
+
+#[tauri::command]
+async fn component_list(
+    request: component_library::ComponentUserRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<component_library::LibraryComponent>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .components
+            .list(&request.user_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn component_page(
+    request: component_library::ComponentPageRequest,
+    app: tauri::AppHandle,
+) -> Result<component_library::ComponentPage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .components
+            .page(&request.user_id, request.page)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn component_is_imported(
+    request: component_library::ComponentArchiveRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<bool, String> {
+    state
+        .components
+        .is_imported(&request.user_id, &request.archive_sha256)
+}
+
+#[tauri::command]
+fn backtest_compatible_factors(
+    request: component_library::BacktestDependencyRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    state
+        .components
+        .compatible_factors(&request.user_id, &request.strategy_archive_sha256)
+}
+
+#[tauri::command]
+fn component_delete(
+    request: component_library::ComponentDeleteRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    state
+        .components
+        .delete(&request.user_id, &request.archive_sha256)
 }
 
 #[derive(serde::Deserialize)]
@@ -118,7 +189,7 @@ fn validation_protocol_create(
 
 #[tauri::command]
 async fn validation_protocol_list(
-    request: local_research::ComponentUserRequest,
+    request: component_library::ComponentUserRequest,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<validation::ValidationProtocol>, String> {
     state.validation.list_protocols(&request.user_id)
@@ -136,7 +207,7 @@ fn validation_report_run(
 
 #[tauri::command]
 async fn validation_report_list(
-    request: local_research::ComponentUserRequest,
+    request: component_library::ComponentUserRequest,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<validation::ValidationReport>, String> {
     state.validation.list_reports(&request.user_id)
@@ -676,13 +747,13 @@ pub fn run() {
             market_unsubscribe_ticker,
             market_subscribe_bars,
             market_unsubscribe_bar,
-            local_research::component_import,
-            local_research::component_list,
-            local_research::component_page,
-            local_research::component_is_imported,
-            local_research::backtest_compatible_factors,
+            component_import,
+            component_list,
+            component_page,
+            component_is_imported,
+            backtest_compatible_factors,
             local_research::backtest_compatible_signals,
-            local_research::component_delete,
+            component_delete,
             snapshot_create,
             snapshot_download,
             snapshot_list,

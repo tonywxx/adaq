@@ -351,7 +351,7 @@ pub(super) mod tests {
         let state = LocalResearchState::open(&root).unwrap();
         let package = model_package();
         let model_archive_sha256 = ComponentPackage::read(&package).unwrap().archive_sha256;
-        state.import_component("alice", &package).unwrap();
+        state.components.import("alice", &package).unwrap();
         let bars = [0, 1, 2, 6, 7, 8]
             .into_iter()
             .enumerate()
@@ -902,7 +902,7 @@ pub(super) mod tests {
         let (root, state, request) = setup("valid", "interface-reset-isolation");
         let watchlist = crate::watchlist::WatchlistDb::open(&root.join("adaq.db")).unwrap();
         let package = model_package();
-        state.import_component("bob", &package).unwrap();
+        state.components.import("bob", &package).unwrap();
         state
             .grant_snapshot_for_user("bob", &request.snapshot_id)
             .unwrap();
