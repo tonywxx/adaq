@@ -21,8 +21,9 @@ use super::{
     CrossMarketValidationContextRequest, CrossMarketValidationRequest,
     ValidationProtocolCreateRequest, ValidationWindowRequest, WalkForwardValidationRequest,
 };
-use crate::local_research::{
-    BacktestRunRequest, FactorInstanceRequest, LocalDataResetKind, LocalResearchState,
+use crate::{
+    backtest::{BacktestRunRequest, FactorInstanceRequest},
+    local_research::{LocalDataResetKind, LocalResearchState},
 };
 
 struct Harness {
@@ -169,16 +170,7 @@ fn holdout_request(harness: &Harness) -> ValidationProtocolCreateRequest {
 }
 
 fn backtest_run_count(state: &LocalResearchState, user_id: &str) -> i64 {
-    state
-        .database
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1",
-            [user_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap()
+    state.backtests.summary_for_user(user_id).unwrap().run_count as i64
 }
 
 #[test]
@@ -418,7 +410,7 @@ fn walk_forward_reports_derive_windows_and_reuse_runs() {
     // A Run bound to a missing Signal Dataset records failed windows instead
     // of aborting the study.
     let unavailable_run = BacktestRunRequest {
-        signal_instances: vec![crate::local_research::SignalInstanceRequest {
+        signal_instances: vec![crate::backtest::SignalInstanceRequest {
             slot: "forecast".into(),
             dataset_id: "missing-dataset".into(),
             signal_name: "up".into(),

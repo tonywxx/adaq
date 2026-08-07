@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    local_research::{BacktestRunRequest, RunPauseRecord},
+    backtest::{BacktestRunRequest, RunPauseRecord},
     user::validate_user,
 };
 

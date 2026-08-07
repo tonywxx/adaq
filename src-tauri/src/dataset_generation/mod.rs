@@ -23,13 +23,13 @@ use std::{
     time::Duration,
 };
 
-use adaq_backtest_core::MarketDataSnapshot;
-use adaq_component_tooling::ComponentPackage;
-use adaq_data_core::OhlcvBar;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::user::validate_user;
+use crate::{
+    backtest::{ComponentPackageSource, SnapshotReadSource},
+    user::validate_user,
+};
 
 const INCOMPATIBLE_SCHEMA: &str = "Incompatible pre-v1 Dataset Generation schema. Close AdaQ, remove its device-local app data directory, and reopen AdaQ. This deletes all Local Research Data for every User on this device.";
 const MAX_DIAGNOSTIC_EVIDENCE_CHARS: usize = 8_192;
@@ -159,21 +159,13 @@ pub(crate) struct DatasetFactorInstance {
 
 /// The concrete local dependencies composed into Dataset Generation. The
 /// complete Local Research state is never passed in; only the database,
-/// Component Package access, Market Data Snapshot access, runtime Component
-/// materialization, and the Signal Dataset directory are required.
-pub(crate) trait GenerationSource: Send + Sync {
+/// Component Package access and Market Data Snapshot access (through the
+/// Backtest module's Source traits), and the Signal Dataset directory are
+/// required.
+pub(crate) trait GenerationSource:
+    SnapshotReadSource + ComponentPackageSource + Send + Sync
+{
     fn database(&self) -> Result<MutexGuard<'_, Connection>, String>;
-    fn package_for_user(
-        &self,
-        user_id: &str,
-        archive_sha256: &str,
-    ) -> Result<ComponentPackage, String>;
-    fn snapshot_for_user(
-        &self,
-        user_id: &str,
-        snapshot_id: &str,
-    ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String>;
-    fn runtime_component(&self, package: &ComponentPackage) -> Result<PathBuf, String>;
     fn dataset_directory(&self) -> Result<PathBuf, String>;
 }
 

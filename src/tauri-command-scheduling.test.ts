@@ -9,12 +9,13 @@ test("workspace list commands do not block the Tauri main thread", () => {
 				new URL("../src-tauri/src/local_research.rs", import.meta.url),
 				"utf8",
 			),
-			["component_list", "backtest_list"],
+			["component_list"],
 			"pub async fn",
 		],
 		[
 			readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"),
 			[
+				"backtest_list",
 				"validation_protocol_list",
 				"validation_report_list",
 				"snapshot_list",

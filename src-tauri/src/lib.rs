@@ -1,8 +1,8 @@
+mod backtest;
 mod dataset_generation;
 mod local_research;
 mod m8;
 mod market_data_snapshot;
-#[allow(dead_code)] // M2 is host-only until Backtest orchestration consumes it.
 mod run_engine;
 mod user;
 mod validation;
@@ -209,6 +209,66 @@ fn snapshot_cancel(
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
     state.snapshots.cancel_download(&request.task_id)
+}
+
+/// Tauri Backtest Run commands are thin adapters: they deserialize the
+/// existing contract, delegate to the Tauri-independent Backtest Run
+/// module, and serialize the result. Command names and camelCase shapes
+/// are frozen.
+#[tauri::command]
+fn backtest_preflight(
+    request: backtest::BacktestRunRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<backtest::BacktestPreflight, String> {
+    state.backtests.preflight(&request)
+}
+
+#[tauri::command]
+fn backtest_run(
+    request: backtest::BacktestRunRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<backtest::BacktestRunView, String> {
+    state.backtests.run(request)
+}
+
+#[tauri::command]
+async fn backtest_list(
+    request: backtest::BacktestListRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<backtest::BacktestRunPage, String> {
+    state.backtests.list(&request)
+}
+
+#[tauri::command]
+fn backtest_get(
+    request: backtest::BacktestRunIdRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<backtest::BacktestRunView, String> {
+    state.backtests.get(&request.user_id, &request.run_id)
+}
+
+#[tauri::command]
+fn backtest_chart_data(
+    request: backtest::BacktestChartRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<backtest::BacktestRunView, String> {
+    state.backtests.chart_data(&request)
+}
+
+#[tauri::command]
+fn backtest_execution_data(
+    request: backtest::BacktestExecutionRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<backtest::BacktestExecutionPage, String> {
+    state.backtests.execution_data(&request)
+}
+
+#[tauri::command]
+fn backtest_delete(
+    request: backtest::BacktestRunIdRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    state.backtests.delete(&request.user_id, &request.run_id)
 }
 
 #[derive(serde::Deserialize)]
@@ -628,13 +688,13 @@ pub fn run() {
             snapshot_list,
             snapshot_list_readable,
             snapshot_cancel,
-            local_research::backtest_preflight,
-            local_research::backtest_run,
-            local_research::backtest_list,
-            local_research::backtest_get,
-            local_research::backtest_chart_data,
-            local_research::backtest_execution_data,
-            local_research::backtest_delete,
+            backtest_preflight,
+            backtest_run,
+            backtest_list,
+            backtest_get,
+            backtest_chart_data,
+            backtest_execution_data,
+            backtest_delete,
             local_research::local_data_summary,
             local_research::local_data_reset,
             validation_protocol_create,

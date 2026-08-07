@@ -3339,14 +3339,15 @@ mod tests {
         let strategy = pack_component(strategy, &wasm).unwrap();
         let strategy_archive_sha256 = ComponentPackage::read(&strategy).unwrap().archive_sha256;
         state.import_component("alice", &strategy).unwrap();
-        let run = crate::local_research::execute_backtest(
-            crate::local_research::BacktestRunRequest {
+        let run = state
+            .backtests
+            .run(crate::backtest::BacktestRunRequest {
                 user_id: "alice".into(),
                 snapshot_id: snapshot.snapshot_id,
                 run_start_time_ms: None,
                 run_end_time_ms: None,
                 factor_instances: vec![],
-                signal_instances: vec![crate::local_research::SignalInstanceRequest {
+                signal_instances: vec![crate::backtest::SignalInstanceRequest {
                     slot: "close-change".into(),
                     dataset_id: dataset["datasetId"].as_str().unwrap().into(),
                     signal_name: "expected-close-return-1-bar".into(),
@@ -3366,10 +3367,8 @@ mod tests {
                     fill_policy: adaq_backtest_core::FillPolicy::Taker,
                 },
                 seed: 0,
-            },
-            &state,
-        )
-        .unwrap();
+            })
+            .unwrap();
         let run_provenance = run.provenance.unwrap();
         assert_eq!(run_provenance.dataset_lock.len(), 1);
         assert_eq!(run_provenance.dataset_lock[0].evidence_state, "unknown");

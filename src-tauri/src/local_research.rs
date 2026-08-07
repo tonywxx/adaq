@@ -1,40 +1,30 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
 };
 
-use adaq_backtest_core::{
-    ExecutionProfile, MarketDataSnapshot, SnapshotStore, SpotSimulator,
-    TargetDecision as SimulationDecision,
-};
+use adaq_backtest_core::{MarketDataSnapshot, SnapshotStore};
 use adaq_component_tooling::{
-    ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
-    ComponentParameterValue, FactorInstancePlanInput, FeatureSlotDefinition, FeatureSlotSource,
-    FrozenFeaturePlan, ModelArtifact, ModelOutput, ModelScope, ParameterDefinition, RunLimits,
-    SignalPlanInput, StrategyArchitecture, component_parameters, native_engine_identity,
-    strategy_architecture, validate_and_freeze_feature_plan_with_bindings_and_parameters,
-    verify_package,
+    ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotDefinition,
+    FeatureSlotSource, ModelArtifact, ModelOutput, ModelScope, ParameterDefinition,
+    StrategyArchitecture, strategy_architecture, verify_package,
 };
-use adaq_data_core::{BarGap, BarInterval, OhlcvBar};
-use rusqlite::{Connection, OptionalExtension, params};
+use adaq_data_core::OhlcvBar;
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tauri::Manager;
 
 use crate::{
+    backtest::{BacktestSource, Backtests, ComponentPackageSource, SnapshotReadSource},
     dataset_generation::{DatasetGeneration, GenerationSource},
-    m8::backtest_signal_datasets,
+    m8::{BacktestSignalDataset, backtest_signal_datasets},
     market_data_snapshot::{LocalSnapshotSource, MarketDataSnapshots},
-    run_engine::{
-        FactorRunRequest, PositionMode, RunEngine, RunRequest, SignalRunRequest, SignalRunRow,
-    },
     user::validate_user,
     validation::{ValidationRunOutcome, ValidationSource, ValidationStudies},
 };
 
-const RUN_HISTORY_PAGE_SIZE: usize = 10;
 const COMPONENT_PAGE_SIZE: usize = 10;
 
 pub struct LocalResearchState {
@@ -44,6 +34,7 @@ pub struct LocalResearchState {
     source: Arc<LocalGenerationSource>,
     pub(crate) generation: DatasetGeneration,
     pub(crate) validation: ValidationStudies,
+    pub(crate) backtests: Backtests,
 }
 
 #[derive(Serialize)]
@@ -124,11 +115,17 @@ pub(crate) struct LocalGenerationSource {
     root: PathBuf,
 }
 
-impl GenerationSource for LocalGenerationSource {
-    fn database(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
-        self.database.lock().map_err(string)
+impl SnapshotReadSource for LocalGenerationSource {
+    fn snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
+        self.snapshots.snapshot_for_user(user_id, snapshot_id)
     }
+}
 
+impl ComponentPackageSource for LocalGenerationSource {
     fn package_for_user(&self, user_id: &str, hash: &str) -> Result<ComponentPackage, String> {
         validate_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
@@ -150,14 +147,6 @@ impl GenerationSource for LocalGenerationSource {
         Ok(package)
     }
 
-    fn snapshot_for_user(
-        &self,
-        user_id: &str,
-        snapshot_id: &str,
-    ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
-        self.snapshots.snapshot_for_user(user_id, snapshot_id)
-    }
-
     fn runtime_component(&self, package: &ComponentPackage) -> Result<PathBuf, String> {
         let directory = self.root.join("runtime");
         fs::create_dir_all(&directory).map_err(string)?;
@@ -166,6 +155,12 @@ impl GenerationSource for LocalGenerationSource {
             fs::write(&path, &package.wasm).map_err(string)?;
         }
         Ok(path)
+    }
+}
+
+impl GenerationSource for LocalGenerationSource {
+    fn database(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.database.lock().map_err(string)
     }
 
     fn dataset_directory(&self) -> Result<PathBuf, String> {
@@ -216,9 +211,12 @@ impl ValidationSource for LocalValidationSource {
         self.state()?.persist_snapshot_for_user(user_id, series)
     }
 
-    fn run_backtest(&self, request: BacktestRunRequest) -> Result<ValidationRunOutcome, String> {
+    fn run_backtest(
+        &self,
+        request: crate::backtest::BacktestRunRequest,
+    ) -> Result<ValidationRunOutcome, String> {
         let state = self.state()?;
-        let view = execute_backtest(request, &state)?;
+        let view = state.backtests.run(request)?;
         Ok(ValidationRunOutcome {
             run_id: view.run_id,
             metrics: view.result.metrics,
@@ -234,6 +232,77 @@ impl LocalValidationSource {
             .map_err(string)?
             .upgrade()
             .ok_or_else(|| "Local Research state is not available".to_owned())
+    }
+}
+
+/// The concrete local dependencies composed into the Backtest Run module.
+/// Only database access, Market Data Snapshot reads, Component Package
+/// access, Signal Dataset reads through the m8-owned path, and the
+/// Validation Report reference check are shared; the complete Local
+/// Research state is not. The state reference is bound after the
+/// composition root finishes constructing itself. The database handle is
+/// held directly because the module initializes its schema before the
+/// self-reference is bound.
+pub(crate) struct LocalBacktestSource {
+    database: Arc<Mutex<Connection>>,
+    state: Mutex<Weak<LocalResearchState>>,
+}
+
+impl LocalBacktestSource {
+    fn state(&self) -> Result<Arc<LocalResearchState>, String> {
+        self.state
+            .lock()
+            .map_err(string)?
+            .upgrade()
+            .ok_or_else(|| "Local Research state is not available".to_owned())
+    }
+}
+
+impl SnapshotReadSource for LocalBacktestSource {
+    fn snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
+        self.state()?.snapshot_for_user(user_id, snapshot_id)
+    }
+}
+
+impl ComponentPackageSource for LocalBacktestSource {
+    fn package_for_user(
+        &self,
+        user_id: &str,
+        archive_sha256: &str,
+    ) -> Result<ComponentPackage, String> {
+        self.state()?.package_for_user(user_id, archive_sha256)
+    }
+
+    fn runtime_component(&self, package: &ComponentPackage) -> Result<PathBuf, String> {
+        self.state()?.runtime_component(package)
+    }
+}
+
+impl BacktestSource for LocalBacktestSource {
+    fn database(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.database.lock().map_err(string)
+    }
+
+    fn signal_datasets(
+        &self,
+        user_id: &str,
+        include_rows: bool,
+        dataset_ids: Option<&[String]>,
+    ) -> Result<Vec<BacktestSignalDataset>, String> {
+        let state = self.state()?;
+        backtest_signal_datasets(&state, user_id, include_rows, dataset_ids)
+    }
+
+    fn validation_report_references_run(
+        &self,
+        user_id: &str,
+        run_id: &str,
+    ) -> Result<bool, String> {
+        self.state()?.validation.references_run(user_id, run_id)
     }
 }
 
@@ -262,27 +331,6 @@ impl LocalResearchState {
                 archive_sha256 TEXT NOT NULL,
                 PRIMARY KEY(user_id, archive_sha256),
                 FOREIGN KEY(archive_sha256) REFERENCES component_content(archive_sha256)
-             );
-             CREATE TABLE IF NOT EXISTS backtest_runs (
-                run_id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                result_json TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS backtest_run_components (
-                run_id TEXT NOT NULL,
-                archive_sha256 TEXT NOT NULL,
-                PRIMARY KEY(run_id, archive_sha256),
-                FOREIGN KEY(run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
-                FOREIGN KEY(archive_sha256) REFERENCES component_content(archive_sha256)
-             );
-             CREATE TABLE IF NOT EXISTS backtest_run_signal_datasets (
-                run_id TEXT NOT NULL,
-                dataset_id TEXT NOT NULL,
-                signal_name TEXT NOT NULL,
-                PRIMARY KEY(run_id, dataset_id, signal_name),
-                FOREIGN KEY(run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
-                FOREIGN KEY(dataset_id) REFERENCES signal_dataset_content(dataset_id)
              );
              CREATE TABLE IF NOT EXISTS signal_dataset_content (
                 dataset_id TEXT PRIMARY KEY,
@@ -324,11 +372,20 @@ impl LocalResearchState {
             state: Mutex::new(Weak::new()),
         });
         let validation = ValidationStudies::open(validation_source.clone())?;
+        let backtest_source = Arc::new(LocalBacktestSource {
+            database: database.clone(),
+            state: Mutex::new(Weak::new()),
+        });
+        let backtests = Backtests::open(backtest_source.clone())?;
         Ok(Arc::new_cyclic(|weak| {
             *validation_source
                 .state
                 .lock()
                 .expect("validation source state binding is uncontended") = weak.clone();
+            *backtest_source
+                .state
+                .lock()
+                .expect("backtest source state binding is uncontended") = weak.clone();
             Self {
                 root,
                 database,
@@ -336,6 +393,7 @@ impl LocalResearchState {
                 source,
                 generation,
                 validation,
+                backtests,
             }
         }))
     }
@@ -344,9 +402,10 @@ impl LocalResearchState {
         validate_user(user_id)?;
         let generation_attempt_count = self.generation.list(user_id)?.len() as u64;
         let validation = self.validation.summary_for_user(user_id)?;
-        // Query the Snapshot module before locking the database mutex so the
-        // hook never re-enters a held lock.
+        // Query the Snapshot and Backtest modules before locking the
+        // database mutex so the hooks never re-enter a held lock.
         let snapshots = self.snapshots.summary_for_user(user_id)?;
+        let backtests = self.backtests.summary_for_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
         let count = |sql: &str| -> Result<u64, String> {
             database
@@ -360,6 +419,10 @@ impl LocalResearchState {
 			 JOIN component_access a USING(archive_sha256) WHERE a.user_id = ?1",
             user_id,
         )?;
+        let owned_components = owned_component_hashes(&database, user_id)?;
+        let locking_runs = self.backtests.runs_locking_components(&database, user_id)?;
+        let component_blocking_run_count =
+            count_runs_locking_owned_components(&locking_runs, &owned_components);
         let database_path = self.root.parent().unwrap_or(&self.root).join("adaq.db");
         let data_directory = database_path
             .parent()
@@ -375,7 +438,7 @@ impl LocalResearchState {
             watchlist_count: count("SELECT COUNT(*) FROM watchlist_items WHERE user_id = ?1")?,
             component_count: count("SELECT COUNT(*) FROM component_access WHERE user_id = ?1")?,
             snapshot_count: snapshots.snapshot_count,
-            run_count: count("SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1")?,
+            run_count: backtests.run_count,
             protocol_count: validation.protocol_count,
             report_count: validation.report_count,
             generation_attempt_count,
@@ -385,18 +448,13 @@ impl LocalResearchState {
             signal_dataset_count: count(
                 "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1",
             )?,
-            component_blocking_run_count: count(
-                "SELECT (SELECT COUNT(DISTINCT r.run_id) FROM backtest_runs r
-				 JOIN backtest_run_components rc USING(run_id)
-				 JOIN component_access a USING(archive_sha256)
-				 WHERE r.user_id = ?1 AND a.user_id = ?1)
-                 + (SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1)",
-            )?,
-            market_data_blocking_record_count: count(
-                "SELECT (SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1)
-                 + (SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1)",
-            )?
-            .saturating_add(validation.report_count),
+            component_blocking_run_count,
+            market_data_blocking_record_count: backtests
+                .run_count
+                .saturating_add(count(
+                    "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1",
+                )?)
+                .saturating_add(validation.report_count),
         })
     }
 
@@ -409,8 +467,9 @@ impl LocalResearchState {
         };
         // Query the Validation module before locking the database mutex so
         // the hook never re-enters a held lock. The Snapshot orphan query
-        // runs inside the reset flows under the held lock instead, so it
-        // stays serialized with Snapshot persistence.
+        // and the Backtest hooks run inside the reset flows under the held
+        // lock instead, so they stay serialized with Snapshot persistence
+        // and Run writes.
         let validation_report_count = if matches!(kind, LocalDataResetKind::MarketData) {
             self.validation.summary_for_user(user_id)?.report_count
         } else {
@@ -419,13 +478,16 @@ impl LocalResearchState {
         let mut database = self.database.lock().map_err(string)?;
         match kind {
             LocalDataResetKind::Watchlist => reset_watchlist(&mut database, user_id),
-            LocalDataResetKind::Components => reset_components(&mut database, user_id, &self.root),
+            LocalDataResetKind::Components => {
+                reset_components(&mut database, user_id, &self.root, &self.backtests)
+            }
             LocalDataResetKind::MarketData => reset_market_data(
                 &mut database,
                 user_id,
                 &self.root,
                 validation_report_count,
                 &self.snapshots,
+                &self.backtests,
             ),
             LocalDataResetKind::All => reset_all(
                 &mut database,
@@ -434,6 +496,7 @@ impl LocalResearchState {
                 _reset_block.as_ref().unwrap(),
                 &self.validation,
                 &self.snapshots,
+                &self.backtests,
             ),
         }
     }
@@ -566,25 +629,9 @@ impl LocalResearchState {
     ) -> Result<Vec<LibraryComponent>, String> {
         validate_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
-        let mut locked_by_hash = HashMap::<String, Vec<String>>::new();
-        {
-            let mut lock_statement = database
-                .prepare(
-                    "SELECT rc.archive_sha256, rc.run_id FROM backtest_run_components rc
-                     JOIN backtest_runs r USING(run_id)
-                     WHERE r.user_id = ?1 ORDER BY r.created_at, rc.run_id",
-                )
-                .map_err(string)?;
-            for row in lock_statement
-                .query_map([user_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(string)?
-            {
-                let (hash, run_id) = row.map_err(string)?;
-                locked_by_hash.entry(hash).or_default().push(run_id);
-            }
-        }
+        // Query the Backtest module on the held connection so the locks
+        // observed here match the rows the listing reads.
+        let locked_by_hash = self.backtests.runs_locking_components(&database, user_id)?;
         let mut statement = database
             .prepare(
                 "SELECT c.component_id, c.version, c.name, c.kind, c.archive_sha256, c.wasm_sha256, c.archive_path, c.metadata_json
@@ -735,18 +782,10 @@ impl LocalResearchState {
         if !entitled {
             return Err("Component Package is not available to this User".into());
         }
-        let locked_by_run_ids = database
-            .prepare(
-                "SELECT rc.run_id FROM backtest_run_components rc
-                 JOIN backtest_runs r USING(run_id)
-                 WHERE r.user_id = ?1 AND rc.archive_sha256 = ?2
-                 ORDER BY r.created_at, rc.run_id",
-            )
-            .map_err(string)?
-            .query_map(params![user_id, hash], |row| row.get::<_, String>(0))
-            .map_err(string)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(string)?;
+        // Query the Backtest module on the held connection so the locks
+        // observed here match the rows the deletion removes.
+        let locked_by_hash = self.backtests.runs_locking_components(&database, user_id)?;
+        let locked_by_run_ids = locked_by_hash.get(hash).cloned().unwrap_or_default();
         if !locked_by_run_ids.is_empty() {
             let noun = if locked_by_run_ids.len() == 1 {
                 "Backtest Run"
@@ -893,208 +932,6 @@ impl LocalResearchState {
     pub(crate) fn runtime_component(&self, package: &ComponentPackage) -> Result<PathBuf, String> {
         self.source.runtime_component(package)
     }
-
-    fn save_run(&self, user_id: &str, run_id: &str, result: &BacktestRun) -> Result<(), String> {
-        let json = serde_json::to_string(result).map_err(string)?;
-        let mut database = self.database.lock().map_err(string)?;
-        let transaction = database.transaction().map_err(string)?;
-        transaction
-            .execute(
-                "INSERT OR IGNORE INTO backtest_runs(run_id, user_id, result_json)
-                 VALUES (?1, ?2, ?3)",
-                params![run_id, user_id, json],
-            )
-            .map_err(string)?;
-        for component in &result.component_lock {
-            transaction.execute(
-                "INSERT OR IGNORE INTO backtest_run_components(run_id, archive_sha256) VALUES (?1, ?2)",
-                params![run_id, component.archive_sha256],
-            ).map_err(string)?;
-        }
-        if let Some(provenance) = &result.provenance {
-            for signal in &provenance.dataset_lock {
-                transaction.execute(
-                    "INSERT OR IGNORE INTO backtest_run_signal_datasets(run_id, dataset_id, signal_name) VALUES (?1, ?2, ?3)",
-                    params![run_id, signal.dataset_id, signal.signal_name],
-                ).map_err(string)?;
-            }
-        }
-        transaction.commit().map_err(string)?;
-        Ok(())
-    }
-
-    fn load_run(&self, user_id: &str, run_id: &str) -> Result<BacktestRun, String> {
-        validate_user(user_id)?;
-        let json: String = self
-            .database
-            .lock()
-            .map_err(string)?
-            .query_row(
-                "SELECT result_json FROM backtest_runs WHERE user_id = ?1 AND run_id = ?2",
-                params![user_id, run_id],
-                |row| row.get(0),
-            )
-            .map_err(|_| "Backtest Run was not found".to_owned())?;
-        let run: BacktestRun = serde_json::from_str(&json).map_err(string)?;
-        if let Some(provenance) = &run.provenance {
-            validate_provenance(provenance)?;
-            if provenance.component_lock != run.component_lock {
-                return Err("Backtest Run provenance does not match its Component Lock".into());
-            }
-        }
-        Ok(run)
-    }
-
-    #[cfg(test)]
-    fn list_runs(&self, user_id: &str) -> Result<Vec<BacktestRunSummary>, String> {
-        validate_user(user_id)?;
-        let database = self.database.lock().map_err(string)?;
-        let mut statement = database.prepare(
-            "SELECT run_id, created_at, result_json FROM backtest_runs WHERE user_id = ?1 ORDER BY created_at DESC",
-        ).map_err(string)?;
-        statement
-            .query_map([user_id], |row| {
-                let run: BacktestRun =
-                    serde_json::from_str(&row.get::<_, String>(2)?).map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            2,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?;
-                Ok(BacktestRunSummary {
-                    run_id: row.get(0)?,
-                    created_at: row.get(1)?,
-                    snapshot_id: run.snapshot.snapshot_id,
-                    code: run.snapshot.code,
-                    interval: run.snapshot.interval,
-                    bar_count: run.snapshot.bar_count,
-                    total_return: run.result.metrics.total_return,
-                })
-            })
-            .map_err(string)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(string)
-    }
-
-    fn list_runs_page(
-        &self,
-        user_id: &str,
-        src: Option<&str>,
-        code: Option<&str>,
-        page: usize,
-    ) -> Result<BacktestRunPage, String> {
-        validate_user(user_id)?;
-        let instrument_valid = match (src, code) {
-            (None, None) => true,
-            (Some(src), Some(code)) => !src.trim().is_empty() && !code.trim().is_empty(),
-            _ => false,
-        };
-        if page == 0 || !instrument_valid {
-            return Err("Backtest Run history request is invalid".into());
-        }
-        let database = self.database.lock().map_err(string)?;
-        let filter = "user_id = ?1
-            AND (?2 IS NULL OR (
-                json_extract(result_json, '$.snapshot.src') = ?2
-                AND json_extract(result_json, '$.snapshot.code') = ?3
-            ))";
-        let total = database
-            .query_row(
-                &format!("SELECT COUNT(*) FROM backtest_runs WHERE {filter}"),
-                params![user_id, src, code],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(string)?
-            .try_into()
-            .map_err(|_| "Backtest Run history count is invalid")?;
-        let offset = page
-            .checked_sub(1)
-            .and_then(|value| value.checked_mul(RUN_HISTORY_PAGE_SIZE))
-            .ok_or_else(|| "Backtest Run history page is too large".to_owned())?;
-        let mut statement = database
-            .prepare(&format!(
-                "SELECT run_id, created_at,
-                    json_extract(result_json, '$.snapshot.snapshotId'),
-                    json_extract(result_json, '$.snapshot.code'),
-                    json_extract(result_json, '$.snapshot.interval'),
-                    json_extract(result_json, '$.snapshot.barCount'),
-                    json_extract(result_json, '$.result.metrics.totalReturn')
-                 FROM backtest_runs WHERE {filter}
-                 ORDER BY created_at DESC, run_id DESC LIMIT ?4 OFFSET ?5"
-            ))
-            .map_err(string)?;
-        let items = statement
-            .query_map(
-                params![
-                    user_id,
-                    src,
-                    code,
-                    RUN_HISTORY_PAGE_SIZE as i64,
-                    offset as i64
-                ],
-                |row| {
-                    let interval_text = row.get::<_, String>(4)?;
-                    let interval = serde_json::from_value(serde_json::Value::String(interval_text))
-                        .map_err(|error| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                4,
-                                rusqlite::types::Type::Text,
-                                Box::new(error),
-                            )
-                        })?;
-                    let total_return_text = row.get::<_, String>(6)?;
-                    let total_return = total_return_text.parse().map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            6,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?;
-                    let bar_count_value = row.get::<_, i64>(5)?;
-                    let bar_count = usize::try_from(bar_count_value).map_err(|_| {
-                        rusqlite::Error::IntegralValueOutOfRange(5, bar_count_value)
-                    })?;
-                    Ok(BacktestRunSummary {
-                        run_id: row.get(0)?,
-                        created_at: row.get(1)?,
-                        snapshot_id: row.get(2)?,
-                        code: row.get(3)?,
-                        interval,
-                        bar_count,
-                        total_return,
-                    })
-                },
-            )
-            .map_err(string)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(string)?;
-        Ok(BacktestRunPage {
-            items,
-            total,
-            page,
-            page_size: RUN_HISTORY_PAGE_SIZE,
-        })
-    }
-
-    fn delete_run(&self, user_id: &str, run_id: &str) -> Result<(), String> {
-        validate_user(user_id)?;
-        if self.validation.references_run(user_id, run_id)? {
-            return Err("Backtest Run is referenced by an immutable Validation Report".into());
-        }
-        let database = self.database.lock().map_err(string)?;
-        let changed = database
-            .execute(
-                "DELETE FROM backtest_runs WHERE user_id = ?1 AND run_id = ?2",
-                params![user_id, run_id],
-            )
-            .map_err(string)?;
-        if changed == 0 {
-            Err("Backtest Run was not found".into())
-        } else {
-            Ok(())
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -1142,224 +979,9 @@ pub struct ComponentArchiveRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BacktestListRequest {
-    pub user_id: String,
-    #[serde(default)]
-    pub src: Option<String>,
-    #[serde(default)]
-    pub code: Option<String>,
-    pub page: usize,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BacktestRunRequest {
-    pub user_id: String,
-    pub snapshot_id: String,
-    #[serde(default)]
-    pub run_start_time_ms: Option<i64>,
-    #[serde(default)]
-    pub run_end_time_ms: Option<i64>,
-    #[serde(default)]
-    pub factor_instances: Vec<FactorInstanceRequest>,
-    #[serde(default)]
-    pub signal_instances: Vec<SignalInstanceRequest>,
-    pub strategy_archive_sha256: String,
-    #[serde(default)]
-    pub strategy_parameters: HashMap<String, String>,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub initial_quote_allocation: rust_decimal::Decimal,
-    pub execution_profile: ExecutionProfile,
-    #[serde(default)]
-    pub seed: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct BacktestDependencyRequest {
     pub user_id: String,
     pub strategy_archive_sha256: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BacktestPreflight {
-    pub run_id: String,
-    pub reuses_existing_run: bool,
-    pub snapshot: MarketDataSnapshot,
-    pub normalized_request: NormalizedBacktestRunRequest,
-    pub feature_plan: serde_json::Value,
-    pub component_lock: Vec<ComponentLockEntry>,
-    pub dataset_lock: Vec<SignalDatasetLock>,
-    pub architecture: StrategyArchitecture,
-}
-
-struct PreparedBacktest {
-    strategy: ComponentPackage,
-    strategy_parameters: Vec<ComponentParameterValue>,
-    factor_packages: Vec<ComponentPackage>,
-    signals: Vec<PreparedSignal>,
-    plan: FrozenFeaturePlan,
-    provenance: BacktestRunProvenance,
-    component_lock: Vec<ComponentLockEntry>,
-    run_id: String,
-    snapshot: MarketDataSnapshot,
-    bars: Vec<OhlcvBar>,
-    gaps: Vec<BarGap>,
-}
-
-struct PreparedSignal {
-    slot: String,
-    dataset_id: String,
-    signal_name: String,
-    rows: Vec<SignalRunRow>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FactorInstanceRequest {
-    pub alias: String,
-    pub archive_sha256: String,
-    #[serde(default)]
-    pub parameters: HashMap<String, FactorParameterBinding>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SignalInstanceRequest {
-    pub slot: String,
-    pub dataset_id: String,
-    pub signal_name: String,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum FactorParameterBinding {
-    Literal(String),
-    StrategyParameter { strategy_parameter: String },
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BacktestRun {
-    pub run_id: String,
-    #[serde(default)]
-    pub plan_hash: String,
-    pub snapshot: MarketDataSnapshot,
-    pub bars: Vec<OhlcvBar>,
-    pub decisions: Vec<SimulationDecision>,
-    #[serde(default)]
-    pub pauses: Vec<RunPauseRecord>,
-    pub result: adaq_backtest_core::SimulationResult,
-    pub component_lock: Vec<ComponentLockEntry>,
-    #[serde(default)]
-    pub provenance: Option<BacktestRunProvenance>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BacktestRunView {
-    pub run_id: String,
-    pub plan_hash: String,
-    pub snapshot: MarketDataSnapshot,
-    pub bars: Vec<OhlcvBar>,
-    pub decisions: Vec<SimulationDecision>,
-    pub pauses: Vec<RunPauseRecord>,
-    pub result: adaq_backtest_core::SimulationResult,
-    pub component_lock: Vec<ComponentLockEntry>,
-    pub provenance: Option<BacktestRunProvenance>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BacktestRunProvenance {
-    pub normalized_request: NormalizedBacktestRunRequest,
-    pub feature_plan_json: String,
-    pub feature_plan_hash: String,
-    pub component_lock: Vec<ComponentLockEntry>,
-    #[serde(default)]
-    pub dataset_lock: Vec<SignalDatasetLock>,
-    #[serde(default = "composed_architecture")]
-    pub architecture: StrategyArchitecture,
-    pub indicator_engine_build_identity: IndicatorEngineBuildIdentity,
-    pub backtest_engine_version: String,
-    pub seed: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NormalizedBacktestRunRequest {
-    pub snapshot_id: String,
-    #[serde(default)]
-    pub run_start_time_ms: Option<i64>,
-    #[serde(default)]
-    pub run_end_time_ms: Option<i64>,
-    pub strategy_archive_sha256: String,
-    pub strategy_parameters: BTreeMap<String, String>,
-    pub factor_instances: Vec<NormalizedFactorInstance>,
-    #[serde(default)]
-    pub signal_instances: Vec<SignalInstanceRequest>,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub initial_quote_allocation: rust_decimal::Decimal,
-    pub execution_profile: ExecutionProfile,
-    pub seed: u64,
-}
-
-fn composed_architecture() -> StrategyArchitecture {
-    StrategyArchitecture::Composed
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SignalDatasetLock {
-    pub slot: String,
-    pub dataset_id: String,
-    pub signal_name: String,
-    pub evidence_state: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NormalizedFactorInstance {
-    pub alias: String,
-    pub archive_sha256: String,
-    pub parameters: Vec<NormalizedParameter>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NormalizedParameter {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IndicatorEngineBuildIdentity {
-    pub engine_version: String,
-    pub ta_lib_version: String,
-    pub ta_source_sha256: String,
-    pub catalog_version: String,
-    pub wrapper_sha256: String,
-    pub target_triple: String,
-    pub compiler_and_flags_sha256: String,
-    pub engine_build_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunPauseRecord {
-    pub open_time_ms: i64,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ComponentLockEntry {
-    pub component_id: String,
-    pub version: String,
-    pub archive_sha256: String,
-    pub wasm_sha256: String,
 }
 
 #[derive(Serialize)]
@@ -1377,63 +999,6 @@ pub struct BacktestSignalCompatibilityRequest {
     user_id: String,
     strategy_archive_sha256: String,
     snapshot_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BacktestRunIdRequest {
-    pub user_id: String,
-    pub run_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BacktestChartRequest {
-    pub user_id: String,
-    pub run_id: String,
-    pub start_time_ms: i64,
-    pub end_time_ms: i64,
-    pub max_points: usize,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BacktestExecutionRequest {
-    pub user_id: String,
-    pub run_id: String,
-    pub offset: usize,
-    pub limit: usize,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BacktestExecutionPage {
-    pub orders: Vec<adaq_backtest_core::SimulatedOrder>,
-    pub fills: Vec<adaq_backtest_core::Fill>,
-    pub total_orders: usize,
-    pub total_fills: usize,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BacktestRunSummary {
-    pub run_id: String,
-    pub created_at: String,
-    pub snapshot_id: String,
-    pub code: String,
-    pub interval: BarInterval,
-    pub bar_count: usize,
-    #[serde(with = "rust_decimal::serde::str")]
-    pub total_return: rust_decimal::Decimal,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BacktestRunPage {
-    pub items: Vec<BacktestRunSummary>,
-    pub total: usize,
-    pub page: usize,
-    pub page_size: usize,
 }
 
 #[tauri::command]
@@ -1576,514 +1141,6 @@ pub fn component_delete(
 }
 
 #[tauri::command]
-pub fn backtest_run(
-    request: BacktestRunRequest,
-    state: tauri::State<'_, Arc<LocalResearchState>>,
-) -> Result<BacktestRunView, String> {
-    execute_backtest(request, &state)
-}
-
-#[tauri::command]
-pub fn backtest_preflight(
-    request: BacktestRunRequest,
-    state: tauri::State<'_, Arc<LocalResearchState>>,
-) -> Result<BacktestPreflight, String> {
-    let prepared = prepare_backtest(&request, &state)?;
-    Ok(BacktestPreflight {
-        run_id: prepared.run_id.clone(),
-        reuses_existing_run: state.load_run(&request.user_id, &prepared.run_id).is_ok(),
-        snapshot: prepared.snapshot,
-        normalized_request: prepared.provenance.normalized_request,
-        feature_plan: serde_json::from_str(&prepared.provenance.feature_plan_json)
-            .map_err(string)?,
-        component_lock: prepared.component_lock,
-        dataset_lock: prepared.provenance.dataset_lock,
-        architecture: prepared.provenance.architecture,
-    })
-}
-
-pub(crate) fn execute_backtest(
-    request: BacktestRunRequest,
-    state: &LocalResearchState,
-) -> Result<BacktestRunView, String> {
-    let prepared = prepare_backtest(&request, state)?;
-    if let Ok(existing) = state.load_run(&request.user_id, &prepared.run_id) {
-        return Ok(run_view(&existing, i64::MIN, i64::MAX, 2_000));
-    }
-    let PreparedBacktest {
-        strategy,
-        strategy_parameters,
-        factor_packages,
-        signals,
-        plan,
-        provenance,
-        component_lock,
-        run_id,
-        snapshot,
-        bars,
-        gaps,
-    } = prepared;
-    let strategy_path = state.runtime_component(&strategy)?;
-    let factor_paths = factor_packages
-        .iter()
-        .map(|package| state.runtime_component(package))
-        .collect::<Result<Vec<_>, _>>()?;
-    let strategy_path = strategy_path.to_string_lossy();
-    let factor_paths = factor_paths
-        .iter()
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let factors = request
-        .factor_instances
-        .iter()
-        .zip(&factor_paths)
-        .map(|(factor, path)| FactorRunRequest {
-            alias: &factor.alias,
-            path,
-        })
-        .collect::<Vec<_>>();
-    let signal_runs = signals
-        .iter()
-        .map(|signal| SignalRunRequest {
-            slot: &signal.slot,
-            dataset_id: &signal.dataset_id,
-            signal_name: &signal.signal_name,
-            interval: snapshot.interval,
-            rows: &signal.rows,
-        })
-        .collect::<Vec<_>>();
-    let engine_result = RunEngine::execute(&RunRequest {
-        strategy_path: &strategy_path,
-        strategy_parameters: &strategy_parameters,
-        factors: &factors,
-        signals: &signal_runs,
-        bars: &bars,
-        gaps: &gaps,
-        plan: &plan,
-        position_mode: PositionMode::LongOnly,
-        limits: RunLimits::default(),
-    })
-    .map_err(|error| error.to_string())?;
-    let bars = engine_result.bars;
-    let decisions = engine_result
-        .decisions
-        .into_iter()
-        .map(|decision| SimulationDecision {
-            open_time_ms: decision.open_time_ms,
-            target_exposure: decision.target_exposure,
-        })
-        .collect::<Vec<_>>();
-    let result = SpotSimulator::execute(
-        &bars,
-        &gaps,
-        &decisions,
-        request.initial_quote_allocation,
-        &request.execution_profile,
-    )
-    .map_err(string)?;
-    let run = BacktestRun {
-        run_id: run_id.clone(),
-        plan_hash: engine_result.plan_hash,
-        snapshot,
-        bars,
-        decisions,
-        pauses: engine_result
-            .pauses
-            .iter()
-            .map(|pause| RunPauseRecord {
-                open_time_ms: pause.open_time_ms,
-                reason: match &pause.reason {
-                    crate::run_engine::RunPauseReason::Warmup => "warmup".into(),
-                    crate::run_engine::RunPauseReason::MissingInput { slot, source } => {
-                        format!("missing-input:{slot}:{source}")
-                    }
-                },
-            })
-            .collect(),
-        result,
-        component_lock,
-        provenance: Some(provenance),
-    };
-    state.save_run(&request.user_id, &run_id, &run)?;
-    Ok(run_view(&run, i64::MIN, i64::MAX, 2_000))
-}
-
-fn prepare_backtest(
-    request: &BacktestRunRequest,
-    state: &LocalResearchState,
-) -> Result<PreparedBacktest, String> {
-    SpotSimulator::validate_execution_inputs(
-        request.initial_quote_allocation,
-        &request.execution_profile,
-    )
-    .map_err(string)?;
-    let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
-    if !matches!(strategy.manifest.kind, ComponentKind::Strategy) {
-        return Err("Backtest requires a Strategy Component".into());
-    }
-    let strategy_parameters =
-        component_parameters(&strategy.manifest, Some(&request.strategy_parameters))?;
-    let frozen_strategy_parameters =
-        normalized_parameters(&strategy.manifest, &strategy_parameters);
-    let (snapshot, mut bars) = state.snapshot_for_user(&request.user_id, &request.snapshot_id)?;
-    let run_start_time_ms = request.run_start_time_ms.unwrap_or(snapshot.start_time_ms);
-    let run_end_time_ms = request.run_end_time_ms.unwrap_or(snapshot.end_time_ms);
-    if run_start_time_ms > run_end_time_ms {
-        return Err("Backtest Run window must be a valid inclusive Bar-open range".into());
-    }
-    if run_start_time_ms < snapshot.start_time_ms || run_end_time_ms > snapshot.end_time_ms {
-        return Err("Backtest Run window must be a subset of the exact Dataset Snapshot".into());
-    }
-    if ![run_start_time_ms, run_end_time_ms]
-        .into_iter()
-        .all(|boundary| bars.iter().any(|bar| bar.open_time_ms == boundary))
-    {
-        return Err("Backtest Run window boundaries must match exact Closed Bar open times".into());
-    }
-    bars.retain(|bar| bar.open_time_ms >= run_start_time_ms && bar.open_time_ms <= run_end_time_ms);
-    if bars.is_empty() {
-        return Err("Backtest Run window contains no Closed Bars".into());
-    }
-    let factor_packages = request
-        .factor_instances
-        .iter()
-        .map(|factor| {
-            let package = state.package_for_user(&request.user_id, &factor.archive_sha256)?;
-            if package.manifest.kind != ComponentKind::Factor {
-                return Err("External Feature Slots require Factor Components".into());
-            }
-            Ok((factor, package))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let factor_parameters = factor_packages
-        .iter()
-        .map(|(factor, package)| {
-            let parameters = resolve_factor_parameters(
-                &strategy.manifest,
-                &package.manifest,
-                &request.strategy_parameters,
-                &factor.parameters,
-            )?;
-            component_parameters(&package.manifest, Some(&parameters))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let factor_inputs = factor_packages
-        .iter()
-        .zip(&factor_parameters)
-        .map(|((factor, package), parameters)| FactorInstancePlanInput {
-            alias: &factor.alias,
-            manifest: &package.manifest,
-            parameters: parameters.clone(),
-        })
-        .collect::<Vec<_>>();
-    let declared_signal_slots = strategy
-        .manifest
-        .feature_slots
-        .iter()
-        .filter(|slot| matches!(slot.source, FeatureSlotSource::Signal { .. }))
-        .collect::<Vec<_>>();
-    if request.signal_instances.len() != declared_signal_slots.len()
-        || request.signal_instances.iter().any(|binding| {
-            request
-                .signal_instances
-                .iter()
-                .filter(|candidate| candidate.slot == binding.slot)
-                .count()
-                != 1
-        })
-    {
-        return Err("Signal bindings must match declared Forecast Signal Slots exactly".into());
-    }
-    let mut selected_dataset_ids = request
-        .signal_instances
-        .iter()
-        .map(|binding| binding.dataset_id.clone())
-        .collect::<Vec<_>>();
-    selected_dataset_ids.sort();
-    selected_dataset_ids.dedup();
-    let datasets =
-        backtest_signal_datasets(state, &request.user_id, true, Some(&selected_dataset_ids))?;
-    let selected_signals = declared_signal_slots
-        .iter()
-        .map(|slot| {
-            let binding = request
-                .signal_instances
-                .iter()
-                .find(|binding| binding.slot == slot.name)
-                .ok_or("A Forecast Signal Slot is not bound")?;
-            let dataset = datasets
-                .iter()
-                .find(|dataset| dataset.dataset_id == binding.dataset_id)
-                .ok_or("Forecast Signal Dataset is not available to this User")?;
-            if dataset.snapshot_id != snapshot.snapshot_id
-                || dataset.src != snapshot.src
-                || dataset.code != snapshot.code
-                || dataset.interval != snapshot.interval.as_str()
-            {
-                return Err(
-                    "Signal Dataset Snapshot, Instrument, Venue, and Bar Interval must match exactly"
-                        .into(),
-                );
-            }
-            let output_index = dataset
-                .outputs
-                .iter()
-                .position(|output| output.name == binding.signal_name)
-                .ok_or("Selected Forecast Signal was not found in the Dataset")?;
-            let FeatureSlotSource::Signal {
-                prediction_kind,
-                forecast_target,
-                value_scale,
-                horizon_bars,
-            } = &slot.source
-            else {
-                unreachable!()
-            };
-            let output = &dataset.outputs[output_index];
-            if output.prediction_kind != *prediction_kind
-                || output.forecast_target != *forecast_target
-                || output.value_scale != *value_scale
-                || output.horizon_bars != *horizon_bars
-            {
-                return Err("Selected Forecast Signal is not semantically compatible".into());
-            }
-            Ok((binding, dataset, output_index))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let signal_inputs = selected_signals
-        .iter()
-        .map(|(binding, dataset, output_index)| SignalPlanInput {
-            slot_name: &binding.slot,
-            dataset_id: &dataset.dataset_id,
-            signal_name: &binding.signal_name,
-            snapshot_id: &dataset.snapshot_id,
-            instrument_id: format!("{}:{}", dataset.src, dataset.code),
-            venue: &dataset.src,
-            bar_interval: &dataset.interval,
-            contract: dataset.outputs[*output_index].clone(),
-            producer_segments: dataset.producer_segments.clone(),
-            artifact_provenance: dataset.artifact_provenance.clone(),
-            evidence_state: &dataset.evidence_state,
-            component_lock: dataset.component_lock.clone(),
-        })
-        .collect::<Vec<_>>();
-    let engine_identity = native_engine_identity().map_err(|error| error.to_string())?;
-    let plan = validate_and_freeze_feature_plan_with_bindings_and_parameters(
-        &strategy.manifest,
-        &strategy.archive_sha256,
-        &engine_identity,
-        &factor_inputs,
-        &frozen_strategy_parameters,
-        &signal_inputs,
-    )
-    .map_err(|error| format!("Feature Plan validation failed: {:?}", error.issues))?;
-    let mut factor_instances = factor_packages
-        .iter()
-        .zip(&factor_parameters)
-        .map(|((factor, package), parameters)| NormalizedFactorInstance {
-            alias: factor.alias.clone(),
-            archive_sha256: package.archive_sha256.clone(),
-            parameters: normalized_parameter_bindings(&package.manifest, parameters),
-        })
-        .collect::<Vec<_>>();
-    factor_instances.sort_by(|left, right| left.alias.cmp(&right.alias));
-    if factor_instances
-        .windows(2)
-        .any(|pair| pair[0].alias == pair[1].alias)
-    {
-        return Err("Factor Instance aliases must be unique".into());
-    }
-    let component_lock = std::iter::once(component_lock_entry(&strategy))
-        .chain(factor_instances.iter().map(|factor| {
-            component_lock_entry(
-                &factor_packages
-                    .iter()
-                    .find(|(request, _)| request.alias == factor.alias)
-                    .expect("unique Factor aliases were checked")
-                    .1,
-            )
-        }))
-        .collect::<Vec<_>>();
-    let mut signal_instances = request.signal_instances.clone();
-    signal_instances.sort_by(|left, right| left.slot.cmp(&right.slot));
-    let dataset_lock = selected_signals
-        .iter()
-        .map(|(binding, dataset, _)| SignalDatasetLock {
-            slot: binding.slot.clone(),
-            dataset_id: dataset.dataset_id.clone(),
-            signal_name: binding.signal_name.clone(),
-            evidence_state: dataset.evidence_state.clone(),
-        })
-        .collect::<Vec<_>>();
-    let provenance = BacktestRunProvenance {
-        normalized_request: NormalizedBacktestRunRequest {
-            snapshot_id: request.snapshot_id.clone(),
-            run_start_time_ms: Some(run_start_time_ms),
-            run_end_time_ms: Some(run_end_time_ms),
-            strategy_archive_sha256: strategy.archive_sha256.clone(),
-            strategy_parameters: frozen_strategy_parameters,
-            factor_instances,
-            signal_instances,
-            initial_quote_allocation: request.initial_quote_allocation,
-            execution_profile: request.execution_profile.clone(),
-            seed: request.seed,
-        },
-        feature_plan_json: String::from_utf8(plan.to_json()).map_err(string)?,
-        feature_plan_hash: plan.plan_hash().into(),
-        component_lock: component_lock.clone(),
-        dataset_lock,
-        architecture: plan.architecture(),
-        indicator_engine_build_identity: IndicatorEngineBuildIdentity {
-            engine_version: engine_identity.engine_version,
-            ta_lib_version: engine_identity.ta_lib_version,
-            ta_source_sha256: engine_identity.ta_source_sha256,
-            catalog_version: engine_identity.catalog_version,
-            wrapper_sha256: engine_identity.wrapper_sha256,
-            target_triple: engine_identity.target_triple,
-            compiler_and_flags_sha256: engine_identity.compiler_and_flags_sha256,
-            engine_build_id: engine_identity.engine_build_id,
-        },
-        backtest_engine_version: format!("adaq-backtest-engine@{}", env!("CARGO_PKG_VERSION")),
-        seed: request.seed,
-    };
-    validate_provenance(&provenance)?;
-    let run_id = fingerprint(&request.user_id, &provenance)?;
-    let gaps = snapshot
-        .gaps
-        .iter()
-        .filter(|gap| gap.end_time_ms > run_start_time_ms && gap.start_time_ms <= run_end_time_ms)
-        .map(|gap| BarGap {
-            start_time_ms: gap.start_time_ms,
-            end_time_ms: gap.end_time_ms,
-        })
-        .collect::<Vec<_>>();
-    Ok(PreparedBacktest {
-        strategy,
-        strategy_parameters,
-        factor_packages: factor_packages
-            .into_iter()
-            .map(|(_, package)| package)
-            .collect(),
-        signals: selected_signals
-            .into_iter()
-            .map(|(binding, dataset, output_index)| PreparedSignal {
-                slot: binding.slot.clone(),
-                dataset_id: dataset.dataset_id.clone(),
-                signal_name: binding.signal_name.clone(),
-                rows: dataset
-                    .rows
-                    .iter()
-                    .map(|row| SignalRunRow {
-                        prediction_time_ms: row.prediction_time_ms,
-                        available_at_ms: row.available_at_ms,
-                        value: row
-                            .values
-                            .as_ref()
-                            .and_then(|values| values.get(output_index).copied()),
-                    })
-                    .collect(),
-            })
-            .collect(),
-        plan,
-        provenance,
-        component_lock,
-        run_id,
-        snapshot,
-        bars,
-        gaps,
-    })
-}
-
-#[tauri::command]
-pub async fn backtest_list(
-    request: BacktestListRequest,
-    state: tauri::State<'_, Arc<LocalResearchState>>,
-) -> Result<BacktestRunPage, String> {
-    state.list_runs_page(
-        &request.user_id,
-        request.src.as_deref(),
-        request.code.as_deref(),
-        request.page,
-    )
-}
-
-#[tauri::command]
-pub fn backtest_get(
-    request: BacktestRunIdRequest,
-    state: tauri::State<'_, Arc<LocalResearchState>>,
-) -> Result<BacktestRunView, String> {
-    state
-        .load_run(&request.user_id, &request.run_id)
-        .map(|run| run_view(&run, i64::MIN, i64::MAX, 2_000))
-}
-
-#[tauri::command]
-pub fn backtest_chart_data(
-    request: BacktestChartRequest,
-    state: tauri::State<'_, Arc<LocalResearchState>>,
-) -> Result<BacktestRunView, String> {
-    if request.start_time_ms >= request.end_time_ms || !(100..=10_000).contains(&request.max_points)
-    {
-        return Err("Backtest Chart range is invalid".into());
-    }
-    state
-        .load_run(&request.user_id, &request.run_id)
-        .map(|run| {
-            run_view(
-                &run,
-                request.start_time_ms,
-                request.end_time_ms,
-                request.max_points,
-            )
-        })
-}
-
-#[tauri::command]
-pub fn backtest_execution_data(
-    request: BacktestExecutionRequest,
-    state: tauri::State<'_, Arc<LocalResearchState>>,
-) -> Result<BacktestExecutionPage, String> {
-    if !(1..=1_000).contains(&request.limit) {
-        return Err("Backtest execution page is invalid".into());
-    }
-    let run = state.load_run(&request.user_id, &request.run_id)?;
-    Ok(execution_page(&run.result, request.offset, request.limit))
-}
-
-fn execution_page(
-    result: &adaq_backtest_core::SimulationResult,
-    offset: usize,
-    limit: usize,
-) -> BacktestExecutionPage {
-    BacktestExecutionPage {
-        orders: result
-            .orders
-            .iter()
-            .skip(offset)
-            .take(limit)
-            .cloned()
-            .collect(),
-        fills: result
-            .fills
-            .iter()
-            .skip(offset)
-            .take(limit)
-            .cloned()
-            .collect(),
-        total_orders: result.orders.len(),
-        total_fills: result.fills.len(),
-    }
-}
-
-#[tauri::command]
-pub fn backtest_delete(
-    request: BacktestRunIdRequest,
-    state: tauri::State<'_, Arc<LocalResearchState>>,
-) -> Result<(), String> {
-    state.delete_run(&request.user_id, &request.run_id)
-}
-
-#[tauri::command]
 pub fn local_data_summary(
     request: LocalDataRequest,
     state: tauri::State<'_, Arc<LocalResearchState>>,
@@ -2102,359 +1159,6 @@ pub async fn local_data_reset(
     })
     .await
     .map_err(string)?
-}
-
-fn fingerprint(user_id: &str, provenance: &BacktestRunProvenance) -> Result<String, String> {
-    let digest = Sha256::digest(serde_json::to_vec(&(user_id, provenance)).map_err(string)?);
-    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
-fn normalized_parameters(
-    manifest: &ComponentManifest,
-    values: &[adaq_component_tooling::ComponentParameterValue],
-) -> BTreeMap<String, String> {
-    manifest
-        .parameters
-        .iter()
-        .zip(values)
-        .map(|(definition, value)| (definition.name.clone(), parameter_value(value)))
-        .collect()
-}
-
-fn normalized_parameter_bindings(
-    manifest: &ComponentManifest,
-    values: &[adaq_component_tooling::ComponentParameterValue],
-) -> Vec<NormalizedParameter> {
-    manifest
-        .parameters
-        .iter()
-        .zip(values)
-        .map(|(definition, value)| NormalizedParameter {
-            name: definition.name.clone(),
-            value: parameter_value(value),
-        })
-        .collect()
-}
-
-fn parameter_value(value: &adaq_component_tooling::ComponentParameterValue) -> String {
-    match value {
-        adaq_component_tooling::ComponentParameterValue::Decimal(value)
-        | adaq_component_tooling::ComponentParameterValue::String(value) => value.clone(),
-        adaq_component_tooling::ComponentParameterValue::Integer(value) => value.to_string(),
-        adaq_component_tooling::ComponentParameterValue::Boolean(value) => value.to_string(),
-    }
-}
-
-fn component_lock_entry(package: &ComponentPackage) -> ComponentLockEntry {
-    ComponentLockEntry {
-        component_id: package.manifest.component_id.to_string(),
-        version: package.manifest.version.to_string(),
-        archive_sha256: package.archive_sha256.clone(),
-        wasm_sha256: package.manifest.wasm_sha256.clone(),
-    }
-}
-
-fn validate_provenance(provenance: &BacktestRunProvenance) -> Result<(), String> {
-    let identity = adaq_component_tooling::EngineIdentity {
-        engine_version: provenance
-            .indicator_engine_build_identity
-            .engine_version
-            .clone(),
-        ta_lib_version: provenance
-            .indicator_engine_build_identity
-            .ta_lib_version
-            .clone(),
-        ta_source_sha256: provenance
-            .indicator_engine_build_identity
-            .ta_source_sha256
-            .clone(),
-        catalog_version: provenance
-            .indicator_engine_build_identity
-            .catalog_version
-            .clone(),
-        wrapper_sha256: provenance
-            .indicator_engine_build_identity
-            .wrapper_sha256
-            .clone(),
-        target_triple: provenance
-            .indicator_engine_build_identity
-            .target_triple
-            .clone(),
-        compiler_and_flags_sha256: provenance
-            .indicator_engine_build_identity
-            .compiler_and_flags_sha256
-            .clone(),
-        engine_build_id: provenance
-            .indicator_engine_build_identity
-            .engine_build_id
-            .clone(),
-    };
-    let frozen_plan =
-        FrozenFeaturePlan::load_for_engine(provenance.feature_plan_json.as_bytes(), &identity)
-            .map_err(|_| "Backtest Run provenance has an invalid frozen Feature Plan")?;
-    let plan: serde_json::Value =
-        serde_json::from_str(&provenance.feature_plan_json).map_err(string)?;
-    let content = plan.as_object().ok_or("Feature Plan is invalid")?;
-    if content.get("planHash").and_then(serde_json::Value::as_str)
-        != Some(&provenance.feature_plan_hash)
-        || frozen_plan.plan_hash() != provenance.feature_plan_hash
-        || content
-            .get("consumerPackageSha256")
-            .and_then(serde_json::Value::as_str)
-            != Some(&provenance.normalized_request.strategy_archive_sha256)
-        || content
-            .get("engineBuildId")
-            .and_then(serde_json::Value::as_str)
-            != Some(&provenance.indicator_engine_build_identity.engine_build_id)
-    {
-        return Err("Backtest Run provenance has inconsistent hashes or engine identity".into());
-    }
-    let requested_hashes = std::iter::once(&provenance.normalized_request.strategy_archive_sha256)
-        .chain(
-            provenance
-                .normalized_request
-                .factor_instances
-                .iter()
-                .map(|factor| &factor.archive_sha256),
-        )
-        .collect::<Vec<_>>();
-    let locked_hashes = provenance
-        .component_lock
-        .iter()
-        .map(|component| &component.archive_sha256)
-        .collect::<Vec<_>>();
-    let mut plan_aliases = content
-        .get("factors")
-        .and_then(serde_json::Value::as_array)
-        .ok_or("Feature Plan is missing Factor bindings")?
-        .iter()
-        .map(|factor| {
-            factor
-                .get("alias")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("Feature Plan has an invalid Factor binding")
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut request_aliases = provenance
-        .normalized_request
-        .factor_instances
-        .iter()
-        .map(|factor| factor.alias.as_str())
-        .collect::<Vec<_>>();
-    plan_aliases.sort_unstable();
-    request_aliases.sort_unstable();
-    let mut planned_signals = content
-        .get("slots")
-        .and_then(serde_json::Value::as_array)
-        .ok_or("Feature Plan is missing ordered Slots")?
-        .iter()
-        .filter_map(|slot| {
-            let source = slot.get("source")?;
-            (source.get("kind")?.as_str()? == "signal").then(|| {
-                Some((
-                    slot.get("name")?.as_str()?.to_owned(),
-                    source.get("dataset_id")?.as_str()?.to_owned(),
-                    source.get("signal_name")?.as_str()?.to_owned(),
-                ))
-            })?
-        })
-        .collect::<Vec<_>>();
-    let mut requested_signals = provenance
-        .normalized_request
-        .signal_instances
-        .iter()
-        .map(|signal| {
-            (
-                signal.slot.clone(),
-                signal.dataset_id.clone(),
-                signal.signal_name.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut locked_signals = provenance
-        .dataset_lock
-        .iter()
-        .map(|signal| {
-            (
-                signal.slot.clone(),
-                signal.dataset_id.clone(),
-                signal.signal_name.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
-    planned_signals.sort();
-    requested_signals.sort();
-    locked_signals.sort();
-    let plan_factor_parameters = frozen_plan
-        .factors()
-        .map(|factor| {
-            (
-                factor.alias,
-                factor
-                    .parameters
-                    .iter()
-                    .map(parameter_value)
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    if requested_hashes != locked_hashes
-        || plan_aliases != request_aliases
-        || provenance
-            .normalized_request
-            .factor_instances
-            .iter()
-            .any(|factor| {
-                plan_factor_parameters.get(factor.alias.as_str())
-                    != Some(
-                        &factor
-                            .parameters
-                            .iter()
-                            .map(|parameter| parameter.value.clone())
-                            .collect(),
-                    )
-            })
-        || locked_hashes.iter().any(|hash| !is_sha256(hash))
-        || planned_signals != requested_signals
-        || requested_signals != locked_signals
-        || provenance
-            .dataset_lock
-            .iter()
-            .any(|signal| !is_sha256(&signal.dataset_id) || signal.evidence_state.is_empty())
-        || frozen_plan.architecture() != provenance.architecture
-        || provenance.seed != provenance.normalized_request.seed
-    {
-        return Err("Backtest Run provenance has inconsistent Component Locks or bindings".into());
-    }
-    Ok(())
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn resolve_factor_parameters(
-    strategy: &ComponentManifest,
-    factor: &ComponentManifest,
-    strategy_overrides: &HashMap<String, String>,
-    bindings: &HashMap<String, FactorParameterBinding>,
-) -> Result<HashMap<String, String>, String> {
-    if bindings.keys().any(|name| {
-        !factor
-            .parameters
-            .iter()
-            .any(|parameter| parameter.name == *name)
-    }) {
-        return Err("Unknown Factor Parameter binding".into());
-    }
-    bindings
-        .iter()
-        .map(|(name, binding)| match binding {
-            FactorParameterBinding::Literal(value) => Ok((name.clone(), value.clone())),
-            FactorParameterBinding::StrategyParameter { strategy_parameter } => {
-                let parameter = strategy
-                    .parameters
-                    .iter()
-                    .find(|parameter| parameter.name == *strategy_parameter)
-                    .ok_or_else(|| {
-                        format!("Unknown Strategy Parameter reference: {strategy_parameter}")
-                    })?;
-                let target = factor
-                    .parameters
-                    .iter()
-                    .find(|parameter| parameter.name == *name)
-                    .ok_or_else(|| format!("Unknown Factor Parameter binding: {name}"))?;
-                if parameter.parameter_type != target.parameter_type {
-                    return Err(format!(
-                        "Strategy Parameter reference type does not match Factor Parameter: {name}"
-                    ));
-                }
-                Ok((
-                    name.clone(),
-                    strategy_overrides
-                        .get(strategy_parameter)
-                        .unwrap_or(&parameter.default_value)
-                        .clone(),
-                ))
-            }
-        })
-        .collect()
-}
-
-fn run_view(run: &BacktestRun, start: i64, end: i64, max_points: usize) -> BacktestRunView {
-    let mut result = run.result.clone();
-    result.equity = aggregate_equity(&result.equity, start, end, max_points);
-    result.benchmark_equity = aggregate_equity(&result.benchmark_equity, start, end, max_points);
-    result
-        .fills
-        .retain(|fill| fill.open_time_ms >= start && fill.open_time_ms < end);
-    result
-        .orders
-        .retain(|order| order.created_time_ms >= start && order.created_time_ms < end);
-    result.fills.truncate(max_points);
-    result.orders.truncate(max_points);
-    BacktestRunView {
-        run_id: run.run_id.clone(),
-        plan_hash: run.plan_hash.clone(),
-        snapshot: run.snapshot.clone(),
-        bars: aggregate_bars(&run.bars, start, end, max_points),
-        decisions: run
-            .decisions
-            .iter()
-            .filter(|decision| decision.open_time_ms >= start && decision.open_time_ms < end)
-            .cloned()
-            .collect(),
-        pauses: run
-            .pauses
-            .iter()
-            .filter(|pause| pause.open_time_ms >= start && pause.open_time_ms < end)
-            .cloned()
-            .collect(),
-        result,
-        component_lock: run.component_lock.clone(),
-        provenance: run.provenance.clone(),
-    }
-}
-
-fn aggregate_bars(bars: &[OhlcvBar], start: i64, end: i64, max_points: usize) -> Vec<OhlcvBar> {
-    let filtered = bars
-        .iter()
-        .filter(|bar| bar.open_time_ms >= start && bar.open_time_ms < end)
-        .collect::<Vec<_>>();
-    let chunk = filtered.len().div_ceil(max_points).max(1);
-    filtered
-        .chunks(chunk)
-        .map(|bars| OhlcvBar {
-            open_time_ms: bars[0].open_time_ms,
-            open: bars[0].open,
-            high: bars.iter().map(|bar| bar.high).max().unwrap(),
-            low: bars.iter().map(|bar| bar.low).min().unwrap(),
-            close: bars.last().unwrap().close,
-            base_volume: bars.iter().map(|bar| bar.base_volume).sum(),
-            quote_volume: bars.iter().map(|bar| bar.quote_volume).sum(),
-        })
-        .collect()
-}
-
-fn aggregate_equity(
-    points: &[adaq_backtest_core::EquityPoint],
-    start: i64,
-    end: i64,
-    max_points: usize,
-) -> Vec<adaq_backtest_core::EquityPoint> {
-    let filtered = points
-        .iter()
-        .filter(|point| point.open_time_ms >= start && point.open_time_ms < end)
-        .collect::<Vec<_>>();
-    let chunk = filtered.len().div_ceil(max_points).max(1);
-    filtered
-        .chunks(chunk)
-        .map(|points| {
-            let mut point = (*points.last().unwrap()).clone();
-            point.drawdown = points.iter().map(|value| value.drawdown).min().unwrap();
-            point
-        })
-        .collect()
 }
 
 fn reset_watchlist(database: &mut Connection, user_id: &str) -> Result<(), String> {
@@ -2489,50 +1193,44 @@ fn insert_default_watchlist(database: &Connection, user_id: &str) -> Result<(), 
     Ok(())
 }
 
-fn reset_components(database: &mut Connection, user_id: &str, root: &Path) -> Result<(), String> {
-    let blocking: i64 = database
+fn reset_components(
+    database: &mut Connection,
+    user_id: &str,
+    root: &Path,
+    backtests: &Backtests,
+) -> Result<(), String> {
+    let owned_components = owned_component_hashes(database, user_id)?;
+    let locking_runs = backtests.runs_locking_components(database, user_id)?;
+    let blocking_runs =
+        count_runs_locking_owned_components(&locking_runs, &owned_components) as i64;
+    let blocking_datasets: i64 = database
         .query_row(
-            "SELECT (SELECT COUNT(DISTINCT r.run_id) FROM backtest_runs r
-             JOIN backtest_run_components rc USING(run_id)
-             JOIN component_access a USING(archive_sha256)
-             WHERE r.user_id = ?1 AND a.user_id = ?1)
-             + (SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1)",
+            "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1",
             [user_id],
             |row| row.get(0),
         )
         .map_err(string)?;
+    let blocking = blocking_runs + blocking_datasets;
     if blocking > 0 {
         return Err(format!(
             "Component Package reset is blocked by {blocking} immutable Backtest Run(s)"
         ));
     }
-    let paths = strings(
-        database,
-        "SELECT c.archive_path FROM component_content c
-         JOIN component_access a USING(archive_sha256)
-         WHERE a.user_id = ?1
-         AND NOT EXISTS(SELECT 1 FROM component_access other
-             WHERE other.archive_sha256 = c.archive_sha256 AND other.user_id <> ?1)
-         AND NOT EXISTS(SELECT 1 FROM backtest_run_components rc
-             WHERE rc.archive_sha256 = c.archive_sha256)",
-        user_id,
-    )?;
+    // The Run-lock guard comes from the Backtest module; the composition
+    // root never issues SQL over the Run bridge tables itself.
+    let locked_by_runs = backtests.component_hashes_locked_by_runs(database, None)?;
+    let paths = orphan_component_candidates(database, user_id)?
+        .into_iter()
+        .filter(|(hash, _)| !locked_by_runs.contains(hash))
+        .map(|(_, path)| path)
+        .collect::<Vec<_>>();
     let staged = stage_files(paths.iter().map(PathBuf::from), root)?;
     let result = (|| {
         let transaction = database.transaction().map_err(string)?;
         transaction
             .execute("DELETE FROM component_access WHERE user_id = ?1", [user_id])
             .map_err(string)?;
-        transaction
-            .execute(
-                "DELETE FROM component_content
-                 WHERE NOT EXISTS(SELECT 1 FROM component_access a
-                     WHERE a.archive_sha256 = component_content.archive_sha256)
-                 AND NOT EXISTS(SELECT 1 FROM backtest_run_components rc
-                     WHERE rc.archive_sha256 = component_content.archive_sha256)",
-                [],
-            )
-            .map_err(string)?;
+        delete_orphan_component_content(&transaction, &locked_by_runs)?;
         transaction.commit().map_err(string)
     })();
     finish_staged_files(staged, result)
@@ -2544,16 +1242,18 @@ fn reset_market_data(
     root: &Path,
     validation_report_count: u64,
     snapshots: &MarketDataSnapshots,
+    backtests: &Backtests,
 ) -> Result<(), String> {
-    let blocking: i64 = database
+    let blocking_datasets: i64 = database
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1)
-             + (SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1)",
+            "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1",
             [user_id],
             |row| row.get(0),
         )
         .map_err(string)?;
-    let blocking = blocking.max(0) as u64 + validation_report_count;
+    let blocking = backtests.run_count(database, user_id)?
+        + blocking_datasets.max(0) as u64
+        + validation_report_count;
     if blocking > 0 {
         return Err(format!(
             "Market Data reset is blocked by {blocking} immutable research record(s)"
@@ -2575,19 +1275,18 @@ fn reset_all(
     reset_block: &crate::dataset_generation::UserResetBlock<'_>,
     validation: &ValidationStudies,
     snapshots: &MarketDataSnapshots,
+    backtests: &Backtests,
 ) -> Result<(), String> {
-    let component_paths = strings(
-        database,
-        "SELECT c.archive_path FROM component_content c
-         JOIN component_access a USING(archive_sha256)
-         WHERE a.user_id = ?1
-         AND NOT EXISTS(SELECT 1 FROM component_access other
-             WHERE other.archive_sha256 = c.archive_sha256 AND other.user_id <> ?1)
-         AND NOT EXISTS(SELECT 1 FROM backtest_run_components rc
-             JOIN backtest_runs r USING(run_id)
-             WHERE rc.archive_sha256 = c.archive_sha256 AND r.user_id <> ?1)",
-        user_id,
-    )?;
+    // The reset User's Runs are deleted inside the transaction below, so
+    // only other Users' Runs keep locking Component content; that set is
+    // stable under the held database lock and guards both the staged file
+    // selection and the transaction's orphan cleanup.
+    let locked_by_runs = backtests.component_hashes_locked_by_runs(database, Some(user_id))?;
+    let component_paths = orphan_component_candidates(database, user_id)?
+        .into_iter()
+        .filter(|(hash, _)| !locked_by_runs.contains(hash))
+        .map(|(_, path)| path)
+        .collect::<Vec<_>>();
     let dataset_paths = strings(
         database,
         "SELECT c.parquet_path FROM signal_dataset_content c JOIN signal_dataset_access a USING(dataset_id) WHERE a.user_id = ?1 AND NOT EXISTS(SELECT 1 FROM signal_dataset_access other WHERE other.dataset_id = c.dataset_id AND other.user_id <> ?1)",
@@ -2612,9 +1311,7 @@ fn reset_all(
             )
             .map_err(string)?;
         transaction.execute("DELETE FROM forecast_evaluation_content WHERE NOT EXISTS(SELECT 1 FROM forecast_evaluation_access a WHERE a.report_id = forecast_evaluation_content.report_id)", []).map_err(string)?;
-        transaction
-            .execute("DELETE FROM backtest_runs WHERE user_id = ?1", [user_id])
-            .map_err(string)?;
+        backtests.reset_for_user(&transaction, user_id)?;
         transaction
             .execute(
                 "DELETE FROM signal_dataset_access WHERE user_id = ?1",
@@ -2626,16 +1323,7 @@ fn reset_all(
             .execute("DELETE FROM component_access WHERE user_id = ?1", [user_id])
             .map_err(string)?;
         snapshots.reset_for_user(&transaction, user_id)?;
-        transaction
-            .execute(
-                "DELETE FROM component_content
-                 WHERE NOT EXISTS(SELECT 1 FROM component_access a
-                     WHERE a.archive_sha256 = component_content.archive_sha256)
-                 AND NOT EXISTS(SELECT 1 FROM backtest_run_components rc
-                     WHERE rc.archive_sha256 = component_content.archive_sha256)",
-                [],
-            )
-            .map_err(string)?;
+        delete_orphan_component_content(&transaction, &locked_by_runs)?;
         transaction
             .execute(
                 "DELETE FROM watchlist_settings WHERE user_id = ?1",
@@ -2646,6 +1334,89 @@ fn reset_all(
         transaction.commit().map_err(string)
     })();
     finish_staged_files(staged, result)
+}
+
+/// Deletes Component content rows nobody can read anymore, skipping the
+/// hashes the Backtest module reports as still locked by Runs.
+fn delete_orphan_component_content(
+    transaction: &Transaction<'_>,
+    locked_by_runs: &HashSet<String>,
+) -> Result<(), String> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT archive_sha256 FROM component_content
+             WHERE NOT EXISTS(SELECT 1 FROM component_access a
+                 WHERE a.archive_sha256 = component_content.archive_sha256)",
+        )
+        .map_err(string)?;
+    let orphans = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(string)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(string)?;
+    for hash in orphans
+        .iter()
+        .filter(|hash| !locked_by_runs.contains(*hash))
+    {
+        transaction
+            .execute(
+                "DELETE FROM component_content WHERE archive_sha256 = ?1",
+                [hash],
+            )
+            .map_err(string)?;
+    }
+    Ok(())
+}
+
+fn owned_component_hashes(database: &Connection, user_id: &str) -> Result<HashSet<String>, String> {
+    let mut statement = database
+        .prepare("SELECT archive_sha256 FROM component_access WHERE user_id = ?1")
+        .map_err(string)?;
+    statement
+        .query_map([user_id], |row| row.get::<_, String>(0))
+        .map_err(string)?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(string)
+}
+
+/// The Component content one User accesses that no other User accesses.
+/// Both Component Reset and Reset All stage and prune from this candidate
+/// set after applying the Backtest module's Run-lock guard.
+fn orphan_component_candidates(
+    database: &Connection,
+    user_id: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let mut statement = database
+        .prepare(
+            "SELECT c.archive_sha256, c.archive_path FROM component_content c
+             JOIN component_access a USING(archive_sha256)
+             WHERE a.user_id = ?1
+             AND NOT EXISTS(SELECT 1 FROM component_access other
+                 WHERE other.archive_sha256 = c.archive_sha256 AND other.user_id <> ?1)",
+        )
+        .map_err(string)?;
+    statement
+        .query_map([user_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(string)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(string)
+}
+
+/// The distinct Runs of one User that lock Component Packages the User
+/// still owns; the count both the summary and the Component Reset blocking
+/// check report.
+fn count_runs_locking_owned_components(
+    locking_runs: &HashMap<String, Vec<String>>,
+    owned_components: &HashSet<String>,
+) -> u64 {
+    locking_runs
+        .iter()
+        .filter(|(hash, _)| owned_components.contains(*hash))
+        .flat_map(|(_, runs)| runs)
+        .collect::<HashSet<_>>()
+        .len() as u64
 }
 
 fn strings(database: &Connection, sql: &str, user_id: &str) -> Result<Vec<String>, String> {
@@ -2727,8 +1498,13 @@ fn string(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::watchlist::WatchlistDb;
+    use crate::{
+        backtest::{BacktestRunRequest, FactorInstanceRequest},
+        watchlist::WatchlistDb,
+    };
+    use adaq_backtest_core::ExecutionProfile;
     use adaq_component_tooling::{ComponentManifest, pack_component};
+    use adaq_data_core::{BarGap, BarInterval};
     use std::{
         io::{Cursor, Write},
         time::{SystemTime, UNIX_EPOCH},
@@ -2960,80 +1736,6 @@ mod tests {
         let second = state.list_components_page("alice", 2).unwrap();
         assert_eq!(second.total, 12);
         assert_eq!(second.items.len(), 2);
-    }
-
-    #[test]
-    fn run_history_is_filtered_and_paged_by_instrument() {
-        let root = std::env::temp_dir().join(format!(
-            "adaq-run-history-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let state = LocalResearchState::open(&root).unwrap();
-        let database = state.database.lock().unwrap();
-        for index in 0..12 {
-            let json = serde_json::json!({
-                "snapshot": {
-                    "snapshotId": format!("btc-{index}"),
-                    "src": "okx",
-                    "code": "BTC-USDT",
-                    "interval": "1h",
-                    "barCount": 100
-                },
-                "result": { "metrics": { "totalReturn": "0.1" } }
-            });
-            database
-                .execute(
-                    "INSERT INTO backtest_runs(run_id, user_id, created_at, result_json) VALUES (?1, 'alice', ?2, ?3)",
-                    params![format!("btc-{index}"), format!("2026-07-30 00:{index:02}:00"), json.to_string()],
-                )
-                .unwrap();
-        }
-        for (user, code) in [("alice", "ETH-USDT"), ("bob", "BTC-USDT")] {
-            let json = serde_json::json!({
-                "snapshot": {
-                    "snapshotId": format!("{user}-{code}"),
-                    "src": "okx",
-                    "code": code,
-                    "interval": "1h",
-                    "barCount": 100
-                },
-                "result": { "metrics": { "totalReturn": "0.2" } }
-            });
-            database
-                .execute(
-                    "INSERT INTO backtest_runs(run_id, user_id, created_at, result_json) VALUES (?1, ?2, '2026-07-30 01:00:00', ?3)",
-                    params![format!("{user}-{code}"), user, json.to_string()],
-                )
-                .unwrap();
-        }
-        drop(database);
-
-        let first = state
-            .list_runs_page("alice", Some("okx"), Some("BTC-USDT"), 1)
-            .unwrap();
-        assert_eq!(first.total, 12);
-        assert_eq!(first.items.len(), 10);
-        assert!(first.items.iter().all(|run| run.code == "BTC-USDT"));
-
-        let second = state
-            .list_runs_page("alice", Some("okx"), Some("BTC-USDT"), 2)
-            .unwrap();
-        assert_eq!(second.total, 12);
-        assert_eq!(second.items.len(), 2);
-
-        let eth = state
-            .list_runs_page("alice", Some("okx"), Some("ETH-USDT"), 1)
-            .unwrap();
-        assert_eq!(eth.total, 1);
-        assert_eq!(eth.items[0].code, "ETH-USDT");
-
-        let all = state.list_runs_page("alice", None, None, 1).unwrap();
-        assert_eq!(all.total, 13);
-        assert_eq!(all.items.len(), 10);
     }
 
     fn fixture(name: &str) -> (ComponentManifest, Vec<u8>) {
@@ -3269,45 +1971,49 @@ mod tests {
             },
             seed: 0,
         };
-        let preview = prepare_backtest(&request(), &state).unwrap();
-        assert!(state.load_run("alice", &preview.run_id).is_err());
+        let preview = state.backtests.preflight(&request()).unwrap();
+        assert!(!preview.reuses_existing_run);
+        assert!(state.backtests.get("alice", &preview.run_id).is_err());
         assert_eq!(
-            preview
-                .provenance
-                .normalized_request
-                .initial_quote_allocation,
+            preview.normalized_request.initial_quote_allocation,
             rust_decimal::Decimal::from(10_000),
         );
-        assert!(preview.provenance.feature_plan_json.contains("\"slots\""));
+        assert!(preview.feature_plan.get("slots").is_some());
         let mut subset = request();
         subset.run_start_time_ms = Some(3_600_000);
         subset.run_end_time_ms = Some(snapshot.end_time_ms);
-        let subset_preview = prepare_backtest(&subset, &state).unwrap();
-        assert_eq!(subset_preview.bars.len(), 2);
+        let subset_preview = state.backtests.preflight(&subset).unwrap();
         assert_ne!(subset_preview.run_id, preview.run_id);
         subset.run_start_time_ms = Some(snapshot.start_time_ms - 1);
         assert!(
-            prepare_backtest(&subset, &state)
+            state
+                .backtests
+                .preflight(&subset)
                 .err()
                 .unwrap()
                 .contains("subset")
         );
 
-        let first = execute_backtest(request(), &state).unwrap();
-        let second = execute_backtest(request(), &state).unwrap();
+        let first = state.backtests.run(request()).unwrap();
+        let second = state.backtests.run(request()).unwrap();
         assert!(!first.plan_hash.is_empty());
-        let mut changed_seed = first.provenance.clone().unwrap();
-        changed_seed.seed = 1;
-        changed_seed.normalized_request.seed = 1;
-        assert_ne!(
-            fingerprint("alice", first.provenance.as_ref().unwrap()).unwrap(),
-            fingerprint("alice", &changed_seed).unwrap()
-        );
         assert_eq!(
             serde_json::to_value(&first).unwrap(),
             serde_json::to_value(&second).unwrap()
         );
-        assert_eq!(state.list_runs("alice").unwrap().len(), 1);
+        assert_eq!(
+            state
+                .backtests
+                .list(&crate::backtest::BacktestListRequest {
+                    user_id: "alice".into(),
+                    src: None,
+                    code: None,
+                    page: 1,
+                })
+                .unwrap()
+                .total,
+            1
+        );
         let locked = state.list_components("alice").unwrap();
         let locked_strategy = locked
             .iter()
@@ -3323,7 +2029,7 @@ mod tests {
                 first.run_id
             )
         );
-        state.delete_run("alice", &first.run_id).unwrap();
+        state.backtests.delete("alice", &first.run_id).unwrap();
         state
             .delete_component("alice", &strategy_entry.archive_sha256)
             .unwrap();
@@ -3439,8 +2145,8 @@ mod tests {
             seed: 0,
         };
 
-        let first = execute_backtest(request(), &state).unwrap();
-        let replay = execute_backtest(request(), &state).unwrap();
+        let first = state.backtests.run(request()).unwrap();
+        let replay = state.backtests.run(request()).unwrap();
 
         assert_eq!(first.run_id, replay.run_id);
         let provenance = first.provenance.as_ref().unwrap();
@@ -3451,7 +2157,11 @@ mod tests {
         assert_eq!(provenance.feature_plan_hash, first.plan_hash);
         assert_eq!(provenance.component_lock, first.component_lock);
         assert_eq!(
-            state.load_run("alice", &first.run_id).unwrap().provenance,
+            state
+                .backtests
+                .get("alice", &first.run_id)
+                .unwrap()
+                .provenance,
             first.provenance
         );
         assert!(provenance.feature_plan_json.contains("\"slots\""));
@@ -3459,43 +2169,41 @@ mod tests {
             provenance.normalized_request.initial_quote_allocation,
             rust_decimal::Decimal::from(10_000),
         );
-        let mut inconsistent = provenance.clone();
-        inconsistent.component_lock[0].archive_sha256 = "f".repeat(64);
-        assert!(validate_provenance(&inconsistent).is_err());
-        let mut inconsistent = provenance.clone();
-        inconsistent.normalized_request.factor_instances[0].archive_sha256 = "f".repeat(64);
-        assert!(validate_provenance(&inconsistent).is_err());
-        let mut inconsistent = provenance.clone();
-        inconsistent.normalized_request.factor_instances[0]
-            .parameters
-            .push(NormalizedParameter {
-                name: "unexpected".into(),
-                value: "1".into(),
-            });
-        assert!(validate_provenance(&inconsistent).is_err());
-        let mut inconsistent = provenance.clone();
-        inconsistent.normalized_request.factor_instances[0].alias = "other".into();
-        assert!(validate_provenance(&inconsistent).is_err());
-        let mut inconsistent = provenance.clone();
-        inconsistent.feature_plan_json = inconsistent
-            .feature_plan_json
-            .replacen("momentum", "tampered", 1);
-        assert!(validate_provenance(&inconsistent).is_err());
         assert_eq!(first.component_lock.len(), 2);
         assert_eq!(first.pauses.len(), 38);
         assert!(!first.result.orders.is_empty());
         assert!(!first.result.fills.is_empty());
-        let execution_page = execution_page(&first.result, 0, 1);
+        let execution_page = state
+            .backtests
+            .execution_data(&crate::backtest::BacktestExecutionRequest {
+                user_id: "alice".into(),
+                run_id: first.run_id.clone(),
+                offset: 0,
+                limit: 1,
+            })
+            .unwrap();
         assert_eq!(execution_page.orders.len(), 1);
         assert_eq!(execution_page.fills.len(), 1);
         assert_eq!(execution_page.total_orders, first.result.orders.len());
         assert_eq!(execution_page.total_fills, first.result.fills.len());
-        assert_eq!(state.list_runs("alice").unwrap().len(), 1);
+        let run_count = || {
+            state
+                .backtests
+                .list(&crate::backtest::BacktestListRequest {
+                    user_id: "alice".into(),
+                    src: None,
+                    code: None,
+                    page: 1,
+                })
+                .unwrap()
+                .total
+        };
+        assert_eq!(run_count(), 1);
         let mut changed_request = request();
         changed_request.seed = 1;
-        let changed = execute_backtest(changed_request, &state).unwrap();
+        let changed = state.backtests.run(changed_request).unwrap();
         assert_ne!(first.run_id, changed.run_id);
-        assert_eq!(state.list_runs("alice").unwrap().len(), 2);
+        assert_eq!(run_count(), 2);
 
         // Validation Studies is a deep module: Protocols and Reports flow
         // through its interface, and an immutable Report locks the Backtest
@@ -3536,7 +2244,8 @@ mod tests {
         assert_eq!(report.windows[0].sample_out_start_time_ms, 25 * 3_600_000);
         assert!(
             state
-                .delete_run(
+                .backtests
+                .delete(
                     "alice",
                     report.windows[0].sample_in_run_id.as_deref().unwrap(),
                 )
@@ -3550,26 +2259,6 @@ mod tests {
             .unwrap();
         assert!(markdown.contains(&report.protocol_id));
         assert!(markdown.contains("research-metrics.md"));
-
-        let mut legacy_json =
-            serde_json::to_value(state.load_run("alice", &first.run_id).unwrap()).unwrap();
-        legacy_json.as_object_mut().unwrap().remove("provenance");
-        state
-            .database
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE backtest_runs SET result_json = ?1 WHERE run_id = ?2",
-                params![legacy_json.to_string(), first.run_id],
-            )
-            .unwrap();
-        assert!(
-            state
-                .load_run("alice", &first.run_id)
-                .unwrap()
-                .provenance
-                .is_none()
-        );
 
         drop(state);
         fs::remove_dir_all(root).unwrap();
