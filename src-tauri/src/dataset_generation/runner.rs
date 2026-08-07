@@ -949,13 +949,10 @@ mod tests {
                 [&request.model_archive_sha256],
             )
             .unwrap();
-        database
-            .execute(
-                "INSERT INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('bob', ?1)",
-                [&request.snapshot_id],
-            )
-            .unwrap();
         drop(database);
+        state
+            .grant_snapshot_for_user("bob", &request.snapshot_id)
+            .unwrap();
         let mut bob_request = request.clone();
         bob_request.user_id = "bob".into();
         let (bob_attempt_id, bob_cancelled) = seed_running_attempt(&state, "bob", "real-model-bob");

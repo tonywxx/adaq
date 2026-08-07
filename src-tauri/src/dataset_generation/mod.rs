@@ -377,24 +377,18 @@ pub(super) mod tests {
             })
             .collect();
         let snapshot = state
-            .persist_snapshot(&BarSeries {
-                src: "okx".into(),
-                code: "BTC-USDT".into(),
-                interval: BarInterval::OneHour,
-                bars,
-                gaps: vec![BarGap {
-                    start_time_ms: 3 * 3_600_000,
-                    end_time_ms: 6 * 3_600_000,
-                }],
-            })
-            .unwrap();
-        state
-            .database
-            .lock()
-            .unwrap()
-            .execute(
-                "INSERT INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('alice', ?1)",
-                [&snapshot.snapshot_id],
+            .persist_snapshot_for_user(
+                "alice",
+                &BarSeries {
+                    src: "okx".into(),
+                    code: "BTC-USDT".into(),
+                    interval: BarInterval::OneHour,
+                    bars,
+                    gaps: vec![BarGap {
+                        start_time_ms: 3 * 3_600_000,
+                        end_time_ms: 6 * 3_600_000,
+                    }],
+                },
             )
             .unwrap();
         (
@@ -918,13 +912,7 @@ pub(super) mod tests {
         let package = model_package();
         state.import_component("bob", &package).unwrap();
         state
-            .database
-            .lock()
-            .unwrap()
-            .execute(
-                "INSERT INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('bob', ?1)",
-                [&request.snapshot_id],
-            )
+            .grant_snapshot_for_user("bob", &request.snapshot_id)
             .unwrap();
         let bob_request = DatasetGenerationRequest {
             user_id: "bob".into(),

@@ -1,12 +1,14 @@
 mod dataset_generation;
 mod local_research;
 mod m8;
+mod market_data_snapshot;
 #[allow(dead_code)] // M2 is host-only until Backtest orchestration consumes it.
 mod run_engine;
 mod user;
 mod validation;
 mod watchlist;
 
+use adaq_backtest_core::MarketDataSnapshot;
 #[cfg(test)]
 use adaq_component_sdk::host::{factor_abi, strategy_abi};
 use adaq_component_tooling::{FactorSchema, WasmLoader};
@@ -149,6 +151,64 @@ fn validation_report_export(
     state
         .validation
         .export_report(&request.user_id, &request.protocol_id, &format)
+}
+
+/// Tauri Market Data Snapshot commands are thin adapters: they deserialize
+/// the existing contract, delegate to the Tauri-independent Market Data
+/// Snapshot module, and serialize the result. Command names and camelCase
+/// shapes are frozen.
+#[tauri::command]
+async fn snapshot_create(
+    request: market_data_snapshot::SnapshotCreateRequest,
+    client: State<'_, OkxClient>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<MarketDataSnapshot, String> {
+    state.snapshots.create_for_user(&request, &client).await
+}
+
+#[tauri::command]
+async fn snapshot_download(
+    request: market_data_snapshot::SnapshotDownloadRequest,
+    on_event: Channel<market_data_snapshot::SnapshotDownloadEvent>,
+    client: State<'_, OkxClient>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<MarketDataSnapshot, String> {
+    state
+        .snapshots
+        .download_for_user(&request, &client, |event| {
+            let _ = on_event.send(event);
+        })
+        .await
+}
+
+#[tauri::command]
+async fn snapshot_list(
+    request: market_data_snapshot::SnapshotListRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<market_data_snapshot::SnapshotPage, String> {
+    state.snapshots.list(&request)
+}
+
+#[tauri::command]
+async fn snapshot_list_readable(
+    request: market_data_snapshot::ReadableSnapshotListRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<MarketDataSnapshot>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .snapshots
+            .list_readable(&request.user_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn snapshot_cancel(
+    request: market_data_snapshot::TaskRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    state.snapshots.cancel_download(&request.task_id)
 }
 
 #[derive(serde::Deserialize)]
@@ -563,11 +623,11 @@ pub fn run() {
             local_research::backtest_compatible_factors,
             local_research::backtest_compatible_signals,
             local_research::component_delete,
-            local_research::snapshot_create,
-            local_research::snapshot_download,
-            local_research::snapshot_list,
-            local_research::snapshot_list_readable,
-            local_research::snapshot_cancel,
+            snapshot_create,
+            snapshot_download,
+            snapshot_list,
+            snapshot_list_readable,
+            snapshot_cancel,
             local_research::backtest_preflight,
             local_research::backtest_run,
             local_research::backtest_list,

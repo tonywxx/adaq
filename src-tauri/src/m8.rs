@@ -2168,24 +2168,18 @@ mod tests {
             })
             .collect();
         let snapshot = state
-            .persist_snapshot(&BarSeries {
-                src: "okx".into(),
-                code: "BTC-USDT".into(),
-                interval: BarInterval::OneHour,
-                bars,
-                gaps: vec![BarGap {
-                    start_time_ms: 3 * 3_600_000,
-                    end_time_ms: 6 * 3_600_000,
-                }],
-            })
-            .unwrap();
-        state
-            .database
-            .lock()
-            .unwrap()
-            .execute(
-                "INSERT INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('alice', ?1)",
-                [&snapshot.snapshot_id],
+            .persist_snapshot_for_user(
+                "alice",
+                &BarSeries {
+                    src: "okx".into(),
+                    code: "BTC-USDT".into(),
+                    interval: BarInterval::OneHour,
+                    bars,
+                    gaps: vec![BarGap {
+                        start_time_ms: 3 * 3_600_000,
+                        end_time_ms: 6 * 3_600_000,
+                    }],
+                },
             )
             .unwrap();
         (
@@ -3261,21 +3255,15 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let snapshot = state
-            .persist_snapshot(&BarSeries {
-                src: "okx".into(),
-                code: "BTC-USDT".into(),
-                interval: BarInterval::OneHour,
-                bars: bars.clone(),
-                gaps: vec![],
-            })
-            .unwrap();
-        state
-            .database
-            .lock()
-            .unwrap()
-            .execute(
-                "INSERT INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('alice', ?1)",
-                [&snapshot.snapshot_id],
+            .persist_snapshot_for_user(
+                "alice",
+                &BarSeries {
+                    src: "okx".into(),
+                    code: "BTC-USDT".into(),
+                    interval: BarInterval::OneHour,
+                    bars: bars.clone(),
+                    gaps: vec![],
+                },
             )
             .unwrap();
 

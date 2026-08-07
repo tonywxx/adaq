@@ -93,24 +93,18 @@ fn harness(name: &str) -> Harness {
         })
         .collect();
     let snapshot = state
-        .persist_snapshot(&BarSeries {
-            src: "okx".into(),
-            code: "BTC-USDT".into(),
-            interval: BarInterval::OneHour,
-            bars,
-            gaps: vec![BarGap {
-                start_time_ms: 25 * 3_600_000,
-                end_time_ms: 30 * 3_600_000,
-            }],
-        })
-        .unwrap();
-    state
-        .database
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT OR IGNORE INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('alice', ?1)",
-            [&snapshot.snapshot_id],
+        .persist_snapshot_for_user(
+            "alice",
+            &BarSeries {
+                src: "okx".into(),
+                code: "BTC-USDT".into(),
+                interval: BarInterval::OneHour,
+                bars,
+                gaps: vec![BarGap {
+                    start_time_ms: 25 * 3_600_000,
+                    end_time_ms: 30 * 3_600_000,
+                }],
+            },
         )
         .unwrap();
     Harness {
@@ -470,22 +464,15 @@ fn cross_market_reports_preserve_order_failures_and_identity() {
         .unwrap();
     let eth_snapshot = harness
         .state
-        .persist_snapshot(&BarSeries {
-            src: "okx".into(),
-            code: "ETH-USDT".into(),
-            interval: BarInterval::OneHour,
-            bars: bars.clone(),
-            gaps: vec![],
-        })
-        .unwrap();
-    harness
-        .state
-        .database
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT OR IGNORE INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('alice', ?1)",
-            [&eth_snapshot.snapshot_id],
+        .persist_snapshot_for_user(
+            "alice",
+            &BarSeries {
+                src: "okx".into(),
+                code: "ETH-USDT".into(),
+                interval: BarInterval::OneHour,
+                bars: bars.clone(),
+                gaps: vec![],
+            },
         )
         .unwrap();
     let contexts = vec![
@@ -526,22 +513,15 @@ fn cross_market_reports_preserve_order_failures_and_identity() {
     // A duplicate Instrument context (same market twice) is rejected.
     let btc_again = harness
         .state
-        .persist_snapshot(&BarSeries {
-            src: "okx".into(),
-            code: "BTC-USDT".into(),
-            interval: BarInterval::OneHour,
-            bars: bars.clone(),
-            gaps: vec![],
-        })
-        .unwrap();
-    harness
-        .state
-        .database
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT OR IGNORE INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('alice', ?1)",
-            [&btc_again.snapshot_id],
+        .persist_snapshot_for_user(
+            "alice",
+            &BarSeries {
+                src: "okx".into(),
+                code: "BTC-USDT".into(),
+                interval: BarInterval::OneHour,
+                bars: bars.clone(),
+                gaps: vec![],
+            },
         )
         .unwrap();
     assert!(
@@ -557,22 +537,15 @@ fn cross_market_reports_preserve_order_failures_and_identity() {
     // Incompatible Bar Intervals are rejected.
     let daily_snapshot = harness
         .state
-        .persist_snapshot(&BarSeries {
-            src: "okx".into(),
-            code: "SOL-USDT".into(),
-            interval: BarInterval::OneDay,
-            bars,
-            gaps: vec![],
-        })
-        .unwrap();
-    harness
-        .state
-        .database
-        .lock()
-        .unwrap()
-        .execute(
-            "INSERT OR IGNORE INTO market_data_snapshot_access(user_id, snapshot_id) VALUES ('alice', ?1)",
-            [&daily_snapshot.snapshot_id],
+        .persist_snapshot_for_user(
+            "alice",
+            &BarSeries {
+                src: "okx".into(),
+                code: "SOL-USDT".into(),
+                interval: BarInterval::OneDay,
+                bars,
+                gaps: vec![],
+            },
         )
         .unwrap();
     assert!(

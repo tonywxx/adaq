@@ -53,3 +53,4 @@ parquet = { version = "59.1", default-features = false, features = ["arrow", "sn
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

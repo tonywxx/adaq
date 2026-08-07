@@ -9,12 +9,17 @@ test("workspace list commands do not block the Tauri main thread", () => {
 				new URL("../src-tauri/src/local_research.rs", import.meta.url),
 				"utf8",
 			),
-			["component_list", "snapshot_list", "snapshot_list_readable", "backtest_list"],
+			["component_list", "backtest_list"],
 			"pub async fn",
 		],
 		[
 			readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"),
-			["validation_protocol_list", "validation_report_list"],
+			[
+				"validation_protocol_list",
+				"validation_report_list",
+				"snapshot_list",
+				"snapshot_list_readable",
+			],
 			"async fn",
 		],
 	] as const;
@@ -35,11 +40,11 @@ test("Models list commands run blocking work off the Tauri main thread", () => {
 				new URL("../src-tauri/src/local_research.rs", import.meta.url),
 				"utf8",
 			),
-			["component_list", "snapshot_list_readable"],
+			["component_list"],
 		],
 		[
 			readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"),
-			["dataset_generation_list"],
+			["dataset_generation_list", "snapshot_list_readable"],
 		],
 	] as const;
 

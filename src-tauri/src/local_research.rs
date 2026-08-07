@@ -2,10 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, Weak,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, Weak},
 };
 
 use adaq_backtest_core::{
@@ -20,7 +17,7 @@ use adaq_component_tooling::{
     strategy_architecture, validate_and_freeze_feature_plan_with_bindings_and_parameters,
     verify_package,
 };
-use adaq_data_core::{BarGap, BarInterval, HistoricalBarRange, OhlcvBar, OkxClient};
+use adaq_data_core::{BarGap, BarInterval, OhlcvBar};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -29,6 +26,7 @@ use tauri::Manager;
 use crate::{
     dataset_generation::{DatasetGeneration, GenerationSource},
     m8::backtest_signal_datasets,
+    market_data_snapshot::{LocalSnapshotSource, MarketDataSnapshots},
     run_engine::{
         FactorRunRequest, PositionMode, RunEngine, RunRequest, SignalRunRequest, SignalRunRow,
     },
@@ -37,14 +35,12 @@ use crate::{
 };
 
 const RUN_HISTORY_PAGE_SIZE: usize = 10;
-const SNAPSHOT_PAGE_SIZE: usize = 10;
 const COMPONENT_PAGE_SIZE: usize = 10;
 
 pub struct LocalResearchState {
     pub(crate) root: PathBuf,
-    snapshots: Arc<SnapshotStore>,
     pub(crate) database: Arc<Mutex<Connection>>,
-    downloads: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    pub(crate) snapshots: MarketDataSnapshots,
     source: Arc<LocalGenerationSource>,
     pub(crate) generation: DatasetGeneration,
     pub(crate) validation: ValidationStudies,
@@ -124,7 +120,7 @@ pub struct LibraryComponent {
 /// Dataset directory are shared; the complete Local Research state is not.
 pub(crate) struct LocalGenerationSource {
     database: Arc<Mutex<Connection>>,
-    snapshots: Arc<SnapshotStore>,
+    snapshots: MarketDataSnapshots,
     root: PathBuf,
 }
 
@@ -159,21 +155,7 @@ impl GenerationSource for LocalGenerationSource {
         user_id: &str,
         snapshot_id: &str,
     ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
-        validate_user(user_id)?;
-        let database = self.database.lock().map_err(string)?;
-        let json: String = database
-            .query_row(
-                "SELECT s.metadata_json FROM market_data_snapshots s
-             JOIN market_data_snapshot_access a USING(snapshot_id)
-             WHERE a.user_id = ?1 AND s.snapshot_id = ?2",
-                params![user_id, snapshot_id],
-                |row| row.get(0),
-            )
-            .map_err(|_| "Market Data Snapshot is not available to this User".to_owned())?;
-        drop(database);
-        let snapshot: MarketDataSnapshot = serde_json::from_str(&json).map_err(string)?;
-        let bars = self.snapshots.read(&snapshot).map_err(string)?;
-        Ok((snapshot, bars))
+        self.snapshots.snapshot_for_user(user_id, snapshot_id)
     }
 
     fn runtime_component(&self, package: &ComponentPackage) -> Result<PathBuf, String> {
@@ -259,7 +241,7 @@ impl LocalResearchState {
     pub fn open(app_data: &Path) -> Result<Arc<Self>, String> {
         let root = app_data.join("m3");
         fs::create_dir_all(root.join("components")).map_err(string)?;
-        let snapshots = SnapshotStore::new(root.join("market-data")).map_err(string)?;
+        let snapshot_store = SnapshotStore::new(root.join("market-data")).map_err(string)?;
         let database = Connection::open(app_data.join("adaq.db")).map_err(string)?;
         database
             .execute_batch(
@@ -280,22 +262,6 @@ impl LocalResearchState {
                 archive_sha256 TEXT NOT NULL,
                 PRIMARY KEY(user_id, archive_sha256),
                 FOREIGN KEY(archive_sha256) REFERENCES component_content(archive_sha256)
-             );
-             CREATE TABLE IF NOT EXISTS market_data_snapshots (
-                snapshot_id TEXT PRIMARY KEY,
-                src TEXT NOT NULL,
-                code TEXT NOT NULL,
-                interval TEXT NOT NULL,
-                start_time_ms INTEGER NOT NULL,
-                end_time_ms INTEGER NOT NULL,
-                bar_count INTEGER NOT NULL,
-                metadata_json TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS market_data_snapshot_access (
-                user_id TEXT NOT NULL,
-                snapshot_id TEXT NOT NULL,
-                PRIMARY KEY(user_id, snapshot_id),
-                FOREIGN KEY(snapshot_id) REFERENCES market_data_snapshots(snapshot_id)
              );
              CREATE TABLE IF NOT EXISTS backtest_runs (
                 run_id TEXT PRIMARY KEY,
@@ -342,7 +308,11 @@ impl LocalResearchState {
             )
             .map_err(string)?;
         let database = Arc::new(Mutex::new(database));
-        let snapshots = Arc::new(snapshots);
+        let snapshot_source = Arc::new(LocalSnapshotSource::new(
+            database.clone(),
+            Arc::new(snapshot_store),
+        ));
+        let snapshots = MarketDataSnapshots::open(snapshot_source)?;
         let source = Arc::new(LocalGenerationSource {
             database: database.clone(),
             snapshots: snapshots.clone(),
@@ -361,9 +331,8 @@ impl LocalResearchState {
                 .expect("validation source state binding is uncontended") = weak.clone();
             Self {
                 root,
-                snapshots,
                 database,
-                downloads: Mutex::new(HashMap::new()),
+                snapshots,
                 source,
                 generation,
                 validation,
@@ -375,6 +344,9 @@ impl LocalResearchState {
         validate_user(user_id)?;
         let generation_attempt_count = self.generation.list(user_id)?.len() as u64;
         let validation = self.validation.summary_for_user(user_id)?;
+        // Query the Snapshot module before locking the database mutex so the
+        // hook never re-enters a held lock.
+        let snapshots = self.snapshots.summary_for_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
         let count = |sql: &str| -> Result<u64, String> {
             database
@@ -388,34 +360,21 @@ impl LocalResearchState {
 			 JOIN component_access a USING(archive_sha256) WHERE a.user_id = ?1",
             user_id,
         )?;
-        let snapshot_json = strings(
-            &database,
-            "SELECT s.metadata_json FROM market_data_snapshots s
-			 JOIN market_data_snapshot_access a USING(snapshot_id) WHERE a.user_id = ?1",
-            user_id,
-        )?;
         let database_path = self.root.parent().unwrap_or(&self.root).join("adaq.db");
         let data_directory = database_path
             .parent()
             .unwrap_or(&self.root)
             .to_string_lossy()
             .into_owned();
-        let market_paths = snapshot_json
-            .iter()
-            .filter_map(|json| serde_json::from_str::<MarketDataSnapshot>(json).ok())
-            .map(|snapshot| snapshot.parquet_path)
-            .collect::<Vec<_>>();
 
         Ok(LocalDataSummary {
             data_directory,
             database_bytes: file_bytes(&database_path),
             component_bytes: component_paths.iter().map(file_bytes).sum(),
-            market_data_bytes: market_paths.iter().map(file_bytes).sum(),
+            market_data_bytes: snapshots.market_data_bytes,
             watchlist_count: count("SELECT COUNT(*) FROM watchlist_items WHERE user_id = ?1")?,
             component_count: count("SELECT COUNT(*) FROM component_access WHERE user_id = ?1")?,
-            snapshot_count: count(
-                "SELECT COUNT(*) FROM market_data_snapshot_access WHERE user_id = ?1",
-            )?,
+            snapshot_count: snapshots.snapshot_count,
             run_count: count("SELECT COUNT(*) FROM backtest_runs WHERE user_id = ?1")?,
             protocol_count: validation.protocol_count,
             report_count: validation.report_count,
@@ -449,7 +408,9 @@ impl LocalResearchState {
             None
         };
         // Query the Validation module before locking the database mutex so
-        // the hook never re-enters a held lock.
+        // the hook never re-enters a held lock. The Snapshot orphan query
+        // runs inside the reset flows under the held lock instead, so it
+        // stays serialized with Snapshot persistence.
         let validation_report_count = if matches!(kind, LocalDataResetKind::MarketData) {
             self.validation.summary_for_user(user_id)?.report_count
         } else {
@@ -459,15 +420,20 @@ impl LocalResearchState {
         match kind {
             LocalDataResetKind::Watchlist => reset_watchlist(&mut database, user_id),
             LocalDataResetKind::Components => reset_components(&mut database, user_id, &self.root),
-            LocalDataResetKind::MarketData => {
-                reset_market_data(&mut database, user_id, &self.root, validation_report_count)
-            }
+            LocalDataResetKind::MarketData => reset_market_data(
+                &mut database,
+                user_id,
+                &self.root,
+                validation_report_count,
+                &self.snapshots,
+            ),
             LocalDataResetKind::All => reset_all(
                 &mut database,
                 user_id,
                 &self.root,
                 _reset_block.as_ref().unwrap(),
                 &self.validation,
+                &self.snapshots,
             ),
         }
     }
@@ -868,123 +834,20 @@ impl LocalResearchState {
             .map_err(string)
     }
 
-    pub fn persist_snapshot(
-        &self,
-        series: &adaq_data_core::BarSeries,
-    ) -> Result<MarketDataSnapshot, String> {
-        let snapshot = self.snapshots.persist(series).map_err(string)?;
-        let metadata = serde_json::to_string(&snapshot).map_err(string)?;
-        self.database.lock().map_err(string)?.execute(
-            "INSERT OR IGNORE INTO market_data_snapshots
-             (snapshot_id, src, code, interval, start_time_ms, end_time_ms, bar_count, metadata_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![snapshot.snapshot_id, snapshot.src, snapshot.code,
-                serde_json::to_string(&snapshot.interval).map_err(string)?, snapshot.start_time_ms,
-                snapshot.end_time_ms, snapshot.bar_count as i64, metadata],
-        ).map_err(string)?;
-        Ok(snapshot)
-    }
-
-    fn persist_snapshot_for_user(
+    pub(crate) fn persist_snapshot_for_user(
         &self,
         user_id: &str,
         series: &adaq_data_core::BarSeries,
     ) -> Result<MarketDataSnapshot, String> {
-        validate_user(user_id)?;
-        let snapshot = self.persist_snapshot(series)?;
-        self.database.lock().map_err(string)?.execute(
-            "INSERT OR IGNORE INTO market_data_snapshot_access (user_id, snapshot_id) VALUES (?1, ?2)",
-            params![user_id, snapshot.snapshot_id],
-        ).map_err(string)?;
-        Ok(snapshot)
+        self.snapshots.persist_for_user(user_id, series)
     }
 
-    fn list_snapshots(&self, request: &SnapshotListRequest) -> Result<SnapshotPage, String> {
-        validate_user(&request.user_id)?;
-        if request.src.trim().is_empty() || request.code.trim().is_empty() || request.page == 0 {
-            return Err("Snapshot coverage request is invalid".into());
-        }
-        let interval = serde_json::to_string(&request.interval).map_err(string)?;
-        let database = self.database.lock().map_err(string)?;
-        let total = database
-            .query_row(
-                "SELECT COUNT(*) FROM market_data_snapshots s
-                 JOIN market_data_snapshot_access a USING(snapshot_id)
-                 WHERE a.user_id = ?1 AND s.src = ?2 AND s.code = ?3 AND s.interval = ?4",
-                params![request.user_id, request.src, request.code, interval],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(string)?
-            .try_into()
-            .map_err(|_| "Snapshot count is invalid")?;
-        let offset = request
-            .page
-            .checked_sub(1)
-            .and_then(|value| value.checked_mul(SNAPSHOT_PAGE_SIZE))
-            .ok_or_else(|| "Snapshot page is too large".to_owned())?;
-        let mut statement = database
-            .prepare(
-                "SELECT s.metadata_json FROM market_data_snapshots s
-             JOIN market_data_snapshot_access a USING(snapshot_id)
-             WHERE a.user_id = ?1 AND s.src = ?2 AND s.code = ?3 AND s.interval = ?4
-             ORDER BY s.start_time_ms, s.snapshot_id LIMIT ?5 OFFSET ?6",
-            )
-            .map_err(string)?;
-        let items = statement
-            .query_map(
-                params![
-                    request.user_id,
-                    request.src,
-                    request.code,
-                    interval,
-                    SNAPSHOT_PAGE_SIZE as i64,
-                    offset as i64
-                ],
-                |row| {
-                    serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            0,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })
-                },
-            )
-            .map_err(string)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(string)?;
-        Ok(SnapshotPage {
-            items,
-            total,
-            page: request.page,
-            page_size: SNAPSHOT_PAGE_SIZE,
-        })
-    }
-
-    fn list_readable_snapshots(&self, user_id: &str) -> Result<Vec<MarketDataSnapshot>, String> {
-        validate_user(user_id)?;
-        let database = self.database.lock().map_err(string)?;
-        let mut statement = database
-            .prepare(
-                "SELECT s.metadata_json FROM market_data_snapshots s
-                 JOIN market_data_snapshot_access a USING(snapshot_id)
-                 WHERE a.user_id = ?1
-                 ORDER BY s.code, s.interval, s.start_time_ms, s.snapshot_id",
-            )
-            .map_err(string)?;
-        statement
-            .query_map([user_id], |row| {
-                serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })
-            })
-            .map_err(string)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(string)
+    pub(crate) fn grant_snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(), String> {
+        self.snapshots.grant_for_user(user_id, snapshot_id)
     }
 
     pub(crate) fn package_for_user(
@@ -1024,7 +887,7 @@ impl LocalResearchState {
         user_id: &str,
         snapshot_id: &str,
     ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
-        self.source.snapshot_for_user(user_id, snapshot_id)
+        self.snapshots.snapshot_for_user(user_id, snapshot_id)
     }
 
     pub(crate) fn runtime_component(&self, package: &ComponentPackage) -> Result<PathBuf, String> {
@@ -1279,54 +1142,6 @@ pub struct ComponentArchiveRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SnapshotCreateRequest {
-    pub user_id: String,
-    pub src: String,
-    pub code: String,
-    pub interval: BarInterval,
-    pub start_time_ms: i64,
-    pub end_time_ms: i64,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SnapshotDownloadRequest {
-    pub user_id: String,
-    pub task_id: String,
-    pub src: String,
-    pub code: String,
-    pub interval: BarInterval,
-    pub start_time_ms: i64,
-    pub end_time_ms: i64,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SnapshotListRequest {
-    pub user_id: String,
-    pub src: String,
-    pub code: String,
-    pub interval: BarInterval,
-    pub page: usize,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SnapshotPage {
-    pub items: Vec<MarketDataSnapshot>,
-    pub total: usize,
-    pub page: usize,
-    pub page_size: usize,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReadableSnapshotListRequest {
-    pub user_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct BacktestListRequest {
     pub user_id: String,
     #[serde(default)]
@@ -1334,26 +1149,6 @@ pub struct BacktestListRequest {
     #[serde(default)]
     pub code: Option<String>,
     pub page: usize,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase", tag = "event", content = "data")]
-pub enum SnapshotDownloadEvent {
-    Progress {
-        downloaded_bars: usize,
-        oldest_time_ms: i64,
-    },
-    Completed {
-        snapshot_id: String,
-        bar_count: usize,
-    },
-    Cancelled,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskRequest {
-    pub task_id: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1778,140 +1573,6 @@ pub fn component_delete(
     state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
     state.delete_component(&request.user_id, &request.archive_sha256)
-}
-
-#[tauri::command]
-pub async fn snapshot_create(
-    request: SnapshotCreateRequest,
-    client: tauri::State<'_, OkxClient>,
-    state: tauri::State<'_, Arc<LocalResearchState>>,
-) -> Result<MarketDataSnapshot, String> {
-    validate_snapshot_request(
-        &request.user_id,
-        &request.src,
-        &request.code,
-        request.start_time_ms,
-        request.end_time_ms,
-    )?;
-    if request.src != "okx" {
-        return Err("M3 supports OKX Spot only".into());
-    }
-    let series = client
-        .get_bar_series_range(
-            &request.code,
-            request.interval,
-            HistoricalBarRange {
-                start_time_ms: request.start_time_ms,
-                end_time_ms: request.end_time_ms,
-            },
-        )
-        .await
-        .map_err(string)?;
-    state.persist_snapshot_for_user(&request.user_id, &series)
-}
-
-#[tauri::command]
-pub async fn snapshot_download(
-    request: SnapshotDownloadRequest,
-    on_event: tauri::ipc::Channel<SnapshotDownloadEvent>,
-    client: tauri::State<'_, OkxClient>,
-    state: tauri::State<'_, Arc<LocalResearchState>>,
-) -> Result<MarketDataSnapshot, String> {
-    validate_snapshot_request(
-        &request.user_id,
-        &request.src,
-        &request.code,
-        request.start_time_ms,
-        request.end_time_ms,
-    )?;
-    if request.src != "okx" || request.task_id.trim().is_empty() {
-        return Err("Snapshot download request is invalid".into());
-    }
-    let cancelled = Arc::new(AtomicBool::new(false));
-    {
-        let mut downloads = state.downloads.lock().map_err(string)?;
-        if downloads.contains_key(&request.task_id) {
-            return Err("Snapshot download is already in progress".into());
-        }
-        downloads.insert(request.task_id.clone(), cancelled.clone());
-    }
-    let result = client
-        .get_bar_series_range_with_progress(
-            &request.code,
-            request.interval,
-            HistoricalBarRange {
-                start_time_ms: request.start_time_ms,
-                end_time_ms: request.end_time_ms,
-            },
-            |downloaded_bars, oldest_time_ms| {
-                let active = !cancelled.load(Ordering::Relaxed);
-                if active {
-                    let _ = on_event.send(SnapshotDownloadEvent::Progress {
-                        downloaded_bars,
-                        oldest_time_ms,
-                    });
-                }
-                active
-            },
-        )
-        .await;
-    state
-        .downloads
-        .lock()
-        .map_err(string)?
-        .remove(&request.task_id);
-    match result {
-        Ok(series) => {
-            let snapshot = state.persist_snapshot_for_user(&request.user_id, &series)?;
-            let _ = on_event.send(SnapshotDownloadEvent::Completed {
-                snapshot_id: snapshot.snapshot_id.clone(),
-                bar_count: snapshot.bar_count,
-            });
-            Ok(snapshot)
-        }
-        Err(error) if error.code == "cancelled" => {
-            let _ = on_event.send(SnapshotDownloadEvent::Cancelled);
-            Err(error.to_string())
-        }
-        Err(error) => Err(error.to_string()),
-    }
-}
-
-#[tauri::command]
-pub async fn snapshot_list(
-    request: SnapshotListRequest,
-    state: tauri::State<'_, Arc<LocalResearchState>>,
-) -> Result<SnapshotPage, String> {
-    state.list_snapshots(&request)
-}
-
-#[tauri::command]
-pub async fn snapshot_list_readable(
-    request: ReadableSnapshotListRequest,
-    app: tauri::AppHandle,
-) -> Result<Vec<MarketDataSnapshot>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        app.state::<Arc<LocalResearchState>>()
-            .list_readable_snapshots(&request.user_id)
-    })
-    .await
-    .map_err(string)?
-}
-
-#[tauri::command]
-pub fn snapshot_cancel(
-    request: TaskRequest,
-    state: tauri::State<'_, Arc<LocalResearchState>>,
-) -> Result<(), String> {
-    if let Some(cancelled) = state
-        .downloads
-        .lock()
-        .map_err(string)?
-        .get(&request.task_id)
-    {
-        cancelled.store(true, Ordering::Relaxed);
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -2796,21 +2457,6 @@ fn aggregate_equity(
         .collect()
 }
 
-fn validate_snapshot_request(
-    user_id: &str,
-    src: &str,
-    code: &str,
-    start_time_ms: i64,
-    end_time_ms: i64,
-) -> Result<(), String> {
-    validate_user(user_id)?;
-    if src.trim().is_empty() || code.trim().is_empty() || start_time_ms >= end_time_ms {
-        Err("Snapshot time range is invalid".into())
-    } else {
-        Ok(())
-    }
-}
-
 fn reset_watchlist(database: &mut Connection, user_id: &str) -> Result<(), String> {
     let transaction = database.transaction().map_err(string)?;
     transaction
@@ -2897,6 +2543,7 @@ fn reset_market_data(
     user_id: &str,
     root: &Path,
     validation_report_count: u64,
+    snapshots: &MarketDataSnapshots,
 ) -> Result<(), String> {
     let blocking: i64 = database
         .query_row(
@@ -2912,38 +2559,10 @@ fn reset_market_data(
             "Market Data reset is blocked by {blocking} immutable research record(s)"
         ));
     }
-    let metadata = strings(
-        database,
-        "SELECT s.metadata_json FROM market_data_snapshots s
-         JOIN market_data_snapshot_access a USING(snapshot_id)
-         WHERE a.user_id = ?1
-         AND NOT EXISTS(SELECT 1 FROM market_data_snapshot_access other
-             WHERE other.snapshot_id = s.snapshot_id AND other.user_id <> ?1)",
-        user_id,
-    )?;
-    let paths = metadata
-        .iter()
-        .map(|json| serde_json::from_str::<MarketDataSnapshot>(json).map_err(string))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .map(|snapshot| snapshot.parquet_path);
-    let staged = stage_files(paths, root)?;
+    let staged = stage_files(snapshots.orphaned_parquet_paths(database, user_id)?, root)?;
     let result = (|| {
         let transaction = database.transaction().map_err(string)?;
-        transaction
-            .execute(
-                "DELETE FROM market_data_snapshot_access WHERE user_id = ?1",
-                [user_id],
-            )
-            .map_err(string)?;
-        transaction
-            .execute(
-                "DELETE FROM market_data_snapshots
-                 WHERE NOT EXISTS(SELECT 1 FROM market_data_snapshot_access a
-                     WHERE a.snapshot_id = market_data_snapshots.snapshot_id)",
-                [],
-            )
-            .map_err(string)?;
+        snapshots.reset_for_user(&transaction, user_id)?;
         transaction.commit().map_err(string)
     })();
     finish_staged_files(staged, result)
@@ -2955,6 +2574,7 @@ fn reset_all(
     root: &Path,
     reset_block: &crate::dataset_generation::UserResetBlock<'_>,
     validation: &ValidationStudies,
+    snapshots: &MarketDataSnapshots,
 ) -> Result<(), String> {
     let component_paths = strings(
         database,
@@ -2968,30 +2588,17 @@ fn reset_all(
              WHERE rc.archive_sha256 = c.archive_sha256 AND r.user_id <> ?1)",
         user_id,
     )?;
-    let snapshot_metadata = strings(
-        database,
-        "SELECT s.metadata_json FROM market_data_snapshots s
-         JOIN market_data_snapshot_access a USING(snapshot_id)
-         WHERE a.user_id = ?1
-         AND NOT EXISTS(SELECT 1 FROM market_data_snapshot_access other
-             WHERE other.snapshot_id = s.snapshot_id AND other.user_id <> ?1)",
-        user_id,
-    )?;
-    let paths = component_paths.into_iter().map(PathBuf::from).chain(
-        snapshot_metadata
-            .iter()
-            .map(|json| serde_json::from_str::<MarketDataSnapshot>(json).map_err(string))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(|snapshot| snapshot.parquet_path),
-    );
     let dataset_paths = strings(
         database,
         "SELECT c.parquet_path FROM signal_dataset_content c JOIN signal_dataset_access a USING(dataset_id) WHERE a.user_id = ?1 AND NOT EXISTS(SELECT 1 FROM signal_dataset_access other WHERE other.dataset_id = c.dataset_id AND other.user_id <> ?1)",
         user_id,
     )?;
     let staged = stage_files(
-        paths.chain(dataset_paths.into_iter().map(PathBuf::from)),
+        component_paths
+            .into_iter()
+            .map(PathBuf::from)
+            .chain(snapshots.orphaned_parquet_paths(database, user_id)?)
+            .chain(dataset_paths.into_iter().map(PathBuf::from)),
         root,
     )?;
     let result = (|| {
@@ -3018,12 +2625,7 @@ fn reset_all(
         transaction
             .execute("DELETE FROM component_access WHERE user_id = ?1", [user_id])
             .map_err(string)?;
-        transaction
-            .execute(
-                "DELETE FROM market_data_snapshot_access WHERE user_id = ?1",
-                [user_id],
-            )
-            .map_err(string)?;
+        snapshots.reset_for_user(&transaction, user_id)?;
         transaction
             .execute(
                 "DELETE FROM component_content
@@ -3031,14 +2633,6 @@ fn reset_all(
                      WHERE a.archive_sha256 = component_content.archive_sha256)
                  AND NOT EXISTS(SELECT 1 FROM backtest_run_components rc
                      WHERE rc.archive_sha256 = component_content.archive_sha256)",
-                [],
-            )
-            .map_err(string)?;
-        transaction
-            .execute(
-                "DELETE FROM market_data_snapshots
-                 WHERE NOT EXISTS(SELECT 1 FROM market_data_snapshot_access a
-                     WHERE a.snapshot_id = market_data_snapshots.snapshot_id)",
                 [],
             )
             .map_err(string)?;
@@ -3976,152 +3570,6 @@ mod tests {
                 .provenance
                 .is_none()
         );
-
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn snapshots_are_user_scoped_and_listed_by_matching_coverage() {
-        let root = std::env::temp_dir().join(format!(
-            "adaq-snapshot-access-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let state = LocalResearchState::open(&root).unwrap();
-        let series = |open_time_ms| adaq_data_core::BarSeries {
-            src: "okx".into(),
-            code: "BTC-USDT".into(),
-            interval: BarInterval::OneHour,
-            bars: vec![OhlcvBar {
-                open_time_ms,
-                open: 1.into(),
-                high: 1.into(),
-                low: 1.into(),
-                close: 1.into(),
-                base_volume: 1.into(),
-                quote_volume: 1.into(),
-            }],
-            gaps: vec![],
-        };
-        let later = state
-            .persist_snapshot_for_user("alice", &series(3_600_000))
-            .unwrap();
-        let earlier = state
-            .persist_snapshot_for_user("alice", &series(0))
-            .unwrap();
-        let mut expected = vec![earlier.snapshot_id.clone(), later.snapshot_id.clone()];
-        for hour in 2..12 {
-            expected.push(
-                state
-                    .persist_snapshot_for_user("alice", &series(hour * 3_600_000))
-                    .unwrap()
-                    .snapshot_id,
-            );
-        }
-        state
-            .persist_snapshot_for_user("bob", &series(12 * 3_600_000))
-            .unwrap();
-
-        let listed = state
-            .list_snapshots(&SnapshotListRequest {
-                user_id: "alice".into(),
-                src: "okx".into(),
-                code: "BTC-USDT".into(),
-                interval: BarInterval::OneHour,
-                page: 1,
-            })
-            .unwrap();
-        assert_eq!(
-            listed
-                .items
-                .iter()
-                .map(|snapshot| &snapshot.snapshot_id)
-                .collect::<Vec<_>>(),
-            expected[..10].iter().collect::<Vec<_>>()
-        );
-        assert_eq!(listed.total, 12);
-        let second = state
-            .list_snapshots(&SnapshotListRequest {
-                user_id: "alice".into(),
-                src: "okx".into(),
-                code: "BTC-USDT".into(),
-                interval: BarInterval::OneHour,
-                page: 2,
-            })
-            .unwrap();
-        assert_eq!(second.items.len(), 2);
-        assert_eq!(
-            second
-                .items
-                .iter()
-                .map(|snapshot| &snapshot.snapshot_id)
-                .collect::<Vec<_>>(),
-            expected[10..].iter().collect::<Vec<_>>()
-        );
-        assert!(
-            state
-                .snapshot_for_user("bob", &earlier.snapshot_id)
-                .is_err()
-        );
-        assert_eq!(
-            validate_snapshot_request("alice", "okx", "BTC-USDT", 1, 1).unwrap_err(),
-            "Snapshot time range is invalid"
-        );
-
-        drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn readable_snapshots_are_user_scoped_and_ordered_for_cross_market_selection() {
-        let root = std::env::temp_dir().join(format!(
-            "adaq-cross-market-snapshots-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let state = LocalResearchState::open(&root).unwrap();
-        let series = |code: &str, open_time_ms| adaq_data_core::BarSeries {
-            src: "okx".into(),
-            code: code.into(),
-            interval: BarInterval::OneHour,
-            bars: vec![OhlcvBar {
-                open_time_ms,
-                open: 1.into(),
-                high: 1.into(),
-                low: 1.into(),
-                close: 1.into(),
-                base_volume: 1.into(),
-                quote_volume: 1.into(),
-            }],
-            gaps: vec![],
-        };
-        state
-            .persist_snapshot_for_user("alice", &series("ETH-USDT", 3_600_000))
-            .unwrap();
-        state
-            .persist_snapshot_for_user("alice", &series("BTC-USDT", 0))
-            .unwrap();
-        state
-            .persist_snapshot_for_user("bob", &series("SOL-USDT", 0))
-            .unwrap();
-
-        assert_eq!(
-            state
-                .list_readable_snapshots("alice")
-                .unwrap()
-                .iter()
-                .map(|snapshot| snapshot.code.as_str())
-                .collect::<Vec<_>>(),
-            vec!["BTC-USDT", "ETH-USDT"]
-        );
-        assert!(state.list_readable_snapshots(" ").is_err());
 
         drop(state);
         fs::remove_dir_all(root).unwrap();
