@@ -16,6 +16,7 @@ tony/
 .env.*
 .pnpm-store/
 .npm-cache/
+supabase/
 
 # Editor directories and files
 .vscode/*
