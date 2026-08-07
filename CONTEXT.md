@@ -214,12 +214,16 @@ _Avoid_: Strategy kind, manifest architecture flag, compatibility mode
 An immutable installable bundle containing a Component binary and its authoritative Component Meta. Validation Reports and trust records remain separate and reference the exact package hash.
 _Avoid_: Bare WASM file, plugin DLL
 
+**Component Library**:
+A User's device-resident collection of imported Component Packages together with their Component Entitlement records; it is where Component deletion locks and compatibility lookups are resolved.
+_Avoid_: Component store, plugin folder
+
 **Component Meta**:
 Stable information describing a Component's identity, versions, parameters, inputs, outputs, dependencies, warmup, and licensing.
 _Avoid_: Backtest result, performance claim
 
 **Validation Report**:
-Historical evidence associated with an exact Component Package hash, data snapshot, configuration, period, and validation method; it does not guarantee future performance.
+Historical evidence associated with an exact Component Package hash, data snapshot, configuration, period, and validation method; it does not guarantee future performance. Walk-forward and cross-market validation studies record their study reports under this same term while binding them to a Validation Protocol and Backtest Run evidence rather than to a Component Package hash.
 _Avoid_: Component Meta, profitability guarantee
 
 **Forecast Evaluation Report**:

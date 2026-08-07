@@ -33,6 +33,8 @@ tony/
 .cursor/
 .claude/
 .agent/
+.scratch/
+.qoder/
 
 # Generated Component Model fixture outputs.
 src-tauri/fixtures/*/src/bindings.rs
