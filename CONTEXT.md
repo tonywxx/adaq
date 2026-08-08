@@ -348,6 +348,14 @@ _Avoid_: Undocumented custom value, Built-in Prediction Kind
 An immutable execution record binding a Market Data Snapshot, Component Lock, Strategy parameters, Feature Plan, Execution Profile, engine version, and seed.
 _Avoid_: Editable backtest session
 
+**Backtest Run Draft**:
+The mutable, user-edited configuration from which ADAQ validates and prepares a Backtest Run. It may be restored from immutable Run provenance but is never research evidence and has no immutable identity.
+_Avoid_: Backtest Run, editable Run, pending Run
+
+**Backtest Preflight**:
+A transient host-derived validation and preparation result bound to one exact revision of a Backtest Run Draft. Any Draft change invalidates it; it is neither persisted nor treated as research evidence.
+_Avoid_: Backtest Run, saved Draft, validation evidence
+
 **Target Exposure**:
 The desired signed notional fraction of a Strategy Instance's current Strategy Equity: zero is flat, positive is long, and negative is short.
 _Avoid_: Signal strength, order quantity, confidence score

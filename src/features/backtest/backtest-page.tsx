@@ -11,10 +11,8 @@ import {
 	PaginationPrevious,
 } from "@/components/ui/pagination";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-	Workspace,
-	type LibraryComponent,
-} from "@/features/components/components-page";
+import { Workspace } from "@/features/components/components-page";
+import type { LibraryComponent } from "@/features/components/component-library";
 import { MetricInfo, ResearchMetric } from "@/features/research/metric-info";
 import {
 	BAR_INTERVALS,
@@ -33,14 +31,18 @@ import {
 	snapshotStatus,
 	reuseSnapshot,
 } from "./backtest-data";
+import { decisionSignalEvidence } from "./backtest-evidence";
 import {
-	copyRunConfiguration,
-	decisionSignalEvidence,
+	createBacktestDraft,
 	defaultExecutionProfile,
-	matchingFactors,
+	transitionBacktestDraft,
+	type BacktestDraftSession,
+	type BacktestPreflight,
+	type DraftCommand,
+	type DraftError,
 	type NormalizedRunConfiguration,
-	runGate,
-} from "./guided-backtest";
+	type SignalCandidate,
+} from "./backtest-run-draft";
 import { formatDecimal } from "./format-decimal";
 
 type Snapshot = {
@@ -162,71 +164,52 @@ type ExecutionPage = {
 	totalOrders: number;
 	totalFills: number;
 };
-type BacktestPreflight = {
-	runId: string;
-	reusesExistingRun: boolean;
-	snapshot: Snapshot;
-	normalizedRequest: Record<string, unknown>;
-	featurePlan: Record<string, unknown>;
-	componentLock: Array<Record<string, unknown>>;
-};
-type SignalCandidate = {
-	slot: string;
-	datasetId: string;
-	signalName: string;
-	evidenceState: string;
-};
 const EXECUTION_PAGE_SIZE = 100;
 const RUN_HISTORY_PAGE_SIZE = 10;
 const SNAPSHOT_PAGE_SIZE = 10;
+
+function formatDraftError(error: DraftError) {
+	if (error.kind === "incomplete-draft")
+		return `Complete the required Backtest fields: ${error.fields.join(", ")}.`;
+	if (error.kind === "invalid-value")
+		return `The ${error.field} value is invalid (${error.reason}).`;
+	if (error.kind === "incompatible-selection")
+		return `The selected ${error.field} is no longer compatible.`;
+	if (error.kind === "incomplete-provenance")
+		return "This legacy Run has incomplete provenance and cannot be copied safely.";
+	return "Validate the current Draft before running the Backtest.";
+}
 
 export function BacktestPage() {
 	const userId = useMarketSessionStore((state) => state.userId);
 	const instrument = useMarketSessionStore((state) => state.activeInstrument);
 	const watchlist = useMarketSessionStore((state) => state.watchlist);
 	const [components, setComponents] = useState<LibraryComponent[]>([]);
-	const [factorSelections, setFactorSelections] = useState<
-		Record<string, string>
-	>({});
-	const [signalSelections, setSignalSelections] = useState<
-		Record<string, string>
-	>({});
 	const [compatibleSignals, setCompatibleSignals] = useState<SignalCandidate[]>(
 		[],
 	);
-	const [strategy, setStrategy] = useState("");
-	const [factorParameters, setFactorParameters] = useState<
-		Record<string, Record<string, string>>
-	>({});
-	const [strategyParameters, setStrategyParameters] = useState<
-		Record<string, string>
-	>({});
-	const [stage, setStage] = useState<
-		"data" | "strategy" | "execution" | "results"
-	>("data");
-	const [initialQuoteAllocation, setInitialQuoteAllocation] = useState("10000");
-	const [executionProfile, setExecutionProfile] = useState(
-		defaultExecutionProfile,
-	);
-	const [seed, setSeed] = useState("0");
+	const [draftSession, setDraftSession] = useState<BacktestDraftSession>(() => {
+		const created = createBacktestDraft({
+			kind: "empty",
+			selectedInstrumentKey: instrumentKey(instrument),
+			interval: "1h",
+			start: new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10),
+			end: new Date().toISOString().slice(0, 10),
+			defaultExecutionProfile,
+			defaultInitialQuoteAllocation: "10000",
+			defaultSeed: "0",
+		});
+		if (!created.ok) throw new Error(created.error.kind);
+		return created.value;
+	});
+	const draftSessionRef = useRef(draftSession);
+	draftSessionRef.current = draftSession;
+	const [showResults, setShowResults] = useState(false);
 	const [running, setRunning] = useState(false);
 	const [compatibleFactors, setCompatibleFactors] = useState<
 		Record<string, string[]>
 	>({});
-	const [preflight, setPreflight] = useState<BacktestPreflight>();
-	const [start, setStart] = useState(() =>
-		new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10),
-	);
-	const [end, setEnd] = useState(() => new Date().toISOString().slice(0, 10));
-	const [selectedInstrumentKey, setSelectedInstrumentKey] = useState(() =>
-		instrumentKey(instrument),
-	);
-	const [interval, setInterval] = useState<BarInterval>("1h");
-	const [snapshot, setSnapshot] = useState<Snapshot>();
-	const [runWindow, setRunWindow] = useState<{
-		startTimeMs: number;
-		endTimeMs: number;
-	}>();
+	const [snapshotInfo, setSnapshotInfo] = useState<Snapshot>();
 	const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
 	const [snapshotsPage, setSnapshotsPage] = useState(1);
 	const [snapshotsTotal, setSnapshotsTotal] = useState(0);
@@ -253,14 +236,56 @@ export function BacktestPage() {
 	const instruments = useMemo(
 		() => [
 			...new Map(
-				[...watchlist, instrument].map((item) => [instrumentKey(item), item]),
+				[
+					...watchlist,
+					instrument,
+					...(snapshotInfo
+						? [{ src: snapshotInfo.src, code: snapshotInfo.code }]
+						: []),
+				].map((item) => [instrumentKey(item), item]),
 			).values(),
 		],
-		[instrument, watchlist],
+		[instrument, snapshotInfo, watchlist],
 	);
+	const draft = draftSession.draft;
+	const stage: "data" | "strategy" | "execution" | "results" = showResults
+		? "results"
+		: draftSession.stage;
+	const selectedInstrumentKey = draft.selectedInstrumentKey;
+	const interval = draft.interval;
+	const start = draft.start;
+	const end = draft.end;
+	const strategy = draft.strategy?.archiveSha256 ?? "";
+	const factorSelections = draft.factorSelections;
+	const factorParameters = draft.factorParameters;
+	const strategyParameters = draft.strategyParameters;
+	const signalSelections = Object.fromEntries(
+		Object.entries(draft.signalSelections).map(([slot, signal]) => [
+			slot,
+			`${signal.datasetId}:${signal.signalName}`,
+		]),
+	);
+	const runWindow = draft.runWindow;
+	const initialQuoteAllocation = draft.initialQuoteAllocation;
+	const executionProfile = draft.executionProfile;
+	const seed = draft.seed;
+	const snapshot = draft.snapshot ? snapshotInfo : undefined;
+	const preflight =
+		draftSession.preflight.status === "ready"
+			? draftSession.preflight.value
+			: undefined;
 	const selectedInstrument =
 		instruments.find((item) => instrumentKey(item) === selectedInstrumentKey) ??
 		instrument;
+	const dispatchDraft = (command: DraftCommand) => {
+		const result = transitionBacktestDraft(draftSession, command);
+		if (!result.ok) {
+			setMessage(formatDraftError(result.error));
+			return undefined;
+		}
+		setDraftSession(result.value.session);
+		return result.value;
+	};
 	const refreshHistory = useCallback(
 		async (page: number, isActive: () => boolean = () => true) => {
 			if (!userId) return;
@@ -358,84 +383,123 @@ export function BacktestPage() {
 			),
 		[components],
 	);
-	const selectedStrategy = strategies.find(
-		(item) => item.archiveSha256 === strategy,
-	);
+	const selectedStrategy =
+		strategies.find((item) => item.archiveSha256 === strategy) ?? draft.strategy;
 	const signalSlots =
 		selectedStrategy?.featureSlots.filter(
 			(slot) => slot.source.kind === "signal",
 		) ?? [];
 	useEffect(() => {
 		setCompatibleFactors({});
-		setPreflight(undefined);
 		if (!userId || !strategy) return;
+		let active = true;
 		void invoke<Record<string, string[]>>("backtest_compatible_factors", {
 			request: { userId, strategyArchiveSha256: strategy },
 		})
-			.then(setCompatibleFactors)
-			.catch((error) => setMessage(String(error)));
+			.then((compatibleHashes) => {
+				if (!active) return;
+				const result = transitionBacktestDraft(draftSessionRef.current, {
+					type: "reconcile-factor-compatibility",
+					strategyArchiveSha256: strategy,
+					compatibleHashes,
+				});
+				if (!result.ok || result.value.ignored) return;
+				setCompatibleFactors(compatibleHashes);
+				setDraftSession(result.value.session);
+			})
+			.catch((error) => active && setMessage(String(error)));
+		return () => {
+			active = false;
+		};
 	}, [strategy, userId]);
 	useEffect(() => {
 		setCompatibleSignals([]);
-		setPreflight(undefined);
-		if (!userId || !strategy || !snapshot) return;
+		const snapshotId = draft.snapshot?.snapshotId;
+		if (!userId || !strategy || !snapshotId) return;
+		let active = true;
 		void invoke<SignalCandidate[]>("backtest_compatible_signals", {
 			request: {
 				userId,
 				strategyArchiveSha256: strategy,
-				snapshotId: snapshot.snapshotId,
+				snapshotId,
 			},
 		})
-			.then(setCompatibleSignals)
-			.catch((error) => setMessage(String(error)));
-	}, [snapshot, strategy, userId]);
+			.then((candidates) => {
+				if (!active) return;
+				const result = transitionBacktestDraft(draftSessionRef.current, {
+					type: "reconcile-signal-compatibility",
+					strategyArchiveSha256: strategy,
+					snapshotId,
+					compatibleCandidates: candidates,
+				});
+				if (!result.ok || result.value.ignored) return;
+				setCompatibleSignals(candidates);
+				setDraftSession(result.value.session);
+			})
+			.catch((error) => active && setMessage(String(error)));
+		return () => {
+			active = false;
+		};
+	}, [draft.snapshot?.snapshotId, strategy, userId]);
 	const selectStage = async (
 		next: "data" | "strategy" | "execution" | "results",
 	) => {
-		if (next === "strategy" && !snapshot) {
-			setMessage("Select a Market Data Snapshot before continuing.");
-			return;
-		}
-		if (next === "execution") {
-			const gate = runGate({
-				snapshotId: snapshot?.snapshotId,
-				strategy: selectedStrategy,
-				dependencies: selectedStrategy?.dependencies ?? [],
-				factorSelections,
-				signalSlots,
-				signalSelections,
-				running,
-			});
-			if (gate) {
-				setMessage(gate);
+		if (next === "results") {
+			if (!run) {
+				setMessage("Run a Backtest before viewing Results.");
 				return;
 			}
-			if (!snapshot) return;
-			setStage("execution");
-			setRunning(true);
-			setRunTechnicalError("");
-			try {
-				setPreflight(
-					await invoke<BacktestPreflight>("backtest_preflight", {
-						request: buildRunRequest(snapshot.snapshotId),
-					}),
-				);
-				setMessage("Authoritative inputs validated. Review before running.");
-			} catch (error) {
-				const details = String(error);
-				setRunTechnicalError(details);
-				setMessage(details);
-			} finally {
-				setRunning(false);
-			}
+			setShowResults(true);
 			return;
 		}
-		if (next === "results" && !run) {
-			setMessage("Run a Backtest before viewing Results.");
-			return;
+		if (!userId || running) return;
+		setShowResults(false);
+		const result = dispatchDraft({
+			type: "enter-stage",
+			stage: next,
+			userId,
+		});
+		if (!result) return;
+		const preflightEffect = result.effect;
+		if (preflightEffect?.kind !== "preflight") return;
+		setRunning(true);
+		setRunTechnicalError("");
+		const preflightRevision = preflightEffect.revision;
+		try {
+			const value = await invoke<BacktestPreflight>("backtest_preflight", {
+				request: preflightEffect.request,
+			});
+			if (
+				draftSessionRef.current.draft.revision !== preflightRevision ||
+				draftSessionRef.current.preflight.status !== "pending"
+			)
+				return;
+			const accepted = transitionBacktestDraft(draftSessionRef.current, {
+				type: "accept-preflight",
+				revision: preflightRevision,
+				preflight: value,
+			});
+			if (!accepted.ok || accepted.value.ignored) return;
+			setDraftSession(accepted.value.session);
+			setMessage("Authoritative inputs validated. Review before running.");
+		} catch (error) {
+			const details = String(error);
+			if (
+				draftSessionRef.current.draft.revision !== preflightRevision ||
+				draftSessionRef.current.preflight.status !== "pending"
+			)
+				return;
+			const rejected = transitionBacktestDraft(draftSessionRef.current, {
+				type: "reject-preflight",
+				revision: preflightRevision,
+			});
+			if (!rejected.ok || rejected.value.ignored) return;
+			setDraftSession(rejected.value.session);
+			setRunTechnicalError(details);
+			setMessage(details);
+		} finally {
+			setRunning(false);
 		}
-		if (next === "data" || next === "strategy") setPreflight(undefined);
-		setStage(next);
 	};
 	const prepare = async () => {
 		if (!userId) return;
@@ -469,9 +533,30 @@ export function BacktestPage() {
 				},
 				onEvent,
 			});
-			setSnapshot(value);
-			setRunWindow(undefined);
-			setSignalSelections({});
+			const currentDraft = draftSessionRef.current.draft;
+			if (
+				currentDraft.selectedInstrumentKey !== selectedInstrumentKey ||
+				currentDraft.interval !== interval ||
+				currentDraft.start !== start ||
+				currentDraft.end !== end
+			) {
+				setMessage(
+					"Snapshot completed for an earlier Draft; the result was discarded.",
+				);
+				return;
+			}
+			setSnapshotInfo(value);
+			setDraftSession((current) => {
+				const selected = transitionBacktestDraft(current, {
+					type: "select-snapshot",
+					snapshot: {
+						snapshotId: value.snapshotId,
+						startTimeMs: value.startTimeMs,
+						endTimeMs: value.endTimeMs,
+					},
+				});
+				return selected.ok ? selected.value.session : current;
+			});
 			void refreshSnapshots(snapshotsPage);
 			setMessage(`${value.barCount} Bars frozen.`);
 		} catch (error) {
@@ -483,58 +568,29 @@ export function BacktestPage() {
 			setDownloadTaskId(undefined);
 		}
 	};
-	const buildRunRequest = (snapshotId: string) => ({
-		userId: userId ?? "",
-		snapshotId,
-		runStartTimeMs: runWindow?.startTimeMs ?? snapshot?.startTimeMs,
-		runEndTimeMs: runWindow?.endTimeMs ?? snapshot?.endTimeMs,
-		factorInstances:
-			selectedStrategy?.dependencies
-				.map((dependency) => ({
-					alias: dependency.alias,
-					archiveSha256: factorSelections[dependency.alias],
-					parameters: factorParameters[dependency.alias] ?? {},
-				}))
-				.filter((factor) => factor.archiveSha256) ?? [],
-		signalInstances: Object.entries(signalSelections).map(([slot, selection]) => {
-			const [datasetId, signalName] = selection.split(":", 2);
-			return { slot, datasetId, signalName };
-		}),
-		strategyArchiveSha256: strategy,
-		strategyParameters,
-		initialQuoteAllocation,
-		executionProfile,
-		seed: Number(seed),
-	});
 	const execute = async () => {
-		if (!preflight) {
+		if (!userId || running) return;
+		if (
+			draftSession.preflight.status !== "ready" ||
+			draftSession.preflight.revision !== draft.revision
+		) {
 			await selectStage("execution");
 			return;
 		}
-		const gate = runGate({
-			snapshotId: snapshot?.snapshotId,
-			strategy: selectedStrategy,
-			dependencies: selectedStrategy?.dependencies ?? [],
-			factorSelections,
-			signalSlots,
-			signalSelections,
-			running,
-		});
-		if (gate) {
-			setMessage(gate);
-			return;
-		}
-		if (!userId || !snapshot || running) return;
+		const result = dispatchDraft({ type: "request-run", userId });
+		if (!result) return;
+		const runEffect = result.effect;
+		if (runEffect?.kind !== "run") return;
 		setRunning(true);
 		setRunTechnicalError("");
 		setMessage("Running deterministic Backtest…");
 		try {
 			const value = await invoke<BacktestRun>("backtest_run", {
-				request: buildRunRequest(snapshot.snapshotId),
+				request: runEffect.request,
 			});
 			setRun(value);
 			setExecutionOffset(0);
-			setStage("results");
+			setShowResults(true);
 			setMessage(`Run ${value.runId.slice(0, 12)} completed.`);
 			if (historyPage === 1) void refreshHistory(1);
 			else setHistoryPage(1);
@@ -596,10 +652,7 @@ export function BacktestPage() {
 		[runId, userId],
 	);
 	const setParameter = (alias: string, name: string, value: string) =>
-		setFactorParameters((current) => ({
-			...current,
-			[alias]: { ...current[alias], [name]: value },
-		}));
+		dispatchDraft({ type: "set-factor-parameter", alias, name, value });
 	const useRunAsNewConfiguration = (source: BacktestRun) => {
 		if (!source.provenance) {
 			setMessage(
@@ -607,24 +660,46 @@ export function BacktestPage() {
 			);
 			return;
 		}
-		const configuration = copyRunConfiguration(
-			source.provenance.normalizedRequest,
+		const normalizedRequest = source.provenance.normalizedRequest;
+		if (!normalizedRequest) {
+			setMessage(
+				"This legacy Run has incomplete provenance and cannot be copied safely.",
+			);
+			return;
+		}
+		const restoredStrategy = strategies.find(
+			(item) => item.archiveSha256 === normalizedRequest.strategyArchiveSha256,
 		);
-		setSnapshot(source.snapshot);
-		setRunWindow({
-			startTimeMs: configuration.runStartTimeMs ?? source.snapshot.startTimeMs,
-			endTimeMs: configuration.runEndTimeMs ?? source.snapshot.endTimeMs,
+		if (!restoredStrategy) {
+			setMessage(
+				"The Run provenance references a Strategy Component that is not available.",
+			);
+			return;
+		}
+		const restored = createBacktestDraft({
+			kind: "from-run-provenance",
+			selectedInstrumentKey: instrumentKey({
+				src: source.snapshot.src,
+				code: source.snapshot.code,
+			}),
+			interval: source.snapshot.interval,
+			start: new Date(source.snapshot.startTimeMs).toISOString().slice(0, 10),
+			end: new Date(source.snapshot.endTimeMs).toISOString().slice(0, 10),
+			snapshot: {
+				snapshotId: source.snapshot.snapshotId,
+				startTimeMs: source.snapshot.startTimeMs,
+				endTimeMs: source.snapshot.endTimeMs,
+			},
+			strategy: restoredStrategy,
+			normalizedRequest,
 		});
-		setStrategy(configuration.strategy);
-		setStrategyParameters(configuration.strategyParameters);
-		setFactorSelections(configuration.factorSelections);
-		setFactorParameters(configuration.factorParameters);
-		setSignalSelections(configuration.signalSelections);
-		setInitialQuoteAllocation(configuration.initialQuoteAllocation);
-		setExecutionProfile(configuration.executionProfile);
-		setSeed(configuration.seed);
-		setPreflight(undefined);
-		setStage("strategy");
+		if (!restored.ok) {
+			setMessage(formatDraftError(restored.error));
+			return;
+		}
+		setSnapshotInfo(source.snapshot);
+		setDraftSession(restored.value);
+		setShowResults(false);
 		setMessage(
 			`Run ${source.runId.slice(0, 12)} copied into a new editable configuration.`,
 		);
@@ -662,12 +737,13 @@ export function BacktestPage() {
 									className="h-9 rounded-md border bg-background px-3"
 									value={selectedInstrumentKey}
 									onChange={(event) => {
-										setSelectedInstrumentKey(event.target.value);
+										dispatchDraft({
+											type: "select-instrument",
+											selectedInstrumentKey: event.target.value,
+										});
 										setHistoryPage(1);
 										setSnapshotsPage(1);
-										setSnapshot(undefined);
-										setRunWindow(undefined);
-										setSignalSelections({});
+										setSnapshotInfo(undefined);
 									}}
 								>
 									{instruments.map((item) => (
@@ -683,11 +759,12 @@ export function BacktestPage() {
 									className="h-9 rounded-md border bg-background px-3"
 									value={interval}
 									onChange={(event) => {
-										setInterval(event.target.value as BarInterval);
+										dispatchDraft({
+											type: "set-interval",
+											interval: event.target.value as BarInterval,
+										});
 										setSnapshotsPage(1);
-										setSnapshot(undefined);
-										setRunWindow(undefined);
-										setSignalSelections({});
+										setSnapshotInfo(undefined);
 									}}
 								>
 									{BAR_INTERVALS.map((value) => (
@@ -702,7 +779,9 @@ export function BacktestPage() {
 									id="backtest-start"
 									type="date"
 									value={start}
-									onChange={(e) => setStart(e.target.value)}
+									onChange={(e) =>
+										dispatchDraft({ type: "set-date-range", start: e.target.value, end })
+									}
 								/>
 							</Field>
 							<Field label="End" id="backtest-end">
@@ -710,7 +789,9 @@ export function BacktestPage() {
 									id="backtest-end"
 									type="date"
 									value={end}
-									onChange={(e) => setEnd(e.target.value)}
+									onChange={(e) =>
+										dispatchDraft({ type: "set-date-range", start, end: e.target.value })
+									}
 								/>
 							</Field>
 						</>
@@ -728,11 +809,12 @@ export function BacktestPage() {
 									className="h-9 rounded-md border bg-background px-3"
 									value={strategy}
 									onChange={(e) => {
-										setStrategy(e.target.value);
-										setFactorSelections({});
-										setFactorParameters({});
-										setSignalSelections({});
-										setStrategyParameters({});
+										dispatchDraft({
+											type: "select-strategy",
+											strategy: strategies.find(
+												(item) => item.archiveSha256 === e.target.value,
+											),
+										});
 									}}
 								>
 									<option value="">Select</option>
@@ -749,21 +831,26 @@ export function BacktestPage() {
 										className="h-9 rounded-md border bg-background px-3"
 										value={factorSelections[dependency.alias] ?? ""}
 										onChange={(event) =>
-											setFactorSelections((current) => ({
-												...current,
-												[dependency.alias]: event.target.value,
-											}))
+											dispatchDraft({
+												type: "select-factor",
+												alias: dependency.alias,
+												archiveSha256: event.target.value || undefined,
+												compatibleHashes: compatibleFactors[dependency.alias] ?? [],
+											})
 										}
 									>
 										<option value="">Select {dependency.version}</option>
-										{matchingFactors(
-											factors,
-											compatibleFactors[dependency.alias] ?? [],
-										).map((item) => (
-											<option key={item.archiveSha256} value={item.archiveSha256}>
-												{item.name} v{item.version}
-											</option>
-										))}
+										{factors
+											.filter((item) =>
+												(compatibleFactors[dependency.alias] ?? []).includes(
+													item.archiveSha256,
+												),
+											)
+											.map((item) => (
+												<option key={item.archiveSha256} value={item.archiveSha256}>
+													{item.name} v{item.version}
+												</option>
+											))}
 									</select>
 								</Field>
 							))}
@@ -772,12 +859,23 @@ export function BacktestPage() {
 									<select
 										className="h-9 rounded-md border bg-background px-3"
 										value={signalSelections[slot.name] ?? ""}
-										onChange={(event) =>
-											setSignalSelections((current) => ({
-												...current,
-												[slot.name]: event.target.value,
-											}))
-										}
+										onChange={(event) => {
+											const [datasetId, signalName] = event.target.value.split(":", 2);
+											dispatchDraft({
+												type: "select-signal",
+												slot: slot.name,
+												candidate:
+													datasetId && signalName
+														? compatibleSignals.find(
+																(candidate) =>
+																	candidate.slot === slot.name &&
+																	candidate.datasetId === datasetId &&
+																	candidate.signalName === signalName,
+															)
+														: undefined,
+												compatibleCandidates: compatibleSignals,
+											});
+										}}
 									>
 										<option value="">Select compatible Dataset Signal</option>
 										{compatibleSignals
@@ -827,10 +925,11 @@ export function BacktestPage() {
 									parameter={parameter}
 									value={strategyParameters[parameter.name] ?? parameter.defaultValue}
 									onChange={(value) =>
-										setStrategyParameters((current) => ({
-											...current,
-											[parameter.name]: value,
-										}))
+										dispatchDraft({
+											type: "set-strategy-parameter",
+											name: parameter.name,
+											value,
+										})
 									}
 								/>
 							))}
@@ -892,9 +991,17 @@ export function BacktestPage() {
 												}
 												className="h-auto justify-start whitespace-normal p-3 text-left"
 												onClick={() => {
-													setSnapshot(reuseSnapshot(snapshots, item.snapshotId));
-													setRunWindow(undefined);
-													setSignalSelections({});
+													const reused = reuseSnapshot(snapshots, item.snapshotId);
+													if (!reused) return;
+													setSnapshotInfo(reused);
+													dispatchDraft({
+														type: "select-snapshot",
+														snapshot: {
+															snapshotId: reused.snapshotId,
+															startTimeMs: reused.startTimeMs,
+															endTimeMs: reused.endTimeMs,
+														},
+													});
 													setSnapshotTechnicalError("");
 												}}
 											>
@@ -967,11 +1074,13 @@ export function BacktestPage() {
 								onChange={(event) => {
 									const startTimeMs = parseUtcInput(event.target.value);
 									if (!Number.isFinite(startTimeMs)) return;
-									setRunWindow((current) => ({
-										startTimeMs,
-										endTimeMs: current?.endTimeMs ?? snapshot.endTimeMs,
-									}));
-									setPreflight(undefined);
+									dispatchDraft({
+										type: "set-run-window",
+										value: {
+											startTimeMs,
+											endTimeMs: runWindow?.endTimeMs ?? snapshot.endTimeMs,
+										},
+									});
 								}}
 							/>
 						</Field>
@@ -983,11 +1092,13 @@ export function BacktestPage() {
 								onChange={(event) => {
 									const endTimeMs = parseUtcInput(event.target.value);
 									if (!Number.isFinite(endTimeMs)) return;
-									setRunWindow((current) => ({
-										startTimeMs: current?.startTimeMs ?? snapshot.startTimeMs,
-										endTimeMs,
-									}));
-									setPreflight(undefined);
+									dispatchDraft({
+										type: "set-run-window",
+										value: {
+											startTimeMs: runWindow?.startTimeMs ?? snapshot.startTimeMs,
+											endTimeMs,
+										},
+									});
 								}}
 							/>
 						</Field>
@@ -997,10 +1108,9 @@ export function BacktestPage() {
 								type="text"
 								inputMode="decimal"
 								value={initialQuoteAllocation}
-								onChange={(event) => {
-									setInitialQuoteAllocation(event.target.value);
-									setPreflight(undefined);
-								}}
+								onChange={(event) =>
+									dispatchDraft({ type: "set-allocation", value: event.target.value })
+								}
 							/>
 						</Field>
 						<Field label="Seed" id="backtest-seed">
@@ -1010,10 +1120,9 @@ export function BacktestPage() {
 								min="0"
 								step="1"
 								value={seed}
-								onChange={(event) => {
-									setSeed(event.target.value);
-									setPreflight(undefined);
-								}}
+								onChange={(event) =>
+									dispatchDraft({ type: "set-seed", value: event.target.value })
+								}
 							/>
 						</Field>
 						{Object.entries(executionProfile)
@@ -1027,13 +1136,13 @@ export function BacktestPage() {
 										type="text"
 										inputMode="decimal"
 										value={value}
-										onChange={(event) => {
-											setExecutionProfile((current) => ({
-												...current,
-												[name]: event.target.value,
-											}));
-											setPreflight(undefined);
-										}}
+										onChange={(event) =>
+											dispatchDraft({
+												type: "set-execution-profile-field",
+												field: name as Exclude<keyof typeof executionProfile, "fillPolicy">,
+												value: event.target.value,
+											})
+										}
 									/>
 								</Field>
 							))}
@@ -1041,13 +1150,12 @@ export function BacktestPage() {
 							<select
 								className="h-9 rounded-md border bg-background px-3"
 								value={executionProfile.fillPolicy}
-								onChange={(event) => {
-									setExecutionProfile((current) => ({
-										...current,
-										fillPolicy: event.target.value as "maker" | "taker",
-									}));
-									setPreflight(undefined);
-								}}
+								onChange={(event) =>
+									dispatchDraft({
+										type: "set-fill-policy",
+										value: event.target.value as "maker" | "taker",
+									})
+								}
 							>
 								<option value="taker">Taker</option>
 								<option value="maker">Maker</option>
@@ -1224,7 +1332,7 @@ export function BacktestPage() {
 												setRun(value);
 												setExecutionOffset(0);
 												setRunTechnicalError("");
-												setStage("results");
+												setShowResults(true);
 											})
 											.catch((error) => {
 												const details = String(error);
