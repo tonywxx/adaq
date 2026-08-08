@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use adaq_backtest_core::{MarketDataSnapshot, SpotSimulator, TargetDecision as SimulationDecision};
+use adaq_backtest_core::{MarketDataSnapshot, SpotSimulator};
 use adaq_component_tooling::{
     ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue,
     FactorInstancePlanInput, FeatureSlotSource, FrozenFeaturePlan, RunLimits, SignalPlanInput,
@@ -105,14 +105,7 @@ pub(super) fn execute(
     })
     .map_err(|error| error.to_string())?;
     let bars = engine_result.bars;
-    let decisions = engine_result
-        .decisions
-        .into_iter()
-        .map(|decision| SimulationDecision {
-            open_time_ms: decision.open_time_ms,
-            target_exposure: decision.target_exposure,
-        })
-        .collect::<Vec<_>>();
+    let decisions = engine_result.decisions;
     let result = SpotSimulator::execute(
         &bars,
         &gaps,

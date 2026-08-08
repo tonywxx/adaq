@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use adaq_backtest_core::TargetDecision;
 use adaq_component_sdk::{decimal_to_f64, host::strategy_abi};
 use adaq_component_tooling::{
     ComponentParameterValue, FrozenBuiltInParameter, FrozenFeaturePlan, FrozenSourceView,
@@ -154,12 +155,6 @@ pub(crate) fn materialize_feature_segment(
             Ok(MaterializedFeatureRow::Present(values))
         })
         .collect()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TargetDecision {
-    pub open_time_ms: i64,
-    pub target_exposure: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
