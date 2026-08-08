@@ -471,9 +471,9 @@ class HttpClient {
 						? baseConfig
 						: this.setupCancelController(baseConfig, requestKey);
 
-					return await this.instance.request<ResponseData<T>, ResponseData<T>>(
+					return (await this.instance.request<ResponseData<T>, ResponseData<T>>(
 						requestConfig,
-					);
+					)) as ResponseData<T>;
 				} catch (error) {
 					lastError = error;
 
