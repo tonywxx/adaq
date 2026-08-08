@@ -243,6 +243,25 @@ function GeneralSettings() {
 					</div>
 				</CardContent>
 			</Card>
+			<br />
+			<br />
+			<Card>
+				<CardHeader>
+					<CardTitle className="text-base">Disclaimer</CardTitle>
+				</CardHeader>
+				<CardContent className="grid gap-4 space-y-3 text-sm leading-relaxed text-muted-foreground">
+					<p>
+						This software is for educational and research purposes only. It is not
+						financial advice, and nothing in it constitutes a recommendation to buy,
+						sell, or hold any security or digital asset. Historical performance and
+						simulated backtest results do not guarantee future results. You use this
+						software at your own risk. The authors and contributors shall not be
+						liable for any direct, indirect, incidental, consequential, or special
+						damages, including but not limited to financial losses, arising from the
+						use of or inability to use this software.
+					</p>
+				</CardContent>
+			</Card>
 		</>
 	);
 }

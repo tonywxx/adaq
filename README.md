@@ -79,3 +79,11 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 | [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | External `Kronos-small` inference, canonical Forecast Signals, evaluation, and Dataset-first Backtest |
 
 Microsoft Qlib integration is future work and will use the same External Model Adapter boundary. M8 does not include training, an embedded or controlled Python Runner, Verified external inference, or Marketplace publishing.
+
+## Disclaimer
+
+**This software is for educational purposes only.**
+
+AdaQ is provided for educational and research purposes only. It does not constitute financial advice, and nothing in it should be interpreted as a recommendation to buy, sell, or hold any security or digital asset. Historical performance and simulated backtest results do not guarantee future results.
+
+You use this software entirely at your own risk. In no event shall the authors, contributors, or maintainers be liable for any direct, indirect, incidental, consequential, or special damages — including but not limited to financial losses — arising from the use of, or inability to use, this software.

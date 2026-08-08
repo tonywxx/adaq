@@ -74,3 +74,11 @@ adaq-component verify dist/my-factor-0.1.0.adaq
 | [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | 外部 `Kronos-small` 推理、规范 Forecast Signals、评估与 Dataset-first Backtest |
 
 Microsoft Qlib 集成属于未来工作，并将使用同一 External Model Adapter 边界。M8 不包含训练、内嵌或受控 Python Runner、Verified external inference 或 Marketplace 发布。
+
+## 免责声明
+
+**本软件仅供学习与研究目的使用（This software is for educational purposes only）。**
+
+AdaQ 仅供学习与研究目的使用，不构成任何投资建议，其中的任何内容均不应被解释为买入、卖出或持有任何证券或数字资产的推荐。历史表现与回测模拟结果不代表未来收益。
+
+使用本软件所产生的一切风险由使用者自行承担。在任何情况下，作者、贡献者与维护者均不对因使用或无法使用本软件而造成的任何直接、间接、附带、后果性或特殊损害（包括但不限于资金损失）承担任何责任。
