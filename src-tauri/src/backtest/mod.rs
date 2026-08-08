@@ -8,7 +8,7 @@
 //! component-lock query for the Component Library, and the summary-for-user
 //! and reset-for-user hooks the composition root calls. Cross-domain reads
 //! — Market Data Snapshot reads, Component Package reads, Signal Dataset
-//! reads through the m8-owned path, and Validation Report references — flow
+//! reads through the forecast_signal_dataset-owned path, and Validation Report references — flow
 //! through Source traits defined here and implemented by the composition
 //! root.
 
@@ -29,7 +29,7 @@ use adaq_data_core::{BarInterval, OhlcvBar};
 use rusqlite::{Connection, Transaction, params};
 use serde::{Deserialize, Serialize};
 
-use crate::{m8::BacktestSignalDataset, user::validate_user};
+use crate::{forecast_signal_dataset::BacktestSignalDataset, user::validate_user};
 
 const RUN_HISTORY_PAGE_SIZE: usize = 10;
 
@@ -61,7 +61,7 @@ pub(crate) trait ComponentPackageSource: Send + Sync {
 /// The concrete local dependencies composed into Backtest Runs. The
 /// complete Local Research state is never passed in; only database access,
 /// Snapshot reads, Component Package access, Signal Dataset reads through
-/// the m8-owned path, and the Validation Report reference check are shared.
+/// the forecast_signal_dataset-owned path, and the Validation Report reference check are shared.
 pub(crate) trait BacktestSource:
     SnapshotReadSource + ComponentPackageSource + Send + Sync
 {

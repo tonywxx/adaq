@@ -6,7 +6,7 @@
 //! against a test-fake Source adapter. Where a test must seed Runs or
 //! observe bridge rows it does so through the module's own database
 //! handle. The production composition-root adapter is covered by the
-//! composition-root, Validation, and m8 interface tests.
+//! composition-root, Validation, and forecast_evaluation interface tests.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -85,7 +85,7 @@ impl BacktestSource for FakeBacktestSource {
         _user_id: &str,
         _include_rows: bool,
         _dataset_ids: Option<&[String]>,
-    ) -> Result<Vec<crate::m8::BacktestSignalDataset>, String> {
+    ) -> Result<Vec<crate::forecast_signal_dataset::BacktestSignalDataset>, String> {
         Ok(vec![])
     }
 
@@ -138,7 +138,7 @@ fn harness(name: &str) -> Harness {
     fs::create_dir_all(&root).unwrap();
     let database = Connection::open(root.join("adaq.db")).unwrap();
     // The referenced tables the bridge FKs point at; the Component Library
-    // and m8 domains own their real schema.
+    // and forecast_signal_dataset domains own their real schema.
     database
         .execute_batch(
             "CREATE TABLE IF NOT EXISTS component_content (

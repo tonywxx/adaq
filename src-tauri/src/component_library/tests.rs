@@ -127,7 +127,7 @@ impl BacktestSource for HarnessBacktestSource {
         _user_id: &str,
         _include_rows: bool,
         _dataset_ids: Option<&[String]>,
-    ) -> Result<Vec<crate::m8::BacktestSignalDataset>, String> {
+    ) -> Result<Vec<crate::forecast_signal_dataset::BacktestSignalDataset>, String> {
         Ok(vec![])
     }
 
@@ -159,7 +159,7 @@ fn harness(name: &str) -> Harness {
     ));
     fs::create_dir_all(&root).unwrap();
     let database = Connection::open(root.join("adaq.db")).unwrap();
-    // The Signal Dataset tables the deletion dataset-lock check reads; m8
+    // The Signal Dataset tables the deletion dataset-lock check reads; forecast_signal_dataset
     // owns their real schema.
     database
         .execute_batch(

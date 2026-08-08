@@ -8,7 +8,7 @@
 //! cleanup the reset flows consume. Run locks flow through the narrow
 //! component-lock queries the Backtest Run module exposes, so this domain
 //! never issues SQL over the Run or bridge tables; the immutable Signal
-//! Dataset lock check reads the m8-owned metadata the way the Validation
+//! Dataset lock check reads the forecast_signal_dataset-owned metadata the way the Validation
 //! Report reference check reads its own domain.
 
 #[cfg(test)]
