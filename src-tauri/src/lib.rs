@@ -1,8 +1,9 @@
 mod backtest;
 mod component_library;
 mod dataset_generation;
+mod forecast_evaluation;
+mod forecast_signal_dataset;
 mod local_research;
-mod m8;
 mod market_data_snapshot;
 mod run_engine;
 mod user;
@@ -777,14 +778,14 @@ pub fn run() {
             dataset_generation_retry,
             dataset_generation_list,
             dataset_generation_cancel,
-            m8::signal_dataset_list,
-            m8::signal_dataset_get,
-            m8::signal_dataset_rows,
-            m8::signal_dataset_import,
-            m8::signal_dataset_export,
-            m8::forecast_evaluation_create,
-            m8::forecast_evaluation_list,
-            m8::forecast_evaluation_export
+            forecast_signal_dataset::signal_dataset_list,
+            forecast_signal_dataset::signal_dataset_get,
+            forecast_signal_dataset::signal_dataset_rows,
+            forecast_signal_dataset::signal_dataset_import,
+            forecast_signal_dataset::signal_dataset_export,
+            forecast_evaluation::forecast_evaluation_create,
+            forecast_evaluation::forecast_evaluation_list,
+            forecast_evaluation::forecast_evaluation_export
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

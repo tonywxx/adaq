@@ -32,7 +32,7 @@ use crate::{
         ComponentLibrary, ComponentLockSource, ComponentSource, finish_staged_files, stage_files,
     },
     dataset_generation::{DatasetGeneration, GenerationSource},
-    m8::{BacktestSignalDataset, backtest_signal_datasets},
+    forecast_signal_dataset::{BacktestSignalDataset, backtest_signal_datasets},
     market_data_snapshot::{LocalSnapshotSource, MarketDataSnapshots},
     user::validate_user,
     validation::{ValidationRunOutcome, ValidationSource, ValidationStudies},
@@ -254,7 +254,7 @@ impl LocalValidationSource {
 
 /// The concrete local dependencies composed into the Backtest Run module.
 /// Only database access, Market Data Snapshot reads, Component Package
-/// access, Signal Dataset reads through the m8-owned path, and the
+/// access, Signal Dataset reads through the forecast_signal_dataset-owned path, and the
 /// Validation Report reference check are shared; the complete Local
 /// Research state is not. The state reference is bound after the
 /// composition root finishes constructing itself. The database handle is
@@ -557,7 +557,7 @@ pub struct BacktestSignalCandidate {
 
 /// The one cross-domain compatibility command: it joins Component Package
 /// reads through the Component Library module, Snapshot reads through the
-/// Snapshot module, and Signal Dataset reads through the m8-owned path.
+/// Snapshot module, and Signal Dataset reads through the forecast_signal_dataset-owned path.
 #[tauri::command]
 pub fn backtest_compatible_signals(
     request: BacktestSignalCompatibilityRequest,
@@ -579,7 +579,7 @@ pub fn backtest_compatible_signals(
 fn compatible_signal_candidates(
     strategy: &ComponentManifest,
     snapshot: &MarketDataSnapshot,
-    datasets: &[crate::m8::BacktestSignalDataset],
+    datasets: &[crate::forecast_signal_dataset::BacktestSignalDataset],
 ) -> Vec<BacktestSignalCandidate> {
     let mut candidates = Vec::new();
     for slot in &strategy.feature_slots {
@@ -855,7 +855,7 @@ mod tests {
             gaps: vec![],
             parquet_path: PathBuf::new(),
         };
-        let dataset = crate::m8::BacktestSignalDataset {
+        let dataset = crate::forecast_signal_dataset::BacktestSignalDataset {
             dataset_id: "a".repeat(64),
             snapshot_id: snapshot.snapshot_id.clone(),
             src: snapshot.src.clone(),
