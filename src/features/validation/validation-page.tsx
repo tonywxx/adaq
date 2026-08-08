@@ -20,21 +20,26 @@ import { useHistoryTab } from "@/lib/navigation-history";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { open } from "@tauri-apps/plugin-fs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-	crossMarketGate,
-	crossMarketProtocolFields,
 	formatValidationError,
-	holdoutGate,
 	protocolDetails,
 	protocolSummary,
 	reportExportFilename,
-	validationRunRequest,
-	walkForwardGate,
-	walkForwardProtocolFields,
-	walkForwardPreview as previewWalkForward,
-} from "./validation-workspace";
+} from "./validation-evidence";
+import {
+	createValidationProtocolDraft,
+	inspectValidationProtocolDraft,
+	transitionValidationProtocolDraft,
+	type DraftCommand,
+	type DraftError,
+	type ValidationContext,
+	type ValidationDraftSession,
+	type ValidationPreviewFacts,
+	type ValidationSnapshot,
+	type WalkForwardPreview,
+} from "./validation-protocol-draft";
 
 type RunSummary = {
 	runId: string;
@@ -74,16 +79,8 @@ type Protocol = {
 		}>;
 	};
 };
-type Snapshot = {
-	snapshotId: string;
-	src: string;
-	code: string;
-	interval: string;
-	startTimeMs: number;
-	endTimeMs: number;
-	barCount: number;
-};
-type CrossMarketContext = { snapshot: Snapshot; runOverride?: BacktestRun };
+type Snapshot = ValidationSnapshot;
+type CrossMarketContext = ValidationContext;
 type Report = {
 	reportId: string;
 	protocolId: string;
@@ -141,17 +138,11 @@ export function ValidationPage() {
 	const [runsTotal, setRunsTotal] = useState(0);
 	const [components, setComponents] = useState<LibraryComponent[]>([]);
 	const [source, setSource] = useState<BacktestRun>();
-	const [method, setMethod] = useState<
-		"chronological-holdout" | "walk-forward" | "cross-market"
-	>("chronological-holdout");
-	const [sampleOutStart, setSampleOutStart] = useState("");
-	const [windowSizeBars, setWindowSizeBars] = useState("100");
-	const [stepSizeBars, setStepSizeBars] = useState("100");
-	const [minimumHistoryBars, setMinimumHistoryBars] = useState("500");
+	const [draftSession, setDraftSession] = useState<ValidationDraftSession>(() =>
+		createValidationProtocolDraft(),
+	);
+	const draftSessionRef = useRef(draftSession);
 	const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-	const [crossMarketContexts, setCrossMarketContexts] = useState<
-		CrossMarketContext[]
-	>([]);
 	const [protocols, setProtocols] = useState<Protocol[]>([]);
 	const [reports, setReports] = useState<Report[]>([]);
 	const [selectedReportId, setSelectedReportId] = useState("");
@@ -161,7 +152,6 @@ export function ValidationPage() {
 		selectedReportId || undefined,
 	);
 	const [loadingRunId, setLoadingRunId] = useState<string>();
-	const [freezing, setFreezing] = useState(false);
 	const [runningProtocolId, setRunningProtocolId] = useState<string>();
 	const [exportingReport, setExportingReport] = useState<string>();
 	const [runsLoading, setRunsLoading] = useState(true);
@@ -172,6 +162,22 @@ export function ValidationPage() {
 		summary: string;
 		details?: string;
 	}>();
+	const applyDraftCommand = useCallback(
+		(command: DraftCommand, showError = true) => {
+			const result = transitionValidationProtocolDraft(
+				draftSessionRef.current,
+				command,
+			);
+			if (!result.ok) {
+				if (showError) setFeedback(formatDraftError(result.error));
+				return result;
+			}
+			draftSessionRef.current = result.value.session;
+			setDraftSession(result.value.session);
+			return result;
+		},
+		[],
+	);
 	const refreshRuns = useCallback(
 		async (page: number, isActive: () => boolean = () => true) => {
 			if (!userId) return;
@@ -235,7 +241,9 @@ export function ValidationPage() {
 		if (!userId) return;
 		let active = true;
 		setSource(undefined);
-		setSampleOutStart("");
+		const nextDraft = createValidationProtocolDraft();
+		draftSessionRef.current = nextDraft;
+		setDraftSession(nextDraft);
 		setFeedback(undefined);
 		void refresh().catch(
 			(error) =>
@@ -261,106 +269,141 @@ export function ValidationPage() {
 	);
 	const selectedReport =
 		reports.find((report) => report.reportId === selectedReportId) ?? reports[0];
-	const walkForward = {
-		snapshotId: source?.snapshot.snapshotId ?? "",
-		windowSizeBars: Number(windowSizeBars),
-		stepSizeBars: Number(stepSizeBars),
-		minimumHistoryBars: Number(minimumHistoryBars),
+	const method = draftSession.draft.kind;
+	const sourceMatchesDraft = Boolean(
+		source && draftSession.draft.source?.runId === source.runId,
+	);
+	const previewFacts: ValidationPreviewFacts | undefined = sourceMatchesDraft
+		? { sourceRunId: source?.runId ?? "", bars: source?.bars ?? [] }
+		: undefined;
+	const inspection = inspectValidationProtocolDraft(draftSession, previewFacts);
+	const draftError = inspection.errors[0];
+	const draftErrorMessage = draftError
+		? formatDraftError(draftError).summary
+		: undefined;
+	const walkForwardPreview: WalkForwardPreview | undefined = inspection.preview;
+	const walkForwardDraft =
+		draftSession.draft.kind === "walk-forward" ? draftSession.draft : undefined;
+	const walkForwardError =
+		method === "walk-forward" && source ? draftErrorMessage : undefined;
+	const crossMarketError =
+		method === "cross-market" && source ? draftErrorMessage : undefined;
+	const crossMarketContexts: readonly CrossMarketContext[] =
+		method === "cross-market" ? draftSession.draft.contexts : [];
+	const freezing = draftSession.freeze.status === "pending";
+	const selectedSourceRunId =
+		draftSession.sourceLoad.status === "pending"
+			? draftSession.sourceLoad.runId
+			: draftSession.draft.source?.runId;
+	const loadOverride = async (snapshotId: string, runId: string) => {
+		if (!userId) return;
+		const requested = applyDraftCommand({
+			type: "request-cross-market-override",
+			snapshotId,
+			runId,
+		});
+		if (!requested.ok || !requested.value.effect) return;
+		if (requested.value.effect.kind !== "load-cross-market-override") return;
+		const { revision } = requested.value.effect;
+		try {
+			const run = await invoke<BacktestRun>("backtest_get", {
+				request: { userId, runId },
+			});
+			const accepted = applyDraftCommand({
+				type: "accept-cross-market-override",
+				revision,
+				snapshotId,
+				run,
+			});
+			if (!accepted.ok) {
+				applyDraftCommand(
+					{ type: "reject-cross-market-override", revision, snapshotId, runId },
+					false,
+				);
+				return;
+			}
+			if (accepted.value.ignored) return;
+		} catch (error) {
+			const rejected = applyDraftCommand(
+				{ type: "reject-cross-market-override", revision, snapshotId, runId },
+				false,
+			);
+			if (rejected.ok && !rejected.value.ignored) {
+				setFeedback({
+					summary: "Override Run could not load.",
+					details: String(error),
+				});
+			}
+		}
 	};
-	const walkForwardError = walkForwardGate({
-		runId: source?.runId,
-		barCount: source?.bars.length,
-		configuration: walkForward,
-	});
-	const walkForwardPreview =
-		!walkForwardError && source
-			? previewWalkForward(source.bars, walkForward)
-			: undefined;
-	const crossMarketError = crossMarketGate({
-		runId: source?.runId,
-		snapshotIds: crossMarketContexts.map(
-			(context) => context.snapshot.snapshotId,
-		),
-	});
 	const selectRun = async (runId: string) => {
 		if (!userId) return;
+		const selected = applyDraftCommand({ type: "select-source", runId });
+		if (!selected.ok || !selected.value.effect) return;
+		if (selected.value.effect.kind !== "load-source") return;
+		const { revision } = selected.value.effect;
+		setSource(undefined);
 		setLoadingRunId(runId);
 		setFeedback(undefined);
 		try {
-			setSource(
-				await invoke<BacktestRun>("backtest_get", { request: { userId, runId } }),
-			);
-		} catch (error) {
-			setFeedback({
-				summary: "Backtest Run could not load.",
-				details: String(error),
+			const run = await invoke<BacktestRun>("backtest_get", {
+				request: { userId, runId },
 			});
+			const accepted = applyDraftCommand({ type: "accept-source", revision, run });
+			if (!accepted.ok) {
+				applyDraftCommand({ type: "reject-source", revision, runId }, false);
+			} else if (!accepted.value.ignored) {
+				setSource(run);
+			}
+		} catch (error) {
+			const rejected = applyDraftCommand(
+				{ type: "reject-source", revision, runId },
+				false,
+			);
+			if (rejected.ok && !rejected.value.ignored) {
+				setFeedback({
+					summary: "Backtest Run could not load.",
+					details: String(error),
+				});
+			}
 		} finally {
-			setLoadingRunId(undefined);
+			setLoadingRunId((current) => (current === runId ? undefined : current));
 		}
 	};
 	const freeze = async () => {
 		if (freezing) return;
-		const boundary = Date.parse(sampleOutStart);
-		const gate =
-			method === "chronological-holdout"
-				? holdoutGate({
-						runId: source?.runId,
-						sampleOutStartTimeMs: boundary,
-					})
-				: method === "walk-forward"
-					? walkForwardError
-					: crossMarketError;
-		if (gate || !userId || !source?.provenance) {
-			setFeedback({
-				summary: gate ?? "This Backtest Run has incomplete provenance.",
-			});
-			return;
-		}
-		setFreezing(true);
+		if (!userId) return;
+		const requested = applyDraftCommand({
+			type: "request-freeze",
+			userId,
+			previewFacts,
+		});
+		if (!requested.ok || !requested.value.effect) return;
+		if (requested.value.effect.kind !== "freeze") return;
+		const { revision, request } = requested.value.effect;
 		setFeedback({ summary: "Freezing Validation Protocol…" });
 		await waitForPaint();
 		try {
 			const protocol = await invoke<Protocol>("validation_protocol_create", {
-				request: {
-					userId,
-					run: validationRunRequest(userId, source.provenance.normalizedRequest),
-					...(method === "chronological-holdout"
-						? {
-								windows: [
-									{
-										snapshotId: source.snapshot.snapshotId,
-										sampleOutStartTimeMs: boundary,
-									},
-								],
-								methodVersion: "chronological-holdout@1",
-							}
-						: method === "walk-forward"
-							? walkForwardProtocolFields(walkForward)
-							: crossMarketProtocolFields(
-									crossMarketContexts.map(({ snapshot, runOverride }) => ({
-										snapshotId: snapshot.snapshotId,
-										...(runOverride?.provenance
-											? {
-													runOverride: validationRunRequest(
-														userId,
-														runOverride.provenance.normalizedRequest,
-													),
-												}
-											: {}),
-									})),
-								)),
-					aggregationRuleVersion: "equal-window@1",
-				},
+				request,
 			});
+			const accepted = applyDraftCommand(
+				{ type: "accept-freeze", revision, protocolId: protocol.protocolId },
+				false,
+			);
+			if (!accepted.ok || accepted.value.ignored) return;
 			setFeedback({
 				summary: `Protocol ${protocol.protocolId.slice(0, 16)} frozen and immutable.`,
 			});
 			await refresh();
 		} catch (error) {
-			setFeedback(formatValidationError(error));
-		} finally {
-			setFreezing(false);
+			const rejected = applyDraftCommand(
+				{ type: "reject-freeze", revision },
+				false,
+			);
+			if (rejected.ok && !rejected.value.ignored) {
+				setFeedback(formatValidationError(error));
+			}
 		}
 	};
 	const run = async (protocolId: string) => {
@@ -439,7 +482,12 @@ export function ValidationPage() {
 								type="radio"
 								name="validation-method"
 								checked={method === "chronological-holdout"}
-								onChange={() => setMethod("chronological-holdout")}
+								onChange={() =>
+									applyDraftCommand({
+										type: "select-method",
+										method: "chronological-holdout",
+									})
+								}
 							/>{" "}
 							<span className="font-medium">Chronological holdout</span>
 							<p className="mt-1 text-muted-foreground">
@@ -451,7 +499,9 @@ export function ValidationPage() {
 								type="radio"
 								name="validation-method"
 								checked={method === "cross-market"}
-								onChange={() => setMethod("cross-market")}
+								onChange={() =>
+									applyDraftCommand({ type: "select-method", method: "cross-market" })
+								}
 							/>{" "}
 							<span className="font-medium">Cross-market</span>
 							<p className="mt-1 text-muted-foreground">
@@ -464,7 +514,9 @@ export function ValidationPage() {
 								type="radio"
 								name="validation-method"
 								checked={method === "walk-forward"}
-								onChange={() => setMethod("walk-forward")}
+								onChange={() =>
+									applyDraftCommand({ type: "select-method", method: "walk-forward" })
+								}
 							/>{" "}
 							<span className="font-medium">Walk-forward</span>
 							<p className="mt-1 text-muted-foreground">
@@ -504,9 +556,9 @@ export function ValidationPage() {
 								>
 									<Button
 										type="button"
-										variant={source?.runId === item.runId ? "default" : "outline"}
+										variant={selectedSourceRunId === item.runId ? "default" : "outline"}
 										className="h-auto justify-start whitespace-normal p-3 text-left"
-										aria-pressed={source?.runId === item.runId}
+										aria-pressed={selectedSourceRunId === item.runId}
 										loading={loadingRunId === item.runId}
 										loadingText="Loading Run…"
 										disabled={Boolean(loadingRunId)}
@@ -565,18 +617,45 @@ export function ValidationPage() {
 							<Input
 								id="sample-out-start"
 								type="datetime-local"
-								value={sampleOutStart}
-								onChange={(event) => setSampleOutStart(event.target.value)}
+								value={
+									draftSession.draft.kind === "chronological-holdout"
+										? draftSession.draft.sampleOutStart
+										: ""
+								}
+								onChange={(event) =>
+									applyDraftCommand({
+										type: "set-holdout-boundary",
+										value: event.target.value,
+									})
+								}
 							/>
 						</label>
 					) : method === "walk-forward" ? (
 						<WalkForwardControls
-							windowSizeBars={windowSizeBars}
-							stepSizeBars={stepSizeBars}
-							minimumHistoryBars={minimumHistoryBars}
-							onWindowSizeBarsChange={setWindowSizeBars}
-							onStepSizeBarsChange={setStepSizeBars}
-							onMinimumHistoryBarsChange={setMinimumHistoryBars}
+							windowSizeBars={walkForwardDraft?.windowSizeBars ?? ""}
+							stepSizeBars={walkForwardDraft?.stepSizeBars ?? ""}
+							minimumHistoryBars={walkForwardDraft?.minimumHistoryBars ?? ""}
+							onWindowSizeBarsChange={(value) =>
+								applyDraftCommand({
+									type: "set-walk-forward-field",
+									field: "windowSizeBars",
+									value,
+								})
+							}
+							onStepSizeBarsChange={(value) =>
+								applyDraftCommand({
+									type: "set-walk-forward-field",
+									field: "stepSizeBars",
+									value,
+								})
+							}
+							onMinimumHistoryBarsChange={(value) =>
+								applyDraftCommand({
+									type: "set-walk-forward-field",
+									field: "minimumHistoryBars",
+									value,
+								})
+							}
 							error={source ? walkForwardError : undefined}
 							preview={walkForwardPreview}
 							gaps={source?.snapshot.gaps ?? []}
@@ -588,46 +667,14 @@ export function ValidationPage() {
 							runs={runs}
 							loading={snapshotsLoading}
 							error={source ? crossMarketError : undefined}
-							onChange={setCrossMarketContexts}
-							onLoadOverride={async (snapshot, runId) => {
-								if (!userId) return;
-								try {
-									const run = await invoke<BacktestRun>("backtest_get", {
-										request: { userId, runId },
-									});
-									if (run.snapshot.snapshotId !== snapshot.snapshotId) {
-										setFeedback({
-											summary: "The override Run must use this exact frozen Snapshot.",
-											details: `Run ${runId} references ${run.snapshot.snapshotId}.`,
-										});
-										return;
-									}
-									setCrossMarketContexts((current) =>
-										current.map((context) =>
-											context.snapshot.snapshotId === snapshot.snapshotId
-												? { ...context, runOverride: run }
-												: context,
-										),
-									);
-								} catch (error) {
-									setFeedback({
-										summary: "Override Run could not load.",
-										details: String(error),
-									});
-								}
-							}}
+							onChange={applyDraftCommand}
+							onLoadOverride={loadOverride}
 						/>
 					)}
 					<Button
 						loading={freezing}
 						loadingText="Freezing…"
-						disabled={
-							freezing ||
-							!source ||
-							(method === "chronological-holdout" && !sampleOutStart) ||
-							(method === "walk-forward" && Boolean(walkForwardError)) ||
-							(method === "cross-market" && Boolean(crossMarketError))
-						}
+						disabled={freezing || !sourceMatchesDraft || Boolean(draftError)}
 						onClick={() => void freeze()}
 					>
 						Freeze Validation Protocol
@@ -769,8 +816,8 @@ function WalkForwardControls({
 	onStepSizeBarsChange: (value: string) => void;
 	onMinimumHistoryBarsChange: (value: string) => void;
 	error?: string;
-	preview?: ReturnType<typeof previewWalkForward>;
-	gaps: Array<{ startTimeMs: number; endTimeMs: number }>;
+	preview?: WalkForwardPreview;
+	gaps: ReadonlyArray<{ startTimeMs: number; endTimeMs: number }>;
 }) {
 	return (
 		<div className="space-y-3 rounded-md border p-3">
@@ -861,12 +908,12 @@ function CrossMarketControls({
 	onLoadOverride,
 }: {
 	snapshots: Snapshot[];
-	contexts: CrossMarketContext[];
+	contexts: readonly CrossMarketContext[];
 	runs: RunSummary[];
 	loading: boolean;
 	error?: string;
-	onChange: (contexts: CrossMarketContext[]) => void;
-	onLoadOverride: (snapshot: Snapshot, runId: string) => Promise<void>;
+	onChange: (command: DraftCommand) => void;
+	onLoadOverride: (snapshotId: string, runId: string) => Promise<void>;
 }) {
 	const selected = new Set(
 		contexts.map((context) => context.snapshot.snapshotId),
@@ -889,7 +936,7 @@ function CrossMarketControls({
 							className="h-auto justify-start whitespace-normal p-3 text-left"
 							aria-pressed={selected.has(snapshot.snapshotId)}
 							disabled={selected.has(snapshot.snapshotId)}
-							onClick={() => onChange([...contexts, { snapshot }])}
+							onClick={() => onChange({ type: "add-cross-market-context", snapshot })}
 						>
 							<span>
 								{snapshot.code} · {snapshot.interval} · {snapshot.barCount} Bars
@@ -924,11 +971,13 @@ function CrossMarketControls({
 								variant="outline"
 								size="sm"
 								disabled={index === 0}
-								onClick={() => {
-									const next = [...contexts];
-									[next[index - 1], next[index]] = [next[index], next[index - 1]];
-									onChange(next);
-								}}
+								onClick={() =>
+									onChange({
+										type: "move-cross-market-context",
+										snapshotId: context.snapshot.snapshotId,
+										direction: "earlier",
+									})
+								}
 							>
 								Move earlier
 							</Button>
@@ -937,11 +986,13 @@ function CrossMarketControls({
 								variant="outline"
 								size="sm"
 								disabled={index === contexts.length - 1}
-								onClick={() => {
-									const next = [...contexts];
-									[next[index], next[index + 1]] = [next[index + 1], next[index]];
-									onChange(next);
-								}}
+								onClick={() =>
+									onChange({
+										type: "move-cross-market-context",
+										snapshotId: context.snapshot.snapshotId,
+										direction: "later",
+									})
+								}
 							>
 								Move later
 							</Button>
@@ -949,7 +1000,12 @@ function CrossMarketControls({
 								type="button"
 								variant="outline"
 								size="sm"
-								onClick={() => onChange(contexts.filter((item) => item !== context))}
+								onClick={() =>
+									onChange({
+										type: "remove-cross-market-context",
+										snapshotId: context.snapshot.snapshotId,
+									})
+								}
 							>
 								Remove
 							</Button>
@@ -957,17 +1013,16 @@ function CrossMarketControls({
 								Override configuration
 								<select
 									className="ml-2 rounded border p-1"
-									value={context.runOverride?.runId ?? ""}
+									value={context.override?.runId ?? ""}
 									onChange={(event) => {
 										if (!event.target.value) {
-											onChange(
-												contexts.map((item) =>
-													item === context ? { ...item, runOverride: undefined } : item,
-												),
-											);
+											onChange({
+												type: "clear-cross-market-override",
+												snapshotId: context.snapshot.snapshotId,
+											});
 											return;
 										}
-										void onLoadOverride(context.snapshot, event.target.value);
+										void onLoadOverride(context.snapshot.snapshotId, event.target.value);
 									}}
 								>
 									<option value="">Shared selected Run</option>
@@ -1022,7 +1077,7 @@ function NumberControl({
 
 function gapCountForWindow(
 	window: { sampleOutEndTimeMs?: number },
-	gaps: Array<{ startTimeMs: number; endTimeMs: number }>,
+	gaps: ReadonlyArray<{ startTimeMs: number; endTimeMs: number }>,
 ) {
 	const end = window.sampleOutEndTimeMs ?? Number.MAX_SAFE_INTEGER;
 	return gaps.filter((gap) => gap.startTimeMs < end).length;
@@ -1359,4 +1414,32 @@ function Feedback({
 }
 function percent(value: string) {
 	return `${formatDecimal(value)}%`;
+}
+
+function formatDraftError(error: DraftError) {
+	switch (error.kind) {
+		case "incomplete-draft":
+			return { summary: `Complete: ${error.fields.join(", ")}.` };
+		case "invalid-value":
+			if (error.reason === "not-a-date") {
+				return { summary: "Choose a valid sample-out boundary." };
+			}
+			if (error.reason === "outside-source") {
+				return {
+					summary: "The sample-out boundary must be inside the source Snapshot.",
+				};
+			}
+			if (error.reason === "not-enough-history") {
+				return {
+					summary: "Walk-forward history cannot produce a complete window.",
+				};
+			}
+			return { summary: "Walk-forward window sizes must be positive integers." };
+		case "incompatible-selection":
+			return { summary: "Selected validation evidence is incompatible." };
+		case "incomplete-provenance":
+			return { summary: "This Backtest Run has incomplete provenance." };
+		case "source-loading":
+			return { summary: "Loading exact validation evidence…" };
+	}
 }
