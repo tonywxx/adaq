@@ -1,6 +1,6 @@
 # ADAQ Component Examples
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md) v0.8.9
 
 These executable examples teach the complete ADAQ Component workflow with the real Rust SDK and `adaq-component` CLI:
 
