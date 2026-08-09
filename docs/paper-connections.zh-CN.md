@@ -49,6 +49,18 @@ Profile 只属于当前 ADAQ User 与当前设备，另一个已登录 User 不�
 
 V1 不提供自定义 Endpoint 字段，防止拼写错误、恶意 URL 或 Live Domain 把 Paper 配置变成另一个信任边界。
 
+## 使用 Connections 界面
+
+**Settings > Connections** 为每个 Provider 显示一张卡片，外加本地 A 股说明。未保存 Profile 的卡片显示凭据表单与 **保存并测试** 按钮。保存时先运行只读 Connection Test，只有测试通过后 Profile 才可用。
+
+已保存的 Profile 显示遮罩状态徽章、固定环境、遮罩 Key 后缀、已确认的 Account ID 与 Valuation Currency、上次测试时间、能力标签（例如 `read`、`trade`、`simulated`、`no_withdraw`），以及上次测试失败时的类型化、脱敏错误。UI 不会重新显示已保存的 Secret Key 或 Passphrase；凭据输入框保持为空并作为轮换字段使用。已保存 Profile 上的按钮：
+
+- **保存并轮换** — 写入新的操作系统密钥库条目，用新的只读测试验证，原子切换 Profile，并安全退役旧 Secret。替换失败时原有 Profile 仍然可用。
+- **重新测试** — 用已存储的凭据重新运行只读 Connection Test 并更新证据。
+- **删除** — 有活动运行时依赖该 Profile 时被阻止；确认后移除操作系统凭据并使 Profile 失效。下次 Bot 启动需要新测试通过的 Profile 和 Account Reconciliation。
+
+退出登录或重置研究数据不会移除或暴露凭据；删除始终是 Connections 中的显式操作。
+
 ## Connection Test 做什么
 
 Paper Connection Test 是只读操作，并生成可保留、已脱敏的证据。它会：
@@ -105,6 +117,7 @@ ADAQ 可以保留 Provider、Environment、Profile ID、Account ID、遮罩 Key 
 | Alpaca 拒绝 Key | 确认它是 Paper Key Pair；必要时在 Alpaca 重新生成，并在 ADAQ 中 Rotation。不要切换到 Live Endpoint。 |
 | OKX 报告 Environment Mismatch | 创建或选择 Demo API Key 后重新测试。ADAQ 不会把 `x-simulated-trading` 改成 Live Mode。 |
 | OKX Passphrase 丢失 | OKX 无法恢复；创建新的 Demo API Key 并 Rotation Profile。 |
+| OKX 密钥具备提现权限 | ADAQ 拒绝该连接；请创建仅 Read/Trade 的最小权限 Demo 密钥并 Rotation Profile。 |
 | Clock Skew 或 Timestamp Failure | 同步设备时间，再运行只读测试；不要削弱 Timestamp Validation。 |
 | Secret Store 拒绝访问 | 解锁或授权操作系统 Credential Store；不要把 Secret 复制到 SQLite 或 Config File。 |
 | Account Balance 与 Funding Target 不同 | 保持 Provider Account Snapshot 权威，使用 Provider 支持的 Reset Workflow；不要编辑本地 Cash。 |

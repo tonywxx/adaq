@@ -101,6 +101,7 @@ const english = {
 			appearance: "Appearance",
 			keyboardShortcuts: "Keyboard Shortcuts",
 			account: "Account",
+			connections: "Connections",
 			dataStorage: "Data & Storage",
 		},
 		general: {
@@ -224,6 +225,83 @@ const english = {
 			signalDatasets: "Forecast Signal Datasets: {{count}}",
 			preserved:
 				"Preserved: login, Account, Profile, theme, and update preference.",
+		},
+		connections: {
+			title: "Connections",
+			description:
+				"Paper/Demo provider credentials are stored in the operating-system secret store on this device only.",
+			requiresDesktop: "Connections are managed in the ADAQ desktop app.",
+			loading: "Loading connections…",
+			savedSecretHint:
+				"The saved credential is never redisplayed. Re-enter every value to rotate.",
+			keyPlaceholder: "Required to rotate",
+			secretPlaceholder: "Required to rotate",
+			environment: "Environment",
+			maskedSuffix: "Key ending",
+			accountId: "Account ID",
+			currency: "Currency",
+			lastTest: "Last test",
+			neverTested: "Never tested",
+			capabilities: "Capabilities",
+			status: {
+				usable: "Usable",
+				unusable: "Unusable",
+			},
+			alpacaPaper: {
+				title: "Alpaca Paper",
+				description:
+					"U.S. equities paper trading on the fixed Alpaca Paper environment.",
+				keyId: "Paper API Key ID",
+				secretKey: "Paper Secret Key",
+			},
+			okxDemo: {
+				title: "OKX Demo Trading",
+				description:
+					"Crypto spot demo trading on the fixed OKX Demo environment with simulated orders.",
+				apiKey: "Demo API Key",
+				secretKey: "Secret Key",
+				passphrase: "Passphrase",
+			},
+			aShare: {
+				title: "A-share Paper",
+				description:
+					"Uses the local ADAQ Ordinary Securities Account simulator; no broker credential is needed.",
+			},
+			save: "Save & test",
+			rotate: "Save & rotate",
+			test: "Test again",
+			delete: "Delete",
+			deleteConfirm:
+				"Delete this connection? The operating-system credential will be removed and the Profile invalidated.",
+			saved: "Connection saved and tested.",
+			tested: "Connection test completed.",
+			deleted: "Connection deleted.",
+			errors: {
+				unknown: "The connection could not be completed.",
+				invalid_input: "Credential values are missing or too long.",
+				auth_failed: "The provider rejected these credentials.",
+				inactive_account: "The provider account is not active.",
+				environment_mismatch:
+					"Environment mismatch: the key is not valid for the fixed Paper/Demo environment.",
+				currency_mismatch:
+					"The account currency differs from the expected Paper currency.",
+				account_mismatch:
+					"The provider account identity or currency changed since the confirmed binding.",
+				clock_skew: "The device clock is out of sync with the provider.",
+				missing_permission:
+					"The key is missing a required permission.",
+				withdrawal_capability:
+					"This key has withdrawal capability; V1 requires Read/Trade only. Create a least-privilege key.",
+				missing_reference:
+					"The stored credential is missing; re-save the connection.",
+				secret_store_unavailable:
+					"The operating-system secret store is unavailable.",
+				request_failed: "The provider request failed.",
+				blocked_active_runtime:
+					"Deletion is blocked while an active runtime depends on this connection.",
+				invalid_profile: "The connection profile was not found.",
+				internal: "An internal error occurred.",
+			},
 		},
 	},
 	loading: {
@@ -397,6 +475,7 @@ const simplifiedChinese = {
 			appearance: "外观",
 			keyboardShortcuts: "键盘快捷键",
 			account: "账户",
+			connections: "连接",
 			dataStorage: "数据与存储",
 		},
 		general: {
@@ -512,6 +591,69 @@ const simplifiedChinese = {
 			modelArtifacts: "模型产物注册：{{count}}",
 			signalDatasets: "预测信号数据集：{{count}}",
 			preserved: "保留：登录、账户、个人资料、主题和更新偏好。",
+		},
+		connections: {
+			title: "连接",
+			description: "Paper/Demo 提供商凭据仅存储在此设备的操作系统密钥库中。",
+			requiresDesktop: "连接在 ADAQ 桌面应用中管理。",
+			loading: "正在加载连接…",
+			savedSecretHint: "已保存的凭据不会重新显示。轮换时需要重新输入全部值。",
+			keyPlaceholder: "轮换时必填",
+			secretPlaceholder: "轮换时必填",
+			environment: "环境",
+			maskedSuffix: "密钥结尾",
+			accountId: "账户 ID",
+			currency: "货币",
+			lastTest: "上次测试",
+			neverTested: "从未测试",
+			capabilities: "能力",
+			status: {
+				usable: "可用",
+				unusable: "不可用",
+			},
+			alpacaPaper: {
+				title: "Alpaca Paper",
+				description: "在固定的 Alpaca Paper 环境中进行美股纸面交易。",
+				keyId: "Paper API Key ID",
+				secretKey: "Paper Secret Key",
+			},
+			okxDemo: {
+				title: "OKX Demo 交易",
+				description: "在固定的 OKX Demo 环境中以模拟订单进行加密现货演示交易。",
+				apiKey: "Demo API Key",
+				secretKey: "Secret Key",
+				passphrase: "Passphrase",
+			},
+			aShare: {
+				title: "A 股纸面账户",
+				description: "使用 ADAQ 本地的普通证券账户模拟器；无需券商凭据。",
+			},
+			save: "保存并测试",
+			rotate: "保存并轮换",
+			test: "重新测试",
+			delete: "删除",
+			deleteConfirm: "删除此连接？操作系统密钥库中的凭据将被移除，Profile 将失效。",
+			saved: "连接已保存并通过测试。",
+			tested: "连接测试已完成。",
+			deleted: "连接已删除。",
+			errors: {
+				unknown: "无法完成连接。",
+				invalid_input: "凭据缺失或过长。",
+				auth_failed: "提供商拒绝了这些凭据。",
+				inactive_account: "提供商账户未激活。",
+				environment_mismatch: "环境不匹配：该密钥不适用于固定的 Paper/Demo 环境。",
+				currency_mismatch: "账户货币与预期的 Paper 货币不一致。",
+				account_mismatch: "提供商账户身份或货币与已确认的绑定不一致。",
+				clock_skew: "设备时钟与提供商时间不同步。",
+				missing_permission: "密钥缺少所需权限。",
+				withdrawal_capability: "该密钥具备提现能力；V1 仅允许 Read/Trade。请创建最小权限密钥。",
+				missing_reference: "已存储的凭据丢失；请重新保存连接。",
+				secret_store_unavailable: "操作系统密钥库不可用。",
+				request_failed: "提供商请求失败。",
+				blocked_active_runtime: "有活动运行时依赖此连接，删除被阻止。",
+				invalid_profile: "未找到连接 Profile。",
+				internal: "发生内部错误。",
+			},
 		},
 	},
 	loading: {

@@ -47,6 +47,7 @@ pub struct LocalResearchState {
     pub(crate) generation: DatasetGeneration,
     pub(crate) validation: ValidationStudies,
     pub(crate) backtests: Backtests,
+    pub(crate) connections: crate::connections::ConnectionManager,
 }
 
 #[derive(Serialize)]
@@ -356,6 +357,7 @@ impl LocalResearchState {
             )
             .map_err(string)?;
         let database = Arc::new(Mutex::new(database));
+        let connections = crate::connections::ConnectionManager::open_production(database.clone())?;
         let snapshot_source = Arc::new(LocalSnapshotSource::new(
             database.clone(),
             Arc::new(snapshot_store),
@@ -402,6 +404,7 @@ impl LocalResearchState {
                 generation,
                 validation,
                 backtests,
+                connections,
             }
         }))
     }

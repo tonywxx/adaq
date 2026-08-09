@@ -1,5 +1,6 @@
 mod backtest;
 mod component_library;
+mod connections;
 mod dataset_generation;
 mod forecast_evaluation;
 mod forecast_signal_dataset;
@@ -654,6 +655,90 @@ fn market_unsubscribe_bar(
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionUserRequest {
+    user_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionProfileRequest {
+    user_id: String,
+    profile_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionSaveRequest {
+    user_id: String,
+    credentials: connections::ProviderCredentials,
+}
+
+/// Tauri Connection commands are thin adapters: they deserialize the
+/// existing contract, delegate to the Tauri-independent Connection domain,
+/// and serialize the result. Errors are serialized as the typed, redacted
+/// ConnectionError contract so the GUI can localize them.
+#[tauri::command]
+fn connection_profile_list(
+    request: ConnectionUserRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<Vec<connections::ProfileView>, String> {
+    state.connections.list(&request.user_id)
+}
+
+#[tauri::command]
+async fn connection_profile_save(
+    request: ConnectionSaveRequest,
+    app: tauri::AppHandle,
+) -> Result<connections::ProfileView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        state
+            .connections
+            .save(&request.user_id, request.credentials, connections::now_ms())
+            .map_err(serialize_connection_error)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn connection_profile_test(
+    request: ConnectionProfileRequest,
+    app: tauri::AppHandle,
+) -> Result<connections::ProfileView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        state
+            .connections
+            .test(&request.user_id, &request.profile_id, connections::now_ms())
+            .map_err(serialize_connection_error)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn connection_profile_delete(
+    request: ConnectionProfileRequest,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        state
+            .connections
+            .delete(&request.user_id, &request.profile_id)
+            .map_err(serialize_connection_error)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn serialize_connection_error(error: connections::ConnectionError) -> String {
+    serde_json::to_string(&error).unwrap_or_else(|_| error.message)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -785,7 +870,11 @@ pub fn run() {
             forecast_signal_dataset::signal_dataset_export,
             forecast_evaluation::forecast_evaluation_create,
             forecast_evaluation::forecast_evaluation_list,
-            forecast_evaluation::forecast_evaluation_export
+            forecast_evaluation::forecast_evaluation_export,
+            connection_profile_list,
+            connection_profile_save,
+            connection_profile_test,
+            connection_profile_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -25,6 +25,7 @@ import {
 import { checkStrongPassword } from "@/lib/password";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
+import { ConnectionsSettings } from "@/features/settings/connections-settings";
 import type { User } from "@supabase/supabase-js";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
@@ -45,6 +46,7 @@ import {
 	LogOutIcon,
 	MoonIcon,
 	PaletteIcon,
+	PlugZapIcon,
 	RefreshCwIcon,
 	Settings2Icon,
 	ShieldIcon,
@@ -85,6 +87,11 @@ const sections = [
 		icon: KeyboardIcon,
 	},
 	{ id: "account", labelKey: "settings.navigation.account", icon: ShieldIcon },
+	{
+		id: "connections",
+		labelKey: "settings.navigation.connections",
+		icon: PlugZapIcon,
+	},
 	{
 		id: "data-storage",
 		labelKey: "settings.navigation.dataStorage",
@@ -143,6 +150,7 @@ export function SettingsPage() {
 					{section === "appearance" && <AppearanceSettings />}
 					{section === "keyboard-shortcuts" && <KeyboardSettings />}
 					{section === "account" && <AccountSettings />}
+					{section === "connections" && <ConnectionsSettings />}
 					{section === "data-storage" && <DataStorageSettings />}
 				</div>
 			</main>

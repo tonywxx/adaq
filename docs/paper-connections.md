@@ -49,6 +49,18 @@ The Profile is scoped to the current ADAQ User and device. Another signed-in ADA
 
 There is no custom endpoint field in V1. This prevents a typo, malicious URL, or Live domain from turning a Paper configuration into a different trust boundary.
 
+## Using the Connections screen
+
+**Settings > Connections** shows one card per provider plus the local A-share note. A card with no saved Profile shows the credential form and a **Save & test** button. Saving runs the read-only Connection Test first; the Profile becomes usable only when the test passes.
+
+A saved Profile shows a masked status badge, the fixed environment, the masked Key suffix, the confirmed account ID and Valuation Currency, the last test time, and capability chips (for example `read`, `trade`, `simulated`, `no_withdraw`), plus the typed, redacted error when the last test failed. The UI never redisplays a saved Secret Key or Passphrase; the credential inputs stay empty and act as rotation fields. Buttons on a saved Profile are:
+
+- **Save & rotate** — writes a new OS-store entry, validates it with a fresh read-only test, atomically switches the Profile, and retires the previous secret. A failed replacement leaves the prior Profile usable.
+- **Test again** — re-runs the read-only Connection Test with the stored credential and updates the evidence.
+- **Delete** — blocked while an active runtime depends on the Profile; after confirmation it removes the OS credential and invalidates the Profile. The next Bot start then requires a newly tested Profile and account reconciliation.
+
+Signing out or resetting research data does not remove or expose credentials; deletion is always this explicit Connections action.
+
 ## What the connection test does
 
 The Paper Connection Test is read-only and produces retained, redacted evidence. It:
@@ -105,6 +117,7 @@ When reporting a connection problem, provide the Profile ID, provider, timestamp
 | Alpaca rejects the Key | Confirm it is the Paper Key pair, regenerate it in Alpaca if necessary, and rotate the ADAQ Profile. Do not switch to the Live endpoint. |
 | OKX reports environment mismatch | Create or select a Demo API key and retest. ADAQ will not change `x-simulated-trading` to Live mode. |
 | OKX Passphrase was lost | OKX cannot recover it; create a new Demo API key and rotate the Profile. |
+| OKX key has withdrawal capability | ADAQ rejects the connection; create a new least-privilege Demo key with Read/Trade only and rotate the Profile. |
 | Clock-skew or timestamp failure | Synchronize the device clock, then rerun the read-only test. Do not weaken timestamp validation. |
 | Secret-store access is denied | Unlock or authorize the operating-system credential store; do not copy the secret into SQLite or a config file. |
 | Account balance differs from the funding target | Keep the provider Account Snapshot authoritative and follow the provider-supported reset workflow; do not edit local cash. |
