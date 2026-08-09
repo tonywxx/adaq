@@ -37,6 +37,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod okx;
+
 pub const NORMALIZATION_CONTRACT_VERSION: &str = "lossless-v1";
 
 const APPLIED_RULES: [&str; 6] = [
@@ -60,6 +62,8 @@ pub enum PipelineError {
     Cancelled { source_id: String },
     #[error("pipeline publication failed after Source revision {source_id}: {message}")]
     PublicationFailed { source_id: String, message: String },
+    #[error("OKX market-data acquisition failed [{code}]: {message}")]
+    Connector { code: String, message: String },
     #[error("{evidence_kind} evidence {evidence_id} is deletion-locked")]
     DeletionBlocked {
         evidence_kind: String,
@@ -1954,10 +1958,8 @@ fn emit(callback: &mut impl FnMut(PipelineProgress), event: PipelineProgress) {
 }
 
 fn validate_user(user_id: &str) -> Result<(), PipelineError> {
-    if user_id.trim().is_empty() {
-        Err(PipelineError::InvalidRequest(
-            "User ID must be non-empty".into(),
-        ))
+    if user_id.trim().is_empty() || user_id.len() > 128 {
+        Err(PipelineError::InvalidRequest("User ID is invalid".into()))
     } else {
         Ok(())
     }

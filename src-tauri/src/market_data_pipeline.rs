@@ -117,6 +117,26 @@ pub(crate) struct UserEvidenceRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct UserRequest {
+    pub user_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UniverseRequest {
+    pub user_id: String,
+    pub as_of_ms: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BackfillCancelRequest {
+    pub user_id: String,
+    pub task_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SnapshotRequest {
     pub user_id: String,
     pub canonical_id: String,

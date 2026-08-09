@@ -18,7 +18,8 @@ use adaq_component_sdk::host::{factor_abi, strategy_abi};
 use adaq_component_tooling::{FactorSchema, WasmLoader};
 use adaq_data_core::{
     BarInterval, BarSeries, BarStreamEvent, BarSubscription, DataError, HistoricalBarRange,
-    InstrumentStatus, OkxClient, SpotInstrument, TickerSnapshot, TickerStreamEvent,
+    InstrumentStatus, Level2StreamEvent, OkxClient, SpotInstrument, TickerSnapshot,
+    TickerStreamEvent, TradeStreamEvent,
 };
 use std::{
     path::{Path, PathBuf},
@@ -32,6 +33,7 @@ use tauri::{
 use watchlist::{InstrumentRef, WatchlistDb, WatchlistState};
 
 use local_research::LocalResearchState;
+use user::validate_user;
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
 const CHECK_FOR_UPDATES_EVENT: &str = "adaq-check-for-updates";
@@ -410,6 +412,128 @@ async fn market_data_pipeline_delete(
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+async fn okx_instrument_master_acquire(
+    request: market_data_pipeline::UserRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::okx::InstrumentMasterSnapshot, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        tauri::async_runtime::block_on(state.okx.acquire_instrument_master(&request.user_id))
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn okx_instrument_master_list(
+    request: market_data_pipeline::UserRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<adaq_data_pipeline::okx::InstrumentMasterSnapshot>, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .okx
+            .list_instrument_master_snapshots(&request.user_id)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn okx_universe(
+    request: market_data_pipeline::UniverseRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::okx::PointInTimeInstrumentUniverse, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .okx
+            .point_in_time_universe(&request.user_id, request.as_of_ms)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn okx_backfill(
+    request: adaq_data_pipeline::okx::OkxBackfillRequest,
+    on_event: Channel<adaq_data_pipeline::okx::OkxBackfillEvent>,
+    app: tauri::AppHandle,
+) -> Result<Vec<market_data_pipeline::PublicationView>, String> {
+    validate_user(&request.user_id)?;
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let task_id = request.task_id.clone();
+    let cancellation = state
+        .okx
+        .begin_backfill(&task_id, &request.user_id)
+        .map_err(string)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result =
+            tauri::async_runtime::block_on(state.okx.backfill(&request, cancellation, |event| {
+                let _ = on_event.send(event);
+            }));
+        let finish = state.okx.finish_backfill(&task_id);
+        match (result, finish) {
+            (Ok(publications), Ok(())) => Ok(publications
+                .into_iter()
+                .map(market_data_pipeline::PublicationView::from)
+                .collect()),
+            (Err(error), _) | (_, Err(error)) => Err(string(error)),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn okx_backfill_cancel(
+    request: market_data_pipeline::BackfillCancelRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    validate_user(&request.user_id)?;
+    state
+        .okx
+        .cancel_backfill(&request.task_id, &request.user_id)
+        .map_err(string)
+}
+
+#[tauri::command]
+async fn okx_acquisition_status(
+    request: market_data_pipeline::UserRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<adaq_data_pipeline::okx::OkxAcquisitionStatus>, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .okx
+            .acquisition_statuses(&request.user_id)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn okx_stream_health(
+    request: market_data_pipeline::UserRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<adaq_data_pipeline::okx::OkxStreamHealth>, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .okx
+            .stream_health(&request.user_id)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// Tauri Backtest Run commands are thin adapters: they deserialize the
 /// existing contract, delegate to the Tauri-independent Backtest Run
 /// module, and serialize the result. Command names and camelCase shapes
@@ -497,6 +621,15 @@ struct MarketSubscribeTickersRequest {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MarketSubscribeRealtimeRequest {
+    src: String,
+    user_id: String,
+    codes: Vec<String>,
+    subscription_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MarketUnsubscribeTickerRequest {
     subscription_id: String,
 }
@@ -552,6 +685,24 @@ struct ActiveBarStream {
 
 #[derive(Default)]
 struct BarStreamState(Mutex<Option<ActiveBarStream>>);
+
+struct ActiveTradeStream {
+    subscription_id: String,
+    task: tauri::async_runtime::JoinHandle<()>,
+    on_event: Channel<TradeStreamEvent>,
+}
+
+#[derive(Default)]
+struct TradeStreamState(Mutex<Option<ActiveTradeStream>>);
+
+struct ActiveLevel2Stream {
+    subscription_id: String,
+    task: tauri::async_runtime::JoinHandle<()>,
+    on_event: Channel<Level2StreamEvent>,
+}
+
+#[derive(Default)]
+struct Level2StreamState(Mutex<Option<ActiveLevel2Stream>>);
 
 fn require_okx(src: &str) -> Result<(), DataError> {
     if src == "okx" {
@@ -693,6 +844,146 @@ fn market_subscribe_tickers(
     }) {
         let _ = previous.on_event.send(TickerStreamEvent::Closed);
         previous.task.abort();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn market_subscribe_trades(
+    request: MarketSubscribeRealtimeRequest,
+    on_event: Channel<TradeStreamEvent>,
+    app: tauri::AppHandle,
+    streams: State<'_, TradeStreamState>,
+) -> Result<(), DataError> {
+    validate_realtime_request(
+        &request.src,
+        &request.user_id,
+        &request.codes,
+        &request.subscription_id,
+    )?;
+    let mut active = streams
+        .0
+        .lock()
+        .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
+    let task_path = app.state::<Arc<LocalResearchState>>().okx.clone();
+    let task_channel = on_event.clone();
+    let user_id = request.user_id;
+    let codes = request.codes;
+    let task = tauri::async_runtime::spawn(async move {
+        if let Err(error) = task_path
+            .stream_trades(&user_id, &codes, |event| task_channel.send(event).is_ok())
+            .await
+        {
+            let _ = task_channel.send(TradeStreamEvent::Error(error));
+        }
+    });
+    if let Some(previous) = active.replace(ActiveTradeStream {
+        subscription_id: request.subscription_id,
+        task,
+        on_event,
+    }) {
+        let _ = previous.on_event.send(TradeStreamEvent::Closed);
+        previous.task.abort();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn market_unsubscribe_trades(
+    request: MarketUnsubscribeTickerRequest,
+    streams: State<'_, TradeStreamState>,
+) -> Result<(), DataError> {
+    let mut active = streams
+        .0
+        .lock()
+        .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
+    if active
+        .as_ref()
+        .is_some_and(|stream| stream.subscription_id == request.subscription_id)
+    {
+        if let Some(previous) = active.take() {
+            let _ = previous.on_event.send(TradeStreamEvent::Closed);
+            previous.task.abort();
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn market_subscribe_level2(
+    request: MarketSubscribeRealtimeRequest,
+    on_event: Channel<Level2StreamEvent>,
+    app: tauri::AppHandle,
+    streams: State<'_, Level2StreamState>,
+) -> Result<(), DataError> {
+    validate_realtime_request(
+        &request.src,
+        &request.user_id,
+        &request.codes,
+        &request.subscription_id,
+    )?;
+    let mut active = streams
+        .0
+        .lock()
+        .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
+    let task_path = app.state::<Arc<LocalResearchState>>().okx.clone();
+    let task_channel = on_event.clone();
+    let user_id = request.user_id;
+    let codes = request.codes;
+    let task = tauri::async_runtime::spawn(async move {
+        if let Err(error) = task_path
+            .stream_level2(&user_id, &codes, |event| task_channel.send(event).is_ok())
+            .await
+        {
+            let _ = task_channel.send(Level2StreamEvent::Error(error));
+        }
+    });
+    if let Some(previous) = active.replace(ActiveLevel2Stream {
+        subscription_id: request.subscription_id,
+        task,
+        on_event,
+    }) {
+        let _ = previous.on_event.send(Level2StreamEvent::Closed);
+        previous.task.abort();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn market_unsubscribe_level2(
+    request: MarketUnsubscribeTickerRequest,
+    streams: State<'_, Level2StreamState>,
+) -> Result<(), DataError> {
+    let mut active = streams
+        .0
+        .lock()
+        .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
+    if active
+        .as_ref()
+        .is_some_and(|stream| stream.subscription_id == request.subscription_id)
+    {
+        if let Some(previous) = active.take() {
+            let _ = previous.on_event.send(Level2StreamEvent::Closed);
+            previous.task.abort();
+        }
+    }
+    Ok(())
+}
+
+fn validate_realtime_request(
+    src: &str,
+    user_id: &str,
+    codes: &[String],
+    subscription_id: &str,
+) -> Result<(), DataError> {
+    require_okx(src)?;
+    validate_user(user_id).map_err(|message| DataError::new("okx", "invalid_request", message))?;
+    if subscription_id.trim().is_empty() || !(1..=32).contains(&codes.len()) {
+        return Err(DataError::new(
+            "okx",
+            "invalid_request",
+            "user ID and subscription ID must be non-empty and codes must contain 1 to 32 items",
+        ));
     }
     Ok(())
 }
@@ -883,6 +1174,8 @@ pub fn run() {
             app.manage(OkxClient::default());
             app.manage(TickerStreamState::default());
             app.manage(BarStreamState::default());
+            app.manage(TradeStreamState::default());
+            app.manage(Level2StreamState::default());
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
             let database_path = database_path(&app_data_dir);
@@ -956,6 +1249,10 @@ pub fn run() {
             watchlist_set_active,
             watchlist_set_interval,
             market_subscribe_tickers,
+            market_subscribe_trades,
+            market_unsubscribe_trades,
+            market_subscribe_level2,
+            market_unsubscribe_level2,
             market_unsubscribe_ticker,
             market_subscribe_bars,
             market_unsubscribe_bar,
@@ -978,6 +1275,13 @@ pub fn run() {
             market_data_pipeline_failures,
             market_data_pipeline_publish_snapshot,
             market_data_pipeline_delete,
+            okx_instrument_master_acquire,
+            okx_instrument_master_list,
+            okx_universe,
+            okx_backfill,
+            okx_backfill_cancel,
+            okx_acquisition_status,
+            okx_stream_health,
             backtest_preflight,
             backtest_run,
             backtest_list,

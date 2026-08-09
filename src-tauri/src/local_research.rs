@@ -21,8 +21,8 @@ use adaq_backtest_core::{MarketDataSnapshot, SnapshotStore};
 use adaq_component_tooling::{
     ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotSource,
 };
-use adaq_data_core::OhlcvBar;
-use adaq_data_pipeline::{DataPipeline, DataQualityReport};
+use adaq_data_core::{OhlcvBar, OkxClient};
+use adaq_data_pipeline::{DataPipeline, DataQualityReport, okx::OkxSpotDataPath};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -43,6 +43,7 @@ pub struct LocalResearchState {
     pub(crate) root: PathBuf,
     pub(crate) database: Arc<Mutex<Connection>>,
     pub(crate) pipeline: DataPipeline,
+    pub(crate) okx: OkxSpotDataPath,
     pub(crate) snapshots: MarketDataSnapshots,
     pub(crate) components: ComponentLibrary,
     source: Arc<LocalGenerationSource>,
@@ -361,6 +362,7 @@ impl LocalResearchState {
         let database = Arc::new(Mutex::new(database));
         let pipeline = DataPipeline::open(root.join("market-data-pipeline"), database.clone())
             .map_err(string)?;
+        let okx = OkxSpotDataPath::open(pipeline.clone(), OkxClient::default()).map_err(string)?;
         let connections = crate::connections::ConnectionManager::open_production(database.clone())?;
         let snapshot_source = Arc::new(LocalSnapshotSource::new(
             database.clone(),
@@ -403,6 +405,7 @@ impl LocalResearchState {
                 root,
                 database,
                 pipeline,
+                okx,
                 snapshots,
                 components,
                 source,
