@@ -73,18 +73,6 @@ M1-M8 合起来形成当前可用闭环：开发或导入 Component，冻结精�
 pnpm install --frozen-lockfile
 ```
 
-### 配置（环境变量）
-
-桌面应用通过 Supabase 托管的账户登录。在项目根目录创建本地 `.env` 文件（已被 git 忽略）：
-
-```sh
-VITE_SUPABASE_URL=https://<your-project>.supabase.co
-VITE_SUPABASE_PUBLISHABLE_KEY=<your-publishable-anon-key>
-# 当 publishable key 缺失时，会回退使用 VITE_SUPABASE_ANON_KEY
-```
-
-将 `supabase/migrations/` 中的数据库迁移应用到你的 Supabase 项目（auth + profiles）。缺少这些变量时，登录 / 账户流程将无法连接。
-
 ### 运行（开发模式）
 
 ```sh

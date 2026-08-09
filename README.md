@@ -73,18 +73,6 @@ Together, M1-M8 provide the current closed loop: develop or import a Component, 
 pnpm install --frozen-lockfile
 ```
 
-### Configure (environment)
-
-The desktop app signs you in through a Supabase-backed account. Create a local `.env` file (gitignored) in the project root:
-
-```sh
-VITE_SUPABASE_URL=https://<your-project>.supabase.co
-VITE_SUPABASE_PUBLISHABLE_KEY=<your-publishable-anon-key>
-# VITE_SUPABASE_ANON_KEY is used as a fallback when the publishable key is absent
-```
-
-Apply the database migration in `supabase/migrations/` to your Supabase project (auth + profiles). Without these variables the sign-in / account flow cannot connect.
-
 ### Run (development)
 
 ```sh
