@@ -15,6 +15,39 @@ test("workspace navigation keeps one authenticated shell mounted", () => {
 	expect(source).toMatch(/path: "\/settings\/\$section"/);
 });
 
+test("reserves Operations at root and exposes localized market workspaces", () => {
+	const routerSource = readFileSync(
+		new URL("./router.tsx", import.meta.url),
+		"utf8",
+	);
+	const sidebarSource = readFileSync(
+		new URL("./components/app-sidebar.tsx", import.meta.url),
+		"utf8",
+	);
+	const marketsSource = readFileSync(
+		new URL("./features/markets/markets-page.tsx", import.meta.url),
+		"utf8",
+	);
+
+	expect(routerSource).toMatch(/path: "\/",\s*component: OperationsDashboard/);
+	for (const path of [
+		"/markets",
+		"/markets/crypto",
+		"/markets/a-shares",
+		"/markets/us-equities",
+	]) {
+		expect(routerSource).toContain(`path: "${path}"`);
+	}
+	expect(routerSource).not.toMatch(/path: "\/",\s*component: Dashboard/);
+	expect(sidebarSource).toMatch(/t\("nav\.markets"\)/);
+	expect(sidebarSource).toMatch(/startsWith\("\/markets"\)/);
+	expect(marketsSource).toMatch(/staleTime: 5 \* 60_000/);
+	expect(marketsSource).toMatch(/gcTime: 30 \* 60_000/);
+	expect(marketsSource).toMatch(/aria-busy=/);
+	expect(marketsSource).toMatch(/role="alert"/);
+	expect(marketsSource).toMatch(/gapsUnknown/);
+});
+
 test("Models switches immediately and keeps loading inside its controls", () => {
 	const routerSource = readFileSync(
 		new URL("./router.tsx", import.meta.url),

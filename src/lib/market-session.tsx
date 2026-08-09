@@ -7,6 +7,7 @@ import { create } from "zustand";
 export const DEFAULT_ACTIVE_INSTRUMENT = {
 	src: "okx",
 	code: "BTC-USDT",
+	venue: { id: "okx", kind: "cryptoSpot", timeZone: "UTC" },
 } as const;
 
 export const MINI_CHART_INTERVALS = [
@@ -21,6 +22,15 @@ export const MINI_CHART_INTERVALS = [
 export type InstrumentRef = {
 	src: string;
 	code: string;
+	venue?: Venue;
+};
+
+export type VenueKind = "cryptoSpot" | "chinaAShareEquity" | "usEquity";
+
+export type Venue = {
+	id: string;
+	kind: VenueKind;
+	timeZone: string;
 };
 
 export type WatchlistState = {
@@ -306,9 +316,13 @@ export function MarketSessionProvider({
 				interval: miniChartInterval,
 			});
 		}
+		const activeCrypto =
+			activeInstrument.src === "okx" &&
+			(!activeInstrument.venue || activeInstrument.venue.kind === "cryptoSpot");
 		if (
-			!catalogLoaded ||
-			catalog[instrumentKey(activeInstrument)]?.status === "live"
+			activeCrypto &&
+			(!catalogLoaded ||
+				catalog[instrumentKey(activeInstrument)]?.status === "live")
 		) {
 			subscriptions.set(barKey(activeInstrument, mainChartInterval), {
 				code: activeInstrument.code,
@@ -427,7 +441,7 @@ function handleBarEvent(event: BarStreamEvent) {
 }
 
 export function instrumentKey(instrument: InstrumentRef) {
-	return `${instrument.src}:${instrument.code}`;
+	return `${instrument.venue?.id ?? instrument.src}:${instrument.code}`;
 }
 
 export function barKey(instrument: InstrumentRef, interval: BarInterval) {

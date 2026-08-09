@@ -5,12 +5,18 @@ import {
 	Sidebar,
 	SidebarContent,
 	SidebarFooter,
+	SidebarGroup,
+	SidebarGroupContent,
+	SidebarGroupLabel,
 	SidebarHeader,
 	SidebarMenu,
 	SidebarMenuButton,
 	SidebarMenuItem,
+	SidebarMenuSub,
+	SidebarMenuSubButton,
+	SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
-import { Link } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import {
 	CameraIcon,
 	ChartBarIcon,
@@ -123,6 +129,7 @@ const data = {
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 	const { t } = useTranslation();
+	const location = useLocation();
 	const navMain = data.navMain.map((item) => ({
 		...item,
 		title: t(item.titleKey),
@@ -151,6 +158,59 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 			</SidebarHeader>
 			<SidebarContent>
 				<NavMain items={navMain} />
+				<SidebarGroup>
+					<SidebarGroupLabel>{t("nav.markets")}</SidebarGroupLabel>
+					<SidebarGroupContent>
+						<SidebarMenu>
+							<SidebarMenuItem>
+								<SidebarMenuButton
+									asChild
+									isActive={location.pathname.startsWith("/markets")}
+									tooltip={t("nav.markets")}
+								>
+									<Link to="/markets">
+										<CandlestickChart aria-hidden="true" />
+										<span>{t("nav.markets")}</span>
+									</Link>
+								</SidebarMenuButton>
+								<SidebarMenuSub>
+									<SidebarMenuSubItem>
+										<SidebarMenuSubButton
+											asChild
+											isActive={location.pathname === "/markets"}
+										>
+											<Link to="/markets">{t("nav.marketsOverview")}</Link>
+										</SidebarMenuSubButton>
+									</SidebarMenuSubItem>
+									<SidebarMenuSubItem>
+										<SidebarMenuSubButton
+											asChild
+											isActive={location.pathname === "/markets/crypto"}
+										>
+											<Link to="/markets/crypto">{t("nav.crypto")}</Link>
+										</SidebarMenuSubButton>
+									</SidebarMenuSubItem>
+									<SidebarMenuSubItem>
+										<SidebarMenuSubButton
+											asChild
+											isActive={location.pathname === "/markets/a-shares"}
+										>
+											<Link to="/markets/a-shares">{t("nav.aShares")}</Link>
+										</SidebarMenuSubButton>
+									</SidebarMenuSubItem>
+									<SidebarMenuSubItem>
+										<SidebarMenuSubButton
+											asChild
+											isActive={location.pathname === "/markets/us-equities"}
+										>
+											<Link to="/markets/us-equities">{t("nav.usEquities")}</Link>
+										</SidebarMenuSubButton>
+									</SidebarMenuSubItem>
+								</SidebarMenuSub>
+							</SidebarMenuItem>
+						</SidebarMenu>
+					</SidebarGroupContent>
+				</SidebarGroup>
 				{/* <NavDocuments items={data.documents} /> */}
 				<NavSecondary items={navSecondary} className="mt-auto" />
 			</SidebarContent>

@@ -1,6 +1,9 @@
 use std::{path::Path, sync::Mutex};
 
-use adaq_data_core::BarInterval;
+use adaq_data_core::{
+    BarInterval,
+    market::{Venue, VenueKind},
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +17,8 @@ const WATCHLIST_LIMIT: i64 = 20;
 pub struct InstrumentRef {
     pub src: String,
     pub code: String,
+    #[serde(default)]
+    pub venue: Option<Venue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26,6 +31,24 @@ pub struct WatchlistState {
 }
 
 pub struct WatchlistDb(Mutex<Connection>);
+
+pub fn validate_provider_venue(instrument: &InstrumentRef) -> Result<(), String> {
+    let expected_kind = match instrument.src.as_str() {
+        "okx" => VenueKind::CryptoSpot,
+        "akshare-rs" => VenueKind::ChinaAShareEquity,
+        "alpaca" => VenueKind::UsEquity,
+        _ => return Err("unsupported Market Data Provider for Watchlist Instrument".to_owned()),
+    };
+    let Some(venue) = instrument.venue.as_ref() else {
+        return (instrument.src == DEFAULT_SRC)
+            .then_some(())
+            .ok_or_else(|| "a canonical Venue is required for this Instrument".to_owned());
+    };
+    if venue.kind != expected_kind {
+        return Err("Watchlist provider and Venue do not match".to_owned());
+    }
+    Ok(())
+}
 
 impl WatchlistDb {
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -42,20 +65,60 @@ impl WatchlistDb {
                     user_id TEXT PRIMARY KEY,
                     active_src TEXT NOT NULL,
                     active_code TEXT NOT NULL,
+                    active_venue_json TEXT,
                     mini_chart_interval TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS watchlist_items (
                     user_id TEXT NOT NULL,
                     src TEXT NOT NULL,
                     code TEXT NOT NULL,
+                    venue_json TEXT,
                     position INTEGER NOT NULL,
-                    PRIMARY KEY (user_id, src, code),
                     FOREIGN KEY (user_id) REFERENCES watchlist_settings(user_id)
                         ON DELETE CASCADE
                 );
-                CREATE INDEX IF NOT EXISTS watchlist_items_order
-                    ON watchlist_items(user_id, position);
                 ",
+            )
+            .map_err(|error| error.to_string())?;
+        ensure_column(
+            &connection,
+            "watchlist_settings",
+            "active_venue_json",
+            "TEXT",
+        )?;
+        ensure_column(&connection, "watchlist_items", "venue_json", "TEXT")?;
+        migrate_legacy_item_identity(&connection)?;
+        connection
+            .execute(
+                "CREATE INDEX IF NOT EXISTS watchlist_items_order
+                 ON watchlist_items(user_id, position)",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        let default_venue_json =
+            serde_json::to_string(&default_venue()).map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "UPDATE watchlist_settings
+                 SET active_venue_json = ?1
+                 WHERE active_venue_json IS NULL AND active_src = 'okx'",
+                [&default_venue_json],
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "UPDATE watchlist_items
+                 SET venue_json = ?1
+                 WHERE venue_json IS NULL AND src = 'okx'",
+                [&default_venue_json],
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS watchlist_items_identity
+                 ON watchlist_items(user_id, venue_json, code)
+                 WHERE venue_json IS NOT NULL",
+                [],
             )
             .map_err(|error| error.to_string())?;
         Ok(Self(Mutex::new(connection)))
@@ -70,7 +133,14 @@ impl WatchlistDb {
 
     pub fn add(&self, user_id: &str, instrument: &InstrumentRef) -> Result<WatchlistState, String> {
         validate_user_id(user_id)?;
-        validate_instrument(instrument)?;
+        let instrument = canonicalize_instrument(instrument)?;
+        let venue_json = serde_json::to_string(
+            instrument
+                .venue
+                .as_ref()
+                .expect("canonical instruments always have a Venue"),
+        )
+        .map_err(|error| error.to_string())?;
         let mut connection = self.0.lock().map_err(|error| error.to_string())?;
         ensure_account(&mut connection, user_id)?;
         let count: i64 = connection
@@ -95,9 +165,15 @@ impl WatchlistDb {
             .map_err(|error| error.to_string())?;
         connection
             .execute(
-                "INSERT INTO watchlist_items(user_id, src, code, position)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![user_id, instrument.src, instrument.code, position],
+                "INSERT INTO watchlist_items(user_id, src, code, venue_json, position)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    user_id,
+                    instrument.src,
+                    instrument.code,
+                    venue_json,
+                    position
+                ],
             )
             .map_err(|error| {
                 if error.to_string().contains("UNIQUE constraint failed") {
@@ -115,30 +191,50 @@ impl WatchlistDb {
         instrument: &InstrumentRef,
     ) -> Result<WatchlistState, String> {
         validate_user_id(user_id)?;
-        validate_instrument(instrument)?;
+        let instrument = canonicalize_instrument(instrument)?;
+        let venue_json = serde_json::to_string(
+            instrument
+                .venue
+                .as_ref()
+                .expect("canonical instruments always have a Venue"),
+        )
+        .map_err(|error| error.to_string())?;
         let mut connection = self.0.lock().map_err(|error| error.to_string())?;
         ensure_account(&mut connection, user_id)?;
         connection
             .execute(
                 "DELETE FROM watchlist_items
-                 WHERE user_id = ?1 AND src = ?2 AND code = ?3",
-                params![user_id, instrument.src, instrument.code],
+                 WHERE user_id = ?1 AND venue_json = ?2 AND code = ?3",
+                params![user_id, venue_json, instrument.code],
             )
             .map_err(|error| error.to_string())?;
-        let (active_src, active_code): (String, String) = connection
-            .query_row(
-                "SELECT active_src, active_code FROM watchlist_settings WHERE user_id = ?1",
-                [user_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(|error| error.to_string())?;
-        if active_src == instrument.src && active_code == instrument.code {
+        let (active_src, active_code, active_venue_json): (String, String, Option<String>) =
+            connection
+                .query_row(
+                    "SELECT active_src, active_code, active_venue_json
+                 FROM watchlist_settings WHERE user_id = ?1",
+                    [user_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|error| error.to_string())?;
+        if active_venue_json.as_deref() == Some(&venue_json)
+            || (active_venue_json.is_none()
+                && active_src == instrument.src
+                && active_code == instrument.code)
+        {
             let next = first_item(&connection, user_id)?.unwrap_or_else(default_active);
+            let next_venue_json = serde_json::to_string(
+                next.venue
+                    .as_ref()
+                    .expect("canonical instruments always have a Venue"),
+            )
+            .map_err(|error| error.to_string())?;
             connection
                 .execute(
                     "UPDATE watchlist_settings
-                     SET active_src = ?2, active_code = ?3 WHERE user_id = ?1",
-                    params![user_id, next.src, next.code],
+                     SET active_src = ?2, active_code = ?3, active_venue_json = ?4
+                     WHERE user_id = ?1",
+                    params![user_id, next.src, next.code, next_venue_json],
                 )
                 .map_err(|error| error.to_string())?;
         }
@@ -151,14 +247,22 @@ impl WatchlistDb {
         instrument: &InstrumentRef,
     ) -> Result<WatchlistState, String> {
         validate_user_id(user_id)?;
-        validate_instrument(instrument)?;
+        let instrument = canonicalize_instrument(instrument)?;
+        let venue_json = serde_json::to_string(
+            instrument
+                .venue
+                .as_ref()
+                .expect("canonical instruments always have a Venue"),
+        )
+        .map_err(|error| error.to_string())?;
         let mut connection = self.0.lock().map_err(|error| error.to_string())?;
         ensure_account(&mut connection, user_id)?;
         connection
             .execute(
                 "UPDATE watchlist_settings
-                 SET active_src = ?2, active_code = ?3 WHERE user_id = ?1",
-                params![user_id, instrument.src, instrument.code],
+                 SET active_src = ?2, active_code = ?3, active_venue_json = ?4
+                 WHERE user_id = ?1",
+                params![user_id, instrument.src, instrument.code, venue_json],
             )
             .map_err(|error| error.to_string())?;
         load_state(&connection, user_id)
@@ -198,21 +302,35 @@ fn ensure_account(connection: &mut Connection, user_id: &str) -> Result<(), Stri
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
+    let default_venue_json =
+        serde_json::to_string(&default_venue()).map_err(|error| error.to_string())?;
     let inserted = transaction
         .execute(
             "INSERT OR IGNORE INTO watchlist_settings(
-                user_id, active_src, active_code, mini_chart_interval
-             ) VALUES (?1, ?2, ?3, '1m')",
-            params![user_id, DEFAULT_SRC, DEFAULT_ACTIVE_CODE],
+                user_id, active_src, active_code, active_venue_json, mini_chart_interval
+             ) VALUES (?1, ?2, ?3, ?4, '1m')",
+            params![
+                user_id,
+                DEFAULT_SRC,
+                DEFAULT_ACTIVE_CODE,
+                default_venue_json
+            ],
         )
         .map_err(|error| error.to_string())?;
     if inserted == 1 {
         for (position, code) in DEFAULT_CODES.iter().enumerate() {
             transaction
                 .execute(
-                    "INSERT INTO watchlist_items(user_id, src, code, position)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![user_id, DEFAULT_SRC, code, position as i64],
+                    "INSERT INTO watchlist_items(user_id, src, code, venue_json, position)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        user_id,
+                        DEFAULT_SRC,
+                        code,
+                        serde_json::to_string(&default_venue())
+                            .map_err(|error| error.to_string())?,
+                        position as i64
+                    ],
                 )
                 .map_err(|error| error.to_string())?;
         }
@@ -221,56 +339,67 @@ fn ensure_account(connection: &mut Connection, user_id: &str) -> Result<(), Stri
 }
 
 fn load_state(connection: &Connection, user_id: &str) -> Result<WatchlistState, String> {
-    let (active_src, active_code, interval): (String, String, String) = connection
+    let (active_src, active_code, active_venue_json, interval): (
+        String,
+        String,
+        Option<String>,
+        String,
+    ) = connection
         .query_row(
-            "SELECT active_src, active_code, mini_chart_interval
+            "SELECT active_src, active_code, active_venue_json, mini_chart_interval
              FROM watchlist_settings WHERE user_id = ?1",
             [user_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|error| error.to_string())?;
+    let active_instrument = from_storage(active_src, active_code, active_venue_json)?;
     let mut statement = connection
         .prepare(
-            "SELECT src, code FROM watchlist_items
+            "SELECT src, code, venue_json FROM watchlist_items
              WHERE user_id = ?1 ORDER BY position, rowid",
         )
         .map_err(|error| error.to_string())?;
     let items = statement
         .query_map([user_id], |row| {
-            Ok(InstrumentRef {
-                src: row.get(0)?,
-                code: row.get(1)?,
-            })
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
         })
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
+    let items = items
+        .into_iter()
+        .map(|(src, code, venue_json)| from_storage(src, code, venue_json))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(WatchlistState {
         items,
-        active_instrument: InstrumentRef {
-            src: active_src,
-            code: active_code,
-        },
+        active_instrument,
         mini_chart_interval: parse_interval(&interval).unwrap_or(BarInterval::OneMinute),
         limit: WATCHLIST_LIMIT,
     })
 }
 
 fn first_item(connection: &Connection, user_id: &str) -> Result<Option<InstrumentRef>, String> {
-    connection
+    let row = connection
         .query_row(
-            "SELECT src, code FROM watchlist_items
+            "SELECT src, code, venue_json FROM watchlist_items
              WHERE user_id = ?1 ORDER BY position, rowid LIMIT 1",
             [user_id],
             |row| {
-                Ok(InstrumentRef {
-                    src: row.get(0)?,
-                    code: row.get(1)?,
-                })
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
             },
         )
         .optional()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    row.map(|(src, code, venue_json)| from_storage(src, code, venue_json))
+        .transpose()
 }
 
 fn parse_interval(value: &str) -> Option<BarInterval> {
@@ -283,7 +412,116 @@ fn default_active() -> InstrumentRef {
     InstrumentRef {
         src: DEFAULT_SRC.to_owned(),
         code: DEFAULT_ACTIVE_CODE.to_owned(),
+        venue: Some(default_venue()),
     }
+}
+
+fn default_venue() -> Venue {
+    Venue::new(DEFAULT_SRC, VenueKind::CryptoSpot).expect("default OKX Venue is valid")
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| error.to_string())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    if columns.iter().any(|value| value == column) {
+        return Ok(());
+    }
+    connection
+        .execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn migrate_legacy_item_identity(connection: &Connection) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(watchlist_items)")
+        .map_err(|error| error.to_string())?;
+    let mut primary_key_columns = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    primary_key_columns.sort_by_key(|(_, position)| *position);
+    let primary_key_columns = primary_key_columns
+        .into_iter()
+        .filter(|(_, position)| *position > 0)
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>();
+    if primary_key_columns != ["user_id", "src", "code"] {
+        return Ok(());
+    }
+
+    connection
+        .execute_batch(
+            "
+            CREATE TABLE watchlist_items_identity_migration (
+                user_id TEXT NOT NULL,
+                src TEXT NOT NULL,
+                code TEXT NOT NULL,
+                venue_json TEXT,
+                position INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES watchlist_settings(user_id)
+                    ON DELETE CASCADE
+            );
+            INSERT INTO watchlist_items_identity_migration(
+                user_id, src, code, venue_json, position
+            )
+            SELECT user_id, src, code, venue_json, position
+            FROM watchlist_items;
+            DROP TABLE watchlist_items;
+            ALTER TABLE watchlist_items_identity_migration RENAME TO watchlist_items;
+            ",
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn canonicalize_instrument(instrument: &InstrumentRef) -> Result<InstrumentRef, String> {
+    if !matches!(instrument.src.as_str(), "okx" | "akshare-rs" | "alpaca")
+        || instrument.code.trim().is_empty()
+    {
+        return Err("unsupported or empty Instrument identity".to_owned());
+    }
+    let venue = instrument
+        .venue
+        .clone()
+        .or_else(|| (instrument.src == DEFAULT_SRC).then(default_venue))
+        .ok_or_else(|| "a canonical Venue is required for this Instrument".to_owned())?;
+    let canonical = Venue::new(venue.id.clone(), venue.kind).map_err(|error| error.to_string())?;
+    if canonical.time_zone != venue.time_zone {
+        return Err("Instrument Venue time zone does not match its Venue kind".to_owned());
+    }
+    Ok(InstrumentRef {
+        src: instrument.src.clone(),
+        code: instrument.code.clone(),
+        venue: Some(canonical),
+    })
+}
+
+fn from_storage(
+    src: String,
+    code: String,
+    venue_json: Option<String>,
+) -> Result<InstrumentRef, String> {
+    let venue = venue_json
+        .map(|value| serde_json::from_str(&value).map_err(|error| error.to_string()))
+        .transpose()?;
+    canonicalize_instrument(&InstrumentRef { src, code, venue })
 }
 
 fn validate_user_id(user_id: &str) -> Result<(), String> {
@@ -294,19 +532,12 @@ fn validate_user_id(user_id: &str) -> Result<(), String> {
     }
 }
 
-fn validate_instrument(instrument: &InstrumentRef) -> Result<(), String> {
-    if instrument.src != DEFAULT_SRC || instrument.code.trim().is_empty() {
-        Err("only non-empty OKX Instrument IDs are supported".to_owned())
-    } else {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use adaq_data_core::market::{Venue, VenueKind};
     use rusqlite::Connection;
 
-    use super::{InstrumentRef, WATCHLIST_LIMIT, WatchlistDb};
+    use super::{InstrumentRef, WATCHLIST_LIMIT, WatchlistDb, validate_provider_venue};
 
     fn database() -> WatchlistDb {
         WatchlistDb::from_connection(Connection::open_in_memory().unwrap()).unwrap()
@@ -316,6 +547,15 @@ mod tests {
         InstrumentRef {
             src: "okx".to_owned(),
             code: code.to_owned(),
+            venue: None,
+        }
+    }
+
+    fn instrument_at(src: &str, venue_id: &str, kind: VenueKind, code: &str) -> InstrumentRef {
+        InstrumentRef {
+            src: src.to_owned(),
+            code: code.to_owned(),
+            venue: Some(Venue::new(venue_id, kind).unwrap()),
         }
     }
 
@@ -345,5 +585,110 @@ mod tests {
         let state = database.remove("user-1", &instrument("ETH-USDT")).unwrap();
 
         assert_eq!(state.active_instrument.code, "BTC-USDT");
+    }
+
+    #[test]
+    fn keeps_identity_provider_independent_but_venue_scoped() {
+        let database = database();
+        let sse = instrument_at("akshare-rs", "sse", VenueKind::ChinaAShareEquity, "600000");
+        database.add("user-1", &sse).unwrap();
+
+        let same_instrument_from_another_provider =
+            instrument_at("alpaca", "sse", VenueKind::ChinaAShareEquity, "600000");
+        assert!(
+            database
+                .add("user-1", &same_instrument_from_another_provider)
+                .unwrap_err()
+                .contains("already")
+        );
+
+        let same_code_at_another_venue =
+            instrument_at("akshare-rs", "szse", VenueKind::ChinaAShareEquity, "600000");
+        assert_eq!(
+            database
+                .add("user-1", &same_code_at_another_venue)
+                .unwrap()
+                .items
+                .len(),
+            5
+        );
+    }
+
+    #[test]
+    fn migrates_the_legacy_provider_key_before_loading_items() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE watchlist_settings (
+                    user_id TEXT PRIMARY KEY,
+                    active_src TEXT NOT NULL,
+                    active_code TEXT NOT NULL,
+                    mini_chart_interval TEXT NOT NULL
+                );
+                CREATE TABLE watchlist_items (
+                    user_id TEXT NOT NULL,
+                    src TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, src, code),
+                    FOREIGN KEY (user_id) REFERENCES watchlist_settings(user_id)
+                        ON DELETE CASCADE
+                );
+                INSERT INTO watchlist_settings(user_id, active_src, active_code, mini_chart_interval)
+                VALUES ('user-1', 'okx', 'BTC-USDT', '1m');
+                INSERT INTO watchlist_items(user_id, src, code, position)
+                VALUES ('user-1', 'okx', 'BTC-USDT', 0);
+                ",
+            )
+            .unwrap();
+
+        let database = WatchlistDb::from_connection(connection).unwrap();
+        let state = database.get("user-1").unwrap();
+        assert_eq!(state.items[0].venue.as_ref().unwrap().id, "okx");
+
+        let same_code_at_another_venue = instrument_at(
+            "akshare-rs",
+            "sse",
+            VenueKind::ChinaAShareEquity,
+            "BTC-USDT",
+        );
+        assert_eq!(
+            database
+                .add("user-1", &same_code_at_another_venue)
+                .unwrap()
+                .items
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn keeps_watchlist_items_isolated_by_user() {
+        let database = database();
+        let instrument = instrument_at("akshare-rs", "sse", VenueKind::ChinaAShareEquity, "600000");
+
+        database.add("user-1", &instrument).unwrap();
+
+        assert!(
+            database
+                .get("user-2")
+                .unwrap()
+                .items
+                .iter()
+                .all(|value| value.code != "600000")
+        );
+    }
+
+    #[test]
+    fn rejects_provider_and_venue_mismatches_at_the_command_boundary() {
+        let instrument = instrument_at("alpaca", "sse", VenueKind::ChinaAShareEquity, "600000");
+
+        assert!(
+            validate_provider_venue(&instrument)
+                .unwrap_err()
+                .contains("do not match")
+        );
     }
 }

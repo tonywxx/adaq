@@ -138,3 +138,17 @@ V1 提供足够行情观察能力，用于检查三条 Data 与 Paper Trading Pa
 6. A 股 Unknown Rule 与美股 IEX-limited Coverage 绝不能被展示为完整 Evidence。
 7. Market Workflow Link 绝不能绕过 Research Qualification、Host Risk、OMS 或 Paper Execution Adapter。
 8. English (US) 与简体中文提供等价功能与 Accessible Label。
+
+## 已实现 GUI 与截图预期
+
+桌面实现现在提供上述四个 Route，保留 `/markets/crypto` 的现有 Crypto Workspace，并在三个 Market Filter 之间使用同一个 Venue 加 Native Code 的 Watchlist Identity。A 股与美股页面会明确展示 Provider Observation、Calendar Coverage、不可用的 Bid/Ask 与 Direct-provider Bar Quality，不会把它们升级为 Canonical Evidence。
+
+手工验收截图应覆盖两个支持的 Locale 下的每个 Route，并至少包括：
+
+- 同时包含两个 Market Instrument 的 Overview Watchlist；
+- 显示 Native Code、Venue 与 Provider Identity 的 A 股或美股 Search Result；
+- 显示 Venue-local Trading Date、Time Zone，以及 Evidence 不可用时的 Unknown 或 Closed 的 Session/Calendar Card；
+- 显示明确 Unavailable Value、Provider Observation Time 与 Data Quality State 的 Ticker 或 Chart Card；
+- 在保留 Route Shell 的情况下展示 Empty、Loading、Degraded 或 Provider Error Control State。
+
+截图只作为验收 Evidence；当 Provider Contract 没有建立 Realtime、Consolidated、Adjusted 或 Canonical Quality 时，截图不能暗示这些能力存在。

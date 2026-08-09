@@ -9,7 +9,13 @@ import {
 import { AuthGate } from "@/components/auth-gate";
 import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
 import { ModelsPage } from "@/features/models/models-page";
-import Home, { Dashboard } from "@/layout/home";
+import {
+	CryptoMarketPage,
+	MarketWorkspacePage,
+	MarketsOverview,
+	OperationsDashboard,
+} from "@/features/markets/markets-page";
+import Home from "@/layout/home";
 import { lazy, Suspense, useEffect } from "react";
 import { LAST_APP_PATH_KEY } from "@/lib/app-settings";
 
@@ -41,7 +47,31 @@ const rootRoute = createRootRoute({
 const appRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/",
-	component: Dashboard,
+	component: OperationsDashboard,
+});
+
+const marketsRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/markets",
+	component: MarketsOverview,
+});
+
+const cryptoMarketRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/markets/crypto",
+	component: CryptoMarketPage,
+});
+
+const ashareMarketRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/markets/a-shares",
+	component: () => <MarketWorkspacePage market="a-shares" />,
+});
+
+const usEquitiesMarketRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/markets/us-equities",
+	component: () => <MarketWorkspacePage market="us-equities" />,
 });
 
 const backtestRoute = createRoute({
@@ -112,6 +142,10 @@ function AppShell() {
 
 const routeTree = rootRoute.addChildren([
 	appRoute,
+	marketsRoute,
+	cryptoMarketRoute,
+	ashareMarketRoute,
+	usEquitiesMarketRoute,
 	backtestRoute,
 	componentsRoute,
 	validationRoute,

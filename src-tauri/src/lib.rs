@@ -17,10 +17,12 @@ use adaq_backtest_core::MarketDataSnapshot;
 use adaq_component_sdk::host::{factor_abi, strategy_abi};
 use adaq_component_tooling::{FactorSchema, WasmLoader};
 use adaq_data_core::{
-    BarInterval, BarSeries, BarStreamEvent, BarSubscription, DataError, HistoricalBarRange,
-    InstrumentStatus, Level2StreamEvent, OkxClient, SpotInstrument, TickerSnapshot,
+    BarGap, BarInterval, BarSeries, BarStreamEvent, BarSubscription, DataError, HistoricalBarRange,
+    InstrumentStatus, Level2StreamEvent, OhlcvBar, OkxClient, SpotInstrument, TickerSnapshot,
     TickerStreamEvent, TradeStreamEvent,
+    market::{InstrumentId, PriceBasis, VenueKind},
 };
+use rust_decimal::Decimal;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -30,7 +32,7 @@ use tauri::{
     ipc::Channel,
     menu::{AboutMetadata, MenuBuilder, SubmenuBuilder},
 };
-use watchlist::{InstrumentRef, WatchlistDb, WatchlistState};
+use watchlist::{InstrumentRef, WatchlistDb, WatchlistState, validate_provider_venue};
 
 use local_research::LocalResearchState;
 use user::validate_user;
@@ -1226,6 +1228,33 @@ struct MarketGetBarSeriesRequest {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MarketWorkspaceBarsRequest {
+    user_id: String,
+    instrument: InstrumentId,
+    interval: BarInterval,
+    start_time_ms: i64,
+    end_time_ms: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MarketWorkspaceBarsView {
+    instrument: InstrumentId,
+    provider: String,
+    actual_upstream: String,
+    method: String,
+    connector_version: String,
+    retrieved_at_ms: i64,
+    freshness_ms: Option<i64>,
+    price_basis: PriceBasis,
+    quality: String,
+    bars: Vec<OhlcvBar>,
+    gaps: Option<Vec<BarGap>>,
+    limitations: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MarketTickerRequest {
     src: String,
     code: String,
@@ -1364,6 +1393,167 @@ async fn market_get_bar_series(
 }
 
 #[tauri::command]
+async fn market_workspace_get_bars(
+    request: MarketWorkspaceBarsRequest,
+    app: tauri::AppHandle,
+) -> Result<MarketWorkspaceBarsView, String> {
+    validate_user(&request.user_id)?;
+    if request.start_time_ms >= request.end_time_ms {
+        return Err("Market Bar range must be increasing".to_owned());
+    }
+    let retrieved_at_ms = unix_now_ms();
+    let range = HistoricalBarRange {
+        start_time_ms: request.start_time_ms,
+        end_time_ms: request.end_time_ms,
+    };
+    match request.instrument.venue.kind {
+        VenueKind::ChinaAShareEquity => {
+            let client = app
+                .state::<Arc<LocalResearchState>>()
+                .ashare
+                .client()
+                .clone();
+            let instrument = request.instrument.clone();
+            let interval = request.interval;
+            let acquisition = tauri::async_runtime::spawn_blocking(move || {
+                tauri::async_runtime::block_on(client.acquire_bars(
+                    instrument,
+                    interval,
+                    range,
+                    retrieved_at_ms,
+                ))
+                .map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| error.to_string())??;
+            Ok(MarketWorkspaceBarsView {
+                instrument: request.instrument,
+                provider: acquisition.provider,
+                actual_upstream: acquisition.actual_upstream,
+                method: acquisition.method,
+                connector_version: acquisition.connector_version,
+                retrieved_at_ms: acquisition.retrieved_at_ms,
+                freshness_ms: Some(retrieved_at_ms.saturating_sub(acquisition.retrieved_at_ms)),
+                price_basis: acquisition
+                    .bars
+                    .first()
+                    .map(|bar| bar.price_basis)
+                    .unwrap_or(PriceBasis::Unknown),
+                quality: "unknown".to_owned(),
+                bars: ashare_bars(acquisition.bars)?,
+                gaps: None,
+                limitations: direct_bar_limitations(acquisition.limitations),
+            })
+        }
+        VenueKind::UsEquity => {
+            let user_id = request.user_id.clone();
+            let instrument = request.instrument;
+            let interval = request.interval;
+            let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let acquisition = state
+                    .connections
+                    .with_alpaca_client(&user_id, |client| {
+                        tauri::async_runtime::block_on(client.acquire_bars(
+                            instrument.clone(),
+                            interval,
+                            range,
+                            retrieved_at_ms,
+                            || false,
+                        ))
+                    })
+                    .and_then(|value| value.map_err(|error| error.to_string()))?;
+                Ok(MarketWorkspaceBarsView {
+                    instrument,
+                    provider: acquisition.provider,
+                    actual_upstream: acquisition.actual_upstream,
+                    method: acquisition.method,
+                    connector_version: acquisition.connector_version,
+                    retrieved_at_ms: acquisition.retrieved_at_ms,
+                    freshness_ms: Some(retrieved_at_ms.saturating_sub(acquisition.retrieved_at_ms)),
+                    price_basis: PriceBasis::Unadjusted,
+                    quality: "unknown".to_owned(),
+                    bars: alpaca_bars(acquisition.bars)?,
+                    gaps: None,
+                    limitations: direct_bar_limitations(acquisition.limitations),
+                })
+            })
+            .await
+            .map_err(|error| error.to_string())?
+        }
+        VenueKind::CryptoSpot => Err("Use the OKX market Bar command for Crypto Spot".to_owned()),
+    }
+}
+
+fn ashare_bars(bars: Vec<adaq_data_core::a_share::AshareBar>) -> Result<Vec<OhlcvBar>, String> {
+    bars.into_iter()
+        .filter_map(|bar| {
+            let values = [
+                bar.open.as_deref(),
+                bar.high.as_deref(),
+                bar.low.as_deref(),
+                bar.close.as_deref(),
+                bar.base_volume.as_deref(),
+                bar.quote_volume.as_deref(),
+            ];
+            if values.iter().any(Option::is_none) {
+                return None;
+            }
+            Some(decimal_bar(bar.open_time_ms, values))
+        })
+        .collect()
+}
+
+fn alpaca_bars(bars: Vec<adaq_data_core::alpaca::AlpacaBar>) -> Result<Vec<OhlcvBar>, String> {
+    bars.into_iter()
+        .filter_map(|bar| {
+            let values = [
+                bar.open.as_deref(),
+                bar.high.as_deref(),
+                bar.low.as_deref(),
+                bar.close.as_deref(),
+                bar.base_volume.as_deref(),
+                bar.quote_volume.as_deref(),
+            ];
+            if values.iter().any(Option::is_none) {
+                return None;
+            }
+            Some(decimal_bar(bar.open_time_ms, values))
+        })
+        .collect()
+}
+
+fn decimal_bar(open_time_ms: i64, values: [Option<&str>; 6]) -> Result<OhlcvBar, String> {
+    let [open, high, low, close, base_volume, quote_volume] = values;
+    Ok(OhlcvBar {
+        open_time_ms,
+        open: Decimal::from_str_exact(open.ok_or("missing open")?)
+            .map_err(|error| error.to_string())?,
+        high: Decimal::from_str_exact(high.ok_or("missing high")?)
+            .map_err(|error| error.to_string())?,
+        low: Decimal::from_str_exact(low.ok_or("missing low")?)
+            .map_err(|error| error.to_string())?,
+        close: Decimal::from_str_exact(close.ok_or("missing close")?)
+            .map_err(|error| error.to_string())?,
+        base_volume: Decimal::from_str_exact(base_volume.ok_or("missing base volume")?)
+            .map_err(|error| error.to_string())?,
+        quote_volume: Decimal::from_str_exact(quote_volume.ok_or("missing quote volume")?)
+            .map_err(|error| error.to_string())?,
+    })
+}
+
+fn direct_bar_limitations(mut limitations: Vec<String>) -> Vec<String> {
+    limitations.push(
+        "Direct provider observations are not canonical Data Quality publication evidence."
+            .to_owned(),
+    );
+    limitations.push(
+        "Bar coverage and gap evidence are not established for this direct observation.".to_owned(),
+    );
+    limitations
+}
+
+#[tauri::command]
 async fn market_get_ticker(
     request: MarketTickerRequest,
     client: State<'_, OkxClient>,
@@ -1386,15 +1576,20 @@ async fn watchlist_add(
     database: State<'_, WatchlistDb>,
     client: State<'_, OkxClient>,
 ) -> Result<WatchlistState, String> {
-    require_okx(&request.instrument.src).map_err(|error| error.to_string())?;
-    let instruments = client
-        .list_spot_instruments()
-        .await
-        .map_err(|error| error.to_string())?;
-    if !instruments.iter().any(|instrument| {
-        instrument.code == request.instrument.code && instrument.status == InstrumentStatus::Live
-    }) {
-        return Err("only Live OKX Spot Instruments can be added".to_owned());
+    validate_provider_venue(&request.instrument)?;
+    if request.instrument.src == "okx" {
+        let instruments = client
+            .list_spot_instruments()
+            .await
+            .map_err(|error| error.to_string())?;
+        if !instruments.iter().any(|instrument| {
+            instrument.code == request.instrument.code
+                && instrument.status == InstrumentStatus::Live
+        }) {
+            return Err("only Live OKX Spot Instruments can be added".to_owned());
+        }
+    } else if !matches!(request.instrument.src.as_str(), "akshare-rs" | "alpaca") {
+        return Err("unsupported Market Data Provider for Watchlist Instrument".to_owned());
     }
     database.add(&request.user_id, &request.instrument)
 }
@@ -1404,6 +1599,7 @@ fn watchlist_remove(
     request: WatchlistInstrumentRequest,
     database: State<'_, WatchlistDb>,
 ) -> Result<WatchlistState, String> {
+    validate_provider_venue(&request.instrument)?;
     database.remove(&request.user_id, &request.instrument)
 }
 
@@ -1412,6 +1608,7 @@ fn watchlist_set_active(
     request: WatchlistInstrumentRequest,
     database: State<'_, WatchlistDb>,
 ) -> Result<WatchlistState, String> {
+    validate_provider_venue(&request.instrument)?;
     database.set_active(&request.user_id, &request.instrument)
 }
 
@@ -1862,6 +2059,7 @@ pub fn run() {
             get_factor_schema,
             market_list_spot_instruments,
             market_get_bar_series,
+            market_workspace_get_bars,
             market_get_ticker,
             watchlist_get,
             watchlist_add,

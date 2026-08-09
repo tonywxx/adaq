@@ -138,3 +138,17 @@ V1 includes enough market observation to inspect its three data and Paper Tradin
 6. A-share Unknown rules and U.S. IEX-limited coverage are never presented as complete evidence.
 7. Market workflow links never bypass research qualification, Host Risk, OMS, or Paper Execution Adapters.
 8. English (US) and Simplified Chinese provide equivalent functionality and accessible labels.
+
+## Implemented GUI and screenshot expectations
+
+The desktop implementation now exposes the four routes above, keeps the existing Crypto workspace at `/markets/crypto`, and uses one Venue-plus-native-code Watchlist identity across the market filters. A-share and U.S. equity pages keep provider observations, calendar coverage, unavailable Bid/Ask values, and direct-provider Bar quality visible rather than upgrading them to canonical evidence.
+
+The manual acceptance screenshot set should include each route in both supported locales, plus:
+
+- the Overview Watchlist containing instruments from at least two Markets;
+- an A-share or U.S. equity search result showing native code, Venue, and provider identity;
+- a session/calendar card showing Venue-local Trading Date, time zone, and Unknown or Closed when evidence is unavailable;
+- a ticker or chart card showing an explicit unavailable value, provider observation time, and Data Quality state;
+- an empty, loading, degraded, or provider-error control state without hiding the surrounding route shell.
+
+Screenshots are acceptance evidence only; they must not imply realtime, consolidated, adjusted, or canonical quality when the provider contract does not establish it.

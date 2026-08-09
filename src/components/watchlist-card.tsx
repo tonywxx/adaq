@@ -46,6 +46,7 @@ import {
 } from "@/lib/market-session";
 import { formatNumber as formatLocaleNumber } from "@/lib/i18n";
 import WChart from "@/w/lightweight-charts/WChart";
+import { marketMatches } from "@/features/markets/market-workspaces";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { LoaderCircleIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
@@ -60,7 +61,12 @@ export function WatchlistCard() {
 	const { t } = useTranslation();
 	const ready = useMarketSessionStore((state) => state.ready);
 	const loadError = useMarketSessionStore((state) => state.loadError);
-	const watchlist = useMarketSessionStore((state) => state.watchlist);
+	const allWatchlist = useMarketSessionStore((state) => state.watchlist);
+	const watchlist = useMemo(
+		() =>
+			allWatchlist.filter((instrument) => marketMatches(instrument, "crypto")),
+		[allWatchlist],
+	);
 	const watchlistLimit = useMarketSessionStore((state) => state.watchlistLimit);
 	const activeInstrument = useMarketSessionStore(
 		(state) => state.activeInstrument,
