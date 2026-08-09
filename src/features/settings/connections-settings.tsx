@@ -98,6 +98,9 @@ export function ConnectionsSettings() {
 				<p className="text-sm text-muted-foreground">
 					{t("settings.connections.description")}
 				</p>
+				<p className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100">
+					{t("settings.connections.credentialEntryHint")}
+				</p>
 			</div>
 			<div className="mt-5 grid gap-5">
 				{!isTauriRuntime() ? (

@@ -1711,6 +1711,7 @@ fn capability_snapshot(
         limitations: limitation
             .map(|value| vec![value.into()])
             .unwrap_or_default(),
+        ..ProviderCapabilitySnapshot::default()
     }
 }
 

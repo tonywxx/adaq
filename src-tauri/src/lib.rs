@@ -752,6 +752,289 @@ async fn ashare_workspace(
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+async fn alpaca_instrument_master_acquire(
+    request: market_data_pipeline::UsEquityInstrumentMasterRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::us_equity::UsEquityInstrumentMasterSnapshotDto, String> {
+    validate_user(&request.user_id)?;
+    let operation_id = request.operation_id();
+    let user_id = request.user_id;
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let cancellation = state
+        .us_equity
+        .begin_acquisition(&user_id, &operation_id)
+        .map_err(string)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let operation_user_id = user_id.clone();
+        let cancellation_for_operation = cancellation.clone();
+        let operation_state = state.clone();
+        let result = state
+            .connections
+            .with_alpaca_client(&user_id, move |client| {
+                tauri::async_runtime::block_on(operation_state.us_equity.acquire_instrument_master(
+                    &operation_user_id,
+                    &client,
+                    &cancellation_for_operation,
+                    unix_now_ms(),
+                ))
+            })
+            .and_then(|result| result.map_err(string));
+        let finish = state.us_equity.finish_acquisition(&user_id, &operation_id);
+        match (result, finish) {
+            (Ok(snapshot), Ok(())) => Ok(snapshot.gui_dto()),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(string(error)),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn alpaca_instrument_master_list(
+    request: market_data_pipeline::UserRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<adaq_data_pipeline::us_equity::UsEquityInstrumentMasterSnapshotDto>, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .us_equity
+            .list_instrument_master_snapshots(&request.user_id)
+            .map(|snapshots| {
+                snapshots
+                    .iter()
+                    .map(|snapshot| snapshot.gui_dto())
+                    .collect()
+            })
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn alpaca_universe(
+    request: market_data_pipeline::UniverseRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::us_equity::UsEquityPointInTimeUniverse, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .us_equity
+            .point_in_time_membership(&request.user_id, request.as_of_ms)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn alpaca_calendar_acquire(
+    request: market_data_pipeline::UsEquityCalendarRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::us_equity::UsEquityCalendarSnapshotDto, String> {
+    validate_user(&request.user_id)?;
+    let range = request.range();
+    let operation_id = request.operation_id();
+    let venue = request.venue;
+    let user_id = request.user_id;
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let cancellation = state
+        .us_equity
+        .begin_acquisition(&user_id, &operation_id)
+        .map_err(string)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let operation_user_id = user_id.clone();
+        let cancellation_for_operation = cancellation.clone();
+        let operation_state = state.clone();
+        let result = state
+            .connections
+            .with_alpaca_client(&user_id, move |client| {
+                tauri::async_runtime::block_on(operation_state.us_equity.acquire_calendar(
+                    &operation_user_id,
+                    &client,
+                    venue,
+                    range,
+                    &cancellation_for_operation,
+                    unix_now_ms(),
+                ))
+            })
+            .and_then(|result| result.map_err(string));
+        let finish = state.us_equity.finish_acquisition(&user_id, &operation_id);
+        match (result, finish) {
+            (Ok(snapshot), Ok(())) => Ok(snapshot.gui_dto()),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(string(error)),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn alpaca_backfill(
+    request: adaq_data_pipeline::us_equity::UsEquityBackfillRequest,
+    on_event: Channel<adaq_data_pipeline::us_equity::UsEquityBackfillEvent>,
+    app: tauri::AppHandle,
+) -> Result<Option<market_data_pipeline::PublicationView>, String> {
+    validate_user(&request.user_id)?;
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let task_id = request.task_id.clone();
+    let user_id = request.user_id.clone();
+    let cancellation = state
+        .us_equity
+        .begin_backfill(&user_id, &task_id)
+        .map_err(string)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let request_user_id = request.user_id.clone();
+        let cancellation_for_operation = cancellation.clone();
+        let operation_state = state.clone();
+        let result = state
+            .connections
+            .with_alpaca_client(&user_id, move |client| {
+                tauri::async_runtime::block_on(operation_state.us_equity.backfill(
+                    request,
+                    &client,
+                    cancellation_for_operation,
+                    |event| {
+                        let _ = on_event.send(event);
+                    },
+                ))
+            })
+            .and_then(|result| result.map_err(string));
+        let finish = state.us_equity.finish_backfill(&request_user_id, &task_id);
+        match (result, finish) {
+            (Ok(publication), Ok(())) => {
+                Ok(publication.map(market_data_pipeline::PublicationView::from))
+            }
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(string(error)),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn alpaca_backfill_cancel(
+    request: market_data_pipeline::BackfillCancelRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    validate_user(&request.user_id)?;
+    state
+        .us_equity
+        .cancel_backfill(&request.user_id, &request.task_id)
+        .map_err(string)
+}
+
+#[tauri::command]
+fn alpaca_acquisition_cancel(
+    request: market_data_pipeline::AshareAcquisitionCancelRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    validate_user(&request.user_id)?;
+    state
+        .us_equity
+        .cancel_acquisition(&request.user_id, &request.operation_id)
+        .map_err(string)
+}
+
+#[tauri::command]
+async fn alpaca_acquisition_status(
+    request: market_data_pipeline::UserEvidenceRequest,
+    app: tauri::AppHandle,
+) -> Result<Option<adaq_data_pipeline::us_equity::UsEquityAcquisitionStatus>, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .us_equity
+            .acquisition_status(&request.user_id, &request.evidence_id)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn alpaca_snapshot(
+    request: market_data_pipeline::UsEquitySnapshotRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::us_equity::UsEquityMarketSnapshotDto, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+        state
+            .connections
+            .with_alpaca_client(&request.user_id, |client| {
+                tauri::async_runtime::block_on(state.us_equity.snapshot(
+                    &client,
+                    request.instrument,
+                    unix_now_ms(),
+                ))
+            })
+            .and_then(|result| result.map_err(string))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn alpaca_stream(
+    request: market_data_pipeline::UsEquityStreamRequest,
+    on_event: Channel<adaq_data_core::alpaca::AlpacaStreamEvent>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    validate_user(&request.user_id)?;
+    let operation_id = request.operation_id();
+    let user_id = request.user_id;
+    let subscription = request.subscription;
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let cancellation = state
+        .us_equity
+        .begin_acquisition(&user_id, &operation_id)
+        .map_err(string)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let cancellation_for_stream = cancellation.clone();
+        let result = state
+            .connections
+            .with_alpaca_client(&user_id, |client| {
+                tauri::async_runtime::block_on(client.stream(subscription, |event| {
+                    if cancellation_for_stream.is_cancelled() {
+                        return false;
+                    }
+                    on_event.send(event).is_ok()
+                }))
+            })
+            .map_err(string)
+            .and_then(|result| result.map_err(string));
+        let finish = state.us_equity.finish_acquisition(&user_id, &operation_id);
+        match (result, finish) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(string(error)),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn alpaca_workspace(
+    request: market_data_pipeline::UserEvidenceRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::us_equity::UsEquityMarketWorkspaceDto, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .us_equity
+            .workspace_dto_for_user(&request.user_id, &request.evidence_id, unix_now_ms())
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// Tauri Backtest Run commands are thin adapters: they deserialize the
 /// existing contract, delegate to the Tauri-independent Backtest Run
 /// module, and serialize the result. Command names and camelCase shapes
@@ -1509,6 +1792,17 @@ pub fn run() {
             ashare_backfill_cancel,
             ashare_acquisition_cancel,
             ashare_workspace,
+            alpaca_instrument_master_acquire,
+            alpaca_instrument_master_list,
+            alpaca_universe,
+            alpaca_calendar_acquire,
+            alpaca_backfill,
+            alpaca_backfill_cancel,
+            alpaca_acquisition_cancel,
+            alpaca_acquisition_status,
+            alpaca_snapshot,
+            alpaca_stream,
+            alpaca_workspace,
             backtest_preflight,
             backtest_run,
             backtest_list,

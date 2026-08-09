@@ -1,0 +1,7 @@
+[
+  { "T": "success", "msg": "connected" },
+  { "T": "success", "msg": "authenticated" },
+  { "T": "subscription", "trades": ["AAPL"], "quotes": ["AAPL"], "bars": ["AAPL"] },
+  { "T": "t", "S": "AAPL", "i": "fixture-trade-1", "p": "1.2450", "s": "4", "t": "2024-01-02T14:31:30Z" },
+  { "T": "u", "S": "AAPL", "o": "1.2300", "h": "1.2500", "l": "1.2200", "c": "1.2460", "v": "3", "vw": "1.2400", "n": 2, "t": "2024-01-02T14:31:00Z" }
+]

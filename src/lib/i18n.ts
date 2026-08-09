@@ -230,6 +230,8 @@ const english = {
 			title: "Connections",
 			description:
 				"Paper/Demo provider credentials are stored in the operating-system secret store on this device only.",
+			credentialEntryHint:
+				"Enter Alpaca Paper Key ID and Secret Key only in Settings > Connections. Never paste them into chat or a .env file; the Host stores them in the operating-system secret store.",
 			requiresDesktop: "Connections are managed in the ADAQ desktop app.",
 			loading: "Loading connections…",
 			savedSecretHint:
@@ -250,7 +252,7 @@ const english = {
 			alpacaPaper: {
 				title: "Alpaca Paper",
 				description:
-					"U.S. equities paper trading on the fixed Alpaca Paper environment.",
+					"U.S. equities paper trading on the fixed Alpaca Paper environment; Basic market data is IEX-only.",
 				keyId: "Paper API Key ID",
 				secretKey: "Paper Secret Key",
 			},
@@ -595,6 +597,8 @@ const simplifiedChinese = {
 		connections: {
 			title: "连接",
 			description: "Paper/Demo 提供商凭据仅存储在此设备的操作系统密钥库中。",
+			credentialEntryHint:
+				"Alpaca Paper Key ID 和 Secret Key 只能填写在“设置 > 连接”中。不要粘贴到聊天或 .env 文件；Host 会将其存储在操作系统密钥库中。",
 			requiresDesktop: "连接在 ADAQ 桌面应用中管理。",
 			loading: "正在加载连接…",
 			savedSecretHint: "已保存的凭据不会重新显示。轮换时需要重新输入全部值。",
@@ -613,7 +617,7 @@ const simplifiedChinese = {
 			},
 			alpacaPaper: {
 				title: "Alpaca Paper",
-				description: "在固定的 Alpaca Paper 环境中进行美股纸面交易。",
+				description: "在固定的 Alpaca Paper 环境中进行美股纸面交易；Basic 行情仅为 IEX。",
 				keyId: "Paper API Key ID",
 				secretKey: "Paper Secret Key",
 			},

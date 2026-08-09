@@ -12,8 +12,12 @@ pub(crate) mod tester;
 #[cfg(test)]
 mod tests;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
+use adaq_data_core::alpaca::{AlpacaClient, AlpacaCredentials};
 use rand::RngCore;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -78,7 +82,7 @@ impl Provider {
 /// Credential values as entered by the User. Deserialized at the Tauri
 /// boundary, validated here, and written to the OS store; the values never
 /// enter SQLite, logs, or frontend state after this struct is consumed.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub(crate) enum ProviderCredentials {
     AlpacaPaper {
@@ -278,6 +282,7 @@ pub(crate) struct ConnectionManager {
     tester: ConnectionTester,
     runtime_guard: Arc<dyn RuntimeGuard>,
     device_id: String,
+    alpaca_rate_gate: Arc<Mutex<Instant>>,
 }
 
 impl ConnectionManager {
@@ -353,6 +358,7 @@ impl ConnectionManager {
             tester: ConnectionTester::new(http),
             runtime_guard,
             device_id,
+            alpaca_rate_gate: Arc::new(Mutex::new(Instant::now())),
         })
     }
 
@@ -367,6 +373,46 @@ impl ConnectionManager {
         let database = self.database.lock().map_err(|error| error.to_string())?;
         let rows = query_profiles(&database, user_id, &self.device_id)?;
         rows.iter().map(ProfileRow::view).collect()
+    }
+
+    /// Resolves one saved Alpaca Paper Profile inside the Host and keeps the
+    /// credential inside the caller's Host-side operation.
+    pub(crate) fn with_alpaca_client<T>(
+        &self,
+        user_id: &str,
+        operation: impl FnOnce(AlpacaClient) -> T,
+    ) -> Result<T, String> {
+        validate_user_id(user_id)?;
+        let row = {
+            let database = self.database.lock().map_err(|error| error.to_string())?;
+            query_profile(&database, user_id, &self.device_id, Provider::AlpacaPaper)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "No Alpaca Paper connection is configured.".to_owned())?
+        };
+        if row.status != ProfileStatus::Usable {
+            return Err("The Alpaca Paper connection is unusable; test or re-save it in Settings > Connections.".into());
+        }
+        let stored = self
+            .secrets
+            .get(&row.os_store_entry())
+            .map_err(|error| match error {
+                secret_store::SecretStoreError::Missing => {
+                    "The stored Alpaca credential is missing; re-save the connection.".to_owned()
+                }
+                secret_store::SecretStoreError::Unavailable(_) => {
+                    "The operating-system secret store is unavailable.".to_owned()
+                }
+            })?;
+        let credential: TestCredential = serde_json::from_str(&stored).map_err(|_| {
+            "The stored Alpaca credential is invalid; re-save the connection.".to_owned()
+        })?;
+        let TestCredential::AlpacaPaper { key_id, secret_key } = credential else {
+            return Err("The saved credential does not match the Alpaca Paper provider.".into());
+        };
+        Ok(operation(AlpacaClient::with_rate_gate(
+            AlpacaCredentials::new(key_id, secret_key),
+            self.alpaca_rate_gate.clone(),
+        )))
     }
 
     /// Saves (or rotates) a Profile: writes the secret to the OS store

@@ -91,7 +91,7 @@ impl TestFailure {
 /// Serialized as a single JSON value inside the OS store so every field the
 /// provider requires survives a later re-test; the JSON never leaves the
 /// Host or enters SQLite.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub(crate) enum TestCredential {
     AlpacaPaper {

@@ -1209,6 +1209,7 @@ impl AshareDataPath {
             rate_limit_known: false,
             streaming_symbol_limit: None,
             limitations: acquisition.limitations.clone(),
+            ..ProviderCapabilitySnapshot::default()
         };
         let mut snapshots = Vec::with_capacity(acquisition.snapshots.len());
         for snapshot in acquisition.snapshots {
@@ -2661,6 +2662,7 @@ fn capability_snapshot(
         rate_limit_known: false,
         streaming_symbol_limit: None,
         limitations: limitations.to_vec(),
+        ..ProviderCapabilitySnapshot::default()
     }
 }
 

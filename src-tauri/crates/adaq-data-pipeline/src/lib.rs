@@ -41,6 +41,7 @@ use thiserror::Error;
 
 pub mod a_share;
 pub mod okx;
+pub mod us_equity;
 
 pub const NORMALIZATION_CONTRACT_VERSION: &str = "lossless-v1";
 
@@ -88,10 +89,20 @@ pub struct ProviderCapabilitySnapshot {
     pub provider: String,
     pub captured_at_ms: i64,
     #[serde(default)]
+    pub subscription_plan: Option<String>,
+    #[serde(default)]
+    pub feed: Option<String>,
+    #[serde(default)]
+    pub coverage: Option<String>,
+    #[serde(default)]
+    pub realtime: Option<bool>,
+    #[serde(default)]
     pub venues: Vec<String>,
     #[serde(default)]
     pub record_types: Vec<String>,
     pub history_start_ms: Option<i64>,
+    #[serde(default)]
+    pub history_end_ms: Option<i64>,
     pub delayed: bool,
     #[serde(default)]
     pub delayed_known: bool,
@@ -99,7 +110,13 @@ pub struct ProviderCapabilitySnapshot {
     pub rate_limit: Option<String>,
     #[serde(default)]
     pub rate_limit_known: bool,
+    #[serde(default)]
+    pub requests_per_minute: Option<u32>,
+    #[serde(default)]
+    pub stream_connection_limit: Option<u32>,
     pub streaming_symbol_limit: Option<u32>,
+    #[serde(default)]
+    pub unavailable_capabilities: Vec<String>,
     #[serde(default)]
     pub limitations: Vec<String>,
 }
@@ -109,15 +126,23 @@ impl Default for ProviderCapabilitySnapshot {
         Self {
             provider: "unknown".into(),
             captured_at_ms: 0,
+            subscription_plan: None,
+            feed: None,
+            coverage: None,
+            realtime: None,
             venues: Vec::new(),
             record_types: Vec::new(),
             history_start_ms: None,
+            history_end_ms: None,
             delayed: false,
             delayed_known: false,
             delay_ms: None,
             rate_limit: None,
             rate_limit_known: false,
+            requests_per_minute: None,
+            stream_connection_limit: None,
             streaming_symbol_limit: None,
+            unavailable_capabilities: Vec::new(),
             limitations: Vec::new(),
         }
     }
@@ -2585,7 +2610,7 @@ fn emit(callback: &mut impl FnMut(PipelineProgress), event: PipelineProgress) {
     callback(event);
 }
 
-fn validate_user(user_id: &str) -> Result<(), PipelineError> {
+pub(crate) fn validate_user(user_id: &str) -> Result<(), PipelineError> {
     if user_id.trim().is_empty() || user_id.len() > 128 {
         Err(PipelineError::InvalidRequest("User ID is invalid".into()))
     } else {
@@ -3264,7 +3289,7 @@ fn source_evidence_bytes(records: &[SourceMarketRecord]) -> Result<Vec<u8>, Pipe
     Ok(bytes)
 }
 
-fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, PipelineError> {
+pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, PipelineError> {
     let value = serde_json::to_value(value).map_err(storage)?;
     serde_json::to_vec(&sort_json(value)).map_err(storage)
 }
@@ -3282,7 +3307,7 @@ fn sort_json(value: Value) -> Value {
     }
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(crate) fn digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let mut output = String::with_capacity(64);
@@ -3299,7 +3324,7 @@ fn hash_file(path: &Path) -> Result<String, PipelineError> {
     Ok(digest(&bytes))
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), PipelineError> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), PipelineError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(storage)?;
     }

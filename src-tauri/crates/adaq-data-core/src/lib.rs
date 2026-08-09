@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 pub mod a_share;
+pub mod alpaca;
 pub mod market;
 
 pub(crate) const OKX_SRC: &str = "okx";

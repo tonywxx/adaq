@@ -24,7 +24,7 @@ use adaq_component_tooling::{
 use adaq_data_core::{OhlcvBar, OkxClient, a_share::AshareClient};
 use adaq_data_pipeline::{
     CancellationToken, DataPipeline, DataQualityReport, a_share::AshareDataPath,
-    okx::OkxSpotDataPath,
+    okx::OkxSpotDataPath, us_equity::UsEquityDataPath,
 };
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,7 @@ pub struct LocalResearchState {
     pub(crate) pipeline: DataPipeline,
     pub(crate) okx: OkxSpotDataPath,
     pub(crate) ashare: AshareDataPath,
+    pub(crate) us_equity: UsEquityDataPath,
     pub(crate) snapshots: MarketDataSnapshots,
     pub(crate) components: ComponentLibrary,
     source: Arc<LocalGenerationSource>,
@@ -369,6 +370,7 @@ impl LocalResearchState {
         let okx = OkxSpotDataPath::open(pipeline.clone(), OkxClient::default()).map_err(string)?;
         let ashare =
             AshareDataPath::open(pipeline.clone(), AshareClient::default()).map_err(string)?;
+        let us_equity = UsEquityDataPath::open(pipeline.clone()).map_err(string)?;
         let connections = crate::connections::ConnectionManager::open_production(database.clone())?;
         let snapshot_source = Arc::new(LocalSnapshotSource::new(
             database.clone(),
@@ -413,6 +415,7 @@ impl LocalResearchState {
                 pipeline,
                 okx,
                 ashare,
+                us_equity,
                 snapshots,
                 components,
                 source,
@@ -485,6 +488,7 @@ impl LocalResearchState {
             kind,
             LocalDataResetKind::MarketData | LocalDataResetKind::All
         );
+        let resets_us_equity = resets_ashare;
         // Query the Validation module before locking the database mutex so
         // the hook never re-enters a held lock. The Snapshot orphan query
         // and the Backtest and Component hooks run inside the reset flows
@@ -522,10 +526,18 @@ impl LocalResearchState {
                 return Err(string(error));
             }
         }
+        if resets_us_equity {
+            if let Err(error) = self.us_equity.begin_user_reset(user_id) {
+                let _ = self.ashare.finish_user_reset(user_id);
+                let _ = self.pipeline.finish_user_reset(user_id);
+                return Err(string(error));
+            }
+        }
         let mut database = match self.database.lock() {
             Ok(database) => database,
             Err(error) => {
                 if resets_ashare {
+                    let _ = self.us_equity.finish_user_reset(user_id);
                     let _ = self.ashare.finish_user_reset(user_id);
                     let _ = self.pipeline.finish_user_reset(user_id);
                 }
@@ -538,16 +550,23 @@ impl LocalResearchState {
                 .and_then(|pipeline_paths| {
                     self.ashare
                         .reset_paths_for_user_with_connection(&database, user_id)
-                        .map(|ashare_paths| (pipeline_paths, ashare_paths))
+                        .and_then(|ashare_paths| {
+                            self.us_equity
+                                .reset_paths_for_user_with_connection(&database, user_id)
+                                .map(|us_equity_paths| {
+                                    (pipeline_paths, ashare_paths, us_equity_paths)
+                                })
+                        })
                 })
                 .map_err(string)
         } else {
-            Ok((Vec::new(), Vec::new()))
+            Ok((Vec::new(), Vec::new(), Vec::new()))
         };
-        let (pipeline_paths, ashare_paths) = match paths {
+        let (pipeline_paths, ashare_paths, us_equity_paths) = match paths {
             Ok(paths) => paths,
             Err(error) => {
                 if resets_ashare {
+                    let _ = self.us_equity.finish_user_reset(user_id);
                     let _ = self.ashare.finish_user_reset(user_id);
                     let _ = self.pipeline.finish_user_reset(user_id);
                 }
@@ -568,9 +587,11 @@ impl LocalResearchState {
                 &self.snapshots,
                 &self.backtests,
                 &self.ashare,
+                &self.us_equity,
                 &self.pipeline,
                 pipeline_paths.clone(),
                 ashare_paths.clone(),
+                us_equity_paths.clone(),
             ),
             LocalDataResetKind::All => reset_all(
                 &mut database,
@@ -583,19 +604,23 @@ impl LocalResearchState {
                 &self.backtests,
                 pipeline_snapshot_blocker_count,
                 &self.ashare,
+                &self.us_equity,
                 &self.pipeline,
                 pipeline_paths,
                 ashare_paths,
+                us_equity_paths,
             ),
         };
         if resets_ashare {
+            let us_equity_finish = self.us_equity.finish_user_reset(user_id).map_err(string);
             let finish = self.ashare.finish_user_reset(user_id).map_err(string);
             let pipeline_finish = self.pipeline.finish_user_reset(user_id).map_err(string);
-            match (result, finish, pipeline_finish) {
-                (Err(error), _, _) => Err(error),
-                (Ok(()), Err(error), _) => Err(error),
-                (Ok(()), Ok(()), Err(error)) => Err(error),
-                (Ok(()), Ok(()), Ok(())) => Ok(()),
+            match (result, us_equity_finish, finish, pipeline_finish) {
+                (Err(error), _, _, _) => Err(error),
+                (Ok(()), Err(error), _, _) => Err(error),
+                (Ok(()), Ok(()), Err(error), _) => Err(error),
+                (Ok(()), Ok(()), Ok(()), Err(error)) => Err(error),
+                (Ok(()), Ok(()), Ok(()), Ok(())) => Ok(()),
             }
         } else {
             result
@@ -847,9 +872,11 @@ fn reset_market_data(
     snapshots: &MarketDataSnapshots,
     backtests: &Backtests,
     ashare: &AshareDataPath,
+    us_equity: &UsEquityDataPath,
     pipeline: &DataPipeline,
     pipeline_paths: Vec<PathBuf>,
     ashare_paths: Vec<PathBuf>,
+    us_equity_paths: Vec<PathBuf>,
 ) -> Result<(), String> {
     let blocking_datasets: i64 = database
         .query_row(
@@ -872,13 +899,17 @@ fn reset_market_data(
             .orphaned_parquet_paths(database, user_id)?
             .into_iter()
             .chain(pipeline_paths)
-            .chain(ashare_paths),
+            .chain(ashare_paths)
+            .chain(us_equity_paths),
         root,
     )?;
     let result = (|| {
         let transaction = database.transaction().map_err(string)?;
         snapshots.reset_for_user(&transaction, user_id)?;
         ashare
+            .reset_user_rows(&transaction, user_id)
+            .map_err(string)?;
+        us_equity
             .reset_user_rows(&transaction, user_id)
             .map_err(string)?;
         pipeline
@@ -900,9 +931,11 @@ fn reset_all(
     backtests: &Backtests,
     pipeline_snapshot_blocker_count: u64,
     ashare: &AshareDataPath,
+    us_equity: &UsEquityDataPath,
     pipeline: &DataPipeline,
     pipeline_paths: Vec<PathBuf>,
     ashare_paths: Vec<PathBuf>,
+    us_equity_paths: Vec<PathBuf>,
 ) -> Result<(), String> {
     // The reset User's Runs are deleted inside the transaction below, so
     // only other Users' Runs keep locking Component content; the Component
@@ -926,7 +959,8 @@ fn reset_all(
             .chain(snapshots.orphaned_parquet_paths(database, user_id)?)
             .chain(dataset_paths.into_iter().map(PathBuf::from))
             .chain(pipeline_paths)
-            .chain(ashare_paths),
+            .chain(ashare_paths)
+            .chain(us_equity_paths),
         root,
     )?;
     let result = (|| {
@@ -951,6 +985,9 @@ fn reset_all(
         components.reset_access_for_user(&transaction, user_id)?;
         snapshots.reset_for_user(&transaction, user_id)?;
         ashare
+            .reset_user_rows(&transaction, user_id)
+            .map_err(string)?;
+        us_equity
             .reset_user_rows(&transaction, user_id)
             .map_err(string)?;
         pipeline

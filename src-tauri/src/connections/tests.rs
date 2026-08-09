@@ -216,6 +216,24 @@ fn save_creates_usable_profile_with_redacted_view_and_stored_secret() {
 }
 
 #[test]
+fn host_resolves_alpaca_client_without_exposing_secret_to_runtime_metadata() {
+    let harness = harness(alpaca_ok_routes());
+    harness
+        .manager
+        .save("user-a", alpaca_credentials(), NOW_MS)
+        .unwrap();
+    let capability = harness
+        .manager
+        .with_alpaca_client("user-a", |client| {
+            serde_json::to_string(&client.capability_snapshot(NOW_MS)).unwrap()
+        })
+        .unwrap();
+    assert!(capability.contains("iex"));
+    assert!(!capability.contains(ALPACA_SECRET));
+    assert!(!capability.contains(ALPACA_KEY_ID));
+}
+
+#[test]
 fn serialization_exclusion_keeps_secrets_out_of_sqlite() {
     let harness = harness(alpaca_ok_routes());
     let _ = harness

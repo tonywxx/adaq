@@ -161,6 +161,78 @@ pub(crate) struct AshareCalendarRequest {
     pub operation_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsEquityInstrumentMasterRequest {
+    pub user_id: String,
+    #[serde(default)]
+    pub operation_id: String,
+}
+
+impl UsEquityInstrumentMasterRequest {
+    pub(crate) fn operation_id(&self) -> String {
+        if self.operation_id.trim().is_empty() {
+            "instrument-master".into()
+        } else {
+            self.operation_id.clone()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsEquityCalendarRequest {
+    pub user_id: String,
+    pub venue: adaq_data_core::market::Venue,
+    pub start_time_ms: i64,
+    pub end_time_ms: i64,
+    #[serde(default)]
+    pub operation_id: String,
+}
+
+impl UsEquityCalendarRequest {
+    pub(crate) const fn range(&self) -> HistoricalBarRange {
+        HistoricalBarRange {
+            start_time_ms: self.start_time_ms,
+            end_time_ms: self.end_time_ms,
+        }
+    }
+
+    pub(crate) fn operation_id(&self) -> String {
+        if self.operation_id.trim().is_empty() {
+            "calendar".into()
+        } else {
+            self.operation_id.clone()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsEquitySnapshotRequest {
+    pub user_id: String,
+    pub instrument: InstrumentId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsEquityStreamRequest {
+    pub user_id: String,
+    pub subscription: adaq_data_core::alpaca::AlpacaStreamSubscription,
+    #[serde(default)]
+    pub operation_id: String,
+}
+
+impl UsEquityStreamRequest {
+    pub(crate) fn operation_id(&self) -> String {
+        if self.operation_id.trim().is_empty() {
+            "stream".into()
+        } else {
+            self.operation_id.clone()
+        }
+    }
+}
+
 impl AshareCalendarRequest {
     pub(crate) const fn range(&self) -> HistoricalBarRange {
         HistoricalBarRange {
