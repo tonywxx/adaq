@@ -5,6 +5,7 @@ mod dataset_generation;
 mod forecast_evaluation;
 mod forecast_signal_dataset;
 mod local_research;
+mod market_data_pipeline;
 mod market_data_snapshot;
 mod run_engine;
 mod user;
@@ -282,6 +283,131 @@ fn snapshot_cancel(
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
     state.snapshots.cancel_download(&request.task_id)
+}
+
+/// Tauri Data Pipeline commands are thin adapters: provider-neutral typed
+/// records enter here, while raw provider payloads stay in the pipeline's
+/// immutable Source evidence and never cross into GUI state.
+#[tauri::command]
+async fn market_data_pipeline_publish(
+    request: market_data_pipeline::PublishRequest,
+    on_event: Channel<adaq_data_pipeline::PipelineProgress>,
+    app: tauri::AppHandle,
+) -> Result<market_data_pipeline::PublicationView, String> {
+    let (task_id, user_id, acquisition, canonicalization) = request.into_parts()?;
+    app.state::<Arc<LocalResearchState>>()
+        .pipeline
+        .begin_attempt(&task_id)
+        .map_err(string)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        state
+            .pipeline
+            .publish_attempt(&task_id, &user_id, acquisition, canonicalization, |event| {
+                let _ = on_event.send(event);
+            })
+            .map(market_data_pipeline::PublicationView::from)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn market_data_pipeline_cancel(
+    task_id: String,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    state.pipeline.cancel(&task_id).map_err(string)
+}
+
+#[tauri::command]
+async fn market_data_pipeline_list(
+    user_id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<adaq_data_pipeline::PipelineDatasetSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .pipeline
+            .list(&user_id)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn market_data_pipeline_quality(
+    request: market_data_pipeline::UserEvidenceRequest,
+    app: tauri::AppHandle,
+) -> Result<market_data_pipeline::QualityView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .pipeline
+            .quality_for_user(&request.user_id, &request.evidence_id)
+            .map(market_data_pipeline::QualityView::from)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn market_data_pipeline_failures(
+    user_id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<adaq_data_pipeline::PipelineFailure>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .pipeline
+            .failures_for_user(&user_id)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn market_data_pipeline_publish_snapshot(
+    request: market_data_pipeline::SnapshotRequest,
+    app: tauri::AppHandle,
+) -> Result<market_data_pipeline::SnapshotPublicationView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .publish_pipeline_snapshot_for_user(&request.user_id, &request.canonical_id)
+            .map(
+                |(snapshot, quality)| market_data_pipeline::SnapshotPublicationView {
+                    snapshot,
+                    quality: market_data_pipeline::QualityView::from(quality),
+                },
+            )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn market_data_pipeline_delete(
+    request: market_data_pipeline::DeleteRequest,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        match request.evidence_kind.as_str() {
+            "source" => state
+                .pipeline
+                .delete_source_for_user(&request.user_id, &request.evidence_id),
+            "canonical" => state
+                .pipeline
+                .delete_canonical_for_user(&request.user_id, &request.evidence_id),
+            _ => Err(adaq_data_pipeline::PipelineError::InvalidRequest(
+                "only Source and Canonical evidence can be deleted through this command".into(),
+            )),
+        }
+        .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Tauri Backtest Run commands are thin adapters: they deserialize the
@@ -845,6 +971,13 @@ pub fn run() {
             snapshot_list,
             snapshot_list_readable,
             snapshot_cancel,
+            market_data_pipeline_publish,
+            market_data_pipeline_cancel,
+            market_data_pipeline_list,
+            market_data_pipeline_quality,
+            market_data_pipeline_failures,
+            market_data_pipeline_publish_snapshot,
+            market_data_pipeline_delete,
             backtest_preflight,
             backtest_run,
             backtest_list,
@@ -878,6 +1011,10 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn string(error: impl std::fmt::Display) -> String {
+    error.to_string()
 }
 
 #[cfg(test)]

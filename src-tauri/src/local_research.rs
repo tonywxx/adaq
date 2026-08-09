@@ -22,6 +22,7 @@ use adaq_component_tooling::{
     ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotSource,
 };
 use adaq_data_core::OhlcvBar;
+use adaq_data_pipeline::{DataPipeline, DataQualityReport};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -41,6 +42,7 @@ use crate::{
 pub struct LocalResearchState {
     pub(crate) root: PathBuf,
     pub(crate) database: Arc<Mutex<Connection>>,
+    pub(crate) pipeline: DataPipeline,
     pub(crate) snapshots: MarketDataSnapshots,
     pub(crate) components: ComponentLibrary,
     source: Arc<LocalGenerationSource>,
@@ -357,6 +359,8 @@ impl LocalResearchState {
             )
             .map_err(string)?;
         let database = Arc::new(Mutex::new(database));
+        let pipeline = DataPipeline::open(root.join("market-data-pipeline"), database.clone())
+            .map_err(string)?;
         let connections = crate::connections::ConnectionManager::open_production(database.clone())?;
         let snapshot_source = Arc::new(LocalSnapshotSource::new(
             database.clone(),
@@ -398,6 +402,7 @@ impl LocalResearchState {
             Self {
                 root,
                 database,
+                pipeline,
                 snapshots,
                 components,
                 source,
@@ -476,6 +481,17 @@ impl LocalResearchState {
         } else {
             0
         };
+        let pipeline_snapshot_blocker_count = if matches!(
+            kind,
+            LocalDataResetKind::MarketData | LocalDataResetKind::All
+        ) {
+            self.pipeline
+                .snapshot_deletion_blockers_for_user(user_id)
+                .map_err(string)?
+                .len() as u64
+        } else {
+            0
+        };
         let mut database = self.database.lock().map_err(string)?;
         match kind {
             LocalDataResetKind::Watchlist => reset_watchlist(&mut database, user_id),
@@ -487,6 +503,7 @@ impl LocalResearchState {
                 user_id,
                 &self.root,
                 validation_report_count,
+                pipeline_snapshot_blocker_count,
                 &self.snapshots,
                 &self.backtests,
             ),
@@ -499,6 +516,7 @@ impl LocalResearchState {
                 &self.validation,
                 &self.snapshots,
                 &self.backtests,
+                pipeline_snapshot_blocker_count,
             ),
         }
     }
@@ -534,6 +552,28 @@ impl LocalResearchState {
         snapshot_id: &str,
     ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
         self.snapshots.snapshot_for_user(user_id, snapshot_id)
+    }
+
+    pub(crate) fn publish_pipeline_snapshot_for_user(
+        &self,
+        user_id: &str,
+        canonical_id: &str,
+    ) -> Result<(MarketDataSnapshot, DataQualityReport), String> {
+        let canonical = self
+            .pipeline
+            .canonical_for_user(user_id, canonical_id)
+            .map_err(string)?;
+        let quality = self
+            .pipeline
+            .quality_for_user(user_id, &canonical.quality_report_id)
+            .map_err(string)?;
+        let snapshot = self
+            .snapshots
+            .persist_for_user(user_id, &canonical.to_bar_series())?;
+        self.pipeline
+            .record_snapshot_reference(user_id, canonical_id, &snapshot.snapshot_id)
+            .map_err(string)?;
+        Ok((snapshot, quality))
     }
 
     pub(crate) fn runtime_component(&self, package: &ComponentPackage) -> Result<PathBuf, String> {
@@ -677,6 +717,7 @@ fn reset_market_data(
     user_id: &str,
     root: &Path,
     validation_report_count: u64,
+    pipeline_snapshot_blocker_count: u64,
     snapshots: &MarketDataSnapshots,
     backtests: &Backtests,
 ) -> Result<(), String> {
@@ -689,7 +730,8 @@ fn reset_market_data(
         .map_err(string)?;
     let blocking = backtests.run_count(database, user_id)?
         + blocking_datasets.max(0) as u64
-        + validation_report_count;
+        + validation_report_count
+        + pipeline_snapshot_blocker_count;
     if blocking > 0 {
         return Err(format!(
             "Market Data reset is blocked by {blocking} immutable research record(s)"
@@ -713,12 +755,18 @@ fn reset_all(
     validation: &ValidationStudies,
     snapshots: &MarketDataSnapshots,
     backtests: &Backtests,
+    pipeline_snapshot_blocker_count: u64,
 ) -> Result<(), String> {
     // The reset User's Runs are deleted inside the transaction below, so
     // only other Users' Runs keep locking Component content; the Component
     // module derives that guard from the Backtest module's lock query, and
     // it stays stable under the held database lock for both the staged
     // file selection and the transaction's orphan cleanup.
+    if pipeline_snapshot_blocker_count > 0 {
+        return Err(format!(
+            "All local data reset is blocked by {pipeline_snapshot_blocker_count} pipeline snapshot reference(s)"
+        ));
+    }
     let component_paths = components.orphan_archive_paths(database, user_id, Some(user_id))?;
     let dataset_paths = strings(
         database,

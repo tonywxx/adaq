@@ -8,6 +8,7 @@ edition = "2024"
 [workspace]
 members = [
     "crates/adaq-data-core",
+    "crates/adaq-data-pipeline",
     "crates/adaq-backtest-core",
     "crates/adaq-component-sdk",
     "crates/adaq-component-tooling",
@@ -29,6 +30,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 adaq-data-core = { path = "crates/adaq-data-core" }
+adaq-data-pipeline = { path = "crates/adaq-data-pipeline" }
 adaq-backtest-core = { path = "crates/adaq-backtest-core" }
 adaq-component-sdk = { path = "crates/adaq-component-sdk", features = ["host"] }
 adaq-component-tooling = { path = "crates/adaq-component-tooling" }
