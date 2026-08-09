@@ -6,9 +6,9 @@ use adaq_backtest_core::MarketDataSnapshot;
 use adaq_data_core::market::InstrumentId;
 use adaq_data_core::{BarInterval, HistoricalBarRange};
 use adaq_data_pipeline::{
-    AcquisitionDiagnostics, CanonicalWarning, CanonicalizationRequest, DataQualityReport,
-    DataQualityState, PipelinePublication, ProviderCapabilitySnapshot, QuarantineReason,
-    SourceAcquisition, SourceMarketRecord,
+    AcquisitionDiagnostics, CalendarEvidence, CanonicalWarning, CanonicalizationRequest,
+    DataQualityReport, DataQualityState, DerivationRequest, PipelinePublication,
+    ProviderCapabilitySnapshot, QuarantineReason, SourceAcquisition, SourceMarketRecord,
 };
 use serde::{Deserialize, Serialize};
 
@@ -288,6 +288,47 @@ pub(crate) struct BackfillCancelRequest {
 pub(crate) struct SnapshotRequest {
     pub user_id: String,
     pub canonical_id: String,
+    #[serde(default)]
+    pub allow_degraded: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeriveRequest {
+    pub user_id: String,
+    pub canonical_id: String,
+    pub target_interval: BarInterval,
+    pub calendar: CalendarEvidence,
+    pub historical_range: Option<HistoricalBarRange>,
+    #[serde(default)]
+    pub algorithm_version: String,
+    #[serde(default)]
+    pub allow_degraded: bool,
+}
+
+impl DeriveRequest {
+    pub(crate) fn into_parts(self) -> (String, String, DerivationRequest, bool) {
+        let mut derivation = DerivationRequest::new(self.target_interval, self.calendar);
+        derivation.historical_range = self.historical_range;
+        if !self.algorithm_version.trim().is_empty() {
+            derivation.algorithm_version = self.algorithm_version;
+        }
+        (
+            self.user_id,
+            self.canonical_id,
+            derivation,
+            self.allow_degraded,
+        )
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DerivedSnapshotRequest {
+    pub user_id: String,
+    pub derived_id: String,
+    #[serde(default)]
+    pub allow_degraded: bool,
 }
 
 #[derive(Debug, Serialize)]

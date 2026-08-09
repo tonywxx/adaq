@@ -112,6 +112,10 @@ pub struct AsharePointInTimeUniverse {
     pub as_of_ms: i64,
     pub snapshot_id: Option<String>,
     pub evidence_state: UniverseEvidenceState,
+    #[serde(default)]
+    pub evidence_reasons: Vec<String>,
+    pub coverage_start_ms: Option<i64>,
+    pub coverage_end_ms: Option<i64>,
     pub instruments: Vec<AshareInstrument>,
 }
 
@@ -1016,17 +1020,21 @@ impl AshareDataPath {
                 "A-share universe observation time must be non-negative".into(),
             ));
         }
-        let snapshot = self
-            .list_instrument_master_snapshots(user_id)?
-            .into_iter()
+        let snapshots = self.list_instrument_master_snapshots(user_id)?;
+        let snapshot = snapshots
+            .iter()
             .filter(|snapshot| snapshot.effective_at_ms <= observation_time_ms)
-            .max_by_key(|snapshot| (snapshot.effective_at_ms, snapshot.snapshot_id.clone()));
+            .max_by_key(|snapshot| (snapshot.effective_at_ms, snapshot.snapshot_id.clone()))
+            .cloned();
         let Some(snapshot) = snapshot else {
             return Ok(AsharePointInTimeUniverse {
                 universe_id: digest(&canonical_json_bytes(&(observation_time_ms, "unknown"))?),
                 as_of_ms: observation_time_ms,
                 snapshot_id: None,
                 evidence_state: UniverseEvidenceState::Unknown,
+                evidence_reasons: vec!["instrument-master-unavailable-at-as-of".into()],
+                coverage_start_ms: None,
+                coverage_end_ms: None,
                 instruments: Vec::new(),
             });
         };
@@ -1035,6 +1043,11 @@ impl AshareDataPath {
         } else {
             UniverseEvidenceState::Reconstructed
         };
+        let coverage_end_ms = snapshots
+            .iter()
+            .filter(|candidate| candidate.effective_at_ms > snapshot.effective_at_ms)
+            .map(|candidate| candidate.effective_at_ms)
+            .min();
         let instruments = snapshot
             .instruments
             .into_iter()
@@ -1051,6 +1064,17 @@ impl AshareDataPath {
             as_of_ms: observation_time_ms,
             snapshot_id: Some(snapshot.snapshot_id),
             evidence_state,
+            evidence_reasons: match evidence_state {
+                UniverseEvidenceState::Observed => {
+                    vec!["instrument-master-observed-at-as-of".into()]
+                }
+                UniverseEvidenceState::Reconstructed => {
+                    vec!["instrument-master-reconstructed-from-prior-observation".into()]
+                }
+                UniverseEvidenceState::Unknown => unreachable!(),
+            },
+            coverage_start_ms: Some(snapshot.effective_at_ms),
+            coverage_end_ms,
             instruments,
         })
     }

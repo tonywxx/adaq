@@ -17,13 +17,15 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
-use adaq_backtest_core::{MarketDataSnapshot, SnapshotStore};
+use adaq_backtest_core::{
+    MarketDataSnapshot, SnapshotDatasetBinding, SnapshotProvenance, SnapshotStore,
+};
 use adaq_component_tooling::{
     ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotSource,
 };
 use adaq_data_core::{OhlcvBar, OkxClient, a_share::AshareClient};
 use adaq_data_pipeline::{
-    CancellationToken, DataPipeline, DataQualityReport, a_share::AshareDataPath,
+    CancellationToken, DataPipeline, DataQualityReport, DataQualityState, a_share::AshareDataPath,
     okx::OkxSpotDataPath, us_equity::UsEquityDataPath,
 };
 use rusqlite::{Connection, params};
@@ -435,6 +437,10 @@ impl LocalResearchState {
         // locking the database mutex so the hooks never re-enter a held
         // lock.
         let snapshots = self.snapshots.summary_for_user(user_id)?;
+        let pipeline_market_data_bytes = self
+            .pipeline
+            .storage_footprint_for_user(user_id)
+            .map_err(string)?;
         let backtests = self.backtests.summary_for_user(user_id)?;
         let components = self.components.summary_for_user(user_id)?;
         let database = self.database.lock().map_err(string)?;
@@ -455,7 +461,9 @@ impl LocalResearchState {
             data_directory,
             database_bytes: file_bytes(&database_path),
             component_bytes: components.component_bytes,
-            market_data_bytes: snapshots.market_data_bytes,
+            market_data_bytes: snapshots
+                .market_data_bytes
+                .saturating_add(pipeline_market_data_bytes),
             watchlist_count: count("SELECT COUNT(*) FROM watchlist_items WHERE user_id = ?1")?,
             component_count: components.component_count,
             snapshot_count: snapshots.snapshot_count,
@@ -660,10 +668,11 @@ impl LocalResearchState {
         self.snapshots.snapshot_for_user(user_id, snapshot_id)
     }
 
-    pub(crate) fn publish_pipeline_snapshot_for_user(
+    pub(crate) fn publish_pipeline_snapshot_for_user_with_policy(
         &self,
         user_id: &str,
         canonical_id: &str,
+        allow_degraded: bool,
     ) -> Result<(MarketDataSnapshot, DataQualityReport), String> {
         let cancellation = CancellationToken::new();
         let _operation = self
@@ -681,9 +690,46 @@ impl LocalResearchState {
             .pipeline
             .quality_for_user(user_id, &canonical.quality_report_id)
             .map_err(string)?;
-        let snapshot = self
-            .snapshots
-            .persist_for_user(user_id, &canonical.to_bar_series())?;
+        if quality.state == DataQualityState::Rejected {
+            return Err(format!(
+                "Market Data Snapshot publication is blocked by rejected quality report {}",
+                quality.report_id
+            ));
+        }
+        if quality.state == DataQualityState::Degraded && !allow_degraded {
+            return Err(format!(
+                "Market Data Snapshot publication requires explicit acceptance of degraded quality report {}",
+                quality.report_id
+            ));
+        }
+        let source = self
+            .pipeline
+            .source_for_user(user_id, &canonical.source_id)
+            .map_err(string)?;
+        let provenance = SnapshotProvenance {
+            venue: canonical.instrument.venue.clone(),
+            datasets: vec![SnapshotDatasetBinding {
+                instrument: canonical.instrument.clone(),
+                source_id: canonical.source_id.clone(),
+                source_revision: source.revision,
+                canonical_id: Some(canonical.canonical_id.clone()),
+                derived_id: None,
+                quality_report_id: quality.report_id.clone(),
+                content_sha256: canonical.content_sha256.clone(),
+            }],
+            quality_report_ids: vec![quality.report_id.clone()],
+            calendar_snapshot_ids: vec![canonical.calendar.identity()],
+            provider_capability_snapshots: vec![
+                serde_json::to_value(&source.identity.capability_snapshot).map_err(string)?,
+            ],
+            universe: None,
+            derivation_algorithm_version: None,
+        };
+        let snapshot = self.snapshots.persist_for_user_with_provenance(
+            user_id,
+            &canonical.to_bar_series(),
+            Some(provenance),
+        )?;
         if cancellation.is_cancelled() {
             self.snapshots
                 .revoke_for_user(user_id, &snapshot.snapshot_id)?;
@@ -721,6 +767,82 @@ impl LocalResearchState {
                 (Ok(()), Ok(())) => Err("pipeline snapshot publication was cancelled".into()),
                 (reference, snapshot) => Err(format!(
                     "pipeline snapshot publication was cancelled; cleanup failed: reference={reference:?}, snapshot={snapshot:?}"
+                )),
+            };
+        }
+        Ok((snapshot, quality))
+    }
+
+    pub(crate) fn publish_pipeline_derived_snapshot_for_user_with_policy(
+        &self,
+        user_id: &str,
+        derived_id: &str,
+        allow_degraded: bool,
+    ) -> Result<(MarketDataSnapshot, DataQualityReport), String> {
+        let derived = self
+            .pipeline
+            .derived_for_user(user_id, derived_id)
+            .map_err(string)?;
+        let canonical = self
+            .pipeline
+            .canonical_for_user(user_id, &derived.canonical_id)
+            .map_err(string)?;
+        let quality = self
+            .pipeline
+            .quality_for_user(user_id, &canonical.quality_report_id)
+            .map_err(string)?;
+        if quality.state == DataQualityState::Rejected {
+            return Err(format!(
+                "Market Data Snapshot publication is blocked by rejected quality report {}",
+                quality.report_id
+            ));
+        }
+        if quality.state == DataQualityState::Degraded && !allow_degraded {
+            return Err(format!(
+                "Market Data Snapshot publication requires explicit acceptance of degraded quality report {}",
+                quality.report_id
+            ));
+        }
+        let source = self
+            .pipeline
+            .source_for_user(user_id, &derived.source_id)
+            .map_err(string)?;
+        let provenance = SnapshotProvenance {
+            venue: derived.instrument.venue.clone(),
+            datasets: vec![SnapshotDatasetBinding {
+                instrument: derived.instrument.clone(),
+                source_id: derived.source_id.clone(),
+                source_revision: source.revision,
+                canonical_id: Some(derived.canonical_id.clone()),
+                derived_id: Some(derived.derived_id.clone()),
+                quality_report_id: quality.report_id.clone(),
+                content_sha256: derived.content_sha256.clone(),
+            }],
+            quality_report_ids: vec![quality.report_id.clone()],
+            calendar_snapshot_ids: vec![derived.calendar.identity()],
+            provider_capability_snapshots: vec![
+                serde_json::to_value(&source.identity.capability_snapshot).map_err(string)?,
+            ],
+            universe: None,
+            derivation_algorithm_version: Some(derived.algorithm_version.clone()),
+        };
+        let snapshot = self.snapshots.persist_for_user_with_provenance(
+            user_id,
+            &derived.to_bar_series(),
+            Some(provenance),
+        )?;
+        if let Err(error) = self.pipeline.record_derived_snapshot_reference(
+            user_id,
+            derived_id,
+            &snapshot.snapshot_id,
+        ) {
+            let cleanup = self
+                .snapshots
+                .revoke_for_user(user_id, &snapshot.snapshot_id);
+            return match cleanup {
+                Ok(()) => Err(string(error)),
+                Err(cleanup_error) => Err(format!(
+                    "{error}; failed to clean up persisted snapshot: {cleanup_error}"
                 )),
             };
         }
@@ -1097,6 +1219,7 @@ mod tests {
             bar_count: 1,
             gaps: vec![],
             parquet_path: PathBuf::new(),
+            provenance: None,
         };
         let dataset = crate::forecast_signal_dataset::BacktestSignalDataset {
             dataset_id: "a".repeat(64),

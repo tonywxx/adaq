@@ -6,6 +6,7 @@ use std::{
     sync::Arc,
 };
 
+use adaq_data_core::market::{InstrumentId, Venue};
 use adaq_data_core::{BarGap, BarInterval, BarSeries, OhlcvBar};
 use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -26,6 +27,85 @@ pub struct MarketDataSnapshot {
     pub bar_count: usize,
     pub gaps: Vec<SnapshotGap>,
     pub parquet_path: PathBuf,
+    #[serde(default)]
+    pub provenance: Option<SnapshotProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotDatasetBinding {
+    pub instrument: InstrumentId,
+    pub source_id: String,
+    pub source_revision: u64,
+    pub canonical_id: Option<String>,
+    pub derived_id: Option<String>,
+    pub quality_report_id: String,
+    pub content_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotUniverseBinding {
+    pub universe_id: String,
+    pub as_of_ms: i64,
+    pub evidence_state: String,
+    #[serde(default)]
+    pub evidence_reasons: Vec<String>,
+    pub coverage_start_ms: Option<i64>,
+    pub coverage_end_ms: Option<i64>,
+    pub instruments: Vec<InstrumentId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotProvenance {
+    pub venue: Venue,
+    pub datasets: Vec<SnapshotDatasetBinding>,
+    pub quality_report_ids: Vec<String>,
+    pub calendar_snapshot_ids: Vec<String>,
+    pub provider_capability_snapshots: Vec<serde_json::Value>,
+    pub universe: Option<SnapshotUniverseBinding>,
+    pub derivation_algorithm_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UniverseSnapshotComponent {
+    pub snapshot_id: String,
+    pub dataset: SnapshotDatasetBinding,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketDataUniverseSnapshot {
+    pub snapshot_id: String,
+    pub venue: Venue,
+    pub interval: BarInterval,
+    pub start_time_ms: i64,
+    pub end_time_ms: i64,
+    pub universe: SnapshotUniverseBinding,
+    pub components: Vec<UniverseSnapshotComponent>,
+    pub quality_report_ids: Vec<String>,
+    pub calendar_snapshot_ids: Vec<String>,
+    pub provider_capability_snapshots: Vec<serde_json::Value>,
+    pub content_sha256: String,
+}
+
+impl MarketDataUniverseSnapshot {
+    pub fn finalize(mut self) -> Result<Self, SnapshotError> {
+        self.content_sha256.clear();
+        self.snapshot_id.clear();
+        self.content_sha256 = universe_content_hash(&self)?;
+        self.snapshot_id = format!("universe-{}", self.content_sha256);
+        Ok(self)
+    }
+
+    pub fn expected_content_sha256(&self) -> Result<String, SnapshotError> {
+        let mut identity = self.clone();
+        identity.content_sha256.clear();
+        identity.snapshot_id.clear();
+        universe_content_hash(&identity)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,9 +147,18 @@ impl SnapshotStore {
     }
 
     pub fn persist(&self, series: &BarSeries) -> Result<MarketDataSnapshot, SnapshotError> {
+        self.persist_with_provenance(series, None)
+    }
+
+    pub fn persist_with_provenance(
+        &self,
+        series: &BarSeries,
+        provenance: Option<SnapshotProvenance>,
+    ) -> Result<MarketDataSnapshot, SnapshotError> {
         validate_series(series)?;
-        let snapshot_id = content_hash(series);
-        let parquet_path = self.root.join(format!("{snapshot_id}.parquet"));
+        let bar_content_hash = content_hash(series);
+        let snapshot_id = snapshot_id(&bar_content_hash, provenance.as_ref());
+        let parquet_path = self.root.join(format!("{bar_content_hash}.parquet"));
         if !parquet_path.is_file() {
             write_parquet(&parquet_path, &series.bars)?;
         }
@@ -83,6 +172,7 @@ impl SnapshotStore {
             bar_count: series.bars.len(),
             gaps: series.gaps.iter().copied().map(Into::into).collect(),
             parquet_path,
+            provenance,
         })
     }
 
@@ -92,7 +182,36 @@ impl SnapshotStore {
                 "Snapshot path is outside the data store".into(),
             ));
         }
-        read_parquet(&snapshot.parquet_path)
+        let bars = read_parquet(&snapshot.parquet_path)?;
+        if snapshot.bar_count != bars.len()
+            || snapshot.start_time_ms != bars.first().map_or(0, |bar| bar.open_time_ms)
+            || snapshot.end_time_ms != bars.last().map_or(0, |bar| bar.open_time_ms)
+        {
+            return Err(SnapshotError(
+                "Snapshot metadata does not match its Parquet evidence".into(),
+            ));
+        }
+        let series = BarSeries {
+            src: snapshot.src.clone(),
+            code: snapshot.code.clone(),
+            interval: snapshot.interval,
+            bars: bars.clone(),
+            gaps: snapshot
+                .gaps
+                .iter()
+                .map(|gap| BarGap {
+                    start_time_ms: gap.start_time_ms,
+                    end_time_ms: gap.end_time_ms,
+                })
+                .collect(),
+        };
+        if snapshot_id(&content_hash(&series), snapshot.provenance.as_ref()) != snapshot.snapshot_id
+        {
+            return Err(SnapshotError(
+                "Snapshot content identity does not match its Parquet evidence".into(),
+            ));
+        }
+        Ok(bars)
     }
 }
 
@@ -228,6 +347,34 @@ fn content_hash(series: &BarSeries) -> String {
         write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
     }
     output
+}
+
+fn content_hash_with_provenance(bar_content_hash: &str, provenance: &SnapshotProvenance) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bar_content_hash.as_bytes());
+    hasher.update([0]);
+    hasher.update(serde_json::to_vec(provenance).expect("Snapshot provenance serializes"));
+    let mut output = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
+}
+
+fn snapshot_id(bar_content_hash: &str, provenance: Option<&SnapshotProvenance>) -> String {
+    provenance.map_or_else(
+        || bar_content_hash.into(),
+        |value| content_hash_with_provenance(bar_content_hash, value),
+    )
+}
+
+fn universe_content_hash(snapshot: &MarketDataUniverseSnapshot) -> Result<String, SnapshotError> {
+    let bytes = serde_json::to_vec(snapshot).map_err(error)?;
+    let mut output = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    Ok(output)
 }
 
 fn error(error: impl std::fmt::Display) -> SnapshotError {

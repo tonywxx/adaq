@@ -60,6 +60,10 @@ pub struct PointInTimeInstrumentUniverse {
     pub as_of_ms: i64,
     pub snapshot_id: Option<String>,
     pub evidence_state: UniverseEvidenceState,
+    #[serde(default)]
+    pub evidence_reasons: Vec<String>,
+    pub coverage_start_ms: Option<i64>,
+    pub coverage_end_ms: Option<i64>,
     pub instruments: Vec<SpotInstrument>,
 }
 
@@ -363,16 +367,42 @@ impl OkxSpotDataPath {
                 "Universe observation time must be non-negative".into(),
             ));
         }
-        let snapshot = self.latest_snapshot_before(user_id, as_of_ms)?;
+        let snapshots = self.list_instrument_master_snapshots(user_id)?;
+        let snapshot = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.retrieved_at_ms <= as_of_ms)
+            .max_by_key(|snapshot| (snapshot.retrieved_at_ms, snapshot.snapshot_id.clone()))
+            .cloned();
         let Some(snapshot) = snapshot else {
             return Ok(PointInTimeInstrumentUniverse {
                 universe_id: digest(&canonical_json_bytes(&(as_of_ms, "unknown"))?),
                 as_of_ms,
                 snapshot_id: None,
                 evidence_state: UniverseEvidenceState::Unknown,
+                evidence_reasons: vec!["instrument-master-unavailable-at-as-of".into()],
+                coverage_start_ms: None,
+                coverage_end_ms: None,
                 instruments: Vec::new(),
             });
         };
+        let evidence_state =
+            if snapshot.retrieved_at_ms.div_euclid(DAY_MS) == as_of_ms.div_euclid(DAY_MS) {
+                UniverseEvidenceState::Observed
+            } else {
+                UniverseEvidenceState::Reconstructed
+            };
+        let evidence_reasons = match evidence_state {
+            UniverseEvidenceState::Observed => vec!["instrument-master-observed-at-as-of".into()],
+            UniverseEvidenceState::Reconstructed => {
+                vec!["instrument-master-reconstructed-from-prior-observation".into()]
+            }
+            UniverseEvidenceState::Unknown => unreachable!(),
+        };
+        let coverage_end_ms = snapshots
+            .iter()
+            .filter(|candidate| candidate.retrieved_at_ms > snapshot.retrieved_at_ms)
+            .map(|candidate| candidate.retrieved_at_ms)
+            .min();
         let instruments = snapshot
             .instruments
             .into_iter()
@@ -387,7 +417,10 @@ impl OkxSpotDataPath {
             universe_id,
             as_of_ms,
             snapshot_id: Some(snapshot.snapshot_id),
-            evidence_state: UniverseEvidenceState::Observed,
+            evidence_state,
+            evidence_reasons,
+            coverage_start_ms: Some(snapshot.retrieved_at_ms),
+            coverage_end_ms,
             instruments,
         })
     }

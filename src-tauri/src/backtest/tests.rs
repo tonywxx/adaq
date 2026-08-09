@@ -196,6 +196,7 @@ fn harness(name: &str) -> Harness {
         bar_count: 3,
         gaps: vec![],
         parquet_path: PathBuf::new(),
+        provenance: None,
     };
     let source = Arc::new(FakeBacktestSource {
         database: Arc::new(Mutex::new(database)),

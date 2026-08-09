@@ -30,7 +30,7 @@ use adaq_data_core::{
 };
 use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use chrono::{Datelike, Timelike};
+use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use rust_decimal::Decimal;
@@ -290,6 +290,13 @@ pub enum CalendarEvidence {
 }
 
 impl CalendarEvidence {
+    pub fn identity(&self) -> String {
+        match self {
+            Self::UtcGrid { calendar_id, .. } => calendar_id.clone(),
+            Self::Venue { snapshot } => snapshot.snapshot_id.clone(),
+        }
+    }
+
     fn validate_for(&self, instrument: &InstrumentId) -> Result<(), PipelineError> {
         match (instrument.venue.kind, self) {
             (VenueKind::CryptoSpot, Self::UtcGrid { calendar_id, .. })
@@ -579,6 +586,191 @@ impl CanonicalMarketDataset {
     }
 }
 
+pub const DERIVATION_ALGORITHM_VERSION: &str = "calendar-ohlcv-v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DerivationRequest {
+    pub target_interval: BarInterval,
+    pub calendar: CalendarEvidence,
+    pub historical_range: Option<HistoricalBarRange>,
+    #[serde(default = "default_derivation_algorithm_version")]
+    pub algorithm_version: String,
+}
+
+impl DerivationRequest {
+    pub fn new(target_interval: BarInterval, calendar: CalendarEvidence) -> Self {
+        Self {
+            target_interval,
+            calendar,
+            historical_range: None,
+            algorithm_version: DERIVATION_ALGORITHM_VERSION.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DerivedMarketDataset {
+    pub derived_id: String,
+    pub canonical_id: String,
+    pub source_id: String,
+    pub source_revision: u64,
+    pub instrument: InstrumentId,
+    pub source_interval: BarInterval,
+    pub interval: BarInterval,
+    pub calendar: CalendarEvidence,
+    pub algorithm_version: String,
+    pub bars: Vec<OhlcvBar>,
+    pub gaps: Vec<BarGap>,
+    pub content_sha256: String,
+    pub evidence_path: PathBuf,
+    pub parquet_path: PathBuf,
+}
+
+impl DerivedMarketDataset {
+    pub fn to_bar_series(&self) -> BarSeries {
+        BarSeries {
+            src: self.instrument.venue.id.clone(),
+            code: self.instrument.code.clone(),
+            interval: self.interval,
+            bars: self.bars.clone(),
+            gaps: self.gaps.clone(),
+        }
+    }
+}
+
+/// Deterministically aggregates complete source Bar windows under the frozen
+/// UTC-grid or Venue calendar. A missing source slot invalidates the entire
+/// target window, so a derived Bar can never bridge a genuine source gap.
+pub fn derive_market_data(
+    canonical: &CanonicalMarketDataset,
+    request: &DerivationRequest,
+) -> Result<DerivedMarketDataset, PipelineError> {
+    request.calendar.validate_for(&canonical.instrument)?;
+    if request.algorithm_version.trim().is_empty() {
+        return Err(PipelineError::InvalidRequest(
+            "derivation algorithm version must be non-empty".into(),
+        ));
+    }
+    let source_rank = interval_rank(canonical.interval);
+    let target_rank = interval_rank(request.target_interval);
+    if target_rank <= source_rank {
+        return Err(PipelineError::InvalidRequest(
+            "derived interval must be higher than the Canonical interval".into(),
+        ));
+    }
+    if interval_step_ms(canonical.interval).is_none() {
+        return Err(PipelineError::InvalidRequest(
+            "derivation requires a fixed-width or daily Canonical interval".into(),
+        ));
+    }
+    if let Some(range) = request.historical_range
+        && range.start_time_ms >= range.end_time_ms
+    {
+        return Err(PipelineError::InvalidRequest(
+            "derivation historical range must be increasing".into(),
+        ));
+    }
+    let start_time_ms = request
+        .historical_range
+        .map(|range| range.start_time_ms)
+        .or_else(|| canonical.bars.first().map(|bar| bar.open_time_ms))
+        .or_else(|| canonical.gaps.first().map(|gap| gap.start_time_ms))
+        .ok_or_else(|| PipelineError::InvalidRequest("Canonical dataset is empty".into()))?;
+    let end_time_ms = request
+        .historical_range
+        .map(|range| range.end_time_ms)
+        .or_else(|| {
+            canonical
+                .bars
+                .last()
+                .and_then(|bar| next_bar_open_time_ms(bar.open_time_ms, canonical.interval).ok())
+        })
+        .or_else(|| canonical.gaps.last().map(|gap| gap.end_time_ms))
+        .ok_or_else(|| PipelineError::InvalidRequest("Canonical dataset has no coverage".into()))?;
+    if start_time_ms >= end_time_ms {
+        return Err(PipelineError::InvalidRequest(
+            "derivation coverage is empty".into(),
+        ));
+    }
+
+    let windows = target_windows(
+        &canonical.instrument,
+        &request.calendar,
+        request.target_interval,
+        start_time_ms,
+        end_time_ms,
+    )?;
+    let bars_by_time = canonical
+        .bars
+        .iter()
+        .filter(|bar| bar.open_time_ms >= start_time_ms && bar.open_time_ms < end_time_ms)
+        .map(|bar| (bar.open_time_ms, bar))
+        .collect::<BTreeMap<_, _>>();
+    let mut bars = Vec::new();
+    let mut gaps = Vec::new();
+    for (window_start, window_end) in windows {
+        let expected = source_times(
+            &canonical.instrument,
+            &request.calendar,
+            canonical.interval,
+            window_start,
+            window_end,
+        )?;
+        if expected.is_empty() {
+            continue;
+        }
+        let Some(window_bars) = expected
+            .iter()
+            .map(|time| bars_by_time.get(time).copied())
+            .collect::<Option<Vec<_>>>()
+        else {
+            push_gap(&mut gaps, window_start, window_end);
+            continue;
+        };
+        bars.push(aggregate_bars(&window_bars, window_start));
+    }
+    let content_sha256 = digest(&canonical_json_bytes(&(
+        &canonical.instrument,
+        canonical.interval,
+        request.target_interval,
+        &request.calendar,
+        &request.algorithm_version,
+        &bars,
+        &gaps,
+    ))?);
+    let derived_id = digest(&canonical_json_bytes(&(
+        &canonical.canonical_id,
+        canonical.revision,
+        request.target_interval,
+        &request.calendar,
+        &request.algorithm_version,
+        &bars,
+        &gaps,
+    ))?);
+    Ok(DerivedMarketDataset {
+        derived_id,
+        canonical_id: canonical.canonical_id.clone(),
+        source_id: canonical.source_id.clone(),
+        source_revision: canonical.revision,
+        instrument: canonical.instrument.clone(),
+        source_interval: canonical.interval,
+        interval: request.target_interval,
+        calendar: request.calendar.clone(),
+        algorithm_version: request.algorithm_version.clone(),
+        bars,
+        gaps,
+        content_sha256,
+        evidence_path: PathBuf::new(),
+        parquet_path: PathBuf::new(),
+    })
+}
+
+fn default_derivation_algorithm_version() -> String {
+    DERIVATION_ALGORITHM_VERSION.into()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelinePublication {
@@ -773,7 +965,7 @@ impl DataPipeline {
         database: Arc<Mutex<Connection>>,
     ) -> Result<Self, PipelineError> {
         let root = root.into();
-        for directory in ["sources", "canonical", "quality"] {
+        for directory in ["sources", "canonical", "quality", "derived"] {
             fs::create_dir_all(root.join(directory)).map_err(storage)?;
         }
         let pipeline = Self(Arc::new(PipelineInner {
@@ -1232,6 +1424,285 @@ impl DataPipeline {
         })
     }
 
+    pub fn derive_for_user(
+        &self,
+        user_id: &str,
+        canonical_id: &str,
+        request: &DerivationRequest,
+        allow_degraded: bool,
+    ) -> Result<DerivedMarketDataset, PipelineError> {
+        validate_user(user_id)?;
+        let canonical = self.canonical_for_user(user_id, canonical_id)?;
+        if request.calendar != canonical.calendar {
+            return Err(PipelineError::InvalidRequest(
+                "derived dataset must use the Canonical calendar snapshot".into(),
+            ));
+        }
+        let quality = self.quality_for_user(user_id, &canonical.quality_report_id)?;
+        match quality.state {
+            DataQualityState::Rejected => {
+                return Err(PipelineError::InvalidRequest(
+                    "Rejected quality evidence cannot produce a derived dataset".into(),
+                ));
+            }
+            DataQualityState::Degraded if !allow_degraded => {
+                return Err(PipelineError::InvalidRequest(
+                    "Degraded quality evidence requires explicit policy acceptance".into(),
+                ));
+            }
+            DataQualityState::Passed | DataQualityState::Degraded => {}
+        }
+        let mut derived = derive_market_data(&canonical, request)?;
+        let evidence_path = self
+            .0
+            .root
+            .join("derived")
+            .join(format!("{}.json", derived.derived_id));
+        let parquet_path = self
+            .0
+            .root
+            .join("derived")
+            .join(format!("{}.parquet", derived.derived_id));
+        derived.evidence_path = evidence_path;
+        derived.parquet_path = parquet_path;
+        let evidence_bytes = canonical_json_bytes(&derived)?;
+        let evidence_sha256 = digest(&evidence_bytes);
+        let catalog = DerivedCatalog::from_dataset(&derived, evidence_sha256);
+        let catalog_json = serde_json::to_string(&catalog).map_err(storage)?;
+
+        atomic_write(&derived.evidence_path, &evidence_bytes)?;
+        if !derived.parquet_path.is_file() {
+            write_parquet_atomic(
+                &derived.parquet_path,
+                &derived.bars,
+                &CancellationToken::new(),
+            )?;
+        }
+        let mut database = self.0.database.lock().map_err(lock_error)?;
+        let transaction = database
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO pipeline_derived_datasets
+                 (derived_id, canonical_id, source_id, derived_json, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, CAST(strftime('%s','now') AS INTEGER) * 1000)",
+                params![
+                    derived.derived_id,
+                    derived.canonical_id,
+                    derived.source_id,
+                    catalog_json
+                ],
+            )
+            .map_err(storage)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO pipeline_derived_access(user_id, derived_id)
+                 VALUES (?1, ?2)",
+                params![user_id, derived.derived_id],
+            )
+            .map_err(storage)?;
+        transaction.commit().map_err(storage)?;
+        drop(database);
+        self.derived_for_user(user_id, &derived.derived_id)
+    }
+
+    pub fn derived_for_user(
+        &self,
+        user_id: &str,
+        derived_id: &str,
+    ) -> Result<DerivedMarketDataset, PipelineError> {
+        validate_user(user_id)?;
+        let database = self.0.database.lock().map_err(lock_error)?;
+        let catalog_json: String = database
+            .query_row(
+                "SELECT d.derived_json FROM pipeline_derived_datasets d
+                 JOIN pipeline_derived_access a USING(derived_id)
+                 WHERE a.user_id = ?1 AND d.derived_id = ?2",
+                params![user_id, derived_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    PipelineError::NotFound("Derived Market Dataset".into())
+                }
+                error => storage(error),
+            })?;
+        drop(database);
+        let catalog: DerivedCatalog = serde_json::from_str(&catalog_json).map_err(storage)?;
+        let evidence_bytes = fs::read(&catalog.evidence_path).map_err(storage)?;
+        if digest(&evidence_bytes) != catalog.evidence_sha256 {
+            return Err(PipelineError::Storage(
+                "Derived evidence content hash does not match its catalog".into(),
+            ));
+        }
+        let dataset: DerivedMarketDataset =
+            serde_json::from_slice(&evidence_bytes).map_err(storage)?;
+        if dataset.derived_id != catalog.derived_id
+            || dataset.canonical_id != catalog.canonical_id
+            || dataset.source_id != catalog.source_id
+            || dataset.source_revision != catalog.source_revision
+            || dataset.instrument != catalog.instrument
+            || dataset.source_interval != catalog.source_interval
+            || dataset.interval != catalog.interval
+            || dataset.calendar != catalog.calendar
+            || dataset.algorithm_version != catalog.algorithm_version
+            || dataset.content_sha256 != catalog.content_sha256
+            || dataset.evidence_path != catalog.evidence_path
+            || dataset.parquet_path != catalog.parquet_path
+        {
+            return Err(PipelineError::Storage(
+                "Derived evidence does not match its catalog".into(),
+            ));
+        }
+        let bars = read_parquet(&catalog.parquet_path)?;
+        if bars != dataset.bars {
+            return Err(PipelineError::Storage(
+                "Derived Parquet rows do not match its evidence".into(),
+            ));
+        }
+        if derived_content_hash(&dataset) != catalog.content_sha256 {
+            return Err(PipelineError::Storage(
+                "Derived content hash does not match its catalog".into(),
+            ));
+        }
+        Ok(dataset)
+    }
+
+    pub fn list_derived_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<DerivedMarketDataset>, PipelineError> {
+        validate_user(user_id)?;
+        let database = self.0.database.lock().map_err(lock_error)?;
+        let mut statement = database
+            .prepare(
+                "SELECT d.derived_id FROM pipeline_derived_datasets d
+                 JOIN pipeline_derived_access a USING(derived_id)
+                 WHERE a.user_id = ?1 ORDER BY d.derived_id",
+            )
+            .map_err(storage)?;
+        let ids = statement
+            .query_map([user_id], |row| row.get::<_, String>(0))
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        drop(statement);
+        drop(database);
+        ids.into_iter()
+            .map(|derived_id| self.derived_for_user(user_id, &derived_id))
+            .collect()
+    }
+
+    pub fn storage_footprint_for_user(&self, user_id: &str) -> Result<u64, PipelineError> {
+        validate_user(user_id)?;
+        let database = self.0.database.lock().map_err(lock_error)?;
+        let mut total = 0_u64;
+        for (query, kind) in [
+            (
+                "SELECT s.source_json FROM pipeline_sources s
+                 JOIN pipeline_source_access a USING(source_id)
+                 WHERE a.user_id = ?1",
+                0,
+            ),
+            (
+                "SELECT c.canonical_json FROM pipeline_canonical_datasets c
+                 JOIN pipeline_canonical_access a USING(canonical_id)
+                 WHERE a.user_id = ?1",
+                1,
+            ),
+            (
+                "SELECT q.report_json FROM pipeline_quality_reports q
+                 JOIN pipeline_quality_access a USING(report_id)
+                 WHERE a.user_id = ?1",
+                2,
+            ),
+            (
+                "SELECT d.derived_json FROM pipeline_derived_datasets d
+                 JOIN pipeline_derived_access a USING(derived_id)
+                 WHERE a.user_id = ?1",
+                3,
+            ),
+        ] {
+            let mut statement = database.prepare(query).map_err(storage)?;
+            let jsons = statement
+                .query_map([user_id], |row| row.get::<_, String>(0))
+                .map_err(storage)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?;
+            for json in jsons {
+                let paths = match kind {
+                    0 => vec![
+                        serde_json::from_str::<SourceCatalog>(&json)
+                            .map_err(storage)?
+                            .evidence_path,
+                    ],
+                    1 => {
+                        let catalog: CanonicalCatalog =
+                            serde_json::from_str(&json).map_err(storage)?;
+                        vec![catalog.evidence_path, catalog.parquet_path]
+                    }
+                    2 => vec![
+                        serde_json::from_str::<QualityCatalog>(&json)
+                            .map_err(storage)?
+                            .evidence_path,
+                    ],
+                    3 => {
+                        let catalog: DerivedCatalog =
+                            serde_json::from_str(&json).map_err(storage)?;
+                        vec![catalog.evidence_path, catalog.parquet_path]
+                    }
+                    _ => unreachable!(),
+                };
+                total = total.saturating_add(paths.into_iter().map(file_size).sum::<u64>());
+            }
+        }
+        Ok(total)
+    }
+
+    pub fn record_derived_snapshot_reference(
+        &self,
+        user_id: &str,
+        derived_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(), PipelineError> {
+        self.record_reference(user_id, "derived", derived_id, "snapshot", snapshot_id)?;
+        let database = self.0.database.lock().map_err(lock_error)?;
+        database
+            .execute(
+                "INSERT OR IGNORE INTO pipeline_snapshot_links
+                 (user_id, canonical_id, snapshot_id) VALUES (?1, ?2, ?3)",
+                params![user_id, format!("derived:{derived_id}"), snapshot_id],
+            )
+            .map_err(storage)?;
+        Ok(())
+    }
+
+    pub fn delete_derived_for_user(
+        &self,
+        user_id: &str,
+        derived_id: &str,
+    ) -> Result<(), PipelineError> {
+        validate_user(user_id)?;
+        let database = self.0.database.lock().map_err(lock_error)?;
+        let blockers = references_for(&database, user_id, "derived", derived_id)?;
+        if !blockers.is_empty() {
+            return Err(PipelineError::DeletionBlocked {
+                evidence_kind: "Derived".into(),
+                evidence_id: derived_id.into(),
+                blockers,
+            });
+        }
+        database
+            .execute(
+                "DELETE FROM pipeline_derived_access
+                 WHERE user_id = ?1 AND derived_id = ?2",
+                params![user_id, derived_id],
+            )
+            .map_err(storage)?;
+        Ok(())
+    }
+
     pub fn quality_for_user(
         &self,
         user_id: &str,
@@ -1301,7 +1772,10 @@ impl DataPipeline {
         validate_user(user_id)?;
         if evidence_id.trim().is_empty()
             || consumer_id.trim().is_empty()
-            || !matches!(evidence_kind, "source" | "canonical" | "snapshot")
+            || !matches!(
+                evidence_kind,
+                "source" | "canonical" | "derived" | "snapshot"
+            )
             || !matches!(
                 consumer_kind,
                 "dataset" | "run" | "report" | "deployment" | "snapshot"
@@ -1512,6 +1986,16 @@ impl DataPipeline {
                    )",
                 2,
             ),
+            (
+                "SELECT d.derived_json FROM pipeline_derived_datasets d
+                 JOIN pipeline_derived_access a USING(derived_id)
+                 WHERE a.user_id = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM pipeline_derived_access other
+                       WHERE other.derived_id = d.derived_id AND other.user_id <> ?1
+                   )",
+                3,
+            ),
         ];
         let mut paths = Vec::new();
         for (sql, kind) in queries {
@@ -1538,6 +2022,12 @@ impl DataPipeline {
                             .map_err(storage)?
                             .evidence_path,
                     ),
+                    3 => {
+                        let catalog: DerivedCatalog =
+                            serde_json::from_str(&json).map_err(storage)?;
+                        paths.push(catalog.parquet_path);
+                        paths.push(catalog.evidence_path);
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -1558,6 +2048,7 @@ impl DataPipeline {
             "pipeline_references",
             "pipeline_failures",
             "pipeline_quality_access",
+            "pipeline_derived_access",
             "pipeline_canonical_access",
             "pipeline_source_access",
         ] {
@@ -1574,6 +2065,16 @@ impl DataPipeline {
                  WHERE NOT EXISTS (
                      SELECT 1 FROM pipeline_quality_access a
                      WHERE a.report_id = pipeline_quality_reports.report_id
+                 )",
+                [],
+            )
+            .map_err(storage)?;
+        transaction
+            .execute(
+                "DELETE FROM pipeline_derived_datasets
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM pipeline_derived_access a
+                     WHERE a.derived_id = pipeline_derived_datasets.derived_id
                  )",
                 [],
             )
@@ -1626,7 +2127,27 @@ impl DataPipeline {
         validate_user(user_id)?;
         let blockers = {
             let database = self.0.database.lock().map_err(lock_error)?;
-            references_for(&database, user_id, "canonical", canonical_id)?
+            let mut blockers = references_for(&database, user_id, "canonical", canonical_id)?;
+            let mut statement = database
+                .prepare(
+                    "SELECT d.derived_id FROM pipeline_derived_datasets d
+                     JOIN pipeline_derived_access a USING(derived_id)
+                     WHERE a.user_id = ?1 AND d.canonical_id = ?2",
+                )
+                .map_err(storage)?;
+            blockers.extend(
+                statement
+                    .query_map(params![user_id, canonical_id], |row| {
+                        Ok(BlockingReference {
+                            consumer_kind: "derived".into(),
+                            consumer_id: row.get(0)?,
+                        })
+                    })
+                    .map_err(storage)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(storage)?,
+            );
+            blockers
         };
         if !blockers.is_empty() {
             return Err(PipelineError::DeletionBlocked {
@@ -1674,6 +2195,25 @@ impl DataPipeline {
             .collect::<Result<Vec<_>, _>>()
             .map_err(storage)?;
         blockers.extend(canonical_blockers);
+        let mut statement = database
+            .prepare(
+                "SELECT d.derived_id FROM pipeline_derived_datasets d
+                 JOIN pipeline_derived_access da USING(derived_id)
+                 WHERE da.user_id = ?1 AND d.source_id = ?2",
+            )
+            .map_err(storage)?;
+        blockers.extend(
+            statement
+                .query_map(params![user_id, source_id], |row| {
+                    Ok(BlockingReference {
+                        consumer_kind: "derived".into(),
+                        consumer_id: row.get(0)?,
+                    })
+                })
+                .map_err(storage)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?,
+        );
         if !blockers.is_empty() {
             return Err(PipelineError::DeletionBlocked {
                 evidence_kind: "Source".into(),
@@ -2161,6 +2701,19 @@ impl DataPipeline {
                     PRIMARY KEY(user_id, report_id),
                     FOREIGN KEY(report_id) REFERENCES pipeline_quality_reports(report_id)
                  );
+                 CREATE TABLE IF NOT EXISTS pipeline_derived_datasets (
+                    derived_id TEXT PRIMARY KEY,
+                    canonical_id TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    derived_json TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS pipeline_derived_access (
+                    user_id TEXT NOT NULL,
+                    derived_id TEXT NOT NULL,
+                    PRIMARY KEY(user_id, derived_id),
+                    FOREIGN KEY(derived_id) REFERENCES pipeline_derived_datasets(derived_id)
+                 );
                  CREATE TABLE IF NOT EXISTS pipeline_snapshot_links (
                     user_id TEXT NOT NULL,
                     canonical_id TEXT NOT NULL,
@@ -2591,6 +3144,48 @@ struct QualityCatalog {
     gap_count: usize,
     evidence_path: PathBuf,
     evidence_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DerivedCatalog {
+    derived_id: String,
+    canonical_id: String,
+    source_id: String,
+    source_revision: u64,
+    instrument: InstrumentId,
+    source_interval: BarInterval,
+    interval: BarInterval,
+    calendar: CalendarEvidence,
+    algorithm_version: String,
+    content_sha256: String,
+    evidence_path: PathBuf,
+    evidence_sha256: String,
+    parquet_path: PathBuf,
+    bar_count: usize,
+    gap_count: usize,
+}
+
+impl DerivedCatalog {
+    fn from_dataset(dataset: &DerivedMarketDataset, evidence_sha256: String) -> Self {
+        Self {
+            derived_id: dataset.derived_id.clone(),
+            canonical_id: dataset.canonical_id.clone(),
+            source_id: dataset.source_id.clone(),
+            source_revision: dataset.source_revision,
+            instrument: dataset.instrument.clone(),
+            source_interval: dataset.source_interval,
+            interval: dataset.interval,
+            calendar: dataset.calendar.clone(),
+            algorithm_version: dataset.algorithm_version.clone(),
+            content_sha256: dataset.content_sha256.clone(),
+            evidence_path: dataset.evidence_path.clone(),
+            evidence_sha256,
+            parquet_path: dataset.parquet_path.clone(),
+            bar_count: dataset.bars.len(),
+            gap_count: dataset.gaps.len(),
+        }
+    }
 }
 
 impl QualityCatalog {
@@ -3235,6 +3830,376 @@ fn report_id(
     )
 }
 
+fn interval_rank(interval: BarInterval) -> u8 {
+    match interval {
+        BarInterval::OneSecond => 0,
+        BarInterval::OneMinute => 1,
+        BarInterval::ThreeMinutes => 2,
+        BarInterval::FiveMinutes => 3,
+        BarInterval::FifteenMinutes => 4,
+        BarInterval::ThirtyMinutes => 5,
+        BarInterval::OneHour => 6,
+        BarInterval::TwoHours => 7,
+        BarInterval::FourHours => 8,
+        BarInterval::SixHours => 9,
+        BarInterval::TwelveHours => 10,
+        BarInterval::OneDay => 11,
+        BarInterval::TwoDays => 12,
+        BarInterval::ThreeDays => 13,
+        BarInterval::FiveDays => 14,
+        BarInterval::OneWeek => 15,
+        BarInterval::OneMonth => 16,
+        BarInterval::ThreeMonths => 17,
+    }
+}
+
+fn target_windows(
+    instrument: &InstrumentId,
+    calendar: &CalendarEvidence,
+    interval: BarInterval,
+    start_time_ms: i64,
+    end_time_ms: i64,
+) -> Result<Vec<(i64, i64)>, PipelineError> {
+    match calendar {
+        CalendarEvidence::UtcGrid { closures, .. } => {
+            let mut current = first_grid_open(start_time_ms, interval)?;
+            let mut windows = Vec::new();
+            while current < end_time_ms {
+                let next = next_bar_open_time_ms(current, interval)
+                    .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+                if next > end_time_ms {
+                    break;
+                }
+                if !closures
+                    .iter()
+                    .any(|closure| closure.start_ms < next && closure.end_ms > current)
+                {
+                    windows.push((current, next));
+                }
+                current = next;
+            }
+            Ok(windows)
+        }
+        CalendarEvidence::Venue { snapshot } => {
+            if snapshot.venue != instrument.venue {
+                return Err(PipelineError::InvalidRequest(
+                    "derivation calendar Venue differs from Instrument Venue".into(),
+                ));
+            }
+            if is_daily_interval(interval) {
+                target_daily_windows(snapshot, interval, start_time_ms, end_time_ms)
+            } else {
+                target_session_windows(snapshot, interval, start_time_ms, end_time_ms)
+            }
+        }
+    }
+}
+
+fn target_daily_windows(
+    calendar: &TradingCalendarSnapshot,
+    interval: BarInterval,
+    start_time_ms: i64,
+    end_time_ms: i64,
+) -> Result<Vec<(i64, i64)>, PipelineError> {
+    let mut date = calendar
+        .trading_date_of(start_time_ms)
+        .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+    let mut windows = Vec::new();
+    loop {
+        if calendar
+            .is_trading_day(date)
+            .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?
+        {
+            let start = calendar
+                .daily_boundary_open_ms(date)
+                .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+            let end_date = calendar
+                .trading_date_offset(date, daily_trading_day_step(interval))
+                .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+            let end = calendar
+                .daily_boundary_open_ms(end_date)
+                .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+            if start >= start_time_ms && end <= end_time_ms {
+                windows.push((start, end));
+            }
+            if start >= end_time_ms {
+                break;
+            }
+            date = end_date;
+        } else {
+            date = calendar
+                .next_trading_date(date)
+                .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+        }
+    }
+    Ok(windows)
+}
+
+fn target_session_windows(
+    calendar: &TradingCalendarSnapshot,
+    interval: BarInterval,
+    start_time_ms: i64,
+    end_time_ms: i64,
+) -> Result<Vec<(i64, i64)>, PipelineError> {
+    let step = interval_step_ms(interval).ok_or_else(|| {
+        PipelineError::InvalidRequest("session derivation requires a fixed-width interval".into())
+    })?;
+    let mut date = calendar
+        .trading_date_of(start_time_ms)
+        .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+    let mut windows = Vec::new();
+    loop {
+        let is_trading_day = calendar
+            .is_trading_day(date)
+            .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+        if is_trading_day {
+            for window in calendar
+                .session_windows_utc(date)
+                .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?
+                .into_iter()
+                .filter(|window| {
+                    matches!(
+                        window.phase,
+                        SessionPhase::Continuous | SessionPhase::Auction
+                    )
+                })
+            {
+                let mut current = window.start_ms;
+                while current
+                    .checked_add(step)
+                    .is_some_and(|end| end <= window.end_ms)
+                {
+                    let end = current + step;
+                    if current >= start_time_ms && end <= end_time_ms {
+                        windows.push((current, end));
+                    }
+                    current = end;
+                }
+            }
+            if calendar
+                .daily_boundary_open_ms(date)
+                .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?
+                >= end_time_ms
+            {
+                break;
+            }
+        }
+        date = calendar
+            .next_trading_date(date)
+            .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+    }
+    Ok(windows)
+}
+
+fn source_times(
+    instrument: &InstrumentId,
+    calendar: &CalendarEvidence,
+    interval: BarInterval,
+    start_time_ms: i64,
+    end_time_ms: i64,
+) -> Result<Vec<i64>, PipelineError> {
+    match calendar {
+        CalendarEvidence::UtcGrid { closures, .. } => {
+            let step = interval_step_ms(interval).ok_or_else(|| {
+                PipelineError::InvalidRequest(
+                    "UTC-grid derivation requires a fixed-width source interval".into(),
+                )
+            })?;
+            let mut current = start_time_ms;
+            let mut times = Vec::new();
+            while current < end_time_ms {
+                if !closures
+                    .iter()
+                    .any(|closure| current >= closure.start_ms && current < closure.end_ms)
+                {
+                    times.push(current);
+                }
+                current = current.checked_add(step).ok_or_else(|| {
+                    PipelineError::InvalidRequest("source interval exceeds i64 range".into())
+                })?;
+            }
+            Ok(times)
+        }
+        CalendarEvidence::Venue { snapshot } => {
+            if snapshot.venue != instrument.venue {
+                return Err(PipelineError::InvalidRequest(
+                    "derivation calendar Venue differs from Instrument Venue".into(),
+                ));
+            }
+            if is_daily_interval(interval) {
+                source_daily_times(snapshot, start_time_ms, end_time_ms)
+            } else {
+                source_session_times(snapshot, interval, start_time_ms, end_time_ms)
+            }
+        }
+    }
+}
+
+fn source_daily_times(
+    calendar: &TradingCalendarSnapshot,
+    start_time_ms: i64,
+    end_time_ms: i64,
+) -> Result<Vec<i64>, PipelineError> {
+    let mut date = calendar
+        .trading_date_of(start_time_ms)
+        .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+    let mut times = Vec::new();
+    loop {
+        if calendar
+            .is_trading_day(date)
+            .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?
+        {
+            let open = calendar
+                .daily_boundary_open_ms(date)
+                .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+            if open >= start_time_ms && open < end_time_ms {
+                times.push(open);
+            }
+            if open >= end_time_ms {
+                break;
+            }
+        }
+        date = calendar
+            .next_trading_date(date)
+            .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+    }
+    Ok(times)
+}
+
+fn source_session_times(
+    calendar: &TradingCalendarSnapshot,
+    interval: BarInterval,
+    start_time_ms: i64,
+    end_time_ms: i64,
+) -> Result<Vec<i64>, PipelineError> {
+    let step = interval_step_ms(interval).ok_or_else(|| {
+        PipelineError::InvalidRequest(
+            "session derivation requires a fixed-width source interval".into(),
+        )
+    })?;
+    let mut date = calendar
+        .trading_date_of(start_time_ms)
+        .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+    let mut times = Vec::new();
+    loop {
+        let is_trading_day = calendar
+            .is_trading_day(date)
+            .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+        if is_trading_day {
+            for window in calendar
+                .session_windows_utc(date)
+                .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?
+                .into_iter()
+                .filter(|window| {
+                    matches!(
+                        window.phase,
+                        SessionPhase::Continuous | SessionPhase::Auction
+                    )
+                })
+            {
+                let mut current = window.start_ms;
+                while current < window.end_ms {
+                    if current >= start_time_ms && current < end_time_ms {
+                        times.push(current);
+                    }
+                    current = current.checked_add(step).ok_or_else(|| {
+                        PipelineError::InvalidRequest("source interval exceeds i64 range".into())
+                    })?;
+                }
+            }
+            if calendar
+                .daily_boundary_open_ms(date)
+                .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?
+                >= end_time_ms
+            {
+                break;
+            }
+        }
+        date = calendar
+            .next_trading_date(date)
+            .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+    }
+    Ok(times)
+}
+
+fn first_grid_open(start_time_ms: i64, interval: BarInterval) -> Result<i64, PipelineError> {
+    if let Some(step) = interval_step_ms(interval) {
+        let remainder = start_time_ms.rem_euclid(step);
+        return start_time_ms
+            .checked_sub(remainder)
+            .and_then(|aligned| {
+                (remainder == 0)
+                    .then_some(aligned)
+                    .or_else(|| aligned.checked_add(step))
+            })
+            .ok_or_else(|| {
+                PipelineError::InvalidRequest("target interval exceeds i64 range".into())
+            });
+    }
+    let instant = DateTime::<Utc>::from_timestamp_millis(start_time_ms)
+        .ok_or_else(|| PipelineError::InvalidRequest("invalid derivation UTC range".into()))?;
+    let date = instant.date_naive();
+    let mut month_start = month_start_ms(date.year(), date.month())?;
+    if month_start < start_time_ms {
+        month_start = next_month_start_ms(month_start, interval)?;
+    }
+    Ok(month_start)
+}
+
+fn month_start_ms(year: i32, month: u32) -> Result<i64, PipelineError> {
+    NaiveDate::from_ymd_opt(year, month, 1)
+        .and_then(|date| date.and_hms_opt(0, 0, 0))
+        .map(|date| date.and_utc().timestamp_millis())
+        .ok_or_else(|| PipelineError::InvalidRequest("invalid monthly derivation boundary".into()))
+}
+
+fn next_month_start_ms(current: i64, interval: BarInterval) -> Result<i64, PipelineError> {
+    let instant = DateTime::<Utc>::from_timestamp_millis(current).ok_or_else(|| {
+        PipelineError::InvalidRequest("invalid monthly derivation boundary".into())
+    })?;
+    let month_delta = match interval {
+        BarInterval::OneMonth => 1,
+        BarInterval::ThreeMonths => 3,
+        _ => 1,
+    };
+    let month_index = instant.year() * 12 + instant.month0() as i32 + month_delta;
+    month_start_ms(
+        month_index.div_euclid(12),
+        month_index.rem_euclid(12) as u32 + 1,
+    )
+}
+
+fn aggregate_bars(bars: &[&OhlcvBar], open_time_ms: i64) -> OhlcvBar {
+    OhlcvBar {
+        open_time_ms,
+        open: bars[0].open,
+        high: bars
+            .iter()
+            .map(|bar| bar.high)
+            .max()
+            .unwrap_or(bars[0].high),
+        low: bars.iter().map(|bar| bar.low).min().unwrap_or(bars[0].low),
+        close: bars.last().map_or(bars[0].close, |bar| bar.close),
+        base_volume: bars.iter().map(|bar| bar.base_volume).sum(),
+        quote_volume: bars.iter().map(|bar| bar.quote_volume).sum(),
+    }
+}
+
+fn derived_content_hash(dataset: &DerivedMarketDataset) -> String {
+    digest(
+        &canonical_json_bytes(&(
+            &dataset.instrument,
+            dataset.source_interval,
+            dataset.interval,
+            &dataset.calendar,
+            &dataset.algorithm_version,
+            &dataset.bars,
+            &dataset.gaps,
+        ))
+        .expect("Derived content serializes"),
+    )
+}
+
 fn interval_step_ms(interval: BarInterval) -> Option<i64> {
     Some(match interval {
         BarInterval::OneSecond => 1_000,
@@ -3322,6 +4287,10 @@ fn hash_file(path: &Path) -> Result<String, PipelineError> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).map_err(storage)?;
     Ok(digest(&bytes))
+}
+
+fn file_size(path: impl AsRef<Path>) -> u64 {
+    fs::metadata(path).map_or(0, |metadata| metadata.len())
 }
 
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), PipelineError> {
@@ -3563,7 +4532,8 @@ fn lock_error(error: impl std::fmt::Display) -> PipelineError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adaq_data_core::market::Venue;
+    use adaq_data_core::market::{SessionPhase, TradingCalendarSnapshot, TradingSession, Venue};
+    use chrono::NaiveTime;
     use tempfile::tempdir;
 
     fn instrument() -> InstrumentId {
@@ -3641,6 +4611,206 @@ mod tests {
                 .collect(),
             ..SourceAcquisition::default()
         }
+    }
+
+    #[test]
+    fn derivation_aggregates_exact_decimals_and_marks_incomplete_windows_as_gaps() {
+        let bars = (0..120)
+            .filter(|index| *index != 60)
+            .map(|index| {
+                let value = Decimal::from(index);
+                OhlcvBar {
+                    open_time_ms: index * 60_000,
+                    open: value,
+                    high: value,
+                    low: value,
+                    close: value,
+                    base_volume: Decimal::new(15, 1),
+                    quote_volume: Decimal::new(225, 2),
+                }
+            })
+            .collect::<Vec<_>>();
+        let canonical = CanonicalMarketDataset {
+            canonical_id: "canonical".into(),
+            source_id: "source".into(),
+            revision: 3,
+            instrument: instrument(),
+            interval: BarInterval::OneMinute,
+            normalization_contract: NORMALIZATION_CONTRACT_VERSION.into(),
+            calendar: CalendarEvidence::UtcGrid {
+                calendar_id: "utc-grid".into(),
+                closures: Vec::new(),
+            },
+            price_basis: PriceBasis::Unadjusted,
+            bars,
+            row_evidence: Vec::new(),
+            gaps: vec![BarGap {
+                start_time_ms: 60 * 60_000,
+                end_time_ms: 61 * 60_000,
+            }],
+            quality_report_id: "quality".into(),
+            content_sha256: "content".into(),
+            parquet_path: PathBuf::new(),
+        };
+        let derived = derive_market_data(
+            &canonical,
+            &DerivationRequest {
+                target_interval: BarInterval::OneHour,
+                calendar: canonical.calendar.clone(),
+                historical_range: Some(HistoricalBarRange {
+                    start_time_ms: 0,
+                    end_time_ms: 2 * 60 * 60_000,
+                }),
+                algorithm_version: DERIVATION_ALGORITHM_VERSION.into(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(derived.bars.len(), 1);
+        assert_eq!(derived.bars[0].open, Decimal::ZERO);
+        assert_eq!(derived.bars[0].high, Decimal::from(59));
+        assert_eq!(derived.bars[0].close, Decimal::from(59));
+        assert_eq!(derived.bars[0].base_volume, Decimal::from(90));
+        assert_eq!(derived.bars[0].quote_volume, Decimal::new(13_500, 2));
+        assert_eq!(
+            derived.gaps,
+            vec![BarGap {
+                start_time_ms: 60 * 60_000,
+                end_time_ms: 2 * 60 * 60_000,
+            }]
+        );
+    }
+
+    #[test]
+    fn venue_derivation_uses_dst_adjusted_sessions_without_crossing_the_break() {
+        let venue = Venue::us_equity("nasdaq").unwrap();
+        let calendar = TradingCalendarSnapshot::new(
+            "nasdaq-calendar",
+            venue.clone(),
+            1_709_856_000_000,
+            1_710_201_600_000,
+            vec![TradingSession {
+                phase: SessionPhase::Continuous,
+                start_local: NaiveTime::from_hms_opt(9, 30, 0).unwrap(),
+                end_local: NaiveTime::from_hms_opt(16, 0, 0).unwrap(),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+        let date = adaq_data_core::market::TradingDate::new(2024, 3, 11).unwrap();
+        let session = calendar.session_windows_utc(date).unwrap()[0];
+        let bars = (0..390)
+            .map(|index| OhlcvBar {
+                open_time_ms: session.start_ms + index * 60_000,
+                open: Decimal::ONE,
+                high: Decimal::ONE,
+                low: Decimal::ONE,
+                close: Decimal::ONE,
+                base_volume: Decimal::ONE,
+                quote_volume: Decimal::ONE,
+            })
+            .collect();
+        let canonical = CanonicalMarketDataset {
+            canonical_id: "canonical-dst".into(),
+            source_id: "source-dst".into(),
+            revision: 1,
+            instrument: InstrumentId::new(venue.clone(), "AAPL").unwrap(),
+            interval: BarInterval::OneMinute,
+            normalization_contract: NORMALIZATION_CONTRACT_VERSION.into(),
+            calendar: CalendarEvidence::Venue {
+                snapshot: calendar.clone(),
+            },
+            price_basis: PriceBasis::Unadjusted,
+            bars,
+            row_evidence: Vec::new(),
+            gaps: Vec::new(),
+            quality_report_id: "quality-dst".into(),
+            content_sha256: "content-dst".into(),
+            parquet_path: PathBuf::new(),
+        };
+        let derived = derive_market_data(
+            &canonical,
+            &DerivationRequest {
+                target_interval: BarInterval::OneHour,
+                calendar: canonical.calendar.clone(),
+                historical_range: Some(HistoricalBarRange {
+                    start_time_ms: session.start_ms,
+                    end_time_ms: session.end_ms,
+                }),
+                algorithm_version: DERIVATION_ALGORITHM_VERSION.into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(session.start_ms, 1_710_163_800_000);
+        assert_eq!(derived.bars.len(), 6);
+        assert!(derived.gaps.is_empty());
+        assert_eq!(derived.bars[0].open_time_ms, session.start_ms);
+    }
+
+    #[test]
+    fn derived_dataset_is_immutable_round_trippable_and_locks_canonical_evidence() {
+        let directory = tempdir().unwrap();
+        let database = Arc::new(Mutex::new(
+            Connection::open(directory.path().join("pipeline.sqlite")).unwrap(),
+        ));
+        let pipeline = DataPipeline::open(directory.path(), database).unwrap();
+        let publication = pipeline
+            .publish(
+                "alice",
+                acquisition(
+                    &(0..120)
+                        .filter(|index| *index != 60)
+                        .map(|index| index * 60_000)
+                        .collect::<Vec<_>>(),
+                ),
+                {
+                    let mut request = request();
+                    request.historical_range = Some(HistoricalBarRange {
+                        start_time_ms: 0,
+                        end_time_ms: 2 * 60 * 60_000,
+                    });
+                    request
+                },
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap();
+        let canonical = publication.canonical.unwrap();
+        let derived = pipeline
+            .derive_for_user(
+                "alice",
+                &canonical.canonical_id,
+                &DerivationRequest {
+                    target_interval: BarInterval::OneHour,
+                    calendar: canonical.calendar.clone(),
+                    historical_range: Some(HistoricalBarRange {
+                        start_time_ms: 0,
+                        end_time_ms: 2 * 60 * 60_000,
+                    }),
+                    algorithm_version: DERIVATION_ALGORITHM_VERSION.into(),
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            pipeline
+                .derived_for_user("alice", &derived.derived_id)
+                .unwrap(),
+            derived
+        );
+        assert_eq!(pipeline.list_derived_for_user("alice").unwrap().len(), 1);
+        assert!(pipeline.storage_footprint_for_user("alice").unwrap() > 0);
+        assert!(matches!(
+            pipeline.delete_canonical_for_user("alice", &canonical.canonical_id),
+            Err(PipelineError::DeletionBlocked { .. })
+        ));
+        pipeline
+            .record_derived_snapshot_reference("alice", &derived.derived_id, "snapshot")
+            .unwrap();
+        assert!(matches!(
+            pipeline.delete_derived_for_user("alice", &derived.derived_id),
+            Err(PipelineError::DeletionBlocked { .. })
+        ));
     }
 
     #[test]

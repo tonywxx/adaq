@@ -23,7 +23,9 @@ use std::{
     },
 };
 
-use adaq_backtest_core::{MarketDataSnapshot, SnapshotStore};
+use adaq_backtest_core::{
+    MarketDataSnapshot, MarketDataUniverseSnapshot, SnapshotProvenance, SnapshotStore,
+};
 use adaq_data_core::{BarSeries, HistoricalBarRange, OhlcvBar, OkxClient};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -106,6 +108,21 @@ impl MarketDataSnapshots {
                 snapshot_id TEXT NOT NULL,
                 PRIMARY KEY(user_id, snapshot_id),
                 FOREIGN KEY(snapshot_id) REFERENCES market_data_snapshots(snapshot_id)
+             );
+             CREATE TABLE IF NOT EXISTS market_data_universe_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                venue TEXT NOT NULL,
+                interval TEXT NOT NULL,
+                start_time_ms INTEGER NOT NULL,
+                end_time_ms INTEGER NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                metadata_json TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS market_data_universe_snapshot_access (
+                user_id TEXT NOT NULL,
+                snapshot_id TEXT NOT NULL,
+                PRIMARY KEY(user_id, snapshot_id),
+                FOREIGN KEY(snapshot_id) REFERENCES market_data_universe_snapshots(snapshot_id)
              );",
             )
             .map_err(string)?;
@@ -324,14 +341,156 @@ impl MarketDataSnapshots {
         Ok((snapshot, bars))
     }
 
+    pub(crate) fn persist_universe_for_user(
+        &self,
+        user_id: &str,
+        snapshot: MarketDataUniverseSnapshot,
+    ) -> Result<MarketDataUniverseSnapshot, String> {
+        validate_user(user_id)?;
+        let snapshot = snapshot.finalize().map_err(string)?;
+        let database = self.0.source.database()?;
+        validate_universe_snapshot(&database, user_id, &snapshot)?;
+        let metadata = serde_json::to_string(&snapshot).map_err(string)?;
+        let interval = serde_json::to_string(&snapshot.interval).map_err(string)?;
+        let venue = serde_json::to_string(&snapshot.venue).map_err(string)?;
+        database
+            .execute(
+                "INSERT OR IGNORE INTO market_data_universe_snapshots
+                 (snapshot_id, venue, interval, start_time_ms, end_time_ms, content_sha256, metadata_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    snapshot.snapshot_id.clone(),
+                    venue,
+                    interval,
+                    snapshot.start_time_ms,
+                    snapshot.end_time_ms,
+                    snapshot.content_sha256.clone(),
+                    metadata
+                ],
+            )
+            .map_err(string)?;
+        database
+            .execute(
+                "INSERT OR IGNORE INTO market_data_universe_snapshot_access
+                 (user_id, snapshot_id) VALUES (?1, ?2)",
+                params![user_id, snapshot.snapshot_id.clone()],
+            )
+            .map_err(string)?;
+        Ok(snapshot)
+    }
+
+    pub(crate) fn universe_snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<MarketDataUniverseSnapshot, String> {
+        validate_user(user_id)?;
+        let database = self.0.source.database()?;
+        let metadata: String = database
+            .query_row(
+                "SELECT s.metadata_json FROM market_data_universe_snapshots s
+                 JOIN market_data_universe_snapshot_access a USING(snapshot_id)
+                 WHERE a.user_id = ?1 AND s.snapshot_id = ?2",
+                params![user_id, snapshot_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| {
+                "Market Data Universe Snapshot is not available to this User".to_owned()
+            })?;
+        let snapshot: MarketDataUniverseSnapshot =
+            serde_json::from_str(&metadata).map_err(string)?;
+        if snapshot.snapshot_id != snapshot_id
+            || snapshot.expected_content_sha256().map_err(string)? != snapshot.content_sha256
+        {
+            return Err("Market Data Universe Snapshot identity is invalid".into());
+        }
+        validate_universe_snapshot(&database, user_id, &snapshot)?;
+        Ok(snapshot)
+    }
+
+    pub(crate) fn list_universe_snapshots(
+        &self,
+        request: &UniverseSnapshotListRequest,
+    ) -> Result<UniverseSnapshotPage, String> {
+        validate_user(&request.user_id)?;
+        if request.page == 0 {
+            return Err("Market Data Universe Snapshot page is invalid".into());
+        }
+        let database = self.0.source.database()?;
+        let total = database
+            .query_row(
+                "SELECT COUNT(*) FROM market_data_universe_snapshot_access
+                 WHERE user_id = ?1",
+                [&request.user_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(string)?
+            .try_into()
+            .map_err(|_| "Market Data Universe Snapshot count is invalid")?;
+        let offset = request
+            .page
+            .checked_sub(1)
+            .and_then(|value| value.checked_mul(SNAPSHOT_PAGE_SIZE))
+            .ok_or_else(|| "Market Data Universe Snapshot page is too large".to_owned())?;
+        let mut statement = database
+            .prepare(
+                "SELECT s.metadata_json FROM market_data_universe_snapshots s
+                 JOIN market_data_universe_snapshot_access a USING(snapshot_id)
+                 WHERE a.user_id = ?1
+                 ORDER BY s.start_time_ms, s.snapshot_id LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(string)?;
+        let items = statement
+            .query_map(
+                params![request.user_id, SNAPSHOT_PAGE_SIZE as i64, offset as i64],
+                |row| {
+                    let metadata: String = row.get(0)?;
+                    serde_json::from_str(&metadata).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })
+                },
+            )
+            .map_err(string)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(string)?;
+        drop(statement);
+        for snapshot in &items {
+            validate_universe_snapshot(&database, &request.user_id, snapshot)?;
+        }
+        Ok(UniverseSnapshotPage {
+            items,
+            total,
+            page: request.page,
+            page_size: SNAPSHOT_PAGE_SIZE,
+        })
+    }
+
     /// Persists one Bar Series as a Snapshot and grants it to one User.
     pub(crate) fn persist_for_user(
         &self,
         user_id: &str,
         series: &BarSeries,
     ) -> Result<MarketDataSnapshot, String> {
+        self.persist_for_user_with_provenance(user_id, series, None)
+    }
+
+    pub(crate) fn persist_for_user_with_provenance(
+        &self,
+        user_id: &str,
+        series: &BarSeries,
+        provenance: Option<SnapshotProvenance>,
+    ) -> Result<MarketDataSnapshot, String> {
         validate_user(user_id)?;
-        let snapshot = self.0.source.store().persist(series).map_err(string)?;
+        let snapshot = self
+            .0
+            .source
+            .store()
+            .persist_with_provenance(series, provenance)
+            .map_err(string)?;
         let metadata = serde_json::to_string(&snapshot).map_err(string)?;
         let interval = serde_json::to_string(&snapshot.interval).map_err(string)?;
         // One lock guard for both inserts; never call another interface
@@ -370,6 +529,25 @@ impl MarketDataSnapshots {
             .map_err(string)?
             .and_then(|json| serde_json::from_str::<MarketDataSnapshot>(&json).ok())
             .map(|snapshot| snapshot.parquet_path);
+        let universe_locked = {
+            let mut statement = database
+                .prepare("SELECT metadata_json FROM market_data_universe_snapshots")
+                .map_err(string)?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(string)?
+                .filter_map(Result::ok)
+                .filter_map(|json| serde_json::from_str::<MarketDataUniverseSnapshot>(&json).ok())
+                .any(|universe| {
+                    universe
+                        .components
+                        .iter()
+                        .any(|component| component.snapshot_id == snapshot_id)
+                })
+        };
+        if universe_locked {
+            return Err("Market Data Snapshot is locked by a Universe Snapshot".into());
+        }
         let transaction = database.unchecked_transaction().map_err(string)?;
         transaction
             .execute(
@@ -390,7 +568,27 @@ impl MarketDataSnapshots {
             )
             .map_err(string)?;
         transaction.commit().map_err(string)?;
+        let parquet_is_shared = if let Some(path) = parquet_path.as_ref() {
+            let mut statement = database
+                .prepare("SELECT metadata_json FROM market_data_snapshots")
+                .map_err(string)?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(string)?
+                .map(|json| {
+                    let json = json.map_err(string)?;
+                    let snapshot: MarketDataSnapshot =
+                        serde_json::from_str(&json).map_err(string)?;
+                    Ok(snapshot.parquet_path == *path)
+                })
+                .collect::<Result<Vec<_>, String>>()?
+                .into_iter()
+                .any(|shared| shared)
+        } else {
+            false
+        };
         if deleted > 0
+            && !parquet_is_shared
             && let Some(path) = parquet_path
         {
             match fs::remove_file(path) {
@@ -489,6 +687,20 @@ impl MarketDataSnapshots {
     ) -> Result<(), String> {
         transaction
             .execute(
+                "DELETE FROM market_data_universe_snapshot_access WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM market_data_universe_snapshots
+                 WHERE NOT EXISTS(SELECT 1 FROM market_data_universe_snapshot_access a
+                     WHERE a.snapshot_id = market_data_universe_snapshots.snapshot_id)",
+                [],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
                 "DELETE FROM market_data_snapshot_access WHERE user_id = ?1",
                 [user_id],
             )
@@ -549,6 +761,29 @@ pub struct SnapshotPage {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct UniverseSnapshotRequest {
+    pub user_id: String,
+    pub snapshot: MarketDataUniverseSnapshot,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UniverseSnapshotListRequest {
+    pub user_id: String,
+    pub page: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UniverseSnapshotPage {
+    pub items: Vec<MarketDataUniverseSnapshot>,
+    pub total: usize,
+    pub page: usize,
+    pub page_size: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReadableSnapshotListRequest {
     pub user_id: String,
 }
@@ -592,6 +827,143 @@ fn snapshot_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MarketDataSnap
     serde_json::from_str(&row.get::<_, String>(0)?).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
     })
+}
+
+fn validate_universe_snapshot(
+    database: &Connection,
+    user_id: &str,
+    snapshot: &MarketDataUniverseSnapshot,
+) -> Result<(), String> {
+    if snapshot.start_time_ms >= snapshot.end_time_ms
+        || snapshot.components.is_empty()
+        || snapshot.universe.instruments.len() != snapshot.components.len()
+        || snapshot.universe.universe_id.trim().is_empty()
+        || snapshot.universe.as_of_ms < 0
+        || snapshot.quality_report_ids.is_empty()
+        || snapshot.calendar_snapshot_ids.is_empty()
+    {
+        return Err("Market Data Universe Snapshot manifest is invalid".into());
+    }
+    if !matches!(
+        snapshot.universe.evidence_state.as_str(),
+        "observed" | "reconstructed" | "unknown"
+    ) || snapshot.universe.evidence_reasons.is_empty()
+    {
+        return Err("Market Data Universe Snapshot evidence state is invalid".into());
+    }
+    if snapshot
+        .universe
+        .coverage_start_ms
+        .is_some_and(|start| start > snapshot.universe.as_of_ms)
+        || snapshot.universe.coverage_end_ms.is_some()
+            && snapshot.universe.coverage_start_ms.is_none()
+        || snapshot
+            .universe
+            .coverage_end_ms
+            .zip(snapshot.universe.coverage_start_ms)
+            .is_some_and(|(end, start)| end <= start)
+    {
+        return Err("Market Data Universe Snapshot evidence coverage is invalid".into());
+    }
+    let mut instruments = Vec::new();
+    let mut quality_report_ids = Vec::new();
+    let mut calendar_snapshot_ids = Vec::new();
+    for component in &snapshot.components {
+        let instrument_key =
+            serde_json::to_string(&component.dataset.instrument).map_err(string)?;
+        if instruments.contains(&instrument_key) {
+            return Err("Market Data Universe Snapshot contains duplicate Instruments".into());
+        }
+        instruments.push(instrument_key);
+        quality_report_ids.push(component.dataset.quality_report_id.clone());
+        if component.dataset.instrument.venue != snapshot.venue {
+            return Err("Market Data Universe Snapshot Venue binding is invalid".into());
+        }
+        if !snapshot
+            .universe
+            .instruments
+            .iter()
+            .any(|instrument| instrument == &component.dataset.instrument)
+        {
+            return Err(
+                "Market Data Universe Snapshot membership does not match its components".into(),
+            );
+        }
+        let metadata: String = database
+            .query_row(
+                "SELECT s.metadata_json FROM market_data_snapshots s
+                 JOIN market_data_snapshot_access a USING(snapshot_id)
+                 WHERE a.user_id = ?1 AND s.snapshot_id = ?2",
+                params![user_id, component.snapshot_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Universe component Snapshot is not available to this User".to_owned())?;
+        let component_snapshot: MarketDataSnapshot =
+            serde_json::from_str(&metadata).map_err(string)?;
+        if component_snapshot.src != component.dataset.instrument.venue.id
+            || component_snapshot.code != component.dataset.instrument.code
+            || component_snapshot.interval != snapshot.interval
+            || component_snapshot.start_time_ms != snapshot.start_time_ms
+            || component_snapshot.end_time_ms != snapshot.end_time_ms
+        {
+            return Err("Universe component Snapshot coverage does not match its manifest".into());
+        }
+        let Some(provenance) = component_snapshot.provenance.as_ref() else {
+            return Err("Universe components require Snapshot provenance".into());
+        };
+        if provenance.venue != snapshot.venue
+            || !provenance
+                .quality_report_ids
+                .contains(&component.dataset.quality_report_id)
+        {
+            return Err("Universe component provenance scope is invalid".into());
+        }
+        calendar_snapshot_ids.extend(provenance.calendar_snapshot_ids.iter().cloned());
+        if !provenance
+            .datasets
+            .iter()
+            .any(|dataset| dataset == &component.dataset)
+        {
+            return Err("Universe component provenance does not match its manifest".into());
+        }
+    }
+    let mut membership = snapshot
+        .universe
+        .instruments
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(string)?;
+    instruments.sort_unstable();
+    membership.sort_unstable();
+    if instruments != membership {
+        return Err("Universe membership does not exactly match its components".into());
+    }
+    if !snapshot
+        .universe
+        .instruments
+        .iter()
+        .all(|instrument| instrument.venue == snapshot.venue)
+    {
+        return Err("Universe membership contains a different Venue".into());
+    }
+    quality_report_ids.sort_unstable();
+    quality_report_ids.dedup();
+    let mut expected_quality_report_ids = snapshot.quality_report_ids.clone();
+    expected_quality_report_ids.sort_unstable();
+    expected_quality_report_ids.dedup();
+    if quality_report_ids != expected_quality_report_ids {
+        return Err("Universe quality provenance does not match its components".into());
+    }
+    calendar_snapshot_ids.sort_unstable();
+    calendar_snapshot_ids.dedup();
+    let mut expected_calendar_snapshot_ids = snapshot.calendar_snapshot_ids.clone();
+    expected_calendar_snapshot_ids.sort_unstable();
+    expected_calendar_snapshot_ids.dedup();
+    if calendar_snapshot_ids != expected_calendar_snapshot_ids {
+        return Err("Universe calendar provenance does not match its components".into());
+    }
+    Ok(())
 }
 
 fn file_bytes(path: impl AsRef<Path>) -> u64 {

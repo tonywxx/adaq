@@ -288,6 +288,48 @@ async fn snapshot_list_readable(
 }
 
 #[tauri::command]
+async fn snapshot_publish_universe(
+    request: market_data_snapshot::UniverseSnapshotRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_backtest_core::MarketDataUniverseSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .snapshots
+            .persist_universe_for_user(&request.user_id, request.snapshot)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn snapshot_list_universe(
+    request: market_data_snapshot::UniverseSnapshotListRequest,
+    app: tauri::AppHandle,
+) -> Result<market_data_snapshot::UniverseSnapshotPage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .snapshots
+            .list_universe_snapshots(&request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn snapshot_read_universe(
+    request: market_data_pipeline::UserEvidenceRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_backtest_core::MarketDataUniverseSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .snapshots
+            .universe_snapshot_for_user(&request.user_id, &request.evidence_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn snapshot_cancel(
     request: market_data_snapshot::TaskRequest,
     state: State<'_, Arc<LocalResearchState>>,
@@ -347,6 +389,52 @@ async fn market_data_pipeline_list(
 }
 
 #[tauri::command]
+async fn market_data_pipeline_derive(
+    request: market_data_pipeline::DeriveRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::DerivedMarketDataset, String> {
+    let (user_id, canonical_id, derivation, allow_degraded) = request.into_parts();
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .pipeline
+            .derive_for_user(&user_id, &canonical_id, &derivation, allow_degraded)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn market_data_pipeline_derived_list(
+    user_id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<adaq_data_pipeline::DerivedMarketDataset>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .pipeline
+            .list_derived_for_user(&user_id)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn market_data_pipeline_derived(
+    request: market_data_pipeline::UserEvidenceRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::DerivedMarketDataset, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .pipeline
+            .derived_for_user(&request.user_id, &request.evidence_id)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn market_data_pipeline_quality(
     request: market_data_pipeline::UserEvidenceRequest,
     app: tauri::AppHandle,
@@ -384,7 +472,34 @@ async fn market_data_pipeline_publish_snapshot(
 ) -> Result<market_data_pipeline::SnapshotPublicationView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
-            .publish_pipeline_snapshot_for_user(&request.user_id, &request.canonical_id)
+            .publish_pipeline_snapshot_for_user_with_policy(
+                &request.user_id,
+                &request.canonical_id,
+                request.allow_degraded,
+            )
+            .map(
+                |(snapshot, quality)| market_data_pipeline::SnapshotPublicationView {
+                    snapshot,
+                    quality: market_data_pipeline::QualityView::from(quality),
+                },
+            )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn market_data_pipeline_publish_derived_snapshot(
+    request: market_data_pipeline::DerivedSnapshotRequest,
+    app: tauri::AppHandle,
+) -> Result<market_data_pipeline::SnapshotPublicationView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .publish_pipeline_derived_snapshot_for_user_with_policy(
+                &request.user_id,
+                &request.derived_id,
+                request.allow_degraded,
+            )
             .map(
                 |(snapshot, quality)| market_data_pipeline::SnapshotPublicationView {
                     snapshot,
@@ -410,8 +525,12 @@ async fn market_data_pipeline_delete(
             "canonical" => state
                 .pipeline
                 .delete_canonical_for_user(&request.user_id, &request.evidence_id),
+            "derived" => state
+                .pipeline
+                .delete_derived_for_user(&request.user_id, &request.evidence_id),
             _ => Err(adaq_data_pipeline::PipelineError::InvalidRequest(
-                "only Source and Canonical evidence can be deleted through this command".into(),
+                "only Source, Canonical, and Derived evidence can be deleted through this command"
+                    .into(),
             )),
         }
         .map_err(string)
@@ -1768,13 +1887,20 @@ pub fn run() {
             snapshot_download,
             snapshot_list,
             snapshot_list_readable,
+            snapshot_publish_universe,
+            snapshot_list_universe,
+            snapshot_read_universe,
             snapshot_cancel,
             market_data_pipeline_publish,
             market_data_pipeline_cancel,
             market_data_pipeline_list,
+            market_data_pipeline_derive,
+            market_data_pipeline_derived_list,
+            market_data_pipeline_derived,
             market_data_pipeline_quality,
             market_data_pipeline_failures,
             market_data_pipeline_publish_snapshot,
+            market_data_pipeline_publish_derived_snapshot,
             market_data_pipeline_delete,
             okx_instrument_master_acquire,
             okx_instrument_master_list,

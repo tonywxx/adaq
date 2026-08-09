@@ -1,4 +1,8 @@
 use super::*;
+use adaq_backtest_core::{
+    SnapshotDatasetBinding, SnapshotProvenance, SnapshotUniverseBinding, UniverseSnapshotComponent,
+};
+use adaq_data_core::market::{InstrumentId, Venue};
 use adaq_data_core::{BarInterval, OhlcvBar};
 use rusqlite::Connection;
 use std::{
@@ -101,6 +105,110 @@ fn download_request(task_id: &str) -> SnapshotDownloadRequest {
         start_time_ms: 1_704_067_200_000,
         end_time_ms: 1_704_153_600_000,
     }
+}
+
+#[test]
+fn universe_snapshot_requires_explicit_provenance_bound_components() {
+    let (_root, module) = snapshot_module("universe");
+    let venue = Venue::crypto_spot("okx").unwrap();
+    let component = |code: &str| {
+        let instrument = InstrumentId::new(venue.clone(), code).unwrap();
+        let dataset = SnapshotDatasetBinding {
+            instrument: instrument.clone(),
+            source_id: format!("source-{code}"),
+            source_revision: 1,
+            canonical_id: Some(format!("canonical-{code}")),
+            derived_id: None,
+            quality_report_id: format!("quality-{code}"),
+            content_sha256: format!("hash-{code}"),
+        };
+        let snapshot = module
+            .persist_for_user_with_provenance(
+                "alice",
+                &BarSeries {
+                    src: venue.id.clone(),
+                    code: code.into(),
+                    interval: BarInterval::OneHour,
+                    bars: vec![bar(0), bar(3_600_000)],
+                    gaps: vec![],
+                },
+                Some(SnapshotProvenance {
+                    venue: venue.clone(),
+                    datasets: vec![dataset.clone()],
+                    quality_report_ids: vec![dataset.quality_report_id.clone()],
+                    calendar_snapshot_ids: vec!["calendar-1".into()],
+                    provider_capability_snapshots: vec![],
+                    universe: None,
+                    derivation_algorithm_version: None,
+                }),
+            )
+            .unwrap();
+        (snapshot, dataset, instrument)
+    };
+    let (btc, btc_dataset, btc_instrument) = component("BTC-USDT");
+    let (eth, eth_dataset, eth_instrument) = component("ETH-USDT");
+    let universe = module
+        .persist_universe_for_user(
+            "alice",
+            MarketDataUniverseSnapshot {
+                snapshot_id: String::new(),
+                venue: venue.clone(),
+                interval: BarInterval::OneHour,
+                start_time_ms: 0,
+                end_time_ms: 3_600_000,
+                universe: SnapshotUniverseBinding {
+                    universe_id: "universe-1".into(),
+                    as_of_ms: 0,
+                    evidence_state: "observed".into(),
+                    evidence_reasons: vec!["instrument-master-observed-at-as-of".into()],
+                    coverage_start_ms: Some(0),
+                    coverage_end_ms: None,
+                    instruments: vec![btc_instrument, eth_instrument],
+                },
+                components: vec![
+                    UniverseSnapshotComponent {
+                        snapshot_id: btc.snapshot_id,
+                        dataset: btc_dataset,
+                    },
+                    UniverseSnapshotComponent {
+                        snapshot_id: eth.snapshot_id,
+                        dataset: eth_dataset,
+                    },
+                ],
+                quality_report_ids: vec!["quality-BTC-USDT".into(), "quality-ETH-USDT".into()],
+                calendar_snapshot_ids: vec!["calendar-1".into()],
+                provider_capability_snapshots: vec![],
+                content_sha256: String::new(),
+            },
+        )
+        .unwrap();
+    assert!(universe.snapshot_id.starts_with("universe-"));
+    assert_eq!(
+        module
+            .universe_snapshot_for_user("alice", &universe.snapshot_id)
+            .unwrap(),
+        universe
+    );
+    assert!(
+        module
+            .revoke_for_user("alice", &universe.components[0].snapshot_id)
+            .is_err()
+    );
+    assert_eq!(
+        module
+            .list_universe_snapshots(&UniverseSnapshotListRequest {
+                user_id: "alice".into(),
+                page: 1
+            })
+            .unwrap()
+            .total,
+        1
+    );
+    assert!(
+        module
+            .universe_snapshot_for_user("bob", &universe.snapshot_id)
+            .is_err()
+    );
 }
 
 #[test]
