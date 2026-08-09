@@ -5,7 +5,9 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-const OKX_SRC: &str = "okx";
+pub mod market;
+
+pub(crate) const OKX_SRC: &str = "okx";
 const OKX_BASE_URL: &str = "https://www.okx.com";
 const OKX_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
 const OKX_BUSINESS_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/business";

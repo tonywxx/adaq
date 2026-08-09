@@ -22,7 +22,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-use crate::forecast_evaluation::{score_scale_provenance, segment_evidence, validate_prediction_scale};
+use crate::forecast_evaluation::{
+    score_scale_provenance, segment_evidence, validate_prediction_scale,
+};
 use crate::local_research::LocalResearchState;
 use crate::user::validate_user;
 
@@ -862,7 +864,9 @@ pub(crate) fn backtest_signal_datasets(
         .collect()
 }
 
-pub(crate) fn producer_segment_values(dataset: &SignalDataset) -> Result<Vec<serde_json::Value>, String> {
+pub(crate) fn producer_segment_values(
+    dataset: &SignalDataset,
+) -> Result<Vec<serde_json::Value>, String> {
     if let Some(segments) = &dataset.external_producer_segments {
         return Ok(segments.clone());
     }
@@ -883,4 +887,3 @@ pub(crate) fn hash(bytes: &[u8]) -> String {
 pub(crate) fn string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
-

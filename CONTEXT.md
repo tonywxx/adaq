@@ -56,6 +56,10 @@ _Avoid_: Device time zone, current UTC offset, display preference
 The ADAQ-wide identity composed of a Venue and that venue's native Instrument code.
 _Avoid_: Symbol, ticker
 
+**Instrument Source Mapping**:
+The recorded provenance binding an Instrument ID to the provider-native symbol used in one Market Data Provider payload, including the provider, connector version, and capture time. Provider-native symbols are retained verbatim so payloads remain traceable to their Instrument identity.
+_Avoid_: Symbol renaming, Instrument Master entry, inferred identity
+
 **Watchlist**:
 A User's asset-class-neutral ordered collection of venue-specific Instruments selected for monitoring. Market Workspaces filter the same Watchlist by Venue or Asset Class; identical display symbols never collapse distinct Instrument IDs.
 _Avoid_: Symbol list, favorites
@@ -75,6 +79,10 @@ _Avoid_: Current instrument list, mutable reference table
 **Trading Calendar Snapshot**:
 An immutable Venue calendar revision defining its Venue Time Zone, Trading Dates, holidays, early closes, scheduled Trading Sessions, and Session Phases for an exact effective range.
 _Avoid_: Device calendar, weekday rule, mutable holiday list
+
+**Scheduled Closure**:
+A scheduled non-trading period recorded as calendar evidence for one Venue, such as a holiday, early close, special closure, or provider maintenance window. It is calendar state rather than a Bar Gap, and a missing Bar inside it never creates a false gap.
+_Avoid_: Bar Gap, downtime log, silent missing data
 
 **Market Rule Snapshot**:
 An immutable, effective-time record of the Venue-, Instrument-, and account-specific rules required to validate and simulate trading, including sessions, auctions, order types, price limits, quantity units, settlement restrictions, fees, halts, and exceptional states.

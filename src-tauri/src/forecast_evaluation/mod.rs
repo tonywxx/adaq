@@ -12,8 +12,8 @@ use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
 use crate::forecast_signal_dataset::{
-    dataset_outputs, hash, producer_segment_values, read_external_rows, string, ComponentLockEntry,
-    SignalDataset,
+    ComponentLockEntry, SignalDataset, dataset_outputs, hash, producer_segment_values,
+    read_external_rows, string,
 };
 use crate::local_research::LocalResearchState;
 use crate::user::validate_user;
@@ -1239,4 +1239,3 @@ fn forecast_evaluation_markdown(report: &ForecastEvaluationReport) -> String {
         serde_json::to_string_pretty(report).expect("report serializes"),
     )
 }
-
