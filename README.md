@@ -10,12 +10,22 @@ AdaQ V1 is a local-first research, backtesting, and simulation desktop app. It d
 
 ## Features
 
-- Reproducible local market-data research and backtesting
-- Sandboxed WebAssembly Factor and Strategy Components
-- Immutable, verifiable `.adaq` Component Packages
-- Host-owned TA-Lib Indicator Catalog and frozen Feature Slots
-- Deterministic Spot simulation with immutable Backtest Runs
-- Native Model Components plus externally generated Forecast Signal Datasets
+- **Local-first research, backtesting & simulation** — Reproducible local market-data research and backtesting. AdaQ V1 runs deterministic Spot simulation and never places real orders; live trading is a separate future milestone.
+- **Immutable, auditable runs** — Every Backtest Run immutably binds a Market Data Snapshot, Component Lock, parameters, Indicator Plan, Execution Profile, engine version, and seed. Results persist locally with Target Decisions, simulated orders, fills, equity, fees, metrics, history, and charts, plus replay-grade provenance.
+- **Sandboxed WebAssembly components** — Deterministic WASM Factor and Strategy Components under a fixed Component ABI (`adaq:factor@1.0.0`, `adaq:strategy@1.0.0`). Factor Components turn Closed Bars into named scalar outputs; Strategy Components consume dense Feature Slots and emit complete Target Exposure decisions.
+- **Verifiable `.adaq` packages** — Immutable, content-addressed Component Packages with authoritative Component Meta. Packages, runs, and snapshots are content-addressed so provenance is exact and reproducible.
+- **Component Library** — List-and-detail library showing name, kind, version, compatibility, and Run-lock status; the detail view exposes parameters, Feature Slots, Factor dependencies, Warmup, ABI/SDK/Manifest versions, and exact hashes. Import via the native file picker; deletion requires confirmation and shows the references that block removal.
+- **TA-Lib Indicator Engine & Feature Slots** — The host pins official C TA-Lib v0.7.1 and exposes `adaq-indicator-catalog@1.0.0` with 160 indicators and 179 outputs. Canonical Indicator Plans are frozen with `planHash`; Market, Built-in, and External Factor Slot sources are supported; indicators evaluate by Continuous Bar Segment, reset analytical state at Bar Gaps, and enforce typed Plan/Run errors plus fixed resource ceilings.
+- **Model research & Forecast Signal Datasets (M8)** — Native Model Components and externally generated `.adaq-signals` evidence produce immutable Forecast Signal Datasets and Forecast Evaluation Reports, and drive compatible Signal-driven or Hybrid Strategy Runs.
+- **Research validation** — Immutable Validation Protocols and Reports support chronological holdout, walk-forward, and cross-market studies with traceable evidence and JSON / Markdown exports.
+- **Bilingual desktop GUI (Tauri 2 + React 19)** — Operations Dashboard home; Components, Models, Backtest, and Validation workspaces; Settings for account and general preferences. The UI ships in English (US) and Simplified Chinese through `i18next` / `react-i18next` with locale-aware formatting, light/dark themes, and accessible controls.
+- **Exact, trustworthy values** — Financial values use exact Decimal representation across domain and IPC boundaries; canonical identities, availability, provider capability, and provenance stay inspectable everywhere.
+
+## Scope of V1
+
+AdaQ V1 is a **local-first research, backtesting, and simulation** desktop app. It executes no real account orders. The closed loop you can use today is: develop or import a Component, prepare exact Market Data Snapshots and Feature Plans, generate or import immutable Forecast Signal evidence, evaluate predictions, run a Dataset-first sandboxed Strategy Backtest, inspect persisted provenance and results, and produce research-validation evidence.
+
+Not included in V1 (roadmap M9–M18): integrated live multi-market data connectors (OKX / Alpaca / A-share), Paper Trading accounts and execution, supervised Trading Bots, Marketplace publishing, and any real-money trading.
 
 ## Screenshots
 
@@ -42,6 +52,106 @@ AdaQ V1 is a local-first research, backtesting, and simulation desktop app. It d
 
 Together, M1-M8 provide the current closed loop: develop or import a Component, freeze exact market data and Feature Plans, produce or import immutable Forecast Signal evidence, evaluate predictions, run a Dataset-first sandboxed Strategy Backtest, inspect persisted provenance and results, and produce research-validation evidence.
 
+## Getting Started
+
+### Prerequisites
+
+- **Desktop build toolchain for Tauri 2** — install the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS (WebKit/WebView2, a C/C++ build toolchain, and on macOS the Xcode Command Line Tools).
+- **Rust stable toolchain** — required to build the native Tauri shell:
+  ```sh
+  rustup toolchain install stable
+  ```
+- **Node.js 20 LTS or newer** and **pnpm 11**:
+  ```sh
+  npm install -g pnpm      # or enable corepack
+  ```
+- *(Component development only)* the `wasm32-unknown-unknown` target plus the component tooling — see [Develop a Component](#develop-a-component).
+
+### Install
+
+```sh
+pnpm install --frozen-lockfile
+```
+
+### Configure (environment)
+
+The desktop app signs you in through a Supabase-backed account. Create a local `.env` file (gitignored) in the project root:
+
+```sh
+VITE_SUPABASE_URL=https://<your-project>.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=<your-publishable-anon-key>
+# VITE_SUPABASE_ANON_KEY is used as a fallback when the publishable key is absent
+```
+
+Apply the database migration in `supabase/migrations/` to your Supabase project (auth + profiles). Without these variables the sign-in / account flow cannot connect.
+
+### Run (development)
+
+```sh
+pnpm tauri dev
+```
+
+This starts the Vite dev server (http://localhost:1420) and opens the native desktop window.
+
+### Build (production / release)
+
+```sh
+pnpm run build      # strict TypeScript check, then build the frontend
+pnpm tauri build    # bundle the signed desktop installer for the current platform
+```
+
+Release packaging (macOS ARM64, Windows x86_64, and Linux x86_64) is automated by the GitHub Actions `Release` workflow after you synchronize the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
+### Verify (optional checks)
+
+```sh
+pnpm run build            # frontend + strict type check
+cd src-tauri && cargo check   # Rust / Tauri
+pnpm test                 # Jest
+```
+
+## Usage
+
+### Sign in
+
+On first launch the app shows a sign-in screen backed by your Supabase account. Use email + password (primary path); first-time email OTP plus password setup is available as a supplement. No real trading credentials are ever requested.
+
+### Import a Component
+
+1. Open **Components** in the sidebar.
+2. Click **Import** and choose a verified `.adaq` package — for example one you built with the Component Developer Kit, or an example from `examples/components`.
+3. Review the detail panel (parameters, Feature Slots, dependencies, Warmup, ABI/SDK/Manifest versions, exact hashes) and confirm. Imported components appear in the library with their compatibility and Run-lock status.
+
+### Prepare market data
+
+Backtests run over immutable Market Data Snapshots. In the Backtest **Data** stage, choose an Instrument and Bar Interval, then reuse an existing Snapshot (showing its range, Bar count, source, and ID) or freeze a new one. Snapshots come from imported/example data or external adapters such as the [Kronos example](examples/external-models/kronos/README.md).
+
+### Run a Backtest
+
+The Backtest workspace uses four stages on one page:
+
+1. **Data** — select the Market Data Snapshot.
+2. **Strategy** — pick the Strategy Component and bind its Feature Slots / Forecast Signal Dataset; set parameters and the Position Mode (Long Only or Long–Short).
+3. **Execution** — choose the Execution Profile (fees, slippage, rebalance thresholds, etc.).
+4. **Results** — run the backtest and inspect four tabs:
+   - **Overview** — metrics, equity, benchmark, and drawdown charts.
+   - **Decisions** — Target Decisions and Run Pauses.
+   - **Execution** — paged simulated orders, fills, and fees.
+   - **Provenance** — Snapshot, packages, parameters, Indicator Plan, Execution Profile, engine identities, versions, and seed.
+
+Historical Runs are read-only. **Use as new configuration** copies a Run's settings into a fresh immutable Run; any changed execution creates a new Run.
+
+### Run research validation
+
+1. Open **Validation** and choose a method: chronological holdout, walk-forward, or cross-market.
+2. Configure the contexts and freeze a Validation Protocol.
+3. Run or resume the protocol, then inspect the **Summary**, **Evidence**, and **Provenance** tabs.
+4. Export the Report as **JSON** or **Markdown**. Recommended Contexts are historical evidence only and never claim a profitable future configuration.
+
+### Settings & localization
+
+Open **Settings → General** to switch the UI locale between English (US), Simplified Chinese, and System; missing translations fall back to English. **Settings → Account** lets you view your email, change your password, and sign out.
+
 ## Develop a Component
 
 Component source code is written in Rust. The Tauri app imports and runs the finished `.adaq` package; it does not provide a GUI code editor or bundle the `adaq-component` CLI.
@@ -59,9 +169,10 @@ cd my-factor
 # Edit src/lib.rs and manifest.json.
 adaq-component build
 adaq-component verify dist/my-factor-0.1.0.adaq
+adaq-component verify dist/my-factor-0.1.0.adaq --previous ../my-factor-0.1.0/manifest.json
 ```
 
-Use `adaq-component new strategy my-strategy` for a Strategy Component. Import the verified file from `dist/` into ADAQ's Component Library.
+Use `adaq-component new strategy my-strategy` for a Strategy Component. Import the verified file from `dist/` into ADAQ's Component Library. `build` runs the component tests, builds `wasm32-unknown-unknown`, runs host conformance, and creates `dist/*.adaq`. `verify` validates an existing package without modifying it; `--previous` also checks the documented SemVer contract.
 
 Start with the [executable Factor and Strategy examples](examples/components/README.md), then use the [SDK guide](src-tauri/crates/adaq-component-sdk/README.md), [CLI guide](src-tauri/crates/adaq-component-tooling/README.md), and [Component architecture](CONTEXT.md) as references. The crates currently install from this repository; after publication, `cargo install adaq-component-tooling --locked` will install the same CLI independently of the desktop app.
 
@@ -74,11 +185,16 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 | [Component Template](src-tauri/crates/adaq-component-tooling/templates/README.md) | [组件模板中文](src-tauri/crates/adaq-component-tooling/templates/README.zh-CN.md) | Scaffold README for generated component projects |
 | [Executable Examples](examples/components/README.md) | [可执行示例中文](examples/components/README.zh-CN.md) | End-to-end Factor and Strategy SDK/CLI tutorial |
 | [Test Fixtures](src-tauri/fixtures/README.md) | [测试固件中文](src-tauri/fixtures/README.zh-CN.md) | WASM component build examples for integration tests |
+| [Indicator Catalog](docs/reference/indicator-catalog.md) | [指标目录中文](docs/reference/indicator-catalog.zh-CN.md) | 160 indicators and 179 outputs with inputs, parameters, and Warmup |
+| [Research Metrics](docs/reference/research-metrics.md) | [研究指标中文](docs/reference/research-metrics.zh-CN.md) | Backtest and research performance metrics |
+| [Developing Components](docs/components/developing-components.md) | [开发组件中文](docs/components/developing-components.zh-CN.md) | Factor/Strategy authoring, Feature Slots, and SemVer rules |
+| [M7 Research Workspace](docs/m7-research-workspace.md) | [M7 研究工作区中文](docs/m7-research-workspace.zh-CN.md) | Desktop research-workspace design and acceptance scope |
 | [M7 Manual Acceptance](docs/m7-manual-acceptance.md) | [M7 人工验收中文](docs/m7-manual-acceptance.zh-CN.md) | Complete human-reviewed research-workspace acceptance path |
 | [M8 Manual Acceptance](docs/m8-manual-acceptance.md) | [M8 人工验收中文](docs/m8-manual-acceptance.zh-CN.md) | Complete Model, Forecast Evaluation, and Dataset-first Backtest acceptance path |
 | [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | External `Kronos-small` inference, canonical Forecast Signals, evaluation, and Dataset-first Backtest |
+| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | M9–M18 delivery plan for the expanded V1 (data, Paper Trading, Bots) |
 
-Microsoft Qlib integration is future work and will use the same External Model Adapter boundary. M8 does not include training, an embedded or controlled Python Runner, Verified external inference, or Marketplace publishing.
+Microsoft Qlib training integration is future work (M12) and will use the same External Model Adapter boundary. M8 does not include training, an embedded or controlled Python Runner, Verified external inference, or Marketplace publishing.
 
 ## Disclaimer
 
