@@ -2,8 +2,10 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import type { TFunction } from "i18next";
 import { DownloadIcon, RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { autoDownloadUpdates } from "@/lib/app-settings";
 import { Button } from "./button";
@@ -36,18 +38,18 @@ function isTauriRuntime() {
 	return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-async function alertLatestVersion() {
+async function alertLatestVersion(t: TFunction) {
 	try {
 		const appVersion = await getVersion();
-		toast.success(`You are using the latest version v${appVersion}.`);
+		toast.success(t("updates.latestVersion", { version: appVersion }));
 	} catch (error) {
 		console.error("Failed to read app version", error);
-		toast.success("You are using the latest version.");
+		toast.success(t("updates.latestVersionFallback"));
 	}
 }
 
-function alertUpdateCheckFailed() {
-	toast.error("Unable to check for updates. Please try again later.");
+function alertUpdateCheckFailed(t: TFunction) {
+	toast.error(t("updates.checkFailed"));
 }
 
 async function runWindowAction(action: () => Promise<void>) {
@@ -71,27 +73,29 @@ function getProgressPercent(downloaded: number, contentLength: number | null) {
 }
 
 function getUpdateButtonLabel(
+	t: TFunction,
 	status: UpdateStatus,
 	version: string | null,
 	progress: DownloadProgress,
 ) {
 	switch (status) {
 		case "available":
-			return version ? `Update to v${version}` : "Update";
+			return version ? t("updates.updateTo", { version }) : t("updates.update");
 		case "downloading":
 			return progress.percent === null
-				? "Downloading"
-				: `${progress.percent}% Downloading...`;
+				? t("updates.downloading")
+				: t("updates.percentDownloading", { percent: progress.percent });
 		case "ready":
-			return "Restart to update";
+			return t("updates.restart");
 		case "error":
-			return "Retry update";
+			return t("updates.retry");
 		default:
 			return null;
 	}
 }
 
 export function AutoUpdateButton() {
+	const { t } = useTranslation();
 	const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
 	const [updateVersion, setUpdateVersion] = useState<string | null>(null);
 	const [downloadProgress, setDownloadProgress] = useState<DownloadProgress>(
@@ -205,7 +209,7 @@ export function AutoUpdateButton() {
 					setUpdateStatus("idle");
 
 					if (notifyNoUpdate) {
-						void alertLatestVersion();
+						void alertLatestVersion(t);
 					}
 
 					return;
@@ -229,11 +233,11 @@ export function AutoUpdateButton() {
 				setUpdateStatus("idle");
 
 				if (notifyError) {
-					alertUpdateCheckFailed();
+					alertUpdateCheckFailed(t);
 				}
 			}
 		},
-		[clearAutoDownloadTimer, startUpdateDownload],
+		[clearAutoDownloadTimer, startUpdateDownload, t],
 	);
 
 	useEffect(() => {
@@ -287,6 +291,7 @@ export function AutoUpdateButton() {
 	}, [checkForUpdates]);
 
 	const updateButtonLabel = getUpdateButtonLabel(
+		t,
 		updateStatus,
 		updateVersion,
 		downloadProgress,
@@ -320,8 +325,8 @@ export function AutoUpdateButton() {
 		<Button
 			type="button"
 			effect="shine"
-			aria-label={updateButtonLabel ?? "Check for Updates"}
-			title={updateButtonLabel ?? "Check for Updates"}
+			aria-label={updateButtonLabel ?? t("titlebar.checkForUpdates")}
+			title={updateButtonLabel ?? t("titlebar.checkForUpdates")}
 			disabled={isDownloadingUpdate}
 			className="relative flex h-8 max-w-[190px] shrink-0 items-center justify-center overflow-hidden rounded-md border border-sidebar-border bg-background/70 px-2.5 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-background disabled:cursor-default disabled:opacity-85"
 			onClick={(event) => {
@@ -344,7 +349,7 @@ export function AutoUpdateButton() {
 					<DownloadIcon className="size-3.5 shrink-0" />
 				)}
 				<span className="truncate">
-					{updateButtonLabel ?? "Check for Updates"}
+					{updateButtonLabel ?? t("titlebar.checkForUpdates")}
 				</span>
 			</span>
 		</Button>

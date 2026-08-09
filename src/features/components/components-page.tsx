@@ -18,6 +18,7 @@ import {
 import { useMarketSessionStore } from "@/lib/market-session";
 import { invoke } from "@tauri-apps/api/core";
 import { LoaderCircleIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	archiveSha256,
@@ -50,6 +51,7 @@ function cacheKey(userId: string, page: number) {
 }
 
 export function ComponentsPage() {
+	const { t } = useTranslation();
 	const userId = useMarketSessionStore((state) => state.userId);
 	const [items, setItems] = useState<LibraryComponent[]>([]);
 	const [packagesPage, setPackagesPage] = useState(1);
@@ -254,11 +256,8 @@ export function ComponentsPage() {
 					/>
 					{importing && (
 						<p className="flex items-center gap-2 text-sm" role="status">
-							<LoaderCircleIcon
-								className="size-4 animate-spin"
-								aria-hidden="true"
-							/>
-							Validating package…
+							<LoaderCircleIcon className="size-4 animate-spin" aria-hidden="true" />
+							{t("loading.validatingPackage")}
 						</p>
 					)}
 					{importFeedback && <ActionFeedback feedback={importFeedback} />}
@@ -274,7 +273,7 @@ export function ComponentsPage() {
 					</CardHeader>
 					<CardContent className="flex flex-col gap-3">
 						{packagesLoading ? (
-							<LoadingState label="Loading Component Packages…" />
+							<LoadingState labelKey="loading.componentPackages" />
 						) : items.length ? (
 							<ul className="flex flex-col gap-2" aria-label="Component packages">
 								{items.map((item) => (
@@ -367,6 +366,7 @@ function ComponentDetail({
 	feedback?: Feedback;
 	onDelete: (component: LibraryComponent) => Promise<void>;
 }) {
+	const { t } = useTranslation();
 	const locked = component.lockedByRunIds.length > 0;
 	return (
 		<Card className="min-w-0">
@@ -574,7 +574,7 @@ function ComponentDetail({
 						variant="destructive"
 						disabled={locked}
 						loading={deleting}
-						loadingText="Removing…"
+						loadingText={t("loading.removing")}
 						onClick={() => void onDelete(component)}
 					>
 						Delete Component Package

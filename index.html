@@ -1,9 +1,25 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-US">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AdaQ</title>
+    <script>
+      (() => {
+        try {
+          const preference = localStorage.getItem("adaq.interfaceLocale");
+          const systemLanguage = navigator.languages?.[0] ?? navigator.language ?? "en-US";
+          const locale =
+            preference === "zh-CN" ||
+            (preference !== "en-US" && /^zh(?:-|$)/i.test(systemLanguage))
+              ? "zh-CN"
+              : "en-US";
+          document.documentElement.lang = locale;
+        } catch {
+          document.documentElement.lang = "en-US";
+        }
+      })();
+    </script>
     <style>
       :root {
         color-scheme: light dark;
@@ -32,10 +48,6 @@
       #app-bootstrap strong {
         font-size: 16px;
       }
-      #app-bootstrap span {
-        color: #666666;
-        font-size: 13px;
-      }
       @keyframes app-bootstrap-spin {
         to {
           transform: rotate(360deg);
@@ -50,9 +62,6 @@
           border-color: rgba(245, 245, 245, 0.18);
           border-top-color: #aadb85;
         }
-        #app-bootstrap span {
-          color: #a8a8a8;
-        }
       }
       @media (prefers-reduced-motion: reduce) {
         #app-bootstrap-spinner {
@@ -64,10 +73,9 @@
 
   <body>
     <div id="root">
-      <main id="app-bootstrap" role="status" aria-label="AdaQ is initializing">
+      <main id="app-bootstrap" role="status" aria-label="AdaQ">
         <div id="app-bootstrap-spinner" aria-hidden="true"></div>
         <strong>AdaQ</strong>
-        <span>Initializing workspace…</span>
       </main>
     </div>
     <script type="module" src="/src/main.tsx"></script>

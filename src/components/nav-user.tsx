@@ -24,12 +24,14 @@ import {
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 export function NavUser() {
 	const { isMobile } = useSidebar();
 	const navigate = useNavigate();
+	const { t } = useTranslation();
 	const [authUser, setAuthUser] = useState<User | null>(null);
-	const user = userInfo(authUser);
+	const user = userInfo(authUser, t("nav.signedIn"), t("nav.account"));
 
 	useEffect(() => {
 		if (!supabase) return;
@@ -98,7 +100,7 @@ export function NavUser() {
 								}
 							>
 								<CircleUserRoundIcon />
-								Account
+								{t("nav.account")}
 							</DropdownMenuItem>
 							<DropdownMenuItem
 								onClick={() =>
@@ -109,13 +111,13 @@ export function NavUser() {
 								}
 							>
 								<Settings2Icon />
-								Settings
+								{t("nav.settings")}
 							</DropdownMenuItem>
 						</DropdownMenuGroup>
 						<DropdownMenuSeparator />
 						<DropdownMenuItem onClick={() => supabase?.auth.signOut()}>
 							<LogOutIcon />
-							Log out
+							{t("nav.logOut")}
 						</DropdownMenuItem>
 					</DropdownMenuContent>
 				</DropdownMenu>
@@ -124,13 +126,17 @@ export function NavUser() {
 	);
 }
 
-function userInfo(user: User | null) {
-	const email = user?.email ?? "Signed in";
+function userInfo(
+	user: User | null,
+	signedInLabel: string,
+	accountLabel: string,
+) {
+	const email = user?.email ?? signedInLabel;
 	const name =
 		user?.user_metadata.full_name ??
 		user?.user_metadata.name ??
 		email.split("@")[0] ??
-		"Account";
+		accountLabel;
 	const avatar =
 		user?.user_metadata.avatar_url ?? user?.user_metadata.picture ?? undefined;
 

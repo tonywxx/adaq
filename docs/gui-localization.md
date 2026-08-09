@@ -32,6 +32,10 @@ Unsupported system languages never trigger runtime translation or a downloaded l
 - The choice survives sign-out and user-scoped research-data resets.
 - The active resource locale updates the document `lang` attribute for assistive technology.
 
+## Implemented foundation
+
+The current foundation is bundled in `src/lib/i18n.ts` and imported by `src/main.tsx` before React renders. It stores the device-local preference under `adaq.interfaceLocale`, keeps the active route mounted during runtime changes, and exposes shared `Intl` helpers for dates, numbers, and exact Decimal display. The application shell, navigation, authentication/loading primitives, and Settings > General consume the same resources; native IPC is not part of locale initialization.
+
 ## What is localized
 
 Every user-facing GUI surface must use translation resources, including:

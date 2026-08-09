@@ -9,6 +9,7 @@ import { useHistoryTab } from "@/lib/navigation-history";
 import { invoke } from "@tauri-apps/api/core";
 import { open as chooseFile, save } from "@tauri-apps/plugin-dialog";
 import { open, readFile } from "@tauri-apps/plugin-fs";
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useState } from "react";
 import {
 	datasetGenerationRequest,
@@ -150,6 +151,7 @@ const afterPaint = () =>
 	);
 
 export function ModelsPage() {
+	const { t } = useTranslation();
 	const userId = useMarketSessionStore((state) => state.userId);
 	const [models, setModels] = useState<LibraryComponent[]>([]);
 	const [components, setComponents] = useState<LibraryComponent[]>([]);
@@ -594,7 +596,7 @@ export function ModelsPage() {
 						</CardHeader>
 						<CardContent className="grid gap-4">
 							{componentsLoading ? (
-								<LoadingState label="Loading Model Packages…" />
+								<LoadingState labelKey="loading.modelPackages" />
 							) : (
 								<>
 									<label className="grid gap-1 text-sm">
@@ -631,7 +633,7 @@ export function ModelsPage() {
 								</>
 							)}
 							{snapshotsLoading ? (
-								<LoadingState label="Loading Market Data Snapshots…" />
+								<LoadingState labelKey="loading.marketDataSnapshots" />
 							) : (
 								<label className="grid gap-1 text-sm">
 									Market Data Snapshot
@@ -676,7 +678,7 @@ export function ModelsPage() {
 							<div className="grid gap-2">
 								<p className="text-sm font-medium">Generation Attempts</p>
 								{attemptsLoading ? (
-									<LoadingState label="Loading Generation Attempts…" />
+									<LoadingState labelKey="loading.generationAttempts" />
 								) : attempts.length ? (
 									attempts.map((attempt) => (
 										<div
@@ -733,7 +735,7 @@ export function ModelsPage() {
 						</CardHeader>
 						<CardContent className="grid gap-3">
 							{datasetsLoading ? (
-								<LoadingState label="Loading Signal Datasets…" />
+								<LoadingState labelKey="loading.signalDatasets" />
 							) : datasets.length ? (
 								datasets.map((item) => (
 									<article
@@ -859,7 +861,7 @@ export function ModelsPage() {
 													Rows
 												</summary>
 												{rowsLoading === item.datasetId && (
-													<p aria-live="polite">Loading Signal rows…</p>
+													<p aria-live="polite">{t("loading.signalRows")}</p>
 												)}
 												{datasetRows[item.datasetId] && (
 													<div className="mt-2 grid gap-2">
@@ -1008,7 +1010,7 @@ export function ModelsPage() {
 								</label>
 								<Button
 									loading={busy}
-									loadingText="Evaluating…"
+									loadingText={t("loading.evaluating")}
 									disabled={
 										busy ||
 										!evaluationDataset ||
@@ -1040,7 +1042,7 @@ export function ModelsPage() {
 						</Card>
 						<div className="grid min-w-0 gap-3">
 							{evaluationsLoading ? (
-								<LoadingState label="Loading Forecast Evaluation Reports…" />
+								<LoadingState labelKey="loading.forecastEvaluationReports" />
 							) : evaluationReports.length ? (
 								evaluationReports.map((report) => (
 									<Card key={report.reportId}>

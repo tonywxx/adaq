@@ -9,6 +9,6 @@ test("Log out uses the Base UI menu click event", () => {
 	);
 
 	expect(source).toMatch(
-		/<DropdownMenuItem onClick=\{\(\) => supabase\?\.auth\.signOut\(\)\}>\s*<LogOutIcon \/>\s*Log out/,
+		/<DropdownMenuItem onClick=\{\(\) => supabase\?\.auth\.signOut\(\)\}>\s*<LogOutIcon \/>\s*\{t\("nav\.logOut"\)\}/,
 	);
 });

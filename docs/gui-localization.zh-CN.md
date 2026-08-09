@@ -32,6 +32,10 @@ Settings > General 提供三个选项，但 System 是自动解析方式，不�
 - 退出登录或重置用户 Research Data 后仍保留该选择。
 - 当前生效的 Resource Locale 必须同步更新文档 `lang` 属性，供辅助技术正确识别。
 
+## 已实现的基础能力
+
+当前基础能力集中在 `src/lib/i18n.ts`，并由 `src/main.tsx` 在 React 渲染前导入。它使用 `adaq.interfaceLocale` 保存设备本地偏好，在运行时切换语言时保持当前路由不变，并提供日期、数字和精确 Decimal 展示所需的共享 `Intl` 辅助函数。应用 Shell、Navigation、Authentication/Loading Primitive 和 Settings > General 共用同一套资源；语言初始化不依赖 Native IPC。
+
 ## 哪些内容必须翻译
 
 所有面向用户的 GUI 都必须来自翻译资源，包括：

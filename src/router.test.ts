@@ -33,9 +33,9 @@ test("Models switches immediately and keeps loading inside its controls", () => 
 	expect(pageSource).toMatch(
 		/if \(tab !== "datasets" && tab !== "evaluations"\) return;[\s\S]*?refreshDatasets/,
 	);
-	expect(pageSource).toMatch(/Loading Model Packages/);
-	expect(pageSource).toMatch(/Loading Market Data Snapshots/);
-	expect(pageSource).toMatch(/Loading Generation Attempts/);
+	expect(pageSource).toMatch(/loading\.modelPackages/);
+	expect(pageSource).toMatch(/loading\.marketDataSnapshots/);
+	expect(pageSource).toMatch(/loading\.generationAttempts/);
 	expect(pageSource).toMatch(
 		/setSnapshotsLoading\(true\);[\s\S]*?await afterPaint\(\);[\s\S]*?snapshot_list_readable/,
 	);

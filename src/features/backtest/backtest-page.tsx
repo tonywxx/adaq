@@ -22,6 +22,7 @@ import {
 import { instrumentKey, useMarketSessionStore } from "@/lib/market-session";
 import { useHistoryTab } from "@/lib/navigation-history";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BacktestChart } from "./backtest-chart";
 import {
@@ -181,6 +182,7 @@ function formatDraftError(error: DraftError) {
 }
 
 export function BacktestPage() {
+	const { t } = useTranslation();
 	const userId = useMarketSessionStore((state) => state.userId);
 	const instrument = useMarketSessionStore((state) => state.activeInstrument);
 	const watchlist = useMarketSessionStore((state) => state.watchlist);
@@ -520,7 +522,7 @@ export function BacktestPage() {
 		};
 		setDownloadTaskId(taskId);
 		setSnapshotTechnicalError("");
-		setMessage("Downloading and freezing Closed Bars…");
+		setMessage(t("loading.downloadingClosedBars"));
 		try {
 			const value = await invoke<Snapshot>("snapshot_download", {
 				request: {
@@ -798,7 +800,7 @@ export function BacktestPage() {
 					)}
 					{stage === "strategy" && componentsLoading && (
 						<LoadingState
-							label="Loading Strategy Components…"
+							labelKey="loading.strategyComponents"
 							className="md:col-span-2 lg:col-span-4"
 						/>
 					)}
@@ -940,7 +942,7 @@ export function BacktestPage() {
 							<div className="flex flex-wrap items-end gap-2">
 								<Button
 									loading={Boolean(downloadTaskId)}
-									loadingText="Preparing Snapshot…"
+									loadingText={t("loading.preparingSnapshot")}
 									onClick={() => void prepare()}
 								>
 									Prepare Snapshot
@@ -974,7 +976,7 @@ export function BacktestPage() {
 							<div className="md:col-span-2 lg:col-span-4">
 								<p className="mb-2 text-sm font-medium">Reuse immutable evidence</p>
 								{snapshotsLoading ? (
-									<LoadingState label="Loading Snapshots…" />
+									<LoadingState labelKey="loading.snapshots" />
 								) : snapshots.length === 0 ? (
 									<p className="text-sm text-muted-foreground">
 										No matching Snapshots. Download and freeze new evidence.
@@ -1313,7 +1315,7 @@ export function BacktestPage() {
 					<CardTitle>Run history · {selectedInstrument.code}</CardTitle>
 				</CardHeader>
 				<CardContent className="flex flex-col gap-2">
-					{historyLoading && <LoadingState label="Loading Run History…" />}
+					{historyLoading && <LoadingState labelKey="loading.runHistory" />}
 					{!historyLoading &&
 						history.map((item) => (
 							<div
@@ -1654,6 +1656,7 @@ function ExecutionTables({
 	onOffset: (offset: number) => void;
 	error?: string;
 }) {
+	const { t } = useTranslation();
 	const total = Math.max(page?.totalOrders ?? 0, page?.totalFills ?? 0);
 	return (
 		<Card>
@@ -1695,7 +1698,7 @@ function ExecutionTables({
 					</p>
 				) : !page ? (
 					<p className="xl:col-span-2 text-muted-foreground" role="status">
-						Loading paged execution evidence…
+						{t("loading.pagedExecutionEvidence")}
 					</p>
 				) : total === 0 ? (
 					<p className="xl:col-span-2 text-muted-foreground">

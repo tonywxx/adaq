@@ -14,8 +14,11 @@ import {
 	instrumentKey,
 	useMarketSessionStore,
 } from "@/lib/market-session";
+import { formatDateTime, formatNumber as formatLocaleNumber } from "@/lib/i18n";
+import { useTranslation } from "react-i18next";
 
 export function CryptoTickerCard() {
+	const { t } = useTranslation();
 	const activeInstrument = useMarketSessionStore(
 		(state) => state.activeInstrument,
 	);
@@ -34,7 +37,7 @@ export function CryptoTickerCard() {
 			<Card className="@container/card rounded-md py-4">
 				<CardHeader>
 					<CardDescription>
-						{baseAsset} / {quoteAsset} · OKX Spot
+						{t("market.instrumentVenue", { baseAsset, quoteAsset })}
 					</CardDescription>
 					<CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
 						{ticker ? `${formatNumber(ticker.last)} USDT` : "—"}
@@ -52,37 +55,64 @@ export function CryptoTickerCard() {
 						>
 							{change === null
 								? "—"
-								: `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}
+								: `${formatLocaleNumber(change, {
+										minimumFractionDigits: 2,
+										maximumFractionDigits: 2,
+										signDisplay: "always",
+									})}%`}
 						</Badge>
 					</CardAction>
 				</CardHeader>
 				<CardContent>
 					{ticker ? (
 						<dl className="grid grid-cols-2 gap-x-5 gap-y-3 text-sm sm:grid-cols-4">
-							<TickerField label="Bid" value={formatNumber(ticker.bidPrice)} />
-							<TickerField label="Ask" value={formatNumber(ticker.askPrice)} />
-							<TickerField label="24h High" value={formatNumber(ticker.high24h)} />
-							<TickerField label="24h Low" value={formatNumber(ticker.low24h)} />
+							<TickerField
+								label={t("market.bid")}
+								value={formatNumber(ticker.bidPrice)}
+							/>
+							<TickerField
+								label={t("market.ask")}
+								value={formatNumber(ticker.askPrice)}
+							/>
+							<TickerField
+								label={t("market.high24h")}
+								value={formatNumber(ticker.high24h)}
+							/>
+							<TickerField
+								label={t("market.low24h")}
+								value={formatNumber(ticker.low24h)}
+							/>
 						</dl>
 					) : (
 						<div className="text-sm text-muted-foreground" aria-live="polite">
-							{error ?? `Loading ${activeInstrument.code} ticker…`}
+							{error ??
+								t("market.loadingTicker", { instrument: activeInstrument.code })}
 						</div>
 					)}
 				</CardContent>
 				<CardFooter className="flex-col items-start gap-1.5 text-sm">
 					<div className="flex flex-wrap items-center gap-x-2 font-medium">
-						<span>{status === "live" ? "Live WebSocket" : "Reconnecting"}</span>
+						<span>
+							{status === "live"
+								? t("market.liveWebSocket")
+								: t("market.reconnecting")}
+						</span>
 						{ticker && (
 							<span className="text-muted-foreground">
-								Updated {new Date(ticker.timestampMs).toLocaleTimeString()}
+								{t("market.updatedAt", {
+									time: formatDateTime(ticker.timestampMs, { timeStyle: "medium" }),
+								})}
 							</span>
 						)}
 					</div>
 					{ticker && (
 						<div className="text-muted-foreground">
-							24h volume {formatNumber(ticker.baseVolume24h, 4)} {baseAsset} ·{" "}
-							{formatNumber(ticker.quoteVolume24h, 2)} {quoteAsset}
+							{t("market.volume24h", {
+								baseVolume: formatNumber(ticker.baseVolume24h, 4),
+								baseAsset,
+								quoteVolume: formatNumber(ticker.quoteVolume24h, 2),
+								quoteAsset,
+							})}
 						</div>
 					)}
 					{error && ticker && (

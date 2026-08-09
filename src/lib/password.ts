@@ -1,15 +1,18 @@
 export type PasswordCheck = {
 	ok: boolean;
-	items: Array<{ label: string; met: boolean }>;
+	items: Array<{
+		key: "length" | "lowercase" | "uppercase" | "digit" | "symbol";
+		met: boolean;
+	}>;
 };
 
 export function checkStrongPassword(password: string): PasswordCheck {
-	const items = [
-		{ label: "At least 8 characters", met: password.length >= 8 },
-		{ label: "Lowercase letter", met: /[a-z]/.test(password) },
-		{ label: "Uppercase letter", met: /[A-Z]/.test(password) },
-		{ label: "Digit", met: /\d/.test(password) },
-		{ label: "Symbol", met: /[^A-Za-z0-9]/.test(password) },
+	const items: PasswordCheck["items"] = [
+		{ key: "length", met: password.length >= 8 },
+		{ key: "lowercase", met: /[a-z]/.test(password) },
+		{ key: "uppercase", met: /[A-Z]/.test(password) },
+		{ key: "digit", met: /\d/.test(password) },
+		{ key: "symbol", met: /[^A-Za-z0-9]/.test(password) },
 	];
 
 	return {

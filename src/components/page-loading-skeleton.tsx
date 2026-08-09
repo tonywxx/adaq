@@ -1,11 +1,16 @@
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useTranslation } from "react-i18next";
 
 export function PageLoadingSkeleton() {
+	const { t } = useTranslation();
+
 	return (
 		<div
 			className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6"
 			aria-busy="true"
+			aria-label={t("loading.page")}
+			role="status"
 		>
 			<div className="space-y-2">
 				<Skeleton className="h-8 w-36" />

@@ -10,5 +10,5 @@ test("initial HTML paints a loading spinner before React starts", () => {
 	expect(spinner).toBeGreaterThan(-1);
 	expect(spinner).toBeLessThan(appScript);
 	expect(source).toMatch(/role="status"/);
-	expect(source).toMatch(/aria-label="AdaQ is initializing"/);
+	expect(source).toMatch(/aria-label="AdaQ"/);
 });

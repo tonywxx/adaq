@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster } from "@/components/ui/sonner";
 import { WatchlistCard } from "@/components/watchlist-card";
 import { useMarketSessionStore } from "@/lib/market-session";
+import { useTranslation } from "react-i18next";
 import type { ReactNode } from "react";
 
 export default function Home({
@@ -63,10 +64,14 @@ export function Dashboard() {
 }
 
 function DashboardLoadingSkeleton() {
+	const { t } = useTranslation();
+
 	return (
 		<div
 			className="grid min-w-0 gap-4 px-4 py-4 lg:grid-cols-[minmax(360px,420px)_minmax(0,1fr)] lg:px-6 lg:py-6"
 			aria-busy="true"
+			aria-label={t("loading.page")}
+			role="status"
 		>
 			<Skeleton className="h-[32rem] w-full" />
 			<div className="flex min-w-0 flex-col gap-4">

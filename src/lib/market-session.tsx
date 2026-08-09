@@ -1,4 +1,5 @@
 import type { BarInterval, OhlcvBar } from "@/lib/market-chart-adapter";
+import { formatDecimal as formatLocaleDecimal } from "@/lib/i18n";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { type ReactNode, useEffect, useMemo } from "react";
 import { create } from "zustand";
@@ -445,10 +446,7 @@ export function calculateChange(last: string, open24h: string) {
 
 export function formatNumber(value: string | null, maximumFractionDigits = 8) {
 	if (value === null) return "—";
-	const number = Number(value);
-	return Number.isFinite(number)
-		? number.toLocaleString(undefined, { maximumFractionDigits })
-		: value;
+	return formatLocaleDecimal(value, { maximumFractionDigits });
 }
 
 export function getErrorMessage(error: unknown) {

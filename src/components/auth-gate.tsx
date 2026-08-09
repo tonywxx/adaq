@@ -20,11 +20,14 @@ import {
 	useMemo,
 	useState,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { NavTitlebarTransparent } from "./nav-titlebar-transparent";
+import type { TFunction } from "i18next";
 
 type AuthStep = "email" | "password" | "otp";
 
 export function AuthGate({ children }: { children: ReactNode }) {
+	const { t } = useTranslation();
 	const [session, setSession] = useState<Session | null>(null);
 	const [loadingSession, setLoadingSession] = useState(true);
 
@@ -53,8 +56,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
 			<>
 				<NavTitlebarTransparent />
 				<AuthShell
-					title="Supabase is not configured"
-					description="Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY, then restart the app."
+					title={t("auth.supabaseNotConfigured")}
+					description={t("auth.supabaseNotConfiguredDescription")}
+					icon="configured"
 				/>
 			</>
 		);
@@ -67,14 +71,16 @@ export function AuthGate({ children }: { children: ReactNode }) {
 				<main
 					className="grid min-h-svh place-content-center justify-items-center gap-3 bg-background"
 					role="status"
-					aria-label="AdaQ is initializing"
+					aria-label={t("auth.initializingAria")}
 				>
 					<LoaderCircleIcon
 						className="size-7 animate-spin text-primary"
 						aria-hidden="true"
 					/>
 					<p className="font-semibold">AdaQ</p>
-					<p className="text-sm text-muted-foreground">Initializing workspace…</p>
+					<p className="text-sm text-muted-foreground">
+						{t("auth.initializingWorkspace")}
+					</p>
 				</main>
 			</>
 		);
@@ -100,6 +106,7 @@ function EmailOtpForm({
 }: {
 	onSession: (session: Session) => void;
 }) {
+	const { t } = useTranslation();
 	const [step, setStep] = useState<AuthStep>("email");
 	const [email, setEmail] = useState("");
 	const [password, setPassword] = useState("");
@@ -148,7 +155,7 @@ function EmailOtpForm({
 
 		setEmail(nextEmail);
 		setStep("otp");
-		setMessage("Check your email for the 8-digit code.");
+		setMessage(t("auth.checkEmail"));
 	}
 
 	async function signInWithPassword(event: FormEvent<HTMLFormElement>) {
@@ -169,7 +176,7 @@ function EmailOtpForm({
 			return;
 		}
 		if (!data.session) {
-			setError("Password sign-in succeeded, but no session was returned.");
+			setError(t("auth.passwordSignInNoSession"));
 			return;
 		}
 
@@ -194,7 +201,7 @@ function EmailOtpForm({
 			return;
 		}
 		if (!data.session) {
-			setError("The code was accepted, but no session was returned.");
+			setError(t("auth.codeAcceptedNoSession"));
 			return;
 		}
 
@@ -207,16 +214,13 @@ function EmailOtpForm({
 			<AuthShell
 				title={
 					step === "password"
-						? "Sign in with password"
+						? t("auth.signInWithPassword")
 						: step === "otp"
-							? "Enter verification code"
-							: "Sign in"
+							? t("auth.enterVerificationCode")
+							: t("auth.signIn")
 				}
-				description={
-					step === "email"
-						? "Please input your email address. For new accounts, an email with a OTP code will be sent to your email address. Existing accounts continue with password."
-						: email
-				}
+				description={step === "email" ? t("auth.emailDescription") : email}
+				icon={step === "password" ? "password" : "mail"}
 			>
 				<form
 					className="grid gap-4"
@@ -229,7 +233,7 @@ function EmailOtpForm({
 					}
 				>
 					<div className="grid gap-2">
-						<Label htmlFor="email">Email</Label>
+						<Label htmlFor="email">{t("auth.email")}</Label>
 						<Input
 							id="email"
 							type="email"
@@ -242,7 +246,7 @@ function EmailOtpForm({
 					</div>
 					{step === "password" && (
 						<div className="grid gap-2">
-							<Label htmlFor="signin-password">Password</Label>
+							<Label htmlFor="signin-password">{t("auth.password")}</Label>
 							<Input
 								id="signin-password"
 								type="password"
@@ -256,7 +260,7 @@ function EmailOtpForm({
 					)}
 					{step === "otp" && (
 						<div className="grid gap-2">
-							<Label htmlFor="otp">Code</Label>
+							<Label htmlFor="otp">{t("auth.code")}</Label>
 							<Input
 								id="otp"
 								inputMode="numeric"
@@ -272,10 +276,10 @@ function EmailOtpForm({
 					<AuthNotice message={message} error={error} />
 					<Button type="submit" loading={loading}>
 						{step === "email"
-							? "Continue"
+							? t("auth.continue")
 							: step === "password"
-								? "Sign in"
-								: "Verify code"}
+								? t("auth.signIn")
+								: t("auth.verifyCode")}
 					</Button>
 					{(step === "password" || step === "otp") && (
 						<Button
@@ -287,12 +291,12 @@ function EmailOtpForm({
 								setStep("email");
 							}}
 						>
-							Use a different email
+							{t("auth.differentEmail")}
 						</Button>
 					)}
 					{step === "password" && (
 						<Button type="button" variant="ghost" onClick={() => sendOtp()}>
-							Sign in with email code instead
+							{t("auth.emailCodeInstead")}
 						</Button>
 					)}
 				</form>
@@ -353,6 +357,7 @@ function PasswordSetupForm({
 	session: Session;
 	onSession: (session: Session) => void;
 }) {
+	const { t } = useTranslation();
 	const [password, setPassword] = useState("");
 	const [confirmPassword, setConfirmPassword] = useState("");
 	const [error, setError] = useState("");
@@ -390,12 +395,13 @@ function PasswordSetupForm({
 		<>
 			<NavTitlebarTransparent />
 			<AuthShell
-				title="Create a strong password"
-				description={session.user.email ?? "Secure your account before continuing."}
+				title={t("auth.createStrongPassword")}
+				description={session.user.email ?? t("auth.secureAccount")}
+				icon="password"
 			>
 				<form className="grid gap-4" onSubmit={createPassword}>
 					<div className="grid gap-2">
-						<Label htmlFor="password">Password</Label>
+						<Label htmlFor="password">{t("auth.password")}</Label>
 						<Input
 							id="password"
 							type="password"
@@ -406,7 +412,7 @@ function PasswordSetupForm({
 						/>
 					</div>
 					<div className="grid gap-2">
-						<Label htmlFor="confirm-password">Confirm password</Label>
+						<Label htmlFor="confirm-password">{t("auth.confirmPassword")}</Label>
 						<Input
 							id="confirm-password"
 							type="password"
@@ -420,15 +426,15 @@ function PasswordSetupForm({
 						{passwordCheck.items.map((item) => (
 							<li
 								className={item.met ? "text-emerald-600" : "text-muted-foreground"}
-								key={item.label}
+								key={item.key}
 							>
-								{item.met ? "✓" : "•"} {item.label}
+								{item.met ? "✓" : "•"} {passwordRequirementLabel(t, item.key)}
 							</li>
 						))}
 						<li
 							className={passwordsMatch ? "text-emerald-600" : "text-muted-foreground"}
 						>
-							{passwordsMatch ? "✓" : "•"} Passwords match
+							{passwordsMatch ? "✓" : "•"} {t("auth.passwordsMatch")}
 						</li>
 					</ul>
 					<AuthNotice error={error} />
@@ -437,7 +443,7 @@ function PasswordSetupForm({
 						loading={loading}
 						disabled={!passwordCheck.ok || !passwordsMatch}
 					>
-						Create password
+						{t("auth.createPassword")}
 					</Button>
 				</form>
 			</AuthShell>
@@ -458,10 +464,12 @@ async function markPasswordSet(userId: string, email?: string) {
 function AuthShell({
 	title,
 	description,
+	icon,
 	children,
 }: {
 	title: string;
 	description: string;
+	icon: "configured" | "mail" | "password";
 	children?: ReactNode;
 }) {
 	return (
@@ -469,7 +477,7 @@ function AuthShell({
 			<Card className="w-full max-w-sm rounded-lg">
 				<CardHeader>
 					<div className="mb-2 flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-						<AuthIcon title={title} />
+						<AuthIcon kind={icon} />
 					</div>
 					<CardTitle>{title}</CardTitle>
 					<CardDescription>{description}</CardDescription>
@@ -480,10 +488,14 @@ function AuthShell({
 	);
 }
 
-function AuthIcon({ title }: { title: string }) {
-	if (title.includes("password")) return <KeyRound className="size-4" />;
-	if (title.includes("configured")) return <ShieldCheck className="size-4" />;
+function AuthIcon({ kind }: { kind: "configured" | "mail" | "password" }) {
+	if (kind === "password") return <KeyRound className="size-4" />;
+	if (kind === "configured") return <ShieldCheck className="size-4" />;
 	return <Mail className="size-4" />;
+}
+
+function passwordRequirementLabel(t: TFunction, key: string) {
+	return t(`auth.passwordRequirements.${key}`);
 }
 
 function AuthNotice({ message, error }: { message?: string; error?: string }) {

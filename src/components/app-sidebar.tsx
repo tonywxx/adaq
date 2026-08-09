@@ -23,32 +23,33 @@ import {
 	GitCompareArrows,
 	CandlestickChart,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type * as React from "react";
 
 const data = {
 	navMain: [
 		{
-			title: "Dashboard",
+			titleKey: "nav.dashboard",
 			url: "/",
 			icon: <LayoutDashboardIcon />,
 		},
 		{
-			title: "Components",
+			titleKey: "nav.components",
 			url: "/components",
 			icon: <ListIcon />,
 		},
 		{
-			title: "Models",
+			titleKey: "nav.models",
 			url: "/models",
 			icon: <CommandIcon />,
 		},
 		{
-			title: "Backtest",
+			titleKey: "nav.backtest",
 			url: "/backtest",
 			icon: <ChartBarIcon />,
 		},
 		{
-			title: "Validation",
+			titleKey: "nav.validation",
 			url: "/validation",
 			icon: <FileTextIcon />,
 		},
@@ -103,17 +104,17 @@ const data = {
 	],
 	navSecondary: [
 		{
-			title: "Settings",
+			titleKey: "nav.settings",
 			url: "/settings/general",
 			icon: <Settings2Icon />,
 		},
 		{
-			title: "GitHub",
+			titleKey: "nav.github",
 			url: "https://github.com/tonywxx/adaq",
 			icon: <GitCompareArrows />,
 		},
 		{
-			title: "WeChat",
+			titleKey: "nav.wechat",
 			url: "https://mp.weixin.qq.com/s/fHFDyntJ7PRwrsRJqfLnaA", // https://weixin.qq.com/r/mp/TC_Pl63E2vClren093pe
 			icon: <QrCodeIcon />,
 		},
@@ -121,6 +122,16 @@ const data = {
 };
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+	const { t } = useTranslation();
+	const navMain = data.navMain.map((item) => ({
+		...item,
+		title: t(item.titleKey),
+	}));
+	const navSecondary = data.navSecondary.map((item) => ({
+		...item,
+		title: t(item.titleKey),
+	}));
+
 	return (
 		<Sidebar collapsible="offcanvas" {...props}>
 			<SidebarHeader>
@@ -139,9 +150,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 				</SidebarMenu>
 			</SidebarHeader>
 			<SidebarContent>
-				<NavMain items={data.navMain} />
+				<NavMain items={navMain} />
 				{/* <NavDocuments items={data.documents} /> */}
-				<NavSecondary items={data.navSecondary} className="mt-auto" />
+				<NavSecondary items={navSecondary} className="mt-auto" />
 			</SidebarContent>
 			<SidebarFooter>
 				<NavUser />

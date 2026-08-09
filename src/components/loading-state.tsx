@@ -1,13 +1,19 @@
 import { LoaderCircleIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 
 export function LoadingState({
-	label,
+	labelKey,
 	className,
 }: {
-	label: string;
+	labelKey: string;
 	className?: string;
 }) {
+	const { t } = useTranslation();
+	const translatedLabel = t(labelKey, {
+		defaultValue: t("loading.page"),
+	});
+
 	return (
 		<div
 			className={cn(
@@ -18,7 +24,7 @@ export function LoadingState({
 			aria-live="polite"
 		>
 			<LoaderCircleIcon className="size-4 animate-spin" aria-hidden="true" />
-			{label}
+			{translatedLabel}
 		</div>
 	);
 }

@@ -44,10 +44,12 @@ import {
 	setMiniChartInterval,
 	useMarketSessionStore,
 } from "@/lib/market-session";
+import { formatNumber as formatLocaleNumber } from "@/lib/i18n";
 import WChart from "@/w/lightweight-charts/WChart";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { LoaderCircleIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useEffect, useMemo, useState } from "react";
 
 const MINI_CHART_BARS = 60;
@@ -55,6 +57,7 @@ const WATCHLIST_PAGE_SIZE = 10;
 type MiniChartInterval = (typeof MINI_CHART_INTERVALS)[number];
 
 export function WatchlistCard() {
+	const { t } = useTranslation();
 	const ready = useMarketSessionStore((state) => state.ready);
 	const loadError = useMarketSessionStore((state) => state.loadError);
 	const watchlist = useMarketSessionStore((state) => state.watchlist);
@@ -92,9 +95,14 @@ export function WatchlistCard() {
 	return (
 		<Card className="min-w-0 rounded-md py-4 lg:sticky lg:top-6 lg:max-h-[calc(100svh-6rem)]">
 			<CardHeader>
-				<CardTitle className="text-xl font-semibold">Watchlist</CardTitle>
+				<CardTitle className="text-xl font-semibold">
+					{t("market.watchlist")}
+				</CardTitle>
 				<CardDescription>
-					{watchlist.length} / {watchlistLimit || "—"} · OKX Spot
+					{t("market.watchlistSummary", {
+						count: watchlist.length,
+						limit: watchlistLimit || "—",
+					})}
 				</CardDescription>
 				<CardAction>
 					<Badge
@@ -107,7 +115,7 @@ export function WatchlistCard() {
 						}
 					>
 						<span className="size-2 rounded-full bg-current" aria-hidden="true" />
-						{live ? "Live" : "Reconnecting"}
+						{live ? t("market.live") : t("market.reconnecting")}
 					</Badge>
 				</CardAction>
 			</CardHeader>
@@ -129,7 +137,7 @@ export function WatchlistCard() {
 						<SelectTrigger
 							className="w-24"
 							size="sm"
-							aria-label="Mini-chart interval"
+							aria-label={t("market.miniChartInterval")}
 						>
 							<SelectValue>{interval}</SelectValue>
 						</SelectTrigger>
@@ -150,7 +158,7 @@ export function WatchlistCard() {
 						onClick={() => setAdding((value) => !value)}
 					>
 						<PlusIcon />
-						Add
+						{t("market.add")}
 					</Button>
 				</div>
 
@@ -167,11 +175,11 @@ export function WatchlistCard() {
 				)}
 
 				<div className="grid grid-cols-[minmax(0,1fr)_5.5rem_5rem_4.25rem_1.75rem] gap-2 border-b px-2 pb-2 text-xs text-muted-foreground">
-					<span>Instrument</span>
-					<span aria-hidden="true">Chart</span>
-					<span className="text-right">Price</span>
-					<span className="text-right">% Chg</span>
-					<span className="sr-only">Actions</span>
+					<span>{t("market.instrument")}</span>
+					<span aria-hidden="true">{t("market.chart")}</span>
+					<span className="text-right">{t("market.price")}</span>
+					<span className="text-right">{t("market.change")}</span>
+					<span className="sr-only">{t("market.actions")}</span>
 				</div>
 
 				<div className="min-h-0 space-y-2 overflow-y-auto pr-1">
@@ -182,13 +190,13 @@ export function WatchlistCard() {
 							) : (
 								<>
 									<LoaderCircleIcon className="size-4 animate-spin" />
-									Loading Watchlist…
+									{t("market.loadingWatchlist")}
 								</>
 							)}
 						</div>
 					) : watchlist.length === 0 ? (
 						<div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-							Your Watchlist is empty.
+							{t("market.emptyWatchlist")}
 						</div>
 					) : (
 						visibleWatchlist.map((instrument) => (
@@ -217,7 +225,10 @@ export function WatchlistCard() {
 							</PaginationItem>
 							<PaginationItem>
 								<span className="px-3 text-sm" aria-current="page">
-									Page {currentPage} of {pageCount}
+									{t("market.pageOf", {
+										current: currentPage,
+										total: pageCount,
+									})}
 								</span>
 							</PaginationItem>
 							<PaginationItem>
@@ -251,6 +262,7 @@ function InstrumentPicker({
 	onClose: () => void;
 	onError: (value?: string) => void;
 }) {
+	const { t } = useTranslation();
 	const watchlist = useMarketSessionStore((state) => state.watchlist);
 	const catalog = useMarketSessionStore((state) => state.catalog);
 	const catalogLoaded = useMarketSessionStore((state) => state.catalogLoaded);
@@ -287,7 +299,7 @@ function InstrumentPicker({
 					type="search"
 					value={query}
 					className="h-8 pr-8 pl-8"
-					placeholder="Search OKX Spot"
+					placeholder={t("market.searchInstruments")}
 					onChange={(event) => onQueryChange(event.target.value)}
 				/>
 				<Button
@@ -295,7 +307,7 @@ function InstrumentPicker({
 					size="icon-xs"
 					variant="ghost"
 					className="-translate-y-1/2 absolute top-1/2 right-1"
-					aria-label="Close instrument search"
+					aria-label={t("market.closeInstrumentSearch")}
 					onClick={onClose}
 				>
 					<XIcon />
@@ -305,11 +317,11 @@ function InstrumentPicker({
 				{isFetching && instruments.length === 0 ? (
 					<div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
 						<LoaderCircleIcon className="size-3.5 animate-spin" />
-						Loading Instruments…
+						{t("market.loadingInstruments")}
 					</div>
 				) : matches.length === 0 ? (
 					<div className="px-2 py-3 text-xs text-muted-foreground">
-						No available matches.
+						{t("market.noAvailableMatches")}
 					</div>
 				) : (
 					matches.map((instrument) => (
@@ -347,6 +359,7 @@ function WatchlistRow({
 	available: boolean;
 	onError: (value?: string) => void;
 }) {
+	const { t } = useTranslation();
 	const ticker = useMarketSessionStore(
 		(state) => state.tickers[instrumentKey(instrument)],
 	);
@@ -380,6 +393,14 @@ function WatchlistRow({
 		).map(({ time, close }) => ({ time, value: close }));
 	}, [data, interval, liveBar]);
 	const change = ticker ? calculateChange(ticker.last, ticker.open24h) : null;
+	const changeLabel =
+		change === null
+			? "—"
+			: `${formatLocaleNumber(change, {
+					minimumFractionDigits: 2,
+					maximumFractionDigits: 2,
+					signDisplay: "always",
+				})}%`;
 	const color =
 		change === null ? "#64748b" : change >= 0 ? "#10b981" : "#f43f5e";
 
@@ -403,7 +424,7 @@ function WatchlistRow({
 				<span className="min-w-0">
 					<span className="block truncate font-medium">{instrument.code}</span>
 					<span className="block text-xs text-muted-foreground">
-						{available ? "OKX Spot" : "Unavailable"}
+						{available ? "OKX Spot" : t("market.unavailable")}
 					</span>
 				</span>
 				<span className="h-12 min-w-0 overflow-hidden" aria-hidden="true">
@@ -439,7 +460,7 @@ function WatchlistRow({
 								: "text-rose-600 dark:text-rose-400"
 					}`}
 				>
-					{change === null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}
+					{changeLabel}
 				</span>
 			</button>
 			<Button
@@ -447,7 +468,9 @@ function WatchlistRow({
 				size="icon-xs"
 				variant="ghost"
 				className="mr-0.5 shrink-0 text-muted-foreground hover:text-destructive"
-				aria-label={`Remove ${instrument.code} from Watchlist`}
+				aria-label={t("market.removeFromWatchlist", {
+					instrument: instrument.code,
+				})}
 				onClick={() => {
 					onError(undefined);
 					void removeWatchlistInstrument(instrument).catch((error) =>

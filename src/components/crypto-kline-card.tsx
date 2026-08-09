@@ -35,6 +35,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { LoaderCircleIcon, RotateCcwIcon } from "lucide-react";
 import { useTheme } from "next-themes";
+import { useTranslation } from "react-i18next";
 import {
 	type ReactNode,
 	useCallback,
@@ -53,6 +54,7 @@ type BarRange = {
 };
 
 export function CryptoKlineCard() {
+	const { t } = useTranslation();
 	const { resolvedTheme } = useTheme();
 	const activeInstrument = useMarketSessionStore(
 		(state) => state.activeInstrument,
@@ -221,7 +223,7 @@ export function CryptoKlineCard() {
 			<Card className="@container/card rounded-md py-4">
 				<CardHeader>
 					<CardDescription>
-						{baseAsset} / {quoteAsset} · OKX Spot{" "}
+						{t("market.instrumentVenue", { baseAsset, quoteAsset })}{" "}
 						<Badge
 							variant="outline"
 							title={streamError}
@@ -233,7 +235,7 @@ export function CryptoKlineCard() {
 							}
 						>
 							<span className="size-2 rounded-full bg-current" aria-hidden="true" />
-							{connectionStatusLabel(connectionStatus)}
+							{connectionStatusLabel(connectionStatus, t)}
 						</Badge>
 					</CardDescription>
 					<CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
@@ -241,13 +243,13 @@ export function CryptoKlineCard() {
 					</CardTitle>
 					<CardAction className="flex items-center gap-2">
 						<Select value={interval} onValueChange={handleIntervalChange}>
-							<SelectTrigger size="sm" aria-label="Bar interval">
-								<SelectValue>{formatInterval(interval)}</SelectValue>
+							<SelectTrigger size="sm" aria-label={t("market.barInterval")}>
+								<SelectValue>{formatInterval(interval, t)}</SelectValue>
 							</SelectTrigger>
 							<SelectContent align="end">
 								{BAR_INTERVALS.map((value) => (
 									<SelectItem key={value} value={value}>
-										{formatInterval(value)}
+										{formatInterval(value, t)}
 									</SelectItem>
 								))}
 							</SelectContent>
@@ -258,7 +260,7 @@ export function CryptoKlineCard() {
 							onClick={() => setChartResetKey((value) => value + 1)}
 						>
 							<RotateCcwIcon />
-							Reset
+							{t("market.reset")}
 						</Button>
 					</CardAction>
 				</CardHeader>
@@ -266,7 +268,7 @@ export function CryptoKlineCard() {
 					{isPending ? (
 						<ChartMessage>
 							<LoaderCircleIcon className="size-4 animate-spin" />
-							Loading OKX bars…
+							{t("market.loadingBars")}
 						</ChartMessage>
 					) : isError ? (
 						<ChartMessage>
@@ -275,14 +277,14 @@ export function CryptoKlineCard() {
 								size="sm"
 								variant="outline"
 								loading={isFetching}
-								loadingText="Retrying…"
+								loadingText={t("market.retrying")}
 								onClick={() => refetch()}
 							>
-								Retry
+								{t("market.retry")}
 							</Button>
 						</ChartMessage>
 					) : chartData.length === 0 ? (
-						<ChartMessage>No closed bars returned by OKX.</ChartMessage>
+						<ChartMessage>{t("market.noClosedBars")}</ChartMessage>
 					) : (
 						<div className="relative">
 							{isFetching && !isPending && (
@@ -292,12 +294,17 @@ export function CryptoKlineCard() {
 									aria-live="polite"
 								>
 									<LoaderCircleIcon className="size-3 animate-spin" />
-									{isFetchingNextPage ? "Loading history…" : "Updating…"}
+									{isFetchingNextPage
+										? t("market.loadingHistory")
+										: t("market.updating")}
 								</Badge>
 							)}
 							<div
 								role="img"
-								aria-label={`${activeInstrument.code} ${formatInterval(interval)} candlestick chart from OKX`}
+								aria-label={t("market.chartAriaLabel", {
+									instrument: activeInstrument.code,
+									interval: formatInterval(interval, t),
+								})}
 							>
 								<WChart
 									key={`${instrumentKey(activeInstrument)}-${interval}-${chartResetKey}`}
@@ -333,11 +340,7 @@ export function CryptoKlineCard() {
 					)}
 				</CardContent>
 				<CardFooter className="w-full">
-					{detailBar ? (
-						<BarDetails bar={detailBar} />
-					) : (
-						"Public market data from OKX"
-					)}
+					{detailBar ? <BarDetails bar={detailBar} /> : t("market.publicMarketData")}
 				</CardFooter>
 			</Card>
 		</div>
@@ -345,21 +348,22 @@ export function CryptoKlineCard() {
 }
 
 function BarDetails({ bar }: { bar: OhlcvBar }) {
+	const { t } = useTranslation();
 	return (
 		<dl className="grid w-full grid-cols-2 gap-x-5 gap-y-2 text-xs sm:grid-cols-4 lg:grid-cols-7">
 			<BarField
-				label="UTC"
+				label={t("market.utc")}
 				value={new Date(bar.openTimeMs)
 					.toISOString()
 					.replace("T", " ")
 					.slice(0, 16)}
 			/>
-			<BarField label="Open" value={bar.open} />
-			<BarField label="High" value={bar.high} />
-			<BarField label="Low" value={bar.low} />
-			<BarField label="Close" value={bar.close} />
-			<BarField label="Base volume" value={bar.baseVolume} />
-			<BarField label="Quote volume" value={bar.quoteVolume} />
+			<BarField label={t("market.open")} value={bar.open} />
+			<BarField label={t("market.high")} value={bar.high} />
+			<BarField label={t("market.low")} value={bar.low} />
+			<BarField label={t("market.close")} value={bar.close} />
+			<BarField label={t("market.baseVolume")} value={bar.baseVolume} />
+			<BarField label={t("market.quoteVolume")} value={bar.quoteVolume} />
 		</dl>
 	);
 }
@@ -395,17 +399,20 @@ function getCrosshairTime(param: unknown) {
 	return typeof param.time === "number" ? param.time : undefined;
 }
 
-function connectionStatusLabel(status: "connecting" | "live" | "reconnecting") {
+function connectionStatusLabel(
+	status: "connecting" | "live" | "reconnecting",
+	t: (key: string) => string,
+) {
 	switch (status) {
 		case "connecting":
-			return "Connecting";
+			return t("market.connecting");
 		case "live":
-			return "Live";
+			return t("market.live");
 		case "reconnecting":
-			return "Reconnecting";
+			return t("market.reconnecting");
 	}
 }
 
-function formatInterval(interval: BarInterval) {
-	return `${interval} UTC`;
+function formatInterval(interval: BarInterval, t: (key: string) => string) {
+	return `${interval} ${t("market.utc")}`;
 }

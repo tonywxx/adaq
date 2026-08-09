@@ -16,6 +16,12 @@ import {
 	LAST_APP_PATH_KEY,
 	setAutoDownloadUpdates,
 } from "@/lib/app-settings";
+import {
+	changeInterfaceLocale,
+	formatNumber,
+	getInterfaceLocalePreference,
+	type InterfaceLocalePreference,
+} from "@/lib/i18n";
 import { checkStrongPassword } from "@/lib/password";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
@@ -45,6 +51,7 @@ import {
 	SunIcon,
 	UserRoundIcon,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useTheme } from "next-themes";
 import {
 	type FormEvent,
@@ -57,12 +64,32 @@ import {
 import { toast } from "sonner";
 
 const sections = [
-	{ id: "general", label: "General", icon: Settings2Icon },
-	{ id: "profile", label: "Profile", icon: UserRoundIcon },
-	{ id: "appearance", label: "Appearance", icon: PaletteIcon },
-	{ id: "keyboard-shortcuts", label: "Keyboard Shortcuts", icon: KeyboardIcon },
-	{ id: "account", label: "Account", icon: ShieldIcon },
-	{ id: "data-storage", label: "Data & Storage", icon: DatabaseIcon },
+	{
+		id: "general",
+		labelKey: "settings.navigation.general",
+		icon: Settings2Icon,
+	},
+	{
+		id: "profile",
+		labelKey: "settings.navigation.profile",
+		icon: UserRoundIcon,
+	},
+	{
+		id: "appearance",
+		labelKey: "settings.navigation.appearance",
+		icon: PaletteIcon,
+	},
+	{
+		id: "keyboard-shortcuts",
+		labelKey: "settings.navigation.keyboardShortcuts",
+		icon: KeyboardIcon,
+	},
+	{ id: "account", labelKey: "settings.navigation.account", icon: ShieldIcon },
+	{
+		id: "data-storage",
+		labelKey: "settings.navigation.dataStorage",
+		icon: DatabaseIcon,
+	},
 ] as const;
 
 type Section = (typeof sections)[number]["id"];
@@ -125,6 +152,7 @@ export function SettingsPage() {
 
 function SettingsNavigation({ section }: { section: Section }) {
 	const router = useRouter();
+	const { t } = useTranslation();
 	const backToApp = () => {
 		router.history.push(sessionStorage.getItem(LAST_APP_PATH_KEY) || "/");
 	};
@@ -133,9 +161,9 @@ function SettingsNavigation({ section }: { section: Section }) {
 		<aside className="sticky top-0 h-[calc(100svh-3rem)] w-72 shrink-0 border-r bg-muted/25 px-3 py-5">
 			<Button className="mb-5 justify-start" variant="ghost" onClick={backToApp}>
 				<ArrowLeftIcon />
-				Back to App
+				{t("settings.navigation.backToApp")}
 			</Button>
-			<nav aria-label="Settings">
+			<nav aria-label={t("settings.navigation.label")}>
 				<ul className="grid gap-1">
 					{sections.map((item) => {
 						const Icon = item.icon;
@@ -150,7 +178,7 @@ function SettingsNavigation({ section }: { section: Section }) {
 									)}
 								>
 									<Icon className="size-4" />
-									<span className="truncate">{item.label}</span>
+									<span className="truncate">{t(item.labelKey)}</span>
 									{section === item.id ? (
 										<ChevronRightIcon className="ml-auto size-3.5 text-muted-foreground" />
 									) : null}
@@ -180,8 +208,11 @@ function SettingsHeader({
 }
 
 function GeneralSettings() {
+	const { t } = useTranslation();
 	const [autoDownload, setAutoDownload] = useState(autoDownloadUpdates);
-	const [version, setVersion] = useState("Loading…");
+	const [version, setVersion] = useState<string | null>(null);
+	const [interfaceLocale, setInterfaceLocale] =
+		useState<InterfaceLocalePreference>(getInterfaceLocalePreference);
 
 	useEffect(() => {
 		if (!isTauriRuntime()) {
@@ -193,29 +224,72 @@ function GeneralSettings() {
 			.catch(() => setVersion("Unavailable"));
 	}, []);
 
+	const versionLabel =
+		version === null
+			? t("settings.general.updates.loading")
+			: version === "Development"
+				? t("settings.general.updates.development")
+				: version === "Unavailable"
+					? t("settings.general.updates.unavailable")
+					: version;
+
 	return (
 		<>
 			<SettingsHeader
-				title="General"
-				description="Application updates and version information."
+				title={t("settings.general.title")}
+				description={t("settings.general.description")}
 			/>
 			<Card>
 				<CardHeader>
-					<CardTitle>Software Updates</CardTitle>
+					<CardTitle>{t("settings.general.language.title")}</CardTitle>
 					<CardDescription>
-						Keep ADAQ current with signed application releases.
+						{t("settings.general.language.description")}
+					</CardDescription>
+				</CardHeader>
+				<CardContent>
+					<div className="grid max-w-sm gap-2">
+						<Label htmlFor="interface-locale">
+							{t("settings.general.language.label")}
+						</Label>
+						<select
+							id="interface-locale"
+							value={interfaceLocale}
+							onChange={(event) => {
+								const preference = event.target.value as InterfaceLocalePreference;
+								setInterfaceLocale(preference);
+								void changeInterfaceLocale(preference);
+							}}
+							className="h-9 rounded-lg border border-input bg-background px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+						>
+							<option value="system">{t("settings.general.language.system")}</option>
+							<option value="en-US">{t("settings.general.language.englishUS")}</option>
+							<option value="zh-CN">
+								{t("settings.general.language.simplifiedChinese")}
+							</option>
+						</select>
+					</div>
+				</CardContent>
+			</Card>
+			<br />
+			<Card>
+				<CardHeader>
+					<CardTitle>{t("settings.general.updates.title")}</CardTitle>
+					<CardDescription>
+						{t("settings.general.updates.description")}
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="grid gap-4">
 					<div className="flex items-center justify-between gap-6">
 						<span>
-							<span className="block font-medium">Automatically download updates</span>
+							<span className="block font-medium">
+								{t("settings.general.updates.autoDownload")}
+							</span>
 							<span className="block text-sm text-muted-foreground">
-								Check at startup and download an available update.
+								{t("settings.general.updates.autoDownloadDescription")}
 							</span>
 						</span>
 						<Checkbox
-							aria-label="Automatically download updates"
+							aria-label={t("settings.general.updates.autoDownload")}
 							checked={autoDownload}
 							onCheckedChange={(checked) => {
 								const enabled = checked === true;
@@ -227,9 +301,11 @@ function GeneralSettings() {
 					<Separator />
 					<div className="flex items-center justify-between gap-4">
 						<div>
-							<p className="font-medium">Version {version}</p>
+							<p className="font-medium">
+								{t("settings.general.updates.version", { version: versionLabel })}
+							</p>
 							<p className="text-sm text-muted-foreground">
-								Installed application version.
+								{t("settings.general.updates.versionDescription")}
 							</p>
 						</div>
 						<Button
@@ -238,7 +314,7 @@ function GeneralSettings() {
 							onClick={() => void emit("adaq-check-for-updates")}
 						>
 							<RefreshCwIcon />
-							Check for updates
+							{t("settings.general.updates.check")}
 						</Button>
 					</div>
 				</CardContent>
@@ -247,19 +323,12 @@ function GeneralSettings() {
 			<br />
 			<Card>
 				<CardHeader>
-					<CardTitle className="text-base">Disclaimer</CardTitle>
+					<CardTitle className="text-base">
+						{t("settings.general.disclaimer.title")}
+					</CardTitle>
 				</CardHeader>
 				<CardContent className="grid gap-4 space-y-3 text-sm leading-relaxed text-muted-foreground">
-					<p>
-						This software is for educational and research purposes only. It is not
-						financial advice, and nothing in it constitutes a recommendation to buy,
-						sell, or hold any security or digital asset. Historical performance and
-						simulated backtest results do not guarantee future results. You use this
-						software at your own risk. The authors and contributors shall not be
-						liable for any direct, indirect, incidental, consequential, or special
-						damages, including but not limited to financial losses, arising from the
-						use of or inability to use this software.
-					</p>
+					<p>{t("settings.general.disclaimer.text")}</p>
 				</CardContent>
 			</Card>
 		</>
@@ -280,6 +349,7 @@ function useAuthUser() {
 }
 
 function ProfileSettings() {
+	const { t } = useTranslation();
 	const user = useAuthUser();
 	const initialName =
 		user?.user_metadata.full_name ?? user?.user_metadata.name ?? "";
@@ -297,7 +367,7 @@ function ProfileSettings() {
 		});
 		setSaving(false);
 		if (error) return toast.error(error.message);
-		toast.success("Profile saved.");
+		toast.success(t("settings.profile.saved"));
 	}
 
 	const avatar = user?.user_metadata.avatar_url ?? user?.user_metadata.picture;
@@ -306,23 +376,26 @@ function ProfileSettings() {
 	return (
 		<>
 			<SettingsHeader
-				title="Profile"
-				description="Your presentation identity in ADAQ."
+				title={t("settings.profile.title")}
+				description={t("settings.profile.description")}
 			/>
 			<Card>
 				<CardContent>
 					<form className="grid gap-5" onSubmit={saveProfile}>
 						<div className="flex items-center gap-4">
 							<Avatar size="lg">
-								<AvatarImage src={avatar} alt={displayName || "Profile"} />
+								<AvatarImage
+									src={avatar}
+									alt={displayName || t("settings.profile.avatarAlt")}
+								/>
 								<AvatarFallback>{initials}</AvatarFallback>
 							</Avatar>
 							<p className="text-sm text-muted-foreground">
-								Your connected account avatar is used when available.
+								{t("settings.profile.avatarDescription")}
 							</p>
 						</div>
 						<div className="grid gap-2">
-							<Label htmlFor="display-name">Display name</Label>
+							<Label htmlFor="display-name">{t("settings.profile.displayName")}</Label>
 							<Input
 								id="display-name"
 								value={displayName}
@@ -332,7 +405,7 @@ function ProfileSettings() {
 							/>
 						</div>
 						<Button className="w-fit" loading={saving} disabled={!displayName.trim()}>
-							Save profile
+							{t("settings.profile.save")}
 						</Button>
 					</form>
 				</CardContent>
@@ -342,21 +415,22 @@ function ProfileSettings() {
 }
 
 function AppearanceSettings() {
+	const { t } = useTranslation();
 	const { setTheme, theme = "system" } = useTheme();
 	const options = [
-		{ id: "system", label: "System", icon: LaptopIcon },
-		{ id: "light", label: "Light", icon: SunIcon },
-		{ id: "dark", label: "Dark", icon: MoonIcon },
+		{ id: "system", labelKey: "theme.system", icon: LaptopIcon },
+		{ id: "light", labelKey: "theme.light", icon: SunIcon },
+		{ id: "dark", labelKey: "theme.dark", icon: MoonIcon },
 	];
 	return (
 		<>
 			<SettingsHeader
-				title="Appearance"
-				description="Choose how ADAQ looks on this device."
+				title={t("settings.appearance.title")}
+				description={t("settings.appearance.description")}
 			/>
 			<Card>
 				<CardHeader>
-					<CardTitle>Theme</CardTitle>
+					<CardTitle>{t("settings.appearance.theme")}</CardTitle>
 				</CardHeader>
 				<CardContent className="grid grid-cols-3 gap-3">
 					{options.map((option) => {
@@ -372,7 +446,7 @@ function AppearanceSettings() {
 								onClick={() => setTheme(option.id)}
 							>
 								<Icon className="size-6" />
-								{option.label}
+								{t(option.labelKey)}
 								{theme === option.id ? (
 									<CheckIcon className="absolute right-2 top-2 size-4" />
 								) : null}
@@ -386,18 +460,19 @@ function AppearanceSettings() {
 }
 
 function KeyboardSettings() {
+	const { t } = useTranslation();
 	return (
 		<>
 			<SettingsHeader
-				title="Keyboard Shortcuts"
-				description="Available application shortcuts."
+				title={t("settings.keyboard.title")}
+				description={t("settings.keyboard.description")}
 			/>
 			<Card>
 				<CardContent className="flex items-center justify-between">
 					<div>
-						<p className="font-medium">Toggle Sidebar</p>
+						<p className="font-medium">{t("settings.keyboard.toggleSidebar")}</p>
 						<p className="text-sm text-muted-foreground">
-							Show or hide the workspace sidebar.
+							{t("settings.keyboard.toggleSidebarDescription")}
 						</p>
 					</div>
 					<kbd className="rounded-md border bg-muted px-2 py-1 font-mono text-xs">
@@ -409,9 +484,9 @@ function KeyboardSettings() {
 			<Card>
 				<CardContent className="flex items-center justify-between">
 					<div>
-						<p className="font-medium">Reload Page</p>
+						<p className="font-medium">{t("settings.keyboard.reloadPage")}</p>
 						<p className="text-sm text-muted-foreground">
-							Reload the current application window.
+							{t("settings.keyboard.reloadPageDescription")}
 						</p>
 					</div>
 					<kbd className="rounded-md border bg-muted px-2 py-1 font-mono text-xs">
@@ -423,9 +498,9 @@ function KeyboardSettings() {
 			<Card>
 				<CardContent className="flex items-center justify-between">
 					<div>
-						<p className="font-medium">Zoom In</p>
+						<p className="font-medium">{t("settings.keyboard.zoomIn")}</p>
 						<p className="text-sm text-muted-foreground">
-							Increase the interface zoom level.
+							{t("settings.keyboard.zoomInDescription")}
 						</p>
 					</div>
 					<kbd className="rounded-md border bg-muted px-2 py-1 font-mono text-xs">
@@ -437,9 +512,9 @@ function KeyboardSettings() {
 			<Card>
 				<CardContent className="flex items-center justify-between">
 					<div>
-						<p className="font-medium">Zoom Out</p>
+						<p className="font-medium">{t("settings.keyboard.zoomOut")}</p>
 						<p className="text-sm text-muted-foreground">
-							Decrease the interface zoom level.
+							{t("settings.keyboard.zoomOutDescription")}
 						</p>
 					</div>
 					<kbd className="rounded-md border bg-muted px-2 py-1 font-mono text-xs">
@@ -451,9 +526,9 @@ function KeyboardSettings() {
 			<Card>
 				<CardContent className="flex items-center justify-between">
 					<div>
-						<p className="font-medium">Reset Zoom</p>
+						<p className="font-medium">{t("settings.keyboard.resetZoom")}</p>
 						<p className="text-sm text-muted-foreground">
-							Restore the default interface zoom level.
+							{t("settings.keyboard.resetZoomDescription")}
 						</p>
 					</div>
 					<kbd className="rounded-md border bg-muted px-2 py-1 font-mono text-xs">
@@ -466,6 +541,7 @@ function KeyboardSettings() {
 }
 
 function AccountSettings() {
+	const { t } = useTranslation();
 	const user = useAuthUser();
 	const [currentPassword, setCurrentPassword] = useState("");
 	const [newPassword, setNewPassword] = useState("");
@@ -487,7 +563,7 @@ function AccountSettings() {
 		});
 		if (signIn.error) {
 			setSaving(false);
-			return toast.error("Current password is incorrect.");
+			return toast.error(t("settings.account.currentPasswordIncorrect"));
 		}
 		const { error } = await supabase.auth.updateUser({ password: newPassword });
 		setSaving(false);
@@ -495,53 +571,53 @@ function AccountSettings() {
 		setCurrentPassword("");
 		setNewPassword("");
 		setConfirmPassword("");
-		toast.success("Password changed.");
+		toast.success(t("settings.account.passwordChanged"));
 	}
 
 	return (
 		<>
 			<SettingsHeader
-				title="Account"
-				description="Authentication details and session actions."
+				title={t("settings.account.title")}
+				description={t("settings.account.description")}
 			/>
 			<div className="grid gap-5">
 				<Card>
 					<CardHeader>
-						<CardTitle>Email</CardTitle>
+						<CardTitle>{t("settings.account.email")}</CardTitle>
 						<CardDescription>
-							Your account email cannot be changed here.
+							{t("settings.account.emailDescription")}
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
-						<Input value={user?.email ?? "Loading…"} readOnly />
+						<Input value={user?.email ?? t("settings.account.loading")} readOnly />
 					</CardContent>
 				</Card>
 				<Card>
 					<CardHeader>
-						<CardTitle>Change password</CardTitle>
+						<CardTitle>{t("settings.account.changePassword")}</CardTitle>
 						<CardDescription>
-							Confirm your current password before choosing a new one.
+							{t("settings.account.changePasswordDescription")}
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
 						<form className="grid gap-4" onSubmit={changePassword}>
 							<PasswordField
 								id="current-password"
-								label="Current password"
+								label={t("settings.account.currentPassword")}
 								value={currentPassword}
 								onChange={setCurrentPassword}
 								autoComplete="current-password"
 							/>
 							<PasswordField
 								id="new-password"
-								label="New password"
+								label={t("settings.account.newPassword")}
 								value={newPassword}
 								onChange={setNewPassword}
 								autoComplete="new-password"
 							/>
 							<PasswordField
 								id="confirm-new-password"
-								label="Confirm new password"
+								label={t("settings.account.confirmPassword")}
 								value={confirmPassword}
 								onChange={setConfirmPassword}
 								autoComplete="new-password"
@@ -549,14 +625,14 @@ function AccountSettings() {
 							<ul className="grid gap-1 text-sm text-muted-foreground">
 								{passwordCheck.items.map((item) => (
 									<li
-										key={item.label}
+										key={item.key}
 										className={item.met ? "text-emerald-600" : undefined}
 									>
-										{item.met ? "✓" : "•"} {item.label}
+										{item.met ? "✓" : "•"} {t(`auth.passwordRequirements.${item.key}`)}
 									</li>
 								))}
 								<li className={matches ? "text-emerald-600" : undefined}>
-									{matches ? "✓" : "•"} Passwords match
+									{matches ? "✓" : "•"} {t("settings.account.passwordsMatch")}
 								</li>
 							</ul>
 							<Button
@@ -564,7 +640,7 @@ function AccountSettings() {
 								loading={saving}
 								disabled={!currentPassword || !passwordCheck.ok || !matches}
 							>
-								Change password
+								{t("settings.account.changePasswordAction")}
 							</Button>
 						</form>
 					</CardContent>
@@ -572,9 +648,9 @@ function AccountSettings() {
 				<Card>
 					<CardContent className="flex items-center justify-between gap-4">
 						<div>
-							<p className="font-medium">Log out</p>
+							<p className="font-medium">{t("settings.account.logOut")}</p>
 							<p className="text-sm text-muted-foreground">
-								End the current ADAQ session.
+								{t("settings.account.logOutDescription")}
 							</p>
 						</div>
 						<Button
@@ -582,7 +658,7 @@ function AccountSettings() {
 							onClick={() => void supabase?.auth.signOut()}
 						>
 							<LogOutIcon />
-							Log out
+							{t("settings.account.logOut")}
 						</Button>
 					</CardContent>
 				</Card>
@@ -620,6 +696,7 @@ function PasswordField({
 }
 
 function DataStorageSettings() {
+	const { t } = useTranslation();
 	const user = useAuthUser();
 	const [summary, setSummary] = useState<LocalDataSummary | null>(null);
 	const [error, setError] = useState("");
@@ -636,28 +713,28 @@ function DataStorageSettings() {
 	return (
 		<>
 			<SettingsHeader
-				title="Data & Storage"
-				description="Inspect and reset local research data for this User."
+				title={t("settings.dataStorage.title")}
+				description={t("settings.dataStorage.description")}
 			/>
 			<div className="grid gap-5">
 				<Card>
 					<CardHeader>
-						<CardTitle>Local storage</CardTitle>
+						<CardTitle>{t("settings.dataStorage.localStorage")}</CardTitle>
 						<CardDescription>
-							{summary?.dataDirectory ?? (error || "Loading local data…")}
+							{summary?.dataDirectory ?? (error || t("settings.dataStorage.loading"))}
 						</CardDescription>
 					</CardHeader>
 					<CardContent className="grid gap-3">
 						<StorageRow
-							label="Database"
+							label={t("settings.dataStorage.database")}
 							value={formatBytes(summary?.databaseBytes)}
 						/>
 						<StorageRow
-							label="Component Packages"
+							label={t("settings.dataStorage.componentPackages")}
 							value={formatBytes(summary?.componentBytes)}
 						/>
 						<StorageRow
-							label="Market Data"
+							label={t("settings.dataStorage.marketData")}
 							value={formatBytes(summary?.marketDataBytes)}
 						/>
 						{/* <Button
@@ -674,38 +751,37 @@ function DataStorageSettings() {
 				</Card>
 				<Card>
 					<CardHeader>
-						<CardTitle>Reset local data</CardTitle>
+						<CardTitle>{t("settings.dataStorage.resetLocalData")}</CardTitle>
 						<CardDescription>
-							These actions cannot be undone. Account and interface preferences are
-							preserved.
+							{t("settings.dataStorage.resetDescription")}
 						</CardDescription>
 					</CardHeader>
 					<CardContent className="grid gap-3">
 						<ResetAction
 							kind="watchlist"
-							title="Reset Watchlist"
-							description="Restore BTC-USDT, ETH-USDT, and SOL-USDT."
+							titleKey="settings.dataStorage.resetWatchlist"
+							descriptionKey="settings.dataStorage.resetWatchlistDescription"
 							summary={summary}
 							userId={user?.id}
 						/>
 						<ResetAction
 							kind="components"
-							title="Reset Component Packages"
-							description="Remove local Component Package access and unreferenced files."
+							titleKey="settings.dataStorage.resetComponents"
+							descriptionKey="settings.dataStorage.resetComponentsDescription"
 							summary={summary}
 							userId={user?.id}
 						/>
 						<ResetAction
 							kind="marketData"
-							title="Reset Market Data"
-							description="Remove local Market Data Snapshot access and unreferenced Parquet files."
+							titleKey="settings.dataStorage.resetMarketData"
+							descriptionKey="settings.dataStorage.resetMarketDataDescription"
 							summary={summary}
 							userId={user?.id}
 						/>
 						<ResetAction
 							kind="all"
-							title="Reset All Local Research Data"
-							description="Remove this User's Watchlist, Components, Model Artifacts, Market Data, Generation Attempts, Signal Datasets, Runs, Protocols, and Reports."
+							titleKey="settings.dataStorage.resetAll"
+							descriptionKey="settings.dataStorage.resetAllDescription"
 							summary={summary}
 							userId={user?.id}
 						/>
@@ -727,17 +803,18 @@ function StorageRow({ label, value }: { label: string; value: string }) {
 
 function ResetAction({
 	kind,
-	title,
-	description,
+	titleKey,
+	descriptionKey,
 	summary,
 	userId,
 }: {
 	kind: ResetKind;
-	title: string;
-	description: string;
+	titleKey: string;
+	descriptionKey: string;
 	summary: LocalDataSummary | null;
 	userId?: string;
 }) {
+	const { t } = useTranslation();
 	const dialog = useRef<HTMLDialogElement>(null);
 	const [confirmation, setConfirmation] = useState("");
 	const [running, setRunning] = useState(false);
@@ -754,13 +831,15 @@ function ResetAction({
 		setRunning(true);
 		try {
 			await invoke("local_data_reset", { request: { userId, kind } });
-			toast.success(`${title} completed.`);
+			toast.success(t("settings.dataStorage.completed", { title }));
 			window.setTimeout(() => window.location.reload(), 500);
 		} catch (reason) {
 			setRunning(false);
 			toast.error(String(reason));
 		}
 	}
+	const title = t(titleKey);
+	const description = t(descriptionKey);
 
 	return (
 		<>
@@ -775,7 +854,7 @@ function ResetAction({
 					disabled={!summary || !userId}
 					onClick={() => dialog.current?.showModal()}
 				>
-					Reset
+					{t("settings.dataStorage.resetButton")}
 				</Button>
 			</div>
 			<dialog
@@ -787,21 +866,24 @@ function ResetAction({
 			>
 				<div className="grid gap-4 p-6">
 					<div>
-						<h3 className="text-lg font-semibold">Confirm {title}</h3>
+						<h3 className="text-lg font-semibold">
+							{t("settings.dataStorage.confirmTitle", { title })}
+						</h3>
 						<p className="mt-1 text-sm text-muted-foreground">
-							This action affects only the current User and cannot be undone.
+							{t("settings.dataStorage.confirmDescription")}
 						</p>
 					</div>
 					<ResetDetails kind={kind} summary={summary} />
 					{blocked ? (
 						<p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
-							This reset is blocked by immutable research records. Use Reset All to
-							remove the complete dependency chain.
+							{t("settings.dataStorage.blocked")}
 						</p>
 					) : null}
 					{kind === "all" ? (
 						<div className="grid gap-2">
-							<Label htmlFor="reset-confirmation">Type RESET to continue</Label>
+							<Label htmlFor="reset-confirmation">
+								{t("settings.dataStorage.typeReset")}
+							</Label>
 							<Input
 								id="reset-confirmation"
 								value={confirmation}
@@ -816,7 +898,7 @@ function ResetAction({
 							disabled={running}
 							onClick={() => dialog.current?.close()}
 						>
-							Cancel
+							{t("settings.dataStorage.cancel")}
 						</Button>
 						<Button
 							variant="destructive"
@@ -840,50 +922,81 @@ function ResetDetails({
 	kind: ResetKind;
 	summary: LocalDataSummary | null;
 }) {
+	const { t } = useTranslation();
 	if (!summary) return null;
 	const rows: ReactNode[] = [];
 	if (kind === "watchlist" || kind === "all")
-		rows.push(<li key="watchlist">Watchlist items: {summary.watchlistCount}</li>);
+		rows.push(
+			<li key="watchlist">
+				{t("settings.dataStorage.watchlistItems", {
+					count: summary.watchlistCount,
+				})}
+			</li>,
+		);
 	if (kind === "components" || kind === "all")
 		rows.push(
-			<li key="components">Component Packages: {summary.componentCount}</li>,
+			<li key="components">
+				{t("settings.dataStorage.componentPackagesCount", {
+					count: summary.componentCount,
+				})}
+			</li>,
 		);
 	if (kind === "marketData" || kind === "all")
 		rows.push(
-			<li key="snapshots">Market Data Snapshots: {summary.snapshotCount}</li>,
+			<li key="snapshots">
+				{t("settings.dataStorage.marketDataSnapshotsCount", {
+					count: summary.snapshotCount,
+				})}
+			</li>,
 		);
 	if (kind === "all")
 		rows.push(
-			<li key="runs">Backtest Runs: {summary.runCount}</li>,
-			<li key="protocols">Validation Protocols: {summary.protocolCount}</li>,
-			<li key="reports">Validation Reports: {summary.reportCount}</li>,
+			<li key="runs">
+				{t("settings.dataStorage.backtestRuns", { count: summary.runCount })}
+			</li>,
+			<li key="protocols">
+				{t("settings.dataStorage.validationProtocols", {
+					count: summary.protocolCount,
+				})}
+			</li>,
+			<li key="reports">
+				{t("settings.dataStorage.validationReports", {
+					count: summary.reportCount,
+				})}
+			</li>,
 			<li key="attempts">
-				Generation Attempts: {summary.generationAttemptCount}
+				{t("settings.dataStorage.generationAttempts", {
+					count: summary.generationAttemptCount,
+				})}
 			</li>,
 			<li key="artifacts">
-				Model Artifact registrations: {summary.modelArtifactCount}
+				{t("settings.dataStorage.modelArtifacts", {
+					count: summary.modelArtifactCount,
+				})}
 			</li>,
 			<li key="datasets">
-				Forecast Signal Datasets: {summary.signalDatasetCount}
+				{t("settings.dataStorage.signalDatasets", {
+					count: summary.signalDatasetCount,
+				})}
 			</li>,
 		);
 	return (
 		<div className="rounded-lg border bg-muted/30 p-4 text-sm">
-			<p className="mb-2 font-medium">Data to reset</p>
+			<p className="mb-2 font-medium">{t("settings.dataStorage.dataToReset")}</p>
 			<ul className="list-inside list-disc space-y-1 text-muted-foreground">
 				{rows}
 			</ul>
-			<p className="mt-3">
-				Preserved: login, Account, Profile, theme, and update preference.
-			</p>
+			<p className="mt-3">{t("settings.dataStorage.preserved")}</p>
 		</div>
 	);
 }
 
 function formatBytes(value?: number) {
 	if (value === undefined) return "—";
-	if (value < 1024) return `${value} B`;
-	if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
-	if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
-	return `${(value / 1024 ** 3).toFixed(1)} GB`;
+	if (value < 1024) return `${formatNumber(value)} B`;
+	if (value < 1024 ** 2)
+		return `${formatNumber(value / 1024, { maximumFractionDigits: 1 })} KB`;
+	if (value < 1024 ** 3)
+		return `${formatNumber(value / 1024 ** 2, { maximumFractionDigits: 1 })} MB`;
+	return `${formatNumber(value / 1024 ** 3, { maximumFractionDigits: 1 })} GB`;
 }

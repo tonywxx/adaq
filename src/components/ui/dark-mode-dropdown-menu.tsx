@@ -7,21 +7,23 @@ import {
 	DropdownMenuRadioItem,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useTranslation } from "react-i18next";
 
 type ThemeMode = "light" | "dark" | "system";
 
 const themeOptions: {
 	value: ThemeMode;
-	label: string;
+	labelKey: "theme.light" | "theme.dark" | "theme.system";
 	icon: typeof SunIcon;
 }[] = [
-	{ value: "light", label: "Light", icon: SunIcon },
-	{ value: "dark", label: "Dark", icon: MoonIcon },
-	{ value: "system", label: "System", icon: LaptopIcon },
+	{ value: "light", labelKey: "theme.light", icon: SunIcon },
+	{ value: "dark", labelKey: "theme.dark", icon: MoonIcon },
+	{ value: "system", labelKey: "theme.system", icon: LaptopIcon },
 ];
 
 export function DarkModeDropDownMenu() {
 	const { setTheme, theme = "system" } = useTheme();
+	const { t } = useTranslation();
 
 	const activeTheme = themeOptions.some((option) => option.value === theme)
 		? (theme as ThemeMode)
@@ -35,11 +37,13 @@ export function DarkModeDropDownMenu() {
 			<DropdownMenuTrigger asChild>
 				<button
 					type="button"
-					aria-label={`Theme: ${
-						themeOptions.find((option) => option.value === activeTheme)
-							?.label ?? "System"
-					}`}
-					title="Theme"
+					aria-label={t("titlebar.theme", {
+						theme: t(
+							themeOptions.find((option) => option.value === activeTheme)?.labelKey ??
+								"theme.system",
+						),
+					})}
+					title={t("titlebar.themeLabel")}
 					className="flex size-8 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
 					onClick={(event) => event.stopPropagation()}
 					onPointerDown={(event) => event.stopPropagation()}
@@ -67,7 +71,7 @@ export function DarkModeDropDownMenu() {
 								className="gap-2"
 							>
 								<Icon className="size-4" />
-								<span>{option.label}</span>
+								<span>{t(option.labelKey)}</span>
 							</DropdownMenuRadioItem>
 						);
 					})}

@@ -5,6 +5,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useHistoryControls } from "@/lib/navigation-history";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 // import { Button } from "./ui/button";
 
@@ -32,6 +33,7 @@ export function AppTitlebar({
 	showSidebarTrigger?: boolean;
 }) {
 	const { back, canGoBack, canGoForward, forward } = useHistoryControls();
+	const { t } = useTranslation();
 	const startDrag = () => {
 		if (!appWindow) {
 			return;
@@ -70,14 +72,16 @@ export function AppTitlebar({
 				<div className="flex items-center gap-3 bg-sidebar">
 					{showSidebarTrigger ? (
 						<SidebarTrigger
+							aria-label={t("titlebar.toggleSidebar")}
+							title={t("titlebar.toggleSidebar")}
 							className="size-5 bg-transparent text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground/70 [&_svg]:size-3.5"
 							onPointerDown={(event) => event.stopPropagation()}
 						/>
 					) : null}
 					<button
 						type="button"
-						aria-label="Back"
-						title="Back"
+						aria-label={t("titlebar.back")}
+						title={t("titlebar.back")}
 						disabled={!canGoBack}
 						className="flex size-4 items-center justify-center text-sidebar-foreground/45 hover:text-sidebar-foreground/70 disabled:cursor-default disabled:text-sidebar-foreground/35"
 						onClick={back}
@@ -87,8 +91,8 @@ export function AppTitlebar({
 					</button>
 					<button
 						type="button"
-						aria-label="Forward"
-						title="Forward"
+						aria-label={t("titlebar.forward")}
+						title={t("titlebar.forward")}
 						disabled={!canGoForward}
 						className="flex size-4 items-center justify-center text-sidebar-foreground/45 hover:text-sidebar-foreground/70 disabled:cursor-default disabled:text-sidebar-foreground/35"
 						onClick={forward}

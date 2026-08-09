@@ -14,15 +14,15 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	for (const source of [backtest, components, models, validation]) {
 		expect(source).not.toMatch(/if \(pageLoading\) return <PageLoadingSkeleton/);
 	}
-	expect(backtest).toMatch(/Loading Run History…/);
-	expect(backtest).toMatch(/Loading Snapshots…/);
-	expect(components).toMatch(/Loading Component Packages…/);
+	expect(backtest).toMatch(/loading\.runHistory/);
+	expect(backtest).toMatch(/loading\.snapshots/);
+	expect(components).toMatch(/loading\.componentPackages/);
 	expect(components).toMatch(
 		/let active = true;[\s\S]*\.finally\(\(\) => \{[\s\S]*if \(active\) setPackagesLoading\(false\);[\s\S]*return \(\) => \{[\s\S]*active = false;/,
 	);
-	expect(models).toMatch(/Loading Model Packages…/);
-	expect(models).toMatch(/Loading Market Data Snapshots…/);
-	expect(models).toMatch(/Loading Generation Attempts…/);
+	expect(models).toMatch(/loading\.modelPackages/);
+	expect(models).toMatch(/loading\.marketDataSnapshots/);
+	expect(models).toMatch(/loading\.generationAttempts/);
 	expect(models).toMatch(
 		/requestAnimationFrame\(\(\) =>\s*requestAnimationFrame\(\(\) => resolve\(\)\)/,
 	);
@@ -33,7 +33,7 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	]) {
 		expect(models).toMatch(new RegExp(`const ${refresh} = useCallback`));
 	}
-	expect(validation).toMatch(/Loading Completed Runs…/);
-	expect(validation).toMatch(/Loading Protocols…/);
-	expect(validation).toMatch(/Loading Reports…/);
+	expect(validation).toMatch(/loading\.completedRuns/);
+	expect(validation).toMatch(/loading\.protocols/);
+	expect(validation).toMatch(/loading\.reports/);
 });

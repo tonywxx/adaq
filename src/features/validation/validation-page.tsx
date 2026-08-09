@@ -20,6 +20,7 @@ import { useHistoryTab } from "@/lib/navigation-history";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { open } from "@tauri-apps/plugin-fs";
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -132,6 +133,7 @@ const waitForPaint = () =>
 const RUN_HISTORY_PAGE_SIZE = 10;
 
 export function ValidationPage() {
+	const { t } = useTranslation();
 	const userId = useMarketSessionStore((state) => state.userId);
 	const [runs, setRuns] = useState<RunSummary[]>([]);
 	const [runsPage, setRunsPage] = useState(1);
@@ -169,14 +171,17 @@ export function ValidationPage() {
 				command,
 			);
 			if (!result.ok) {
-				if (showError) setFeedback(formatDraftError(result.error));
+				if (showError)
+					setFeedback(
+						formatDraftError(result.error, t("loading.exactValidationEvidence")),
+					);
 				return result;
 			}
 			draftSessionRef.current = result.value.session;
 			setDraftSession(result.value.session);
 			return result;
 		},
-		[],
+		[t],
 	);
 	const refreshRuns = useCallback(
 		async (page: number, isActive: () => boolean = () => true) => {
@@ -279,7 +284,7 @@ export function ValidationPage() {
 	const inspection = inspectValidationProtocolDraft(draftSession, previewFacts);
 	const draftError = inspection.errors[0];
 	const draftErrorMessage = draftError
-		? formatDraftError(draftError).summary
+		? formatDraftError(draftError, t("loading.exactValidationEvidence")).summary
 		: undefined;
 	const walkForwardPreview: WalkForwardPreview | undefined = inspection.preview;
 	const walkForwardDraft =
@@ -547,7 +552,7 @@ export function ValidationPage() {
 					<div className="grid gap-2">
 						<p className="text-sm font-medium">Completed Backtest Run</p>
 						{runsLoading ? (
-							<LoadingState label="Loading Completed Runs…" />
+							<LoadingState labelKey="loading.completedRuns" />
 						) : (
 							runs.map((item) => (
 								<div
@@ -560,7 +565,7 @@ export function ValidationPage() {
 										className="h-auto justify-start whitespace-normal p-3 text-left"
 										aria-pressed={selectedSourceRunId === item.runId}
 										loading={loadingRunId === item.runId}
-										loadingText="Loading Run…"
+										loadingText={t("loading.loadingRun")}
 										disabled={Boolean(loadingRunId)}
 										onClick={() => void selectRun(item.runId)}
 									>
@@ -673,7 +678,7 @@ export function ValidationPage() {
 					)}
 					<Button
 						loading={freezing}
-						loadingText="Freezing…"
+						loadingText={t("loading.freezing")}
 						disabled={freezing || !sourceMatchesDraft || Boolean(draftError)}
 						onClick={() => void freeze()}
 					>
@@ -688,7 +693,7 @@ export function ValidationPage() {
 				</CardHeader>
 				<CardContent className="space-y-3">
 					{protocolsLoading ? (
-						<LoadingState label="Loading Protocols…" />
+						<LoadingState labelKey="loading.protocols" />
 					) : (
 						protocols.map((protocol) => (
 							<div
@@ -724,7 +729,7 @@ export function ValidationPage() {
 								</div>
 								<Button
 									loading={runningProtocolId === protocol.protocolId}
-									loadingText="Running…"
+									loadingText={t("loading.running")}
 									disabled={Boolean(runningProtocolId)}
 									onClick={() => void run(protocol.protocolId)}
 								>
@@ -747,7 +752,7 @@ export function ValidationPage() {
 				</CardHeader>
 				<CardContent>
 					{reportsLoading ? (
-						<LoadingState label="Loading Reports…" />
+						<LoadingState labelKey="loading.reports" />
 					) : selectedReport ? (
 						<>
 							<div className="mb-3 flex flex-wrap gap-2">
@@ -925,7 +930,7 @@ function CrossMarketControls({
 				Select at least two readable Snapshots. The selected completed Run supplies
 				the shared configuration; an exact Run on the same Snapshot may override it.
 			</p>
-			{loading && <LoadingState label="Loading readable Snapshots…" />}
+			{loading && <LoadingState labelKey="loading.readableSnapshots" />}
 			<div className="grid gap-2 sm:grid-cols-2">
 				{!loading &&
 					snapshots.map((snapshot) => (
@@ -1138,6 +1143,7 @@ function ReportViews({
 	onExport: (reportId: string, format: "json" | "markdown") => void;
 	exportingReport?: string;
 }) {
+	const { t } = useTranslation();
 	return (
 		<>
 			<TabsContent value="summary" className="space-y-3">
@@ -1215,7 +1221,7 @@ function ReportViews({
 					<Button
 						variant="outline"
 						loading={exportingReport === `${report.reportId}:json`}
-						loadingText="Exporting JSON…"
+						loadingText={t("loading.exportingJson")}
 						disabled={Boolean(exportingReport)}
 						onClick={() => onExport(report.reportId, "json")}
 					>
@@ -1224,7 +1230,7 @@ function ReportViews({
 					<Button
 						variant="outline"
 						loading={exportingReport === `${report.reportId}:markdown`}
-						loadingText="Exporting Markdown…"
+						loadingText={t("loading.exportingMarkdown")}
 						disabled={Boolean(exportingReport)}
 						onClick={() => onExport(report.reportId, "markdown")}
 					>
@@ -1416,7 +1422,7 @@ function percent(value: string) {
 	return `${formatDecimal(value)}%`;
 }
 
-function formatDraftError(error: DraftError) {
+function formatDraftError(error: DraftError, exactEvidenceLoading: string) {
 	switch (error.kind) {
 		case "incomplete-draft":
 			return { summary: `Complete: ${error.fields.join(", ")}.` };
@@ -1440,6 +1446,6 @@ function formatDraftError(error: DraftError) {
 		case "incomplete-provenance":
 			return { summary: "This Backtest Run has incomplete provenance." };
 		case "source-loading":
-			return { summary: "Loading exact validation evidence…" };
+			return { summary: exactEvidenceLoading };
 	}
 }
