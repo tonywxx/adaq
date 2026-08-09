@@ -1,0 +1,211 @@
+# ADAQ V1 Delivery Roadmap after M8
+
+[简体中文](./v1-roadmap.zh-CN.md)
+
+Status: accepted V1 architecture and dependency-ordered delivery baseline. M1 through M8 are the implemented research foundation; every milestone from M9 through M18 is required before the expanded V1 is declared usable.
+
+This roadmap implements the complete research-to-Paper feedback system. It is not a reduced demonstration loop. Real-money order submission remains a separately qualified post-V1 capability.
+
+## V1 outcome
+
+A V1 user can acquire and inspect crypto, China A-share, and U.S. equity data; produce immutable quality-controlled research evidence; compute Features; research and promote time-series or cross-sectional Factors; train and evaluate Qlib-first Models; build and backtest single-instrument or portfolio Strategies; generate, compile, verify, and import qualified Components; deploy immutable Bundles to supervised Paper Trading Bots; monitor accounts, health, alerts, and research work in a bilingual GUI; and feed realized Paper evidence back into human-reviewed research without mutating a running deployment.
+
+V1 execution uses only:
+
+- OKX Demo Trading for Crypto Spot.
+- Alpaca Paper for U.S. equities.
+- The ADAQ-owned A-share Ordinary Securities Account simulator for China A-shares.
+
+No V1 path accepts a Live endpoint or Real Trading credential.
+
+## Product names and ownership
+
+| Concern | V1 owner | Naming decision |
+| --- | --- | --- |
+| Acquisition, canonicalization, quality, revisions, publication | Host data pipeline | `adaq-data-pipeline`; do not create a narrow `adaq-data-cleaning` product |
+| Technical indicators and arbitrary derived Features | Host Feature Engine | `adaq-feature-engine`; `adaq-indicator-engine` remains a reusable subengine |
+| Factor research | Factor Lab plus Factor Components | One Factor product with Time-Series and Cross-Sectional scopes |
+| Model research | Model Lab | Qlib-first, with ADAQ Native optional; inference deployment remains engine-neutral |
+| Strategy research | Strategy Lab plus Strategy Components | One Strategy product with Single-Instrument and Portfolio scopes |
+| Package generation | Component Generation and Qualification | Factor, Model, and Strategy use the existing SDK/CLI/package trust boundary |
+| Paper accounts and execution | Host Paper Trading Core | `adaq-paper-trading-core` with OKX, Alpaca, and A-share Adapters |
+| Bot evaluation | Supervised child process | One prebuilt `adaq-bot-worker` Sidecar per active Bot; no generated Bot executable |
+| Operations | Host Monitoring Engine and GUI | Tauri/React Operations Dashboard, not a TUI |
+
+ADAQ does not publish a speculative Unified Data API or Unified Trading API in V1. The internal contracts are asset-neutral where evidence proves a common semantic boundary, while provider differences remain explicit in Connectors and Adapters.
+
+## Dependency chain
+
+```mermaid
+flowchart LR
+    M8["M8: Model research foundation"] --> M9["M9: Multi-market data and platform foundation"]
+    M9 --> M10["M10: Feature Engineering"]
+    M10 --> M11["M11: Factor Research"]
+    M11 --> M12["M12: Qlib-first Model Lab"]
+    M12 --> M13["M13: Strategy and Portfolio Backtest"]
+    M13 --> M14["M14: Component Generation and Qualification"]
+    M14 --> M15["M15: Secure Paper Trading"]
+    M15 --> M16["M16: Trading Bot Runtime"]
+    M16 --> M17["M17: Monitoring and Operations Dashboard"]
+    M17 --> M18["M18: Feedback, hardening, and V1 acceptance"]
+    M18 -. "separate post-V1 qualification" .-> LIVE["Real Trading"]
+```
+
+Later implementation may prepare an independent slice in parallel only when its declared dependencies are already stable. A milestone is not complete merely because the next milestone can be prototyped.
+
+## Milestones
+
+### M9 — Multi-market data and platform foundation
+
+Deliver the final V1 data trust boundary for OKX Spot, China A-shares through `akshare-rs`, and U.S. equities through Alpaca Market Data Basic. Add venue-aware Instrument, calendar, and session semantics; the Source → Canonical → Snapshot pipeline; append-only revisions; Data Quality Reports; Point-in-Time Instrument Universes; secure Provider Connection Profiles; `en-US` and `zh-CN` GUI localization; and the basic three-market workspaces.
+
+Completion gate: all three providers produce inspectable Source and Canonical evidence and immutable Snapshots with provider capability, calendar, quality, gap, quarantine, and revision provenance; the GUI can inspect each market in both locales; no credential enters SQLite, logs, Components, or frontend state.
+
+### M10 — Feature Engineering
+
+Deliver `adaq-feature-engine` as the host owner of point-in-time Feature definitions, frozen Feature Plans, exact availability, warmup, missing-input behavior, transformations, and immutable Feature evidence. Reuse `adaq-indicator-engine` for technical indicators while allowing non-indicator Features such as returns, volatility, liquidity, calendar, cross-sectional ranks, and provenance-bound corporate-action transformations.
+
+Completion gate: identical Snapshot, Plan, engine identities, parameters, and seed produce identical Feature evidence across chunking; every value is causal, scope-correct, finite or explicitly unavailable, and no transformation mutates Canonical Market Data.
+
+### M11 — Factor Research and Promotion
+
+Deliver one Factor Lab with explicit Time-Series and Cross-Sectional scopes, point-in-time Universe binding, scope-correct evaluation, neutralization and robustness controls, IC and Rank IC, turnover, decay, stability, regime, and cost-aware diagnostics. Promotion Decisions distinguish Candidate, Rejected, Research Validated, and Component Eligible evidence without calling a high historical score a guarantee.
+
+Completion gate: promoted Factors bind exact Feature, Snapshot, Universe, evaluation protocol, report, and decision evidence and can be selected by Model research; failed or incomplete studies remain inspectable and cannot enter the promoted library.
+
+### M12 — Qlib-first Model Lab
+
+Deliver controlled Model training and fitting with Microsoft Qlib as the primary workflow and ADAQ Native as an optional workflow. Support Single-Instrument and Cross-Sectional Model scopes, immutable Experiments, training and validation windows, Point-in-Time Training Universes, Feature and Factor selection, seeds, environments, artifacts, metrics, diagnostics, and Forecast Signal Datasets.
+
+Qualify three deployment outcomes: portable WASI Model Component, portable ONNX model under a controlled runner, and Local Qlib Paper under a supervised Python sidecar. An artifact that cannot be exported or pass equivalence remains Research Only; an explicitly qualified Local Qlib artifact may run in Paper without credentials or order authority.
+
+Completion gate: an end-to-end Qlib experiment can be reproduced, evaluated out of sample, inspected, and classified into one truthful deployment profile without weakening M8 Forecast Signal contracts.
+
+### M13 — Strategy and Portfolio Backtest
+
+Deliver Single-Instrument and Portfolio Strategy construction over promoted Factors and qualified Model Signals. Freeze the Strategy Target → Host Risk → Approved Target → Execution Plan boundary, capital allocation, position limits, rebalancing, stop rules, costs, liquidity, settlement, calendars, and provider-specific market constraints. Extend immutable Backtest and Validation evidence with portfolio performance, risk, attribution, turnover, capacity, and like-for-like optimization comparisons.
+
+Completion gate: a Strategy cannot emit orders, bypass hard Risk, use unavailable inputs, mix accounts or currencies, or claim a result without exact Snapshot, Feature, Model, Risk, Execution, and evaluation provenance.
+
+### M14 — Component Generation and Qualification
+
+Deliver the user-controlled workflow that converts eligible Factor, Model, and Strategy research objects into SDK projects, builds them, verifies package and runtime conformance, runs numerical or behavioral equivalence against the source research evidence, assigns immutable identity and version, packages `.adaq`, and imports the result into the Component Library.
+
+Local Qlib Paper remains a qualified Deployment Profile rather than a fake portable Component. Marketplace publication is not part of V1; the documented future publishing gates remain separate from local deployment qualification.
+
+Completion gate: no generated package is imported as qualified unless build, conformance, provenance, equivalence, resource, and trust gates pass; failures retain evidence and never overwrite an existing Package identity/version.
+
+### M15 — Secure Paper Trading Accounts and Execution
+
+Deliver `adaq-paper-trading-core`, `adaq-okx-paper`, `adaq-alpaca-paper`, and `adaq-a-share-paper`; Provider Connection tests; account snapshots and reconciliation; capital reservations; host Risk and OMS; provider-normalized order and Fill journals; and the A-share event-driven Fill Engine for an Ordinary Securities Account only.
+
+Create the three independent funding targets: CNY 1,000,000, USD 1,000,000, and USDT 1,000,000. External account snapshots remain authoritative when they differ. No cross-account or cross-currency capital is invented.
+
+Completion gate: each account can reconcile, accept venue-valid Paper orders through Host Risk and OMS, preserve partial Fills and provider evidence, recover from uncertain outcomes, and fail closed without creating a Real order.
+
+### M16 — Trading Bot Runtime
+
+Deliver immutable Bot Deployment Bundles, the Host Bot Supervisor, one signed prebuilt Rust `adaq-bot-worker` Sidecar per active Bot, the separately supervised Local Qlib runner, causal Closed-Bar and scheduled cross-sectional decision clocks, decision deadlines, heartbeats, resource limits, and the explicit fail-closed lifecycle.
+
+Completion gate: only Running may authorize new risk; Workers and Python never receive credentials or order APIs; Pause, Resume, Stop and Keep Position, separately confirmed Stop and Flatten, crash recovery, reconciliation, and Retry produce complete Runtime Attempt evidence with no stale-target replay.
+
+### M17 — Monitoring, Alerts, and Operations Dashboard
+
+Deliver multidimensional Health, append-only Operational Events, typed Alerts with Active/Acknowledged/Resolved lifecycle, debounce and hysteresis, safety actions, Notification Center, Critical banner, OS notifications, Bot/account/research drill-down, and the GUI home Operations Dashboard. Complete global status without summing CNY, USD, and USDT and without letting frontend cache grant trading authority.
+
+Completion gate: data, Worker, Model, account, Risk/OMS, Adapter, local-system, and feedback failures are independently visible and trigger their frozen fail-closed actions; the Dashboard paints immediately, loads cards independently, and works in both V1 locales.
+
+### M18 — Paper feedback, operational hardening, and V1 acceptance
+
+Deliver immutable Paper Feedback Snapshots and Factor, Model, Strategy, and Execution Feedback Reports; sample-sufficiency and realized-horizon gates; Research Review Required Alerts; explicit User Review Decisions; and new-attempt/new-Bundle promotion paths. Add fault injection, restart and reconciliation drills, retention and diagnostics controls, full bilingual user documentation, accessibility review, performance budgets, release packaging, and supported-platform acceptance.
+
+Completion gate: the complete three-market workflow passes automated and reviewed acceptance on supported platforms; fault and recovery evidence is retained; no drift response retrains, switches a challenger, or hot-patches a running Bundle automatically; every V1 security and no-Live invariant is verified.
+
+## Traceability to the requested workflow
+
+| Requested step | V1 delivery |
+| --- | --- |
+| 1. Acquire raw data | M9 Connectors, Source Market Datasets, Provider Capability Snapshots |
+| 2. Clean and preprocess data | M9 lossless Canonicalization, quarantine, gaps, quality reports; M10 research transformations |
+| 3. Compute indicators and Features | M10 `adaq-feature-engine` with `adaq-indicator-engine` as a subengine |
+| 4. Research, evaluate, and save Factors | M11 Factor Lab; M14 Component generation and import |
+| 5. Train and evaluate Models | M12 Qlib-first Model Lab; M14 portable or Local Qlib qualification |
+| 6. Build and backtest Strategies | M13 Strategy/Portfolio Backtest; M14 Component generation and import |
+| 7. Deploy Trading Bots | M16 Supervisor plus per-Bot worker, over M15 Paper accounts |
+| 8. Monitor and alert | M17 Health, events, alerts, safety actions, notifications |
+| 9. Global Dashboard and market views | M9 three-market workspaces; M17 Operations Dashboard |
+| 10. Real Trading | Deliberately post-V1; M18 produces Paper and operational qualification evidence but grants no Live authority |
+| Feedback closure | M18 immutable Paper feedback and human-reviewed new research Attempts |
+
+## M9 executable delivery map
+
+M9 is published as [parent issue #66](https://github.com/tonywxx/adaq/issues/66) with ten independently evidenced child slices:
+
+1. **[M9.1 — GUI localization foundation](https://github.com/tonywxx/adaq/issues/67):** initialize `i18next` and `react-i18next` before first paint; implement System, English (US), and 简体中文 settings, persistence, parity tests, `Intl` formatting, and English fallback.
+2. **[M9.2 — Market identity, Venue time, and calendar contracts](https://github.com/tonywxx/adaq/issues/68):** define asset-neutral Instrument/Venue identity, `Asia/Shanghai`, `America/New_York`, UTC storage, Trading Dates, Sessions, Phases, Calendar Snapshots, Bar alignment, and scheduled-closure versus gap semantics.
+3. **[M9.3 — Provider Connection Profiles and OS secret storage](https://github.com/tonywxx/adaq/issues/69):** implement User/device scoping, Secret References, fixed Paper/Demo endpoints, redaction, rotation/deletion, and read-only Alpaca Paper and OKX Demo Connection Tests.
+4. **[M9.4 — `adaq-data-pipeline` core](https://github.com/tonywxx/adaq/issues/70):** implement immutable Source and Canonical datasets, lossless normalization, quarantine, gaps, quality reports, append-only revisions, content addressing, publication, and existing Snapshot integration.
+5. **[M9.5 — OKX Spot data path](https://github.com/tonywxx/adaq/issues/71):** full recorded Spot Instrument Universe, maximum retrievable one-minute Closed-Bar history, resumable updates, daily/status Instrument Master evidence, deterministic higher intervals, and selected realtime ticker/trade/Level 2 inputs.
+6. **[M9.6 — China A-share data path](https://github.com/tonywxx/adaq/issues/72):** `akshare-rs` connector with actual upstream provenance, Ordinary Equity Instrument Master, unadjusted Bars, corporate actions as separate evidence, China calendar/session rules, and evidence-graded provider coverage.
+7. **[M9.7 — U.S. equity data path](https://github.com/tonywxx/adaq/issues/73):** Alpaca Market Data Basic connector with authenticated access, IEX-only realtime disclosure, history/delay/rate/stream limits, U.S. calendar/session rules, and optional `yfinance-rs` evidence that never silently repairs Canonical data.
+8. **[M9.8 — Multi-market quality and Snapshot publication](https://github.com/tonywxx/adaq/issues/74):** Point-in-Time Universes, Observed/Reconstructed/Unknown evidence, deterministic higher-interval derivation, revisions, deletion locks, quality inspection, and research-compatible immutable Snapshots across all three markets.
+9. **[M9.9 — Unified Markets GUI](https://github.com/tonywxx/adaq/issues/75):** move the current Crypto dashboard to `/markets/crypto`; add `/markets`, `/markets/a-shares`, and `/markets/us-equities`; preserve one asset-neutral per-user Watchlist; show session, ticker, Bid/Ask, volume, Kline, provider, freshness, quality, rule summary, and workflow links.
+10. **[M9.10 — Bilingual, cross-platform acceptance](https://github.com/tonywxx/adaq/issues/76):** publish English and Simplified Chinese setup/manual acceptance, run automated gates, retain provider-fixture and optional real-credential evidence, verify secret redaction, and prove no Paper connection submits an order during M9.
+
+Dependency frontier:
+
+```mermaid
+flowchart TD
+    A["M9.1 Localization"]
+    B["M9.2 Market identity and calendars"]
+    C["M9.3 Secure connections"]
+    B --> D["M9.4 Data pipeline core"]
+    D --> E["M9.5 OKX"]
+    D --> F["M9.6 A-shares"]
+    C --> G["M9.7 U.S. equities"]
+    D --> G
+    E --> H["M9.8 Quality and Snapshots"]
+    F --> H
+    G --> H
+    A --> I["M9.9 Markets GUI"]
+    H --> I
+    A --> J["M9.10 Acceptance"]
+    B --> J
+    C --> J
+    D --> J
+    E --> J
+    F --> J
+    G --> J
+    H --> J
+    I --> J
+```
+
+M9 stops at trustworthy multi-market data, secure non-ordering provider connections, localization, and market inspection. Feature computation starts in M10; Factor, Model, Strategy, Paper order submission, Bot execution, Monitoring, and feedback remain required later V1 milestones rather than M9 placeholders.
+
+The initial executable frontier is #67, #68, and #69. They have no open blockers and may proceed independently; all later children carry native GitHub `blocked_by` edges matching the diagram.
+
+## Roadmap-wide completion rules
+
+Every milestone and child issue must:
+
+- Map each Acceptance Criterion to independent implementation and verification evidence.
+- Keep immutable identities, User scoping, exact Decimals, availability, provider capability, and provenance inspectable.
+- Paint new GUI routes immediately and keep pending state in the control that owns the work.
+- Retain failed, cancelled, late, degraded, and recovery evidence instead of presenting only successes.
+- Add English (US) and Simplified Chinese user documentation and accessible GUI copy for user-facing behavior.
+- Pass focused tests first, then the applicable Rust workspace, frontend Jest, production build, formatting, secret-scan, and supported-platform CI gates.
+- Preserve unrelated user changes and never close a parent issue from a child unless explicitly authorized.
+
+The final V1 manual acceptance must exercise three reference journeys—OKX Crypto Paper, A-share local Paper, and Alpaca U.S. Equity Paper—and failure journeys for missing data, provider disconnect, clock skew, Worker crash, uncertain order state, credential rotation, and restart reconciliation.
+
+## Explicit post-V1 work
+
+- Real Trading endpoints, credentials, and order authority.
+- A public Unified Data API or Unified Trading API.
+- A-share Credit Accounts, financing, securities lending, short selling, or margin.
+- Cross-account or cross-currency Global Portfolio and converted total equity.
+- Historical full-depth order-book replay, HFT, tick-driven Strategies, derivatives, and advanced market terminals.
+- Marketplace publishing infrastructure, payments, licensing enforcement, and managed Qlib hosting.
+- Cloud or unattended Bot control, remote notification channels, and remote credential synchronization.
+
+These exclusions do not remove any part of the accepted Paper-trading V1 workflow.

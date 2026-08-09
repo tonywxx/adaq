@@ -1,0 +1,5 @@
+# Use full-universe minute bars and selected realtime microstructure
+
+_ADR 0030 limits this decision to the OKX Spot data slice; it no longer defines the complete V1 market scope._
+
+AdaQ V1 records immutable OKX Spot Instrument Master Snapshots, derives Point-in-Time Instrument Universes from evidence available at each observation time, and retains Source and Canonical one-minute Closed Bars for the full recorded Universe. Higher Bar Intervals are deterministic provenance-bound derived data rather than approximate joins. Instruments used by active research or Bots additionally receive realtime Ticker, Market Trade, and Level 2 Order Book data; Trades have a bounded configurable retention period, while V1 consumes Level 2 data for current execution and monitoring without offering historical order-book replay. Paper account balances, orders, and fills belong to the separate execution journal, and fundamentals and alternative data remain outside V1. This preserves enough history for time-series and cross-sectional research plus current microstructure for Paper Trading without turning the local desktop product into a full tick-and-book archive.
