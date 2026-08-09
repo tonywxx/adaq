@@ -42,6 +42,14 @@ fn database_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("adaq.db")
 }
 
+fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|value| i64::try_from(value.as_millis()).ok())
+        .unwrap_or(0)
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -299,7 +307,7 @@ async fn market_data_pipeline_publish(
     let (task_id, user_id, acquisition, canonicalization) = request.into_parts()?;
     app.state::<Arc<LocalResearchState>>()
         .pipeline
-        .begin_attempt(&task_id)
+        .begin_attempt(&task_id, &user_id)
         .map_err(string)?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
@@ -528,6 +536,216 @@ async fn okx_stream_health(
         app.state::<Arc<LocalResearchState>>()
             .okx
             .stream_health(&request.user_id)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn ashare_instrument_master_acquire(
+    request: market_data_pipeline::AshareInstrumentMasterRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::a_share::AshareInstrumentMasterSnapshotDto, String> {
+    validate_user(&request.user_id)?;
+    let operation_id = request.operation_id();
+    let user_id = request.user_id.clone();
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let cancellation = state
+        .ashare
+        .begin_acquisition(&user_id, &operation_id)
+        .map_err(string)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let connector_cancellation = cancellation.clone();
+        let result = tauri::async_runtime::block_on(
+            state
+                .ashare
+                .acquire_instrument_master_with_cancel(&user_id, move || {
+                    connector_cancellation.is_cancelled()
+                }),
+        )
+        .map_err(string);
+        let finish = state.ashare.finish_acquisition(&user_id, &operation_id);
+        match (result, finish) {
+            (Ok(snapshot), Ok(())) => Ok(snapshot.gui_dto()),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(string(error)),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn ashare_instrument_master_list(
+    request: market_data_pipeline::UserRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<adaq_data_pipeline::a_share::AshareInstrumentMasterSnapshotDto>, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .ashare
+            .list_instrument_master_snapshots(&request.user_id)
+            .map(|snapshots| {
+                snapshots
+                    .iter()
+                    .map(|snapshot| snapshot.gui_dto())
+                    .collect()
+            })
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn ashare_universe(
+    request: market_data_pipeline::UniverseRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::a_share::AsharePointInTimeUniverse, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .ashare
+            .point_in_time_membership(&request.user_id, request.as_of_ms)
+            .map_err(string)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn ashare_calendar_acquire(
+    request: market_data_pipeline::AshareCalendarRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<adaq_data_pipeline::a_share::AshareCalendarSnapshotDto>, String> {
+    validate_user(&request.user_id)?;
+    let range = request.range();
+    let operation_id = request.operation_id();
+    let user_id = request.user_id.clone();
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let cancellation = state
+        .ashare
+        .begin_acquisition(&user_id, &operation_id)
+        .map_err(string)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let connector_cancellation = cancellation.clone();
+        let result = tauri::async_runtime::block_on(state.ashare.acquire_calendar_with_cancel(
+            &user_id,
+            range,
+            move || connector_cancellation.is_cancelled(),
+        ))
+        .map_err(string);
+        let finish = state.ashare.finish_acquisition(&user_id, &operation_id);
+        match (result, finish) {
+            (Ok(snapshots), Ok(())) => Ok(snapshots
+                .iter()
+                .map(|snapshot| snapshot.gui_dto())
+                .collect()),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(string(error)),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn ashare_corporate_actions_acquire(
+    request: market_data_pipeline::AshareCorporateActionRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::a_share::AshareCorporateActionDatasetDto, String> {
+    validate_user(&request.user_id)?;
+    let operation_id = request.operation_id();
+    let user_id = request.user_id.clone();
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let cancellation = state
+        .ashare
+        .begin_acquisition(&user_id, &operation_id)
+        .map_err(string)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let connector_cancellation = cancellation.clone();
+        let result =
+            tauri::async_runtime::block_on(state.ashare.acquire_corporate_actions_with_cancel(
+                &user_id,
+                request.instrument,
+                move || connector_cancellation.is_cancelled(),
+            ))
+            .map_err(string);
+        let finish = state.ashare.finish_acquisition(&user_id, &operation_id);
+        match (result, finish) {
+            (Ok(dataset), Ok(())) => Ok(dataset.gui_dto()),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(string(error)),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn ashare_backfill(
+    request: adaq_data_pipeline::a_share::AshareBackfillRequest,
+    on_event: Channel<adaq_data_pipeline::a_share::AshareBackfillEvent>,
+    app: tauri::AppHandle,
+) -> Result<Option<market_data_pipeline::PublicationView>, String> {
+    validate_user(&request.user_id)?;
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let cancellation = state
+        .ashare
+        .begin_backfill(&request.user_id, &request.task_id)
+        .map_err(string)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = tauri::async_runtime::block_on(state.ashare.backfill(
+            &request,
+            cancellation,
+            |event| {
+                let _ = on_event.send(event);
+            },
+        ));
+        match result {
+            Ok(publication) => Ok(publication.map(market_data_pipeline::PublicationView::from)),
+            Err(error) => Err(string(error)),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn ashare_backfill_cancel(
+    request: market_data_pipeline::BackfillCancelRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    validate_user(&request.user_id)?;
+    state
+        .ashare
+        .cancel_backfill(&request.user_id, &request.task_id)
+        .map_err(string)
+}
+
+#[tauri::command]
+fn ashare_acquisition_cancel(
+    request: market_data_pipeline::AshareAcquisitionCancelRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    validate_user(&request.user_id)?;
+    state
+        .ashare
+        .cancel_acquisition(&request.user_id, &request.operation_id)
+        .map_err(string)
+}
+
+#[tauri::command]
+async fn ashare_workspace(
+    request: market_data_pipeline::UserEvidenceRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_data_pipeline::a_share::AshareMarketWorkspaceDto, String> {
+    validate_user(&request.user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .ashare
+            .workspace_dto_for_user(&request.user_id, &request.evidence_id, unix_now_ms())
             .map_err(string)
     })
     .await
@@ -1282,6 +1500,15 @@ pub fn run() {
             okx_backfill_cancel,
             okx_acquisition_status,
             okx_stream_health,
+            ashare_instrument_master_acquire,
+            ashare_instrument_master_list,
+            ashare_universe,
+            ashare_calendar_acquire,
+            ashare_corporate_actions_acquire,
+            ashare_backfill,
+            ashare_backfill_cancel,
+            ashare_acquisition_cancel,
+            ashare_workspace,
             backtest_preflight,
             backtest_run,
             backtest_list,

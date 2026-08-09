@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use adaq_backtest_core::MarketDataSnapshot;
-use adaq_data_core::BarInterval;
 use adaq_data_core::market::InstrumentId;
+use adaq_data_core::{BarInterval, HistoricalBarRange};
 use adaq_data_pipeline::{
     AcquisitionDiagnostics, CanonicalWarning, CanonicalizationRequest, DataQualityReport,
     DataQualityState, PipelinePublication, ProviderCapabilitySnapshot, QuarantineReason,
@@ -43,6 +43,8 @@ pub(crate) struct AcquisitionRequest {
     pub connector_version: String,
     #[serde(default)]
     pub request_parameters: BTreeMap<String, String>,
+    #[serde(default)]
+    pub response_sha256s: Vec<String>,
     pub retrieved_at_ms: i64,
     pub capability_snapshot: ProviderCapabilitySnapshot,
     #[serde(default)]
@@ -64,8 +66,11 @@ impl AcquisitionRequest {
             connector_version: self.connector_version,
             request_parameters: serde_json::Value::Object(request_parameters),
             retrieved_at_ms: self.retrieved_at_ms,
+            response_sha256s: self.response_sha256s,
+            acquisition_content_sha256: None,
             capability_snapshot: self.capability_snapshot,
             acquisition_diagnostics: self.acquisition_diagnostics,
+            price_basis: adaq_data_core::market::PriceBasis::Unadjusted,
             records: self
                 .records
                 .into_iter()
@@ -126,6 +131,77 @@ pub(crate) struct UserRequest {
 pub(crate) struct UniverseRequest {
     pub user_id: String,
     pub as_of_ms: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AshareInstrumentMasterRequest {
+    pub user_id: String,
+    #[serde(default)]
+    pub operation_id: String,
+}
+
+impl AshareInstrumentMasterRequest {
+    pub(crate) fn operation_id(&self) -> String {
+        if self.operation_id.trim().is_empty() {
+            "instrument-master".into()
+        } else {
+            self.operation_id.clone()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AshareCalendarRequest {
+    pub user_id: String,
+    pub start_time_ms: i64,
+    pub end_time_ms: i64,
+    #[serde(default)]
+    pub operation_id: String,
+}
+
+impl AshareCalendarRequest {
+    pub(crate) const fn range(&self) -> HistoricalBarRange {
+        HistoricalBarRange {
+            start_time_ms: self.start_time_ms,
+            end_time_ms: self.end_time_ms,
+        }
+    }
+
+    pub(crate) fn operation_id(&self) -> String {
+        if self.operation_id.trim().is_empty() {
+            "calendar".into()
+        } else {
+            self.operation_id.clone()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AshareCorporateActionRequest {
+    pub user_id: String,
+    pub instrument: InstrumentId,
+    #[serde(default)]
+    pub operation_id: String,
+}
+
+impl AshareCorporateActionRequest {
+    pub(crate) fn operation_id(&self) -> String {
+        if self.operation_id.trim().is_empty() {
+            format!("corporate-actions-{}", self.instrument.code)
+        } else {
+            self.operation_id.clone()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AshareAcquisitionCancelRequest {
+    pub user_id: String,
+    pub operation_id: String,
 }
 
 #[derive(Debug, Deserialize)]

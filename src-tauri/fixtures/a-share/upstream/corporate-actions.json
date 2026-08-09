@@ -1,0 +1,19 @@
+{
+  "success": true,
+  "result": {
+    "pages": 1,
+    "data": [
+      {
+        "SECURITY_CODE": "600000",
+        "SECURITY_NAME_ABBR": "fixture ordinary SSE",
+        "PRETAX_BONUS_RMB": 0.25,
+        "BONUS_IT_RATIO": 0.0,
+        "TRANSFER_IT_RATIO": 0.0,
+        "PLAN_NOTICE_DATE": "2023-12-20",
+        "EQUITY_RECORD_DATE": "2024-01-01",
+        "EX_DIVIDEND_DATE": "2024-01-02",
+        "NOTICE_DATE": "2023-12-21"
+      }
+    ]
+  }
+}

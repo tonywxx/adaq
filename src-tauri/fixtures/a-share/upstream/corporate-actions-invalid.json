@@ -1,0 +1,16 @@
+{
+  "success": true,
+  "result": {
+    "pages": 1,
+    "data": [
+      {
+        "SECURITY_CODE": "600000",
+        "PRETAX_BONUS_RMB": "not-a-decimal",
+        "BONUS_IT_RATIO": 0.0,
+        "TRANSFER_IT_RATIO": 0.0,
+        "NOTICE_DATE": "2023-12-21",
+        "EX_DIVIDEND_DATE": "2024-01-02"
+      }
+    ]
+  }
+}

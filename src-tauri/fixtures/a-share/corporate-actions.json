@@ -1,0 +1,24 @@
+[
+  {
+    "instrument": {
+      "venue": {
+        "id": "sse",
+        "kind": "chinaAShareEquity",
+        "timeZone": "Asia/Shanghai"
+      },
+      "code": "600000"
+    },
+    "providerSymbol": "sh600000",
+    "kind": "cashDividend",
+    "effectiveAtMs": 1704159000000,
+    "announcedAtMs": 1704072600000,
+    "availableAtMs": 1704159000000,
+    "cashPerShare": "0.25",
+    "sharesPerShare": null,
+    "rawPayload": {
+      "securityCode": "600000",
+      "pretaxBonusRmb": "0.25",
+      "exDividendDate": "2024-01-02"
+    }
+  }
+]

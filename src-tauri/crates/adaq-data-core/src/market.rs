@@ -25,6 +25,17 @@ pub enum VenueKind {
     UsEquity,
 }
 
+/// The corporate-action treatment of an equity price series.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PriceBasis {
+    #[default]
+    Unadjusted,
+    ForwardAdjusted,
+    BackwardAdjusted,
+    Unknown,
+}
+
 impl VenueKind {
     /// The V1 IANA time zone mandated for this Venue class.
     pub const fn time_zone_name(self) -> &'static str {
@@ -300,6 +311,7 @@ pub enum DayKind {
     Holiday,
     Weekend,
     SpecialClosure,
+    Unavailable,
 }
 
 /// Evidence about one Venue-local calendar date in a Trading Calendar
@@ -446,8 +458,9 @@ impl TradingCalendarSnapshot {
     }
 
     /// Whether one Venue-local date is a Trading Date. Weekends are
-    /// structurally closed; holidays and special closures require recorded
-    /// DayEvidence. Unrecorded weekdays follow the default session template.
+    /// structurally closed; holidays, special closures, and unavailable
+    /// provider coverage require recorded DayEvidence. Unrecorded weekdays
+    /// follow the default session template.
     pub fn is_trading_day(&self, date: TradingDate) -> Result<bool, CalendarError> {
         let weekday = date.to_naive_date()?.weekday();
         if matches!(weekday, Weekday::Sat | Weekday::Sun) {
@@ -455,7 +468,7 @@ impl TradingCalendarSnapshot {
         }
         Ok(self
             .day(date)
-            .map(|day| day.day_kind == DayKind::TradingDay)
+            .map(|day| matches!(day.day_kind, DayKind::TradingDay))
             .unwrap_or(true))
     }
 
@@ -523,12 +536,20 @@ impl TradingCalendarSnapshot {
     /// Whether a UTC instant is a scheduled non-trading period under this
     /// calendar: a holiday, weekend, special closure, scheduled break,
     /// early close, maintenance window, or outside every Trading Session.
-    /// Missing Bars in such a period are calendar state, never Bar Gaps.
+    /// Missing Bars in such a period are calendar state, never Bar Gaps. An
+    /// `Unavailable` day is deliberately not treated as scheduled closure so
+    /// callers can preserve the provider coverage limitation as a gap.
     pub fn is_scheduled_non_trading(&self, utc_ms: i64) -> Result<bool, CalendarError> {
         if !self.contains(utc_ms) {
             return Err(CalendarError::OutsideCalendarRange(utc_ms));
         }
         let date = self.trading_date_of(utc_ms)?;
+        if self
+            .day(date)
+            .is_some_and(|day| day.day_kind == DayKind::Unavailable)
+        {
+            return Ok(false);
+        }
         if !self.is_trading_day(date)? {
             return Ok(true);
         }
@@ -591,11 +612,14 @@ impl TradingCalendarSnapshot {
     }
 
     /// The UTC instant at which the daily (or longer) Bar for one Trading
-    /// Date opens: the first scheduled session start on that trading day.
+    /// Date opens: the first continuous session start on that trading day.
+    /// Auction and pre-open windows provide session evidence but do not move
+    /// the daily OHLC identity away from the regular trading open.
     pub fn daily_boundary_open_ms(&self, date: TradingDate) -> Result<i64, CalendarError> {
         let windows = self.session_windows_utc(date)?;
         windows
-            .first()
+            .iter()
+            .find(|window| window.phase == SessionPhase::Continuous)
             .map(|window| window.start_ms)
             .ok_or(CalendarError::InvalidCalendar(
                 "daily boundary requested for a non-trading day",

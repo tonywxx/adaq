@@ -21,8 +21,11 @@ use adaq_backtest_core::{MarketDataSnapshot, SnapshotStore};
 use adaq_component_tooling::{
     ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotSource,
 };
-use adaq_data_core::{OhlcvBar, OkxClient};
-use adaq_data_pipeline::{DataPipeline, DataQualityReport, okx::OkxSpotDataPath};
+use adaq_data_core::{OhlcvBar, OkxClient, a_share::AshareClient};
+use adaq_data_pipeline::{
+    CancellationToken, DataPipeline, DataQualityReport, a_share::AshareDataPath,
+    okx::OkxSpotDataPath,
+};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -44,6 +47,7 @@ pub struct LocalResearchState {
     pub(crate) database: Arc<Mutex<Connection>>,
     pub(crate) pipeline: DataPipeline,
     pub(crate) okx: OkxSpotDataPath,
+    pub(crate) ashare: AshareDataPath,
     pub(crate) snapshots: MarketDataSnapshots,
     pub(crate) components: ComponentLibrary,
     source: Arc<LocalGenerationSource>,
@@ -363,6 +367,8 @@ impl LocalResearchState {
         let pipeline = DataPipeline::open(root.join("market-data-pipeline"), database.clone())
             .map_err(string)?;
         let okx = OkxSpotDataPath::open(pipeline.clone(), OkxClient::default()).map_err(string)?;
+        let ashare =
+            AshareDataPath::open(pipeline.clone(), AshareClient::default()).map_err(string)?;
         let connections = crate::connections::ConnectionManager::open_production(database.clone())?;
         let snapshot_source = Arc::new(LocalSnapshotSource::new(
             database.clone(),
@@ -406,6 +412,7 @@ impl LocalResearchState {
                 database,
                 pipeline,
                 okx,
+                ashare,
                 snapshots,
                 components,
                 source,
@@ -474,6 +481,10 @@ impl LocalResearchState {
         } else {
             None
         };
+        let resets_ashare = matches!(
+            kind,
+            LocalDataResetKind::MarketData | LocalDataResetKind::All
+        );
         // Query the Validation module before locking the database mutex so
         // the hook never re-enters a held lock. The Snapshot orphan query
         // and the Backtest and Component hooks run inside the reset flows
@@ -484,19 +495,66 @@ impl LocalResearchState {
         } else {
             0
         };
+        if resets_ashare {
+            if let Err(error) = self.pipeline.begin_user_reset(user_id) {
+                return Err(string(error));
+            }
+        }
         let pipeline_snapshot_blocker_count = if matches!(
             kind,
             LocalDataResetKind::MarketData | LocalDataResetKind::All
         ) {
-            self.pipeline
-                .snapshot_deletion_blockers_for_user(user_id)
-                .map_err(string)?
-                .len() as u64
+            match self.pipeline.snapshot_deletion_blockers_for_user(user_id) {
+                Ok(blockers) => blockers.len() as u64,
+                Err(error) => {
+                    if resets_ashare {
+                        let _ = self.pipeline.finish_user_reset(user_id);
+                    }
+                    return Err(string(error));
+                }
+            }
         } else {
             0
         };
-        let mut database = self.database.lock().map_err(string)?;
-        match kind {
+        if resets_ashare {
+            if let Err(error) = self.ashare.begin_user_reset(user_id) {
+                let _ = self.pipeline.finish_user_reset(user_id);
+                return Err(string(error));
+            }
+        }
+        let mut database = match self.database.lock() {
+            Ok(database) => database,
+            Err(error) => {
+                if resets_ashare {
+                    let _ = self.ashare.finish_user_reset(user_id);
+                    let _ = self.pipeline.finish_user_reset(user_id);
+                }
+                return Err(string(error));
+            }
+        };
+        let paths = if resets_ashare {
+            self.pipeline
+                .reset_paths_for_user_with_connection(&database, user_id)
+                .and_then(|pipeline_paths| {
+                    self.ashare
+                        .reset_paths_for_user_with_connection(&database, user_id)
+                        .map(|ashare_paths| (pipeline_paths, ashare_paths))
+                })
+                .map_err(string)
+        } else {
+            Ok((Vec::new(), Vec::new()))
+        };
+        let (pipeline_paths, ashare_paths) = match paths {
+            Ok(paths) => paths,
+            Err(error) => {
+                if resets_ashare {
+                    let _ = self.ashare.finish_user_reset(user_id);
+                    let _ = self.pipeline.finish_user_reset(user_id);
+                }
+                return Err(error);
+            }
+        };
+        let result = match kind {
             LocalDataResetKind::Watchlist => reset_watchlist(&mut database, user_id),
             LocalDataResetKind::Components => {
                 self.components.reset_for_user(&mut database, user_id)
@@ -509,6 +567,10 @@ impl LocalResearchState {
                 pipeline_snapshot_blocker_count,
                 &self.snapshots,
                 &self.backtests,
+                &self.ashare,
+                &self.pipeline,
+                pipeline_paths.clone(),
+                ashare_paths.clone(),
             ),
             LocalDataResetKind::All => reset_all(
                 &mut database,
@@ -520,7 +582,23 @@ impl LocalResearchState {
                 &self.snapshots,
                 &self.backtests,
                 pipeline_snapshot_blocker_count,
+                &self.ashare,
+                &self.pipeline,
+                pipeline_paths,
+                ashare_paths,
             ),
+        };
+        if resets_ashare {
+            let finish = self.ashare.finish_user_reset(user_id).map_err(string);
+            let pipeline_finish = self.pipeline.finish_user_reset(user_id).map_err(string);
+            match (result, finish, pipeline_finish) {
+                (Err(error), _, _) => Err(error),
+                (Ok(()), Err(error), _) => Err(error),
+                (Ok(()), Ok(()), Err(error)) => Err(error),
+                (Ok(()), Ok(()), Ok(())) => Ok(()),
+            }
+        } else {
+            result
         }
     }
 
@@ -562,10 +640,18 @@ impl LocalResearchState {
         user_id: &str,
         canonical_id: &str,
     ) -> Result<(MarketDataSnapshot, DataQualityReport), String> {
+        let cancellation = CancellationToken::new();
+        let _operation = self
+            .pipeline
+            .begin_user_operation(user_id, format!("snapshot:{canonical_id}"), &cancellation)
+            .map_err(string)?;
         let canonical = self
             .pipeline
             .canonical_for_user(user_id, canonical_id)
             .map_err(string)?;
+        if cancellation.is_cancelled() {
+            return Err("pipeline snapshot publication was cancelled".into());
+        }
         let quality = self
             .pipeline
             .quality_for_user(user_id, &canonical.quality_report_id)
@@ -573,9 +659,46 @@ impl LocalResearchState {
         let snapshot = self
             .snapshots
             .persist_for_user(user_id, &canonical.to_bar_series())?;
-        self.pipeline
-            .record_snapshot_reference(user_id, canonical_id, &snapshot.snapshot_id)
-            .map_err(string)?;
+        if cancellation.is_cancelled() {
+            self.snapshots
+                .revoke_for_user(user_id, &snapshot.snapshot_id)?;
+            return Err("pipeline snapshot publication was cancelled".into());
+        }
+        if let Err(error) =
+            self.pipeline
+                .record_snapshot_reference(user_id, canonical_id, &snapshot.snapshot_id)
+        {
+            let _ = self.pipeline.remove_snapshot_reference(
+                user_id,
+                canonical_id,
+                &snapshot.snapshot_id,
+            );
+            let cleanup = self
+                .snapshots
+                .revoke_for_user(user_id, &snapshot.snapshot_id);
+            return match cleanup {
+                Ok(()) => Err(string(error)),
+                Err(cleanup_error) => Err(format!(
+                    "{error}; failed to clean up persisted snapshot: {cleanup_error}"
+                )),
+            };
+        }
+        if cancellation.is_cancelled() {
+            let reference_cleanup = self.pipeline.remove_snapshot_reference(
+                user_id,
+                canonical_id,
+                &snapshot.snapshot_id,
+            );
+            let snapshot_cleanup = self
+                .snapshots
+                .revoke_for_user(user_id, &snapshot.snapshot_id);
+            return match (reference_cleanup, snapshot_cleanup) {
+                (Ok(()), Ok(())) => Err("pipeline snapshot publication was cancelled".into()),
+                (reference, snapshot) => Err(format!(
+                    "pipeline snapshot publication was cancelled; cleanup failed: reference={reference:?}, snapshot={snapshot:?}"
+                )),
+            };
+        }
         Ok((snapshot, quality))
     }
 
@@ -723,6 +846,10 @@ fn reset_market_data(
     pipeline_snapshot_blocker_count: u64,
     snapshots: &MarketDataSnapshots,
     backtests: &Backtests,
+    ashare: &AshareDataPath,
+    pipeline: &DataPipeline,
+    pipeline_paths: Vec<PathBuf>,
+    ashare_paths: Vec<PathBuf>,
 ) -> Result<(), String> {
     let blocking_datasets: i64 = database
         .query_row(
@@ -740,10 +867,23 @@ fn reset_market_data(
             "Market Data reset is blocked by {blocking} immutable research record(s)"
         ));
     }
-    let staged = stage_files(snapshots.orphaned_parquet_paths(database, user_id)?, root)?;
+    let staged = stage_files(
+        snapshots
+            .orphaned_parquet_paths(database, user_id)?
+            .into_iter()
+            .chain(pipeline_paths)
+            .chain(ashare_paths),
+        root,
+    )?;
     let result = (|| {
         let transaction = database.transaction().map_err(string)?;
         snapshots.reset_for_user(&transaction, user_id)?;
+        ashare
+            .reset_user_rows(&transaction, user_id)
+            .map_err(string)?;
+        pipeline
+            .reset_user_rows(&transaction, user_id)
+            .map_err(string)?;
         transaction.commit().map_err(string)
     })();
     finish_staged_files(staged, result)
@@ -759,6 +899,10 @@ fn reset_all(
     snapshots: &MarketDataSnapshots,
     backtests: &Backtests,
     pipeline_snapshot_blocker_count: u64,
+    ashare: &AshareDataPath,
+    pipeline: &DataPipeline,
+    pipeline_paths: Vec<PathBuf>,
+    ashare_paths: Vec<PathBuf>,
 ) -> Result<(), String> {
     // The reset User's Runs are deleted inside the transaction below, so
     // only other Users' Runs keep locking Component content; the Component
@@ -780,7 +924,9 @@ fn reset_all(
         component_paths
             .into_iter()
             .chain(snapshots.orphaned_parquet_paths(database, user_id)?)
-            .chain(dataset_paths.into_iter().map(PathBuf::from)),
+            .chain(dataset_paths.into_iter().map(PathBuf::from))
+            .chain(pipeline_paths)
+            .chain(ashare_paths),
         root,
     )?;
     let result = (|| {
@@ -804,6 +950,12 @@ fn reset_all(
         transaction.execute("DELETE FROM signal_dataset_content WHERE NOT EXISTS(SELECT 1 FROM signal_dataset_access a WHERE a.dataset_id = signal_dataset_content.dataset_id)", []).map_err(string)?;
         components.reset_access_for_user(&transaction, user_id)?;
         snapshots.reset_for_user(&transaction, user_id)?;
+        ashare
+            .reset_user_rows(&transaction, user_id)
+            .map_err(string)?;
+        pipeline
+            .reset_user_rows(&transaction, user_id)
+            .map_err(string)?;
         components.delete_orphan_content(&transaction, Some(user_id))?;
         transaction
             .execute(

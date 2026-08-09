@@ -648,6 +648,8 @@ impl OkxSpotDataPath {
                         .map(|snapshot| snapshot.snapshot_id.as_str()),
                 )),
             retrieved_at_ms: rest.retrieved_at_ms,
+            response_sha256s: Vec::new(),
+            acquisition_content_sha256: None,
             capability_snapshot: capability_snapshot(rest.retrieved_at_ms, None),
             acquisition_diagnostics: AcquisitionDiagnostics {
                 request_count: rest.diagnostics.request_count,
@@ -663,6 +665,7 @@ impl OkxSpotDataPath {
                     }
                 )],
             },
+            price_basis: adaq_data_core::market::PriceBasis::Unadjusted,
             records,
         };
         let mut canonicalization = CanonicalizationRequest::new(
@@ -1164,6 +1167,8 @@ impl OkxSpotDataPath {
                 Some(universe_snapshot_id),
             ),
             retrieved_at_ms,
+            response_sha256s: Vec::new(),
+            acquisition_content_sha256: None,
             capability_snapshot: capability_snapshot(
                 retrieved_at_ms,
                 (!acquisition.series.gaps.is_empty()).then_some("provider gap"),
@@ -1174,6 +1179,7 @@ impl OkxSpotDataPath {
                 response_statuses: acquisition.diagnostics.response_statuses,
                 notes,
             },
+            price_basis: adaq_data_core::market::PriceBasis::Unadjusted,
             records,
         };
         let mut canonicalization = CanonicalizationRequest::new(
@@ -1697,8 +1703,10 @@ fn capability_snapshot(
         record_types: vec!["instrument-master".into(), "closed-bar@1m".into()],
         history_start_ms: None,
         delayed: false,
+        delayed_known: true,
         delay_ms: None,
         rate_limit: Some("bounded REST retries with client rate gate".into()),
+        rate_limit_known: true,
         streaming_symbol_limit: Some(adaq_data_core::OKX_MAX_STREAM_SYMBOLS as u32),
         limitations: limitation
             .map(|value| vec![value.into()])

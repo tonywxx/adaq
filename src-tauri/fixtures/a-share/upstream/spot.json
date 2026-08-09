@@ -1,0 +1,18 @@
+[
+  {
+    "symbol": "sh600000",
+    "code": "600000",
+    "name": "fixture ordinary SSE",
+    "trade": "10.25",
+    "volume": "100",
+    "amount": "1025.00"
+  },
+  {
+    "symbol": "sz000001",
+    "code": "000001",
+    "name": "fixture suspended SZSE",
+    "trade": "0",
+    "volume": "0",
+    "amount": "0"
+  }
+]

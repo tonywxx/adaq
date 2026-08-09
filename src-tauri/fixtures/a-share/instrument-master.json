@@ -1,0 +1,31 @@
+[
+  {
+    "instrument": {
+      "venue": {
+        "id": "sse",
+        "kind": "chinaAShareEquity",
+        "timeZone": "Asia/Shanghai"
+      },
+      "code": "600000"
+    },
+    "providerSymbol": "sh600000",
+    "name": "fixture ordinary share",
+    "status": "live",
+    "listingTimeMs": null,
+    "continuousTradingTimeMs": null,
+    "mapping": {
+      "instrument": {
+        "venue": {
+          "id": "sse",
+          "kind": "chinaAShareEquity",
+          "timeZone": "Asia/Shanghai"
+        },
+        "code": "600000"
+      },
+      "provider": "akshare-rs",
+      "providerSymbol": "sh600000",
+      "connectorVersion": "adaq-data-core-akshare-v1",
+      "capturedAtMs": 1704159000000
+    }
+  }
+]

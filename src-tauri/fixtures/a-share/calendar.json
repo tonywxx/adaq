@@ -1,0 +1,18 @@
+{
+  "venue": "sse",
+  "timeZone": "Asia/Shanghai",
+  "sessions": [
+    { "phase": "continuous", "start": "09:30", "end": "11:30" },
+    { "phase": "continuous", "start": "13:00", "end": "15:00" }
+  ],
+  "scheduledClosures": [
+    {
+      "kind": "maintenance",
+      "start": "11:30",
+      "end": "13:00",
+      "reason": "scheduled A-share midday break"
+    }
+  ],
+  "openDates": ["2024-01-02"],
+  "closedDates": ["2024-01-01"]
+}

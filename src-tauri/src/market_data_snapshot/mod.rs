@@ -25,7 +25,7 @@ use std::{
 
 use adaq_backtest_core::{MarketDataSnapshot, SnapshotStore};
 use adaq_data_core::{BarSeries, HistoricalBarRange, OhlcvBar, OkxClient};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
 use crate::user::validate_user;
@@ -354,6 +354,52 @@ impl MarketDataSnapshots {
             )
             .map_err(string)?;
         Ok(snapshot)
+    }
+
+    pub(crate) fn revoke_for_user(&self, user_id: &str, snapshot_id: &str) -> Result<(), String> {
+        validate_user(user_id)?;
+        let database = self.0.source.database()?;
+        let parquet_path = database
+            .query_row(
+                "SELECT metadata_json FROM market_data_snapshots
+                 WHERE snapshot_id = ?1",
+                [snapshot_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(string)?
+            .and_then(|json| serde_json::from_str::<MarketDataSnapshot>(&json).ok())
+            .map(|snapshot| snapshot.parquet_path);
+        let transaction = database.unchecked_transaction().map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM market_data_snapshot_access
+                 WHERE user_id = ?1 AND snapshot_id = ?2",
+                params![user_id, snapshot_id],
+            )
+            .map_err(string)?;
+        let deleted = transaction
+            .execute(
+                "DELETE FROM market_data_snapshots
+                 WHERE snapshot_id = ?1
+                   AND NOT EXISTS(
+                       SELECT 1 FROM market_data_snapshot_access
+                       WHERE snapshot_id = ?1
+                   )",
+                [snapshot_id],
+            )
+            .map_err(string)?;
+        transaction.commit().map_err(string)?;
+        if deleted > 0
+            && let Some(path) = parquet_path
+        {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Ok(())
     }
 
     /// Grants one existing Snapshot to one more User. Granting is

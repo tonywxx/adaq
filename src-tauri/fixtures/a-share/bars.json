@@ -1,0 +1,27 @@
+[
+  {
+    "instrument": {
+      "venue": {
+        "id": "sse",
+        "kind": "chinaAShareEquity",
+        "timeZone": "Asia/Shanghai"
+      },
+      "code": "600000"
+    },
+    "providerSymbol": "sh600000",
+    "interval": "1d",
+    "openTimeMs": 1704159000000,
+    "open": "10.00",
+    "high": "10.50",
+    "low": "9.75",
+    "close": "10.25",
+    "baseVolume": "100",
+    "quoteVolume": "1025.00",
+    "priceBasis": "unadjusted",
+    "rawPayload": {
+      "date": "2024-01-02",
+      "open": "10.00",
+      "close": "10.25"
+    }
+  }
+]

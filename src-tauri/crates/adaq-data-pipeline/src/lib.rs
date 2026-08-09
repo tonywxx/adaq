@@ -6,7 +6,7 @@
 //! lifecycle metadata needed to find that evidence.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Write as _,
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
@@ -16,12 +16,14 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
+    time::{Duration, Instant},
 };
 
 use adaq_data_core::{
     BarGap, BarInterval, BarSeries, HistoricalBarRange, OhlcvBar,
     market::{
-        BarIdentity, CalendarError, InstrumentId, ScheduledClosure, SessionPhase,
+        BarIdentity, CalendarError, InstrumentId, PriceBasis, ScheduledClosure, SessionPhase,
         TradingCalendarSnapshot, VenueKind,
     },
     next_bar_open_time_ms,
@@ -30,13 +32,14 @@ use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{Datelike, Timelike};
 use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod a_share;
 pub mod okx;
 
 pub const NORMALIZATION_CONTRACT_VERSION: &str = "lossless-v1";
@@ -62,7 +65,7 @@ pub enum PipelineError {
     Cancelled { source_id: String },
     #[error("pipeline publication failed after Source revision {source_id}: {message}")]
     PublicationFailed { source_id: String, message: String },
-    #[error("OKX market-data acquisition failed [{code}]: {message}")]
+    #[error("market-data acquisition failed [{code}]: {message}")]
     Connector { code: String, message: String },
     #[error("{evidence_kind} evidence {evidence_id} is deletion-locked")]
     DeletionBlocked {
@@ -90,8 +93,12 @@ pub struct ProviderCapabilitySnapshot {
     pub record_types: Vec<String>,
     pub history_start_ms: Option<i64>,
     pub delayed: bool,
+    #[serde(default)]
+    pub delayed_known: bool,
     pub delay_ms: Option<u64>,
     pub rate_limit: Option<String>,
+    #[serde(default)]
+    pub rate_limit_known: bool,
     pub streaming_symbol_limit: Option<u32>,
     #[serde(default)]
     pub limitations: Vec<String>,
@@ -106,8 +113,10 @@ impl Default for ProviderCapabilitySnapshot {
             record_types: Vec::new(),
             history_start_ms: None,
             delayed: false,
+            delayed_known: false,
             delay_ms: None,
             rate_limit: None,
+            rate_limit_known: false,
             streaming_symbol_limit: None,
             limitations: Vec::new(),
         }
@@ -180,8 +189,14 @@ pub struct SourceAcquisition {
     pub connector_version: String,
     pub request_parameters: Value,
     pub retrieved_at_ms: i64,
+    #[serde(default)]
+    pub response_sha256s: Vec<String>,
+    #[serde(default)]
+    pub acquisition_content_sha256: Option<String>,
     pub capability_snapshot: ProviderCapabilitySnapshot,
     pub acquisition_diagnostics: AcquisitionDiagnostics,
+    #[serde(default)]
+    pub price_basis: PriceBasis,
     pub records: Vec<SourceMarketRecord>,
 }
 
@@ -194,8 +209,11 @@ impl Default for SourceAcquisition {
             connector_version: "0.0.0".into(),
             request_parameters: Value::Object(Default::default()),
             retrieved_at_ms: 1,
+            response_sha256s: Vec::new(),
+            acquisition_content_sha256: None,
             capability_snapshot: ProviderCapabilitySnapshot::default(),
             acquisition_diagnostics: AcquisitionDiagnostics::default(),
+            price_basis: PriceBasis::Unadjusted,
             records: Vec::new(),
         }
     }
@@ -210,10 +228,16 @@ pub struct SourceIdentity {
     pub connector_version: String,
     pub request_parameters: Value,
     pub retrieved_at_ms: i64,
+    #[serde(default)]
+    pub response_sha256s: Vec<String>,
+    #[serde(default)]
+    pub acquisition_content_sha256: Option<String>,
     pub payload_sha256: String,
     pub content_sha256: String,
     pub capability_snapshot: ProviderCapabilitySnapshot,
     pub acquisition_diagnostics: AcquisitionDiagnostics,
+    #[serde(default)]
+    pub price_basis: PriceBasis,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -326,6 +350,8 @@ pub struct CanonicalizationRequest {
     pub normalization_contract: String,
     pub calendar: CalendarEvidence,
     pub historical_range: Option<HistoricalBarRange>,
+    #[serde(default)]
+    pub price_basis: PriceBasis,
 }
 
 impl CanonicalizationRequest {
@@ -340,6 +366,7 @@ impl CanonicalizationRequest {
             normalization_contract: NORMALIZATION_CONTRACT_VERSION.into(),
             calendar,
             historical_range: None,
+            price_basis: PriceBasis::Unadjusted,
         };
         request.validate()?;
         Ok(request)
@@ -356,6 +383,25 @@ impl CanonicalizationRequest {
         {
             return Err(PipelineError::InvalidRequest(
                 "historical range must be increasing".into(),
+            ));
+        }
+        if matches!(
+            self.instrument.venue.kind,
+            VenueKind::ChinaAShareEquity | VenueKind::UsEquity
+        ) && self.price_basis != PriceBasis::Unadjusted
+        {
+            return Err(PipelineError::InvalidRequest(
+                "Canonical equity Bars require Unadjusted Price Basis".into(),
+            ));
+        }
+        if self.instrument.venue.kind == VenueKind::ChinaAShareEquity
+            && matches!(
+                self.interval,
+                BarInterval::OneMonth | BarInterval::ThreeMonths
+            )
+        {
+            return Err(PipelineError::InvalidRequest(
+                "A-share monthly Bar intervals are not supported by the pinned connector".into(),
             ));
         }
         self.calendar.validate_for(&self.instrument)
@@ -378,6 +424,7 @@ impl Default for CanonicalizationRequest {
                 closures: Vec::new(),
             },
             historical_range: None,
+            price_basis: PriceBasis::Unadjusted,
         }
     }
 }
@@ -483,6 +530,8 @@ pub struct CanonicalMarketDataset {
     pub interval: BarInterval,
     pub normalization_contract: String,
     pub calendar: CalendarEvidence,
+    #[serde(default)]
+    pub price_basis: PriceBasis,
     pub bars: Vec<OhlcvBar>,
     pub row_evidence: Vec<CanonicalRowEvidence>,
     pub gaps: Vec<BarGap>,
@@ -587,6 +636,10 @@ impl CancellationToken {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
+
+    pub(crate) fn is_same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl Default for CancellationToken {
@@ -624,10 +677,66 @@ impl Drop for PublicationArtifacts {
     }
 }
 
+struct SourceAccessGuard {
+    pipeline: DataPipeline,
+    user_id: String,
+    source_id: String,
+    keep_access: bool,
+}
+
+impl SourceAccessGuard {
+    fn commit(&mut self) {
+        self.keep_access = true;
+    }
+}
+
+impl Drop for SourceAccessGuard {
+    fn drop(&mut self) {
+        if self.keep_access {
+            let _ = self
+                .pipeline
+                .grant_source_for_user(&self.user_id, &self.source_id);
+        } else {
+            let _ = self
+                .pipeline
+                .delete_source_for_user(&self.user_id, &self.source_id);
+        }
+    }
+}
+
+pub struct UserOperationGuard {
+    pipeline: DataPipeline,
+    user_id: String,
+    operation_id: String,
+}
+
+impl Drop for UserOperationGuard {
+    fn drop(&mut self) {
+        let mut became_idle = false;
+        if let Ok(mut active) = self.pipeline.0.active_users.lock() {
+            if let Some(operations) = active.get_mut(&self.user_id) {
+                operations.remove(&self.operation_id);
+                if operations.is_empty() {
+                    active.remove(&self.user_id);
+                    became_idle = true;
+                }
+            }
+        }
+        if became_idle {
+            let _ = self.pipeline.release_timed_out_reset_if_idle(&self.user_id);
+        }
+    }
+}
+
 struct PipelineInner {
     root: PathBuf,
     database: Arc<Mutex<Connection>>,
     active: Mutex<HashMap<String, CancellationToken>>,
+    attempt_users: Mutex<HashMap<String, String>>,
+    active_users: Mutex<HashMap<String, HashMap<String, CancellationToken>>>,
+    resetting: Mutex<HashSet<String>>,
+    timed_out_resets: Mutex<HashSet<String>>,
+    next_operation: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Clone)]
@@ -646,6 +755,11 @@ impl DataPipeline {
             root,
             database,
             active: Mutex::new(HashMap::new()),
+            attempt_users: Mutex::new(HashMap::new()),
+            active_users: Mutex::new(HashMap::new()),
+            resetting: Mutex::new(HashSet::new()),
+            timed_out_resets: Mutex::new(HashSet::new()),
+            next_operation: std::sync::atomic::AtomicU64::new(1),
         }));
         pipeline.initialize_schema()?;
         Ok(pipeline)
@@ -658,26 +772,210 @@ impl DataPipeline {
         Self::open(root, Arc::new(Mutex::new(connection)))
     }
 
-    pub fn begin_attempt(&self, attempt_id: &str) -> Result<CancellationToken, PipelineError> {
+    pub(crate) fn root_dir(&self) -> &Path {
+        &self.0.root
+    }
+
+    pub(crate) fn database(&self) -> Arc<Mutex<Connection>> {
+        self.0.database.clone()
+    }
+
+    pub fn begin_user_reset(&self, user_id: &str) -> Result<(), PipelineError> {
+        validate_user(user_id)?;
+        let mut resetting = self.0.resetting.lock().map_err(lock_error)?;
+        if !resetting.insert(user_id.to_owned()) {
+            return Err(PipelineError::InvalidRequest(
+                "pipeline reset is already in progress for this user".into(),
+            ));
+        }
+        if let Ok(active) = self.0.active_users.lock() {
+            if let Some(operations) = active.get(user_id) {
+                for token in operations.values() {
+                    token.cancel();
+                }
+            }
+        }
+        drop(resetting);
+        let deadline = Instant::now() + Duration::from_secs(35);
+        loop {
+            let empty = self
+                .0
+                .active_users
+                .lock()
+                .map_err(lock_error)?
+                .get(user_id)
+                .is_none_or(HashMap::is_empty);
+            if empty {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                let still_active = self
+                    .0
+                    .active_users
+                    .lock()
+                    .map_err(lock_error)?
+                    .get(user_id)
+                    .is_some_and(|operations| !operations.is_empty());
+                if still_active {
+                    self.0
+                        .timed_out_resets
+                        .lock()
+                        .map_err(lock_error)?
+                        .insert(user_id.to_owned());
+                } else {
+                    self.0.resetting.lock().map_err(lock_error)?.remove(user_id);
+                }
+                return Err(PipelineError::Storage(
+                    "timed out waiting for pipeline operations during reset".into(),
+                ));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    pub fn finish_user_reset(&self, user_id: &str) -> Result<(), PipelineError> {
+        validate_user(user_id)?;
+        let active = self
+            .0
+            .active_users
+            .lock()
+            .map_err(lock_error)?
+            .get(user_id)
+            .is_some_and(|operations| !operations.is_empty());
+        if active {
+            return Err(PipelineError::Storage(
+                "cannot finish pipeline reset while user operations are active".into(),
+            ));
+        }
+        self.0.resetting.lock().map_err(lock_error)?.remove(user_id);
+        self.0
+            .timed_out_resets
+            .lock()
+            .map_err(lock_error)?
+            .remove(user_id);
+        Ok(())
+    }
+
+    fn release_timed_out_reset_if_idle(&self, user_id: &str) -> Result<(), PipelineError> {
+        let idle = self
+            .0
+            .active_users
+            .lock()
+            .map_err(lock_error)?
+            .get(user_id)
+            .is_none_or(HashMap::is_empty);
+        if !idle {
+            return Ok(());
+        }
+        let timed_out = self
+            .0
+            .timed_out_resets
+            .lock()
+            .map_err(lock_error)?
+            .remove(user_id);
+        if timed_out {
+            self.0.resetting.lock().map_err(lock_error)?.remove(user_id);
+        }
+        Ok(())
+    }
+
+    pub fn begin_user_operation(
+        &self,
+        user_id: &str,
+        operation_id: String,
+        cancellation: &CancellationToken,
+    ) -> Result<UserOperationGuard, PipelineError> {
+        validate_user(user_id)?;
+        if operation_id.trim().is_empty() {
+            return Err(PipelineError::InvalidRequest(
+                "pipeline operation ID must be non-empty".into(),
+            ));
+        }
+        let resetting = self.0.resetting.lock().map_err(lock_error)?;
+        if resetting.contains(user_id) {
+            return Err(PipelineError::InvalidRequest(
+                "pipeline data is being reset for this user".into(),
+            ));
+        }
+        let mut active_users = self.0.active_users.lock().map_err(lock_error)?;
+        let operations = active_users.entry(user_id.to_owned()).or_default();
+        if operations.contains_key(&operation_id) {
+            return Err(PipelineError::InvalidRequest(
+                "pipeline user operation is already in progress".into(),
+            ));
+        }
+        operations.insert(operation_id.clone(), cancellation.clone());
+        drop(resetting);
+        Ok(UserOperationGuard {
+            pipeline: self.clone(),
+            user_id: user_id.to_owned(),
+            operation_id,
+        })
+    }
+
+    pub fn begin_attempt(
+        &self,
+        attempt_id: &str,
+        user_id: &str,
+    ) -> Result<CancellationToken, PipelineError> {
+        validate_user(user_id)?;
         if attempt_id.trim().is_empty() {
             return Err(PipelineError::InvalidRequest(
                 "pipeline attempt ID must be non-empty".into(),
             ));
         }
         let token = CancellationToken::new();
+        let resetting = self.0.resetting.lock().map_err(lock_error)?;
+        if resetting.contains(user_id) {
+            return Err(PipelineError::InvalidRequest(
+                "pipeline data is being reset for this user".into(),
+            ));
+        }
         let mut active = self.0.active.lock().map_err(lock_error)?;
         if active.contains_key(attempt_id) {
             return Err(PipelineError::InvalidRequest(
                 "pipeline attempt is already in progress".into(),
             ));
         }
+        let mut attempt_users = self.0.attempt_users.lock().map_err(lock_error)?;
+        let mut active_users = self.0.active_users.lock().map_err(lock_error)?;
+        let operations = active_users.entry(user_id.to_owned()).or_default();
+        if operations.contains_key(attempt_id) {
+            return Err(PipelineError::InvalidRequest(
+                "pipeline user operation is already in progress".into(),
+            ));
+        }
         active.insert(attempt_id.to_owned(), token.clone());
+        attempt_users.insert(attempt_id.to_owned(), user_id.to_owned());
+        operations.insert(attempt_id.to_owned(), token.clone());
         Ok(token)
     }
 
     pub fn cancel(&self, attempt_id: &str) -> Result<(), PipelineError> {
         if let Some(token) = self.0.active.lock().map_err(lock_error)?.get(attempt_id) {
             token.cancel();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish_attempt(&self, attempt_id: &str) -> Result<(), PipelineError> {
+        self.0.active.lock().map_err(lock_error)?.remove(attempt_id);
+        let user_id = self
+            .0
+            .attempt_users
+            .lock()
+            .map_err(lock_error)?
+            .remove(attempt_id);
+        if let Some(user_id) = user_id {
+            let mut active_users = self.0.active_users.lock().map_err(lock_error)?;
+            if let Some(operations) = active_users.get_mut(&user_id) {
+                operations.remove(attempt_id);
+                if operations.is_empty() {
+                    active_users.remove(&user_id);
+                }
+            }
+            drop(active_users);
+            self.release_timed_out_reset_if_idle(&user_id)?;
         }
         Ok(())
     }
@@ -690,6 +988,7 @@ impl DataPipeline {
         request: CanonicalizationRequest,
         on_event: impl FnMut(PipelineProgress),
     ) -> Result<PipelinePublication, PipelineError> {
+        validate_user(user_id)?;
         let token = self
             .0
             .active
@@ -698,15 +997,29 @@ impl DataPipeline {
             .get(attempt_id)
             .cloned()
             .ok_or_else(|| PipelineError::NotFound("pipeline attempt".into()))?;
+        let bound_user = self
+            .0
+            .attempt_users
+            .lock()
+            .map_err(lock_error)?
+            .get(attempt_id)
+            .cloned()
+            .ok_or_else(|| PipelineError::NotFound("pipeline attempt".into()))?;
+        if bound_user != user_id {
+            return Err(PipelineError::InvalidRequest(
+                "pipeline attempt belongs to a different user".into(),
+            ));
+        }
         let result = self.publish_internal(
             Some(attempt_id.to_owned()),
             user_id,
             acquisition,
             request,
             token,
+            false,
             on_event,
         );
-        self.0.active.lock().map_err(lock_error)?.remove(attempt_id);
+        self.finish_attempt(attempt_id)?;
         result
     }
 
@@ -718,7 +1031,34 @@ impl DataPipeline {
         cancellation: CancellationToken,
         on_event: impl FnMut(PipelineProgress),
     ) -> Result<PipelinePublication, PipelineError> {
-        self.publish_internal(None, user_id, acquisition, request, cancellation, on_event)
+        self.publish_internal(
+            None,
+            user_id,
+            acquisition,
+            request,
+            cancellation,
+            false,
+            on_event,
+        )
+    }
+
+    pub fn publish_without_partial_source(
+        &self,
+        user_id: &str,
+        acquisition: SourceAcquisition,
+        request: CanonicalizationRequest,
+        cancellation: CancellationToken,
+        on_event: impl FnMut(PipelineProgress),
+    ) -> Result<PipelinePublication, PipelineError> {
+        self.publish_internal(
+            None,
+            user_id,
+            acquisition,
+            request,
+            cancellation,
+            true,
+            on_event,
+        )
     }
 
     pub fn list(&self, user_id: &str) -> Result<Vec<PipelineDatasetSummary>, PipelineError> {
@@ -834,6 +1174,7 @@ impl DataPipeline {
             || evidence.interval != catalog.interval
             || evidence.normalization_contract != catalog.normalization_contract
             || evidence.calendar != catalog.calendar
+            || evidence.price_basis != catalog.price_basis
             || evidence.quality_report_id != catalog.quality_report_id
             || evidence.content_sha256 != catalog.content_sha256
             || evidence.parquet_path != catalog.parquet_path
@@ -856,6 +1197,7 @@ impl DataPipeline {
             interval: catalog.interval,
             normalization_contract: catalog.normalization_contract,
             calendar: catalog.calendar,
+            price_basis: catalog.price_basis,
             bars,
             row_evidence: evidence.row_evidence,
             gaps: evidence.gaps,
@@ -980,6 +1322,34 @@ impl DataPipeline {
         Ok(())
     }
 
+    pub fn remove_snapshot_reference(
+        &self,
+        user_id: &str,
+        canonical_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(), PipelineError> {
+        validate_user(user_id)?;
+        let mut database = self.0.database.lock().map_err(lock_error)?;
+        let transaction = database.transaction().map_err(storage)?;
+        transaction
+            .execute(
+                "DELETE FROM pipeline_snapshot_links
+                 WHERE user_id = ?1 AND canonical_id = ?2 AND snapshot_id = ?3",
+                params![user_id, canonical_id, snapshot_id],
+            )
+            .map_err(storage)?;
+        transaction
+            .execute(
+                "DELETE FROM pipeline_references
+                 WHERE user_id = ?1 AND evidence_kind = 'canonical'
+                   AND evidence_id = ?2 AND consumer_kind = 'snapshot'
+                   AND consumer_id = ?3",
+                params![user_id, canonical_id, snapshot_id],
+            )
+            .map_err(storage)?;
+        transaction.commit().map_err(storage)
+    }
+
     pub fn snapshot_deletion_blockers(
         &self,
         user_id: &str,
@@ -1074,6 +1444,138 @@ impl DataPipeline {
             .map_err(storage)
     }
 
+    pub fn reset_paths_for_user(&self, user_id: &str) -> Result<Vec<PathBuf>, PipelineError> {
+        validate_user(user_id)?;
+        let database = self.0.database.lock().map_err(lock_error)?;
+        self.reset_paths_for_user_with_connection(&database, user_id)
+    }
+
+    pub fn reset_paths_for_user_with_connection(
+        &self,
+        database: &Connection,
+        user_id: &str,
+    ) -> Result<Vec<PathBuf>, PipelineError> {
+        validate_user(user_id)?;
+        let queries = [
+            (
+                "SELECT s.source_json FROM pipeline_sources s
+                 JOIN pipeline_source_access a USING(source_id)
+                 WHERE a.user_id = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM pipeline_source_access other
+                       WHERE other.source_id = s.source_id AND other.user_id <> ?1
+                   )",
+                0,
+            ),
+            (
+                "SELECT c.canonical_json FROM pipeline_canonical_datasets c
+                 JOIN pipeline_canonical_access a USING(canonical_id)
+                 WHERE a.user_id = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM pipeline_canonical_access other
+                       WHERE other.canonical_id = c.canonical_id AND other.user_id <> ?1
+                   )",
+                1,
+            ),
+            (
+                "SELECT q.report_json FROM pipeline_quality_reports q
+                 JOIN pipeline_quality_access a USING(report_id)
+                 WHERE a.user_id = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM pipeline_quality_access other
+                       WHERE other.report_id = q.report_id AND other.user_id <> ?1
+                   )",
+                2,
+            ),
+        ];
+        let mut paths = Vec::new();
+        for (sql, kind) in queries {
+            let mut statement = database.prepare(sql).map_err(storage)?;
+            let rows = statement
+                .query_map([user_id], |row| row.get::<_, String>(0))
+                .map_err(storage)?;
+            for row in rows {
+                let json = row.map_err(storage)?;
+                match kind {
+                    0 => paths.push(
+                        serde_json::from_str::<SourceCatalog>(&json)
+                            .map_err(storage)?
+                            .evidence_path,
+                    ),
+                    1 => {
+                        let catalog: CanonicalCatalog =
+                            serde_json::from_str(&json).map_err(storage)?;
+                        paths.push(catalog.parquet_path);
+                        paths.push(catalog.evidence_path);
+                    }
+                    2 => paths.push(
+                        serde_json::from_str::<QualityCatalog>(&json)
+                            .map_err(storage)?
+                            .evidence_path,
+                    ),
+                    _ => unreachable!(),
+                }
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    pub fn reset_user_rows(
+        &self,
+        transaction: &Transaction<'_>,
+        user_id: &str,
+    ) -> Result<(), PipelineError> {
+        validate_user(user_id)?;
+        for table in [
+            "pipeline_snapshot_links",
+            "pipeline_references",
+            "pipeline_failures",
+            "pipeline_quality_access",
+            "pipeline_canonical_access",
+            "pipeline_source_access",
+        ] {
+            transaction
+                .execute(
+                    &format!("DELETE FROM {table} WHERE user_id = ?1"),
+                    [user_id],
+                )
+                .map_err(storage)?;
+        }
+        transaction
+            .execute(
+                "DELETE FROM pipeline_quality_reports
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM pipeline_quality_access a
+                     WHERE a.report_id = pipeline_quality_reports.report_id
+                 )",
+                [],
+            )
+            .map_err(storage)?;
+        transaction
+            .execute(
+                "DELETE FROM pipeline_canonical_datasets
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM pipeline_canonical_access a
+                     WHERE a.canonical_id = pipeline_canonical_datasets.canonical_id
+                 )",
+                [],
+            )
+            .map_err(storage)?;
+        transaction
+            .execute(
+                "DELETE FROM pipeline_sources
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM pipeline_source_access a
+                     WHERE a.source_id = pipeline_sources.source_id
+                 )",
+                [],
+            )
+            .map_err(storage)?;
+        Ok(())
+    }
+
     pub fn ensure_snapshot_deletable(
         &self,
         user_id: &str,
@@ -1163,6 +1665,19 @@ impl DataPipeline {
         Ok(())
     }
 
+    fn grant_source_for_user(&self, user_id: &str, source_id: &str) -> Result<(), PipelineError> {
+        validate_user(user_id)?;
+        let database = self.0.database.lock().map_err(lock_error)?;
+        database
+            .execute(
+                "INSERT OR IGNORE INTO pipeline_source_access(user_id, source_id)
+                 VALUES (?1, ?2)",
+                params![user_id, source_id],
+            )
+            .map_err(storage)?;
+        Ok(())
+    }
+
     fn publish_internal(
         &self,
         attempt_id: Option<String>,
@@ -1170,12 +1685,34 @@ impl DataPipeline {
         acquisition: SourceAcquisition,
         request: CanonicalizationRequest,
         cancellation: CancellationToken,
+        revoke_source_on_error: bool,
         mut on_event: impl FnMut(PipelineProgress),
     ) -> Result<PipelinePublication, PipelineError> {
         validate_user(user_id)?;
         request.validate()?;
         validate_acquisition(&acquisition)?;
-        let source = self.create_source(user_id, &acquisition, &request)?;
+        let operation_id = attempt_id
+            .as_ref()
+            .map(|attempt_id| format!("publication:{attempt_id}"))
+            .unwrap_or_else(|| {
+                format!(
+                    "direct-{}",
+                    self.0.next_operation.fetch_add(1, Ordering::Relaxed)
+                )
+            });
+        let _user_operation = self.begin_user_operation(user_id, operation_id, &cancellation)?;
+        if acquisition.price_basis != request.price_basis {
+            return Err(PipelineError::InvalidRequest(
+                "Source acquisition Price Basis differs from canonical request".into(),
+            ));
+        }
+        let (source, access_inserted) = self.create_source(user_id, &acquisition, &request)?;
+        let mut source_access = SourceAccessGuard {
+            pipeline: self.clone(),
+            user_id: user_id.to_owned(),
+            source_id: source.source_id.clone(),
+            keep_access: !revoke_source_on_error || !access_inserted,
+        };
         emit(
             &mut on_event,
             PipelineProgress::Started {
@@ -1349,6 +1886,7 @@ impl DataPipeline {
                 interval: request.interval,
                 normalization_contract: request.normalization_contract.clone(),
                 calendar: request.calendar.clone(),
+                price_basis: request.price_basis,
                 bars: output.bars.clone(),
                 row_evidence: output.row_evidence.clone(),
                 gaps: output.gaps.clone(),
@@ -1491,7 +2029,24 @@ impl DataPipeline {
             canonical_evidence.as_ref(),
             &quality,
             &quality_sha256,
+            &cancellation,
         ) {
+            if matches!(&error, PipelineError::Cancelled { .. }) {
+                self.record_failure(
+                    attempt_id.as_deref(),
+                    user_id,
+                    &source,
+                    "catalog-cutover",
+                    "cancelled",
+                )?;
+                emit(
+                    &mut on_event,
+                    PipelineProgress::Cancelled {
+                        source_id: source.source_id.clone(),
+                    },
+                );
+                return Err(error);
+            }
             let message = error.to_string();
             let message = self.record_failure_message(
                 attempt_id.as_deref(),
@@ -1513,6 +2068,7 @@ impl DataPipeline {
             });
         }
         artifacts.commit_on_catalog_cutover();
+        source_access.commit();
         if let Some(canonical) = &canonical {
             emit(
                 &mut on_event,
@@ -1611,30 +2167,17 @@ impl DataPipeline {
         user_id: &str,
         acquisition: &SourceAcquisition,
         request: &CanonicalizationRequest,
-    ) -> Result<SourceMarketDataset, PipelineError> {
+    ) -> Result<(SourceMarketDataset, bool), PipelineError> {
         let logical_key = digest(&canonical_json_bytes(&(
             &acquisition.provider,
             &acquisition.actual_upstream,
             &acquisition.connector,
             &acquisition.connector_version,
             &acquisition.request_parameters,
+            acquisition.price_basis,
             &request.instrument,
             &request.interval,
         ))?);
-        let revision = {
-            let database = self.0.database.lock().map_err(lock_error)?;
-            database
-                .query_row(
-                    "SELECT COALESCE(MAX(CAST(json_extract(source_json, '$.revision') AS INTEGER)), 0)
-                     FROM pipeline_sources s JOIN pipeline_source_access a USING(source_id)
-                     WHERE a.user_id = ?1 AND json_extract(source_json, '$.logicalKey') = ?2",
-                    params![user_id, logical_key],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(storage)?
-                .max(0) as u64
-                + 1
-        };
         let payload_sha256 = payload_hash(&acquisition.records)?;
         let evidence_bytes = source_evidence_bytes(&acquisition.records)?;
         let content_sha256 = digest(&evidence_bytes);
@@ -1645,10 +2188,79 @@ impl DataPipeline {
             connector_version: acquisition.connector_version.clone(),
             request_parameters: acquisition.request_parameters.clone(),
             retrieved_at_ms: acquisition.retrieved_at_ms,
+            response_sha256s: acquisition.response_sha256s.clone(),
+            acquisition_content_sha256: acquisition.acquisition_content_sha256.clone(),
             payload_sha256,
             content_sha256: content_sha256.clone(),
             capability_snapshot: acquisition.capability_snapshot.clone(),
             acquisition_diagnostics: acquisition.acquisition_diagnostics.clone(),
+            price_basis: acquisition.price_basis,
+        };
+        let mut database = self.0.database.lock().map_err(lock_error)?;
+        let transaction = database
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let existing_json = transaction
+            .query_row(
+                "SELECT s.source_json FROM pipeline_sources s
+                     JOIN pipeline_source_access a USING(source_id)
+                     WHERE a.user_id = ?1
+                       AND json_extract(s.source_json, '$.logicalKey') = ?2
+                       AND json_extract(s.source_json, '$.identity.contentSha256') = ?3
+                     ORDER BY CAST(json_extract(s.source_json, '$.revision') AS INTEGER) DESC
+                     LIMIT 1",
+                params![user_id, logical_key, content_sha256],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(storage)?;
+        if let Some(existing_json) = existing_json {
+            let catalog: SourceCatalog = serde_json::from_str(&existing_json).map_err(storage)?;
+            if catalog.identity == identity_without_id {
+                let evidence = fs::read(&catalog.evidence_path).map_err(storage)?;
+                if digest(&evidence) != catalog.identity.content_sha256 {
+                    return Err(PipelineError::Storage(
+                        "Existing A-share Source evidence hash does not match its catalog".into(),
+                    ));
+                }
+                let records = read_json_lines(&catalog.evidence_path)?;
+                let had_access = transaction
+                    .query_row(
+                        "SELECT EXISTS(
+                             SELECT 1 FROM pipeline_source_access
+                             WHERE user_id = ?1 AND source_id = ?2
+                         )",
+                        params![user_id, catalog.source_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(storage)?
+                    != 0;
+                transaction.commit().map_err(storage)?;
+                return Ok((
+                    SourceMarketDataset {
+                        source_id: catalog.source_id,
+                        revision: catalog.revision,
+                        logical_key: catalog.logical_key,
+                        identity: catalog.identity,
+                        records,
+                        evidence_path: catalog.evidence_path,
+                    },
+                    !had_access,
+                ));
+            }
+        }
+        let revision = {
+            transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(CAST(json_extract(source_json, '$.revision') AS INTEGER)), 0)
+                     FROM pipeline_sources s JOIN pipeline_source_access a USING(source_id)
+                     WHERE a.user_id = ?1 AND json_extract(source_json, '$.logicalKey') = ?2",
+                    params![user_id, logical_key],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(storage)?
+                .max(0) as u64
+                + 1
         };
         let source_id = digest(&canonical_json_bytes(&(
             revision,
@@ -1671,21 +2283,15 @@ impl DataPipeline {
         };
         let catalog = SourceCatalog::from_source(&source);
         let catalog_json = serde_json::to_string(&catalog).map_err(storage)?;
-        let database = self.0.database.lock().map_err(lock_error)?;
-        database
+        transaction
             .execute(
                 "INSERT OR IGNORE INTO pipeline_sources(source_id, source_json, created_at_ms)
                  VALUES (?1, ?2, ?3)",
                 params![source.source_id, catalog_json, acquisition.retrieved_at_ms],
             )
             .map_err(storage)?;
-        database
-            .execute(
-                "INSERT OR IGNORE INTO pipeline_source_access(user_id, source_id) VALUES (?1, ?2)",
-                params![user_id, source.source_id],
-            )
-            .map_err(storage)?;
-        Ok(source)
+        transaction.commit().map_err(storage)?;
+        Ok((source, true))
     }
 
     fn commit_catalog(
@@ -1696,6 +2302,7 @@ impl DataPipeline {
         canonical_evidence: Option<&(PathBuf, String)>,
         quality: &DataQualityReport,
         quality_sha256: &str,
+        cancellation: &CancellationToken,
     ) -> Result<(), PipelineError> {
         let quality_json = serde_json::to_string(&QualityCatalog::from_report(
             quality,
@@ -1704,6 +2311,13 @@ impl DataPipeline {
         .map_err(storage)?;
         let database = self.0.database.lock().map_err(lock_error)?;
         let transaction = database.unchecked_transaction().map_err(storage)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO pipeline_source_access(user_id, source_id)
+                 VALUES (?1, ?2)",
+                params![user_id, source.source_id],
+            )
+            .map_err(storage)?;
         if let Some(canonical) = canonical {
             let (evidence_path, evidence_sha256) = canonical_evidence.ok_or_else(|| {
                 PipelineError::Storage("Canonical row evidence is missing".into())
@@ -1743,6 +2357,14 @@ impl DataPipeline {
                 params![user_id, quality.report_id],
             )
             .map_err(storage)?;
+        if cancellation.is_cancelled() {
+            // This is the publication cutover: once the final cooperative
+            // check passes, SQLite commit wins over a cancellation arriving
+            // during the atomic commit.
+            return Err(PipelineError::Cancelled {
+                source_id: source.source_id.clone(),
+            });
+        }
         transaction.commit().map_err(storage)
     }
 
@@ -1861,6 +2483,8 @@ struct CanonicalCatalog {
     interval: BarInterval,
     normalization_contract: String,
     calendar: CalendarEvidence,
+    #[serde(default)]
+    price_basis: PriceBasis,
     quality_report_id: String,
     content_sha256: String,
     parquet_path: PathBuf,
@@ -1883,6 +2507,7 @@ impl CanonicalCatalog {
             interval: canonical.interval,
             normalization_contract: canonical.normalization_contract.clone(),
             calendar: canonical.calendar.clone(),
+            price_basis: canonical.price_basis,
             quality_report_id: canonical.quality_report_id.clone(),
             content_sha256: canonical.content_sha256.clone(),
             parquet_path: canonical.parquet_path.clone(),
@@ -1903,6 +2528,8 @@ struct CanonicalEvidenceFile {
     interval: BarInterval,
     normalization_contract: String,
     calendar: CalendarEvidence,
+    #[serde(default)]
+    price_basis: PriceBasis,
     row_evidence: Vec<CanonicalRowEvidence>,
     gaps: Vec<BarGap>,
     quality_report_id: String,
@@ -1920,6 +2547,7 @@ impl CanonicalEvidenceFile {
             interval: canonical.interval,
             normalization_contract: canonical.normalization_contract.clone(),
             calendar: canonical.calendar.clone(),
+            price_basis: canonical.price_basis,
             row_evidence: canonical.row_evidence.clone(),
             gaps: canonical.gaps.clone(),
             quality_report_id: canonical.quality_report_id.clone(),
@@ -2162,6 +2790,8 @@ fn parse_record(
             field: field.into(),
         })
     };
+    let mut warnings = Vec::new();
+    let quote_volume = parse("quoteVolume", &record.quote_volume)?;
     let bar = OhlcvBar {
         open_time_ms: record.open_time_ms,
         open: parse("open", &record.open)?,
@@ -2169,7 +2799,7 @@ fn parse_record(
         low: parse("low", &record.low)?,
         close: parse("close", &record.close)?,
         base_volume: parse("baseVolume", &record.base_volume)?,
-        quote_volume: parse("quoteVolume", &record.quote_volume)?,
+        quote_volume,
     };
     if [
         &bar.open,
@@ -2191,7 +2821,6 @@ fn parse_record(
             details: "high and low do not contain open and close".into(),
         });
     }
-    let mut warnings = Vec::new();
     if bar.base_volume.is_zero() && bar.quote_volume.is_zero() {
         warnings.push(WarningReason::ZeroVolume);
     }
@@ -2207,14 +2836,6 @@ fn validate_venue_bar_time(
     open_time_ms: i64,
 ) -> Result<(), CalendarError> {
     let context = calendar.session_context_at(open_time_ms)?;
-    if !matches!(
-        context.phase,
-        SessionPhase::Continuous | SessionPhase::Auction
-    ) {
-        return Err(CalendarError::InvalidCalendar(
-            "bar open is outside a tradable session",
-        ));
-    }
     if matches!(
         interval,
         BarInterval::OneDay
@@ -2231,6 +2852,14 @@ fn validate_venue_bar_time(
             ));
         }
         return Ok(());
+    }
+    if !matches!(
+        context.phase,
+        SessionPhase::Continuous | SessionPhase::Auction
+    ) {
+        return Err(CalendarError::InvalidCalendar(
+            "bar open is outside a tradable session",
+        ));
     }
     let window =
         calendar
@@ -2284,12 +2913,23 @@ fn detect_gaps(
         .or_else(|| {
             observed
                 .last()
-                .and_then(|time| next_bar_open_time_ms(*time, request.interval).ok())
+                .and_then(|time| next_expected_bar_open_time(request, *time).ok())
         })
     else {
         return Ok(gaps);
     };
-    let mut current = start;
+    let venue_daily = is_daily_interval(request.interval)
+        && matches!(&request.calendar, CalendarEvidence::Venue { .. });
+    let Some(mut current) = (if venue_daily {
+        let CalendarEvidence::Venue { snapshot } = &request.calendar else {
+            unreachable!("venue_daily only matches venue calendars")
+        };
+        first_daily_open(snapshot, start, end)?
+    } else {
+        Some(start)
+    }) else {
+        return Ok(gaps);
+    };
     let mut gap_start = None;
     let present = bars
         .iter()
@@ -2298,10 +2938,13 @@ fn detect_gaps(
     // ponytail: scan each expected interval; replace with venue calendar range
     // arithmetic if multi-year backfills make this measurable.
     while current < end {
-        let next = next_bar_open_time_ms(current, request.interval)
+        let next = next_expected_bar_open_time(request, current)
             .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
-        let missing =
-            !present.contains(&current) && !request.calendar.scheduled_non_trading(current)?;
+        let missing = if venue_daily {
+            !present.contains(&current)
+        } else {
+            !present.contains(&current) && !request.calendar.scheduled_non_trading(current)?
+        };
         if missing {
             gap_start.get_or_insert(current);
         } else if let Some(start) = gap_start.take() {
@@ -2310,7 +2953,7 @@ fn detect_gaps(
         current = next;
     }
     if let Some(start) = gap_start {
-        push_gap(&mut gaps, start, current);
+        push_gap(&mut gaps, start, current.min(end));
     }
     Ok(gaps)
 }
@@ -2346,23 +2989,100 @@ fn coverage(request: &CanonicalizationRequest, bars: &[OhlcvBar], gaps: &[BarGap
         expected_record_count: bars.len()
             + gaps
                 .iter()
-                .map(|gap| gap_slots(*gap, request.interval))
+                .map(|gap| gap_slots(*gap, request))
                 .sum::<usize>(),
         canonical_record_count: bars.len(),
     }
 }
 
-fn gap_slots(gap: BarGap, interval: BarInterval) -> usize {
+fn gap_slots(gap: BarGap, request: &CanonicalizationRequest) -> usize {
     let mut count = 0;
     let mut current = gap.start_time_ms;
     while current < gap.end_time_ms {
-        let Ok(next) = next_bar_open_time_ms(current, interval) else {
+        let Ok(next) = next_expected_bar_open_time(request, current) else {
             break;
         };
         count += 1;
         current = next;
     }
     count
+}
+
+fn is_daily_interval(interval: BarInterval) -> bool {
+    matches!(
+        interval,
+        BarInterval::OneDay
+            | BarInterval::TwoDays
+            | BarInterval::ThreeDays
+            | BarInterval::FiveDays
+            | BarInterval::OneWeek
+            | BarInterval::OneMonth
+            | BarInterval::ThreeMonths
+    )
+}
+
+fn daily_trading_day_step(interval: BarInterval) -> u32 {
+    match interval {
+        BarInterval::OneDay => 1,
+        BarInterval::TwoDays => 2,
+        BarInterval::ThreeDays => 3,
+        BarInterval::FiveDays | BarInterval::OneWeek => 5,
+        BarInterval::OneMonth => 21,
+        BarInterval::ThreeMonths => 63,
+        _ => 1,
+    }
+}
+
+fn first_daily_open(
+    calendar: &TradingCalendarSnapshot,
+    start_time_ms: i64,
+    end_time_ms: i64,
+) -> Result<Option<i64>, PipelineError> {
+    let mut date = calendar
+        .trading_date_of(start_time_ms)
+        .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+    loop {
+        if calendar
+            .is_trading_day(date)
+            .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?
+        {
+            let open_time_ms = calendar
+                .daily_boundary_open_ms(date)
+                .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+            if open_time_ms >= start_time_ms {
+                return Ok((open_time_ms < end_time_ms).then_some(open_time_ms));
+            }
+        }
+        date = calendar
+            .next_trading_date(date)
+            .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+    }
+}
+
+fn next_expected_bar_open_time(
+    request: &CanonicalizationRequest,
+    current_time_ms: i64,
+) -> Result<i64, PipelineError> {
+    if !is_daily_interval(request.interval) {
+        return next_bar_open_time_ms(current_time_ms, request.interval)
+            .map_err(|error| PipelineError::InvalidRequest(error.to_string()));
+    }
+    let calendar = match &request.calendar {
+        CalendarEvidence::Venue { snapshot } => snapshot,
+        CalendarEvidence::UtcGrid { .. } => {
+            return next_bar_open_time_ms(current_time_ms, request.interval)
+                .map_err(|error| PipelineError::InvalidRequest(error.to_string()));
+        }
+    };
+    let date = calendar
+        .trading_date_of(current_time_ms)
+        .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+    let next_date = calendar
+        .trading_date_offset(date, daily_trading_day_step(request.interval))
+        .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+    calendar
+        .daily_boundary_open_ms(next_date)
+        .map_err(|error| PipelineError::InvalidRequest(error.to_string()))
 }
 
 fn quality_state(
@@ -2460,6 +3180,7 @@ fn canonical_id(
             &request.instrument,
             request.interval,
             &request.normalization_contract,
+            request.price_basis,
             &request.calendar,
             &output.bars,
             &output.row_evidence,
@@ -2854,10 +3575,13 @@ mod tests {
                 connector_version: acquisition.connector_version,
                 request_parameters: acquisition.request_parameters,
                 retrieved_at_ms: acquisition.retrieved_at_ms,
+                response_sha256s: acquisition.response_sha256s,
+                acquisition_content_sha256: acquisition.acquisition_content_sha256,
                 payload_sha256: payload_hash(&acquisition.records).unwrap(),
                 content_sha256: digest(&bytes),
                 capability_snapshot: acquisition.capability_snapshot,
                 acquisition_diagnostics: acquisition.acquisition_diagnostics,
+                price_basis: acquisition.price_basis,
             },
             records: acquisition.records,
             evidence_path: PathBuf::from("source.jsonl"),
@@ -2955,6 +3679,122 @@ mod tests {
                 .quality_for_user("bob", &publication.quality.report_id)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn reset_user_rows_removes_entitlements_without_deleting_shared_catalogs() {
+        let directory = tempdir().unwrap();
+        let pipeline = DataPipeline::open(
+            directory.path(),
+            Arc::new(Mutex::new(
+                Connection::open(directory.path().join("pipeline.sqlite")).unwrap(),
+            )),
+        )
+        .unwrap();
+        let alice = pipeline
+            .publish(
+                "alice",
+                acquisition(&[0, 60_000]),
+                request(),
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap();
+        let bob = pipeline
+            .publish(
+                "bob",
+                acquisition(&[0, 60_000]),
+                request(),
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(alice.source.source_id, bob.source.source_id);
+        assert!(pipeline.reset_paths_for_user("alice").unwrap().is_empty());
+
+        let database = pipeline.database();
+        let mut database = database.lock().unwrap();
+        let transaction = database.transaction().unwrap();
+        pipeline.reset_user_rows(&transaction, "alice").unwrap();
+        transaction.commit().unwrap();
+        drop(database);
+
+        assert!(pipeline.list("alice").unwrap().is_empty());
+        assert_eq!(pipeline.list("bob").unwrap().len(), 1);
+        assert!(alice.source.evidence_path.is_file());
+        assert!(alice.canonical.unwrap().parquet_path.is_file());
+    }
+
+    #[test]
+    fn identical_retry_reuses_the_published_source_revision() {
+        let directory = tempdir().unwrap();
+        let pipeline = DataPipeline::open(
+            directory.path(),
+            Arc::new(Mutex::new(
+                Connection::open(directory.path().join("pipeline.sqlite")).unwrap(),
+            )),
+        )
+        .unwrap();
+        let first = pipeline
+            .publish(
+                "alice",
+                acquisition(&[0]),
+                request(),
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap();
+        let retry = pipeline
+            .publish(
+                "alice",
+                acquisition(&[0]),
+                request(),
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(retry.source.source_id, first.source.source_id);
+        assert_eq!(retry.source.revision, first.source.revision);
+        assert_eq!(pipeline.list("alice").unwrap().len(), 1);
+
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(matches!(
+            pipeline.publish_without_partial_source(
+                "alice",
+                acquisition(&[0]),
+                request(),
+                cancellation,
+                |_| {},
+            ),
+            Err(PipelineError::Cancelled { .. })
+        ));
+        assert_eq!(pipeline.list("alice").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_share_style_failure_revokes_source_access_before_catalog_cutover() {
+        let directory = tempdir().unwrap();
+        let pipeline = DataPipeline::open(
+            directory.path(),
+            Arc::new(Mutex::new(
+                Connection::open(directory.path().join("pipeline.sqlite")).unwrap(),
+            )),
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(matches!(
+            pipeline.publish_without_partial_source(
+                "alice",
+                acquisition(&[0]),
+                request(),
+                cancellation,
+                |_| {},
+            ),
+            Err(PipelineError::Cancelled { .. })
+        ));
+        assert!(pipeline.list("alice").unwrap().is_empty());
     }
 
     #[test]

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+pub mod a_share;
 pub mod market;
 
 pub(crate) const OKX_SRC: &str = "okx";
@@ -407,6 +408,10 @@ pub struct DataError {
     pub src: String,
     pub code: String,
     pub message: String,
+    #[serde(skip)]
+    pub raw_response: Option<Vec<u8>>,
+    #[serde(skip)]
+    pub response_sha256: Option<String>,
 }
 
 impl DataError {
@@ -419,6 +424,8 @@ impl DataError {
             src: src.into(),
             code: code.into(),
             message: message.into(),
+            raw_response: None,
+            response_sha256: None,
         }
     }
 
