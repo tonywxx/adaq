@@ -1482,36 +1482,12 @@ fn calendar_operator(
             .map_err(|_| FeatureUnavailabilityReason::InsufficientCoverage)
             .map(|date| date.weekday().num_days_from_monday() as f64),
         FeatureOperator::TradingMonth => Ok(date.month as f64),
-        FeatureOperator::MinutesFromSessionOpen => match calendar
-            .session_window_containing(observation.observation_time_ms)
-        {
-            Ok(window) => window
-                .filter(|window| {
-                    matches!(
-                        window.phase,
-                        adaq_data_core::market::SessionPhase::Continuous
-                            | adaq_data_core::market::SessionPhase::Auction
-                    )
-                })
-                .map(|window| (observation.observation_time_ms - window.start_ms) as f64 / 60_000.0)
-                .ok_or(FeatureUnavailabilityReason::InsufficientCoverage),
-            Err(_) => Err(FeatureUnavailabilityReason::InsufficientCoverage),
-        },
-        FeatureOperator::MinutesToSessionClose => match calendar
-            .session_window_containing(observation.observation_time_ms)
-        {
-            Ok(window) => window
-                .filter(|window| {
-                    matches!(
-                        window.phase,
-                        adaq_data_core::market::SessionPhase::Continuous
-                            | adaq_data_core::market::SessionPhase::Auction
-                    )
-                })
-                .map(|window| (window.end_ms - observation.observation_time_ms) as f64 / 60_000.0)
-                .ok_or(FeatureUnavailabilityReason::InsufficientCoverage),
-            Err(_) => Err(FeatureUnavailabilityReason::InsufficientCoverage),
-        },
+        FeatureOperator::MinutesFromSessionOpen => {
+            session_boundary_minutes(calendar, date, observation.observation_time_ms, true)
+        }
+        FeatureOperator::MinutesToSessionClose => {
+            session_boundary_minutes(calendar, date, observation.observation_time_ms, false)
+        }
         FeatureOperator::SessionProgress => {
             session_progress(calendar, date, observation.observation_time_ms)
         }
@@ -1522,6 +1498,69 @@ fn calendar_operator(
         Ok(_) => EvalValue::Unavailable(FeatureUnavailabilityReason::UndefinedArithmetic),
         Err(reason) => EvalValue::Unavailable(reason),
     })
+}
+
+fn session_boundary_minutes(
+    calendar: &TradingCalendarSnapshot,
+    date: adaq_data_core::market::TradingDate,
+    observation_time_ms: i64,
+    from_open: bool,
+) -> Result<f64, FeatureUnavailabilityReason> {
+    let closures = calendar
+        .day(date)
+        .map(|day| day.closures.as_slice())
+        .unwrap_or(&[]);
+    for window in calendar
+        .session_windows_utc(date)
+        .map_err(|_| FeatureUnavailabilityReason::InsufficientCoverage)?
+        .into_iter()
+        .filter(|window| {
+            matches!(
+                window.phase,
+                adaq_data_core::market::SessionPhase::Continuous
+                    | adaq_data_core::market::SessionPhase::Auction
+            )
+        })
+    {
+        if observation_time_ms < window.start_ms || observation_time_ms >= window.end_ms {
+            continue;
+        }
+        let fragments = without_closures(window, closures);
+        if !fragments.iter().any(|fragment| {
+            observation_time_ms >= fragment.start_ms && observation_time_ms < fragment.end_ms
+        }) {
+            return Err(FeatureUnavailabilityReason::InsufficientCoverage);
+        }
+        let milliseconds: i64 = if from_open {
+            fragments
+                .iter()
+                .map(|fragment| {
+                    if observation_time_ms >= fragment.end_ms {
+                        fragment.end_ms - fragment.start_ms
+                    } else if observation_time_ms > fragment.start_ms {
+                        observation_time_ms - fragment.start_ms
+                    } else {
+                        0
+                    }
+                })
+                .sum()
+        } else {
+            fragments
+                .iter()
+                .map(|fragment| {
+                    if observation_time_ms <= fragment.start_ms {
+                        fragment.end_ms - fragment.start_ms
+                    } else if observation_time_ms < fragment.end_ms {
+                        fragment.end_ms - observation_time_ms
+                    } else {
+                        0
+                    }
+                })
+                .sum()
+        };
+        return Ok(milliseconds as f64 / 60_000.0);
+    }
+    Err(FeatureUnavailabilityReason::InsufficientCoverage)
 }
 
 fn session_progress(
@@ -1565,32 +1604,42 @@ fn eligible_continuous_windows(
         .into_iter()
         .filter(|window| window.phase == adaq_data_core::market::SessionPhase::Continuous)
     {
-        let mut fragments = vec![(window.start_ms, window.end_ms)];
-        for closure in closures {
-            let mut next = Vec::new();
-            for (start_ms, end_ms) in fragments {
-                if closure.end_ms <= start_ms || closure.start_ms >= end_ms {
-                    next.push((start_ms, end_ms));
-                    continue;
-                }
-                if start_ms < closure.start_ms {
-                    next.push((start_ms, closure.start_ms.min(end_ms)));
-                }
-                if closure.end_ms < end_ms {
-                    next.push((closure.end_ms.max(start_ms), end_ms));
-                }
+        eligible.extend(without_closures(window, closures));
+    }
+    Ok(eligible)
+}
+
+fn without_closures(
+    window: adaq_data_core::market::SessionWindowUtc,
+    closures: &[adaq_data_core::market::ScheduledClosure],
+) -> Vec<adaq_data_core::market::SessionWindowUtc> {
+    let mut fragments = vec![(window.start_ms, window.end_ms)];
+    for closure in closures {
+        let mut next = Vec::new();
+        for (start_ms, end_ms) in fragments {
+            if closure.end_ms <= start_ms || closure.start_ms >= end_ms {
+                next.push((start_ms, end_ms));
+                continue;
             }
-            fragments = next;
+            if start_ms < closure.start_ms {
+                next.push((start_ms, closure.start_ms.min(end_ms)));
+            }
+            if closure.end_ms < end_ms {
+                next.push((closure.end_ms.max(start_ms), end_ms));
+            }
         }
-        eligible.extend(fragments.into_iter().filter_map(|(start_ms, end_ms)| {
+        fragments = next;
+    }
+    fragments
+        .into_iter()
+        .filter_map(|(start_ms, end_ms)| {
             (start_ms < end_ms).then_some(adaq_data_core::market::SessionWindowUtc {
-                phase: adaq_data_core::market::SessionPhase::Continuous,
+                phase: window.phase,
                 start_ms,
                 end_ms,
             })
-        }));
-    }
-    Ok(eligible)
+        })
+        .collect()
 }
 
 fn one_hot(
@@ -1831,22 +1880,75 @@ fn evaluate_indicator(
             "indicator-engine-identity-mismatch",
         ));
     }
-    let required_fields = node
-        .inputs
+    let definition = engine
+        .catalog()
+        .indicators
         .iter()
-        .map(|input| match input {
-            FeatureInput::Market { field } => Ok(*field),
-            _ => Err(fatal_error(
-                FeatureEvaluationErrorCode::InvalidInvariant,
+        .find(|definition| definition.id == indicator_id)
+        .ok_or_else(|| {
+            fatal_error(
+                FeatureEvaluationErrorCode::OperatorFailure,
                 EvaluationStage::Validation,
                 Some(node.id.clone()),
                 Some(instrument_id.to_owned()),
                 Some(observation.observation_time_ms),
-                "indicator-requires-market-inputs",
-            )),
+                "unknown-indicator",
+            )
+        })?;
+    if node.inputs.len() != definition.inputs.len() {
+        return Err(fatal_error(
+            FeatureEvaluationErrorCode::BrokenShape,
+            EvaluationStage::Validation,
+            Some(node.id.clone()),
+            Some(instrument_id.to_owned()),
+            Some(observation.observation_time_ms),
+            "indicator-input-count-mismatch",
+        ));
+    }
+    let required_fields = node
+        .inputs
+        .iter()
+        .zip(definition.inputs.iter())
+        .map(|(input, definition_input)| {
+            let FeatureInput::Market { field } = input else {
+                return Err(fatal_error(
+                    FeatureEvaluationErrorCode::InvalidInvariant,
+                    EvaluationStage::Validation,
+                    Some(node.id.clone()),
+                    Some(instrument_id.to_owned()),
+                    Some(observation.observation_time_ms),
+                    "indicator-requires-market-inputs",
+                ));
+            };
+            let valid = match definition_input.kind.as_str() {
+                "Double Array" | "Volume" => definition_input
+                    .allowed_fields
+                    .iter()
+                    .any(|allowed| allowed == field.as_str()),
+                fixed => fixed.eq_ignore_ascii_case(field.as_str()),
+            };
+            if !valid {
+                return Err(fatal_error(
+                    FeatureEvaluationErrorCode::InvalidInvariant,
+                    EvaluationStage::Validation,
+                    Some(node.id.clone()),
+                    Some(instrument_id.to_owned()),
+                    Some(observation.observation_time_ms),
+                    "indicator-input-binding-mismatch",
+                ));
+            }
+            Ok(*field)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if required_fields.is_empty() {
+    let real_inputs = required_fields
+        .iter()
+        .zip(definition.inputs.iter())
+        .filter_map(|(field, definition_input)| {
+            matches!(definition_input.kind.as_str(), "Double Array" | "Volume")
+                .then_some(to_indicator_field(*field))
+        })
+        .collect::<Vec<_>>();
+    if definition.inputs.is_empty() {
         return Err(fatal_error(
             FeatureEvaluationErrorCode::InvalidInvariant,
             EvaluationStage::Validation,
@@ -1862,15 +1964,7 @@ fn evaluate_indicator(
             .get("output")
             .and_then(Value::as_str)
             .map(str::to_owned)
-            .or_else(|| {
-                engine
-                    .catalog()
-                    .indicators
-                    .iter()
-                    .find(|definition| definition.id == indicator_id)
-                    .and_then(|definition| definition.outputs.first())
-                    .map(|output| output.id.clone())
-            })
+            .or_else(|| definition.outputs.first().map(|output| output.id.clone()))
             .ok_or_else(|| {
                 fatal_error(
                     FeatureEvaluationErrorCode::OperatorFailure,
@@ -1903,11 +1997,7 @@ fn evaluate_indicator(
         let compiled = engine
             .compile(IndicatorRequest {
                 indicator_id: indicator_id.to_owned(),
-                real_inputs: required_fields
-                    .iter()
-                    .copied()
-                    .map(to_indicator_field)
-                    .collect(),
+                real_inputs: real_inputs.clone(),
                 parameters,
                 outputs: vec![output],
             })

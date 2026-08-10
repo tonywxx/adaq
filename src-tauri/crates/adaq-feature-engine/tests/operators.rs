@@ -331,6 +331,72 @@ fn stateful_inputs_are_causal_and_invalid_parameters_are_rejected() {
 }
 
 #[test]
+fn pointwise_encoding_and_checked_division_are_typed() {
+    let plan = plan(
+        vec![
+            node(
+                "one-hot",
+                FeatureOperator::OneHot,
+                vec![FeatureInput::Market {
+                    field: MarketField::Close,
+                }],
+                BTreeMap::from([("category".into(), json!(1))]),
+            ),
+            node(
+                "sine",
+                FeatureOperator::Sine,
+                vec![FeatureInput::Market {
+                    field: MarketField::Close,
+                }],
+                BTreeMap::from([("period".into(), json!(4))]),
+            ),
+            node(
+                "cosine",
+                FeatureOperator::Cosine,
+                vec![FeatureInput::Market {
+                    field: MarketField::Close,
+                }],
+                BTreeMap::from([("period".into(), json!(4))]),
+            ),
+            node(
+                "divide",
+                FeatureOperator::CheckedArithmetic,
+                vec![
+                    FeatureInput::Market {
+                        field: MarketField::Close,
+                    },
+                    FeatureInput::Market {
+                        field: MarketField::QuoteVolume,
+                    },
+                ],
+                BTreeMap::from([("operation".into(), json!("divide"))]),
+            ),
+        ],
+        &[
+            ("one-hot", "one-hot"),
+            ("sine", "sine"),
+            ("cosine", "cosine"),
+            ("divide", "divide"),
+        ],
+    );
+    let mut evaluator = FeatureEngine::new(identity()).evaluator(plan).unwrap();
+    let observations = evaluator
+        .evaluate_batch(&[event(1, "1", "1", "0"), event(2, "2", "1", "4")])
+        .unwrap();
+    assert_eq!(value(&observations[0]), Some(1.0));
+    assert_eq!(value(&observations[1]), Some(1.0));
+    assert_close(value(&observations[2]), 0.0);
+    assert_eq!(
+        reason(&observations[3]),
+        Some(FeatureUnavailabilityReason::UndefinedArithmetic)
+    );
+    assert_eq!(value(&observations[4]), Some(0.0));
+    assert_close(value(&observations[5]), 0.0);
+    assert_close(value(&observations[6]), -1.0);
+    assert_close(value(&observations[7]), 0.5);
+}
+
+#[test]
 fn volume_and_undefined_arithmetic_keep_typed_missingness() {
     let plan = plan(
         vec![
@@ -511,13 +577,31 @@ fn calendar_closures_are_excluded_from_session_progress() {
     )
     .unwrap();
     let plan = plan(
-        vec![node(
-            "progress",
-            FeatureOperator::SessionProgress,
-            Vec::new(),
-            BTreeMap::new(),
-        )],
-        &[("progress", "progress")],
+        vec![
+            node(
+                "from-open",
+                FeatureOperator::MinutesFromSessionOpen,
+                Vec::new(),
+                BTreeMap::new(),
+            ),
+            node(
+                "to-close",
+                FeatureOperator::MinutesToSessionClose,
+                Vec::new(),
+                BTreeMap::new(),
+            ),
+            node(
+                "progress",
+                FeatureOperator::SessionProgress,
+                Vec::new(),
+                BTreeMap::new(),
+            ),
+        ],
+        &[
+            ("from-open", "from-open"),
+            ("to-close", "to-close"),
+            ("progress", "progress"),
+        ],
     );
     let times = [local(9, 45), local(10, 15), local(10, 45)];
     let events = times
@@ -531,12 +615,24 @@ fn calendar_closures_are_excluded_from_session_progress() {
         .collect::<Vec<_>>();
     let mut evaluator = FeatureEngine::new(identity()).evaluator(plan).unwrap();
     let observations = evaluator.evaluate_batch(&events).unwrap();
-    assert_close(value(&observations[0]), 15.0 / 210.0);
+    assert_close(value(&observations[0]), 15.0);
+    assert_close(value(&observations[1]), 75.0);
+    assert_close(value(&observations[2]), 15.0 / 210.0);
     assert_eq!(
-        reason(&observations[1]),
+        reason(&observations[3]),
         Some(FeatureUnavailabilityReason::InsufficientCoverage)
     );
-    assert_close(value(&observations[2]), 45.0 / 210.0);
+    assert_eq!(
+        reason(&observations[4]),
+        Some(FeatureUnavailabilityReason::InsufficientCoverage)
+    );
+    assert_eq!(
+        reason(&observations[5]),
+        Some(FeatureUnavailabilityReason::InsufficientCoverage)
+    );
+    assert_close(value(&observations[6]), 45.0);
+    assert_close(value(&observations[7]), 45.0);
+    assert_close(value(&observations[8]), 45.0 / 210.0);
 }
 
 #[test]
@@ -714,6 +810,65 @@ fn indicator_nodes_use_the_pinned_indicator_engine_and_validate_output() {
         .collect::<Vec<_>>();
     let observations = native_engine.evaluate_batch(plan, &partial_events).unwrap();
     assert!(reason(observations.last().unwrap()).is_none());
+
+    let adx_definition = FeatureDefinition::freeze(DefinitionDraft {
+        definition_id: Uuid::new_v4(),
+        revision: 1,
+        scope: FeatureScope::TimeSeries,
+        nodes: vec![node(
+            "adx",
+            FeatureOperator::Indicator { id: "adx".into() },
+            vec![
+                FeatureInput::Market {
+                    field: MarketField::High,
+                },
+                FeatureInput::Market {
+                    field: MarketField::Low,
+                },
+                FeatureInput::Market {
+                    field: MarketField::Close,
+                },
+            ],
+            BTreeMap::from([
+                ("output".into(), json!("value")),
+                ("time-period".into(), json!(2)),
+            ]),
+        )],
+        outputs: vec![FeatureOutput {
+            name: "adx".into(),
+            node_id: "adx".into(),
+        }],
+    })
+    .unwrap();
+    let adx_plan = FeaturePlan::freeze(FeaturePlanDraft {
+        definitions: vec![adx_definition],
+        engine_identity: native_engine.identity().clone(),
+        ..FeaturePlanDraft::default()
+    })
+    .unwrap();
+    let adx_events = (1..=12)
+        .map(|time| {
+            let close = 100 + time;
+            FeatureInputEvent::observation(FeatureEvaluationInput::new(
+                "BTC-USD",
+                time,
+                time,
+                FeatureMarketBar::complete(
+                    time,
+                    (close - 1).to_string(),
+                    (close + 2).to_string(),
+                    (close - 2).to_string(),
+                    close.to_string(),
+                    "1",
+                    "1",
+                )
+                .unwrap(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let observations = native_engine.evaluate_batch(adx_plan, &adx_events).unwrap();
+    assert!(reason(observations.last().unwrap()).is_none());
+    assert!(value(observations.last().unwrap()).unwrap().is_finite());
 }
 
 #[test]

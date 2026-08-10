@@ -11,6 +11,8 @@ fn main() {
         "build.rs",
         "src/lib.rs",
         "src/execution.rs",
+        "../../Cargo.lock",
+        "../adaq-data-core/Cargo.toml",
         "../adaq-data-core/src/lib.rs",
         "../adaq-data-core/src/market.rs",
         "../adaq-data-core/src/a_share.rs",
