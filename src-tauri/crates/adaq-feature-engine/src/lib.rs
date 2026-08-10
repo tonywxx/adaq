@@ -2,9 +2,11 @@
 
 mod execution;
 mod fitting;
+mod materialization;
 
 pub use execution::*;
 pub use fitting::*;
+pub use materialization::*;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -969,6 +971,10 @@ pub struct FeatureMaterializationRequest {
     pub observation_range: ObservationRange,
     #[serde(default)]
     pub parameters: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_identity: Option<FeatureEngineIdentity>,
     pub seed: u64,
 }
 
@@ -989,21 +995,44 @@ impl FeatureMaterializationRequest {
             point_in_time_universe_id: point_in_time_universe_id.into(),
             observation_range,
             parameters,
+            artifact_ids: Vec::new(),
+            engine_identity: None,
             seed,
         };
-        if request.user_id.is_empty()
-            || !is_sha256(&request.feature_plan_hash)
-            || request.snapshot_id.is_empty()
-            || request.point_in_time_universe_id.is_empty()
-            || request.observation_range.start_time_ms >= request.observation_range.end_time_ms
-        {
-            return Err(RequestValidationError);
-        }
+        request.validate()?;
         Ok(request)
     }
 
     pub fn request_hash(&self) -> String {
         sha256_hex(&canonical_json(self).expect("materialization request is serializable"))
+    }
+
+    pub fn with_plan_evidence(
+        mut self,
+        plan: &FeaturePlan,
+    ) -> Result<Self, RequestValidationError> {
+        if self.feature_plan_hash != plan.plan_hash() {
+            return Err(RequestValidationError);
+        }
+        self.artifact_ids = plan
+            .artifacts()
+            .iter()
+            .map(|artifact| artifact.artifact_id.clone())
+            .collect();
+        self.engine_identity = Some(plan.engine_identity());
+        Ok(self)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), RequestValidationError> {
+        if self.user_id.is_empty()
+            || !is_sha256(&self.feature_plan_hash)
+            || self.snapshot_id.is_empty()
+            || self.point_in_time_universe_id.is_empty()
+            || self.observation_range.start_time_ms >= self.observation_range.end_time_ms
+        {
+            return Err(RequestValidationError);
+        }
+        Ok(())
     }
 }
 

@@ -128,11 +128,16 @@ version = "0.1.0"
 dependencies = [
  "adaq-data-core",
  "adaq-indicator-engine",
+ "arrow-array",
+ "arrow-schema",
  "chrono",
+ "parquet",
+ "rusqlite",
  "rust_decimal",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
  "uuid",
 ]
 
