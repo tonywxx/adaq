@@ -119,6 +119,43 @@ fn plan_rejects_scope_cycles_and_bad_output_contracts() {
 }
 
 #[test]
+fn definition_rejects_cross_sectional_outputs_downstream() {
+    let error = FeatureDefinition::freeze(DefinitionDraft {
+        definition_id: Uuid::from_u128(20),
+        revision: 1,
+        scope: FeatureScope::CrossSectional,
+        nodes: vec![
+            FeatureNode {
+                id: "rank".into(),
+                operator: FeatureOperator::CrossSectionalRank,
+                scope: FeatureScope::CrossSectional,
+                inputs: vec![FeatureInput::Market {
+                    field: MarketField::Close,
+                }],
+                parameters: BTreeMap::new(),
+                warmup_bars: 0,
+            },
+            FeatureNode {
+                id: "second-rank".into(),
+                operator: FeatureOperator::CrossSectionalRank,
+                scope: FeatureScope::CrossSectional,
+                inputs: vec![FeatureInput::Node {
+                    node_id: "rank".into(),
+                }],
+                parameters: BTreeMap::new(),
+                warmup_bars: 0,
+            },
+        ],
+        outputs: vec![FeatureOutput {
+            name: "second-rank".into(),
+            node_id: "second-rank".into(),
+        }],
+    })
+    .unwrap_err();
+    assert!(error.codes().contains(&"cross-sectional-output-terminal"));
+}
+
+#[test]
 fn observation_keeps_typed_unavailability_and_rejects_non_finite_values() {
     let unavailable = FeatureObservation::unavailable(
         "return",

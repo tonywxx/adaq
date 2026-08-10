@@ -130,6 +130,13 @@ pub enum FeatureOperator {
 }
 
 impl FeatureOperator {
+    fn is_cross_sectional(&self) -> bool {
+        matches!(
+            self,
+            Self::CrossSectionalRank | Self::CrossSectionalPercentile | Self::CrossSectionalZScore
+        )
+    }
+
     fn catalog_id(&self) -> &'static str {
         match self {
             Self::CheckedArithmetic => "checked-arithmetic",
@@ -1040,6 +1047,8 @@ pub struct FeatureObservation {
     pub instrument_id: String,
     pub observation_time_ms: i64,
     pub value: FeatureObservationValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_sectional_coverage: Option<CrossSectionalCoverage>,
 }
 
 impl FeatureObservation {
@@ -1076,6 +1085,7 @@ impl FeatureObservation {
                 value,
                 available_at_ms,
             },
+            cross_sectional_coverage: None,
         })
     }
 
@@ -1100,6 +1110,7 @@ impl FeatureObservation {
             instrument_id,
             observation_time_ms,
             value: FeatureObservationValue::Unavailable { reason },
+            cross_sectional_coverage: None,
         })
     }
 
@@ -1497,14 +1508,14 @@ fn validate_definition(
                 issues.push(issue("invalid-feature-operator", Some(node.id.clone())));
             }
         }
-        if matches!(
-            node.operator,
-            FeatureOperator::CrossSectionalRank
-                | FeatureOperator::CrossSectionalPercentile
-                | FeatureOperator::CrossSectionalZScore
-        ) && node.scope != FeatureScope::CrossSectional
-        {
+        if node.operator.is_cross_sectional() && node.scope != FeatureScope::CrossSectional {
             issues.push(issue("invalid-operator-scope", Some(node.id.clone())));
+        }
+        if node.scope == FeatureScope::CrossSectional && !node.operator.is_cross_sectional() {
+            issues.push(issue(
+                "invalid-cross-sectional-operator-scope",
+                Some(node.id.clone()),
+            ));
         }
         if node.scope.rank() > content.scope.rank() {
             issues.push(issue("definition-scope-mismatch", Some(node.id.clone())));
@@ -1594,6 +1605,41 @@ fn validate_operator_contract(node: &FeatureNode, issues: &mut Vec<ValidationIss
                 .is_some_and(|unit| !matches!(unit.as_str(), Some("price" | "quantity" | "value")))
             {
                 issues.push(issue("invalid-split-unit", Some(node.id.clone())));
+            }
+        }
+        FeatureOperator::CrossSectionalRank
+        | FeatureOperator::CrossSectionalPercentile
+        | FeatureOperator::CrossSectionalZScore => {
+            if node.inputs.len() != 1 {
+                issues.push(issue(
+                    "invalid-cross-sectional-input-count",
+                    Some(node.id.clone()),
+                ));
+            }
+            let minimum_count = parameter("minimumCount").or_else(|| parameter("minimum-count"));
+            if minimum_count.is_some_and(|value| value.as_u64().is_none_or(|value| value == 0)) {
+                issues.push(issue(
+                    "invalid-cross-sectional-minimum-count",
+                    Some(node.id.clone()),
+                ));
+            }
+            let minimum_coverage =
+                parameter("minimumCoverage").or_else(|| parameter("minimum-coverage"));
+            if minimum_coverage.is_some_and(|value| {
+                value
+                    .as_f64()
+                    .is_none_or(|value| !value.is_finite() || value <= 0.0 || value > 1.0)
+            }) {
+                issues.push(issue(
+                    "invalid-cross-sectional-coverage",
+                    Some(node.id.clone()),
+                ));
+            }
+            if parameter("reverse").is_some_and(|value| value.as_bool().is_none()) {
+                issues.push(issue(
+                    "invalid-cross-sectional-order",
+                    Some(node.id.clone()),
+                ));
             }
         }
         _ => {}

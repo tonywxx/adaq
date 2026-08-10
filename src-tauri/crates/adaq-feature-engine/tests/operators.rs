@@ -1,13 +1,18 @@
 use std::collections::{BTreeMap, HashMap};
 
-use adaq_data_core::market::{
-    DayEvidence, InstrumentId, SessionPhase, TradingCalendarSnapshot, TradingSession, Venue,
+use adaq_data_core::{
+    BarInterval,
+    market::{
+        DayEvidence, InstrumentId, PriceBasis, SessionPhase, TradingCalendarSnapshot,
+        TradingSession, Venue, VenueKind,
+    },
 };
 use adaq_feature_engine::{
     CorporateAction, DefinitionDraft, FeatureDefinition, FeatureEngine, FeatureEngineIdentity,
-    FeatureEvaluationInput, FeatureInput, FeatureInputEvent, FeatureMarketBar, FeatureNode,
-    FeatureObservation, FeatureObservationValue, FeatureOperator, FeatureOutput, FeaturePlan,
-    FeaturePlanDraft, FeatureScope, FeatureUnavailabilityReason, MarketField,
+    FeatureEvaluationInput, FeatureInput, FeatureInputEvent, FeatureMarketBar,
+    FeatureMarketContext, FeatureNode, FeatureObservation, FeatureObservationValue,
+    FeatureOperator, FeatureOutput, FeaturePlan, FeaturePlanDraft, FeatureScope,
+    FeatureUnavailabilityReason, MarketField, PointInTimeInstrumentUniverse, UniverseEvidenceState,
 };
 use chrono::NaiveTime;
 use serde_json::json;
@@ -86,6 +91,110 @@ fn reason(observation: &FeatureObservation) -> Option<FeatureUnavailabilityReaso
 fn assert_close(actual: Option<f64>, expected: f64) {
     let actual = actual.expect("expected an available feature");
     assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+}
+
+fn cross_sectional_context() -> FeatureMarketContext {
+    FeatureMarketContext::new(
+        Venue::us_equity("iex").unwrap(),
+        VenueKind::UsEquity,
+        BarInterval::OneDay,
+        PriceBasis::Unadjusted,
+        "USD",
+    )
+    .unwrap()
+}
+
+fn cross_sectional_universe(
+    time: i64,
+    members: &[&str],
+    evidence_state: UniverseEvidenceState,
+) -> PointInTimeInstrumentUniverse {
+    let context = cross_sectional_context();
+    PointInTimeInstrumentUniverse::new(
+        "universe-1",
+        time,
+        members.iter().map(|member| (*member).to_owned()).collect(),
+        context,
+        evidence_state,
+    )
+    .unwrap()
+}
+
+fn cross_sectional_batch(
+    time: i64,
+    universe: PointInTimeInstrumentUniverse,
+    values: &[(&str, &str)],
+) -> FeatureInputEvent {
+    let context = cross_sectional_context();
+    FeatureInputEvent::cross_sectional_batch(
+        time,
+        universe,
+        values
+            .iter()
+            .map(|(instrument_id, close)| {
+                FeatureEvaluationInput::new(*instrument_id, time, time, bar(time, close, "1", "1"))
+                    .with_market_context(context.clone())
+            })
+            .collect(),
+    )
+}
+
+fn cross_sectional_plan(nodes: Vec<FeatureNode>, outputs: &[(&str, &str)]) -> FeaturePlan {
+    let definition = FeatureDefinition::freeze(DefinitionDraft {
+        definition_id: Uuid::new_v4(),
+        revision: 1,
+        scope: FeatureScope::CrossSectional,
+        nodes,
+        outputs: outputs
+            .iter()
+            .map(|(name, node_id)| FeatureOutput {
+                name: (*name).into(),
+                node_id: (*node_id).into(),
+            })
+            .collect(),
+    })
+    .unwrap();
+    FeaturePlan::freeze(FeaturePlanDraft {
+        definitions: vec![definition],
+        engine_identity: identity(),
+        ..FeaturePlanDraft::default()
+    })
+    .unwrap()
+}
+
+fn cross_sectional_node(
+    id: &str,
+    operator: FeatureOperator,
+    parameters: BTreeMap<String, serde_json::Value>,
+) -> FeatureNode {
+    FeatureNode {
+        id: id.into(),
+        operator,
+        scope: FeatureScope::CrossSectional,
+        inputs: vec![FeatureInput::Market {
+            field: MarketField::Close,
+        }],
+        parameters,
+        warmup_bars: 0,
+    }
+}
+
+fn observation_map(
+    observations: &[FeatureObservation],
+) -> HashMap<(String, String), FeatureObservation> {
+    observations
+        .iter()
+        .cloned()
+        .map(|observation| {
+            (
+                (
+                    observation.instrument_id.clone(),
+                    observation.output_name.clone(),
+                ),
+                observation,
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -892,4 +1001,339 @@ fn future_return_direction_is_rejected_at_definition_freeze() {
     })
     .unwrap_err();
     assert!(error.codes().contains(&"future-return-not-allowed"));
+}
+
+#[test]
+fn cross_sectional_rank_percentile_and_zscore_are_deterministic() {
+    let plan = cross_sectional_plan(
+        vec![
+            cross_sectional_node("rank", FeatureOperator::CrossSectionalRank, BTreeMap::new()),
+            cross_sectional_node(
+                "reverse-rank",
+                FeatureOperator::CrossSectionalRank,
+                BTreeMap::from([("reverse".into(), json!(true))]),
+            ),
+            cross_sectional_node(
+                "percentile",
+                FeatureOperator::CrossSectionalPercentile,
+                BTreeMap::new(),
+            ),
+            cross_sectional_node(
+                "z-score",
+                FeatureOperator::CrossSectionalZScore,
+                BTreeMap::new(),
+            ),
+        ],
+        &[
+            ("rank", "rank"),
+            ("reverse-rank", "reverse-rank"),
+            ("percentile", "percentile"),
+            ("z-score", "z-score"),
+        ],
+    );
+    let universe = cross_sectional_universe(10, &["A", "B", "C"], UniverseEvidenceState::Observed);
+    let mut evaluator = FeatureEngine::new(identity()).evaluator(plan).unwrap();
+    let observations = evaluator
+        .observe(cross_sectional_batch(
+            10,
+            universe,
+            &[("C", "20"), ("A", "10"), ("B", "20")],
+        ))
+        .unwrap();
+    let observations = observation_map(&observations);
+
+    assert_eq!(
+        value(&observations[&(String::from("A"), String::from("rank"))]),
+        Some(1.0)
+    );
+    assert_eq!(
+        value(&observations[&(String::from("B"), String::from("rank"))]),
+        Some(2.5)
+    );
+    assert_eq!(
+        value(&observations[&(String::from("C"), String::from("reverse-rank"))]),
+        Some(1.5)
+    );
+    assert_eq!(
+        value(&observations[&(String::from("A"), String::from("percentile"))]),
+        Some(0.0)
+    );
+    assert_eq!(
+        value(&observations[&(String::from("B"), String::from("percentile"))]),
+        Some(0.75)
+    );
+    assert_close(
+        value(&observations[&(String::from("A"), String::from("z-score"))]),
+        -std::f64::consts::SQRT_2,
+    );
+    assert_eq!(
+        observations[&(String::from("B"), String::from("rank"))]
+            .cross_sectional_coverage
+            .as_ref()
+            .unwrap()
+            .available_count,
+        3
+    );
+}
+
+#[test]
+fn cross_sectional_nodes_can_consume_lower_scope_features() {
+    let mut close = node(
+        "close",
+        FeatureOperator::CheckedArithmetic,
+        vec![FeatureInput::Market {
+            field: MarketField::Close,
+        }],
+        BTreeMap::new(),
+    );
+    close.scope = FeatureScope::Pointwise;
+    let rank = FeatureNode {
+        id: "rank".into(),
+        operator: FeatureOperator::CrossSectionalRank,
+        scope: FeatureScope::CrossSectional,
+        inputs: vec![FeatureInput::Node {
+            node_id: "close".into(),
+        }],
+        parameters: BTreeMap::new(),
+        warmup_bars: 0,
+    };
+    let plan = cross_sectional_plan(vec![close, rank], &[("rank", "rank")]);
+    let mut evaluator = FeatureEngine::new(identity()).evaluator(plan).unwrap();
+    let observations = evaluator
+        .observe(cross_sectional_batch(
+            10,
+            cross_sectional_universe(10, &["A", "B"], UniverseEvidenceState::Observed),
+            &[("B", "20"), ("A", "10")],
+        ))
+        .unwrap();
+    let observations = observation_map(&observations);
+    assert_eq!(
+        value(&observations[&(String::from("A"), String::from("rank"))]),
+        Some(1.0)
+    );
+    assert_eq!(
+        value(&observations[&(String::from("B"), String::from("rank"))]),
+        Some(2.0)
+    );
+}
+
+#[test]
+fn cross_sectional_coverage_preserves_missing_members_and_actual_coverage() {
+    let plan = cross_sectional_plan(
+        vec![cross_sectional_node(
+            "rank",
+            FeatureOperator::CrossSectionalRank,
+            BTreeMap::from([
+                ("minimum-count".into(), json!(2)),
+                ("minimum-coverage".into(), json!(0.5)),
+            ]),
+        )],
+        &[("rank", "rank")],
+    );
+    let universe = cross_sectional_universe(
+        10,
+        &["A", "B", "C", "D"],
+        UniverseEvidenceState::Reconstructed,
+    );
+    let mut evaluator = FeatureEngine::new(identity()).evaluator(plan).unwrap();
+    let observations = evaluator
+        .observe(cross_sectional_batch(
+            10,
+            universe,
+            &[("C", "30"), ("A", "10")],
+        ))
+        .unwrap();
+    let observations = observation_map(&observations);
+
+    assert_eq!(
+        value(&observations[&(String::from("A"), String::from("rank"))]),
+        Some(1.0)
+    );
+    assert_eq!(
+        value(&observations[&(String::from("C"), String::from("rank"))]),
+        Some(2.0)
+    );
+    assert_eq!(
+        reason(&observations[&(String::from("B"), String::from("rank"))]),
+        Some(FeatureUnavailabilityReason::MissingMarketInput)
+    );
+    assert_eq!(
+        reason(&observations[&(String::from("D"), String::from("rank"))]),
+        Some(FeatureUnavailabilityReason::MissingMarketInput)
+    );
+    let coverage = observations[&(String::from("A"), String::from("rank"))]
+        .cross_sectional_coverage
+        .as_ref()
+        .unwrap();
+    assert_eq!(coverage.universe_count, 4);
+    assert_eq!(coverage.available_count, 2);
+    assert_eq!(coverage.actual_coverage, 0.5);
+    assert_eq!(
+        coverage.evidence_state,
+        UniverseEvidenceState::Reconstructed
+    );
+}
+
+#[test]
+fn cross_sectional_default_full_coverage_and_singleton_formulas_are_unavailable() {
+    let plan = cross_sectional_plan(
+        vec![
+            cross_sectional_node("rank", FeatureOperator::CrossSectionalRank, BTreeMap::new()),
+            cross_sectional_node(
+                "percentile",
+                FeatureOperator::CrossSectionalPercentile,
+                BTreeMap::new(),
+            ),
+            cross_sectional_node(
+                "z-score",
+                FeatureOperator::CrossSectionalZScore,
+                BTreeMap::new(),
+            ),
+        ],
+        &[
+            ("rank", "rank"),
+            ("percentile", "percentile"),
+            ("z-score", "z-score"),
+        ],
+    );
+    let mut evaluator = FeatureEngine::new(identity())
+        .evaluator(plan.clone())
+        .unwrap();
+    let observations = evaluator
+        .observe(cross_sectional_batch(
+            10,
+            cross_sectional_universe(10, &["A", "B"], UniverseEvidenceState::Observed),
+            &[("A", "10")],
+        ))
+        .unwrap();
+    let observations = observation_map(&observations);
+    assert_eq!(
+        reason(&observations[&(String::from("A"), String::from("rank"))]),
+        Some(FeatureUnavailabilityReason::InsufficientCoverage)
+    );
+    assert_eq!(
+        reason(&observations[&(String::from("B"), String::from("rank"))]),
+        Some(FeatureUnavailabilityReason::MissingMarketInput)
+    );
+
+    let mut evaluator = FeatureEngine::new(identity()).evaluator(plan).unwrap();
+    let observations = evaluator
+        .observe(cross_sectional_batch(
+            20,
+            cross_sectional_universe(20, &["A"], UniverseEvidenceState::Observed),
+            &[("A", "10")],
+        ))
+        .unwrap();
+    let observations = observation_map(&observations);
+    assert_eq!(
+        value(&observations[&(String::from("A"), String::from("rank"))]),
+        Some(1.0)
+    );
+    assert_eq!(
+        reason(&observations[&(String::from("A"), String::from("percentile"))]),
+        Some(FeatureUnavailabilityReason::UndefinedArithmetic)
+    );
+    assert_eq!(
+        reason(&observations[&(String::from("A"), String::from("z-score"))]),
+        Some(FeatureUnavailabilityReason::UndefinedArithmetic)
+    );
+}
+
+#[test]
+fn cross_sectional_unknown_universe_is_complete_and_mixed_markets_are_rejected() {
+    let plan = cross_sectional_plan(
+        vec![cross_sectional_node(
+            "rank",
+            FeatureOperator::CrossSectionalRank,
+            BTreeMap::new(),
+        )],
+        &[("rank", "rank")],
+    );
+    let universe = cross_sectional_universe(10, &["A", "B"], UniverseEvidenceState::Unknown);
+    let mut evaluator = FeatureEngine::new(identity())
+        .evaluator(plan.clone())
+        .unwrap();
+    let observations = evaluator
+        .observe(cross_sectional_batch(10, universe, &[("A", "10")]))
+        .unwrap();
+    assert_eq!(observations.len(), 2);
+    assert!(observations.iter().all(|observation| {
+        reason(observation) == Some(FeatureUnavailabilityReason::UnknownUniverse)
+    }));
+
+    let universe = cross_sectional_universe(20, &["A", "B"], UniverseEvidenceState::Observed);
+    let us_context = cross_sectional_context();
+    let crypto_context = FeatureMarketContext::new(
+        Venue::crypto_spot("okx").unwrap(),
+        VenueKind::CryptoSpot,
+        BarInterval::OneDay,
+        PriceBasis::Unadjusted,
+        "USD",
+    )
+    .unwrap();
+    let batch = FeatureInputEvent::cross_sectional_batch(
+        20,
+        universe,
+        vec![
+            FeatureEvaluationInput::new("A", 20, 20, bar(20, "10", "1", "1"))
+                .with_market_context(us_context),
+            FeatureEvaluationInput::new("B", 20, 20, bar(20, "20", "1", "1"))
+                .with_market_context(crypto_context),
+        ],
+    );
+    let mut evaluator = FeatureEngine::new(identity()).evaluator(plan).unwrap();
+    let error = evaluator.observe(batch).unwrap_err();
+    assert_eq!(error.code(), "invalid-observation");
+    assert_eq!(error.diagnostic, "cross-sectional-market-context-mismatch");
+}
+
+#[test]
+fn cross_sectional_preview_keeps_every_member_and_input_order_does_not_change_output() {
+    let plan = cross_sectional_plan(
+        vec![cross_sectional_node(
+            "rank",
+            FeatureOperator::CrossSectionalRank,
+            BTreeMap::new(),
+        )],
+        &[("rank", "rank")],
+    );
+    let universe = cross_sectional_universe(10, &["A", "B", "C"], UniverseEvidenceState::Observed);
+    let first = cross_sectional_batch(10, universe.clone(), &[("C", "30"), ("A", "10")]);
+    let second = cross_sectional_batch(
+        20,
+        cross_sectional_universe(20, &["A", "B", "C"], UniverseEvidenceState::Observed),
+        &[("A", "11"), ("B", "21"), ("C", "31")],
+    );
+    let mut evaluator = FeatureEngine::new(identity())
+        .evaluator(plan.clone())
+        .unwrap();
+    let preview = evaluator.evaluate_batch(&[first, second]).unwrap();
+    assert_eq!(preview.len(), 6);
+    assert_eq!(
+        preview
+            .iter()
+            .filter(|observation| observation.observation_time_ms == 10)
+            .count(),
+        3
+    );
+
+    let mut ordered = FeatureEngine::new(identity())
+        .evaluator(plan.clone())
+        .unwrap();
+    let ordered = ordered
+        .observe(cross_sectional_batch(
+            10,
+            universe,
+            &[("A", "10"), ("C", "30")],
+        ))
+        .unwrap();
+    let mut reversed = FeatureEngine::new(identity()).evaluator(plan).unwrap();
+    let reversed = reversed
+        .observe(cross_sectional_batch(
+            10,
+            cross_sectional_universe(10, &["A", "B", "C"], UniverseEvidenceState::Observed),
+            &[("C", "30"), ("A", "10")],
+        ))
+        .unwrap();
+    assert_eq!(observation_map(&ordered), observation_map(&reversed));
 }

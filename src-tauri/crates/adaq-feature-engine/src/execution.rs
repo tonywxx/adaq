@@ -1,9 +1,12 @@
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fmt,
 };
 
-use adaq_data_core::{OhlcvBar, market::TradingCalendarSnapshot};
+use adaq_data_core::{
+    BarInterval, OhlcvBar,
+    market::{PriceBasis, TradingCalendarSnapshot, Venue, VenueKind},
+};
 use adaq_indicator_engine::{
     CompiledIndicator, IndicatorColumn, IndicatorEngine, IndicatorRequest,
     MarketField as IndicatorMarketField, OhlcvSegment, ParameterValue,
@@ -16,8 +19,8 @@ use serde_json::{Value, json};
 use crate::{
     EvaluationStage, FeatureDefinition, FeatureEngineIdentity, FeatureEvaluationError,
     FeatureEvaluationErrorCode, FeatureInput, FeatureNode, FeatureObservation, FeatureOperator,
-    FeatureOutput, FeaturePlan, FeatureScope, FeatureSource, FeatureUnavailabilityReason,
-    FrozenBuiltInParameter, MarketField,
+    FeatureOutput, FeaturePlan, FeatureScope, FeatureSlot, FeatureSource,
+    FeatureUnavailabilityReason, FrozenBuiltInParameter, MarketField,
 };
 
 /// An exact decimal retained alongside its finite analytical representation.
@@ -75,6 +78,155 @@ impl fmt::Display for FeatureInputError {
 }
 
 impl std::error::Error for FeatureInputError {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FeatureMarketContext {
+    pub venue: Venue,
+    pub asset_class: VenueKind,
+    pub bar_interval: BarInterval,
+    pub price_basis: PriceBasis,
+    pub valuation_currency: String,
+}
+
+impl FeatureMarketContext {
+    pub fn new(
+        venue: Venue,
+        asset_class: VenueKind,
+        bar_interval: BarInterval,
+        price_basis: PriceBasis,
+        valuation_currency: impl Into<String>,
+    ) -> Result<Self, FeatureInputError> {
+        let valuation_currency = valuation_currency.into();
+        if venue.kind != asset_class {
+            return Err(FeatureInputError::new(
+                "market-context-asset-class-mismatch",
+            ));
+        }
+        if valuation_currency.trim().is_empty() {
+            return Err(FeatureInputError::new("market-context-currency-missing"));
+        }
+        Ok(Self {
+            venue,
+            asset_class,
+            bar_interval,
+            price_basis,
+            valuation_currency,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UniverseEvidenceState {
+    Observed,
+    Reconstructed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PointInTimeInstrumentUniverse {
+    pub universe_id: String,
+    pub as_of_ms: i64,
+    pub members: Vec<String>,
+    pub market_context: FeatureMarketContext,
+    pub evidence_state: UniverseEvidenceState,
+}
+
+impl PointInTimeInstrumentUniverse {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        universe_id: impl Into<String>,
+        as_of_ms: i64,
+        members: Vec<String>,
+        market_context: FeatureMarketContext,
+        evidence_state: UniverseEvidenceState,
+    ) -> Result<Self, FeatureInputError> {
+        let universe = Self {
+            universe_id: universe_id.into(),
+            as_of_ms,
+            members,
+            market_context,
+            evidence_state,
+        };
+        universe.validate()?;
+        Ok(universe)
+    }
+
+    fn context(&self) -> Result<FeatureMarketContext, FeatureInputError> {
+        FeatureMarketContext::new(
+            self.market_context.venue.clone(),
+            self.market_context.asset_class,
+            self.market_context.bar_interval,
+            self.market_context.price_basis,
+            self.market_context.valuation_currency.clone(),
+        )
+    }
+
+    fn validate(&self) -> Result<(), FeatureInputError> {
+        if self.universe_id.trim().is_empty() {
+            return Err(FeatureInputError::new("universe-id-missing"));
+        }
+        if self.members.iter().any(|member| member.trim().is_empty()) {
+            return Err(FeatureInputError::new("universe-member-id-missing"));
+        }
+        let members = self.members.iter().collect::<BTreeSet<_>>();
+        if members.len() != self.members.len() {
+            return Err(FeatureInputError::new("duplicate-universe-member"));
+        }
+        self.context().map(|_| ())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FeatureCrossSectionalBatch {
+    pub observation_time_ms: i64,
+    pub universe: PointInTimeInstrumentUniverse,
+    pub inputs: Vec<FeatureEvaluationInput>,
+}
+
+impl FeatureCrossSectionalBatch {
+    pub fn new(
+        observation_time_ms: i64,
+        universe: PointInTimeInstrumentUniverse,
+        inputs: Vec<FeatureEvaluationInput>,
+    ) -> Self {
+        Self {
+            observation_time_ms,
+            universe,
+            inputs,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CrossSectionalCoverage {
+    pub universe_count: usize,
+    pub available_count: usize,
+    pub actual_coverage: f64,
+    pub evidence_state: UniverseEvidenceState,
+}
+
+impl CrossSectionalCoverage {
+    fn new(
+        universe_count: usize,
+        available_count: usize,
+        evidence_state: UniverseEvidenceState,
+    ) -> Self {
+        Self {
+            universe_count,
+            available_count,
+            actual_coverage: if universe_count == 0 {
+                0.0
+            } else {
+                available_count as f64 / universe_count as f64
+            },
+            evidence_state,
+        }
+    }
+}
 
 /// A lossless OHLCV projection. Missing fields remain missing instead of being imputed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,6 +503,7 @@ pub struct FeatureEvaluationInput {
     pub bar: Option<FeatureMarketBar>,
     pub calendar: Option<TradingCalendarSnapshot>,
     pub corporate_actions: Vec<CorporateAction>,
+    pub market_context: Option<FeatureMarketContext>,
 }
 
 impl FeatureEvaluationInput {
@@ -367,6 +520,7 @@ impl FeatureEvaluationInput {
             bar: Some(bar),
             calendar: None,
             corporate_actions: Vec::new(),
+            market_context: None,
         }
     }
 
@@ -382,6 +536,7 @@ impl FeatureEvaluationInput {
             bar: None,
             calendar: None,
             corporate_actions: Vec::new(),
+            market_context: None,
         }
     }
 
@@ -394,11 +549,17 @@ impl FeatureEvaluationInput {
         self.corporate_actions = corporate_actions;
         self
     }
+
+    pub fn with_market_context(mut self, market_context: FeatureMarketContext) -> Self {
+        self.market_context = Some(market_context);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FeatureInputEvent {
     Observation(FeatureEvaluationInput),
+    CrossSectionalBatch(FeatureCrossSectionalBatch),
     BarGap {
         instrument_id: String,
         observation_time_ms: i64,
@@ -413,6 +574,18 @@ pub enum FeatureInputEvent {
 impl FeatureInputEvent {
     pub fn observation(input: FeatureEvaluationInput) -> Self {
         Self::Observation(input)
+    }
+
+    pub fn cross_sectional_batch(
+        observation_time_ms: i64,
+        universe: PointInTimeInstrumentUniverse,
+        inputs: Vec<FeatureEvaluationInput>,
+    ) -> Self {
+        Self::CrossSectionalBatch(FeatureCrossSectionalBatch::new(
+            observation_time_ms,
+            universe,
+            inputs,
+        ))
     }
 
     pub fn bar_gap(
@@ -529,6 +702,7 @@ impl FeatureEvaluator {
     ) -> Result<Vec<FeatureObservation>, FeatureEvaluationError> {
         match event {
             FeatureInputEvent::Observation(input) => self.observe_bar(input),
+            FeatureInputEvent::CrossSectionalBatch(batch) => self.observe_cross_sectional(batch),
             FeatureInputEvent::BarGap {
                 instrument_id,
                 observation_time_ms,
@@ -582,136 +756,431 @@ impl FeatureEvaluator {
         runtime.remember_actions(&input.corporate_actions);
         input.corporate_actions = runtime.corporate_actions.clone();
 
+        let current = evaluate_definitions_for_input(
+            definitions,
+            runtime,
+            &input,
+            &plan.engine_identity(),
+            indicator_engine,
+            &instrument_id,
+            false,
+        )?;
+        let slots = evaluate_slots_for_input(
+            plan.slots(),
+            runtime,
+            &input,
+            &plan.engine_identity(),
+            indicator_engine,
+            &instrument_id,
+        )?;
         let mut observations = Vec::new();
-        for (index, template) in definitions.iter().enumerate() {
-            let definition = &mut runtime.definitions[index];
-            definition.current.clear();
-            for node_id in template.order.iter() {
-                let node = definition.nodes.get(node_id).cloned().ok_or_else(|| {
-                    fatal_error(
-                        FeatureEvaluationErrorCode::BrokenShape,
-                        EvaluationStage::Invariant,
-                        Some(node_id.clone()),
-                        Some(instrument_id.clone()),
-                        Some(input.observation_time_ms),
-                        "runtime-node-missing",
-                    )
-                })?;
-                let values = node
-                    .inputs
-                    .iter()
-                    .map(|feature_input| {
-                        resolve_input(
-                            feature_input,
-                            &input,
-                            &definition.current,
-                            &instrument_id,
-                            node_id,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let state = definition.states.get_mut(node_id).ok_or_else(|| {
-                    fatal_error(
-                        FeatureEvaluationErrorCode::BrokenShape,
-                        EvaluationStage::Invariant,
-                        Some(node_id.clone()),
-                        Some(instrument_id.clone()),
-                        Some(input.observation_time_ms),
-                        "runtime-state-missing",
-                    )
-                })?;
-                let value = evaluate_node(
-                    &node,
-                    &values,
-                    &input,
-                    state,
-                    &plan.engine_identity(),
-                    indicator_engine,
-                    &instrument_id,
-                )?;
-                definition.current.insert(node.id.clone(), value);
-            }
+        for (definition_index, template) in definitions.iter().enumerate() {
             for output in &template.outputs {
-                let value = definition.current.get(&output.node_id).ok_or_else(|| {
-                    fatal_error(
-                        FeatureEvaluationErrorCode::BrokenShape,
-                        EvaluationStage::Invariant,
-                        Some(output.node_id.clone()),
-                        Some(instrument_id.clone()),
-                        Some(input.observation_time_ms),
-                        "runtime-output-missing",
-                    )
-                })?;
+                let value = current[definition_index]
+                    .get(&output.node_id)
+                    .ok_or_else(|| {
+                        fatal_error(
+                            FeatureEvaluationErrorCode::BrokenShape,
+                            EvaluationStage::Invariant,
+                            Some(output.node_id.clone()),
+                            Some(instrument_id.clone()),
+                            Some(input.observation_time_ms),
+                            "runtime-output-missing",
+                        )
+                    })?;
                 observations.push(observation_from_value(&output.name, &input, value)?);
             }
         }
-
         for slot in plan.slots() {
-            let value = match &slot.source {
-                FeatureSource::Market { field } => input
-                    .bar
-                    .as_ref()
-                    .and_then(|bar| bar.field(*field))
-                    .map(|value| {
-                        value.analytical().map_or_else(
-                            |_| {
-                                EvalValue::Unavailable(
-                                    FeatureUnavailabilityReason::MissingMarketInput,
-                                )
-                            },
-                            |value| EvalValue::Available {
-                                value,
-                                available_at_ms: input.available_at_ms,
-                            },
-                        )
-                    })
-                    .unwrap_or(EvalValue::Unavailable(
-                        FeatureUnavailabilityReason::MissingMarketInput,
-                    )),
-                FeatureSource::BuiltIn {
-                    indicator,
-                    output,
-                    real_inputs,
-                    parameters,
-                } => {
-                    let node = builtin_node(
-                        slot.name.as_str(),
-                        indicator.as_str(),
-                        output.as_str(),
-                        real_inputs,
-                        parameters,
-                    );
-                    let values = node
-                        .inputs
-                        .iter()
-                        .map(|feature_input| {
-                            resolve_input(
-                                feature_input,
-                                &input,
-                                &HashMap::new(),
-                                &instrument_id,
-                                &slot.name,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let state = runtime.slot_states.entry(slot.name.clone()).or_default();
-                    evaluate_node(
-                        &node,
-                        &values,
-                        &input,
-                        state,
-                        &plan.engine_identity(),
-                        indicator_engine,
-                        &instrument_id,
-                    )?
-                }
-                FeatureSource::External { .. } | FeatureSource::Signal { .. } => {
-                    EvalValue::Unavailable(FeatureUnavailabilityReason::MissingDependency)
-                }
-            };
-            observations.push(observation_from_value(&slot.name, &input, &value)?);
+            let value = slots.get(&slot.name).ok_or_else(|| {
+                fatal_error(
+                    FeatureEvaluationErrorCode::BrokenShape,
+                    EvaluationStage::Invariant,
+                    None,
+                    Some(instrument_id.clone()),
+                    Some(input.observation_time_ms),
+                    "runtime-slot-missing",
+                )
+            })?;
+            observations.push(observation_from_value(&slot.name, &input, value)?);
         }
         Ok(observations)
+    }
+
+    fn observe_cross_sectional(
+        &mut self,
+        batch: FeatureCrossSectionalBatch,
+    ) -> Result<Vec<FeatureObservation>, FeatureEvaluationError> {
+        let prepared = self.prepare_cross_sectional_batch(batch)?;
+        let PreparedCrossSectionalBatch {
+            observation_time_ms,
+            universe,
+            members,
+            mut inputs,
+        } = prepared;
+        let universe_count = members.len();
+        let definitions = &self.definitions;
+        let plan = &self.plan;
+        let expected_identity = plan.engine_identity();
+        let indicator_engine = &mut self.indicator_engine;
+
+        if universe.evidence_state == UniverseEvidenceState::Unknown {
+            for member in &members {
+                let runtime = self
+                    .instruments
+                    .entry(member.clone())
+                    .or_insert_with(|| InstrumentRuntime::new(definitions));
+                runtime.note_event(member, observation_time_ms)?;
+            }
+            let coverage = CrossSectionalCoverage::new(universe_count, 0, universe.evidence_state);
+            let mut observations = Vec::new();
+            for member in &members {
+                for (definition_index, template) in definitions.iter().enumerate() {
+                    for output in &template.outputs {
+                        let mut observation = FeatureObservation::unavailable(
+                            &output.name,
+                            member,
+                            observation_time_ms,
+                            FeatureUnavailabilityReason::UnknownUniverse,
+                        )
+                        .map_err(|error| {
+                            fatal_error(
+                                error.code,
+                                EvaluationStage::Invariant,
+                                Some(output.node_id.clone()),
+                                Some(member.clone()),
+                                Some(observation_time_ms),
+                                "invalid-cross-sectional-observation",
+                            )
+                        })?;
+                        if definitions[definition_index]
+                            .nodes
+                            .get(&output.node_id)
+                            .is_some_and(|node| node.scope == FeatureScope::CrossSectional)
+                        {
+                            observation.cross_sectional_coverage = Some(coverage.clone());
+                        }
+                        observations.push(observation);
+                    }
+                }
+                for slot in plan.slots() {
+                    observations.push(
+                        FeatureObservation::unavailable(
+                            &slot.name,
+                            member,
+                            observation_time_ms,
+                            FeatureUnavailabilityReason::UnknownUniverse,
+                        )
+                        .map_err(|error| {
+                            fatal_error(
+                                error.code,
+                                EvaluationStage::Invariant,
+                                None,
+                                Some(member.clone()),
+                                Some(observation_time_ms),
+                                "invalid-cross-sectional-observation",
+                            )
+                        })?,
+                    );
+                }
+            }
+            return Ok(observations);
+        }
+
+        let mut row_states = vec![vec![HashMap::new(); definitions.len()]; inputs.len()];
+        let mut row_coverage = vec![vec![HashMap::new(); definitions.len()]; inputs.len()];
+        let mut slot_values = vec![HashMap::new(); inputs.len()];
+
+        for (row_index, input) in inputs.iter_mut().enumerate() {
+            let instrument_id = input.instrument_id.clone();
+            let runtime = self
+                .instruments
+                .entry(instrument_id.clone())
+                .or_insert_with(|| InstrumentRuntime::new(definitions));
+            runtime.note_event(&instrument_id, observation_time_ms)?;
+            if input
+                .corporate_actions
+                .iter()
+                .any(|action| action.instrument_id() != instrument_id)
+            {
+                return Err(fatal_error(
+                    FeatureEvaluationErrorCode::InvalidObservation,
+                    EvaluationStage::Input,
+                    None,
+                    Some(instrument_id.clone()),
+                    Some(observation_time_ms),
+                    "corporate-action-instrument-mismatch",
+                ));
+            }
+            runtime.observe_count = runtime.observe_count.saturating_add(1);
+            runtime.remember_actions(&input.corporate_actions);
+            input.corporate_actions = runtime.corporate_actions.clone();
+
+            row_states[row_index] = evaluate_definitions_for_input(
+                definitions,
+                runtime,
+                input,
+                &expected_identity,
+                indicator_engine,
+                &instrument_id,
+                true,
+            )?;
+            slot_values[row_index] = evaluate_slots_for_input(
+                plan.slots(),
+                runtime,
+                input,
+                &expected_identity,
+                indicator_engine,
+                &instrument_id,
+            )?;
+        }
+
+        for (definition_index, template) in definitions.iter().enumerate() {
+            for node_id in &template.order {
+                let node = template.nodes.get(node_id).ok_or_else(|| {
+                    fatal_error(
+                        FeatureEvaluationErrorCode::BrokenShape,
+                        EvaluationStage::Invariant,
+                        Some(node_id.clone()),
+                        None,
+                        Some(observation_time_ms),
+                        "runtime-node-missing",
+                    )
+                })?;
+                if node.scope != FeatureScope::CrossSectional {
+                    continue;
+                }
+                let values = inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(row_index, input)| {
+                        node.inputs
+                            .iter()
+                            .map(|feature_input| {
+                                resolve_input(
+                                    feature_input,
+                                    input,
+                                    &row_states[row_index][definition_index],
+                                    &input.instrument_id,
+                                    node_id,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let evaluated = evaluate_cross_sectional_node(
+                    node,
+                    &values,
+                    &members,
+                    universe.evidence_state,
+                    observation_time_ms,
+                )?;
+                for (row_index, (value, coverage)) in evaluated.into_iter().enumerate() {
+                    row_states[row_index][definition_index].insert(node.id.clone(), value);
+                    row_coverage[row_index][definition_index].insert(node.id.clone(), coverage);
+                }
+            }
+        }
+
+        let mut observations = Vec::new();
+        for row_index in 0..inputs.len() {
+            let input = &inputs[row_index];
+            for (definition_index, template) in definitions.iter().enumerate() {
+                for output in &template.outputs {
+                    let value = row_states[row_index][definition_index]
+                        .get(&output.node_id)
+                        .ok_or_else(|| {
+                            fatal_error(
+                                FeatureEvaluationErrorCode::BrokenShape,
+                                EvaluationStage::Invariant,
+                                Some(output.node_id.clone()),
+                                Some(input.instrument_id.clone()),
+                                Some(observation_time_ms),
+                                "runtime-output-missing",
+                            )
+                        })?;
+                    let mut observation = observation_from_value(&output.name, input, value)?;
+                    observation.cross_sectional_coverage = row_coverage[row_index]
+                        [definition_index]
+                        .get(&output.node_id)
+                        .cloned();
+                    observations.push(observation);
+                }
+            }
+            for slot in plan.slots() {
+                let value = slot_values[row_index].get(&slot.name).ok_or_else(|| {
+                    fatal_error(
+                        FeatureEvaluationErrorCode::BrokenShape,
+                        EvaluationStage::Invariant,
+                        None,
+                        Some(input.instrument_id.clone()),
+                        Some(observation_time_ms),
+                        "runtime-slot-missing",
+                    )
+                })?;
+                observations.push(observation_from_value(&slot.name, input, value)?);
+            }
+        }
+        Ok(observations)
+    }
+
+    fn prepare_cross_sectional_batch(
+        &self,
+        batch: FeatureCrossSectionalBatch,
+    ) -> Result<PreparedCrossSectionalBatch, FeatureEvaluationError> {
+        if !self
+            .plan
+            .definitions()
+            .iter()
+            .any(|definition| definition.scope() == FeatureScope::CrossSectional)
+        {
+            return Err(fatal_error(
+                FeatureEvaluationErrorCode::InvalidObservation,
+                EvaluationStage::Validation,
+                None,
+                None,
+                Some(batch.observation_time_ms),
+                "cross-sectional-batch-requires-cross-sectional-plan",
+            ));
+        }
+        batch.universe.validate().map_err(|error| {
+            fatal_error(
+                FeatureEvaluationErrorCode::InvalidObservation,
+                EvaluationStage::Validation,
+                None,
+                None,
+                Some(batch.observation_time_ms),
+                error.code,
+            )
+        })?;
+        if batch.universe.as_of_ms != batch.observation_time_ms {
+            return Err(fatal_error(
+                FeatureEvaluationErrorCode::InvalidObservation,
+                EvaluationStage::Validation,
+                None,
+                None,
+                Some(batch.observation_time_ms),
+                "cross-sectional-observation-time-mismatch",
+            ));
+        }
+        let context = batch.universe.context().map_err(|error| {
+            fatal_error(
+                FeatureEvaluationErrorCode::InvalidObservation,
+                EvaluationStage::Validation,
+                None,
+                None,
+                Some(batch.observation_time_ms),
+                error.code,
+            )
+        })?;
+        let mut members = batch.universe.members.clone();
+        members.sort();
+        let member_set = members.iter().collect::<BTreeSet<_>>();
+        let mut inputs_by_id = BTreeMap::new();
+        for mut input in batch.inputs {
+            if input.instrument_id.is_empty() {
+                return Err(fatal_error(
+                    FeatureEvaluationErrorCode::InvalidObservation,
+                    EvaluationStage::Validation,
+                    None,
+                    None,
+                    Some(batch.observation_time_ms),
+                    "empty-instrument-id",
+                ));
+            }
+            if input.observation_time_ms != batch.observation_time_ms {
+                return Err(fatal_error(
+                    FeatureEvaluationErrorCode::InvalidObservation,
+                    EvaluationStage::Validation,
+                    None,
+                    Some(input.instrument_id),
+                    Some(input.observation_time_ms),
+                    "cross-sectional-observation-time-mismatch",
+                ));
+            }
+            if input.available_at_ms > batch.observation_time_ms {
+                return Err(fatal_error(
+                    FeatureEvaluationErrorCode::InvalidObservation,
+                    EvaluationStage::Availability,
+                    None,
+                    Some(input.instrument_id),
+                    Some(batch.observation_time_ms),
+                    "cross-sectional-input-not-yet-available",
+                ));
+            }
+            if input
+                .bar
+                .as_ref()
+                .is_some_and(|bar| bar.open_time_ms != batch.observation_time_ms)
+            {
+                return Err(fatal_error(
+                    FeatureEvaluationErrorCode::InvalidObservation,
+                    EvaluationStage::Validation,
+                    None,
+                    Some(input.instrument_id),
+                    Some(batch.observation_time_ms),
+                    "cross-sectional-bar-time-mismatch",
+                ));
+            }
+            if !member_set.contains(&input.instrument_id) {
+                return Err(fatal_error(
+                    FeatureEvaluationErrorCode::InvalidObservation,
+                    EvaluationStage::Validation,
+                    None,
+                    Some(input.instrument_id),
+                    Some(batch.observation_time_ms),
+                    "cross-sectional-instrument-outside-universe",
+                ));
+            }
+            if input.market_context.is_none() {
+                input.market_context = Some(context.clone());
+            }
+            if input
+                .market_context
+                .as_ref()
+                .is_some_and(|value| value != &context)
+            {
+                return Err(fatal_error(
+                    FeatureEvaluationErrorCode::InvalidObservation,
+                    EvaluationStage::Validation,
+                    None,
+                    Some(input.instrument_id),
+                    Some(batch.observation_time_ms),
+                    "cross-sectional-market-context-mismatch",
+                ));
+            }
+            if inputs_by_id
+                .insert(input.instrument_id.clone(), input)
+                .is_some()
+            {
+                return Err(fatal_error(
+                    FeatureEvaluationErrorCode::InvalidObservation,
+                    EvaluationStage::Validation,
+                    None,
+                    None,
+                    Some(batch.observation_time_ms),
+                    "duplicate-cross-sectional-input",
+                ));
+            }
+        }
+        let inputs = members
+            .iter()
+            .map(|member| {
+                inputs_by_id.remove(member).unwrap_or_else(|| {
+                    FeatureEvaluationInput::missing(
+                        member,
+                        batch.observation_time_ms,
+                        batch.observation_time_ms,
+                    )
+                })
+            })
+            .collect();
+        Ok(PreparedCrossSectionalBatch {
+            observation_time_ms: batch.observation_time_ms,
+            universe: batch.universe,
+            members,
+            inputs,
+        })
     }
 
     fn observe_gap(
@@ -789,6 +1258,149 @@ impl FeatureEvaluator {
             .chain(self.plan.slots().iter().map(|slot| slot.name.clone()))
             .collect()
     }
+}
+
+fn evaluate_definitions_for_input(
+    definitions: &[RuntimeDefinition],
+    runtime: &mut InstrumentRuntime,
+    input: &FeatureEvaluationInput,
+    expected_identity: &FeatureEngineIdentity,
+    indicator_engine: &mut Option<IndicatorEngine>,
+    instrument_id: &str,
+    skip_cross_sectional: bool,
+) -> Result<Vec<HashMap<String, EvalValue>>, FeatureEvaluationError> {
+    let mut current = Vec::with_capacity(definitions.len());
+    for (definition_index, template) in definitions.iter().enumerate() {
+        let definition = &mut runtime.definitions[definition_index];
+        definition.current.clear();
+        for node_id in &template.order {
+            let node = definition.nodes.get(node_id).cloned().ok_or_else(|| {
+                fatal_error(
+                    FeatureEvaluationErrorCode::BrokenShape,
+                    EvaluationStage::Invariant,
+                    Some(node_id.clone()),
+                    Some(instrument_id.to_owned()),
+                    Some(input.observation_time_ms),
+                    "runtime-node-missing",
+                )
+            })?;
+            if skip_cross_sectional && node.scope == FeatureScope::CrossSectional {
+                continue;
+            }
+            let values = node
+                .inputs
+                .iter()
+                .map(|feature_input| {
+                    resolve_input(
+                        feature_input,
+                        input,
+                        &definition.current,
+                        instrument_id,
+                        node_id,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let state = definition.states.get_mut(node_id).ok_or_else(|| {
+                fatal_error(
+                    FeatureEvaluationErrorCode::BrokenShape,
+                    EvaluationStage::Invariant,
+                    Some(node_id.clone()),
+                    Some(instrument_id.to_owned()),
+                    Some(input.observation_time_ms),
+                    "runtime-state-missing",
+                )
+            })?;
+            let value = evaluate_node(
+                &node,
+                &values,
+                input,
+                state,
+                expected_identity,
+                indicator_engine,
+                instrument_id,
+            )?;
+            definition.current.insert(node.id.clone(), value);
+        }
+        current.push(definition.current.clone());
+    }
+    Ok(current)
+}
+
+fn evaluate_slots_for_input(
+    slots: &[FeatureSlot],
+    runtime: &mut InstrumentRuntime,
+    input: &FeatureEvaluationInput,
+    expected_identity: &FeatureEngineIdentity,
+    indicator_engine: &mut Option<IndicatorEngine>,
+    instrument_id: &str,
+) -> Result<HashMap<String, EvalValue>, FeatureEvaluationError> {
+    let mut values_by_name = HashMap::new();
+    for slot in slots {
+        let value = match &slot.source {
+            FeatureSource::Market { field } => input
+                .bar
+                .as_ref()
+                .and_then(|bar| bar.field(*field))
+                .map(|value| {
+                    value.analytical().map_or_else(
+                        |_| EvalValue::Unavailable(FeatureUnavailabilityReason::MissingMarketInput),
+                        |value| EvalValue::available(value, input.available_at_ms),
+                    )
+                })
+                .unwrap_or(EvalValue::Unavailable(
+                    FeatureUnavailabilityReason::MissingMarketInput,
+                )),
+            FeatureSource::BuiltIn {
+                indicator,
+                output,
+                real_inputs,
+                parameters,
+            } => {
+                let node = builtin_node(
+                    slot.name.as_str(),
+                    indicator.as_str(),
+                    output.as_str(),
+                    real_inputs,
+                    parameters,
+                );
+                let values = node
+                    .inputs
+                    .iter()
+                    .map(|feature_input| {
+                        resolve_input(
+                            feature_input,
+                            input,
+                            &HashMap::new(),
+                            instrument_id,
+                            &slot.name,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let state = runtime.slot_states.entry(slot.name.clone()).or_default();
+                evaluate_node(
+                    &node,
+                    &values,
+                    input,
+                    state,
+                    expected_identity,
+                    indicator_engine,
+                    instrument_id,
+                )?
+            }
+            FeatureSource::External { .. } | FeatureSource::Signal { .. } => {
+                EvalValue::Unavailable(FeatureUnavailabilityReason::MissingDependency)
+            }
+        };
+        values_by_name.insert(slot.name.clone(), value);
+    }
+    Ok(values_by_name)
+}
+
+struct PreparedCrossSectionalBatch {
+    observation_time_ms: i64,
+    universe: PointInTimeInstrumentUniverse,
+    members: Vec<String>,
+    inputs: Vec<FeatureEvaluationInput>,
 }
 
 struct RuntimeDefinition {
@@ -1017,6 +1629,173 @@ fn resolve_input(
             FeatureUnavailabilityReason::ArtifactMissingInstrument,
         )),
     }
+}
+
+fn evaluate_cross_sectional_node(
+    node: &FeatureNode,
+    row_inputs: &[Vec<EvalValue>],
+    instrument_ids: &[String],
+    evidence_state: UniverseEvidenceState,
+    observation_time_ms: i64,
+) -> Result<Vec<(EvalValue, CrossSectionalCoverage)>, FeatureEvaluationError> {
+    if node.inputs.len() != 1 || row_inputs.iter().any(|inputs| inputs.len() != 1) {
+        return Err(fatal_error(
+            FeatureEvaluationErrorCode::BrokenShape,
+            EvaluationStage::Validation,
+            Some(node.id.clone()),
+            None,
+            Some(observation_time_ms),
+            "cross-sectional-input-count-mismatch",
+        ));
+    }
+    let minimum_count = node
+        .parameters
+        .get("minimumCount")
+        .or_else(|| node.parameters.get("minimum-count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let minimum_count = usize::try_from(minimum_count).map_err(|_| {
+        fatal_error(
+            FeatureEvaluationErrorCode::OperatorFailure,
+            EvaluationStage::Validation,
+            Some(node.id.clone()),
+            None,
+            Some(observation_time_ms),
+            "invalid-cross-sectional-minimum-count",
+        )
+    })?;
+    let minimum_coverage = node
+        .parameters
+        .get("minimumCoverage")
+        .or_else(|| node.parameters.get("minimum-coverage"))
+        .and_then(value_as_f64)
+        .unwrap_or(1.0);
+    if minimum_count == 0
+        || !minimum_coverage.is_finite()
+        || minimum_coverage <= 0.0
+        || minimum_coverage > 1.0
+    {
+        return Err(fatal_error(
+            FeatureEvaluationErrorCode::OperatorFailure,
+            EvaluationStage::Validation,
+            Some(node.id.clone()),
+            None,
+            Some(observation_time_ms),
+            "invalid-cross-sectional-coverage-policy",
+        ));
+    }
+    let reverse = node
+        .parameters
+        .get("reverse")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let coverage = CrossSectionalCoverage::new(
+        row_inputs.len(),
+        row_inputs
+            .iter()
+            .filter(|inputs| inputs[0].value().is_some())
+            .count(),
+        evidence_state,
+    );
+    let available_count = coverage.available_count;
+    let enough_coverage =
+        coverage.available_count >= minimum_count && coverage.actual_coverage >= minimum_coverage;
+    let available = row_inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, inputs)| inputs[0].value().map(|value| (index, value)))
+        .collect::<Vec<_>>();
+    let available_at_ms = row_inputs
+        .iter()
+        .filter_map(|inputs| inputs[0].available_at_ms())
+        .max()
+        .unwrap_or(observation_time_ms);
+    let mut results = row_inputs
+        .iter()
+        .map(|inputs| (inputs[0].clone(), coverage.clone()))
+        .collect::<Vec<_>>();
+    if !enough_coverage {
+        for (index, value) in &available {
+            results[*index].0 = if value.is_finite() {
+                EvalValue::Unavailable(FeatureUnavailabilityReason::InsufficientCoverage)
+            } else {
+                EvalValue::Unavailable(FeatureUnavailabilityReason::UndefinedArithmetic)
+            };
+        }
+        return Ok(results);
+    }
+
+    let mut ranked = available
+        .iter()
+        .map(|(index, value)| (*index, *value))
+        .collect::<Vec<_>>();
+    ranked.sort_by(|(left_index, left), (right_index, right)| {
+        let order = if reverse {
+            right.total_cmp(left)
+        } else {
+            left.total_cmp(right)
+        };
+        order.then_with(|| instrument_ids[*left_index].cmp(&instrument_ids[*right_index]))
+    });
+    let mut ranks = vec![0.0; row_inputs.len()];
+    let mut start = 0;
+    while start < ranked.len() {
+        let mut end = start + 1;
+        while end < ranked.len() && ranked[start].1 == ranked[end].1 {
+            end += 1;
+        }
+        let rank = (start + 1 + end) as f64 / 2.0;
+        for (index, _) in &ranked[start..end] {
+            ranks[*index] = rank;
+        }
+        start = end;
+    }
+    let values = available
+        .iter()
+        .map(|(_, value)| *value)
+        .collect::<Vec<_>>();
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let variance = values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / values.len() as f64;
+    for (index, value) in available {
+        let output = match &node.operator {
+            FeatureOperator::CrossSectionalRank => {
+                EvalValue::available(ranks[index], available_at_ms)
+            }
+            FeatureOperator::CrossSectionalPercentile => {
+                if available_count <= 1 {
+                    EvalValue::Unavailable(FeatureUnavailabilityReason::UndefinedArithmetic)
+                } else {
+                    EvalValue::available(
+                        (ranks[index] - 1.0) / (available_count - 1) as f64,
+                        available_at_ms,
+                    )
+                }
+            }
+            FeatureOperator::CrossSectionalZScore => {
+                if variance == 0.0 || !variance.is_finite() {
+                    EvalValue::Unavailable(FeatureUnavailabilityReason::UndefinedArithmetic)
+                } else {
+                    EvalValue::available((value - mean) / variance.sqrt(), available_at_ms)
+                }
+            }
+            _ => {
+                return Err(fatal_error(
+                    FeatureEvaluationErrorCode::InvalidInvariant,
+                    EvaluationStage::Validation,
+                    Some(node.id.clone()),
+                    None,
+                    Some(observation_time_ms),
+                    "invalid-cross-sectional-operator",
+                ));
+            }
+        };
+        results[index].0 = output;
+    }
+    Ok(results)
 }
 
 fn evaluate_node(
