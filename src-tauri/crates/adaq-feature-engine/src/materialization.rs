@@ -910,6 +910,190 @@ impl FeatureMaterializationStore {
         self.recover_pending_deletions()
     }
 
+    /// Advances one Running Attempt's observation progress monotonically.
+    /// Completed counts never move backward, and the Attempt must remain
+    /// Running; finished or cancelled Attempts keep their final evidence.
+    pub fn record_progress(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+        completed: u64,
+        total: u64,
+    ) -> Result<(), MaterializationStoreError> {
+        validate_user(user_id)?;
+        if completed > total {
+            return Err(MaterializationStoreError::InvalidRequest);
+        }
+        let database = self.lock_database()?;
+        let updated = database
+            .execute(
+                "UPDATE feature_materialization_attempts
+                 SET progress_completed = ?1, progress_total = ?2, updated_at_ms = ?3
+                 WHERE attempt_id = ?4 AND user_id = ?5 AND status = ?6
+                   AND ?1 >= progress_completed",
+                params![
+                    completed as i64,
+                    total as i64,
+                    now_ms(),
+                    attempt_id,
+                    user_id,
+                    STATUS_RUNNING
+                ],
+            )
+            .map_err(sqlite_error)?;
+        if updated == 0 {
+            let attempt = load_attempt(&database, user_id, attempt_id)?;
+            if attempt.status != MaterializationAttemptStatus::Running {
+                return Err(MaterializationStoreError::InvalidTransition);
+            }
+        }
+        Ok(())
+    }
+
+    /// Loads one Attempt's stored Request and frozen Plan so a runner can
+    /// execute the exact persisted evidence after a restart. The Plan is
+    /// re-validated against its own persisted engine identity and must
+    /// match the Request's frozen Plan hash.
+    pub fn execution_evidence(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<(FeatureMaterializationRequest, FeaturePlan), MaterializationStoreError> {
+        validate_user(user_id)?;
+        let database = self.lock_database()?;
+        let attempt = load_attempt(&database, user_id, attempt_id)?;
+        let (request_json, plan_json, engine_identity_json): (String, String, String) = database
+            .query_row(
+                "SELECT r.request_json, r.plan_json, r.engine_identity_json
+                 FROM feature_materialization_requests r
+                 WHERE r.request_hash = ?1",
+                [attempt.request_hash.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(sqlite_error)?;
+        drop(database);
+        let request = serde_json::from_str::<FeatureMaterializationRequest>(&request_json)
+            .map_err(|error| MaterializationStoreError::Json(error.to_string()))?;
+        let engine_identity = serde_json::from_str::<FeatureEngineIdentity>(&engine_identity_json)
+            .map_err(|error| MaterializationStoreError::Json(error.to_string()))?;
+        let plan = FeaturePlan::load_for_engine(plan_json.as_bytes(), &engine_identity).map_err(
+            |error| stored_plan_load_error(error, "feature_materialization_requests.plan_json"),
+        )?;
+        if plan.plan_hash() != request.feature_plan_hash {
+            return Err(MaterializationStoreError::InvalidObservation(
+                "stored-feature-plan-hash-mismatch".into(),
+            ));
+        }
+        Ok((request, plan))
+    }
+
+    /// Removes one User's Materialization Attempts, Dataset access, and
+    /// Dataset references, then deletes Dataset evidence that no remaining
+    /// User can access. Content bytes disappear only after the last User
+    /// reference is gone, without granting cross-User visibility.
+    pub fn reset_for_user(&self, user_id: &str) -> Result<(), MaterializationStoreError> {
+        validate_user(user_id)?;
+        let database = self.lock_database()?;
+        let transaction = database.unchecked_transaction().map_err(sqlite_error)?;
+        transaction
+            .execute(
+                "DELETE FROM feature_dataset_references WHERE referencing_user_id = ?1",
+                [user_id],
+            )
+            .map_err(sqlite_error)?;
+        transaction
+            .execute(
+                "DELETE FROM feature_materialization_attempts WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(sqlite_error)?;
+        transaction
+            .execute(
+                "DELETE FROM feature_dataset_access WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(sqlite_error)?;
+        let orphan_datasets = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT dataset_id, content_sha256 FROM feature_datasets
+                     WHERE user_id = ?1
+                       AND NOT EXISTS (
+                           SELECT 1 FROM feature_dataset_access a
+                           WHERE a.dataset_id = feature_datasets.dataset_id
+                       )",
+                )
+                .map_err(sqlite_error)?;
+            let rows = statement
+                .query_map([user_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(sqlite_error)?;
+            rows.map(|row| row.map_err(sqlite_error))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for (dataset_id, _) in &orphan_datasets {
+            transaction
+                .execute(
+                    "DELETE FROM feature_dataset_references WHERE dataset_id = ?1",
+                    [dataset_id],
+                )
+                .map_err(sqlite_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM feature_datasets WHERE dataset_id = ?1",
+                    [dataset_id],
+                )
+                .map_err(sqlite_error)?;
+        }
+        let orphan_content = orphan_datasets
+            .iter()
+            .map(|(_, content_sha256)| content_sha256.clone())
+            .collect::<BTreeSet<_>>();
+        for content_sha256 in orphan_content {
+            let remaining: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM feature_datasets WHERE content_sha256 = ?1",
+                    [content_sha256.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            if remaining != 0 {
+                continue;
+            }
+            let path: String = transaction
+                .query_row(
+                    "SELECT parquet_path FROM feature_dataset_contents WHERE content_sha256 = ?1",
+                    [content_sha256.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sqlite_error)?
+                .unwrap_or_default();
+            if path.is_empty() {
+                continue;
+            }
+            if Path::new(&path) != content_path(&self.dataset_directory, &content_sha256).as_path()
+            {
+                return Err(MaterializationStoreError::IncompatibleSchema {
+                    stored_schema_version: Some(FEATURE_DATASET_STORAGE_SCHEMA_VERSION.into()),
+                    table: Some("feature_dataset_contents.parquet_path".into()),
+                });
+            }
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO feature_dataset_deletions(
+                         content_sha256, parquet_path, requested_at_ms
+                     ) VALUES (?1, ?2, ?3)",
+                    params![content_sha256, path, now_ms()],
+                )
+                .map_err(sqlite_error)?;
+        }
+        transaction.commit().map_err(sqlite_error)?;
+        drop(database);
+        self.recover_pending_deletions()
+    }
+
     fn start_internal(
         &self,
         request: FeatureMaterializationRequest,
@@ -1219,7 +1403,7 @@ impl FeatureMaterializationStore {
         self.attempt(user_id, attempt_id)
     }
 
-    fn fail_with_diagnostic(
+    pub fn fail_with_diagnostic(
         &self,
         user_id: &str,
         attempt_id: &str,

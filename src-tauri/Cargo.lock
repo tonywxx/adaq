@@ -38,6 +38,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tokio",
+ "uuid",
  "zip 8.6.0",
 ]
 

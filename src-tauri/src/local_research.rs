@@ -38,6 +38,7 @@ use crate::{
         ComponentLibrary, ComponentLockSource, ComponentSource, finish_staged_files, stage_files,
     },
     dataset_generation::{DatasetGeneration, GenerationSource},
+    features::{FeatureSource, Features},
     forecast_signal_dataset::{BacktestSignalDataset, backtest_signal_datasets},
     market_data_snapshot::{LocalSnapshotSource, MarketDataSnapshots},
     user::validate_user,
@@ -56,6 +57,7 @@ pub struct LocalResearchState {
     pub(crate) components: ComponentLibrary,
     source: Arc<LocalGenerationSource>,
     pub(crate) generation: DatasetGeneration,
+    pub(crate) features: Features,
     pub(crate) validation: ValidationStudies,
     pub(crate) backtests: Backtests,
     pub(crate) connections: crate::connections::ConnectionManager,
@@ -150,6 +152,53 @@ impl GenerationSource for LocalGenerationSource {
         let directory = self.root.join("signal-datasets");
         fs::create_dir_all(&directory).map_err(string)?;
         Ok(directory)
+    }
+}
+
+/// The concrete local dependencies composed into the Feature lifecycle
+/// module. Only database access, the database file path for the engine's
+/// own Materialization connection, the Feature Dataset directory, and
+/// User-scoped Snapshot/Universe evidence reads are shared; the complete
+/// Local Research state is not.
+pub(crate) struct LocalFeatureSource {
+    database: Arc<Mutex<Connection>>,
+    database_path: PathBuf,
+    snapshots: MarketDataSnapshots,
+    root: PathBuf,
+}
+
+impl SnapshotReadSource for LocalFeatureSource {
+    fn snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
+        self.snapshots.snapshot_for_user(user_id, snapshot_id)
+    }
+}
+
+impl FeatureSource for LocalFeatureSource {
+    fn database(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.database.lock().map_err(string)
+    }
+
+    fn database_path(&self) -> Result<PathBuf, String> {
+        Ok(self.database_path.clone())
+    }
+
+    fn feature_dataset_directory(&self) -> Result<PathBuf, String> {
+        let directory = self.root.join("feature-datasets");
+        fs::create_dir_all(&directory).map_err(string)?;
+        Ok(directory)
+    }
+
+    fn universe_snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<adaq_backtest_core::MarketDataUniverseSnapshot, String> {
+        self.snapshots
+            .universe_snapshot_for_user(user_id, snapshot_id)
     }
 }
 
@@ -398,6 +447,13 @@ impl LocalResearchState {
             components: components.clone(),
         });
         let generation = DatasetGeneration::open(source.clone())?;
+        let feature_source = Arc::new(LocalFeatureSource {
+            database: database.clone(),
+            database_path: app_data.join("adaq.db"),
+            snapshots: snapshots.clone(),
+            root: root.clone(),
+        });
+        let features = Features::open(feature_source)?;
         let validation_source = Arc::new(LocalValidationSource {
             database: database.clone(),
             state: Mutex::new(Weak::new()),
@@ -423,6 +479,7 @@ impl LocalResearchState {
                 components,
                 source,
                 generation,
+                features,
                 validation,
                 backtests,
                 connections,
@@ -493,6 +550,17 @@ impl LocalResearchState {
         } else {
             None
         };
+        let _feature_reset_block = if matches!(kind, LocalDataResetKind::All) {
+            Some(self.features.stop_all_for_user(user_id)?)
+        } else {
+            None
+        };
+        // Feature Materialization evidence lives behind the engine store's
+        // own connection; reset it before the shared transaction so a
+        // failure deletes nothing else.
+        if matches!(kind, LocalDataResetKind::All) {
+            self.features.reset_materialization_for_user(user_id)?;
+        }
         let resets_ashare = matches!(
             kind,
             LocalDataResetKind::MarketData | LocalDataResetKind::All
@@ -607,6 +675,7 @@ impl LocalResearchState {
                 user_id,
                 &self.root,
                 _reset_block.as_ref().unwrap(),
+                _feature_reset_block.as_ref().unwrap(),
                 &self.components,
                 &self.validation,
                 &self.snapshots,
@@ -1028,6 +1097,7 @@ fn reset_all(
     user_id: &str,
     root: &Path,
     reset_block: &crate::dataset_generation::UserResetBlock<'_>,
+    feature_reset_block: &crate::features::UserFeatureResetBlock<'_>,
     components: &ComponentLibrary,
     validation: &ValidationStudies,
     snapshots: &MarketDataSnapshots,
@@ -1070,6 +1140,7 @@ fn reset_all(
         let transaction = database.transaction().map_err(string)?;
         validation.reset_for_user(&transaction, user_id)?;
         reset_block.delete_attempt_evidence(&transaction)?;
+        feature_reset_block.delete_attempt_evidence(&transaction)?;
         transaction
             .execute(
                 "DELETE FROM forecast_evaluation_access WHERE user_id = ?1",

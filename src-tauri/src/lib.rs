@@ -2,6 +2,7 @@ mod backtest;
 mod component_library;
 mod connections;
 mod dataset_generation;
+mod features;
 mod forecast_evaluation;
 mod forecast_signal_dataset;
 mod local_research;
@@ -188,6 +189,273 @@ fn dataset_generation_cancel(
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
     state.generation.cancel(&attempt_id, &user_id)
+}
+
+/// Tauri Feature commands are thin adapters: they deserialize the existing
+/// contract, delegate to the Tauri-independent Feature lifecycle module,
+/// and serialize the result. Commands validate the User and request and
+/// return promptly; heavy Fitting and Materialization work runs in the
+/// module's one persistent FIFO background runner.
+#[tauri::command]
+fn feature_definition_validate(
+    request: features::DefinitionDraftRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<features::DraftValidationView, String> {
+    state.features.validate_definition_draft(request)
+}
+
+#[tauri::command]
+fn feature_definition_publish(
+    request: features::DefinitionPublishRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<features::DefinitionView, String> {
+    state.features.publish_definition(request)
+}
+
+#[tauri::command]
+async fn feature_definition_list(
+    request: features::FeatureUserRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<features::DefinitionView>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .list_definitions(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn feature_definition_get(
+    request: features::DefinitionIdRequest,
+    app: tauri::AppHandle,
+) -> Result<features::DefinitionView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .get_definition(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn feature_definition_preview(
+    request: features::FeaturePreviewRequest,
+    app: tauri::AppHandle,
+) -> Result<features::FeaturePreviewView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .preview_definition_draft(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn feature_fitting_start(
+    request: features::FeatureFittingStartRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<features::FittingAttemptView, String> {
+    state.features.start_fitting(request)
+}
+
+#[tauri::command]
+async fn feature_fitting_list(
+    request: features::FeatureUserRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<features::FittingAttemptView>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .list_fitting_attempts(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn feature_fitting_get(
+    request: features::FeatureAttemptRequest,
+    app: tauri::AppHandle,
+) -> Result<features::FittingAttemptView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .get_fitting_attempt(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn feature_fitting_cancel(
+    request: features::FeatureAttemptRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    state.features.cancel_fitting_attempt(request)
+}
+
+#[tauri::command]
+fn feature_fitting_retry(
+    request: features::FeatureAttemptRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<features::FittingAttemptView, String> {
+    state.features.retry_fitting_attempt(request)
+}
+
+#[tauri::command]
+async fn feature_artifact_list(
+    request: features::FeatureUserRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<features::ArtifactView>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .list_artifacts(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn feature_artifact_get(
+    request: features::FeatureArtifactRequest,
+    app: tauri::AppHandle,
+) -> Result<features::ArtifactView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .get_artifact(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn feature_artifact_delete(
+    request: features::FeatureArtifactRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    state.features.delete_artifact(request)
+}
+
+#[tauri::command]
+fn feature_materialization_start(
+    request: features::FeatureMaterializationStartRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<adaq_feature_engine::MaterializationAttempt, String> {
+    state.features.start_materialization(request)
+}
+
+#[tauri::command]
+async fn feature_materialization_list(
+    request: features::FeatureUserRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<adaq_feature_engine::MaterializationAttempt>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .list_materialization_attempts(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn feature_materialization_get(
+    request: features::FeatureAttemptRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_feature_engine::MaterializationAttempt, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .get_materialization_attempt(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn feature_materialization_cancel(
+    request: features::FeatureAttemptRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    state.features.cancel_materialization_attempt(request)
+}
+
+#[tauri::command]
+fn feature_materialization_retry(
+    request: features::FeatureAttemptRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<adaq_feature_engine::MaterializationAttempt, String> {
+    state.features.retry_materialization_attempt(request)
+}
+
+#[tauri::command]
+async fn feature_dataset_list(
+    request: features::FeatureUserRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<features::FeatureDatasetView>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .list_datasets(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn feature_dataset_get(
+    request: features::FeatureDatasetRequest,
+    app: tauri::AppHandle,
+) -> Result<features::FeatureDatasetView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .get_dataset(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn feature_dataset_summary(
+    request: features::FeatureDatasetRequest,
+    app: tauri::AppHandle,
+) -> Result<Vec<adaq_feature_engine::FeatureOutputSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .dataset_summary(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn feature_dataset_rows(
+    request: features::FeatureDatasetRowsRequest,
+    app: tauri::AppHandle,
+) -> Result<adaq_feature_engine::FeatureDatasetPage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .features
+            .dataset_rows(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn feature_dataset_delete(
+    request: features::FeatureDatasetRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    state.features.delete_dataset(request)
 }
 
 /// Tauri Validation commands are thin adapters: they deserialize the
@@ -2145,6 +2413,29 @@ pub fn run() {
             dataset_generation_retry,
             dataset_generation_list,
             dataset_generation_cancel,
+            feature_definition_validate,
+            feature_definition_publish,
+            feature_definition_list,
+            feature_definition_get,
+            feature_definition_preview,
+            feature_fitting_start,
+            feature_fitting_list,
+            feature_fitting_get,
+            feature_fitting_cancel,
+            feature_fitting_retry,
+            feature_artifact_list,
+            feature_artifact_get,
+            feature_artifact_delete,
+            feature_materialization_start,
+            feature_materialization_list,
+            feature_materialization_get,
+            feature_materialization_cancel,
+            feature_materialization_retry,
+            feature_dataset_list,
+            feature_dataset_get,
+            feature_dataset_summary,
+            feature_dataset_rows,
+            feature_dataset_delete,
             forecast_signal_dataset::signal_dataset_list,
             forecast_signal_dataset::signal_dataset_get,
             forecast_signal_dataset::signal_dataset_rows,

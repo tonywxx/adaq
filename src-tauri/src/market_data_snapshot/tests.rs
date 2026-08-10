@@ -399,12 +399,30 @@ fn download_cancellation_stops_the_in_flight_download() {
         control_module.cancel_download("task-cancel").unwrap();
     });
     let download_events = events.clone();
-    let error = block_on(module.download_for_user(
-        &download_request("task-cancel"),
-        &OkxClient::new(base_url),
-        move |event| download_events.lock().unwrap().push(event),
-    ))
-    .unwrap_err();
+    // The control thread's probes transiently hold the task slot while they
+    // fail against the unreachable probe endpoint; if one wins the startup
+    // race, the main download briefly observes its own task as in flight.
+    // Retry until this test's download actually starts.
+    let slot_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let error = loop {
+        let attempt_events = download_events.clone();
+        let attempt_url = base_url.clone();
+        let result = block_on(module.download_for_user(
+            &download_request("task-cancel"),
+            &OkxClient::new(attempt_url),
+            move |event| attempt_events.lock().unwrap().push(event),
+        ));
+        match result {
+            Err(error) if error == "Snapshot download is already in progress" => {
+                assert!(
+                    std::time::Instant::now() < slot_deadline,
+                    "the main download never acquired the task slot"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+            other => break other.unwrap_err(),
+        }
+    };
     control.join().unwrap();
     assert!(error.contains("cancelled"));
 

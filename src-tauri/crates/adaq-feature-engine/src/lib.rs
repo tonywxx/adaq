@@ -305,7 +305,8 @@ struct DefinitionDocument {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureDefinition(DefinitionDocument);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ValidationIssue {
     pub code: String,
     pub path: Option<String>,

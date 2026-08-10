@@ -1436,11 +1436,11 @@ impl FeatureEvaluator {
         runtime.reset_gap();
         let input =
             FeatureEvaluationInput::missing(instrument_id, observation_time_ms, available_at_ms);
-        self.output_names()
-            .into_iter()
-            .map(|name| {
-                FeatureObservation::unavailable(
-                    name,
+        let mut observations = Vec::new();
+        for definition in self.plan.definitions() {
+            for output in definition.outputs() {
+                let mut observation = FeatureObservation::unavailable(
+                    &output.name,
                     instrument_id,
                     observation_time_ms,
                     FeatureUnavailabilityReason::BarGap,
@@ -1454,9 +1454,36 @@ impl FeatureEvaluator {
                         Some(input.observation_time_ms),
                         "invalid-gap-observation",
                     )
-                })
-            })
-            .collect()
+                })?;
+                observation.feature_reference = Some(FeatureReference {
+                    definition_hash: definition.definition_hash().into(),
+                    node_id: output.node_id.clone(),
+                    output_name: output.name.clone(),
+                });
+                observations.push(observation);
+            }
+        }
+        for slot in self.plan.slots() {
+            observations.push(
+                FeatureObservation::unavailable(
+                    &slot.name,
+                    instrument_id,
+                    observation_time_ms,
+                    FeatureUnavailabilityReason::BarGap,
+                )
+                .map_err(|error| {
+                    fatal_error(
+                        error.code,
+                        EvaluationStage::Invariant,
+                        None,
+                        Some(input.instrument_id.clone()),
+                        Some(input.observation_time_ms),
+                        "invalid-gap-observation",
+                    )
+                })?,
+            );
+        }
+        Ok(observations)
     }
 
     fn observe_scheduled_closure(
@@ -1481,20 +1508,6 @@ impl FeatureEvaluator {
             .or_insert_with(|| InstrumentRuntime::new(definitions));
         runtime.note_event(instrument_id, observation_time_ms)?;
         Ok(Vec::new())
-    }
-
-    fn output_names(&self) -> Vec<String> {
-        self.plan
-            .definitions()
-            .iter()
-            .flat_map(|definition| {
-                definition
-                    .outputs()
-                    .iter()
-                    .map(|output| output.name.clone())
-            })
-            .chain(self.plan.slots().iter().map(|slot| slot.name.clone()))
-            .collect()
     }
 }
 
