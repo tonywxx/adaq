@@ -64,6 +64,10 @@ _Avoid_: Symbol renaming, Instrument Master entry, inferred identity
 A User's asset-class-neutral ordered collection of venue-specific Instruments selected for monitoring. Market Workspaces filter the same Watchlist by Venue or Asset Class; identical display symbols never collapse distinct Instrument IDs.
 _Avoid_: Symbol list, favorites
 
+**Default Watchlist Seed**:
+The ordered set of initial monitoring Instruments added once when a User's Watchlist is first created or upgraded. Removing a seeded Instrument is a User choice and does not trigger automatic refilling.
+_Avoid_: Permanent favorites, automatic refill
+
 **Active Instrument**:
 The single Instrument currently in focus across market-data views. It is always present and need not belong to the Watchlist.
 _Avoid_: Selected symbol, current ticker

@@ -1476,8 +1476,10 @@ fn venue_for_code(code: &str) -> Result<Venue, DataError> {
         || code.starts_with("601")
         || code.starts_with("603")
         || code.starts_with("605")
+        || code.starts_with("510")
         || code.starts_with("688")
-        || code.starts_with("689");
+        || code.starts_with("689")
+        || code.starts_with("588");
     let szse = code.starts_with("000")
         || code.starts_with("001")
         || code.starts_with("002")
@@ -2097,6 +2099,20 @@ mod tests {
         );
         assert_eq!(
             normalize_provider_instrument("sh688001", "688001")
+                .unwrap()
+                .0
+                .id,
+            "sse"
+        );
+        assert_eq!(
+            normalize_provider_instrument("sh510500", "510500")
+                .unwrap()
+                .0
+                .id,
+            "sse"
+        );
+        assert_eq!(
+            normalize_provider_instrument("sh588000", "588000")
                 .unwrap()
                 .0
                 .id,

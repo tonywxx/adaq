@@ -2,6 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
+	CardAction,
 	CardContent,
 	CardDescription,
 	CardFooter,
@@ -34,8 +35,8 @@ import {
 	SearchIcon,
 	XIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode, RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	type AlpacaInstrument,
@@ -265,6 +266,7 @@ export function MarketWorkspacePage({
 		(state) => state.activeInstrument,
 	);
 	const [search, setSearch] = useState("");
+	const instrumentSearchRef = useRef<HTMLInputElement>(null);
 	const catalogQuery = useMarketCatalog(market, userId);
 	const instruments = useMemo(() => {
 		const all = catalogQuery.data?.instruments ?? [];
@@ -345,6 +347,7 @@ export function MarketWorkspacePage({
 				<UnifiedWatchlistCard
 					market={market}
 					catalog={catalogQuery.data?.instruments ?? []}
+					onAdd={() => instrumentSearchRef.current?.focus()}
 				/>
 				<main className="grid min-w-0 gap-4" aria-busy={catalogQuery.isPending}>
 					<InstrumentSearchCard
@@ -353,6 +356,7 @@ export function MarketWorkspacePage({
 						allInstruments={catalogQuery.data?.instruments ?? []}
 						search={search}
 						onSearch={setSearch}
+						inputRef={instrumentSearchRef}
 						loading={catalogQuery.isPending}
 						error={catalogQuery.error}
 					/>
@@ -447,9 +451,11 @@ function MarketEntry({ market }: { market: MarketId }) {
 function UnifiedWatchlistCard({
 	market,
 	catalog,
+	onAdd,
 }: {
 	market: MarketId | "all";
 	catalog: MarketInstrument[];
+	onAdd?: () => void;
 }) {
 	const { t } = useTranslation();
 	const watchlist = useMarketSessionStore((state) => state.watchlist);
@@ -475,6 +481,20 @@ function UnifiedWatchlistCard({
 						limit: limit || "—",
 					})}
 				</CardDescription>
+				{onAdd ? (
+					<CardAction>
+						<Button
+							type="button"
+							size="sm"
+							variant="outline"
+							disabled={!ready || items.length >= limit}
+							onClick={onAdd}
+						>
+							<PlusIcon aria-hidden="true" />
+							{t("market.add")}
+						</Button>
+					</CardAction>
+				) : null}
 			</CardHeader>
 			<CardContent className="grid gap-2">
 				{!ready ? (
@@ -548,6 +568,7 @@ function InstrumentSearchCard({
 	allInstruments,
 	search,
 	onSearch,
+	inputRef,
 	loading,
 	error,
 }: {
@@ -556,6 +577,7 @@ function InstrumentSearchCard({
 	allInstruments: MarketInstrument[];
 	search: string;
 	onSearch: (value: string) => void;
+	inputRef: RefObject<HTMLInputElement | null>;
 	loading: boolean;
 	error: unknown;
 }) {
@@ -592,6 +614,7 @@ function InstrumentSearchCard({
 						aria-label={t("markets.instrumentSearch.label")}
 						placeholder={t("markets.instrumentSearch.placeholder")}
 						className="pl-9"
+						ref={inputRef}
 						onChange={(event) => onSearch(event.target.value)}
 					/>
 				</div>

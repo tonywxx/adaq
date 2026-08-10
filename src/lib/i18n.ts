@@ -316,7 +316,8 @@ const english = {
 			componentPackages: "Component Packages",
 			marketData: "Market Data",
 			resetWatchlist: "Reset Watchlist",
-			resetWatchlistDescription: "Restore BTC-USDT, ETH-USDT, and SOL-USDT.",
+			resetWatchlistDescription:
+				"Restore the default Crypto, China A-share, and U.S. equity Watchlist.",
 			resetComponents: "Reset Component Packages",
 			resetComponentsDescription:
 				"Remove local Component Package access and unreferenced files.",
@@ -803,7 +804,7 @@ const simplifiedChinese = {
 			componentPackages: "组件包",
 			marketData: "市场数据",
 			resetWatchlist: "重置自选列表",
-			resetWatchlistDescription: "恢复 BTC-USDT、ETH-USDT 和 SOL-USDT。",
+			resetWatchlistDescription: "恢复默认的 Crypto、中国 A 股和美股自选列表。",
 			resetComponents: "重置组件包",
 			resetComponentsDescription: "移除本地组件包访问权限和未引用文件。",
 			resetMarketData: "重置市场数据",

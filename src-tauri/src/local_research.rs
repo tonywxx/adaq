@@ -28,7 +28,7 @@ use adaq_data_pipeline::{
     CancellationToken, DataPipeline, DataQualityReport, DataQualityState, a_share::AshareDataPath,
     okx::OkxSpotDataPath, us_equity::UsEquityDataPath,
 };
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
@@ -42,6 +42,7 @@ use crate::{
     market_data_snapshot::{LocalSnapshotSource, MarketDataSnapshots},
     user::validate_user,
     validation::{ValidationRunOutcome, ValidationSource, ValidationStudies},
+    watchlist::insert_default_watchlist,
 };
 
 pub struct LocalResearchState {
@@ -965,26 +966,6 @@ fn reset_watchlist(database: &mut Connection, user_id: &str) -> Result<(), Strin
     transaction.commit().map_err(string)
 }
 
-fn insert_default_watchlist(database: &Connection, user_id: &str) -> Result<(), String> {
-    database
-        .execute(
-            "INSERT INTO watchlist_settings(user_id, active_src, active_code, mini_chart_interval)
-             VALUES (?1, 'okx', 'BTC-USDT', '1m')",
-            [user_id],
-        )
-        .map_err(string)?;
-    for (position, code) in ["BTC-USDT", "ETH-USDT", "SOL-USDT"].iter().enumerate() {
-        database
-            .execute(
-                "INSERT INTO watchlist_items(user_id, src, code, position)
-                 VALUES (?1, 'okx', ?2, ?3)",
-                params![user_id, code, position as i64],
-            )
-            .map_err(string)?;
-    }
-    Ok(())
-}
-
 fn reset_market_data(
     database: &mut Connection,
     user_id: &str,
@@ -1309,11 +1290,11 @@ mod tests {
 
         let alice = state.local_data_summary("alice").unwrap();
         let bob = state.local_data_summary("bob").unwrap();
-        assert_eq!(alice.watchlist_count, 3);
+        assert_eq!(alice.watchlist_count, 16);
         assert_eq!(alice.component_count, 0);
         assert_eq!(alice.generation_attempt_count, 0);
         assert_eq!(alice.signal_dataset_count, 0);
-        assert_eq!(bob.watchlist_count, 3);
+        assert_eq!(bob.watchlist_count, 16);
         assert_eq!(bob.component_count, 1);
         assert_eq!(bob.signal_dataset_count, 1);
         assert!(package.is_file());

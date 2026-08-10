@@ -9,7 +9,17 @@ use serde::{Deserialize, Serialize};
 
 const DEFAULT_SRC: &str = "okx";
 const DEFAULT_ACTIVE_CODE: &str = "BTC-USDT";
-const DEFAULT_CODES: [&str; 3] = ["BTC-USDT", "ETH-USDT", "SOL-USDT"];
+const DEFAULT_CRYPTO_CODES: [&str; 3] = ["BTC-USDT", "ETH-USDT", "SOL-USDT"];
+const DEFAULT_A_SHARE_CODES: [(&str, &str); 6] = [
+    ("600519", "sse"),
+    ("601318", "sse"),
+    ("510500", "sse"),
+    ("000333", "szse"),
+    ("588000", "sse"),
+    ("688981", "sse"),
+];
+const DEFAULT_US_CODES: [&str; 7] = ["NVDA", "TSLA", "AAPL", "GOOGL", "MSFT", "AMZN", "META"];
+const WATCHLIST_DEFAULTS_VERSION: i64 = 1;
 const WATCHLIST_LIMIT: i64 = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,7 +76,8 @@ impl WatchlistDb {
                     active_src TEXT NOT NULL,
                     active_code TEXT NOT NULL,
                     active_venue_json TEXT,
-                    mini_chart_interval TEXT NOT NULL
+                    mini_chart_interval TEXT NOT NULL,
+                    watchlist_defaults_version INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS watchlist_items (
                     user_id TEXT NOT NULL,
@@ -85,6 +96,12 @@ impl WatchlistDb {
             "watchlist_settings",
             "active_venue_json",
             "TEXT",
+        )?;
+        ensure_column(
+            &connection,
+            "watchlist_settings",
+            "watchlist_defaults_version",
+            "INTEGER NOT NULL DEFAULT 0",
         )?;
         ensure_column(&connection, "watchlist_items", "venue_json", "TEXT")?;
         migrate_legacy_item_identity(&connection)?;
@@ -298,6 +315,32 @@ impl WatchlistDb {
     }
 }
 
+pub(crate) fn insert_default_watchlist(
+    connection: &Connection,
+    user_id: &str,
+) -> Result<(), String> {
+    validate_user_id(user_id)?;
+    let default_venue_json =
+        serde_json::to_string(&default_venue()).map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "INSERT INTO watchlist_settings(
+                user_id, active_src, active_code, active_venue_json,
+                mini_chart_interval, watchlist_defaults_version
+             ) VALUES (?1, ?2, ?3, ?4, '1m', ?5)",
+            params![
+                user_id,
+                DEFAULT_SRC,
+                DEFAULT_ACTIVE_CODE,
+                default_venue_json,
+                WATCHLIST_DEFAULTS_VERSION,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    seed_default_items(connection, user_id)?;
+    Ok(())
+}
+
 fn ensure_account(connection: &mut Connection, user_id: &str) -> Result<(), String> {
     let transaction = connection
         .transaction()
@@ -307,8 +350,9 @@ fn ensure_account(connection: &mut Connection, user_id: &str) -> Result<(), Stri
     let inserted = transaction
         .execute(
             "INSERT OR IGNORE INTO watchlist_settings(
-                user_id, active_src, active_code, active_venue_json, mini_chart_interval
-             ) VALUES (?1, ?2, ?3, ?4, '1m')",
+                user_id, active_src, active_code, active_venue_json,
+                mini_chart_interval, watchlist_defaults_version
+             ) VALUES (?1, ?2, ?3, ?4, '1m', 0)",
             params![
                 user_id,
                 DEFAULT_SRC,
@@ -317,25 +361,73 @@ fn ensure_account(connection: &mut Connection, user_id: &str) -> Result<(), Stri
             ],
         )
         .map_err(|error| error.to_string())?;
-    if inserted == 1 {
-        for (position, code) in DEFAULT_CODES.iter().enumerate() {
-            transaction
-                .execute(
-                    "INSERT INTO watchlist_items(user_id, src, code, venue_json, position)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        user_id,
-                        DEFAULT_SRC,
-                        code,
-                        serde_json::to_string(&default_venue())
-                            .map_err(|error| error.to_string())?,
-                        position as i64
-                    ],
-                )
-                .map_err(|error| error.to_string())?;
-        }
+    let defaults_version: i64 = transaction
+        .query_row(
+            "SELECT watchlist_defaults_version FROM watchlist_settings WHERE user_id = ?1",
+            [user_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if inserted == 1 || defaults_version < WATCHLIST_DEFAULTS_VERSION {
+        seed_default_items(&transaction, user_id)?;
+        transaction
+            .execute(
+                "UPDATE watchlist_settings
+                 SET watchlist_defaults_version = ?2 WHERE user_id = ?1",
+                params![user_id, WATCHLIST_DEFAULTS_VERSION],
+            )
+            .map_err(|error| error.to_string())?;
     }
     transaction.commit().map_err(|error| error.to_string())
+}
+
+fn seed_default_items(connection: &Connection, user_id: &str) -> Result<(), String> {
+    let mut count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM watchlist_items WHERE user_id = ?1",
+            [user_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut position: i64 = connection
+        .query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0)
+             FROM watchlist_items WHERE user_id = ?1",
+            [user_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    for instrument in default_watchlist_items() {
+        if count >= WATCHLIST_LIMIT {
+            break;
+        }
+        let venue_json = serde_json::to_string(
+            instrument
+                .venue
+                .as_ref()
+                .expect("default instruments always have a Venue"),
+        )
+        .map_err(|error| error.to_string())?;
+        let inserted = connection
+            .execute(
+                "INSERT OR IGNORE INTO watchlist_items(
+                    user_id, src, code, venue_json, position
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    user_id,
+                    instrument.src,
+                    instrument.code,
+                    venue_json,
+                    position,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if inserted == 1 {
+            count += 1;
+            position += 1;
+        }
+    }
+    Ok(())
 }
 
 fn load_state(connection: &Connection, user_id: &str) -> Result<WatchlistState, String> {
@@ -413,6 +505,34 @@ fn default_active() -> InstrumentRef {
         src: DEFAULT_SRC.to_owned(),
         code: DEFAULT_ACTIVE_CODE.to_owned(),
         venue: Some(default_venue()),
+    }
+}
+
+fn default_watchlist_items() -> Vec<InstrumentRef> {
+    let mut items = Vec::with_capacity(
+        DEFAULT_CRYPTO_CODES.len() + DEFAULT_A_SHARE_CODES.len() + DEFAULT_US_CODES.len(),
+    );
+    items.extend(
+        DEFAULT_CRYPTO_CODES
+            .iter()
+            .map(|code| default_instrument(DEFAULT_SRC, code, "okx", VenueKind::CryptoSpot)),
+    );
+    items.extend(DEFAULT_A_SHARE_CODES.iter().map(|(code, venue)| {
+        default_instrument("akshare-rs", code, venue, VenueKind::ChinaAShareEquity)
+    }));
+    items.extend(
+        DEFAULT_US_CODES
+            .iter()
+            .map(|code| default_instrument("alpaca", code, "nasdaq", VenueKind::UsEquity)),
+    );
+    items
+}
+
+fn default_instrument(src: &str, code: &str, venue_id: &str, kind: VenueKind) -> InstrumentRef {
+    InstrumentRef {
+        src: src.to_owned(),
+        code: code.to_owned(),
+        venue: Some(Venue::new(venue_id, kind).expect("default Venue is valid")),
     }
 }
 
@@ -563,11 +683,24 @@ mod tests {
     fn initializes_defaults_once_and_allows_an_empty_watchlist() {
         let database = database();
         let initial = database.get("user-1").unwrap();
-        assert_eq!(initial.items.len(), 3);
+        assert_eq!(initial.items.len(), 16);
         assert_eq!(initial.limit, WATCHLIST_LIMIT);
+        assert_eq!(
+            initial
+                .items
+                .iter()
+                .map(|item| item.code.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "BTC-USDT", "ETH-USDT", "SOL-USDT", "600519", "601318", "510500", "000333",
+                "588000", "688981", "NVDA", "TSLA", "AAPL", "GOOGL", "MSFT", "AMZN", "META",
+            ]
+        );
+        assert_eq!(initial.items[5].venue.as_ref().unwrap().id, "sse");
+        assert_eq!(initial.items[6].venue.as_ref().unwrap().id, "szse");
 
-        for code in ["BTC-USDT", "ETH-USDT", "SOL-USDT"] {
-            database.remove("user-1", &instrument(code)).unwrap();
+        for item in initial.items {
+            database.remove("user-1", &item).unwrap();
         }
 
         let state = database.get("user-1").unwrap();
@@ -610,7 +743,7 @@ mod tests {
                 .unwrap()
                 .items
                 .len(),
-            5
+            18
         );
     }
 
@@ -647,6 +780,23 @@ mod tests {
         let database = WatchlistDb::from_connection(connection).unwrap();
         let state = database.get("user-1").unwrap();
         assert_eq!(state.items[0].venue.as_ref().unwrap().id, "okx");
+        assert_eq!(state.items.len(), 16);
+
+        let seeded = state
+            .items
+            .iter()
+            .find(|item| item.code == "600519")
+            .cloned()
+            .unwrap();
+        database.remove("user-1", &seeded).unwrap();
+        assert!(
+            database
+                .get("user-1")
+                .unwrap()
+                .items
+                .iter()
+                .all(|item| item.code != "600519")
+        );
 
         let same_code_at_another_venue = instrument_at(
             "akshare-rs",
@@ -660,7 +810,7 @@ mod tests {
                 .unwrap()
                 .items
                 .len(),
-            2
+            16
         );
     }
 
