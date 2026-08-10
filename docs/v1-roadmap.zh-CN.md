@@ -184,6 +184,59 @@ M9 的终点是可信的 Multi-market Data、安全且不下单的 Provider Conn
 
 初始可执行 Frontier 是 #67、#68、#69；它们没有 Open Blocker，可以独立进行。其余 Child 已按上图写入 GitHub 原生 `blocked_by` 依赖。
 
+## M10 可执行交付图
+
+M10 已发布为 [Parent Issue #77](https://github.com/tonywxx/adaq/issues/77)，并由双语 [M10 Feature Engineering 架构](./m10-feature-engineering.zh-CN.md)定义：
+
+1. [#78 — Feature Engine Contract 与 Feature Plan 2.0](https://github.com/tonywxx/adaq/issues/78)
+2. [#79 — Pointwise/Time-Series Feature Operator](https://github.com/tonywxx/adaq/issues/79)
+3. [#80 — Cross-Sectional Feature Scope 与 Universe Operator](https://github.com/tonywxx/adaq/issues/80)
+4. [#81 — Fitted Transformation Protocol 与 Artifact](https://github.com/tonywxx/adaq/issues/81)
+5. [#82 — Immutable Feature Dataset Materialization 与 Retained Attempt](https://github.com/tonywxx/adaq/issues/82)
+6. [#83 — Batch/Observation Equivalence 与 Component Consumer](https://github.com/tonywxx/adaq/issues/83)
+7. [#84 — User-scoped Feature API 与 Background Runner](https://github.com/tonywxx/adaq/issues/84)
+8. [#85 — Localized Feature Workspace](https://github.com/tonywxx/adaq/issues/85)
+9. [#86 — Three-market Fixture、Benchmark 与 Hardening](https://github.com/tonywxx/adaq/issues/86)
+10. [#87 — Bilingual Cross-platform Acceptance](https://github.com/tonywxx/adaq/issues/87)
+
+```mermaid
+flowchart TD
+    A["M10.1 Contract 与 Plan 2.0"]
+    B["M10.2 Pointwise 与 Time Series"]
+    C["M10.3 Cross Sectional"]
+    D["M10.4 Fitting"]
+    E["M10.5 Materialization"]
+    F["M10.6 Unified Evaluation"]
+    G["M10.7 Native API"]
+    H["M10.8 Feature Workspace"]
+    I["M10.9 Hardening"]
+    J["M10.10 Acceptance"]
+    A --> B
+    A --> D
+    A --> E
+    B --> C
+    B --> F
+    C --> F
+    D --> F
+    E --> F
+    E --> G
+    F --> G
+    G --> H
+    F --> I
+    G --> I
+    A --> J
+    B --> J
+    C --> J
+    D --> J
+    E --> J
+    F --> J
+    G --> J
+    H --> J
+    I --> J
+```
+
+#78 是唯一初始可执行 Frontier。其余 Child 已按本图写入 GitHub 原生 `blocked_by` 关系。M10 终点是 Completed Feature Dataset 与等价 Feature Engine；Factor Evaluation 从 M11 开始。
+
 ## Roadmap 全局完成规则
 
 每个 Milestone 与 Child Issue 都必须：

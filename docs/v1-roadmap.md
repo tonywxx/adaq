@@ -184,6 +184,59 @@ M9 stops at trustworthy multi-market data, secure non-ordering provider connecti
 
 The initial executable frontier is #67, #68, and #69. They have no open blockers and may proceed independently; all later children carry native GitHub `blocked_by` edges matching the diagram.
 
+## M10 executable delivery map
+
+M10 is published as [parent issue #77](https://github.com/tonywxx/adaq/issues/77) and specified in the bilingual [M10 Feature Engineering architecture](./m10-feature-engineering.md):
+
+1. [#78 — Feature Engine contracts and Feature Plan 2.0](https://github.com/tonywxx/adaq/issues/78)
+2. [#79 — Pointwise and Time-Series Feature operators](https://github.com/tonywxx/adaq/issues/79)
+3. [#80 — Cross-Sectional Feature scope and Universe operators](https://github.com/tonywxx/adaq/issues/80)
+4. [#81 — fitted Transformation Protocols and Artifacts](https://github.com/tonywxx/adaq/issues/81)
+5. [#82 — immutable Feature Dataset materialization and retained Attempts](https://github.com/tonywxx/adaq/issues/82)
+6. [#83 — batch/observation equivalence and Component consumers](https://github.com/tonywxx/adaq/issues/83)
+7. [#84 — User-scoped Feature APIs and background runner](https://github.com/tonywxx/adaq/issues/84)
+8. [#85 — localized Feature Workspace](https://github.com/tonywxx/adaq/issues/85)
+9. [#86 — three-market fixtures, benchmarks, and hardening](https://github.com/tonywxx/adaq/issues/86)
+10. [#87 — bilingual cross-platform acceptance](https://github.com/tonywxx/adaq/issues/87)
+
+```mermaid
+flowchart TD
+    A["M10.1 Contracts and Plan 2.0"]
+    B["M10.2 Pointwise and Time Series"]
+    C["M10.3 Cross Sectional"]
+    D["M10.4 Fitting"]
+    E["M10.5 Materialization"]
+    F["M10.6 Unified evaluation"]
+    G["M10.7 Native APIs"]
+    H["M10.8 Feature Workspace"]
+    I["M10.9 Hardening"]
+    J["M10.10 Acceptance"]
+    A --> B
+    A --> D
+    A --> E
+    B --> C
+    B --> F
+    C --> F
+    D --> F
+    E --> F
+    E --> G
+    F --> G
+    G --> H
+    F --> I
+    G --> I
+    A --> J
+    B --> J
+    C --> J
+    D --> J
+    E --> J
+    F --> J
+    G --> J
+    H --> J
+    I --> J
+```
+
+#78 is the only initial executable frontier. All later children carry native GitHub `blocked_by` edges matching this graph. M10 stops at finalized Feature Datasets and the equivalent Feature Engine; Factor evaluation begins in M11.
+
 ## Roadmap-wide completion rules
 
 Every milestone and child issue must:

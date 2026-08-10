@@ -1,6 +1,6 @@
 [package]
 name = "adaq"
-version = "0.8.9"
+version = "0.8.10"
 description = "AI Quant Trading"
 authors = ["TONy.W"]
 edition = "2024"

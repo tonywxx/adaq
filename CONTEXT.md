@@ -19,7 +19,7 @@ The User's authentication details and session actions, currently limited to view
 _Avoid_: User Profile, Venue account
 
 **Local Research Data**:
-Device-resident Watchlist, Component, Market Data, Run, and Validation records owned by one User. Reset operations affect only the current User, and shared files are removed only when no other User retains access.
+Device-resident Watchlist, Component, Market Data, Feature Definition, Fitted Transformation Artifact, Feature Dataset, Run, and Validation records owned by one User. Reset operations affect only the current User, and shared files are removed only when no other User retains access.
 _Avoid_: Account data, device-wide data
 
 **Component Entitlement**:
@@ -411,7 +411,7 @@ The ordered optional Forecast Signal Frames returned one-for-one for a Predictio
 _Avoid_: Forecast Signal Dataset, arbitrary model response
 
 **Available At**:
-The earliest timestamp at which a Forecast Signal Frame may legally be consumed by a Strategy. It is separate from Prediction Time, does not change Dataset row identity, and prevents a forecast from being used before its required inputs and inference schedule make it available. M8 native Closed-Bar inference uses the input Bar's close boundary for both Prediction Time and Available At, with execution no earlier than the next Bar.
+The earliest timestamp at which a Feature or Forecast Signal may legally be consumed. A derived Feature uses the latest Available At among its inputs and Fitted Transformation Artifact; provider publication evidence, rather than an event's effective date or local computation time, governs when external information became available. M8 native Closed-Bar inference uses the input Bar's close boundary for both Prediction Time and Available At, with execution no earlier than the next Bar.
 _Avoid_: Prediction Time, file creation time, unrestricted execution time
 
 **Observation Time**:
@@ -593,23 +593,119 @@ The exposure constraint selected for a Strategy Instance: Long Only permits targ
 _Avoid_: Trade direction, signal type
 
 **Feature**:
-A finite analytical value associated with one Instrument and Observation Time, derived causally from evidence available no later than its declared availability boundary.
+A finite `f64` analytical value associated with one Instrument and Observation Time, derived causally from evidence available no later than its declared availability boundary. Boolean, calendar, session, and categorical meanings require explicit versioned numeric encodings rather than a separate runtime value type.
 _Avoid_: Future-known value, arbitrary model column
 
+**Feature Observation**:
+The identity-preserving outcome for one Feature, Instrument ID, and Observation Time: either one finite Available value or Unavailable with an exact typed reason. An Unavailable observation remains in evidence rather than being dropped, filled, or converted into a value.
+_Avoid_: Nullable row, missing record, zero-filled Feature
+
+**Feature Unavailability Reason**:
+A versioned typed code explaining why one Feature Observation has no value, optionally accompanied by its exact Definition node and diagnostic detail. Codes, rather than free-form text, govern identity, propagation, inspection, and downstream behavior.
+_Avoid_: Null, log message, fatal engine error
+
+**Feature Scope**:
+The observation dependency required to compute a Feature: Pointwise uses one observation, Time Series uses one Instrument's causal history, and Cross Sectional uses one exact Point-in-Time Instrument Universe at one Observation Time.
+_Avoid_: Factor Scope, Model Scope, Asset Class
+
+**Pointwise Feature**:
+A Feature computed independently from one Instrument observation without earlier observations or simultaneous observations from other Instruments.
+_Avoid_: Time-Series Feature, Cross-Sectional Feature
+
+**Time-Series Feature**:
+A Feature computed from one Instrument's observations in causal Observation Time order, with history and Warmup reset at Bar Gaps.
+_Avoid_: Pointwise Feature, Cross-Sectional Feature, Time-Series Factor
+
+**Rolling Feature Window**:
+The exact count of consecutive eligible Closed Bars from one Continuous Bar Segment required by a Time-Series Feature. It becomes Available only when full, excludes Scheduled Closures, and restarts when a Bar Gap or unavailable dependency breaks the affected branch.
+_Avoid_: Elapsed wall-clock window, partial rolling window, gap-filled history
+
+**Cross-Sectional Feature**:
+A Feature computed jointly for one exact Point-in-Time Instrument Universe at one Observation Time, preserving every member and explicit missingness. V1 binds that Universe to one Venue, Asset Class, Bar Interval, Price Basis, and Valuation Currency rather than ranking incomparable markets together.
+_Avoid_: Pointwise Feature, Time-Series Feature, Cross-Sectional Factor
+
+**Cross-Sectional Coverage Policy**:
+The frozen minimum available-member count and coverage required before one Cross-Sectional Feature may be computed. Every Universe member remains in the output; members without inputs remain Unavailable, and any computation over the available subset records its actual coverage. Rank uses deterministic average ties, while Percentile and Z-score use their versioned Feature Operator Catalog formulas.
+_Avoid_: Silent row filtering, current Watchlist, implicit threshold
+
 **Feature Definition**:
-A versioned declarative recipe for producing one or more Features from Canonical Market Data, Built-in Indicators, declared transformations, or compatible Factor outputs.
-_Avoid_: Ad-hoc notebook column, Feature Dataset
+A versioned, immutable declarative acyclic recipe for producing one through 64 ordered, uniquely named lower-kebab-case Features under one Feature Scope from Canonical Market Data, Built-in Indicators, declared host transformations, Fitted Transformation Artifacts, or compatible Factor outputs. A stable random Definition ID groups its positive integer revisions, while a content hash identifies exact semantics; any output addition, removal, rename, reorder, or other semantic edit creates a new revision. Arbitrary custom analytical logic belongs in a Factor Component.
+_Avoid_: Ad-hoc notebook column, script, Feature Dataset
+
+**Feature Definition Draft**:
+The mutable, user-edited recipe from which ADAQ validates and freezes a Feature Plan. It has no immutable identity and is not research evidence.
+_Avoid_: Feature Definition, Feature Plan, saved Dataset
+
+**Feature Presentation Metadata**:
+User-scoped mutable display information for one Feature Definition family, such as its name, description, and tags. It never changes Definition semantics, revision, content hash, Feature values, or another User's visibility.
+_Avoid_: Feature Definition, shared catalog identity, semantic version
+
+**Feature Operator Catalog**:
+The versioned host-owned registry of declarative Pointwise, Time-Series, Cross-Sectional, fitted, calendar, liquidity, and corporate-action operations accepted in a Feature Definition. It is a finite public contract rather than a general expression or script language.
+_Avoid_: Indicator Catalog, arbitrary function registry, notebook API
+
+**Feature Engine Identity**:
+The exact Feature Engine, Feature Operator Catalog, Indicator Engine, target, compiler, and build identity required to reproduce one Feature Plan's evidence. Identical builds require bit-identical output, while numerically equivalent platform builds retain distinct identities.
+_Avoid_: Feature Plan hash, application version, Research Engine
+
+**Feature Evaluation Error**:
+A fatal, versioned failure containing an exact code, execution stage, Definition or node identity, applicable Instrument and Observation Time, and safe diagnostics. It terminates the Attempt and remains distinct from a Feature Unavailability Reason.
+_Avoid_: Feature Unavailability Reason, localized message, debug string
+
+**Feature Preview**:
+A transient evaluation of one Feature Definition Draft against a bounded selection from an immutable Market Data Snapshot. It uses the production Feature Engine, preserves a complete Point-in-Time Instrument Universe for every Cross-Sectional batch, and may apply but never fit an Artifact; it has no persistent evidence identity and cannot replace Plan freezing or Feature materialization.
+_Avoid_: Feature Dataset, validation evidence, sampled Backtest
 
 **Feature Dataset**:
-An immutable collection of Feature observations keyed by Instrument ID and Observation Time, bound to its exact Market Data Snapshot, Point-in-Time Instrument Universe, Feature Plan, availability, missingness, and provenance.
+An immutable collection of Feature observations keyed by Instrument ID and Observation Time, bound to its exact Market Data Snapshot, Point-in-Time Instrument Universe, Feature Plan, availability, missingness, and provenance. Factor research selects a finalized Feature Dataset explicitly and never triggers implicit fitting or materialization.
 _Avoid_: Mutable feature table, Forecast Signal Dataset
 
+**Feature Dataset Summary**:
+A rebuildable inspection projection over one exact Feature Dataset, recording per-output coverage, Feature Unavailability Reason counts, minimum, maximum, mean, and population standard deviation. It describes Dataset contents and is not Factor evaluation, Model evidence, or a performance claim.
+_Avoid_: Factor Evaluation Report, mutable dashboard metric, Feature quality score
+
+**Feature Materialization Request**:
+The exact User-scoped binding of one frozen Feature Plan to a Market Data Snapshot, Point-in-Time Instrument Universe, observation range, parameters, and Seed for Feature Dataset production. The Plan remains reusable across compatible Requests, while every resulting Dataset retains its complete Request identity.
+_Avoid_: Feature Plan, mutable form, Feature Materialization Attempt
+
+**Feature Materialization Attempt**:
+A lifecycle record for executing one frozen Feature Plan through Pending, Running, and exactly one terminal state: Completed, Failed, or Cancelled. Only a Completed Attempt may atomically publish an immutable Feature Dataset; partial values and diagnostics remain evidence but cannot be consumed downstream, and interrupted work becomes Failed with retained interruption evidence.
+_Avoid_: Feature Dataset, generic Job, mutable Dataset
+
+**Transformation Fitting Protocol**:
+An immutable, content-addressed specification binding one fitted transformation node to its exact input Feature, Market Data Snapshot, Point-in-Time Instrument Universe, Fitting Scope, fitting window, algorithm parameters, and engine identity. Walk-forward research freezes a separate Protocol and Artifact for every fold.
+_Avoid_: Full-history preprocessing, Model Training Protocol, mutable fit settings
+
+**Fitting Scope**:
+The Instrument grouping used to learn one Fitted Transformation Artifact: Pooled Universe learns one parameter set from all eligible observations, while Per Instrument retains an exact parameter set for every Instrument ID in the fitting Universe.
+_Avoid_: Feature Scope, Cross-Sectional normalization, implicit grouping
+
+**Transformation Fitting Attempt**:
+A lifecycle record for executing one Transformation Fitting Protocol through Pending, Running, and exactly one terminal state: Completed, Failed, or Cancelled. Only a Completed Attempt may publish a Fitted Transformation Artifact; Feature materialization applies that Artifact and never refits it.
+_Avoid_: Feature Materialization Attempt, Model Training Attempt, implicit fit
+
 **Fitted Transformation Artifact**:
-Immutable transformation parameters learned only from an exact recorded fitting window and applied unchanged to later validation, test, inference, or Paper Trading observations.
+Immutable transformation parameters learned only from an exact recorded fitting window and applied unchanged to later validation, test, inference, or Paper Trading observations. Its deterministic Eligible At is the latest Available At among its fitting inputs, while Created At records local operational completion without changing historical Feature identity.
 _Avoid_: Model Artifact, full-history scaler, mutable preprocessing state
 
+**Causal Corporate Action Transformation**:
+A provenance-bound forward transformation that applies Split or Dividend evidence only after it became available and effective. Split transforms subsequent price and quantity values onto the initial causal basis, while Dividend evidence updates a separate Total Return Feature; neither rewrites earlier Feature observations or Canonical Market Data.
+_Avoid_: Back-adjusted history, Canonical data repair, Corporate Action
+
+**Realized Volatility Feature**:
+The population standard deviation of backward-looking log returns over one full Rolling Feature Window. Its base value is per Bar; any annualization is a separate explicit transformation bound to the exact Venue calendar, Bar Interval, and periods-per-year rule.
+_Avoid_: Implied volatility, hidden annualization, future volatility
+
+**Liquidity Feature**:
+A declared analytical measure derived from available market evidence, such as Quote Volume, rolling Quote Volume, zero-volume state, or Amihud Illiquidity. ADAQ does not call Quote Volume `turnover` or produce a Turnover Ratio without a trustworthy shares, float, or market-value denominator.
+_Avoid_: Turnover when meaning Quote Volume, liquidity score without units, inferred market cap
+
+**Session Progress Feature**:
+A Venue-calendar-bound value from zero through one measuring progress across eligible trading minutes in a Trading Date. Scheduled breaks and closures do not advance it and do not create synthetic market observations.
+_Avoid_: UTC day progress, wall-clock time since open, device-local session progress
+
 **Feature Plan**:
-The fully validated, immutable resolution of Feature Definitions or Feature Slots and their exact Market, Indicator, Factor, Forecast Signal Dataset, transformation, and Fitted Transformation Artifact sources, including parameters, availability, and Warmup requirements. Historical materialization, Factor research, Model training or inference, Strategy Backtest, and Paper Trading each freeze the Plan they execute; a modular Backtest references an already finalized Forecast Signal Dataset and never invokes its producing Model implicitly.
+The fully validated, immutable `2.0.0` resolution of an acyclic Feature Definition graph or Feature Slots and their exact Market, Indicator, Factor, Forecast Signal Dataset, transformation, and Fitted Transformation Artifact sources, including scopes, parameters, availability, missingness, Warmup, and Feature Engine Identity. It freezes reusable computation semantics rather than one Market Data Snapshot, Point-in-Time Instrument Universe, or observation range. Historical materialization, Factor research, Model training or inference, Strategy Backtest, and Paper Trading each freeze the Plan they execute; a modular Backtest references an already finalized Forecast Signal Dataset and never invokes its producing Model implicitly.
 _Avoid_: Indicator Plan, runtime feature lookup
 
 **Warmup**:
@@ -777,6 +873,10 @@ _Avoid_: authoritative ledger, Worker state, frontend-owned trading state
 **Market Workspace**:
 The localized GUI navigation area under `/markets` for inspecting market and data evidence through Overview, Crypto, China A-share, and United States Equity routes. It presents one asset-neutral Watchlist, Instrument search, Venue-local session state, Ticker and Bar views, provider coverage, freshness, quality, and rule summaries without becoming the Operations Dashboard or an order-entry terminal.
 _Avoid_: Operations Dashboard, Market Data Connector, full trading terminal
+
+**Feature Workspace**:
+The localized GUI area at `/features` for editing Feature Definition Drafts and inspecting published Definitions, Transformation Fitting Attempts, Feature Materialization Attempts, and Feature Datasets. Its Preview is transient and never becomes authoritative Feature evidence.
+_Avoid_: Factor Lab, Model Lab, notebook editor
 
 **Page Navigation History**:
 The ordered sequence of ADAQ application pages and selected Backtest-result or Validation-report tabs visited in the current WebView session, used by Back and Forward to restore a previously visited page or tab, or revisit one after going back. A new page or tab visited after going back discards the Forward sequence. It excludes report selection, form state, external pages, other non-ADAQ history entries, and shareable URL state.
