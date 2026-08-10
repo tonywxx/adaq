@@ -12,6 +12,7 @@ members = [
     "crates/adaq-backtest-core",
     "crates/adaq-component-sdk",
     "crates/adaq-component-tooling",
+    "crates/adaq-feature-engine",
     "crates/adaq-indicator-engine",
 ]
 resolver = "2"

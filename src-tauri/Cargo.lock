@@ -69,6 +69,7 @@ name = "adaq-component-tooling"
 version = "0.1.0"
 dependencies = [
  "adaq-component-sdk",
+ "adaq-feature-engine",
  "adaq-indicator-engine",
  "rust_decimal",
  "semver",
@@ -119,6 +120,17 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "adaq-feature-engine"
+version = "0.1.0"
+dependencies = [
+ "adaq-indicator-engine",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "uuid",
 ]
 
 [[package]]

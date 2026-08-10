@@ -1,0 +1,17 @@
+[package]
+name = "adaq-feature-engine"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Tauri-independent feature engineering contracts for ADAQ"
+build = "build.rs"
+
+[dependencies]
+adaq-indicator-engine = { path = "../adaq-indicator-engine" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+uuid = { version = "1", features = ["serde", "v4"] }
+
+[build-dependencies]
+sha2 = "0.11"

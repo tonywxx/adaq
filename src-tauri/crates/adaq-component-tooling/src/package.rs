@@ -4,6 +4,7 @@ use std::{
     io::{Cursor, Read, Write},
 };
 
+pub use adaq_feature_engine::MarketField;
 use rust_decimal::Decimal;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
@@ -229,17 +230,6 @@ pub fn strategy_architecture(manifest: &ComponentManifest) -> Option<StrategyArc
             _ => StrategyArchitecture::Hybrid,
         }
     })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum MarketField {
-    Open,
-    High,
-    Low,
-    Close,
-    BaseVolume,
-    QuoteVolume,
 }
 
 #[derive(Debug, Clone, PartialEq)]
