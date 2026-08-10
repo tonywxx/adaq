@@ -1,8 +1,8 @@
-# ADAQ V1 Delivery Roadmap after M8
+# ADAQ V1 Delivery Roadmap after M9
 
 [简体中文](./v1-roadmap.zh-CN.md)
 
-Status: accepted V1 architecture and dependency-ordered delivery baseline. M1 through M8 are the implemented research foundation; every milestone from M9 through M18 is required before the expanded V1 is declared usable.
+Status: accepted V1 architecture and dependency-ordered delivery baseline. M1 through M9 are the implemented research and multi-market foundation; every milestone from M10 through M18 is required before the expanded V1 is declared usable.
 
 This roadmap implements the complete research-to-Paper feedback system. It is not a reduced demonstration loop. Real-money order submission remains a separately qualified post-V1 capability.
 

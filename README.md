@@ -17,15 +17,16 @@ AdaQ V1 is a local-first research, backtesting, and simulation desktop app. It d
 - **Component Library** — List-and-detail library showing name, kind, version, compatibility, and Run-lock status; the detail view exposes parameters, Feature Slots, Factor dependencies, Warmup, ABI/SDK/Manifest versions, and exact hashes. Import via the native file picker; deletion requires confirmation and shows the references that block removal.
 - **TA-Lib Indicator Engine & Feature Slots** — The host pins official C TA-Lib v0.7.1 and exposes `adaq-indicator-catalog@1.0.0` with 160 indicators and 179 outputs. Canonical Indicator Plans are frozen with `planHash`; Market, Built-in, and External Factor Slot sources are supported; indicators evaluate by Continuous Bar Segment, reset analytical state at Bar Gaps, and enforce typed Plan/Run errors plus fixed resource ceilings.
 - **Model research & Forecast Signal Datasets (M8)** — Native Model Components and externally generated `.adaq-signals` evidence produce immutable Forecast Signal Datasets and Forecast Evaluation Reports, and drive compatible Signal-driven or Hybrid Strategy Runs.
+- **Multi-market data foundation (M9)** — OKX Spot, China A-share, and U.S. equity paths preserve Source, Canonical, Quality, Point-in-Time Universe, calendar, capability, and immutable Snapshot evidence; the Markets GUI exposes all three markets with one user-scoped Watchlist.
 - **Research validation** — Immutable Validation Protocols and Reports support chronological holdout, walk-forward, and cross-market studies with traceable evidence and JSON / Markdown exports.
-- **Bilingual desktop GUI (Tauri 2 + React 19)** — Operations Dashboard home; Components, Models, Backtest, and Validation workspaces; Settings for account and general preferences. The UI ships in English (US) and Simplified Chinese through `i18next` / `react-i18next` with locale-aware formatting, light/dark themes, and accessible controls.
+- **Bilingual desktop GUI (Tauri 2 + React 19)** — Operations Dashboard home; Markets, Components, Models, Backtest, and Validation workspaces; Settings for account, locale, and provider Connections. The UI ships in English (US) and Simplified Chinese through `i18next` / `react-i18next` with locale-aware formatting, light/dark themes, and accessible controls.
 - **Exact, trustworthy values** — Financial values use exact Decimal representation across domain and IPC boundaries; canonical identities, availability, provider capability, and provenance stay inspectable everywhere.
 
 ## Scope of V1
 
-AdaQ V1 is a **local-first research, backtesting, and simulation** desktop app. It executes no real account orders. The closed loop you can use today is: develop or import a Component, prepare exact Market Data Snapshots and Feature Plans, generate or import immutable Forecast Signal evidence, evaluate predictions, run a Dataset-first sandboxed Strategy Backtest, inspect persisted provenance and results, and produce research-validation evidence.
+AdaQ V1 is a **local-first research, backtesting, and simulation** desktop app. It executes no real account orders. The closed loop you can use today is: inspect OKX Spot, China A-share, and U.S. equity market evidence; develop or import a Component; prepare exact Market Data Snapshots and Feature Plans; generate or import immutable Forecast Signal evidence; evaluate predictions; run a Dataset-first sandboxed Strategy Backtest; inspect persisted provenance and results; and produce research-validation evidence.
 
-Not included in V1 (roadmap M9–M18): integrated live multi-market data connectors (OKX / Alpaca / A-share), Paper Trading accounts and execution, supervised Trading Bots, Marketplace publishing, and any real-money trading.
+Not included in the current M9 delivery (roadmap M10–M18): Feature Engineering, Factor research, Qlib Model training, portfolio Strategies, Paper Trading accounts and execution, supervised Trading Bots, Marketplace publishing, and any real-money trading.
 
 ## Screenshots
 
@@ -49,8 +50,9 @@ Not included in V1 (roadmap M9–M18): integrated live multi-market data connect
 | M6 | Executable Components and Research Validation. Bilingual executable Factor and Strategy examples teach the supported SDK and CLI workflow; replay-grade Backtest Run provenance preserves every authoritative input; immutable Validation Protocols and Reports support chronological holdout, walk-forward, and cross-market research with traceable evidence and JSON/Markdown exports. |
 | M7 | Research Workspace Productization. Components, Backtest, and Validation provide guided, auditable desktop workflows over immutable local evidence; the [bilingual manual acceptance guides](docs/m7-manual-acceptance.md) cover the complete from-empty-project path. |
 | M8 | Model research and Dataset-first Backtests. Native Model Components and external `.adaq-signals` evidence produce immutable Forecast Signal Datasets, Forecast Evaluation Reports, and compatible Signal-driven or Hybrid Strategy Runs. The [bilingual manual acceptance guides](docs/m8-manual-acceptance.md) cover the complete reviewed path. |
+| M9 | Multi-market data and platform foundation. OKX Spot, China A-shares through `akshare-rs`, and U.S. equities through Alpaca Basic provide inspectable Source/Canonical/Quality/Snapshot evidence, secure non-ordering Paper/Demo connections, bilingual Markets routes, and one user-scoped Watchlist. The [M9 bilingual manual acceptance guides](docs/m9-manual-acceptance.md) cover the final cross-platform review path. |
 
-Together, M1-M8 provide the current closed loop: develop or import a Component, freeze exact market data and Feature Plans, produce or import immutable Forecast Signal evidence, evaluate predictions, run a Dataset-first sandboxed Strategy Backtest, inspect persisted provenance and results, and produce research-validation evidence.
+Together, M1-M9 provide the current closed loop: inspect trustworthy multi-market evidence, develop or import a Component, freeze exact market data and Feature Plans, produce or import immutable Forecast Signal evidence, evaluate predictions, run a Dataset-first sandboxed Strategy Backtest, inspect persisted provenance and results, and produce research-validation evidence.
 
 ## Getting Started
 
@@ -179,8 +181,9 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 | [M7 Research Workspace](docs/m7-research-workspace.md) | [M7 研究工作区中文](docs/m7-research-workspace.zh-CN.md) | Desktop research-workspace design and acceptance scope |
 | [M7 Manual Acceptance](docs/m7-manual-acceptance.md) | [M7 人工验收中文](docs/m7-manual-acceptance.zh-CN.md) | Complete human-reviewed research-workspace acceptance path |
 | [M8 Manual Acceptance](docs/m8-manual-acceptance.md) | [M8 人工验收中文](docs/m8-manual-acceptance.zh-CN.md) | Complete Model, Forecast Evaluation, and Dataset-first Backtest acceptance path |
+| [M9 Manual Acceptance](docs/m9-manual-acceptance.md) | [M9 人工验收中文](docs/m9-manual-acceptance.zh-CN.md) | Bilingual cross-platform acceptance path for localization, connections, three markets, quality, Snapshots, and GUI boundaries |
 | [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | External `Kronos-small` inference, canonical Forecast Signals, evaluation, and Dataset-first Backtest |
-| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | M9–M18 delivery plan for the expanded V1 (data, Paper Trading, Bots) |
+| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | M10–M18 delivery plan after the M9 data foundation (Paper Trading, Bots, and later V1 work) |
 
 Microsoft Qlib training integration is future work (M12) and will use the same External Model Adapter boundary. M8 does not include training, an embedded or controlled Python Runner, Verified external inference, or Marketplace publishing.
 
