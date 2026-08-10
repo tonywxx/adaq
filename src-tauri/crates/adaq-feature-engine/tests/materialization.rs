@@ -6,8 +6,9 @@ use std::{
 };
 
 use adaq_feature_engine::{
-    DefinitionDraft, FeatureDatasetFilter, FeatureDatasetRowState, FeatureDefinition,
-    FeatureEngineIdentity, FeatureInput, FeatureMaterializationRequest,
+    DefinitionDraft, FeatureDatasetCell, FeatureDatasetFilter, FeatureDatasetRowState,
+    FeatureDefinition, FeatureEngineIdentity, FeatureEvaluationInput, FeatureInput,
+    FeatureInputEvent, FeatureMarketBar, FeatureMaterializationRequest,
     FeatureMaterializationStore, FeatureNode, FeatureObservation, FeatureOperator, FeatureOutput,
     FeaturePlan, FeaturePlanDraft, FeatureReference, FeatureScope, FeatureSlot, FeatureSource,
     FeatureUnavailabilityReason, FittedArtifactBinding, MaterializationAttemptStatus,
@@ -98,6 +99,52 @@ fn observations() -> Vec<FeatureObservation> {
         )
         .unwrap(),
     ]
+}
+
+#[test]
+fn stage_events_uses_the_same_evaluator_as_stateful_observation() {
+    let root = tempdir().unwrap();
+    let store = FeatureMaterializationStore::open(root.path().join("research.sqlite"), root.path())
+        .unwrap();
+    let plan = plan();
+    let pending = store
+        .start_for_plan(request_for(&plan, "alice"), &plan)
+        .unwrap();
+    store.begin("alice", &pending.attempt_id).unwrap();
+    let events = vec![
+        FeatureInputEvent::observation(FeatureEvaluationInput::new(
+            "BTC-USD",
+            10,
+            10,
+            FeatureMarketBar::complete(10, "10", "10", "10", "10", "1", "10").unwrap(),
+        )),
+        FeatureInputEvent::observation(FeatureEvaluationInput::new(
+            "BTC-USD",
+            20,
+            20,
+            FeatureMarketBar::complete(20, "12", "12", "12", "12", "1", "12").unwrap(),
+        )),
+    ];
+    store
+        .stage_events("alice", &pending.attempt_id, &events, &[])
+        .unwrap();
+    let completed = store.publish("alice", &pending.attempt_id).unwrap();
+    let dataset = store
+        .dataset("alice", completed.dataset_id.as_deref().unwrap())
+        .unwrap();
+    let page = store
+        .page(
+            "alice",
+            &dataset.dataset_id,
+            FeatureDatasetFilter::default(),
+            0,
+        )
+        .unwrap();
+    assert_eq!(page.rows.len(), 2);
+    assert!(matches!(
+        page.rows[1].values["return"],
+        FeatureDatasetCell::Available { value, .. } if (value - 0.2).abs() < 1e-12
+    ));
 }
 
 fn publish_alice(

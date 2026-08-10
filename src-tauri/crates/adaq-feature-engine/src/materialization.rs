@@ -17,9 +17,10 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    FEATURE_UNAVAILABILITY_REASON_VERSION, FeatureEngineIdentity, FeatureMaterializationRequest,
-    FeatureObservation, FeatureObservationValue, FeaturePlan, FeatureUnavailabilityReason,
-    canonicalize_json, is_lower_kebab, is_sha256,
+    FEATURE_UNAVAILABILITY_REASON_VERSION, FeatureEngine, FeatureEngineIdentity,
+    FeatureEvaluationError, FeatureInputEvent, FeatureMaterializationRequest, FeatureObservation,
+    FeatureObservationValue, FeaturePlan, FeatureUnavailabilityReason,
+    FittedTransformationArtifact, PlanLoadError, canonicalize_json, is_lower_kebab, is_sha256,
 };
 
 pub const FEATURE_DATASET_STORAGE_SCHEMA_VERSION: &str = "1.4.0";
@@ -582,6 +583,65 @@ impl FeatureMaterializationStore {
             return Err(MaterializationStoreError::InvalidTransition);
         }
         Ok(())
+    }
+
+    pub fn stage_events(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+        events: &[FeatureInputEvent],
+        artifacts: &[FittedTransformationArtifact],
+    ) -> Result<(), MaterializationStoreError> {
+        validate_user(user_id)?;
+        let (request, plan_json, engine_identity_json) = {
+            let database = self.lock_database()?;
+            let attempt = load_attempt(&database, user_id, attempt_id)?;
+            if attempt.status != MaterializationAttemptStatus::Running
+                || attempt.dataset_id.is_some()
+            {
+                return Err(MaterializationStoreError::InvalidTransition);
+            }
+            database
+                .query_row(
+                    "SELECT r.request_json, r.plan_json, r.engine_identity_json
+                     FROM feature_materialization_requests r
+                     WHERE r.request_hash = ?1",
+                    [attempt.request_hash.as_str()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .map_err(sqlite_error)
+                .and_then(|(request_json, plan_json, engine_identity_json)| {
+                    let request =
+                        serde_json::from_str::<FeatureMaterializationRequest>(&request_json)
+                            .map_err(|error| MaterializationStoreError::Json(error.to_string()))?;
+                    Ok((request, plan_json, engine_identity_json))
+                })?
+        };
+        let engine_identity = serde_json::from_str::<FeatureEngineIdentity>(&engine_identity_json)
+            .map_err(|error| MaterializationStoreError::Json(error.to_string()))?;
+        let plan = FeaturePlan::load_for_engine(plan_json.as_bytes(), &engine_identity).map_err(
+            |error| stored_plan_load_error(error, "feature_materialization_requests.plan_json"),
+        )?;
+        if plan.plan_hash() != request.feature_plan_hash {
+            return Err(MaterializationStoreError::InvalidObservation(
+                "stored-feature-plan-hash-mismatch".into(),
+            ));
+        }
+        let mut evaluator = FeatureEngine::new(plan.engine_identity())
+            .evaluator_with_artifacts(plan.clone(), artifacts)
+            .map_err(evaluation_store_error)?;
+        let observations = evaluator
+            .evaluate_batch(events)
+            .map_err(evaluation_store_error)?;
+        let output_names = plan_output_names(&plan);
+        let output_name_refs = output_names.iter().map(String::as_str).collect::<Vec<_>>();
+        self.stage(user_id, attempt_id, &output_name_refs, &observations)
     }
 
     pub fn publish(
@@ -1771,7 +1831,15 @@ fn validate_manifest(dataset: &FeatureDataset) -> Result<(), MaterializationStor
     let plan_json = json_string(&dataset.manifest.plan_json)?;
     let plan =
         FeaturePlan::load_for_engine(plan_json.as_bytes(), &dataset.manifest.engine_identity)
-            .map_err(|_| MaterializationStoreError::InvalidOutputSchema)?;
+            .map_err(|error| match error {
+                PlanLoadError::ResetRequired {
+                    stored_schema_version,
+                } => MaterializationStoreError::ResetRequired {
+                    stored_schema_version,
+                    table: Some("feature_dataset_manifest.plan_json".into()),
+                },
+                _ => MaterializationStoreError::InvalidOutputSchema,
+            })?;
     if plan.plan_hash() != dataset.manifest.request.feature_plan_hash
         || plan_output_names(&plan)
             != dataset
@@ -1847,6 +1915,29 @@ fn ensure_dataset_access(
     exists
         .map(|_| ())
         .ok_or(MaterializationStoreError::Unauthorized)
+}
+
+fn evaluation_store_error(error: FeatureEvaluationError) -> MaterializationStoreError {
+    MaterializationStoreError::InvalidObservation(format!(
+        "feature-evaluation:{}:{}",
+        error.code(),
+        error.diagnostic
+    ))
+}
+
+fn stored_plan_load_error(error: PlanLoadError, table: &str) -> MaterializationStoreError {
+    match error {
+        PlanLoadError::ResetRequired {
+            stored_schema_version,
+        } => MaterializationStoreError::ResetRequired {
+            stored_schema_version,
+            table: Some(table.into()),
+        },
+        other => MaterializationStoreError::InvalidObservation(format!(
+            "stored-feature-plan:{}",
+            other.code()
+        )),
+    }
 }
 
 fn validate_user(user_id: &str) -> Result<(), MaterializationStoreError> {

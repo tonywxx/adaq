@@ -497,6 +497,59 @@ fn validated_identity(value: String, code: &'static str) -> Result<String, Featu
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum FeatureDependencySource {
+    External {
+        dependency_alias: String,
+        output: String,
+    },
+    Signal {
+        dataset_id: String,
+        signal_name: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FeatureDependencyInput {
+    pub source: FeatureDependencySource,
+    pub value: Option<f64>,
+    pub available_at_ms: i64,
+}
+
+impl FeatureDependencyInput {
+    pub fn external(
+        dependency_alias: impl Into<String>,
+        output: impl Into<String>,
+        value: Option<f64>,
+        available_at_ms: i64,
+    ) -> Self {
+        Self {
+            source: FeatureDependencySource::External {
+                dependency_alias: dependency_alias.into(),
+                output: output.into(),
+            },
+            value,
+            available_at_ms,
+        }
+    }
+
+    pub fn signal(
+        dataset_id: impl Into<String>,
+        signal_name: impl Into<String>,
+        value: Option<f64>,
+        available_at_ms: i64,
+    ) -> Self {
+        Self {
+            source: FeatureDependencySource::Signal {
+                dataset_id: dataset_id.into(),
+                signal_name: signal_name.into(),
+            },
+            value,
+            available_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct FeatureEvaluationInput {
     pub instrument_id: String,
     pub observation_time_ms: i64,
@@ -505,6 +558,7 @@ pub struct FeatureEvaluationInput {
     pub calendar: Option<TradingCalendarSnapshot>,
     pub corporate_actions: Vec<CorporateAction>,
     pub market_context: Option<FeatureMarketContext>,
+    pub dependencies: Vec<FeatureDependencyInput>,
 }
 
 impl FeatureEvaluationInput {
@@ -522,6 +576,7 @@ impl FeatureEvaluationInput {
             calendar: None,
             corporate_actions: Vec::new(),
             market_context: None,
+            dependencies: Vec::new(),
         }
     }
 
@@ -538,6 +593,7 @@ impl FeatureEvaluationInput {
             calendar: None,
             corporate_actions: Vec::new(),
             market_context: None,
+            dependencies: Vec::new(),
         }
     }
 
@@ -553,6 +609,11 @@ impl FeatureEvaluationInput {
 
     pub fn with_market_context(mut self, market_context: FeatureMarketContext) -> Self {
         self.market_context = Some(market_context);
+        self
+    }
+
+    pub fn with_dependency(mut self, dependency: FeatureDependencyInput) -> Self {
+        self.dependencies.push(dependency);
         self
     }
 }
@@ -661,6 +722,7 @@ impl FeatureEngine {
 pub struct FeatureEvaluator {
     plan: FeaturePlan,
     definitions: Vec<RuntimeDefinition>,
+    factor_warmup_bars: HashMap<String, u32>,
     instruments: HashMap<String, InstrumentRuntime>,
     indicator_engine: Option<IndicatorEngine>,
     artifacts: HashMap<String, FittedTransformationArtifact>,
@@ -691,6 +753,11 @@ impl FeatureEvaluator {
             .iter()
             .map(RuntimeDefinition::new)
             .collect::<Result<Vec<_>, _>>()?;
+        let factor_warmup_bars = plan
+            .factors()
+            .iter()
+            .map(|factor| (factor.alias.clone(), factor.warmup_bars))
+            .collect();
         let artifacts = artifacts
             .iter()
             .map(|artifact| (artifact.artifact_id().to_owned(), artifact.clone()))
@@ -799,6 +866,7 @@ impl FeatureEvaluator {
         Ok(Self {
             plan,
             definitions,
+            factor_warmup_bars,
             instruments: HashMap::new(),
             indicator_engine: None,
             artifacts,
@@ -859,6 +927,7 @@ impl FeatureEvaluator {
         let definitions = &self.definitions;
         let artifacts = &self.artifacts;
         let fitted_artifacts = &self.fitted_artifacts;
+        let factor_warmup_bars = &self.factor_warmup_bars;
         let indicator_engine = &mut self.indicator_engine;
         let runtime = self
             .instruments
@@ -902,6 +971,7 @@ impl FeatureEvaluator {
             indicator_engine,
             artifacts,
             fitted_artifacts,
+            factor_warmup_bars,
             &instrument_id,
         )?;
         let mut observations = Vec::new();
@@ -964,6 +1034,7 @@ impl FeatureEvaluator {
         let plan = &self.plan;
         let artifacts = &self.artifacts;
         let fitted_artifacts = &self.fitted_artifacts;
+        let factor_warmup_bars = &self.factor_warmup_bars;
         let expected_identity = plan.engine_identity();
         let indicator_engine = &mut self.indicator_engine;
 
@@ -1083,6 +1154,7 @@ impl FeatureEvaluator {
                 indicator_engine,
                 artifacts,
                 fitted_artifacts,
+                factor_warmup_bars,
                 &instrument_id,
             )?;
         }
@@ -1508,6 +1580,7 @@ fn evaluate_slots_for_input(
     indicator_engine: &mut Option<IndicatorEngine>,
     artifacts: &HashMap<String, FittedTransformationArtifact>,
     fitted_artifacts: &HashMap<(String, String), FittedTransformationArtifact>,
+    factor_warmup_bars: &HashMap<String, u32>,
     instrument_id: &str,
 ) -> Result<HashMap<String, EvalValue>, FeatureEvaluationError> {
     let mut values_by_name = HashMap::new();
@@ -1569,13 +1642,107 @@ fn evaluate_slots_for_input(
                     instrument_id,
                 )?
             }
-            FeatureSource::External { .. } | FeatureSource::Signal { .. } => {
-                EvalValue::Unavailable(FeatureUnavailabilityReason::MissingDependency)
+            FeatureSource::External {
+                dependency_alias,
+                output,
+            } => {
+                let warmup_bars = factor_warmup_bars
+                    .get(dependency_alias)
+                    .copied()
+                    .unwrap_or_default()
+                    .max(slot.warmup_bars);
+                resolve_dependency(
+                    input,
+                    &FeatureDependencySource::External {
+                        dependency_alias: dependency_alias.clone(),
+                        output: output.clone(),
+                    },
+                    instrument_id,
+                    &slot.name,
+                    Some(warmup_bars),
+                    runtime.observe_count,
+                )?
             }
+            FeatureSource::Signal {
+                dataset_id,
+                signal_name,
+                ..
+            } => resolve_dependency(
+                input,
+                &FeatureDependencySource::Signal {
+                    dataset_id: dataset_id.clone(),
+                    signal_name: signal_name.clone(),
+                },
+                instrument_id,
+                &slot.name,
+                Some(slot.warmup_bars),
+                runtime.observe_count,
+            )?,
         };
         values_by_name.insert(slot.name.clone(), value);
     }
     Ok(values_by_name)
+}
+
+fn resolve_dependency(
+    input: &FeatureEvaluationInput,
+    source: &FeatureDependencySource,
+    instrument_id: &str,
+    node_id: &str,
+    warmup_bars: Option<u32>,
+    observe_count: usize,
+) -> Result<EvalValue, FeatureEvaluationError> {
+    if warmup_bars.is_some_and(|warmup| observe_count <= warmup as usize) {
+        return Ok(EvalValue::Unavailable(FeatureUnavailabilityReason::Warmup));
+    }
+    let dependency =
+        input
+            .dependencies
+            .iter()
+            .find(|dependency| match (&dependency.source, source) {
+                (
+                    FeatureDependencySource::External {
+                        dependency_alias: left_alias,
+                        output: left_output,
+                    },
+                    FeatureDependencySource::External {
+                        dependency_alias: right_alias,
+                        output: right_output,
+                    },
+                ) => left_alias == right_alias && left_output == right_output,
+                (
+                    FeatureDependencySource::Signal {
+                        dataset_id: left_dataset,
+                        signal_name: left_signal,
+                    },
+                    FeatureDependencySource::Signal {
+                        dataset_id: right_dataset,
+                        signal_name: right_signal,
+                    },
+                ) => left_dataset == right_dataset && left_signal == right_signal,
+                _ => false,
+            });
+    let Some(dependency) = dependency else {
+        return Ok(EvalValue::Unavailable(
+            FeatureUnavailabilityReason::MissingDependency,
+        ));
+    };
+    let Some(value) = dependency.value else {
+        return Ok(EvalValue::Unavailable(
+            FeatureUnavailabilityReason::MissingDependency,
+        ));
+    };
+    if !value.is_finite() {
+        return Err(fatal_error(
+            FeatureEvaluationErrorCode::NonFiniteOutput,
+            EvaluationStage::Input,
+            Some(node_id.to_owned()),
+            Some(instrument_id.to_owned()),
+            Some(input.observation_time_ms),
+            "non-finite-feature-dependency",
+        ));
+    }
+    Ok(EvalValue::available(value, dependency.available_at_ms))
 }
 
 struct PreparedCrossSectionalBatch {
@@ -3139,17 +3306,9 @@ fn evaluate_indicator(
     }
     state.market_history.push(bar.clone());
     state.market_available_at.push(observation.available_at_ms);
-    let max_history = state
-        .compiled_indicator
-        .as_ref()
-        .expect("compiled indicator")
-        .lookback()
-        .saturating_add(1);
-    while state.market_history.len() > max_history {
-        state.market_history.remove(0);
-        state.market_available_at.remove(0);
-    }
-    // ponytail: TA-Lib exposes only batch evaluation; retain one lookback tail to bound memory, upgrading to a native streaming API if profiling makes O(window) per bar materialization a bottleneck.
+    // ponytail: TA-Lib exposes only batch evaluation, so retain each continuous segment to keep
+    // EMA-like indicators identical to full-segment evaluation; replace with a native streaming
+    // API if profiling makes the O(segment length) per-bar materialization a bottleneck.
     let segment = FeatureMarketBar::indicator_segment(&state.market_history, &required_fields)
         .map_err(|error| {
             fatal_error(

@@ -147,6 +147,10 @@ impl FrozenFeaturePlan {
         self.inner.plan_hash()
     }
 
+    pub fn feature_plan(&self) -> &FeaturePlan {
+        &self.inner
+    }
+
     pub fn slot_names(&self) -> impl ExactSizeIterator<Item = &str> {
         self.inner.slot_names()
     }

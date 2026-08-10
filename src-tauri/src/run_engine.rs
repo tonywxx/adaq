@@ -1,18 +1,18 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use adaq_backtest_core::TargetDecision;
-use adaq_component_sdk::{decimal_to_f64, host::strategy_abi};
+use adaq_component_sdk::host::strategy_abi;
 use adaq_component_tooling::{
-    ComponentParameterValue, FrozenBuiltInParameter, FrozenFeaturePlan, FrozenSourceView,
-    MarketField, RunLimits, WasmLoader, builtin_engine_market_field,
+    ComponentParameterValue, FrozenFeaturePlan, FrozenSourceView, RunLimits, WasmLoader,
 };
 use adaq_data_core::{BarGap, BarInterval, OhlcvBar, next_bar_open_time_ms};
-use adaq_indicator_engine::{
-    EngineError, IndicatorColumn, IndicatorEngine, IndicatorRequest, OhlcvSegment, ParameterValue,
+use adaq_feature_engine::{
+    FeatureDependencyInput, FeatureEngine, FeatureEvaluationError, FeatureEvaluationInput,
+    FeatureInputEvent, FeatureMarketBar, FeatureObservation, FeatureObservationValue,
+    FeatureUnavailabilityReason,
 };
 use rust_decimal::Decimal;
 
-const MAX_INDICATOR_OUTPUT_CELLS: usize = 16_777_216;
 const MAX_CLOSED_BARS: usize = 1_000_000;
 const MAX_GUEST_CAUSE_BYTES: usize = 4 * 1024;
 
@@ -82,79 +82,7 @@ pub(crate) fn materialize_feature_segment(
         position_mode: PositionMode::LongOnly,
         limits,
     };
-    let builtin_values = evaluate_builtins(&request, bars)?;
-    let factor_values = evaluate_factors(&request, bars)
-        .map_err(|error| RunError::host("factor-evaluation-failed", RunStage::Factor, error))?;
-    bars.iter()
-        .enumerate()
-        .map(|(index, bar)| {
-            if index < plan.effective_warmup_bars() as usize {
-                return Ok(MaterializedFeatureRow::Warmup);
-            }
-            let mut values = Vec::with_capacity(plan.slot_names().len());
-            for (slot, source) in plan.slot_names().zip(plan.sources()) {
-                let value = match source {
-                    FrozenSourceView::Market(field) => {
-                        market_value(field, bar).map_err(|error| {
-                            RunError::host("invalid-market-input", RunStage::FeatureFrame, error)
-                                .at_bar(bar.open_time_ms)
-                                .for_slot(slot, format!("market:{field:?}"))
-                        })?
-                    }
-                    FrozenSourceView::External {
-                        dependency_alias,
-                        output,
-                    } => {
-                        let Some(value) = factor_values
-                            .get(dependency_alias)
-                            .and_then(|rows| rows[index].as_ref())
-                            .and_then(|row| row.get(output).copied())
-                        else {
-                            return Ok(MaterializedFeatureRow::MissingInput {
-                                slot: slot.into(),
-                                source: format!("external:{dependency_alias}:{output}"),
-                            });
-                        };
-                        value
-                    }
-                    FrozenSourceView::BuiltIn {
-                        indicator,
-                        output,
-                        real_inputs,
-                        parameters,
-                    } => {
-                        let key = builtin_key(indicator, output, real_inputs, parameters);
-                        let Some(value) =
-                            builtin_values.values.get(&key).and_then(|rows| rows[index])
-                        else {
-                            return Ok(MaterializedFeatureRow::MissingInput {
-                                slot: slot.into(),
-                                source: format!("builtin:{indicator}:{output}"),
-                            });
-                        };
-                        value
-                    }
-                    FrozenSourceView::Signal { .. } => {
-                        return Ok(MaterializedFeatureRow::MissingInput {
-                            slot: slot.into(),
-                            source: "signal:not-available-during-model-inference".into(),
-                        });
-                    }
-                };
-                if !value.is_finite() {
-                    return Err(RunError::host(
-                        "non-finite-feature-slot",
-                        RunStage::FeatureFrame,
-                        "Feature Slot contains a non-finite value",
-                    )
-                    .at_bar(bar.open_time_ms)
-                    .for_slot(slot, source_name(source)));
-                }
-                values.push(value);
-            }
-            Ok(MaterializedFeatureRow::Present(values))
-        })
-        .collect()
+    evaluate_feature_rows(&request, bars)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,9 +109,6 @@ pub(crate) enum RunPauseReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunStage {
     Validation,
-    BuiltInInput,
-    BuiltInCompile,
-    BuiltInEvaluate,
     Factor,
     FeatureFrame,
     Strategy,
@@ -298,128 +223,27 @@ fn execute_segment(
 ) -> Result<(), RunError> {
     let strategy = load_strategy(request)
         .map_err(|error| RunError::host("strategy-load-failed", RunStage::Strategy, error))?;
-    let builtin_values = evaluate_builtins(request, bars)?;
-    let factor_values = evaluate_factors(request, bars)
-        .map_err(|error| RunError::host("factor-evaluation-failed", RunStage::Factor, error))?;
+    let feature_rows = evaluate_feature_rows(request, bars)?;
     let mut frames = Vec::with_capacity(bars.len());
-    for (index, bar) in bars.iter().enumerate() {
-        if index < request.plan.effective_warmup_bars() as usize {
-            result.pauses.push(RunPause {
+    for (bar, feature) in bars.iter().zip(feature_rows) {
+        match feature {
+            MaterializedFeatureRow::Warmup => result.pauses.push(RunPause {
                 open_time_ms: bar.open_time_ms,
                 reason: RunPauseReason::Warmup,
-            });
-            continue;
-        }
-        let mut values = Vec::with_capacity(request.plan.slot_names().len());
-        let mut missing = None;
-        for (slot, source) in request.plan.slot_names().zip(request.plan.sources()) {
-            let value = match source {
-                FrozenSourceView::Market(field) => market_value(field, bar).map_err(|error| {
-                    RunError::host("invalid-market-input", RunStage::FeatureFrame, error)
-                        .at_bar(bar.open_time_ms)
-                        .for_slot(slot, format!("market:{field:?}"))
-                })?,
-                FrozenSourceView::External {
-                    dependency_alias,
-                    output,
-                } => match factor_values
-                    .get(dependency_alias)
-                    .and_then(|rows| rows[index].as_ref())
-                    .and_then(|row| row.get(output).copied())
-                {
-                    Some(value) => value,
-                    None => {
-                        missing = Some((
-                            slot.to_owned(),
-                            format!("external:{dependency_alias}:{output}"),
-                        ));
-                        break;
-                    }
-                },
-                FrozenSourceView::BuiltIn {
-                    indicator,
-                    output,
-                    real_inputs,
-                    parameters,
-                } => {
-                    let key = builtin_key(indicator, output, real_inputs, parameters);
-                    match builtin_values.values.get(&key).and_then(|rows| rows[index]) {
-                        Some(value) => value,
-                        None => {
-                            missing =
-                                Some((slot.to_owned(), format!("builtin:{indicator}:{output}")));
-                            break;
-                        }
-                    }
-                }
-                FrozenSourceView::Signal {
-                    dataset_id,
-                    signal_name,
-                } => {
-                    let binding = request
-                        .signals
-                        .iter()
-                        .find(|binding| {
-                            binding.slot == slot
-                                && binding.dataset_id == dataset_id
-                                && binding.signal_name == signal_name
-                        })
-                        .expect("Signal Run bindings were validated");
-                    let decision_time_ms =
-                        next_bar_open_time_ms(bar.open_time_ms, binding.interval).map_err(
-                            |error| {
-                                RunError::host(
-                                    "invalid-signal-decision-time",
-                                    RunStage::FeatureFrame,
-                                    error.to_string(),
-                                )
-                                .at_bar(bar.open_time_ms)
-                                .for_slot(slot, format!("signal:{dataset_id}:{signal_name}"))
-                            },
-                        )?;
-                    match binding
-                        .rows
-                        .binary_search_by_key(&decision_time_ms, |row| row.prediction_time_ms)
-                        .ok()
-                        .map(|index| &binding.rows[index])
-                    {
-                        Some(row)
-                            if row.available_at_ms <= decision_time_ms && row.value.is_some() =>
-                        {
-                            row.value.expect("checked above")
-                        }
-                        _ => {
-                            missing = Some((
-                                slot.to_owned(),
-                                format!("signal:{dataset_id}:{signal_name}"),
-                            ));
-                            break;
-                        }
-                    }
-                }
-            };
-            if !value.is_finite() {
-                return Err(RunError::host(
-                    "non-finite-feature-slot",
-                    RunStage::FeatureFrame,
-                    "Feature Slot contains a non-finite value",
-                )
-                .at_bar(bar.open_time_ms)
-                .for_slot(slot, source_name(source)));
+            }),
+            MaterializedFeatureRow::MissingInput { slot, source } => {
+                result.pauses.push(RunPause {
+                    open_time_ms: bar.open_time_ms,
+                    reason: RunPauseReason::MissingInput { slot, source },
+                });
             }
-            values.push(value);
+            MaterializedFeatureRow::Present(values) => {
+                frames.push(strategy_abi::exports::adaq::strategy::api::FeatureFrame {
+                    open_time_ms: bar.open_time_ms,
+                    values,
+                });
+            }
         }
-        if let Some((slot, source)) = missing {
-            result.pauses.push(RunPause {
-                open_time_ms: bar.open_time_ms,
-                reason: RunPauseReason::MissingInput { slot, source },
-            });
-            continue;
-        }
-        frames.push(strategy_abi::exports::adaq::strategy::api::FeatureFrame {
-            open_time_ms: bar.open_time_ms,
-            values,
-        });
     }
     for frames in frames.chunks(4096) {
         let targets = strategy
@@ -475,6 +299,184 @@ fn normalize_closed_bars(bars: &[OhlcvBar]) -> Result<Vec<OhlcvBar>, RunError> {
         }
     }
     Ok(normalized)
+}
+
+fn evaluate_feature_rows(
+    request: &RunRequest<'_>,
+    bars: &[OhlcvBar],
+) -> Result<Vec<MaterializedFeatureRow>, RunError> {
+    let factor_values = evaluate_factors(request, bars)
+        .map_err(|error| RunError::host("factor-evaluation-failed", RunStage::Factor, error))?;
+    let feature_plan = request.plan.feature_plan();
+    let mut evaluator = FeatureEngine::new(feature_plan.engine_identity())
+        .evaluator(feature_plan.clone())
+        .map_err(|error| feature_evaluation_error(error, None))?;
+    let mut rows = Vec::with_capacity(bars.len());
+    for (index, bar) in bars.iter().enumerate() {
+        let dependencies = feature_dependencies(request, &factor_values, index, bar)?;
+        let input = FeatureEvaluationInput::new(
+            "component-run",
+            bar.open_time_ms,
+            bar.open_time_ms,
+            FeatureMarketBar::from_ohlcv(bar.clone()),
+        );
+        let input = dependencies
+            .into_iter()
+            .fold(input, FeatureEvaluationInput::with_dependency);
+        let observations = evaluator
+            .observe(FeatureInputEvent::observation(input))
+            .map_err(|error| feature_evaluation_error(error, Some(bar.open_time_ms)))?;
+        rows.push(feature_row_from_observations(
+            request.plan,
+            &observations,
+            bar.open_time_ms,
+        )?);
+    }
+    Ok(rows)
+}
+
+fn feature_dependencies(
+    request: &RunRequest<'_>,
+    factor_values: &HashMap<String, Vec<Option<HashMap<String, f64>>>>,
+    index: usize,
+    bar: &OhlcvBar,
+) -> Result<Vec<FeatureDependencyInput>, RunError> {
+    let mut dependencies = Vec::new();
+    for factor in request.plan.factors() {
+        for output in factor.output_names {
+            dependencies.push(FeatureDependencyInput::external(
+                factor.alias,
+                output.clone(),
+                factor_values
+                    .get(factor.alias)
+                    .and_then(|rows| rows[index].as_ref())
+                    .and_then(|row| row.get(output).copied()),
+                bar.open_time_ms,
+            ));
+        }
+    }
+    for (slot, source) in request.plan.slot_names().zip(request.plan.sources()) {
+        let FrozenSourceView::Signal {
+            dataset_id,
+            signal_name,
+        } = source
+        else {
+            continue;
+        };
+        let Some(binding) = request.signals.iter().find(|binding| {
+            binding.slot == slot
+                && binding.dataset_id == dataset_id
+                && binding.signal_name == signal_name
+        }) else {
+            dependencies.push(FeatureDependencyInput::signal(
+                dataset_id,
+                signal_name,
+                None,
+                bar.open_time_ms,
+            ));
+            continue;
+        };
+        let decision_time_ms =
+            next_bar_open_time_ms(bar.open_time_ms, binding.interval).map_err(|error| {
+                RunError::host(
+                    "invalid-signal-decision-time",
+                    RunStage::FeatureFrame,
+                    error.to_string(),
+                )
+                .at_bar(bar.open_time_ms)
+                .for_slot(slot, format!("signal:{dataset_id}:{signal_name}"))
+            })?;
+        let row = binding
+            .rows
+            .binary_search_by_key(&decision_time_ms, |row| row.prediction_time_ms)
+            .ok()
+            .map(|row_index| &binding.rows[row_index]);
+        let (value, available_at_ms) = match row {
+            Some(row) if row.available_at_ms <= decision_time_ms => {
+                (row.value, row.available_at_ms)
+            }
+            _ => (None, decision_time_ms),
+        };
+        dependencies.push(FeatureDependencyInput::signal(
+            dataset_id,
+            signal_name,
+            value,
+            available_at_ms,
+        ));
+    }
+    Ok(dependencies)
+}
+
+fn feature_row_from_observations(
+    plan: &FrozenFeaturePlan,
+    observations: &[FeatureObservation],
+    bar_open_time_ms: i64,
+) -> Result<MaterializedFeatureRow, RunError> {
+    let mut slot_observations = Vec::with_capacity(plan.slot_names().len());
+    for (slot, source) in plan.slot_names().zip(plan.sources()) {
+        let observation = observations
+            .iter()
+            .find(|observation| observation.output_name == slot)
+            .ok_or_else(|| {
+                RunError::host(
+                    "feature-output-missing",
+                    RunStage::FeatureFrame,
+                    "Feature evaluator did not return the planned Slot",
+                )
+                .at_bar(bar_open_time_ms)
+                .for_slot(slot, source_name(source))
+            })?;
+        slot_observations.push((slot, source, observation));
+    }
+    // Warmup outranks missing inputs: while any Slot is still warming up the whole
+    // frame stays in Warmup, matching the pre-unification whole-row semantics.
+    if slot_observations.iter().any(|(_, _, observation)| {
+        matches!(
+            observation.value,
+            FeatureObservationValue::Unavailable {
+                reason: FeatureUnavailabilityReason::Warmup
+            }
+        )
+    }) {
+        return Ok(MaterializedFeatureRow::Warmup);
+    }
+    let mut values = Vec::with_capacity(slot_observations.len());
+    for (slot, source, observation) in slot_observations {
+        match observation.value {
+            FeatureObservationValue::Available { value, .. } => values.push(value),
+            FeatureObservationValue::Unavailable { reason } => {
+                let source = source_name(source);
+                let source = if reason == FeatureUnavailabilityReason::MissingDependency {
+                    source
+                } else {
+                    format!("{source}:{}", reason.code())
+                };
+                return Ok(MaterializedFeatureRow::MissingInput {
+                    slot: slot.to_owned(),
+                    source,
+                });
+            }
+        }
+    }
+    Ok(MaterializedFeatureRow::Present(values))
+}
+
+fn feature_evaluation_error(
+    error: FeatureEvaluationError,
+    fallback_time_ms: Option<i64>,
+) -> RunError {
+    RunError::host(
+        "feature-evaluation-failed",
+        RunStage::FeatureFrame,
+        format!("{}: {}", error.code(), error.diagnostic),
+    )
+    .at_bar(
+        error
+            .observation_time_ms
+            .or(fallback_time_ms)
+            .unwrap_or_default(),
+    )
+    .for_slot(error.node_id.as_deref().unwrap_or("feature"), error.code())
 }
 
 fn evaluate_factors(
@@ -627,216 +629,6 @@ fn load_strategy(request: &RunRequest<'_>) -> Result<WasmLoader, String> {
     Ok(strategy)
 }
 
-fn evaluate_builtins(
-    request: &RunRequest<'_>,
-    bars: &[OhlcvBar],
-) -> Result<BuiltinEvaluation, RunError> {
-    let mut requests = BTreeMap::<
-        String,
-        (
-            String,
-            Vec<MarketField>,
-            BTreeMap<String, FrozenBuiltInParameter>,
-            Vec<String>,
-            String,
-        ),
-    >::new();
-    for (slot, source) in request.plan.slot_names().zip(request.plan.sources()) {
-        let FrozenSourceView::BuiltIn {
-            indicator,
-            output,
-            real_inputs,
-            parameters,
-        } = source
-        else {
-            continue;
-        };
-        let key = builtin_request_key(indicator, real_inputs, parameters);
-        let entry = requests.entry(key).or_insert_with(|| {
-            (
-                indicator.into(),
-                real_inputs.to_vec(),
-                parameters.clone(),
-                Vec::new(),
-                slot.into(),
-            )
-        });
-        if !entry.3.iter().any(|selected| selected == output) {
-            entry.3.push(output.into());
-        }
-    }
-    if requests.is_empty() {
-        return Ok(BuiltinEvaluation {
-            values: HashMap::new(),
-            request_count: 0,
-        });
-    }
-    let request_count = requests.len();
-    let output_count = requests
-        .values()
-        .map(|request| request.3.len())
-        .sum::<usize>();
-    validate_builtin_output_cells(bars.len(), output_count)?;
-    let first = requests
-        .values()
-        .next()
-        .expect("non-empty Built-in requests");
-    let first_source = format!("builtin:{}", first.0);
-    let first_slot = &first.4;
-    let engine = IndicatorEngine::initialize().map_err(|error| {
-        builtin_engine_error(
-            error,
-            RunStage::BuiltInCompile,
-            bars,
-            first_slot,
-            &first_source,
-        )
-    })?;
-    let segment = OhlcvSegment::new(
-        builtin_market_column(bars, MarketField::Open, first_slot, &first_source)?,
-        builtin_market_column(bars, MarketField::High, first_slot, &first_source)?,
-        builtin_market_column(bars, MarketField::Low, first_slot, &first_source)?,
-        builtin_market_column(bars, MarketField::Close, first_slot, &first_source)?,
-        builtin_market_column(bars, MarketField::BaseVolume, first_slot, &first_source)?,
-        builtin_market_column(bars, MarketField::QuoteVolume, first_slot, &first_source)?,
-    )
-    .map_err(|error| {
-        builtin_engine_error(
-            error,
-            RunStage::BuiltInInput,
-            bars,
-            first_slot,
-            &first_source,
-        )
-    })?;
-    let mut values = HashMap::new();
-    for (_, (indicator, real_inputs, parameters, outputs, slot)) in requests {
-        let source = format!("builtin:{indicator}");
-        let compiled = engine
-            .compile(IndicatorRequest {
-                indicator_id: indicator.clone(),
-                outputs: outputs.clone(),
-                real_inputs: real_inputs
-                    .iter()
-                    .map(|field| builtin_engine_market_field(*field))
-                    .collect(),
-                parameters: parameters
-                    .iter()
-                    .map(|(id, value)| {
-                        engine_parameter(value)
-                            .map(|value| (id.clone(), value))
-                            .map_err(|error| {
-                                RunError::host(
-                                    "invalid-frozen-indicator-parameter",
-                                    RunStage::BuiltInCompile,
-                                    error,
-                                )
-                                .at_bar(bars[0].open_time_ms)
-                                .for_slot(&slot, &source)
-                            })
-                    })
-                    .collect::<Result<_, RunError>>()?,
-            })
-            .map_err(|error| {
-                builtin_engine_error(error, RunStage::BuiltInCompile, bars, &slot, &source)
-            })?;
-        let columns = engine.evaluate(&compiled, &segment).map_err(|error| {
-            builtin_engine_error(error, RunStage::BuiltInEvaluate, bars, &slot, &source)
-        })?;
-        for (output, column) in columns {
-            let rows = match column {
-                IndicatorColumn::Real(rows) => rows,
-                IndicatorColumn::Integer(rows) => {
-                    rows.into_iter().map(|value| value.map(f64::from)).collect()
-                }
-            };
-            values.insert(
-                builtin_key(&indicator, &output, &real_inputs, &parameters),
-                rows,
-            );
-        }
-    }
-    Ok(BuiltinEvaluation {
-        values,
-        request_count,
-    })
-}
-
-struct BuiltinEvaluation {
-    values: HashMap<String, Vec<Option<f64>>>,
-    #[cfg_attr(not(test), allow(dead_code))]
-    request_count: usize,
-}
-
-fn validate_builtin_output_cells(bar_count: usize, output_count: usize) -> Result<(), RunError> {
-    if bar_count
-        .checked_mul(output_count)
-        .is_none_or(|cells| cells > MAX_INDICATOR_OUTPUT_CELLS)
-    {
-        return Err(RunError::host(
-            "too-many-indicator-output-cells",
-            RunStage::Validation,
-            "Built-in Indicator outputs exceed the Run limit",
-        ));
-    }
-    Ok(())
-}
-
-fn builtin_market_column(
-    bars: &[OhlcvBar],
-    field: MarketField,
-    slot: &str,
-    source: &str,
-) -> Result<Vec<f64>, RunError> {
-    bars.iter()
-        .map(|bar| {
-            market_value(field, bar).map_err(|error| {
-                RunError::host("invalid-indicator-input", RunStage::BuiltInInput, error)
-                    .at_bar(bar.open_time_ms)
-                    .for_slot(slot, source)
-            })
-        })
-        .collect()
-}
-
-fn builtin_engine_error(
-    error: EngineError,
-    stage: RunStage,
-    bars: &[OhlcvBar],
-    slot: &str,
-    source: &str,
-) -> RunError {
-    let index = match &error {
-        EngineError::NonFiniteOutput { index, .. } => *index,
-        _ => 0,
-    };
-    let (ta_ret_code, ta_ret_code_name) = match &error {
-        EngineError::Initialization {
-            ret_code,
-            ret_code_name,
-            ..
-        }
-        | EngineError::TaLib {
-            ret_code,
-            ret_code_name,
-            ..
-        } => (Some(*ret_code), Some((*ret_code_name).into())),
-        _ => (None, None),
-    };
-    let (cause, cause_truncated) = bounded_context(&error.to_string());
-    RunError {
-        code: error.code().into(),
-        stage,
-        bar_open_time_ms: bars.get(index).map(|bar| bar.open_time_ms),
-        slot: Some(slot.into()),
-        source: Some(source.into()),
-        ta_ret_code,
-        ta_ret_code_name,
-        cause,
-        cause_truncated,
-    }
-}
-
 fn source_name(source: FrozenSourceView<'_>) -> String {
     match source {
         FrozenSourceView::Market(field) => format!("market:{field:?}"),
@@ -852,49 +644,6 @@ fn source_name(source: FrozenSourceView<'_>) -> String {
             signal_name,
         } => format!("signal:{dataset_id}:{signal_name}"),
     }
-}
-
-fn builtin_key(
-    indicator: &str,
-    output: &str,
-    real_inputs: &[MarketField],
-    parameters: &BTreeMap<String, FrozenBuiltInParameter>,
-) -> String {
-    format!("{indicator}:{output}:{real_inputs:?}:{parameters:?}")
-}
-fn builtin_request_key(
-    indicator: &str,
-    real_inputs: &[MarketField],
-    parameters: &BTreeMap<String, FrozenBuiltInParameter>,
-) -> String {
-    format!("{indicator}:{real_inputs:?}:{parameters:?}")
-}
-fn engine_parameter(value: &FrozenBuiltInParameter) -> Result<ParameterValue, String> {
-    match value {
-        FrozenBuiltInParameter::Integer(value) => Ok(ParameterValue::Integer(*value)),
-        FrozenBuiltInParameter::Real(value) => value
-            .parse()
-            .map(ParameterValue::Real)
-            .map_err(|_| "invalid-indicator-parameter".into()),
-        FrozenBuiltInParameter::Enum(value) => Ok(ParameterValue::Enum(value.clone())),
-    }
-}
-
-fn market_value(field: MarketField, bar: &OhlcvBar) -> Result<f64, String> {
-    let (name, value) = match field {
-        MarketField::Open => ("open", bar.open),
-        MarketField::High => ("high", bar.high),
-        MarketField::Low => ("low", bar.low),
-        MarketField::Close => ("close", bar.close),
-        MarketField::BaseVolume => ("base-volume", bar.base_volume),
-        MarketField::QuoteVolume => ("quote-volume", bar.quote_volume),
-    };
-    decimal_to_f64(value).map_err(|error| {
-        format!(
-            "Market field {} cannot be converted at Bar {}: {error}",
-            name, bar.open_time_ms
-        )
-    })
 }
 
 fn validate_request(request: &RunRequest<'_>) -> Result<(), String> {
@@ -999,6 +748,7 @@ mod tests {
         validate_and_freeze_feature_plan_with_bindings_and_parameters,
         validate_and_freeze_feature_plan_with_factors,
     };
+    use adaq_indicator_engine::IndicatorEngine;
 
     use super::*;
 
@@ -1279,6 +1029,100 @@ mod tests {
                 },
             }]
         );
+    }
+
+    #[test]
+    fn warmup_outranks_missing_signal_input_in_feature_rows() {
+        let contract = |name: &str| ModelOutput {
+            name: name.into(),
+            prediction_kind: PredictionKind::Probability,
+            forecast_target: ForecastTarget::Builtin {
+                target: BuiltinForecastTarget::FutureCloseUp,
+            },
+            value_scale: ForecastValueScale::Probability,
+            horizon_bars: 1,
+        };
+        let manifest: ComponentManifest = serde_json::from_value(serde_json::json!({
+            "manifestSchemaVersion": "1.0.0",
+            "componentId": "00000000-0000-4000-8000-000000000002",
+            "version": "1.0.0",
+            "name": "Warmup Signal Fixture",
+            "kind": "strategy",
+            "sdkVersion": "0.1.0",
+            "abiVersion": "1.0.0",
+            "featureSlots": [{
+                "name": "quote-volume",
+                "source": {
+                    "kind": "signal",
+                    "predictionKind": {"kind": "probability"},
+                    "forecastTarget": {"kind": "builtin", "target": "future-close-up"},
+                    "valueScale": {"kind": "probability"},
+                    "horizonBars": 1
+                }
+            }, {
+                "name": "rsi",
+                "source": {
+                    "kind": "builtin",
+                    "indicator": "rsi",
+                    "output": "value",
+                    "inputs": {"real-0": "close"},
+                    "parameters": {"time-period": 2}
+                }
+            }]
+        }))
+        .unwrap();
+        let dataset_id = "b".repeat(64);
+        let signal_inputs = [SignalPlanInput {
+            slot_name: "quote-volume",
+            dataset_id: &dataset_id,
+            signal_name: "quote-volume",
+            snapshot_id: "snapshot",
+            instrument_id: "okx:BTC-USDT".into(),
+            venue: "okx",
+            bar_interval: "1m",
+            contract: contract("quote-volume"),
+            producer_segments: vec![serde_json::json!({"segment": 1})],
+            artifact_provenance: serde_json::json!({"sha256": "artifact"}),
+            evidence_state: "unknown",
+            component_lock: vec![],
+        }];
+        let plan = validate_and_freeze_feature_plan_with_bindings_and_parameters(
+            &manifest,
+            &"a".repeat(64),
+            &native_engine_identity().unwrap(),
+            &[],
+            &BTreeMap::new(),
+            &signal_inputs,
+        )
+        .unwrap();
+        let signals = [SignalRunRequest {
+            slot: "quote-volume",
+            dataset_id: &dataset_id,
+            signal_name: "quote-volume",
+            interval: BarInterval::OneMinute,
+            rows: &[],
+        }];
+        let bars = (0..5)
+            .map(|index| bar(index, &(10 + index).to_string(), "5"))
+            .collect::<Vec<_>>();
+        let request = RunRequest {
+            strategy_path: &fixture(),
+            strategy_parameters: &[],
+            factors: &[],
+            signals: &signals,
+            bars: &bars,
+            gaps: &[],
+            plan: &plan,
+            position_mode: PositionMode::LongOnly,
+            limits: RunLimits::default(),
+        };
+        let rows = evaluate_feature_rows(&request, &bars).unwrap();
+        assert_eq!(rows[0], MaterializedFeatureRow::Warmup);
+        assert_eq!(rows[1], MaterializedFeatureRow::Warmup);
+        assert!(matches!(
+            rows[2],
+            MaterializedFeatureRow::MissingInput { .. }
+        ));
     }
 
     #[test]
@@ -1773,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_output_builtin_request_reuses_one_evaluation_for_semantic_slots() {
+    fn multi_output_builtin_slots_use_the_shared_feature_evaluator() {
         let manifest = serde_json::from_str::<ComponentManifest>(r#"{
             "manifestSchemaVersion":"1.0.0","componentId":"00000000-0000-0000-0000-000000000000",
             "version":"1.0.0","name":"MACD Fixture","kind":"strategy","sdkVersion":"0.1.0","abiVersion":"1.0.0",
@@ -1803,9 +1647,10 @@ mod tests {
             position_mode: PositionMode::LongOnly,
             limits: RunLimits::default(),
         };
-        let values = evaluate_builtins(&request, &bars).unwrap();
-        assert_eq!(values.values.len(), 3);
-        assert_eq!(values.request_count, 1);
+        let values = evaluate_feature_rows(&request, &bars).unwrap();
+        assert!(values.iter().any(|row| {
+            matches!(row, MaterializedFeatureRow::Present(values) if values.len() == 3)
+        }));
     }
 
     #[test]
@@ -1906,8 +1751,6 @@ mod tests {
             position_mode: PositionMode::LongOnly,
             limits: RunLimits::default(),
         };
-        let evaluation = evaluate_builtins(&request, &bars).unwrap();
-        assert_eq!(evaluation.request_count, 1);
         let result = RunEngine::execute(&request).unwrap();
         assert_eq!(
             result.decisions.first().unwrap().target_exposure,
@@ -1923,48 +1766,6 @@ mod tests {
                 .iter()
                 .any(|decision| decision.target_exposure == Decimal::ZERO)
         );
-    }
-
-    #[test]
-    fn indicator_failures_preserve_typed_run_context() {
-        let bars = vec![bar(10, "1", "1"), bar(20, "2", "2")];
-        let ta = builtin_engine_error(
-            EngineError::TaLib {
-                code: "ta-lib-error",
-                ret_code: 2,
-                ret_code_name: "TA_BAD_PARAM",
-            },
-            RunStage::BuiltInEvaluate,
-            &bars,
-            "rsi",
-            "builtin:rsi",
-        );
-        assert_eq!(ta.stage, RunStage::BuiltInEvaluate);
-        assert_eq!(ta.bar_open_time_ms, Some(10));
-        assert_eq!(ta.slot.as_deref(), Some("rsi"));
-        assert_eq!(ta.source.as_deref(), Some("builtin:rsi"));
-        assert_eq!(ta.ta_ret_code, Some(2));
-        assert_eq!(ta.ta_ret_code_name.as_deref(), Some("TA_BAD_PARAM"));
-
-        let non_finite = builtin_engine_error(
-            EngineError::NonFiniteOutput {
-                code: "non-finite-indicator-output",
-                index: 1,
-            },
-            RunStage::BuiltInEvaluate,
-            &bars,
-            "rsi",
-            "builtin:rsi",
-        );
-        assert_eq!(non_finite.bar_open_time_ms, Some(20));
-    }
-
-    #[test]
-    fn indicator_output_cell_limit_is_checked_before_allocation() {
-        assert!(validate_builtin_output_cells(1_000_000, 16).is_ok());
-        let error = validate_builtin_output_cells(1_000_000, 17).unwrap_err();
-        assert_eq!(error.code, "too-many-indicator-output-cells");
-        assert_eq!(error.stage, RunStage::Validation);
     }
 
     #[test]

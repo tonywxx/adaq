@@ -464,7 +464,18 @@ pub(super) fn validate_provenance(provenance: &BacktestRunProvenance) -> Result<
     };
     let frozen_plan =
         FrozenFeaturePlan::load_for_engine(provenance.feature_plan_json.as_bytes(), &identity)
-            .map_err(|_| "Backtest Run provenance has an invalid frozen Feature Plan")?;
+            .map_err(|error| {
+                if error.code == "reset-required" {
+                    "Backtest Run provenance stores an incompatible Feature Plan schema; \
+                     reset local research data before rerunning (reset-required)"
+                        .to_string()
+                } else {
+                    format!(
+                        "Backtest Run provenance has an invalid frozen Feature Plan: {}",
+                        error.code
+                    )
+                }
+            })?;
     let plan: serde_json::Value =
         serde_json::from_str(&provenance.feature_plan_json).map_err(string)?;
     let content = plan.as_object().ok_or("Feature Plan is invalid")?;

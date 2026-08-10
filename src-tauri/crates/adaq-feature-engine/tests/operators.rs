@@ -8,11 +8,12 @@ use adaq_data_core::{
     },
 };
 use adaq_feature_engine::{
-    CorporateAction, DefinitionDraft, FeatureDefinition, FeatureEngine, FeatureEngineIdentity,
-    FeatureEvaluationInput, FeatureInput, FeatureInputEvent, FeatureMarketBar,
-    FeatureMarketContext, FeatureNode, FeatureObservation, FeatureObservationValue,
-    FeatureOperator, FeatureOutput, FeaturePlan, FeaturePlanDraft, FeatureScope,
-    FeatureUnavailabilityReason, MarketField, PointInTimeInstrumentUniverse, UniverseEvidenceState,
+    CorporateAction, DefinitionDraft, FeatureDefinition, FeatureDependencyInput, FeatureEngine,
+    FeatureEngineIdentity, FeatureEvaluationInput, FeatureFactor, FeatureInput, FeatureInputEvent,
+    FeatureMarketBar, FeatureMarketContext, FeatureNode, FeatureObservation,
+    FeatureObservationValue, FeatureOperator, FeatureOutput, FeaturePlan, FeaturePlanDraft,
+    FeatureScope, FeatureSlot, FeatureSource, FeatureUnavailabilityReason, MarketField,
+    PointInTimeInstrumentUniverse, UniverseEvidenceState,
 };
 use chrono::NaiveTime;
 use serde_json::json;
@@ -177,6 +178,294 @@ fn cross_sectional_node(
         parameters,
         warmup_bars: 0,
     }
+}
+
+#[test]
+fn dependency_slots_share_batch_and_stateful_evaluation() {
+    let plan = FeaturePlan::freeze(FeaturePlanDraft {
+        factors: vec![adaq_feature_engine::FeatureFactor {
+            alias: "momentum".into(),
+            parameters: Vec::new(),
+            output_names: vec!["score".into()],
+            warmup_bars: 1,
+        }],
+        slots: vec![adaq_feature_engine::FeatureSlot {
+            name: "factor-score".into(),
+            source: adaq_feature_engine::FeatureSource::External {
+                dependency_alias: "momentum".into(),
+                output: "score".into(),
+            },
+            warmup_bars: 0,
+        }],
+        engine_identity: identity(),
+        ..FeaturePlanDraft::default()
+    })
+    .unwrap();
+    let first = FeatureInputEvent::observation(
+        FeatureEvaluationInput::new("BTC-USD", 1, 1, bar(1, "10", "1", "1")).with_dependency(
+            FeatureDependencyInput::external("momentum", "score", None, 1),
+        ),
+    );
+    let second = FeatureInputEvent::observation(
+        FeatureEvaluationInput::new("BTC-USD", 2, 2, bar(2, "11", "1", "1")).with_dependency(
+            FeatureDependencyInput::external("momentum", "score", Some(2.5), 2),
+        ),
+    );
+    let missing = FeatureInputEvent::observation(
+        FeatureEvaluationInput::new("BTC-USD", 3, 3, bar(3, "12", "1", "1")).with_dependency(
+            FeatureDependencyInput::external("momentum", "score", None, 3),
+        ),
+    );
+    let mut batch = FeatureEngine::new(identity())
+        .evaluator(plan.clone())
+        .unwrap();
+    let expected = batch
+        .evaluate_batch(&[first.clone(), second.clone(), missing.clone()])
+        .unwrap();
+
+    let mut stateful = FeatureEngine::new(identity()).evaluator(plan).unwrap();
+    let mut actual = stateful.observe(first).unwrap();
+    actual.extend(stateful.observe(second).unwrap());
+    actual.extend(stateful.observe(missing).unwrap());
+
+    assert_eq!(actual, expected);
+    assert_eq!(
+        reason(&actual[0]),
+        Some(FeatureUnavailabilityReason::Warmup)
+    );
+    assert_eq!(value(&actual[1]), Some(2.5));
+    assert_eq!(
+        reason(&actual[2]),
+        Some(FeatureUnavailabilityReason::MissingDependency)
+    );
+}
+
+#[test]
+fn restart_replay_and_chunk_partitions_are_bit_identical_across_gaps_dependencies_and_calendar() {
+    let calendar = TradingCalendarSnapshot::new(
+        "a-share-equivalence",
+        Venue::china_a_share("sse").unwrap(),
+        0,
+        2_000_000_000_000,
+        vec![
+            TradingSession {
+                phase: SessionPhase::Continuous,
+                start_local: NaiveTime::from_hms_opt(9, 30, 0).unwrap(),
+                end_local: NaiveTime::from_hms_opt(11, 30, 0).unwrap(),
+            },
+            TradingSession {
+                phase: SessionPhase::Continuous,
+                start_local: NaiveTime::from_hms_opt(13, 0, 0).unwrap(),
+                end_local: NaiveTime::from_hms_opt(15, 0, 0).unwrap(),
+            },
+        ],
+        Vec::<DayEvidence>::new(),
+    )
+    .unwrap();
+    let definition = FeatureDefinition::freeze(DefinitionDraft {
+        definition_id: Uuid::new_v4(),
+        revision: 1,
+        scope: FeatureScope::TimeSeries,
+        nodes: vec![
+            node(
+                "mean",
+                FeatureOperator::RollingMean,
+                vec![FeatureInput::Market {
+                    field: MarketField::Close,
+                }],
+                BTreeMap::from([("window".into(), json!(2))]),
+            ),
+            node(
+                "day",
+                FeatureOperator::TradingDayOfWeek,
+                Vec::new(),
+                BTreeMap::new(),
+            ),
+        ],
+        outputs: vec![
+            FeatureOutput {
+                name: "mean".into(),
+                node_id: "mean".into(),
+            },
+            FeatureOutput {
+                name: "day".into(),
+                node_id: "day".into(),
+            },
+        ],
+    })
+    .unwrap();
+    let plan = FeaturePlan::freeze(FeaturePlanDraft {
+        definitions: vec![definition],
+        factors: vec![FeatureFactor {
+            alias: "momentum".into(),
+            parameters: Vec::new(),
+            output_names: vec!["score".into()],
+            warmup_bars: 0,
+        }],
+        slots: vec![FeatureSlot {
+            name: "factor-score".into(),
+            source: FeatureSource::External {
+                dependency_alias: "momentum".into(),
+                output: "score".into(),
+            },
+            warmup_bars: 0,
+        }],
+        engine_identity: identity(),
+        ..FeaturePlanDraft::default()
+    })
+    .unwrap();
+    // 2024-03-11 SSE morning session, minute cadence in venue-local time.
+    let base_time = 1_710_120_600_000;
+    let obs = |offset: i64, close: &str, dependency: Option<f64>| {
+        let time = base_time + offset * 60_000;
+        FeatureInputEvent::observation(
+            FeatureEvaluationInput::new("600000", time, time, bar(time, close, "1", "1"))
+                .with_calendar(calendar.clone())
+                .with_dependency(FeatureDependencyInput::external(
+                    "momentum", "score", dependency, time,
+                )),
+        )
+    };
+    let events = vec![
+        obs(0, "10", Some(1.0)),
+        obs(1, "12", None),
+        FeatureInputEvent::bar_gap("600000", base_time + 2 * 60_000, base_time + 2 * 60_000),
+        obs(3, "14", Some(2.0)),
+        FeatureInputEvent::scheduled_closure("600000", base_time + 4 * 60_000),
+        obs(5, "16", Some(3.0)),
+    ];
+    let engine = FeatureEngine::new(identity());
+    let reference = engine.evaluate_batch(plan.clone(), &events).unwrap();
+    assert!(
+        reference
+            .iter()
+            .any(|observation| reason(observation) == Some(FeatureUnavailabilityReason::BarGap))
+    );
+    assert!(
+        reference.iter().any(|observation| reason(observation)
+            == Some(FeatureUnavailabilityReason::MissingDependency))
+    );
+
+    let mut stateful = engine.evaluator(plan.clone()).unwrap();
+    let mut one_at_a_time = Vec::new();
+    for event in &events {
+        one_at_a_time.extend(stateful.observe(event.clone()).unwrap());
+    }
+    assert_eq!(one_at_a_time, reference);
+
+    for chunk_size in [2usize, 3, 4, events.len()] {
+        let mut chunked = engine.evaluator(plan.clone()).unwrap();
+        let mut observations = Vec::new();
+        for chunk in events.chunks(chunk_size) {
+            observations.extend(chunked.evaluate_batch(chunk).unwrap());
+        }
+        assert_eq!(observations, reference);
+    }
+
+    let replayed = FeatureEngine::new(identity())
+        .evaluate_batch(plan, &events)
+        .unwrap();
+    assert_eq!(replayed, reference);
+}
+
+#[test]
+fn signal_dependency_slots_share_batch_and_stateful_evaluation() {
+    let plan = FeaturePlan::freeze(FeaturePlanDraft {
+        slots: vec![FeatureSlot {
+            name: "forecast".into(),
+            source: FeatureSource::Signal {
+                dataset_id: "a".repeat(64),
+                signal_name: "forecast".into(),
+                snapshot_id: "snapshot".into(),
+                instrument_id: "BTC-USD".into(),
+                venue: "okx".into(),
+                bar_interval: "1m".into(),
+                contract: json!({
+                    "name": "forecast",
+                    "predictionKind": {"kind": "probability"},
+                    "forecastTarget": {"kind": "builtin", "target": "future-close-up"},
+                    "valueScale": {"kind": "probability"},
+                    "horizonBars": 1
+                }),
+                producer_segments: vec![json!({"segment": 1})],
+                artifact_provenance: json!({"sha256": "artifact"}),
+                evidence_state: "unknown".into(),
+                component_lock: vec![],
+            },
+            warmup_bars: 0,
+        }],
+        engine_identity: identity(),
+        ..FeaturePlanDraft::default()
+    })
+    .unwrap();
+    let signal = |time: i64, value: Option<f64>| {
+        FeatureInputEvent::observation(
+            FeatureEvaluationInput::new("BTC-USD", time, time, bar(time, "10", "1", "1"))
+                .with_dependency(FeatureDependencyInput::signal(
+                    "a".repeat(64),
+                    "forecast",
+                    value,
+                    time,
+                )),
+        )
+    };
+    let events = vec![signal(1, Some(0.4)), signal(2, None), signal(3, Some(0.7))];
+    let engine = FeatureEngine::new(identity());
+    let reference = engine.evaluate_batch(plan.clone(), &events).unwrap();
+    assert_eq!(value(&reference[0]), Some(0.4));
+    assert_eq!(
+        reason(&reference[1]),
+        Some(FeatureUnavailabilityReason::MissingDependency)
+    );
+    assert_eq!(value(&reference[2]), Some(0.7));
+
+    let mut stateful = engine.evaluator(plan.clone()).unwrap();
+    let mut one_at_a_time = Vec::new();
+    for event in &events {
+        one_at_a_time.extend(stateful.observe(event.clone()).unwrap());
+    }
+    assert_eq!(one_at_a_time, reference);
+
+    let replayed = FeatureEngine::new(identity())
+        .evaluate_batch(plan, &events)
+        .unwrap();
+    assert_eq!(replayed, reference);
+}
+
+#[test]
+fn cross_sectional_batches_are_equivalent_across_replay_and_partitioning() {
+    let plan = cross_sectional_plan(
+        vec![cross_sectional_node(
+            "rank",
+            FeatureOperator::CrossSectionalRank,
+            BTreeMap::new(),
+        )],
+        &[("rank", "rank")],
+    );
+    let batches = vec![
+        cross_sectional_batch(
+            1,
+            cross_sectional_universe(1, &["A", "B", "C"], UniverseEvidenceState::Observed),
+            &[("A", "10"), ("B", "12"), ("C", "11")],
+        ),
+        cross_sectional_batch(
+            2,
+            cross_sectional_universe(2, &["A", "B"], UniverseEvidenceState::Observed),
+            &[("A", "13"), ("B", "15")],
+        ),
+    ];
+    let engine = FeatureEngine::new(identity());
+    let reference = engine.evaluate_batch(plan.clone(), &batches).unwrap();
+    let mut stateful = engine.evaluator(plan.clone()).unwrap();
+    let mut one_at_a_time = Vec::new();
+    for batch in &batches {
+        one_at_a_time.extend(stateful.observe(batch.clone()).unwrap());
+    }
+    assert_eq!(one_at_a_time, reference);
+    let replayed = FeatureEngine::new(identity())
+        .evaluate_batch(plan, &batches)
+        .unwrap();
+    assert_eq!(replayed, reference);
 }
 
 fn observation_map(

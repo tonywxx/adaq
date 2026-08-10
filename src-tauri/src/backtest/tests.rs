@@ -748,3 +748,59 @@ fn summary_reset_and_orphan_guard_hooks_are_user_scoped() {
 
     finish(harness);
 }
+
+#[test]
+fn incompatible_stored_feature_plan_fails_with_reset_required_diagnostic() {
+    let provenance = super::BacktestRunProvenance {
+        normalized_request: super::NormalizedBacktestRunRequest {
+            snapshot_id: "snapshot-1".into(),
+            run_start_time_ms: None,
+            run_end_time_ms: None,
+            strategy_archive_sha256: "a".repeat(64),
+            strategy_parameters: std::collections::BTreeMap::new(),
+            factor_instances: Vec::new(),
+            signal_instances: Vec::new(),
+            initial_quote_allocation: rust_decimal::Decimal::ONE,
+            execution_profile: ExecutionProfile {
+                maker_fee_rate: rust_decimal::Decimal::new(8, 4),
+                taker_fee_rate: rust_decimal::Decimal::new(1, 3),
+                adverse_slippage_rate: rust_decimal::Decimal::ZERO,
+                rebalance_threshold: rust_decimal::Decimal::ZERO,
+                price_increment: rust_decimal::Decimal::ONE,
+                quantity_increment: rust_decimal::Decimal::new(1, 4),
+                minimum_quantity: rust_decimal::Decimal::new(1, 4),
+                risk_free_rate: rust_decimal::Decimal::ZERO,
+                fill_policy: adaq_backtest_core::FillPolicy::Taker,
+            },
+            seed: 1,
+        },
+        feature_plan_json: r#"{"planSchemaVersion":"1.0.0"}"#.into(),
+        feature_plan_hash: "b".repeat(64),
+        component_lock: Vec::new(),
+        dataset_lock: Vec::new(),
+        architecture: adaq_component_tooling::StrategyArchitecture::Composed,
+        indicator_engine_build_identity: super::IndicatorEngineBuildIdentity {
+            engine_version: "test".into(),
+            ta_lib_version: "test".into(),
+            ta_source_sha256: "c".repeat(64),
+            catalog_version: "test".into(),
+            wrapper_sha256: "d".repeat(64),
+            target_triple: "test".into(),
+            compiler_and_flags_sha256: "e".repeat(64),
+            engine_build_id: "test".into(),
+        },
+        backtest_engine_version: "test".into(),
+        seed: 1,
+    };
+    let error = super::pipeline::validate_provenance(&provenance).unwrap_err();
+    assert!(error.contains("reset-required"), "{error}");
+    assert!(
+        error.contains("incompatible Feature Plan schema"),
+        "{error}"
+    );
+
+    let mut invalid = provenance;
+    invalid.feature_plan_json = "{".into();
+    let error = super::pipeline::validate_provenance(&invalid).unwrap_err();
+    assert!(error.contains("invalid frozen Feature Plan"), "{error}");
+}

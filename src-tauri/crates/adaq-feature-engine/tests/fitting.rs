@@ -519,3 +519,136 @@ fn feature_evaluator_applies_bound_artifact_without_fitting_or_mutating_it() {
     );
     assert_eq!(artifact.created_at_ms(), 1000);
 }
+
+#[test]
+fn bound_artifact_evaluation_is_identical_across_batch_stateful_and_replay_paths() {
+    let close = FeatureNode {
+        id: "close".into(),
+        operator: FeatureOperator::CheckedArithmetic,
+        scope: FeatureScope::TimeSeries,
+        inputs: vec![FeatureInput::Market {
+            field: MarketField::Close,
+        }],
+        parameters: BTreeMap::new(),
+        warmup_bars: 0,
+    };
+    let input_definition = FeatureDefinition::freeze(DefinitionDraft {
+        definition_id: Uuid::from_u128(20),
+        revision: 1,
+        scope: FeatureScope::TimeSeries,
+        nodes: vec![close.clone()],
+        outputs: vec![FeatureOutput {
+            name: "close".into(),
+            node_id: "close".into(),
+        }],
+    })
+    .unwrap();
+    let input_feature = FeatureReference {
+        definition_hash: input_definition.definition_hash().into(),
+        node_id: "close".into(),
+        output_name: "close".into(),
+    };
+    let standardized = FeatureNode {
+        id: "standardized".into(),
+        operator: FeatureOperator::Standardization,
+        scope: FeatureScope::TimeSeries,
+        inputs: vec![FeatureInput::Node {
+            node_id: "close".into(),
+            definition_hash: Some(input_feature.definition_hash.clone()),
+        }],
+        parameters: BTreeMap::new(),
+        warmup_bars: 0,
+    };
+    let definition = FeatureDefinition::freeze(DefinitionDraft {
+        definition_id: Uuid::from_u128(21),
+        revision: 1,
+        scope: FeatureScope::TimeSeries,
+        nodes: vec![close, standardized],
+        outputs: vec![FeatureOutput {
+            name: "standardized".into(),
+            node_id: "standardized".into(),
+        }],
+    })
+    .unwrap();
+    let fitted_output = FeatureReference {
+        definition_hash: definition.definition_hash().into(),
+        node_id: "standardized".into(),
+        output_name: "standardized".into(),
+    };
+    let protocol = TransformationFittingProtocol::freeze(TransformationFittingProtocolDraft {
+        input_feature: input_feature.clone(),
+        fitted_node_id: "standardized".into(),
+        fitted_output: fitted_output.clone(),
+        snapshot_id: "snapshot-1".into(),
+        point_in_time_universe_id: "universe-1".into(),
+        fitting_scope: FittingScope::PooledUniverse,
+        fitting_window: ObservationRange {
+            start_time_ms: 0,
+            end_time_ms: 100,
+        },
+        algorithm: FittingAlgorithm::Standardization,
+        minimum_samples: 2,
+        engine_identity: identity(),
+    })
+    .unwrap();
+    let fitting_sample = |time: i64, value: f64| {
+        FeatureObservation::available("close", "btc", time, value, time)
+            .unwrap()
+            .with_feature_reference(input_feature.clone())
+    };
+    let artifact = protocol
+        .fit(&[fitting_sample(10, 10.0), fitting_sample(20, 20.0)], 1000)
+        .unwrap();
+    let plan = FeaturePlan::freeze(FeaturePlanDraft {
+        definitions: vec![input_definition, definition],
+        artifacts: vec![FittedArtifactBinding {
+            artifact_id: artifact.artifact_id().into(),
+            eligible_at_ms: artifact.eligible_at_ms(),
+            fitted_output,
+        }],
+        engine_identity: identity(),
+        ..FeaturePlanDraft::default()
+    })
+    .unwrap();
+    let events = ["30", "15", "25", "20"]
+        .iter()
+        .enumerate()
+        .map(|(index, close)| {
+            let time = 100 + index as i64 * 10;
+            FeatureInputEvent::observation(FeatureEvaluationInput::new(
+                "btc",
+                time,
+                time,
+                FeatureMarketBar::complete(time, "10", "90", "1", *close, "1", "1").unwrap(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let engine = FeatureEngine::new(identity());
+    let reference = engine
+        .evaluator_with_artifacts(plan.clone(), &[artifact.clone()])
+        .unwrap()
+        .evaluate_batch(&events)
+        .unwrap();
+    assert!(
+        reference.iter().any(|observation| matches!(
+            observation.value,
+            FeatureObservationValue::Available { .. }
+        ))
+    );
+
+    let mut stateful = engine
+        .evaluator_with_artifacts(plan.clone(), &[artifact.clone()])
+        .unwrap();
+    let mut one_at_a_time = Vec::new();
+    for event in &events {
+        one_at_a_time.extend(stateful.observe(event.clone()).unwrap());
+    }
+    assert_eq!(one_at_a_time, reference);
+
+    let replayed = FeatureEngine::new(identity())
+        .evaluator_with_artifacts(plan, &[artifact])
+        .unwrap()
+        .evaluate_batch(&events)
+        .unwrap();
+    assert_eq!(replayed, reference);
+}
