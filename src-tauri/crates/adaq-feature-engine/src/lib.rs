@@ -1,5 +1,9 @@
 //! Tauri-independent contracts for ADAQ Feature Definitions and Feature Plans.
 
+mod execution;
+
+pub use execution::*;
+
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
@@ -1487,6 +1491,7 @@ fn validate_definition(
         if !catalog.supports(&node.operator) {
             issues.push(issue("unsupported-feature-operator", Some(node.id.clone())));
         }
+        validate_operator_contract(node, &mut issues);
         if let FeatureOperator::Indicator { id } = &node.operator {
             if id.is_empty() {
                 issues.push(issue("invalid-feature-operator", Some(node.id.clone())));
@@ -1537,6 +1542,52 @@ fn validate_definition(
         Ok(())
     } else {
         Err(DefinitionValidationError { issues })
+    }
+}
+
+fn validate_operator_contract(node: &FeatureNode, issues: &mut Vec<ValidationIssue>) {
+    let parameter = |name: &str| node.parameters.get(name);
+    match &node.operator {
+        FeatureOperator::BackwardSimpleReturn | FeatureOperator::BackwardLogReturn => {
+            if parameter("direction")
+                .and_then(Value::as_str)
+                .is_some_and(|direction| direction != "backward")
+            {
+                issues.push(issue("future-return-not-allowed", Some(node.id.clone())));
+            }
+            if parameter("period")
+                .and_then(Value::as_u64)
+                .is_some_and(|period| period == 0 || period > MAX_EFFECTIVE_WARMUP_BARS as u64)
+            {
+                issues.push(issue("invalid-return-period", Some(node.id.clone())));
+            }
+        }
+        FeatureOperator::RollingMean
+        | FeatureOperator::RollingPopulationStandardDeviation
+        | FeatureOperator::RollingMinimum
+        | FeatureOperator::RollingMaximum
+        | FeatureOperator::RollingQuoteVolume => {
+            if parameter("window")
+                .and_then(Value::as_u64)
+                .is_some_and(|window| window == 0 || window > MAX_EFFECTIVE_WARMUP_BARS as u64)
+            {
+                issues.push(issue("invalid-rolling-window", Some(node.id.clone())));
+            }
+        }
+        FeatureOperator::OneHot => {
+            if parameter("category").is_none() && parameter("value").is_none() {
+                issues.push(issue("missing-one-hot-category", Some(node.id.clone())));
+            }
+        }
+        FeatureOperator::Sine | FeatureOperator::Cosine => {
+            if parameter("period")
+                .and_then(Value::as_f64)
+                .is_some_and(|period| !period.is_finite() || period <= 0.0)
+            {
+                issues.push(issue("invalid-cycle-period", Some(node.id.clone())));
+            }
+        }
+        _ => {}
     }
 }
 

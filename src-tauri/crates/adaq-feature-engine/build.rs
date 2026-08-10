@@ -6,14 +6,14 @@ const FEATURE_ENGINE_VERSION: &str = "adaq-feature-engine@1.0.0";
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    for path in ["Cargo.toml", "build.rs", "src/lib.rs"] {
+    for path in ["Cargo.toml", "build.rs", "src/lib.rs", "src/execution.rs"] {
         println!(
             "cargo:rerun-if-changed={}",
             manifest_dir.join(path).display()
         );
     }
 
-    let source = ["Cargo.toml", "build.rs", "src/lib.rs"]
+    let source = ["Cargo.toml", "build.rs", "src/lib.rs", "src/execution.rs"]
         .into_iter()
         .flat_map(|path| fs::read(manifest_dir.join(path)).unwrap())
         .collect::<Vec<_>>();
