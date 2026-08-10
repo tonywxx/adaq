@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use adaq_data_core::market::{
-    DayEvidence, SessionPhase, TradingCalendarSnapshot, TradingSession, Venue,
+    DayEvidence, InstrumentId, SessionPhase, TradingCalendarSnapshot, TradingSession, Venue,
 };
 use adaq_feature_engine::{
     CorporateAction, DefinitionDraft, FeatureDefinition, FeatureEngine, FeatureEngineIdentity,
@@ -180,6 +180,157 @@ fn rolling_state_resets_on_gaps_but_not_scheduled_closures() {
 }
 
 #[test]
+fn rolling_variants_and_realized_volatility_use_full_windows() {
+    let plan = plan(
+        vec![
+            node(
+                "mean",
+                FeatureOperator::RollingMean,
+                vec![FeatureInput::Market {
+                    field: MarketField::Close,
+                }],
+                BTreeMap::from([("window".into(), json!(2))]),
+            ),
+            node(
+                "std",
+                FeatureOperator::RollingPopulationStandardDeviation,
+                vec![FeatureInput::Market {
+                    field: MarketField::Close,
+                }],
+                BTreeMap::from([("window".into(), json!(2))]),
+            ),
+            node(
+                "min",
+                FeatureOperator::RollingMinimum,
+                vec![FeatureInput::Market {
+                    field: MarketField::Close,
+                }],
+                BTreeMap::from([("window".into(), json!(2))]),
+            ),
+            node(
+                "max",
+                FeatureOperator::RollingMaximum,
+                vec![FeatureInput::Market {
+                    field: MarketField::Close,
+                }],
+                BTreeMap::from([("window".into(), json!(2))]),
+            ),
+            node(
+                "quote-mean",
+                FeatureOperator::RollingQuoteVolume,
+                vec![FeatureInput::Market {
+                    field: MarketField::QuoteVolume,
+                }],
+                BTreeMap::from([("window".into(), json!(2))]),
+            ),
+            node(
+                "realized",
+                FeatureOperator::RealizedVolatility,
+                vec![FeatureInput::Market {
+                    field: MarketField::Close,
+                }],
+                BTreeMap::from([("window".into(), json!(2))]),
+            ),
+        ],
+        &[
+            ("mean", "mean"),
+            ("std", "std"),
+            ("min", "min"),
+            ("max", "max"),
+            ("quote-mean", "quote-mean"),
+            ("realized", "realized"),
+        ],
+    );
+    let mut evaluator = FeatureEngine::new(identity()).evaluator(plan).unwrap();
+    let observations = evaluator
+        .evaluate_batch(&[
+            event(1, "100", "1", "10"),
+            event(2, "110", "1", "20"),
+            event(3, "100", "1", "30"),
+        ])
+        .unwrap();
+    let last = &observations[12..18];
+    assert_close(value(&last[0]), 105.0);
+    assert_close(value(&last[1]), 5.0);
+    assert_close(value(&last[2]), 100.0);
+    assert_close(value(&last[3]), 110.0);
+    assert_close(value(&last[4]), 25.0);
+    let first_return = (110.0_f64 / 100.0).ln();
+    let second_return = (100.0_f64 / 110.0).ln();
+    let mean = (first_return + second_return) / 2.0;
+    let expected = (((first_return - mean).powi(2) + (second_return - mean).powi(2)) / 2.0).sqrt();
+    assert_close(value(&last[5]), expected);
+}
+
+#[test]
+fn stateful_inputs_are_causal_and_invalid_parameters_are_rejected() {
+    let mut pointwise = node(
+        "return",
+        FeatureOperator::BackwardSimpleReturn,
+        vec![FeatureInput::Market {
+            field: MarketField::Close,
+        }],
+        BTreeMap::new(),
+    );
+    pointwise.scope = FeatureScope::Pointwise;
+    let error = FeatureDefinition::freeze(DefinitionDraft {
+        definition_id: Uuid::new_v4(),
+        revision: 1,
+        scope: FeatureScope::Pointwise,
+        nodes: vec![pointwise],
+        outputs: vec![FeatureOutput {
+            name: "return".into(),
+            node_id: "return".into(),
+        }],
+    })
+    .unwrap_err();
+    assert!(error.codes().contains(&"invalid-operator-scope"));
+
+    let invalid_window = FeatureDefinition::freeze(DefinitionDraft {
+        definition_id: Uuid::new_v4(),
+        revision: 1,
+        scope: FeatureScope::TimeSeries,
+        nodes: vec![node(
+            "mean",
+            FeatureOperator::RollingMean,
+            vec![FeatureInput::Market {
+                field: MarketField::Close,
+            }],
+            BTreeMap::from([("window".into(), json!(-1))]),
+        )],
+        outputs: vec![FeatureOutput {
+            name: "mean".into(),
+            node_id: "mean".into(),
+        }],
+    })
+    .unwrap_err();
+    assert!(invalid_window.codes().contains(&"invalid-rolling-window"));
+
+    let mut evaluator = FeatureEngine::new(identity())
+        .evaluator(plan(
+            vec![node(
+                "log-return",
+                FeatureOperator::BackwardLogReturn,
+                vec![FeatureInput::Market {
+                    field: MarketField::Close,
+                }],
+                BTreeMap::new(),
+            )],
+            &[("log-return", "log-return")],
+        ))
+        .unwrap();
+    let error = evaluator
+        .evaluate_batch(&[event(1, "0", "1", "1"), event(2, "1", "1", "1")])
+        .unwrap();
+    assert_eq!(
+        reason(&error[1]),
+        Some(FeatureUnavailabilityReason::UndefinedArithmetic)
+    );
+    let error = evaluator.observe(event(2, "2", "1", "1"));
+    assert_eq!(error.unwrap_err().code(), "invalid-observation");
+}
+
+#[test]
 fn volume_and_undefined_arithmetic_keep_typed_missingness() {
     let plan = plan(
         vec![
@@ -309,6 +460,86 @@ fn calendar_features_use_venue_local_time_and_exclude_breaks() {
 }
 
 #[test]
+fn calendar_closures_are_excluded_from_session_progress() {
+    let venue = Venue::china_a_share("sse").unwrap();
+    let timestamp = 1_710_126_000_000;
+    let date = adaq_data_core::market::TradingDate::from_utc_ms(&venue, timestamp).unwrap();
+    let local = |hour, minute| {
+        venue
+            .resolve_local_time(
+                date.to_naive_date()
+                    .unwrap()
+                    .and_hms_opt(hour, minute, 0)
+                    .unwrap(),
+                adaq_data_core::market::LocalTimeDisambiguation::Reject,
+            )
+            .unwrap()
+    };
+    let calendar = TradingCalendarSnapshot::new(
+        "a-share-closure-test",
+        venue.clone(),
+        0,
+        2_000_000_000_000,
+        vec![
+            TradingSession {
+                phase: SessionPhase::Continuous,
+                start_local: NaiveTime::from_hms_opt(9, 30, 0).unwrap(),
+                end_local: NaiveTime::from_hms_opt(11, 30, 0).unwrap(),
+            },
+            TradingSession {
+                phase: SessionPhase::Break,
+                start_local: NaiveTime::from_hms_opt(11, 30, 0).unwrap(),
+                end_local: NaiveTime::from_hms_opt(13, 0, 0).unwrap(),
+            },
+            TradingSession {
+                phase: SessionPhase::Continuous,
+                start_local: NaiveTime::from_hms_opt(13, 0, 0).unwrap(),
+                end_local: NaiveTime::from_hms_opt(15, 0, 0).unwrap(),
+            },
+        ],
+        vec![DayEvidence {
+            date,
+            day_kind: adaq_data_core::market::DayKind::TradingDay,
+            session_override: None,
+            closures: vec![adaq_data_core::market::ScheduledClosure {
+                kind: adaq_data_core::market::ScheduledClosureKind::SpecialClosure,
+                start_ms: local(10, 0),
+                end_ms: local(10, 30),
+                reason: Some("test closure".into()),
+            }],
+        }],
+    )
+    .unwrap();
+    let plan = plan(
+        vec![node(
+            "progress",
+            FeatureOperator::SessionProgress,
+            Vec::new(),
+            BTreeMap::new(),
+        )],
+        &[("progress", "progress")],
+    );
+    let times = [local(9, 45), local(10, 15), local(10, 45)];
+    let events = times
+        .into_iter()
+        .map(|time| {
+            FeatureInputEvent::observation(
+                FeatureEvaluationInput::new("sse:600000", time, time, bar(time, "10", "1", "1"))
+                    .with_calendar(calendar.clone()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut evaluator = FeatureEngine::new(identity()).evaluator(plan).unwrap();
+    let observations = evaluator.evaluate_batch(&events).unwrap();
+    assert_close(value(&observations[0]), 15.0 / 210.0);
+    assert_eq!(
+        reason(&observations[1]),
+        Some(FeatureUnavailabilityReason::InsufficientCoverage)
+    );
+    assert_close(value(&observations[2]), 45.0 / 210.0);
+}
+
+#[test]
 fn split_and_dividend_features_are_forward_and_causally_available() {
     let nodes = vec![
         node(
@@ -330,8 +561,9 @@ fn split_and_dividend_features_are_forward_and_causally_available() {
     ];
     let plan = plan(nodes, &[("split", "split"), ("dividend", "dividend")]);
     let actions = vec![
-        CorporateAction::split(2, 2, "2").unwrap(),
+        CorporateAction::split("600000", 2, 2, "1").unwrap(),
         CorporateAction::dividend(
+            "600000",
             2,
             2,
             "10",
@@ -356,9 +588,9 @@ fn split_and_dividend_features_are_forward_and_causally_available() {
         .unwrap();
     assert_eq!(value(&observations[0]), Some(100.0));
     assert_eq!(value(&observations[1]), Some(100.0));
-    assert_eq!(value(&observations[2]), Some(220.0));
+    assert_eq!(value(&observations[2]), Some(55.0));
     assert_close(value(&observations[3]), 121.0);
-    assert_eq!(value(&observations[4]), Some(240.0));
+    assert_eq!(value(&observations[4]), Some(60.0));
     assert_close(value(&observations[5]), 132.0);
     assert_eq!(
         match observations[2].value {
@@ -369,6 +601,29 @@ fn split_and_dividend_features_are_forward_and_causally_available() {
         },
         2
     );
+}
+
+#[test]
+fn ashare_corporate_actions_retain_instrument_and_evidence_identity() {
+    let instrument = InstrumentId::new(Venue::china_a_share("sse").unwrap(), "600000").unwrap();
+    let action = adaq_data_core::a_share::AshareCorporateAction {
+        instrument,
+        provider_symbol: "sh.600000".into(),
+        kind: adaq_data_core::a_share::AshareCorporateActionKind::CashAndShareDistribution,
+        effective_at_ms: Some(2),
+        announced_at_ms: Some(1),
+        available_at_ms: 2,
+        cash_per_share: Some("1".into()),
+        shares_per_share: Some("1".into()),
+        raw_payload: json!({"event": "split-and-dividend"}),
+    };
+    let actions = FeatureMarketBar::from_ashare_action(&action).unwrap();
+    assert_eq!(actions.len(), 2);
+    for action in actions {
+        let encoded = serde_json::to_value(action).unwrap();
+        assert_eq!(encoded["instrumentId"], "sse:600000");
+        assert!(!encoded["evidenceId"].as_str().unwrap().is_empty());
+    }
 }
 
 #[test]
@@ -432,9 +687,33 @@ fn indicator_nodes_use_the_pinned_indicator_engine_and_validate_output() {
     let events = (1..=8)
         .map(|time| event(time, &(100 + time).to_string(), "1", "1"))
         .collect::<Vec<_>>();
-    let observations = native_engine.evaluate_batch(plan, &events).unwrap();
+    let observations = native_engine.evaluate_batch(plan.clone(), &events).unwrap();
     assert!(reason(observations.last().unwrap()).is_none());
     assert!(value(observations.last().unwrap()).unwrap().is_finite());
+
+    let partial_events = (1..=8)
+        .map(|time| {
+            FeatureInputEvent::observation(FeatureEvaluationInput::new(
+                "BTC-USD",
+                time,
+                time,
+                FeatureMarketBar {
+                    open_time_ms: time,
+                    open: None,
+                    high: None,
+                    low: None,
+                    close: Some(
+                        adaq_feature_engine::CanonicalDecimal::new(&(100 + time).to_string())
+                            .unwrap(),
+                    ),
+                    base_volume: None,
+                    quote_volume: None,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    let observations = native_engine.evaluate_batch(plan, &partial_events).unwrap();
+    assert!(reason(observations.last().unwrap()).is_none());
 }
 
 #[test]

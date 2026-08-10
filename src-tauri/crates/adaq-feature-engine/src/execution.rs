@@ -128,16 +128,25 @@ impl FeatureMarketBar {
         let effective_at_ms = action
             .effective_at_ms
             .ok_or_else(|| FeatureInputError::new("corporate-action-effective-time-missing"))?;
+        let instrument_id = format!("{}:{}", action.instrument.venue.id, action.instrument.code);
+        let evidence_id = crate::sha256_hex(
+            &serde_json::to_vec(action)
+                .map_err(|_| FeatureInputError::new("corporate-action-provenance-missing"))?,
+        );
         let mut actions = Vec::new();
-        if let Some(ratio) = &action.shares_per_share {
-            actions.push(CorporateAction::split(
+        if let Some(shares_per_share) = &action.shares_per_share {
+            actions.push(CorporateAction::split_with_evidence(
+                &instrument_id,
+                &evidence_id,
                 effective_at_ms,
                 action.available_at_ms,
-                ratio.clone(),
+                shares_per_share.clone(),
             )?);
         }
         if let Some(cash) = &action.cash_per_share {
-            actions.push(CorporateAction::dividend(
+            actions.push(CorporateAction::dividend_with_evidence(
+                &instrument_id,
+                &evidence_id,
                 effective_at_ms,
                 action.available_at_ms,
                 cash.clone(),
@@ -161,13 +170,22 @@ impl FeatureMarketBar {
         }
     }
 
-    fn indicator_segment(bars: &[Self]) -> Result<OhlcvSegment, FeatureInputError> {
+    fn indicator_segment(
+        bars: &[Self],
+        required_fields: &[MarketField],
+    ) -> Result<OhlcvSegment, FeatureInputError> {
         let collect = |field: MarketField| {
             bars.iter()
                 .map(|bar| {
-                    bar.field(field)
-                        .ok_or_else(|| FeatureInputError::new("missing-market-input"))?
-                        .analytical()
+                    match bar.field(field) {
+                        Some(value) => value.analytical(),
+                        None if required_fields.contains(&field) => {
+                            Err(FeatureInputError::new("missing-market-input"))
+                        }
+                        // The TA-Lib price holder always receives all columns, but only
+                        // declared inputs are semantically required by the catalog entry.
+                        None => Ok(0.0),
+                    }
                 })
                 .collect::<Result<Vec<_>, _>>()
         };
@@ -191,11 +209,16 @@ impl FeatureMarketBar {
 )]
 pub enum CorporateAction {
     Split {
+        instrument_id: String,
+        evidence_id: String,
         effective_at_ms: i64,
         available_at_ms: i64,
-        ratio: CanonicalDecimal,
+        share_multiplier: CanonicalDecimal,
+        price_factor: CanonicalDecimal,
     },
     Dividend {
+        instrument_id: String,
+        evidence_id: String,
         effective_at_ms: i64,
         available_at_ms: i64,
         cash_per_share: CanonicalDecimal,
@@ -205,30 +228,119 @@ pub enum CorporateAction {
 
 impl CorporateAction {
     pub fn split(
+        instrument_id: impl Into<String>,
         effective_at_ms: i64,
         available_at_ms: i64,
-        ratio: impl Into<String>,
+        shares_per_share: impl Into<String>,
     ) -> Result<Self, FeatureInputError> {
-        Ok(Self::Split {
+        let instrument_id = instrument_id.into();
+        let shares_per_share = shares_per_share.into();
+        let evidence_id = format!(
+            "manual:{}:{}:{}:{}",
+            instrument_id, effective_at_ms, available_at_ms, shares_per_share
+        );
+        Self::split_with_evidence(
+            instrument_id,
+            evidence_id,
             effective_at_ms,
             available_at_ms,
-            ratio: CanonicalDecimal::new(ratio)?,
+            shares_per_share,
+        )
+    }
+
+    pub fn split_with_evidence(
+        instrument_id: impl Into<String>,
+        evidence_id: impl Into<String>,
+        effective_at_ms: i64,
+        available_at_ms: i64,
+        shares_per_share: impl Into<String>,
+    ) -> Result<Self, FeatureInputError> {
+        let instrument_id =
+            validated_identity(instrument_id.into(), "corporate-action-instrument-missing")?;
+        let evidence_id =
+            validated_identity(evidence_id.into(), "corporate-action-evidence-missing")?;
+        let shares_per_share = CanonicalDecimal::new(shares_per_share)?;
+        let shares_per_share_decimal = Decimal::from_str_exact(shares_per_share.as_str())
+            .map_err(|_| FeatureInputError::new("invalid-corporate-action-ratio"))?;
+        let share_multiplier = shares_per_share_decimal
+            .checked_add(Decimal::ONE)
+            .ok_or_else(|| FeatureInputError::new("invalid-corporate-action-ratio"))?;
+        if share_multiplier <= Decimal::ZERO {
+            return Err(FeatureInputError::new("invalid-corporate-action-ratio"));
+        }
+        let price_factor = Decimal::ONE
+            .checked_div(share_multiplier)
+            .ok_or_else(|| FeatureInputError::new("invalid-corporate-action-ratio"))?;
+        Ok(Self::Split {
+            instrument_id,
+            evidence_id,
+            effective_at_ms,
+            available_at_ms,
+            share_multiplier: CanonicalDecimal::from_decimal(share_multiplier),
+            price_factor: CanonicalDecimal::from_decimal(price_factor),
         })
     }
 
     pub fn dividend(
+        instrument_id: impl Into<String>,
+        effective_at_ms: i64,
+        available_at_ms: i64,
+        cash_per_share: impl Into<String>,
+        reference_price: Option<CanonicalDecimal>,
+    ) -> Result<Self, FeatureInputError> {
+        let instrument_id = instrument_id.into();
+        let cash_per_share = cash_per_share.into();
+        let evidence_id = format!(
+            "manual:{}:{}:{}:{}",
+            instrument_id, effective_at_ms, available_at_ms, cash_per_share
+        );
+        Self::dividend_with_evidence(
+            instrument_id,
+            evidence_id,
+            effective_at_ms,
+            available_at_ms,
+            cash_per_share,
+            reference_price,
+        )
+    }
+
+    pub fn dividend_with_evidence(
+        instrument_id: impl Into<String>,
+        evidence_id: impl Into<String>,
         effective_at_ms: i64,
         available_at_ms: i64,
         cash_per_share: impl Into<String>,
         reference_price: Option<CanonicalDecimal>,
     ) -> Result<Self, FeatureInputError> {
         Ok(Self::Dividend {
+            instrument_id: validated_identity(
+                instrument_id.into(),
+                "corporate-action-instrument-missing",
+            )?,
+            evidence_id: validated_identity(
+                evidence_id.into(),
+                "corporate-action-evidence-missing",
+            )?,
             effective_at_ms,
             available_at_ms,
             cash_per_share: CanonicalDecimal::new(cash_per_share)?,
             reference_price,
         })
     }
+
+    fn instrument_id(&self) -> &str {
+        match self {
+            Self::Split { instrument_id, .. } | Self::Dividend { instrument_id, .. } => {
+                instrument_id
+            }
+        }
+    }
+}
+
+fn validated_identity(value: String, code: &'static str) -> Result<String, FeatureInputError> {
+    (!value.trim().is_empty())
+        .then_some(value)
+        .ok_or_else(|| FeatureInputError::new(code))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -422,7 +534,10 @@ impl FeatureEvaluator {
                 observation_time_ms,
                 available_at_ms,
             } => self.observe_gap(&instrument_id, observation_time_ms, available_at_ms),
-            FeatureInputEvent::ScheduledClosure { .. } => Ok(Vec::new()),
+            FeatureInputEvent::ScheduledClosure {
+                instrument_id,
+                observation_time_ms,
+            } => self.observe_scheduled_closure(&instrument_id, observation_time_ms),
         }
     }
 
@@ -448,6 +563,21 @@ impl FeatureEvaluator {
             .instruments
             .entry(instrument_id.clone())
             .or_insert_with(|| InstrumentRuntime::new(definitions));
+        runtime.note_event(&instrument_id, input.observation_time_ms)?;
+        if input
+            .corporate_actions
+            .iter()
+            .any(|action| action.instrument_id() != instrument_id)
+        {
+            return Err(fatal_error(
+                FeatureEvaluationErrorCode::InvalidObservation,
+                EvaluationStage::Input,
+                None,
+                Some(instrument_id.clone()),
+                Some(input.observation_time_ms),
+                "corporate-action-instrument-mismatch",
+            ));
+        }
         runtime.observe_count = runtime.observe_count.saturating_add(1);
         runtime.remember_actions(&input.corporate_actions);
         input.corporate_actions = runtime.corporate_actions.clone();
@@ -595,6 +725,7 @@ impl FeatureEvaluator {
             .instruments
             .entry(instrument_id.to_owned())
             .or_insert_with(|| InstrumentRuntime::new(definitions));
+        runtime.note_event(instrument_id, observation_time_ms)?;
         runtime.reset_gap();
         let input =
             FeatureEvaluationInput::missing(instrument_id, observation_time_ms, available_at_ms);
@@ -619,6 +750,30 @@ impl FeatureEvaluator {
                 })
             })
             .collect()
+    }
+
+    fn observe_scheduled_closure(
+        &mut self,
+        instrument_id: &str,
+        observation_time_ms: i64,
+    ) -> Result<Vec<FeatureObservation>, FeatureEvaluationError> {
+        if instrument_id.is_empty() {
+            return Err(fatal_error(
+                FeatureEvaluationErrorCode::InvalidObservation,
+                EvaluationStage::Validation,
+                None,
+                None,
+                Some(observation_time_ms),
+                "empty-instrument-id",
+            ));
+        }
+        let definitions = &self.definitions;
+        let runtime = self
+            .instruments
+            .entry(instrument_id.to_owned())
+            .or_insert_with(|| InstrumentRuntime::new(definitions));
+        runtime.note_event(instrument_id, observation_time_ms)?;
+        Ok(Vec::new())
     }
 
     fn output_names(&self) -> Vec<String> {
@@ -696,6 +851,7 @@ struct InstrumentRuntime {
     slot_states: HashMap<String, RuntimeNodeState>,
     corporate_actions: Vec<CorporateAction>,
     observe_count: usize,
+    last_event_time_ms: Option<i64>,
 }
 
 impl InstrumentRuntime {
@@ -726,7 +882,30 @@ impl InstrumentRuntime {
             slot_states: HashMap::new(),
             corporate_actions: Vec::new(),
             observe_count: 0,
+            last_event_time_ms: None,
         }
+    }
+
+    fn note_event(
+        &mut self,
+        instrument_id: &str,
+        observation_time_ms: i64,
+    ) -> Result<(), FeatureEvaluationError> {
+        if self
+            .last_event_time_ms
+            .is_some_and(|last| observation_time_ms <= last)
+        {
+            return Err(fatal_error(
+                FeatureEvaluationErrorCode::InvalidObservation,
+                EvaluationStage::Validation,
+                None,
+                Some(instrument_id.to_owned()),
+                Some(observation_time_ms),
+                "non-monotonic-observation-time",
+            ));
+        }
+        self.last_event_time_ms = Some(observation_time_ms);
+        Ok(())
     }
 
     fn remember_actions(&mut self, actions: &[CorporateAction]) {
@@ -882,7 +1061,9 @@ fn evaluate_node(
         | FeatureOperator::RollingMinimum
         | FeatureOperator::RollingMaximum
         | FeatureOperator::RollingQuoteVolume => rolling(inputs, node, state, available_at_ms),
-        FeatureOperator::RealizedVolatility => realized_volatility(inputs, available_at_ms),
+        FeatureOperator::RealizedVolatility => {
+            realized_volatility(inputs, node, state, available_at_ms)
+        }
         FeatureOperator::QuoteVolume => unary(inputs, available_at_ms),
         FeatureOperator::ZeroVolume => zero_volume(inputs, available_at_ms),
         FeatureOperator::AmihudIlliquidity => amihud(inputs, available_at_ms),
@@ -894,10 +1075,10 @@ fn evaluate_node(
         FeatureOperator::OneHot => one_hot(inputs, node, available_at_ms),
         FeatureOperator::Sine | FeatureOperator::Cosine => cycle(inputs, node, available_at_ms),
         FeatureOperator::CausalSplitAdjustment => {
-            corporate_action_value(inputs, observation, available_at_ms, false)
+            corporate_action_value(inputs, node, observation, available_at_ms, false)
         }
         FeatureOperator::DividendTotalReturn => {
-            corporate_action_value(inputs, observation, available_at_ms, true)
+            corporate_action_value(inputs, node, observation, available_at_ms, true)
         }
         FeatureOperator::Standardization | FeatureOperator::Winsorization => Ok(
             EvalValue::Unavailable(FeatureUnavailabilityReason::ArtifactMissingInstrument),
@@ -1152,28 +1333,65 @@ fn rolling(
 
 fn realized_volatility(
     inputs: &[EvalValue],
+    node: &FeatureNode,
+    state: &mut RuntimeNodeState,
     available_at_ms: i64,
 ) -> Result<EvalValue, FeatureEvaluationError> {
-    let value = match inputs {
-        [high, low, ..] => {
-            let high = high.value();
-            let low = low.value();
-            match (high, low) {
-                (Some(high), Some(low)) if high > 0.0 && low > 0.0 => (high / low).ln().abs(),
-                _ => {
-                    return Ok(EvalValue::Unavailable(
-                        FeatureUnavailabilityReason::UndefinedArithmetic,
-                    ));
-                }
-            }
-        }
-        [value] => value.value().unwrap_or_default().abs(),
-        _ => {
-            return Ok(EvalValue::Unavailable(
-                FeatureUnavailabilityReason::MissingDependency,
-            ));
-        }
+    let current = inputs.first().and_then(EvalValue::value).ok_or_else(|| {
+        fatal_error(
+            FeatureEvaluationErrorCode::BrokenShape,
+            EvaluationStage::Operator,
+            Some(node.id.clone()),
+            None,
+            None,
+            "realized-volatility-input-missing",
+        )
+    })?;
+    let window = positive_parameter(node, "window", node.warmup_bars.max(1))?;
+    state
+        .history
+        .push_back(EvalValue::available(current, available_at_ms));
+    while state.history.len() > window.saturating_add(1) {
+        state.history.pop_front();
+    }
+    if state.history.len() < window.saturating_add(1) {
+        return Ok(EvalValue::Unavailable(FeatureUnavailabilityReason::Warmup));
+    }
+    let prices = state
+        .history
+        .iter()
+        .filter_map(EvalValue::value)
+        .collect::<Vec<_>>();
+    if prices.len() != window.saturating_add(1) || prices.iter().any(|price| *price <= 0.0) {
+        return Ok(EvalValue::Unavailable(
+            FeatureUnavailabilityReason::UndefinedArithmetic,
+        ));
+    }
+    let returns = prices
+        .windows(2)
+        .map(|pair| {
+            let value = (pair[1] / pair[0]).ln();
+            value.is_finite().then_some(value)
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(returns) = returns else {
+        return Ok(EvalValue::Unavailable(
+            FeatureUnavailabilityReason::UndefinedArithmetic,
+        ));
     };
+    let mean = returns.iter().sum::<f64>() / window as f64;
+    let variance = returns
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / window as f64;
+    let available_at_ms = state
+        .history
+        .iter()
+        .filter_map(EvalValue::available_at_ms)
+        .max()
+        .unwrap_or(available_at_ms);
+    let value = variance.sqrt();
     Ok(if value.is_finite() {
         EvalValue::available(value, available_at_ms)
     } else {
@@ -1232,6 +1450,22 @@ fn calendar_operator(
             FeatureUnavailabilityReason::InsufficientCoverage,
         ));
     };
+    let session_operator = matches!(
+        operator,
+        FeatureOperator::MinutesFromSessionOpen
+            | FeatureOperator::MinutesToSessionClose
+            | FeatureOperator::SessionProgress
+    );
+    if session_operator
+        && calendar
+            .is_scheduled_non_trading(observation.observation_time_ms)
+            .map_err(|_| FeatureUnavailabilityReason::InsufficientCoverage)
+            .is_ok_and(|closed| closed)
+    {
+        return Ok(EvalValue::Unavailable(
+            FeatureUnavailabilityReason::InsufficientCoverage,
+        ));
+    }
     let date = calendar
         .trading_date_of(observation.observation_time_ms)
         .map_err(|_| {
@@ -1295,13 +1529,7 @@ fn session_progress(
     date: adaq_data_core::market::TradingDate,
     observation_time_ms: i64,
 ) -> Result<f64, FeatureUnavailabilityReason> {
-    let windows = calendar
-        .session_windows_utc(date)
-        .map_err(|_| FeatureUnavailabilityReason::InsufficientCoverage)?;
-    let continuous = windows
-        .iter()
-        .filter(|window| window.phase == adaq_data_core::market::SessionPhase::Continuous)
-        .collect::<Vec<_>>();
+    let continuous = eligible_continuous_windows(calendar, date)?;
     let total = continuous
         .iter()
         .map(|window| (window.end_ms - window.start_ms).max(0) as f64)
@@ -1319,6 +1547,50 @@ fn session_progress(
         }
     });
     Ok((elapsed / total).clamp(0.0, 1.0))
+}
+
+fn eligible_continuous_windows(
+    calendar: &TradingCalendarSnapshot,
+    date: adaq_data_core::market::TradingDate,
+) -> Result<Vec<adaq_data_core::market::SessionWindowUtc>, FeatureUnavailabilityReason> {
+    let windows = calendar
+        .session_windows_utc(date)
+        .map_err(|_| FeatureUnavailabilityReason::InsufficientCoverage)?;
+    let closures = calendar
+        .day(date)
+        .map(|day| day.closures.as_slice())
+        .unwrap_or(&[]);
+    let mut eligible = Vec::new();
+    for window in windows
+        .into_iter()
+        .filter(|window| window.phase == adaq_data_core::market::SessionPhase::Continuous)
+    {
+        let mut fragments = vec![(window.start_ms, window.end_ms)];
+        for closure in closures {
+            let mut next = Vec::new();
+            for (start_ms, end_ms) in fragments {
+                if closure.end_ms <= start_ms || closure.start_ms >= end_ms {
+                    next.push((start_ms, end_ms));
+                    continue;
+                }
+                if start_ms < closure.start_ms {
+                    next.push((start_ms, closure.start_ms.min(end_ms)));
+                }
+                if closure.end_ms < end_ms {
+                    next.push((closure.end_ms.max(start_ms), end_ms));
+                }
+            }
+            fragments = next;
+        }
+        eligible.extend(fragments.into_iter().filter_map(|(start_ms, end_ms)| {
+            (start_ms < end_ms).then_some(adaq_data_core::market::SessionWindowUtc {
+                phase: adaq_data_core::market::SessionPhase::Continuous,
+                start_ms,
+                end_ms,
+            })
+        }));
+    }
+    Ok(eligible)
 }
 
 fn one_hot(
@@ -1388,6 +1660,7 @@ fn cycle(
 
 fn corporate_action_value(
     inputs: &[EvalValue],
+    node: &FeatureNode,
     observation: &FeatureEvaluationInput,
     available_at_ms: i64,
     dividends: bool,
@@ -1403,14 +1676,17 @@ fn corporate_action_value(
             CorporateAction::Split {
                 effective_at_ms,
                 available_at_ms,
-                ratio,
+                price_factor,
+                share_multiplier,
+                ..
             } if !dividends && *effective_at_ms <= observation.observation_time_ms => {
                 if *available_at_ms > observation.observation_time_ms {
                     return Ok(EvalValue::Unavailable(
                         FeatureUnavailabilityReason::CorporateActionUnavailable,
                     ));
                 }
-                let ratio = ratio.analytical().map_err(|_| {
+                let factor = split_factor(node, price_factor, share_multiplier)?;
+                let factor = factor.analytical().map_err(|_| {
                     FeatureEvaluationError::observation(
                         FeatureEvaluationErrorCode::InvalidInvariant,
                         EvaluationStage::Input,
@@ -1418,12 +1694,12 @@ fn corporate_action_value(
                         observation.observation_time_ms,
                     )
                 })?;
-                if ratio <= 0.0 || !ratio.is_finite() {
+                if factor <= 0.0 || !factor.is_finite() {
                     return Ok(EvalValue::Unavailable(
                         FeatureUnavailabilityReason::UndefinedArithmetic,
                     ));
                 }
-                value *= ratio;
+                value *= factor;
                 action_available_at = action_available_at.max(*available_at_ms);
             }
             CorporateAction::Dividend {
@@ -1431,6 +1707,7 @@ fn corporate_action_value(
                 available_at_ms,
                 cash_per_share,
                 reference_price,
+                ..
             } if dividends && *effective_at_ms <= observation.observation_time_ms => {
                 if *available_at_ms > observation.observation_time_ms {
                     return Ok(EvalValue::Unavailable(
@@ -1476,6 +1753,41 @@ fn corporate_action_value(
     })
 }
 
+fn split_factor(
+    node: &FeatureNode,
+    price_factor: &CanonicalDecimal,
+    share_multiplier: &CanonicalDecimal,
+) -> Result<CanonicalDecimal, FeatureEvaluationError> {
+    let unit = node
+        .parameters
+        .get("unit")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            node.inputs.first().and_then(|input| match input {
+                FeatureInput::Market { field } => match field {
+                    MarketField::BaseVolume => Some("quantity"),
+                    MarketField::QuoteVolume => Some("value"),
+                    _ => Some("price"),
+                },
+                FeatureInput::Node { .. } | FeatureInput::Artifact { .. } => None,
+            })
+        })
+        .unwrap_or("price");
+    match unit {
+        "price" => Ok(price_factor.clone()),
+        "quantity" => Ok(share_multiplier.clone()),
+        "value" => Ok(CanonicalDecimal::from_decimal(Decimal::ONE)),
+        _ => Err(fatal_error(
+            FeatureEvaluationErrorCode::OperatorFailure,
+            EvaluationStage::Validation,
+            Some(node.id.clone()),
+            None,
+            None,
+            "invalid-split-unit",
+        )),
+    }
+}
+
 fn evaluate_indicator(
     node: &FeatureNode,
     indicator_id: &str,
@@ -1519,11 +1831,11 @@ fn evaluate_indicator(
             "indicator-engine-identity-mismatch",
         ));
     }
-    let real_inputs = node
+    let required_fields = node
         .inputs
         .iter()
         .map(|input| match input {
-            FeatureInput::Market { field } => Ok(to_indicator_field(*field)),
+            FeatureInput::Market { field } => Ok(*field),
             _ => Err(fatal_error(
                 FeatureEvaluationErrorCode::InvalidInvariant,
                 EvaluationStage::Validation,
@@ -1534,7 +1846,7 @@ fn evaluate_indicator(
             )),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if real_inputs.is_empty() {
+    if required_fields.is_empty() {
         return Err(fatal_error(
             FeatureEvaluationErrorCode::InvalidInvariant,
             EvaluationStage::Validation,
@@ -1591,7 +1903,11 @@ fn evaluate_indicator(
         let compiled = engine
             .compile(IndicatorRequest {
                 indicator_id: indicator_id.to_owned(),
-                real_inputs,
+                real_inputs: required_fields
+                    .iter()
+                    .copied()
+                    .map(to_indicator_field)
+                    .collect(),
                 parameters,
                 outputs: vec![output],
             })
@@ -1609,16 +1925,28 @@ fn evaluate_indicator(
     }
     state.market_history.push(bar.clone());
     state.market_available_at.push(observation.available_at_ms);
-    let segment = FeatureMarketBar::indicator_segment(&state.market_history).map_err(|error| {
-        fatal_error(
-            FeatureEvaluationErrorCode::BrokenShape,
-            EvaluationStage::Input,
-            Some(node.id.clone()),
-            Some(instrument_id.to_owned()),
-            Some(observation.observation_time_ms),
-            error.code,
-        )
-    })?;
+    let max_history = state
+        .compiled_indicator
+        .as_ref()
+        .expect("compiled indicator")
+        .lookback()
+        .saturating_add(1);
+    while state.market_history.len() > max_history {
+        state.market_history.remove(0);
+        state.market_available_at.remove(0);
+    }
+    // ponytail: TA-Lib exposes only batch evaluation; retain one lookback tail to bound memory, upgrading to a native streaming API if profiling makes O(window) per bar materialization a bottleneck.
+    let segment = FeatureMarketBar::indicator_segment(&state.market_history, &required_fields)
+        .map_err(|error| {
+            fatal_error(
+                FeatureEvaluationErrorCode::BrokenShape,
+                EvaluationStage::Input,
+                Some(node.id.clone()),
+                Some(instrument_id.to_owned()),
+                Some(observation.observation_time_ms),
+                error.code,
+            )
+        })?;
     let outputs = engine
         .evaluate(
             state

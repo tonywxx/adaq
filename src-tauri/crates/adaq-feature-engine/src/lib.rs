@@ -1550,44 +1550,83 @@ fn validate_operator_contract(node: &FeatureNode, issues: &mut Vec<ValidationIss
     match &node.operator {
         FeatureOperator::BackwardSimpleReturn | FeatureOperator::BackwardLogReturn => {
             if parameter("direction")
-                .and_then(Value::as_str)
-                .is_some_and(|direction| direction != "backward")
+                .is_some_and(|direction| direction.as_str() != Some("backward"))
             {
                 issues.push(issue("future-return-not-allowed", Some(node.id.clone())));
             }
-            if parameter("period")
-                .and_then(Value::as_u64)
-                .is_some_and(|period| period == 0 || period > MAX_EFFECTIVE_WARMUP_BARS as u64)
-            {
-                issues.push(issue("invalid-return-period", Some(node.id.clone())));
-            }
+            validate_positive_integer_parameter(node, "period", "invalid-return-period", issues);
         }
         FeatureOperator::RollingMean
         | FeatureOperator::RollingPopulationStandardDeviation
         | FeatureOperator::RollingMinimum
         | FeatureOperator::RollingMaximum
         | FeatureOperator::RollingQuoteVolume => {
-            if parameter("window")
-                .and_then(Value::as_u64)
-                .is_some_and(|window| window == 0 || window > MAX_EFFECTIVE_WARMUP_BARS as u64)
-            {
-                issues.push(issue("invalid-rolling-window", Some(node.id.clone())));
-            }
+            validate_positive_integer_parameter(node, "window", "invalid-rolling-window", issues);
+        }
+        FeatureOperator::RealizedVolatility => {
+            validate_positive_integer_parameter(node, "window", "invalid-rolling-window", issues);
         }
         FeatureOperator::OneHot => {
             if parameter("category").is_none() && parameter("value").is_none() {
                 issues.push(issue("missing-one-hot-category", Some(node.id.clone())));
             }
+            if parameter("category").is_some() && parameter("value").is_some() {
+                issues.push(issue("ambiguous-one-hot-category", Some(node.id.clone())));
+            }
+            if parameter("category")
+                .or_else(|| parameter("value"))
+                .is_some_and(|value| value.as_f64().is_none_or(|value| !value.is_finite()))
+            {
+                issues.push(issue("invalid-one-hot-category", Some(node.id.clone())));
+            }
         }
         FeatureOperator::Sine | FeatureOperator::Cosine => {
-            if parameter("period")
-                .and_then(Value::as_f64)
-                .is_some_and(|period| !period.is_finite() || period <= 0.0)
-            {
+            if parameter("period").is_some_and(|period| {
+                period
+                    .as_f64()
+                    .is_none_or(|period| !period.is_finite() || period <= 0.0)
+            }) {
                 issues.push(issue("invalid-cycle-period", Some(node.id.clone())));
             }
         }
+        FeatureOperator::CausalSplitAdjustment => {
+            if parameter("unit")
+                .is_some_and(|unit| !matches!(unit.as_str(), Some("price" | "quantity" | "value")))
+            {
+                issues.push(issue("invalid-split-unit", Some(node.id.clone())));
+            }
+        }
         _ => {}
+    }
+    if matches!(
+        node.operator,
+        FeatureOperator::Indicator { .. }
+            | FeatureOperator::BackwardSimpleReturn
+            | FeatureOperator::BackwardLogReturn
+            | FeatureOperator::RollingMean
+            | FeatureOperator::RollingPopulationStandardDeviation
+            | FeatureOperator::RollingMinimum
+            | FeatureOperator::RollingMaximum
+            | FeatureOperator::RollingQuoteVolume
+            | FeatureOperator::RealizedVolatility
+    ) && node.scope != FeatureScope::TimeSeries
+    {
+        issues.push(issue("invalid-operator-scope", Some(node.id.clone())));
+    }
+}
+
+fn validate_positive_integer_parameter(
+    node: &FeatureNode,
+    name: &str,
+    code: &'static str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    if node.parameters.get(name).is_some_and(|value| {
+        value
+            .as_u64()
+            .is_none_or(|value| value == 0 || value > MAX_EFFECTIVE_WARMUP_BARS as u64)
+    }) {
+        issues.push(issue(code, Some(node.id.clone())));
     }
 }
 
