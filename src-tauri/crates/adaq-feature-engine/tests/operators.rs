@@ -214,6 +214,7 @@ fn decimal_projection_and_backward_returns_are_causal() {
                 FeatureOperator::BackwardSimpleReturn,
                 vec![FeatureInput::Node {
                     node_id: "close".into(),
+                    definition_hash: None,
                 }],
                 BTreeMap::new(),
             ),
@@ -539,9 +540,11 @@ fn volume_and_undefined_arithmetic_keep_typed_missingness() {
                 vec![
                     FeatureInput::Node {
                         node_id: "return".into(),
+                        definition_hash: None,
                     },
                     FeatureInput::Node {
                         node_id: "quote".into(),
+                        definition_hash: None,
                     },
                 ],
                 BTreeMap::new(),
@@ -1093,6 +1096,7 @@ fn cross_sectional_nodes_can_consume_lower_scope_features() {
         scope: FeatureScope::CrossSectional,
         inputs: vec![FeatureInput::Node {
             node_id: "close".into(),
+            definition_hash: None,
         }],
         parameters: BTreeMap::new(),
         warmup_bars: 0,

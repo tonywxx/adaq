@@ -96,7 +96,7 @@ Cross-Sectional Rank uses ascending average ties. Percentile is `(rank - 1) / (n
 
 ## Fitted transformations
 
-A Transformation Fitting Protocol binds one fitted node, input Feature, Snapshot, Universe, Fitting Scope, fitting window, algorithm parameters, engine identity, and required `minimumSamples`. Fitting Scope is Pooled Universe or Per Instrument. Walk-forward work creates one Protocol and Artifact per fold; instantaneous Cross-Sectional Z-score is not fitted.
+A Transformation Fitting Protocol binds one fitted node and exact fitted output Feature, input Feature, Snapshot, Universe, Fitting Scope, fitting window, algorithm parameters, engine identity, and required `minimumSamples`. Fitting Scope is Pooled Universe or Per Instrument. Walk-forward work creates one Protocol and Artifact per fold; instantaneous Cross-Sectional Z-score is not fitted.
 
 A completed Fitting Attempt publishes one immutable Artifact per fitted node. Standardization uses population variance and constant input is Unavailable. Winsorization freezes lower and upper quantiles and the nearest-rank rule. Insufficient samples fail without publishing an Artifact. Materialization applies an Artifact and never refits it.
 
@@ -106,7 +106,7 @@ Artifact Eligible At is the latest Available At among fitting inputs. Created At
 
 SQLite stores User-scoped Definitions, Plans, Protocols, Artifacts, Requests, Attempts, manifests, references, lifecycle state, and presentation metadata. Immutable Feature Dataset rows use content-addressed Parquet with one wide row per `(Instrument ID, Observation Time)`. Every output retains value, Available At, state, and versioned reason code through a canonical Manifest mapping.
 
-Fitting and Materialization Attempts move through Pending, Running, and exactly one terminal state: Completed, Failed, or Cancelled. Exact Pending or Running requests coalesce, exact Completed evidence is reused, and Retry creates a new Attempt retaining source evidence.
+Fitting and Materialization Attempts move through Pending, Running, and exactly one terminal state: Completed, Failed, or Cancelled. Exact Pending or Running requests coalesce, exact Completed evidence is reused, Retry creates a new Attempt retaining source evidence, and repeated Retry requests coalesce with an active Pending or Running retry.
 
 The device runs one heavy Feature Attempt at a time through persistent FIFO. Pending survives restart. Stale Running becomes Failed with interruption evidence. Progress advances only after complete Feature Observations and exposes no invented remaining-time estimate.
 

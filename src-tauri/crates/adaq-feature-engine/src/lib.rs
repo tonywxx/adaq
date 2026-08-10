@@ -1,8 +1,10 @@
 //! Tauri-independent contracts for ADAQ Feature Definitions and Feature Plans.
 
 mod execution;
+mod fitting;
 
 pub use execution::*;
+pub use fitting::*;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -234,9 +236,17 @@ impl FeatureOperatorCatalog {
     rename_all_fields = "camelCase"
 )]
 pub enum FeatureInput {
-    Market { field: MarketField },
-    Node { node_id: String },
-    Artifact { artifact_id: String },
+    Market {
+        field: MarketField,
+    },
+    Node {
+        node_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        definition_hash: Option<String>,
+    },
+    Artifact {
+        artifact_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -630,11 +640,20 @@ pub struct NamedParameter {
     pub value: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FeatureReference {
+    pub definition_hash: String,
+    pub node_id: String,
+    pub output_name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FittedArtifactBinding {
     pub artifact_id: String,
     pub eligible_at_ms: i64,
+    pub fitted_output: FeatureReference,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1048,6 +1067,8 @@ pub struct FeatureObservation {
     pub observation_time_ms: i64,
     pub value: FeatureObservationValue,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_reference: Option<FeatureReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cross_sectional_coverage: Option<CrossSectionalCoverage>,
 }
 
@@ -1085,6 +1106,7 @@ impl FeatureObservation {
                 value,
                 available_at_ms,
             },
+            feature_reference: None,
             cross_sectional_coverage: None,
         })
     }
@@ -1110,8 +1132,14 @@ impl FeatureObservation {
             instrument_id,
             observation_time_ms,
             value: FeatureObservationValue::Unavailable { reason },
+            feature_reference: None,
             cross_sectional_coverage: None,
         })
+    }
+
+    pub fn with_feature_reference(mut self, feature_reference: FeatureReference) -> Self {
+        self.feature_reference = Some(feature_reference);
+        self
     }
 
     pub fn reason(&self) -> Option<FeatureUnavailabilityReason> {
@@ -1264,8 +1292,22 @@ fn validate_draft(draft: &FeaturePlanDraft) -> Result<(), PlanValidationError> {
     }
     let mut artifact_ids = BTreeSet::new();
     for artifact in &draft.artifacts {
-        if artifact.artifact_id.is_empty() || !artifact_ids.insert(&artifact.artifact_id) {
+        if artifact.artifact_id.is_empty()
+            || !artifact_ids.insert(&artifact.artifact_id)
+            || !is_sha256(&artifact.fitted_output.definition_hash)
+            || !is_lower_kebab(&artifact.fitted_output.node_id)
+            || !is_lower_kebab(&artifact.fitted_output.output_name)
+        {
             issues.push(issue("invalid-artifact-binding", None));
+        }
+        if !draft.definitions.iter().any(|definition| {
+            definition.definition_hash() == artifact.fitted_output.definition_hash
+                && definition.outputs().iter().any(|output| {
+                    output.node_id == artifact.fitted_output.node_id
+                        && output.name == artifact.fitted_output.output_name
+                })
+        }) {
+            issues.push(issue("unbound-fitted-artifact-output", None));
         }
     }
     for definition in &draft.definitions {
@@ -1701,7 +1743,11 @@ fn visit_node(
     };
     states.insert(id.to_owned(), 1);
     for input in &node.inputs {
-        let FeatureInput::Node { node_id } = input else {
+        let FeatureInput::Node {
+            node_id,
+            definition_hash,
+        } = input
+        else {
             if let FeatureInput::Artifact { artifact_id } = input {
                 if artifact_id.is_empty() {
                     issues.push(issue("invalid-artifact-input", Some(id.to_owned())));
@@ -1709,6 +1755,12 @@ fn visit_node(
             }
             continue;
         };
+        if definition_hash
+            .as_deref()
+            .is_some_and(|definition_hash| !is_sha256(definition_hash))
+        {
+            issues.push(issue("invalid-node-definition-hash", Some(id.to_owned())));
+        }
         let Some(dependency) = nodes.get(node_id.as_str()).copied() else {
             issues.push(issue("unknown-dependency", Some(node_id.clone())));
             continue;

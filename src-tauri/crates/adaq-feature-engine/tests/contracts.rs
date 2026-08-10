@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use adaq_feature_engine::{
     DefinitionDraft, FeatureDefinition, FeatureEngineIdentity, FeatureEvaluationErrorCode,
     FeatureInput, FeatureMaterializationRequest, FeatureNode, FeatureObservation, FeatureOperator,
-    FeatureOutput, FeaturePlan, FeaturePlanDraft, FeatureScope, FeatureSlot, FeatureSource,
-    FeatureUnavailabilityReason, FittedArtifactBinding, MAX_CANONICAL_JSON_BYTES,
+    FeatureOutput, FeaturePlan, FeaturePlanDraft, FeatureReference, FeatureScope, FeatureSlot,
+    FeatureSource, FeatureUnavailabilityReason, FittedArtifactBinding, MAX_CANONICAL_JSON_BYTES,
     MAX_EFFECTIVE_WARMUP_BARS, MarketField, ObservationRange, PlanLoadError,
 };
 use serde_json::json;
@@ -88,6 +88,7 @@ fn plan_rejects_scope_cycles_and_bad_output_contracts() {
                 scope: FeatureScope::CrossSectional,
                 inputs: vec![FeatureInput::Node {
                     node_id: "b".into(),
+                    definition_hash: None,
                 }],
                 parameters: BTreeMap::new(),
                 warmup_bars: 0,
@@ -98,6 +99,7 @@ fn plan_rejects_scope_cycles_and_bad_output_contracts() {
                 scope: FeatureScope::CrossSectional,
                 inputs: vec![FeatureInput::Node {
                     node_id: "a".into(),
+                    definition_hash: None,
                 }],
                 parameters: BTreeMap::new(),
                 warmup_bars: 0,
@@ -141,6 +143,7 @@ fn definition_rejects_cross_sectional_outputs_downstream() {
                 scope: FeatureScope::CrossSectional,
                 inputs: vec![FeatureInput::Node {
                     node_id: "rank".into(),
+                    definition_hash: None,
                 }],
                 parameters: BTreeMap::new(),
                 warmup_bars: 0,
@@ -373,11 +376,17 @@ fn plan_rejects_unbound_artifact_inputs() {
             .any(|code| *code == "unbound-artifact-input")
     );
 
+    let fitted_output = FeatureReference {
+        definition_hash: definition.definition_hash().into(),
+        node_id: "standardize".into(),
+        output_name: "standardized".into(),
+    };
     let bound = FeaturePlan::freeze(FeaturePlanDraft {
         definitions: vec![definition],
         artifacts: vec![FittedArtifactBinding {
             artifact_id: "missing".into(),
             eligible_at_ms: 0,
+            fitted_output,
         }],
         engine_identity: identity(),
         ..FeaturePlanDraft::default()
@@ -429,6 +438,7 @@ fn definition_rejects_dependency_depth_beyond_the_contract() {
             } else {
                 vec![FeatureInput::Node {
                     node_id: format!("node-{}", index - 1),
+                    definition_hash: None,
                 }]
             },
             parameters: BTreeMap::new(),

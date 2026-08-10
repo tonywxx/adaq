@@ -19,8 +19,9 @@ use serde_json::{Value, json};
 use crate::{
     EvaluationStage, FeatureDefinition, FeatureEngineIdentity, FeatureEvaluationError,
     FeatureEvaluationErrorCode, FeatureInput, FeatureNode, FeatureObservation, FeatureOperator,
-    FeatureOutput, FeaturePlan, FeatureScope, FeatureSlot, FeatureSource,
-    FeatureUnavailabilityReason, FrozenBuiltInParameter, MarketField,
+    FeatureOutput, FeaturePlan, FeatureReference, FeatureScope, FeatureSlot, FeatureSource,
+    FeatureUnavailabilityReason, FittedTransformationArtifact, FittedTransformationValue,
+    FrozenBuiltInParameter, MarketField,
 };
 
 /// An exact decimal retained alongside its finite analytical representation.
@@ -627,6 +628,14 @@ impl FeatureEngine {
     }
 
     pub fn evaluator(&self, plan: FeaturePlan) -> Result<FeatureEvaluator, FeatureEvaluationError> {
+        self.evaluator_with_artifacts(plan, &[])
+    }
+
+    pub fn evaluator_with_artifacts(
+        &self,
+        plan: FeaturePlan,
+        artifacts: &[FittedTransformationArtifact],
+    ) -> Result<FeatureEvaluator, FeatureEvaluationError> {
         if plan.engine_identity() != self.identity {
             return Err(fatal_error(
                 FeatureEvaluationErrorCode::InvalidIdentity,
@@ -637,7 +646,7 @@ impl FeatureEngine {
                 "feature-engine-identity-mismatch",
             ));
         }
-        FeatureEvaluator::new(plan)
+        FeatureEvaluator::new_with_artifacts(plan, artifacts)
     }
 
     pub fn evaluate_batch(
@@ -654,6 +663,8 @@ pub struct FeatureEvaluator {
     definitions: Vec<RuntimeDefinition>,
     instruments: HashMap<String, InstrumentRuntime>,
     indicator_engine: Option<IndicatorEngine>,
+    artifacts: HashMap<String, FittedTransformationArtifact>,
+    fitted_artifacts: HashMap<(String, String), FittedTransformationArtifact>,
 }
 
 impl fmt::Debug for FeatureEvaluator {
@@ -668,16 +679,130 @@ impl fmt::Debug for FeatureEvaluator {
 
 impl FeatureEvaluator {
     pub fn new(plan: FeaturePlan) -> Result<Self, FeatureEvaluationError> {
+        Self::new_with_artifacts(plan, &[])
+    }
+
+    pub fn new_with_artifacts(
+        plan: FeaturePlan,
+        artifacts: &[FittedTransformationArtifact],
+    ) -> Result<Self, FeatureEvaluationError> {
         let definitions = plan
             .definitions()
             .iter()
             .map(RuntimeDefinition::new)
             .collect::<Result<Vec<_>, _>>()?;
+        let artifacts = artifacts
+            .iter()
+            .map(|artifact| (artifact.artifact_id().to_owned(), artifact.clone()))
+            .collect::<HashMap<_, _>>();
+        if artifacts
+            .values()
+            .any(|artifact| !artifact.integrity_valid())
+        {
+            return Err(fatal_error(
+                FeatureEvaluationErrorCode::InvalidIdentity,
+                EvaluationStage::Validation,
+                None,
+                None,
+                None,
+                "invalid-fitted-artifact",
+            ));
+        }
+        let expected_identity = plan.engine_identity();
+        let mut fitted_artifacts = HashMap::new();
+        for binding in plan.artifacts() {
+            if let Some(artifact) = artifacts.get(&binding.artifact_id) {
+                let fitted_node_owners = plan
+                    .definitions()
+                    .iter()
+                    .filter(|definition| {
+                        definition.definition_hash() == binding.fitted_output.definition_hash
+                            && definition.outputs().iter().any(|output| {
+                                output.node_id == binding.fitted_output.node_id
+                                    && output.name == binding.fitted_output.output_name
+                            })
+                    })
+                    .flat_map(|definition| {
+                        definition
+                            .nodes()
+                            .iter()
+                            .filter(|node| node.id == binding.fitted_output.node_id)
+                            .map(move |node| (definition, node))
+                    })
+                    .collect::<Vec<_>>();
+                let fitted_node_is_bound = fitted_node_owners.len() == 1 && {
+                    let (definition, node) = fitted_node_owners[0];
+                    definition.definition_hash() == binding.fitted_output.definition_hash
+                        && node.id == binding.fitted_output.node_id
+                        && node.id == artifact.fitted_node_id
+                        && definition.outputs().iter().any(|output| {
+                            output.node_id == binding.fitted_output.node_id
+                                && output.name == binding.fitted_output.output_name
+                        })
+                };
+                let fitted_input_is_bound = fitted_node_owners.first().is_some_and(|(_, node)| {
+                    node.inputs.iter().any(|input| {
+                        matches!(
+                            input,
+                            FeatureInput::Node {
+                                node_id,
+                                definition_hash: Some(definition_hash),
+                            } if node_id == &artifact.input_feature.node_id
+                                && definition_hash == &artifact.input_feature.definition_hash
+                        )
+                    })
+                });
+                let feature_definition_is_bound = plan.definitions().iter().any(|definition| {
+                    definition.definition_hash() == artifact.input_feature.definition_hash
+                        && definition.outputs().iter().any(|output| {
+                            output.node_id == artifact.input_feature.node_id
+                                && output.name == artifact.input_feature.output_name
+                        })
+                });
+                if artifact.eligible_at_ms() != binding.eligible_at_ms
+                    || artifact.engine_identity != expected_identity
+                    || artifact.fitted_output != binding.fitted_output
+                    || !feature_definition_is_bound
+                    || !fitted_node_is_bound
+                    || !fitted_input_is_bound
+                {
+                    return Err(fatal_error(
+                        FeatureEvaluationErrorCode::InvalidIdentity,
+                        EvaluationStage::Validation,
+                        None,
+                        None,
+                        None,
+                        "fitted-artifact-eligibility-mismatch",
+                    ));
+                }
+                if fitted_artifacts
+                    .insert(
+                        (
+                            binding.fitted_output.definition_hash.clone(),
+                            binding.fitted_output.node_id.clone(),
+                        ),
+                        artifact.clone(),
+                    )
+                    .is_some()
+                {
+                    return Err(fatal_error(
+                        FeatureEvaluationErrorCode::InvalidIdentity,
+                        EvaluationStage::Validation,
+                        None,
+                        None,
+                        None,
+                        "duplicate-fitted-artifact-output",
+                    ));
+                }
+            }
+        }
         Ok(Self {
             plan,
             definitions,
             instruments: HashMap::new(),
             indicator_engine: None,
+            artifacts,
+            fitted_artifacts,
         })
     }
 
@@ -732,6 +857,8 @@ impl FeatureEvaluator {
         let instrument_id = input.instrument_id.clone();
         let plan = &self.plan;
         let definitions = &self.definitions;
+        let artifacts = &self.artifacts;
+        let fitted_artifacts = &self.fitted_artifacts;
         let indicator_engine = &mut self.indicator_engine;
         let runtime = self
             .instruments
@@ -762,6 +889,8 @@ impl FeatureEvaluator {
             &input,
             &plan.engine_identity(),
             indicator_engine,
+            artifacts,
+            fitted_artifacts,
             &instrument_id,
             false,
         )?;
@@ -771,6 +900,8 @@ impl FeatureEvaluator {
             &input,
             &plan.engine_identity(),
             indicator_engine,
+            artifacts,
+            fitted_artifacts,
             &instrument_id,
         )?;
         let mut observations = Vec::new();
@@ -788,7 +919,17 @@ impl FeatureEvaluator {
                             "runtime-output-missing",
                         )
                     })?;
-                observations.push(observation_from_value(&output.name, &input, value)?);
+                let feature_reference = FeatureReference {
+                    definition_hash: template.definition_hash.clone(),
+                    node_id: output.node_id.clone(),
+                    output_name: output.name.clone(),
+                };
+                observations.push(observation_from_value(
+                    &output.name,
+                    &input,
+                    Some(&feature_reference),
+                    value,
+                )?);
             }
         }
         for slot in plan.slots() {
@@ -802,7 +943,7 @@ impl FeatureEvaluator {
                     "runtime-slot-missing",
                 )
             })?;
-            observations.push(observation_from_value(&slot.name, &input, value)?);
+            observations.push(observation_from_value(&slot.name, &input, None, value)?);
         }
         Ok(observations)
     }
@@ -821,6 +962,8 @@ impl FeatureEvaluator {
         let universe_count = members.len();
         let definitions = &self.definitions;
         let plan = &self.plan;
+        let artifacts = &self.artifacts;
+        let fitted_artifacts = &self.fitted_artifacts;
         let expected_identity = plan.engine_identity();
         let indicator_engine = &mut self.indicator_engine;
 
@@ -853,6 +996,11 @@ impl FeatureEvaluator {
                                 "invalid-cross-sectional-observation",
                             )
                         })?;
+                        observation.feature_reference = Some(FeatureReference {
+                            definition_hash: definitions[definition_index].definition_hash.clone(),
+                            node_id: output.node_id.clone(),
+                            output_name: output.name.clone(),
+                        });
                         if definitions[definition_index]
                             .nodes
                             .get(&output.node_id)
@@ -922,6 +1070,8 @@ impl FeatureEvaluator {
                 input,
                 &expected_identity,
                 indicator_engine,
+                artifacts,
+                fitted_artifacts,
                 &instrument_id,
                 true,
             )?;
@@ -931,6 +1081,8 @@ impl FeatureEvaluator {
                 input,
                 &expected_identity,
                 indicator_engine,
+                artifacts,
+                fitted_artifacts,
                 &instrument_id,
             )?;
         }
@@ -961,6 +1113,10 @@ impl FeatureEvaluator {
                                     feature_input,
                                     input,
                                     &row_states[row_index][definition_index],
+                                    &row_states[row_index],
+                                    definitions,
+                                    definition_index,
+                                    artifacts,
                                     &input.instrument_id,
                                     node_id,
                                 )
@@ -999,7 +1155,17 @@ impl FeatureEvaluator {
                                 "runtime-output-missing",
                             )
                         })?;
-                    let mut observation = observation_from_value(&output.name, input, value)?;
+                    let feature_reference = FeatureReference {
+                        definition_hash: template.definition_hash.clone(),
+                        node_id: output.node_id.clone(),
+                        output_name: output.name.clone(),
+                    };
+                    let mut observation = observation_from_value(
+                        &output.name,
+                        input,
+                        Some(&feature_reference),
+                        value,
+                    )?;
                     observation.cross_sectional_coverage = row_coverage[row_index]
                         [definition_index]
                         .get(&output.node_id)
@@ -1018,7 +1184,7 @@ impl FeatureEvaluator {
                         "runtime-slot-missing",
                     )
                 })?;
-                observations.push(observation_from_value(&slot.name, input, value)?);
+                observations.push(observation_from_value(&slot.name, input, None, value)?);
             }
         }
         Ok(observations)
@@ -1266,10 +1432,12 @@ fn evaluate_definitions_for_input(
     input: &FeatureEvaluationInput,
     expected_identity: &FeatureEngineIdentity,
     indicator_engine: &mut Option<IndicatorEngine>,
+    artifacts: &HashMap<String, FittedTransformationArtifact>,
+    fitted_artifacts: &HashMap<(String, String), FittedTransformationArtifact>,
     instrument_id: &str,
     skip_cross_sectional: bool,
 ) -> Result<Vec<HashMap<String, EvalValue>>, FeatureEvaluationError> {
-    let mut current = Vec::with_capacity(definitions.len());
+    let mut current = vec![HashMap::new(); definitions.len()];
     for (definition_index, template) in definitions.iter().enumerate() {
         let definition = &mut runtime.definitions[definition_index];
         definition.current.clear();
@@ -1295,6 +1463,10 @@ fn evaluate_definitions_for_input(
                         feature_input,
                         input,
                         &definition.current,
+                        &current,
+                        definitions,
+                        definition_index,
+                        artifacts,
                         instrument_id,
                         node_id,
                     )
@@ -1317,11 +1489,13 @@ fn evaluate_definitions_for_input(
                 state,
                 expected_identity,
                 indicator_engine,
+                fitted_artifacts,
+                &template.definition_hash,
                 instrument_id,
             )?;
             definition.current.insert(node.id.clone(), value);
         }
-        current.push(definition.current.clone());
+        current[definition_index] = definition.current.clone();
     }
     Ok(current)
 }
@@ -1332,6 +1506,8 @@ fn evaluate_slots_for_input(
     input: &FeatureEvaluationInput,
     expected_identity: &FeatureEngineIdentity,
     indicator_engine: &mut Option<IndicatorEngine>,
+    artifacts: &HashMap<String, FittedTransformationArtifact>,
+    fitted_artifacts: &HashMap<(String, String), FittedTransformationArtifact>,
     instrument_id: &str,
 ) -> Result<HashMap<String, EvalValue>, FeatureEvaluationError> {
     let mut values_by_name = HashMap::new();
@@ -1371,6 +1547,10 @@ fn evaluate_slots_for_input(
                             feature_input,
                             input,
                             &HashMap::new(),
+                            &[],
+                            &[],
+                            0,
+                            artifacts,
                             instrument_id,
                             &slot.name,
                         )
@@ -1384,6 +1564,8 @@ fn evaluate_slots_for_input(
                     state,
                     expected_identity,
                     indicator_engine,
+                    fitted_artifacts,
+                    "",
                     instrument_id,
                 )?
             }
@@ -1404,6 +1586,7 @@ struct PreparedCrossSectionalBatch {
 }
 
 struct RuntimeDefinition {
+    definition_hash: String,
     nodes: HashMap<String, FeatureNode>,
     order: Vec<String>,
     outputs: Vec<FeatureOutput>,
@@ -1441,6 +1624,7 @@ impl RuntimeDefinition {
             })
             .collect();
         Ok(Self {
+            definition_hash: definition.definition_hash().into(),
             nodes,
             order,
             outputs: definition.outputs().to_vec(),
@@ -1472,6 +1656,7 @@ impl InstrumentRuntime {
             definitions: definition_templates
                 .iter()
                 .map(|template| RuntimeDefinition {
+                    definition_hash: template.definition_hash.clone(),
                     nodes: template.nodes.clone(),
                     order: template.order.clone(),
                     outputs: template.outputs.clone(),
@@ -1560,7 +1745,14 @@ impl RuntimeNodeState {
 
 #[derive(Debug, Clone, PartialEq)]
 enum EvalValue {
-    Available { value: f64, available_at_ms: i64 },
+    Available {
+        value: f64,
+        available_at_ms: i64,
+    },
+    Artifact {
+        artifact_id: String,
+        eligible_at_ms: i64,
+    },
     Unavailable(FeatureUnavailabilityReason),
 }
 
@@ -1575,6 +1767,7 @@ impl EvalValue {
     fn value(&self) -> Option<f64> {
         match self {
             Self::Available { value, .. } => Some(*value),
+            Self::Artifact { .. } => None,
             Self::Unavailable(_) => None,
         }
     }
@@ -1584,6 +1777,7 @@ impl EvalValue {
             Self::Available {
                 available_at_ms, ..
             } => Some(*available_at_ms),
+            Self::Artifact { eligible_at_ms, .. } => Some(*eligible_at_ms),
             Self::Unavailable(_) => None,
         }
     }
@@ -1592,7 +1786,11 @@ impl EvalValue {
 fn resolve_input(
     input: &FeatureInput,
     observation: &FeatureEvaluationInput,
-    current: &HashMap<String, EvalValue>,
+    local_current: &HashMap<String, EvalValue>,
+    all_current: &[HashMap<String, EvalValue>],
+    definitions: &[RuntimeDefinition],
+    definition_index: usize,
+    artifacts: &HashMap<String, FittedTransformationArtifact>,
     instrument_id: &str,
     node_id: &str,
 ) -> Result<EvalValue, FeatureEvaluationError> {
@@ -1619,15 +1817,37 @@ fn resolve_input(
         }
         FeatureInput::Node {
             node_id: dependency,
-        } => Ok(current
-            .get(dependency)
-            .cloned()
+            definition_hash,
+        } => {
+            let source_current = match definition_hash.as_deref() {
+                None => Some(local_current),
+                Some(definition_hash) => definitions
+                    .iter()
+                    .position(|definition| definition.definition_hash == definition_hash)
+                    .and_then(|source_index| {
+                        if source_index == definition_index {
+                            Some(local_current)
+                        } else {
+                            all_current.get(source_index)
+                        }
+                    }),
+            };
+            Ok(source_current
+                .and_then(|current| current.get(dependency))
+                .cloned()
+                .unwrap_or(EvalValue::Unavailable(
+                    FeatureUnavailabilityReason::MissingDependency,
+                )))
+        }
+        FeatureInput::Artifact { artifact_id } => Ok(artifacts
+            .get(artifact_id)
+            .map(|artifact| EvalValue::Artifact {
+                artifact_id: artifact_id.clone(),
+                eligible_at_ms: artifact.eligible_at_ms(),
+            })
             .unwrap_or(EvalValue::Unavailable(
-                FeatureUnavailabilityReason::MissingDependency,
+                FeatureUnavailabilityReason::ArtifactMissingInstrument,
             ))),
-        FeatureInput::Artifact { .. } => Ok(EvalValue::Unavailable(
-            FeatureUnavailabilityReason::ArtifactMissingInstrument,
-        )),
     }
 }
 
@@ -1805,8 +2025,23 @@ fn evaluate_node(
     state: &mut RuntimeNodeState,
     expected_identity: &FeatureEngineIdentity,
     indicator_engine: &mut Option<IndicatorEngine>,
+    fitted_artifacts: &HashMap<(String, String), FittedTransformationArtifact>,
+    definition_hash: &str,
     instrument_id: &str,
 ) -> Result<EvalValue, FeatureEvaluationError> {
+    if matches!(
+        node.operator,
+        FeatureOperator::Standardization | FeatureOperator::Winsorization
+    ) {
+        return evaluate_fitted_transformation(
+            node,
+            inputs,
+            observation,
+            fitted_artifacts,
+            definition_hash,
+            instrument_id,
+        );
+    }
     if let Some(reason) = input_unavailability(node, inputs) {
         state.reset();
         return Ok(EvalValue::Unavailable(reason));
@@ -1859,9 +2094,7 @@ fn evaluate_node(
         FeatureOperator::DividendTotalReturn => {
             corporate_action_value(inputs, node, observation, available_at_ms, true)
         }
-        FeatureOperator::Standardization | FeatureOperator::Winsorization => Ok(
-            EvalValue::Unavailable(FeatureUnavailabilityReason::ArtifactMissingInstrument),
-        ),
+        FeatureOperator::Standardization | FeatureOperator::Winsorization => unreachable!(),
         FeatureOperator::CrossSectionalRank
         | FeatureOperator::CrossSectionalPercentile
         | FeatureOperator::CrossSectionalZScore => Ok(EvalValue::Unavailable(
@@ -1880,6 +2113,117 @@ fn evaluate_node(
     })
 }
 
+fn evaluate_fitted_transformation(
+    node: &FeatureNode,
+    inputs: &[EvalValue],
+    observation: &FeatureEvaluationInput,
+    fitted_artifacts: &HashMap<(String, String), FittedTransformationArtifact>,
+    definition_hash: &str,
+    instrument_id: &str,
+) -> Result<EvalValue, FeatureEvaluationError> {
+    let input = node
+        .inputs
+        .iter()
+        .zip(inputs)
+        .find(|(input, _)| !matches!(input, FeatureInput::Artifact { .. }))
+        .map(|(_, value)| value);
+    let (value, available_at_ms) = match input {
+        Some(EvalValue::Available {
+            value,
+            available_at_ms,
+        }) => (*value, *available_at_ms),
+        Some(EvalValue::Unavailable(reason)) => return Ok(EvalValue::Unavailable(*reason)),
+        Some(EvalValue::Artifact { .. }) | None => {
+            return Ok(EvalValue::Unavailable(
+                FeatureUnavailabilityReason::MissingDependency,
+            ));
+        }
+    };
+    let Some(artifact) = fitted_artifacts.get(&(definition_hash.to_owned(), node.id.clone()))
+    else {
+        return Ok(EvalValue::Unavailable(
+            FeatureUnavailabilityReason::ArtifactMissingInstrument,
+        ));
+    };
+    if node.id != artifact.fitted_node_id {
+        return Err(fatal_error(
+            FeatureEvaluationErrorCode::InvalidIdentity,
+            EvaluationStage::Validation,
+            Some(node.id.clone()),
+            Some(instrument_id.to_owned()),
+            Some(observation.observation_time_ms),
+            "fitted-artifact-node-mismatch",
+        ));
+    }
+    let algorithm_matches = match node.operator {
+        FeatureOperator::Standardization => {
+            matches!(artifact.algorithm, crate::FittingAlgorithm::Standardization)
+        }
+        FeatureOperator::Winsorization => {
+            matches!(
+                artifact.algorithm,
+                crate::FittingAlgorithm::Winsorization { .. }
+            )
+        }
+        _ => false,
+    };
+    if !algorithm_matches {
+        return Err(fatal_error(
+            FeatureEvaluationErrorCode::InvalidIdentity,
+            EvaluationStage::Validation,
+            Some(node.id.clone()),
+            Some(instrument_id.to_owned()),
+            Some(observation.observation_time_ms),
+            "fitted-artifact-algorithm-mismatch",
+        ));
+    }
+    let fitted_input = node.inputs.iter().find_map(|input| match input {
+        FeatureInput::Node {
+            node_id,
+            definition_hash,
+        } => Some((node_id.as_str(), definition_hash.as_deref())),
+        FeatureInput::Market { .. } | FeatureInput::Artifact { .. } => None,
+    });
+    if !matches!(
+        fitted_input,
+        Some((node_id, Some(definition_hash)))
+            if node_id == artifact.input_feature.node_id
+                && definition_hash == artifact.input_feature.definition_hash
+    ) {
+        return Err(fatal_error(
+            FeatureEvaluationErrorCode::InvalidIdentity,
+            EvaluationStage::Validation,
+            Some(node.id.clone()),
+            Some(instrument_id.to_owned()),
+            Some(observation.observation_time_ms),
+            "fitted-artifact-input-feature-mismatch",
+        ));
+    }
+    match artifact
+        .apply_value(
+            instrument_id,
+            observation.observation_time_ms,
+            value,
+            available_at_ms,
+        )
+        .map_err(|error| {
+            fatal_error(
+                FeatureEvaluationErrorCode::OperatorFailure,
+                EvaluationStage::Availability,
+                Some(node.id.clone()),
+                Some(instrument_id.to_owned()),
+                Some(observation.observation_time_ms),
+                error.code(),
+            )
+        })? {
+        FittedTransformationValue::Available {
+            value,
+            available_at_ms,
+        } => Ok(EvalValue::available(value, available_at_ms)),
+        FittedTransformationValue::Unavailable(reason) => Ok(EvalValue::Unavailable(reason)),
+    }
+}
+
 fn input_unavailability(
     node: &FeatureNode,
     inputs: &[EvalValue],
@@ -1889,6 +2233,7 @@ fn input_unavailability(
         .enumerate()
         .find_map(|(index, value)| match value {
             EvalValue::Available { .. } => None,
+            EvalValue::Artifact { .. } => None,
             EvalValue::Unavailable(reason) => Some(
                 if matches!(node.inputs.get(index), Some(FeatureInput::Market { .. })) {
                     *reason
@@ -2966,9 +3311,10 @@ fn builtin_node(
 fn observation_from_value(
     output_name: &str,
     input: &FeatureEvaluationInput,
+    feature_reference: Option<&FeatureReference>,
     value: &EvalValue,
 ) -> Result<FeatureObservation, FeatureEvaluationError> {
-    match value {
+    let mut observation = match value {
         EvalValue::Available {
             value,
             available_at_ms,
@@ -2979,13 +3325,23 @@ fn observation_from_value(
             *value,
             *available_at_ms,
         ),
+        EvalValue::Artifact { .. } => Err(fatal_error(
+            FeatureEvaluationErrorCode::BrokenShape,
+            EvaluationStage::Invariant,
+            None,
+            Some(input.instrument_id.clone()),
+            Some(input.observation_time_ms),
+            "artifact-value-exposed-as-feature-output",
+        )),
         EvalValue::Unavailable(reason) => FeatureObservation::unavailable(
             output_name,
             &input.instrument_id,
             input.observation_time_ms,
             *reason,
         ),
-    }
+    }?;
+    observation.feature_reference = feature_reference.cloned();
+    Ok(observation)
 }
 
 fn visit_runtime_node(
@@ -3020,7 +3376,7 @@ fn visit_runtime_node(
     })?;
     states.insert(id.to_owned(), 1);
     for input in &node.inputs {
-        if let FeatureInput::Node { node_id } = input {
+        if let FeatureInput::Node { node_id, .. } = input {
             visit_runtime_node(node_id, nodes, states, order)?;
         }
     }
@@ -3040,7 +3396,7 @@ fn depends_on_market(
     let value = nodes.get(id).is_some_and(|node| {
         node.inputs.iter().any(|input| match input {
             FeatureInput::Market { .. } => true,
-            FeatureInput::Node { node_id } => depends_on_market(node_id, nodes, memo),
+            FeatureInput::Node { node_id, .. } => depends_on_market(node_id, nodes, memo),
             FeatureInput::Artifact { .. } => false,
         })
     });
