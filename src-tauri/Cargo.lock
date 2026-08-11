@@ -133,6 +133,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "chrono",
+ "libc",
  "parquet",
  "rusqlite",
  "rust_decimal",

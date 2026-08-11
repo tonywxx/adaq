@@ -1,0 +1,346 @@
+{
+  "schemaVersion": "adaq-feature-reference-vectors@1.0.0",
+  "journeys": {
+    "china-a-share": {
+      "definitionHashes": [
+        "a4475b61a600f553ae0e4fc0ccef319ddaf0a3a84e2a385326da2eae3175ea61"
+      ],
+      "planHash": "38965ae796b447221ec7246342fc59b7821f1d9f826bb4352cc431125900ac91",
+      "observationsSha256": "2634d42a980400e797e2e2c32aff83e5dbb9b59a897ed39af3958b7c6edc917b",
+      "samples": [
+        {
+          "output": "from-open",
+          "instrument": "sse:600000",
+          "timeMs": 1710122400000,
+          "value": 30.0,
+          "availableAtMs": 1710122400000
+        },
+        {
+          "output": "to-close",
+          "instrument": "sse:600000",
+          "timeMs": 1710122400000,
+          "value": 90.0,
+          "availableAtMs": 1710122400000
+        },
+        {
+          "output": "progress",
+          "instrument": "sse:600000",
+          "timeMs": 1710122400000,
+          "value": 0.125,
+          "availableAtMs": 1710122400000
+        },
+        {
+          "output": "progress",
+          "instrument": "sse:600000",
+          "timeMs": 1710127800000,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "output": "from-open",
+          "instrument": "sse:600000",
+          "timeMs": 1710135000000,
+          "value": 30.0,
+          "availableAtMs": 1710135000000
+        },
+        {
+          "output": "day",
+          "instrument": "sse:600000",
+          "timeMs": 1710120600000,
+          "value": 0.0,
+          "availableAtMs": 1710120600000
+        },
+        {
+          "output": "month",
+          "instrument": "sse:600000",
+          "timeMs": 1710120600000,
+          "value": 3.0,
+          "availableAtMs": 1710120600000
+        },
+        {
+          "output": "split",
+          "instrument": "sse:600000",
+          "timeMs": 1710127800000,
+          "value": 10.1,
+          "availableAtMs": 1710127800000
+        },
+        {
+          "output": "split",
+          "instrument": "sse:600000",
+          "timeMs": 1710135000000,
+          "reason": "corporate-action-unavailable"
+        },
+        {
+          "output": "split",
+          "instrument": "sse:600000",
+          "timeMs": 1710138600000,
+          "value": 2.6,
+          "availableAtMs": 1710138600000
+        },
+        {
+          "output": "dividend",
+          "instrument": "sse:600000",
+          "timeMs": 1710135000000,
+          "value": 5.1,
+          "availableAtMs": 1710135000000
+        },
+        {
+          "output": "dividend",
+          "instrument": "sse:600000",
+          "timeMs": 1710138600000,
+          "value": 5.460000000000001,
+          "availableAtMs": 1710138600000
+        }
+      ],
+      "protocolHashes": [],
+      "artifactHashes": [],
+      "errorCodes": []
+    },
+    "failures": {
+      "definitionHashes": [
+        "b1ddfd49a185d4d9901114d54ead10509498920707adda1b61854eef5a15118a"
+      ],
+      "planHash": "63154a0f603d53c37c92fb63c1072c576a15f325adc138494c84ddba556b4925",
+      "observationsSha256": "9e1e8d3ed6e7922c29bbe67353154543b692a23d23de1bf9297d75ae3d6788c6",
+      "samples": [
+        {
+          "output": "log-return",
+          "instrument": "okx:FAIL-USDT",
+          "timeMs": 1,
+          "reason": "warmup"
+        },
+        {
+          "output": "log-return",
+          "instrument": "okx:FAIL-USDT",
+          "timeMs": 2,
+          "reason": "undefined-arithmetic"
+        }
+      ],
+      "protocolHashes": [],
+      "artifactHashes": [],
+      "errorCodes": [
+        "non-finite-output",
+        "invalid-observation",
+        "invalid-identity"
+      ]
+    },
+    "fitting": {
+      "definitionHashes": [
+        "8b4264d41444bc7588183eba45b7ca883831b7af8b7acd8de78c546ca5498927"
+      ],
+      "planHash": "77f621bab4118810f4515cebd4611fc40323df485d084167026f5ade0b663fd3",
+      "observationsSha256": "34f6822c25d85cb668c83e60360701e5131578adbd3484f87a75712bb6981b0e",
+      "samples": [],
+      "protocolHashes": [
+        "dc2a24da52731b00b608e753cff0d386ce58f607cd52b6a908a1f9f39d4c663c",
+        "1cff8fa48202934d1c8c2ae2e2e1502af5c2e12eabb7976d3ede2a2d0ba5dbc5",
+        "19a98db141df24dc9c4196973aea3a67cc98292addbba1a0d93a602f5373d748",
+        "48a5f42a02e17b466b301bdd8452c2add9c1341b935bcf51f36aac871d70badf",
+        "7005a981c08b3507eb32dc913cfe5875d7256db3f0d5fa6afc438ef96861c571"
+      ],
+      "artifactHashes": [
+        "48c465f73049d338ab4b5237330a2aed8452b18d77f64fc1820227e9b2fb67ad",
+        "75444a13fe3ad1c7a2f3277f63425a45515c515f526430568ead1582e395a9e3",
+        "dad14ff6466b6880c2ff2eb34f723bac3ffb6412bf9e5a5529b44f8d7fa74052"
+      ],
+      "errorCodes": [
+        "insufficient-samples",
+        "artifact-not-available-for-observation"
+      ]
+    },
+    "okx-spot": {
+      "definitionHashes": [
+        "44d9db8681167bf4c47cee93a9effa678d5af8063d59179feaaed53566878834"
+      ],
+      "planHash": "ce038c8b7c879bd2b587ef963577f44f36dfb839d6f2920cb174c5de4254df7e",
+      "observationsSha256": "3086c2842a253ada60c921c555c06d65947867d03be0096383eaa38e88de5891",
+      "samples": [
+        {
+          "output": "simple-return",
+          "instrument": "okx:BTC-USDT",
+          "timeMs": 1710000000000,
+          "reason": "warmup"
+        },
+        {
+          "output": "simple-return",
+          "instrument": "okx:BTC-USDT",
+          "timeMs": 1710000060000,
+          "value": 0.014999999999999902,
+          "availableAtMs": 1710000060000
+        },
+        {
+          "output": "log-return",
+          "instrument": "okx:BTC-USDT",
+          "timeMs": 1710000060000,
+          "value": 0.014888612493750559,
+          "availableAtMs": 1710000060000
+        },
+        {
+          "output": "simple-return",
+          "instrument": "okx:BTC-USDT",
+          "timeMs": 1710000240000,
+          "reason": "bar-gap"
+        },
+        {
+          "output": "realized",
+          "instrument": "okx:BTC-USDT",
+          "timeMs": 1710000240000,
+          "reason": "bar-gap"
+        },
+        {
+          "output": "simple-return",
+          "instrument": "okx:BTC-USDT",
+          "timeMs": 1710000300000,
+          "reason": "warmup"
+        },
+        {
+          "output": "quote",
+          "instrument": "okx:BTC-USDT",
+          "timeMs": 1710000420000,
+          "reason": "missing-market-input"
+        },
+        {
+          "output": "quote",
+          "instrument": "okx:BTC-USDT",
+          "timeMs": 1710000480000,
+          "value": 1000.0,
+          "availableAtMs": 1710000480000
+        },
+        {
+          "output": "rsi",
+          "instrument": "okx:BTC-USDT",
+          "timeMs": 1710000720000,
+          "value": 80.13827781269642,
+          "availableAtMs": 1710000720000
+        },
+        {
+          "output": "realized",
+          "instrument": "okx:BTC-USDT",
+          "timeMs": 1710000720000,
+          "value": 0.008929140482438034,
+          "availableAtMs": 1710000720000
+        }
+      ],
+      "protocolHashes": [],
+      "artifactHashes": [],
+      "errorCodes": []
+    },
+    "us-equities": {
+      "definitionHashes": [
+        "b9d1d71a8798f09e0507ddd4699248eadf2695d88dce745a8a0e11071caf4cc0"
+      ],
+      "planHash": "29a8ee580a9ea22d653f86ca29d1daedd8548e217eac48471cc43fd8058e5710",
+      "observationsSha256": "095dee0f522bf47779036d73953b774f9dbf206d78709926a841a90a80846305",
+      "samples": [
+        {
+          "output": "rank",
+          "instrument": "AAPL",
+          "timeMs": 100,
+          "value": 1.0,
+          "availableAtMs": 100,
+          "coverageAvailableCount": 5,
+          "coverageEvidenceState": "observed"
+        },
+        {
+          "output": "rank",
+          "instrument": "NVDA",
+          "timeMs": 100,
+          "value": 2.5,
+          "availableAtMs": 100,
+          "coverageAvailableCount": 5,
+          "coverageEvidenceState": "observed"
+        },
+        {
+          "output": "reverse-rank",
+          "instrument": "NVDA",
+          "timeMs": 100,
+          "value": 3.5,
+          "availableAtMs": 100,
+          "coverageAvailableCount": 5,
+          "coverageEvidenceState": "observed"
+        },
+        {
+          "output": "percentile",
+          "instrument": "AAPL",
+          "timeMs": 100,
+          "value": 0.0,
+          "availableAtMs": 100,
+          "coverageAvailableCount": 5,
+          "coverageEvidenceState": "observed"
+        },
+        {
+          "output": "percentile",
+          "instrument": "TSLA",
+          "timeMs": 100,
+          "value": 0.75,
+          "availableAtMs": 100,
+          "coverageAvailableCount": 5,
+          "coverageEvidenceState": "observed"
+        },
+        {
+          "output": "z-score",
+          "instrument": "AAPL",
+          "timeMs": 100,
+          "value": -1.224744871391589,
+          "availableAtMs": 100,
+          "coverageAvailableCount": 5,
+          "coverageEvidenceState": "observed"
+        },
+        {
+          "output": "rank",
+          "instrument": "AAPL",
+          "timeMs": 200,
+          "reason": "insufficient-coverage",
+          "coverageAvailableCount": 3,
+          "coverageEvidenceState": "reconstructed"
+        },
+        {
+          "output": "rank",
+          "instrument": "MSFT",
+          "timeMs": 200,
+          "reason": "missing-market-input",
+          "coverageAvailableCount": 3,
+          "coverageEvidenceState": "reconstructed"
+        },
+        {
+          "output": "relaxed-rank",
+          "instrument": "AAPL",
+          "timeMs": 200,
+          "value": 1.0,
+          "availableAtMs": 200,
+          "coverageAvailableCount": 3,
+          "coverageEvidenceState": "reconstructed"
+        },
+        {
+          "output": "relaxed-rank",
+          "instrument": "MSFT",
+          "timeMs": 200,
+          "reason": "missing-market-input",
+          "coverageAvailableCount": 3,
+          "coverageEvidenceState": "reconstructed"
+        },
+        {
+          "output": "rank",
+          "instrument": "AAPL",
+          "timeMs": 300,
+          "reason": "unknown-universe",
+          "coverageAvailableCount": 0,
+          "coverageEvidenceState": "unknown"
+        },
+        {
+          "output": "rank",
+          "instrument": "XOM",
+          "timeMs": 300,
+          "reason": "unknown-universe",
+          "coverageAvailableCount": 0,
+          "coverageEvidenceState": "unknown"
+        }
+      ],
+      "protocolHashes": [],
+      "artifactHashes": [],
+      "errorCodes": [
+        "invalid-observation",
+        "cross-sectional-market-context-mismatch"
+      ]
+    }
+  }
+}

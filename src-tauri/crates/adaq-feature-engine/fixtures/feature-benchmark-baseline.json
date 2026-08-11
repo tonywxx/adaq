@@ -1,0 +1,19 @@
+{
+  "crossSectional": {
+    "instruments": 10000,
+    "observations": 252,
+    "outputs": 3,
+    "runtimeMs": 64828
+  },
+  "peakProcessRssBytes": 439386112,
+  "recordedArchitecture": "aarch64",
+  "recordedPlatform": "macos",
+  "rssSemantics": "high-water RSS (ru_maxrss) of the serial release benchmark process",
+  "schemaVersion": "adaq-feature-benchmark-baseline@1.0.0",
+  "targetTriple": "aarch64-apple-darwin",
+  "timeSeries": {
+    "bars": 1000000,
+    "outputs": 3,
+    "runtimeMs": 20155
+  }
+}

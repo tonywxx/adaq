@@ -71,6 +71,10 @@ jobs:
         working-directory: src-tauri
         shell: bash
         run: sh crates/adaq-indicator-engine/scripts/check_generated.sh
+      - name: Verify Feature reference vectors regenerate without diff
+        working-directory: src-tauri
+        shell: bash
+        run: sh crates/adaq-feature-engine/scripts/check_generated.sh
       - name: Run official TA-Lib C regression suite
         working-directory: src-tauri
         shell: bash
@@ -78,3 +82,9 @@ jobs:
       - name: Run Catalog and mixed-Run acceptance suites
         working-directory: src-tauri
         run: cargo test --workspace
+      - name: Run Feature benchmark workloads
+        if: matrix.architecture == 'arm64'
+        working-directory: src-tauri
+        run: |
+          cargo test -p adaq-feature-engine --release --test benchmarks -- --ignored --test-threads=1
+          git diff --exit-code -- crates/adaq-feature-engine/fixtures
