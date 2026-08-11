@@ -1292,6 +1292,72 @@ fn reset_all_fails_before_deletion_when_an_attempt_cannot_stop() {
 }
 
 #[test]
+fn plan_freeze_preview_uses_the_native_identity_and_creates_no_evidence() {
+    let (root, state, _snapshot) = setup("plan-freeze-preview");
+    let definition = FeatureDefinition::freeze(return_draft()).unwrap();
+    // The GUI submits camelCase JSON with an empty engine identity; this
+    // deserialization proves the wire shape, and the module replaces the
+    // identity with the native one before freezing.
+    let gui_json = serde_json::json!({
+        "userId": "alice",
+        "plan": {
+            "definitions": [serde_json::to_value(&definition).unwrap()],
+            "slots": [],
+            "factors": [],
+            "artifacts": [],
+            "consumerPackageSha256": "",
+            "consumerParameters": [],
+            "consumerWarmupBars": 0,
+            "engineIdentity": {
+                "featureEngineVersion": "",
+                "featureEngineSourceSha256": "",
+                "featureEngineBuildId": "",
+                "operatorCatalogVersion": "",
+                "indicatorEngineVersion": "",
+                "indicatorCatalogVersion": "",
+                "taLibVersion": "",
+                "taSourceSha256": "",
+                "wrapperSha256": "",
+                "targetTriple": "",
+                "compilerAndFlagsSha256": "",
+                "engineBuildId": ""
+            }
+        }
+    });
+    let gui_request: FeaturePlanDraftRequest = serde_json::from_value(gui_json).unwrap();
+    let view = state.features.freeze_plan_for_user(gui_request).unwrap();
+    assert_eq!(view.plan_hash, native_plan(vec![definition]).plan_hash());
+    assert_eq!(
+        FeaturePlan::load(view.plan_json.as_bytes())
+            .unwrap()
+            .plan_hash(),
+        view.plan_hash
+    );
+    assert!(
+        state
+            .features
+            .list_fitting_attempts(FeatureUserRequest {
+                user_id: "alice".into(),
+            })
+            .unwrap()
+            .is_empty()
+    );
+    let invalid = state
+        .features
+        .freeze_plan_for_user(FeaturePlanDraftRequest {
+            user_id: "alice".into(),
+            plan: FeaturePlanDraft::default(),
+        });
+    assert!(
+        invalid
+            .unwrap_err()
+            .starts_with("feature-plan-validation-failed")
+    );
+    drop(state);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn artifact_deletion_is_locked_by_typed_references() {
     let (root, state, snapshot) = setup("artifact-lock");
     let definition = FeatureDefinition::freeze(return_draft()).unwrap();

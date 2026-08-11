@@ -34,6 +34,11 @@ const ValidationPage = lazy(() =>
 		default: module.ValidationPage,
 	})),
 );
+const FeaturesPage = lazy(() =>
+	import("@/features/features/features-page").then((module) => ({
+		default: module.FeaturesPage,
+	})),
+);
 const SettingsPage = lazy(() =>
 	import("@/features/settings/settings-page").then((module) => ({
 		default: module.SettingsPage,
@@ -101,6 +106,15 @@ const validationRoute = createRoute({
 		</Suspense>
 	),
 });
+const featuresRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/features",
+	component: () => (
+		<Suspense fallback={<PageLoadingSkeleton />}>
+			<FeaturesPage />
+		</Suspense>
+	),
+});
 const modelsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/models",
@@ -149,6 +163,7 @@ const routeTree = rootRoute.addChildren([
 	backtestRoute,
 	componentsRoute,
 	validationRoute,
+	featuresRoute,
 	modelsRoute,
 	settingsIndexRoute,
 	settingsRoute,

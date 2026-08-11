@@ -28,6 +28,7 @@ import {
 	Settings2Icon,
 	GitCompareArrows,
 	CandlestickChart,
+	SigmaIcon,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type * as React from "react";
@@ -58,6 +59,11 @@ const data = {
 			titleKey: "nav.validation",
 			url: "/validation",
 			icon: <FileTextIcon />,
+		},
+		{
+			titleKey: "nav.features",
+			url: "/features",
+			icon: <SigmaIcon />,
 		},
 	],
 	navClouds: [

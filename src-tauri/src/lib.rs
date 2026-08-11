@@ -255,6 +255,14 @@ async fn feature_definition_preview(
 }
 
 #[tauri::command]
+fn feature_plan_freeze(
+    request: features::FeaturePlanDraftRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<features::PlanFreezeView, String> {
+    state.features.freeze_plan_for_user(request)
+}
+
+#[tauri::command]
 fn feature_fitting_start(
     request: features::FeatureFittingStartRequest,
     state: State<'_, Arc<LocalResearchState>>,
@@ -2418,6 +2426,7 @@ pub fn run() {
             feature_definition_list,
             feature_definition_get,
             feature_definition_preview,
+            feature_plan_freeze,
             feature_fitting_start,
             feature_fitting_list,
             feature_fitting_get,

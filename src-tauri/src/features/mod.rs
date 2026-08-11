@@ -133,6 +133,13 @@ pub(crate) struct FeatureDatasetView {
     pub created_at_ms: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlanFreezeView {
+    pub plan_hash: String,
+    pub plan_json: String,
+}
+
 pub(super) struct DefinitionRecord {
     pub(super) definition_hash: String,
     pub(super) definition_id: String,
@@ -259,6 +266,13 @@ pub(crate) struct FeatureArtifactRequest {
 pub(crate) struct FeatureDatasetRequest {
     pub user_id: String,
     pub dataset_id: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FeaturePlanDraftRequest {
+    pub user_id: String,
+    pub plan: FeaturePlanDraft,
 }
 
 #[derive(Clone, Deserialize)]
@@ -465,6 +479,25 @@ impl Features {
     ) -> Result<FeaturePreviewView, String> {
         validate_user(&request.user_id)?;
         preview::preview(&self.inner, request)
+    }
+
+    // ---- Plans ----
+
+    /// Freezes a Plan draft with the native engine identity so the GUI can
+    /// learn the immutable Plan hash before binding it to a Materialization
+    /// request. Validates the draft natively and creates no evidence.
+    pub(crate) fn freeze_plan_for_user(
+        &self,
+        request: FeaturePlanDraftRequest,
+    ) -> Result<PlanFreezeView, String> {
+        validate_user(&request.user_id)?;
+        let identity = native_identity()?;
+        let plan = freeze_plan(request.plan, &identity)?;
+        let plan_json = String::from_utf8(plan.to_json()).map_err(string)?;
+        Ok(PlanFreezeView {
+            plan_hash: plan.plan_hash().to_owned(),
+            plan_json,
+        })
     }
 
     // ---- Fitting ----
