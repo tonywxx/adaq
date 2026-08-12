@@ -371,58 +371,32 @@ fn download_cancellation_stops_the_in_flight_download() {
     );
     let events = Arc::new(Mutex::new(Vec::<SnapshotDownloadEvent>::new()));
     // While the download below awaits its delayed HTTP response, a control
-    // thread observes the in-flight map and signals cancellation. It polls
-    // for the in-flight slot because the download's startup time is not
-    // guaranteed; one shared runtime and client keep each probe cheap.
+    // thread observes the in-flight map and signals cancellation.
     let control_module = module.clone();
     let control = thread::spawn(move || {
-        let runtime = private_runtime();
-        let probe_client = OkxClient::new("http://127.0.0.1:9");
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let duplicate = runtime
-                .block_on(control_module.download_for_user(
-                    &download_request("task-cancel"),
-                    &probe_client,
-                    |_| (),
-                ))
-                .unwrap_err();
-            if duplicate == "Snapshot download is already in progress" {
-                break;
-            }
+        while !control_module
+            .0
+            .downloads
+            .lock()
+            .unwrap()
+            .contains_key("task-cancel")
+        {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the in-flight download never registered: {duplicate}"
+                "the in-flight download never registered"
             );
             thread::sleep(Duration::from_millis(10));
         }
         control_module.cancel_download("task-cancel").unwrap();
     });
     let download_events = events.clone();
-    // The control thread's probes transiently hold the task slot while they
-    // fail against the unreachable probe endpoint; if one wins the startup
-    // race, the main download briefly observes its own task as in flight.
-    // Retry until this test's download actually starts.
-    let slot_deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let error = loop {
-        let attempt_events = download_events.clone();
-        let attempt_url = base_url.clone();
-        let result = block_on(module.download_for_user(
-            &download_request("task-cancel"),
-            &OkxClient::new(attempt_url),
-            move |event| attempt_events.lock().unwrap().push(event),
-        ));
-        match result {
-            Err(error) if error == "Snapshot download is already in progress" => {
-                assert!(
-                    std::time::Instant::now() < slot_deadline,
-                    "the main download never acquired the task slot"
-                );
-                thread::sleep(Duration::from_millis(1));
-            }
-            other => break other.unwrap_err(),
-        }
-    };
+    let error = block_on(module.download_for_user(
+        &download_request("task-cancel"),
+        &OkxClient::new(base_url),
+        move |event| download_events.lock().unwrap().push(event),
+    ))
+    .unwrap_err();
     control.join().unwrap();
     assert!(error.contains("cancelled"));
 

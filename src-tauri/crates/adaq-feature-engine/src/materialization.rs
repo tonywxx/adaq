@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{BufReader, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
@@ -2659,7 +2659,10 @@ fn remove_file_if_exists(path: &Path) -> Result<(), MaterializationStoreError> {
 }
 
 fn sync_published_file(path: &Path) -> Result<(), MaterializationStoreError> {
-    File::open(path)
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
         .map_err(io_error)?
         .sync_all()
         .map_err(io_error)?;
