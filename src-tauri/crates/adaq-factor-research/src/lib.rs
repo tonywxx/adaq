@@ -4,6 +4,7 @@ mod abi;
 mod candidate;
 mod catalog;
 mod contracts;
+mod evaluation;
 mod materialization;
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -13,6 +14,7 @@ pub use abi::*;
 pub use candidate::*;
 pub use catalog::*;
 pub use contracts::*;
+pub use evaluation::*;
 pub use materialization::*;
 
 pub const FACTOR_RESEARCH_SCHEMA_VERSION: &str = "1.0.0";

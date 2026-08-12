@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::{
     ContractError, ContractLoadError, FACTOR_ABI_VERSION, FACTOR_RESEARCH_SCHEMA_VERSION,
-    MAX_FACTOR_OUTPUTS, MAX_FACTOR_SLOTS, MAX_GRID_SEARCH_TRIALS, canonical_json, checked_product,
-    content_hash, is_lower_kebab, is_sha256, load_versioned_json,
+    FactorMetricCatalog, MAX_FACTOR_OUTPUTS, MAX_FACTOR_SLOTS, MAX_GRID_SEARCH_TRIALS,
+    canonical_json, checked_product, content_hash, is_lower_kebab, is_sha256, load_versioned_json,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -500,7 +500,12 @@ pub struct FactorDatasetManifest {
     pub dataset_id: String,
     pub protocol_hash: String,
     pub candidate_hash: String,
+    pub scope: FactorScope,
     pub feature_dataset_id: String,
+    pub feature_plan_hash: String,
+    pub market_data_snapshot_id: String,
+    pub point_in_time_universe_id: String,
+    pub market_context: FactorMarketContext,
     pub output_names: Vec<String>,
     pub observation_count: u64,
     pub payload_sha256: String,
@@ -514,10 +519,21 @@ impl FactorDatasetManifest {
             || !is_sha256(&self.protocol_hash)
             || !is_sha256(&self.candidate_hash)
             || self.feature_dataset_id.is_empty()
+            || !is_sha256(&self.feature_plan_hash)
+            || self.market_data_snapshot_id.is_empty()
+            || self.point_in_time_universe_id.is_empty()
             || !is_sha256(&self.payload_sha256)
         {
             return Err(ContractError::Invalid(
                 "Factor Dataset Manifest identity is invalid".into(),
+            ));
+        }
+        self.market_context.validate()?;
+        if self.market_context.point_in_time_universe_id != self.point_in_time_universe_id
+            || self.market_context.bar_interval.is_empty()
+        {
+            return Err(ContractError::Invalid(
+                "Factor Dataset market context and Universe identity differ".into(),
             ));
         }
         unique_names(self.output_names.iter().map(String::as_str), "output")?;
@@ -852,6 +868,50 @@ impl FactorLens {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EconomicAssumptions {
+    pub rebalance_every_bars: u32,
+    pub fee_bps: f64,
+    pub slippage_bps: f64,
+    pub long_short: bool,
+}
+
+impl EconomicAssumptions {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.rebalance_every_bars == 0
+            || !self.fee_bps.is_finite()
+            || self.fee_bps < 0.0
+            || !self.slippage_bps.is_finite()
+            || self.slippage_bps < 0.0
+        {
+            return Err(ContractError::Invalid(
+                "Economic assumptions must use positive rebalance bars and finite non-negative costs".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FactorRegimeDefinition {
+    pub feature_name: String,
+    pub bucket_count: u8,
+}
+
+impl FactorRegimeDefinition {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if !is_lower_kebab(&self.feature_name) || !(2..=5).contains(&self.bucket_count) {
+            return Err(ContractError::Invalid(
+                "Factor Regime Definition requires one lower-kebab feature and 2..=5 buckets"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EvaluationEvidenceState {
@@ -863,6 +923,7 @@ pub enum EvaluationEvidenceState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationWindow {
+    pub fold_id: String,
     pub selection: ObservationRange,
     pub evaluation: ObservationRange,
     pub training: Option<ObservationRange>,
@@ -873,8 +934,18 @@ pub struct EvaluationWindow {
 
 impl EvaluationWindow {
     pub fn validate(&self) -> Result<EvaluationEvidenceState, ContractError> {
+        if !is_lower_kebab(&self.fold_id) {
+            return Err(ContractError::Invalid(
+                "Evaluation Window fold identity must be lower-kebab-case".into(),
+            ));
+        }
         self.selection.validate()?;
         self.evaluation.validate()?;
+        if self.selection.end_time_ms > self.evaluation.start_time_ms {
+            return Err(ContractError::Invalid(
+                "Evaluation Window selection must end before evaluation begins".into(),
+            ));
+        }
         let influencing = [
             self.training.as_ref(),
             self.fitting.as_ref(),
@@ -883,6 +954,11 @@ impl EvaluationWindow {
         ];
         for range in influencing.into_iter().flatten() {
             range.validate()?;
+            if range.start_time_ms >= self.evaluation.end_time_ms {
+                return Err(ContractError::Invalid(
+                    "Evaluation Window provenance cannot be after evaluation".into(),
+                ));
+            }
             if ranges_overlap(range, &self.evaluation) {
                 return Ok(EvaluationEvidenceState::Overlapping);
             }
@@ -902,12 +978,45 @@ fn ranges_overlap(left: &ObservationRange, right: &ObservationRange) -> bool {
     left.start_time_ms < right.end_time_ms && right.start_time_ms < left.end_time_ms
 }
 
+fn validate_universe(universe: &[String]) -> Result<(), ContractError> {
+    if universe.is_empty()
+        || universe
+            .iter()
+            .any(|instrument| instrument.trim().is_empty())
+        || universe.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(ContractError::Invalid(
+            "Point-in-Time Universe must be non-empty, unique, and deterministically ordered"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_feature_names(names: &[String]) -> Result<(), ContractError> {
+    let mut seen = BTreeSet::new();
+    if names
+        .iter()
+        .any(|name| !is_lower_kebab(name) || !seen.insert(name.as_str()))
+    {
+        return Err(ContractError::Invalid(
+            "Evaluation Feature names must be unique lower-kebab-case identifiers".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactorEvaluationProtocolDraft {
     pub protocol_id: Uuid,
     pub user_id: Uuid,
     pub factor_dataset_id: String,
+    pub feature_dataset_id: String,
+    pub feature_plan_hash: String,
+    pub market_data_snapshot_id: String,
+    pub point_in_time_universe_id: String,
+    pub point_in_time_universe: Vec<String>,
     pub output_name: String,
     pub scope: FactorScope,
     pub target: FactorTarget,
@@ -919,6 +1028,9 @@ pub struct FactorEvaluationProtocolDraft {
     pub purge_bars: u32,
     pub embargo_bars: u32,
     pub lenses: Vec<FactorLens>,
+    pub nuisance_feature_names: Vec<String>,
+    pub regime: Option<FactorRegimeDefinition>,
+    pub economic: EconomicAssumptions,
     pub family_id: Uuid,
     pub trial_id: Uuid,
     pub seed: u64,
@@ -931,6 +1043,11 @@ pub struct FactorEvaluationProtocol {
     pub protocol_id: Uuid,
     pub user_id: Uuid,
     pub factor_dataset_id: String,
+    pub feature_dataset_id: String,
+    pub feature_plan_hash: String,
+    pub market_data_snapshot_id: String,
+    pub point_in_time_universe_id: String,
+    pub point_in_time_universe: Vec<String>,
     pub output_name: String,
     pub scope: FactorScope,
     pub target: FactorTarget,
@@ -942,6 +1059,9 @@ pub struct FactorEvaluationProtocol {
     pub purge_bars: u32,
     pub embargo_bars: u32,
     pub lenses: Vec<FactorLens>,
+    pub nuisance_feature_names: Vec<String>,
+    pub regime: Option<FactorRegimeDefinition>,
+    pub economic: EconomicAssumptions,
     pub family_id: Uuid,
     pub trial_id: Uuid,
     pub seed: u64,
@@ -955,6 +1075,11 @@ impl FactorEvaluationProtocol {
             || draft.family_id.is_nil()
             || draft.trial_id.is_nil()
             || draft.factor_dataset_id.is_empty()
+            || draft.feature_dataset_id.is_empty()
+            || !is_sha256(&draft.feature_plan_hash)
+            || draft.market_data_snapshot_id.is_empty()
+            || draft.point_in_time_universe_id.is_empty()
+            || draft.point_in_time_universe.is_empty()
             || !is_lower_kebab(&draft.output_name)
             || draft.horizon_bars.is_empty()
             || draft.horizon_bars.iter().any(|horizon| *horizon == 0)
@@ -966,6 +1091,12 @@ impl FactorEvaluationProtocol {
         }
         draft.market_context.validate()?;
         draft.engine_identity.validate()?;
+        validate_universe(&draft.point_in_time_universe)?;
+        validate_feature_names(&draft.nuisance_feature_names)?;
+        if let Some(regime) = &draft.regime {
+            regime.validate()?;
+        }
+        draft.economic.validate()?;
         let required = FactorLens::required(draft.scope);
         if required.iter().any(|lens| !draft.lenses.contains(lens)) {
             return Err(ContractError::Invalid(
@@ -977,14 +1108,55 @@ impl FactorEvaluationProtocol {
                 "Factor Evaluation Protocol requires a Lens".into(),
             ));
         }
+        if draft.market_context.point_in_time_universe_id != draft.point_in_time_universe_id
+            || (draft.scope == FactorScope::TimeSeries
+                && draft.lenses.iter().any(|lens| {
+                    matches!(lens, FactorLens::CrossSectional | FactorLens::Neutralized)
+                }))
+            || (draft.scope == FactorScope::CrossSectional
+                && draft.lenses.contains(&FactorLens::Temporal))
+            || (draft.lenses.contains(&FactorLens::Neutralized)
+                && draft.nuisance_feature_names.is_empty())
+            || (draft.lenses.contains(&FactorLens::Regime) && draft.regime.is_none())
+            || (!draft.lenses.contains(&FactorLens::Regime) && draft.regime.is_some())
+        {
+            return Err(ContractError::Invalid(
+                "Factor Evaluation Lenses and provenance are incompatible with the Scope".into(),
+            ));
+        }
+        if draft.horizon_bars.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(ContractError::Invalid(
+                "Factor Evaluation horizons must be unique and ascending".into(),
+            ));
+        }
+        let mut fold_ids = BTreeSet::new();
         for window in &draft.windows {
             window.validate()?;
+            if !fold_ids.insert(window.fold_id.as_str()) {
+                return Err(ContractError::Invalid(
+                    "Factor Evaluation fold identities must be unique".into(),
+                ));
+            }
+        }
+        if draft.windows.windows(2).any(|pair| {
+            pair[0].evaluation.start_time_ms >= pair[1].evaluation.start_time_ms
+                || pair[0].evaluation.end_time_ms > pair[1].evaluation.end_time_ms
+        }) {
+            return Err(ContractError::Invalid(
+                "Factor Evaluation folds must be chronological holdout or walk-forward windows"
+                    .into(),
+            ));
         }
         let mut protocol = Self {
             schema_version: FACTOR_RESEARCH_SCHEMA_VERSION.into(),
             protocol_id: draft.protocol_id,
             user_id: draft.user_id,
             factor_dataset_id: draft.factor_dataset_id,
+            feature_dataset_id: draft.feature_dataset_id,
+            feature_plan_hash: draft.feature_plan_hash,
+            market_data_snapshot_id: draft.market_data_snapshot_id,
+            point_in_time_universe_id: draft.point_in_time_universe_id,
+            point_in_time_universe: draft.point_in_time_universe,
             output_name: draft.output_name,
             scope: draft.scope,
             target: draft.target,
@@ -996,6 +1168,9 @@ impl FactorEvaluationProtocol {
             purge_bars: draft.purge_bars,
             embargo_bars: draft.embargo_bars,
             lenses: draft.lenses,
+            nuisance_feature_names: draft.nuisance_feature_names,
+            regime: draft.regime,
+            economic: draft.economic,
             family_id: draft.family_id,
             trial_id: draft.trial_id,
             seed: draft.seed,
@@ -1013,6 +1188,11 @@ impl FactorEvaluationProtocol {
             || self.family_id.is_nil()
             || self.trial_id.is_nil()
             || self.factor_dataset_id.is_empty()
+            || self.feature_dataset_id.is_empty()
+            || !is_sha256(&self.feature_plan_hash)
+            || self.market_data_snapshot_id.is_empty()
+            || self.point_in_time_universe_id.is_empty()
+            || self.point_in_time_universe.is_empty()
             || !is_lower_kebab(&self.output_name)
             || self.horizon_bars.is_empty()
             || self.horizon_bars.iter().any(|horizon| *horizon == 0)
@@ -1026,8 +1206,52 @@ impl FactorEvaluationProtocol {
         }
         self.market_context.validate()?;
         self.engine_identity.validate()?;
+        let required = FactorLens::required(self.scope);
+        if self.lenses.is_empty() || required.iter().any(|lens| !self.lenses.contains(lens)) {
+            return Err(ContractError::Invalid(
+                "Factor Evaluation Protocol is missing a scope-compatible and Economic Lens".into(),
+            ));
+        }
+        if self.market_context.point_in_time_universe_id != self.point_in_time_universe_id
+            || (self.scope == FactorScope::TimeSeries
+                && self.lenses.iter().any(|lens| {
+                    matches!(lens, FactorLens::CrossSectional | FactorLens::Neutralized)
+                }))
+            || (self.scope == FactorScope::CrossSectional
+                && self.lenses.contains(&FactorLens::Temporal))
+            || (self.lenses.contains(&FactorLens::Neutralized)
+                && self.nuisance_feature_names.is_empty())
+            || (self.lenses.contains(&FactorLens::Regime) && self.regime.is_none())
+            || (!self.lenses.contains(&FactorLens::Regime) && self.regime.is_some())
+            || self.horizon_bars.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(ContractError::Invalid(
+                "Factor Evaluation Lenses and provenance are incompatible with the Scope".into(),
+            ));
+        }
+        let mut fold_ids = BTreeSet::new();
+        validate_universe(&self.point_in_time_universe)?;
+        validate_feature_names(&self.nuisance_feature_names)?;
+        if let Some(regime) = &self.regime {
+            regime.validate()?;
+        }
+        self.economic.validate()?;
         for window in &self.windows {
             window.validate()?;
+            if !fold_ids.insert(window.fold_id.as_str()) {
+                return Err(ContractError::Invalid(
+                    "Factor Evaluation fold identities must be unique".into(),
+                ));
+            }
+        }
+        if self.windows.windows(2).any(|pair| {
+            pair[0].evaluation.start_time_ms >= pair[1].evaluation.start_time_ms
+                || pair[0].evaluation.end_time_ms > pair[1].evaluation.end_time_ms
+        }) {
+            return Err(ContractError::Invalid(
+                "Factor Evaluation folds must be chronological holdout or walk-forward windows"
+                    .into(),
+            ));
         }
         Ok(())
     }
@@ -1058,6 +1282,11 @@ impl FactorEvaluationProtocol {
             protocol_id: Uuid,
             user_id: Uuid,
             factor_dataset_id: &'a str,
+            feature_dataset_id: &'a str,
+            feature_plan_hash: &'a str,
+            market_data_snapshot_id: &'a str,
+            point_in_time_universe_id: &'a str,
+            point_in_time_universe: &'a [String],
             output_name: &'a str,
             scope: FactorScope,
             target: FactorTarget,
@@ -1069,6 +1298,9 @@ impl FactorEvaluationProtocol {
             purge_bars: u32,
             embargo_bars: u32,
             lenses: &'a [FactorLens],
+            nuisance_feature_names: &'a [String],
+            regime: &'a Option<FactorRegimeDefinition>,
+            economic: &'a EconomicAssumptions,
             family_id: Uuid,
             trial_id: Uuid,
             seed: u64,
@@ -1078,6 +1310,11 @@ impl FactorEvaluationProtocol {
             protocol_id: self.protocol_id,
             user_id: self.user_id,
             factor_dataset_id: &self.factor_dataset_id,
+            feature_dataset_id: &self.feature_dataset_id,
+            feature_plan_hash: &self.feature_plan_hash,
+            market_data_snapshot_id: &self.market_data_snapshot_id,
+            point_in_time_universe_id: &self.point_in_time_universe_id,
+            point_in_time_universe: &self.point_in_time_universe,
             output_name: &self.output_name,
             scope: self.scope,
             target: self.target,
@@ -1089,6 +1326,9 @@ impl FactorEvaluationProtocol {
             purge_bars: self.purge_bars,
             embargo_bars: self.embargo_bars,
             lenses: &self.lenses,
+            nuisance_feature_names: &self.nuisance_feature_names,
+            regime: &self.regime,
+            economic: &self.economic,
             family_id: self.family_id,
             trial_id: self.trial_id,
             seed: self.seed,
@@ -1102,15 +1342,56 @@ pub struct FactorEvaluationReport {
     pub schema_version: String,
     pub report_id: Uuid,
     pub protocol_hash: String,
+    pub factor_dataset_id: String,
+    pub output_name: String,
+    pub scope: FactorScope,
+    pub target: FactorTarget,
+    pub market_data_snapshot_id: String,
+    pub point_in_time_universe_id: String,
+    pub market_context: FactorMarketContext,
     pub evidence_state: EvaluationEvidenceState,
     pub metrics: Vec<MetricRecord>,
+    pub target_unavailable: Vec<TargetUnavailableEvidence>,
+    pub regime_evidence: Vec<RegimeEvidence>,
     pub input_identities: Vec<String>,
     pub report_hash: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetUnavailableReason {
+    BarGap,
+    CorporateActionUnavailable,
+    InsufficientCoverage,
+    MissingClose,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TargetUnavailableEvidence {
+    pub instrument_id: String,
+    pub observation_time_ms: i64,
+    pub horizon_bars: u32,
+    pub reason: TargetUnavailableReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegimeEvidence {
+    pub fold_id: String,
+    pub horizon_bars: u32,
+    pub feature_name: String,
+    pub bucket_count: u8,
+    pub thresholds: Vec<f64>,
+    pub bucket_metrics: Vec<MetricObservation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MetricRecord {
+    pub fold_id: String,
+    pub variant: String,
+    pub horizon_bars: u32,
     pub output_name: String,
     pub lens: FactorLens,
     pub metric: MetricId,
@@ -1118,10 +1399,26 @@ pub struct MetricRecord {
 }
 
 impl FactorEvaluationReport {
+    pub fn freeze(mut report: Self) -> Result<Self, ContractError> {
+        report.report_hash.clear();
+        let report_hash = {
+            let content = report.content();
+            content_hash(&content)?
+        };
+        report.report_hash = report_hash;
+        report.validate()?;
+        Ok(report)
+    }
+
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.schema_version != FACTOR_RESEARCH_SCHEMA_VERSION
             || self.report_id.is_nil()
             || !is_sha256(&self.protocol_hash)
+            || self.factor_dataset_id.is_empty()
+            || !is_lower_kebab(&self.output_name)
+            || self.market_data_snapshot_id.is_empty()
+            || self.point_in_time_universe_id.is_empty()
+            || self.market_context.point_in_time_universe_id != self.point_in_time_universe_id
             || !is_sha256(&self.report_hash)
             || self.input_identities.is_empty()
             || self
@@ -1134,11 +1431,50 @@ impl FactorEvaluationReport {
                 "Factor Evaluation Report identity is invalid".into(),
             ));
         }
-        if self.metrics.iter().any(|metric| {
-            !is_lower_kebab(&metric.output_name) || metric.observation.validate().is_err()
+        self.market_context.validate()?;
+        let catalog = FactorMetricCatalog::initial();
+        catalog.validate()?;
+        if let Some(metric) = self.metrics.iter().find(|metric| {
+            !is_lower_kebab(&metric.fold_id)
+                || metric.variant.trim().is_empty()
+                || metric.horizon_bars == 0
+                || metric.output_name != self.output_name
+                || !lens_matches_scope(self.scope, metric.lens)
+                || !is_metric_observation_allowed(&catalog, metric.metric, &metric.observation)
+        }) {
+            return Err(ContractError::Invalid(format!(
+                "Factor Evaluation metric is invalid: {:?} {:?} {:?}",
+                metric.metric, metric.lens, metric.observation
+            )));
+        }
+        if self
+            .target_unavailable
+            .iter()
+            .any(|evidence| evidence.instrument_id.trim().is_empty() || evidence.horizon_bars == 0)
+        {
+            return Err(ContractError::Invalid(
+                "Factor Evaluation target evidence is invalid".into(),
+            ));
+        }
+        if self.regime_evidence.iter().any(|evidence| {
+            !is_lower_kebab(&evidence.fold_id)
+                || evidence.horizon_bars == 0
+                || !is_lower_kebab(&evidence.feature_name)
+                || evidence
+                    .thresholds
+                    .iter()
+                    .any(|threshold| !threshold.is_finite())
+                || evidence.thresholds.windows(2).any(|pair| pair[0] > pair[1])
+                || !(2..=5).contains(&evidence.bucket_count)
+                || evidence.thresholds.len() > evidence.bucket_count as usize - 1
+                || evidence.bucket_metrics.len() != evidence.bucket_count as usize
+                || evidence
+                    .bucket_metrics
+                    .iter()
+                    .any(|metric| metric.validate().is_err())
         }) {
             return Err(ContractError::Invalid(
-                "Factor Evaluation Report contains an invalid output identity".into(),
+                "Factor Evaluation regime evidence is invalid".into(),
             ));
         }
         Ok(())
@@ -1151,17 +1487,75 @@ impl FactorEvaluationReport {
             schema_version: &'a str,
             report_id: Uuid,
             protocol_hash: &'a str,
+            factor_dataset_id: &'a str,
+            output_name: &'a str,
+            scope: FactorScope,
+            target: FactorTarget,
+            market_data_snapshot_id: &'a str,
+            point_in_time_universe_id: &'a str,
+            market_context: &'a FactorMarketContext,
             evidence_state: EvaluationEvidenceState,
             metrics: &'a [MetricRecord],
+            target_unavailable: &'a [TargetUnavailableEvidence],
+            regime_evidence: &'a [RegimeEvidence],
             input_identities: &'a [String],
         }
         Content {
             schema_version: &self.schema_version,
             report_id: self.report_id,
             protocol_hash: &self.protocol_hash,
+            factor_dataset_id: &self.factor_dataset_id,
+            output_name: &self.output_name,
+            scope: self.scope,
+            target: self.target,
+            market_data_snapshot_id: &self.market_data_snapshot_id,
+            point_in_time_universe_id: &self.point_in_time_universe_id,
+            market_context: &self.market_context,
             evidence_state: self.evidence_state,
             metrics: &self.metrics,
+            target_unavailable: &self.target_unavailable,
+            regime_evidence: &self.regime_evidence,
             input_identities: &self.input_identities,
+        }
+    }
+}
+
+fn lens_matches_scope(scope: FactorScope, lens: FactorLens) -> bool {
+    match scope {
+        FactorScope::TimeSeries => matches!(
+            lens,
+            FactorLens::Temporal | FactorLens::Economic | FactorLens::Regime
+        ),
+        FactorScope::CrossSectional => matches!(
+            lens,
+            FactorLens::CrossSectional
+                | FactorLens::Economic
+                | FactorLens::Neutralized
+                | FactorLens::Regime
+        ),
+    }
+}
+
+fn is_metric_observation_allowed(
+    catalog: &FactorMetricCatalog,
+    metric: MetricId,
+    observation: &MetricObservation,
+) -> bool {
+    let Some(definition) = catalog.metric(metric) else {
+        return false;
+    };
+    if observation.validate().is_err() {
+        return false;
+    }
+    match observation {
+        MetricObservation::Available { value, .. } => {
+            definition.range.as_ref().is_none_or(|range| {
+                range.minimum.is_none_or(|minimum| *value >= minimum)
+                    && range.maximum.is_none_or(|maximum| *value <= maximum)
+            })
+        }
+        MetricObservation::Unavailable { reason, .. } => {
+            definition.undefined_reasons.contains(reason)
         }
     }
 }
@@ -1621,6 +2015,7 @@ mod tests {
     #[test]
     fn evaluation_windows_never_call_incomplete_provenance_out_of_sample() {
         let window = EvaluationWindow {
+            fold_id: "fold-1".into(),
             selection: ObservationRange {
                 start_time_ms: 0,
                 end_time_ms: 10,

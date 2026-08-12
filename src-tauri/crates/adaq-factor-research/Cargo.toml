@@ -9,7 +9,9 @@ repository = "https://github.com/tonywxx/adaq"
 [dependencies]
 adaq-component-sdk = { path = "../adaq-component-sdk", features = ["host"] }
 adaq-component-tooling = { path = "../adaq-component-tooling" }
+adaq-data-core = { path = "../adaq-data-core" }
 adaq-feature-engine = { path = "../adaq-feature-engine" }
+rust_decimal = { version = "1", features = ["serde-with-str"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["serde", "v4"] }

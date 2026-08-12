@@ -125,7 +125,10 @@ pub enum CorrelationMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MetricUndefinedReason {
+    BarGap,
+    CorporateActionUnavailable,
     InsufficientSamples,
+    MissingClose,
     ConstantValues,
     SingularMatrix,
     UnavailableTarget,
@@ -277,8 +280,8 @@ impl FactorMetricCatalog {
 fn definitions() -> Vec<MetricDefinition> {
     use MetricDirection::{Descriptive, HigherBetter, LowerBetter};
     use MetricUndefinedReason::{
-        ConstantValues, InsufficientSamples, MissingInput, NoEligibleObservations, NotApplicable,
-        SingularMatrix, UnavailableTarget,
+        ConstantValues, InsufficientSamples, InvalidRequirement, MissingInput,
+        NoEligibleObservations, NotApplicable, SingularMatrix, UnavailableTarget,
     };
     vec![
         MetricDefinition {
@@ -322,7 +325,12 @@ fn definitions() -> Vec<MetricDefinition> {
                 maximum: Some(1.0),
             }),
             minimum_samples: 3,
-            undefined_reasons: vec![InsufficientSamples, ConstantValues, UnavailableTarget],
+            undefined_reasons: vec![
+                InsufficientSamples,
+                ConstantValues,
+                UnavailableTarget,
+                NoEligibleObservations,
+            ],
         },
         MetricDefinition {
             id: MetricId::RankIc,
@@ -337,7 +345,12 @@ fn definitions() -> Vec<MetricDefinition> {
                 maximum: Some(1.0),
             }),
             minimum_samples: 3,
-            undefined_reasons: vec![InsufficientSamples, ConstantValues, UnavailableTarget],
+            undefined_reasons: vec![
+                InsufficientSamples,
+                ConstantValues,
+                UnavailableTarget,
+                NoEligibleObservations,
+            ],
         },
         MetricDefinition {
             id: MetricId::Turnover,
@@ -351,7 +364,7 @@ fn definitions() -> Vec<MetricDefinition> {
                 maximum: None,
             }),
             minimum_samples: 2,
-            undefined_reasons: vec![InsufficientSamples, NoEligibleObservations],
+            undefined_reasons: vec![InsufficientSamples, NoEligibleObservations, NotApplicable],
         },
         MetricDefinition {
             id: MetricId::Decay,
@@ -389,7 +402,12 @@ fn definitions() -> Vec<MetricDefinition> {
             direction: HigherBetter,
             range: None,
             minimum_samples: 5,
-            undefined_reasons: vec![InsufficientSamples, MissingInput, NoEligibleObservations],
+            undefined_reasons: vec![
+                InsufficientSamples,
+                MissingInput,
+                NoEligibleObservations,
+                NotApplicable,
+            ],
         },
         MetricDefinition {
             id: MetricId::Regime,
@@ -414,7 +432,14 @@ fn definitions() -> Vec<MetricDefinition> {
                 maximum: Some(1.0),
             }),
             minimum_samples: 3,
-            undefined_reasons: vec![InsufficientSamples, SingularMatrix, MissingInput],
+            undefined_reasons: vec![
+                InsufficientSamples,
+                SingularMatrix,
+                ConstantValues,
+                InvalidRequirement,
+                MissingInput,
+                NoEligibleObservations,
+            ],
         },
         MetricDefinition {
             id: MetricId::SampleCount,

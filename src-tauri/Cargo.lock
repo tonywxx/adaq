@@ -130,7 +130,9 @@ version = "0.1.0"
 dependencies = [
  "adaq-component-sdk",
  "adaq-component-tooling",
+ "adaq-data-core",
  "adaq-feature-engine",
+ "rust_decimal",
  "serde",
  "serde_json",
  "uuid",
