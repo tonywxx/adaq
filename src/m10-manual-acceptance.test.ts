@@ -72,7 +72,35 @@ test("M10 manual acceptance guides expose the same executable contract", () => {
 
 test("both READMEs link to both M10 acceptance guides", () => {
 	for (const readme of [read("README.md"), read("README.zh-CN.md")]) {
-		expect(readme).toContain("docs/m10-manual-acceptance.md");
-		expect(readme).toContain("docs/m10-manual-acceptance.zh-CN.md");
+		const m10Row = readme.split("\n").find((line) => line.startsWith("| M10 |"));
+		expect(m10Row).toBeDefined();
+		expect(m10Row).toContain("docs/m10-manual-acceptance.md");
+		expect(m10Row).toContain("docs/m10-manual-acceptance.zh-CN.md");
+	}
+});
+
+test("M10 architecture guides retain matching ordered sections", () => {
+	const guides = [
+		read("docs/m10-feature-engineering.md"),
+		read("docs/m10-feature-engineering.zh-CN.md"),
+	];
+	const sectionShape = (guide: string) =>
+		[...guide.matchAll(/^(#{1,3})\s+/gm)].map((match) => match[1].length);
+
+	expect(sectionShape(guides[1])).toEqual(sectionShape(guides[0]));
+	for (const concept of [
+		"adaq-feature-engine",
+		"planSchemaVersion: \"2.0.0\"",
+		"Available At",
+		"Point-in-Time",
+		"Unavailable",
+		"Parquet",
+		"FIFO",
+		"/features",
+		"#77",
+		"#87",
+		"M11",
+	]) {
+		for (const guide of guides) expect(guide).toContain(concept);
 	}
 });

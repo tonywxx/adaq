@@ -173,7 +173,7 @@ macOS 使用 `shasum -a 256 <path>`，Windows PowerShell 使用 `Get-FileHash -A
 | 运行 `pnpm run build`。 | Strict TypeScript check 与 Vite production build 通过。本次复核运行通过。 | Revision 和完整输出。 |
 | 运行 `pnpm run lint`。 | Lint 通过；既有 warnings 与新增 findings 分开记录。本次复核运行通过，含 12 个既有 warnings，均不在四个 M10 acceptance 文件中。 | Revision、file/rule 和完整输出。 |
 | 运行 `git diff --check`。 | 没有 whitespace errors。本次复核运行 clean。 | Revision 和完整输出。 |
-| 运行 `gh workflow run \"Indicator engine acceptance\" --ref <reviewed-ref>`。 | reviewed ref 的三平台 native matrix 启动，并分别暴露 macOS ARM64、Windows x86_64 和 Linux x86_64 jobs。 | Workflow URL、SHA、job URLs、conclusion 和失败日志片段。 |
+| 运行 `gh workflow run "Indicator engine acceptance" --ref <reviewed-ref>`。 | reviewed ref 的三平台 native matrix 启动，并分别暴露 macOS ARM64、Windows x86_64 和 Linux x86_64 jobs。 | Workflow URL、SHA、job URLs、conclusion 和失败日志片段。 |
 | 搜索仓库是否配置 secret scanner。 | 本 checkout 没有 secret-scan command；仍需人工确认 diff 不含 credential material 或 token-like fixture value。本次复核 diff 已经人工检查，不含任何 credential 或 token 材料。 | Command/output 和复核文件列表。 |
 | 记录适用的 GitHub Actions `macOS ARM64`、`Windows x86_64` 和 `Linux x86_64` run URLs。 | 为 reviewed revision 或明确标识的 platform baseline 保留 native fixture/Rust gates 与 release packaging evidence。 | Run URL、SHA、job、conclusion 和失败日志片段。 |
 
