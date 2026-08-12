@@ -6,6 +6,8 @@ mod catalog;
 mod contracts;
 mod evaluation;
 mod materialization;
+mod promotion;
+mod research;
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -16,6 +18,8 @@ pub use catalog::*;
 pub use contracts::*;
 pub use evaluation::*;
 pub use materialization::*;
+pub use promotion::*;
+pub use research::*;
 
 pub const FACTOR_RESEARCH_SCHEMA_VERSION: &str = "1.0.0";
 pub const FACTOR_ABI_VERSION: &str = "2.0.0";

@@ -1625,9 +1625,14 @@ impl ResearchFamily {
         if self.schema_version != FACTOR_RESEARCH_SCHEMA_VERSION
             || self.family_id.is_nil()
             || self.user_id.is_nil()
+            || self.parent_family_id.is_some_and(|id| id.is_nil())
             || !is_sha256(&self.root_candidate_hash)
             || !is_sha256(&self.lineage_hash)
             || self.registered_trial_ids.iter().any(Uuid::is_nil)
+            || self
+                .registered_trial_ids
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
             || self.lineage_hash != content_hash(&self.content())?
         {
             return Err(ContractError::Invalid(
@@ -1637,7 +1642,7 @@ impl ResearchFamily {
         Ok(())
     }
 
-    fn content(&self) -> impl Serialize + '_ {
+    pub(crate) fn content(&self) -> impl Serialize + '_ {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Content<'a> {
@@ -1676,11 +1681,14 @@ pub struct ResearchTrial {
 }
 
 impl ResearchTrial {
-    pub fn is_significant(&self) -> bool {
+    pub fn is_significant_at(&self, maximum_p_value: f64) -> bool {
+        if !maximum_p_value.is_finite() || !(0.0..=1.0).contains(&maximum_p_value) {
+            return false;
+        }
         self.holm_adjusted
             .as_ref()
             .and_then(MetricObservation::value)
-            .is_some_and(|value| value < 0.05)
+            .is_some_and(|value| value <= maximum_p_value)
     }
 
     pub fn validate(&self) -> Result<(), ContractError> {
@@ -1693,6 +1701,19 @@ impl ResearchTrial {
                 .report_hash
                 .as_deref()
                 .is_some_and(|hash| !is_sha256(hash))
+            || self
+                .raw_statistic
+                .as_ref()
+                .is_some_and(|observation| observation.validate().is_err())
+            || self
+                .p_value
+                .as_ref()
+                .is_some_and(|observation| probability_observation_is_invalid(observation))
+            || (self.p_value.is_some() && self.raw_statistic.is_none())
+            || self
+                .holm_adjusted
+                .as_ref()
+                .is_some_and(|observation| probability_observation_is_invalid(observation))
         {
             return Err(ContractError::Invalid(
                 "Research Trial identity is invalid".into(),
@@ -1700,6 +1721,13 @@ impl ResearchTrial {
         }
         Ok(())
     }
+}
+
+fn probability_observation_is_invalid(observation: &MetricObservation) -> bool {
+    observation.validate().is_err()
+        || observation
+            .value()
+            .is_some_and(|value| !(0.0..=1.0).contains(&value))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1719,17 +1747,8 @@ pub struct PromotionPolicy {
 
 impl PromotionPolicy {
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.schema_version != FACTOR_RESEARCH_SCHEMA_VERSION
-            || self.policy_id.is_nil()
-            || self.revision == 0
-            || self.required_lenses.is_empty()
-            || !self.minimum_coverage.is_finite()
-            || !(0.0..=1.0).contains(&self.minimum_coverage)
-            || !self.maximum_holm_p_value.is_finite()
-            || !(0.0..=1.0).contains(&self.maximum_holm_p_value)
-            || !is_sha256(&self.policy_hash)
-            || self.policy_hash != content_hash(&self.content())?
-        {
+        self.validate_requirements()?;
+        if !is_sha256(&self.policy_hash) || self.policy_hash != content_hash(&self.content())? {
             return Err(ContractError::Invalid(
                 "Factor Promotion Policy is invalid".into(),
             ));
@@ -1737,7 +1756,30 @@ impl PromotionPolicy {
         Ok(())
     }
 
-    fn content(&self) -> impl Serialize + '_ {
+    pub(crate) fn validate_requirements(&self) -> Result<(), ContractError> {
+        if self.schema_version != FACTOR_RESEARCH_SCHEMA_VERSION
+            || self.policy_id.is_nil()
+            || self.revision == 0
+            || self.required_lenses.is_empty()
+            || self
+                .required_lenses
+                .iter()
+                .enumerate()
+                .any(|(index, lens)| self.required_lenses[..index].contains(lens))
+            || !self.minimum_coverage.is_finite()
+            || !(0.0..=1.0).contains(&self.minimum_coverage)
+            || self.minimum_samples == 0
+            || !self.maximum_holm_p_value.is_finite()
+            || !(0.0..=1.0).contains(&self.maximum_holm_p_value)
+        {
+            return Err(ContractError::Invalid(
+                "Factor Promotion Policy requirements are invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn content(&self) -> impl Serialize + '_ {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Content<'a> {
@@ -1798,6 +1840,7 @@ impl FactorPromotionDecision {
             || !is_lower_kebab(&self.output_name)
             || self.report_hashes.is_empty()
             || self.report_hashes.iter().any(|hash| !is_sha256(hash))
+            || self.report_hashes.windows(2).any(|pair| pair[0] >= pair[1])
             || !is_sha256(&self.policy_hash)
             || !is_sha256(&self.decision_hash)
             || self.decision_hash != content_hash(&self.content())?
@@ -1819,7 +1862,7 @@ impl FactorPromotionDecision {
         Ok(())
     }
 
-    fn content(&self) -> impl Serialize + '_ {
+    pub(crate) fn content(&self) -> impl Serialize + '_ {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Content<'a> {
@@ -1877,7 +1920,17 @@ impl PromotedFactorLibrary {
                 !is_sha256(&entry.candidate_hash)
                     || !is_lower_kebab(&entry.output_name)
                     || entry.decision_id.is_nil()
+                    || entry.report_hashes.is_empty()
                     || entry.report_hashes.iter().any(|hash| !is_sha256(hash))
+            })
+            || self.entries.windows(2).any(|pair| {
+                (
+                    pair[0].candidate_hash.as_str(),
+                    pair[0].output_name.as_str(),
+                ) >= (
+                    pair[1].candidate_hash.as_str(),
+                    pair[1].output_name.as_str(),
+                )
             })
         {
             return Err(ContractError::Invalid(
@@ -1887,7 +1940,7 @@ impl PromotedFactorLibrary {
         Ok(())
     }
 
-    fn content(&self) -> impl Serialize + '_ {
+    pub(crate) fn content(&self) -> impl Serialize + '_ {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Content<'a> {

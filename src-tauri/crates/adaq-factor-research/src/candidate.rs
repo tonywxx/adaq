@@ -572,7 +572,7 @@ pub fn run_limits(policy: FactorResourcePolicy) -> Result<RunLimits, ContractErr
     })
 }
 
-fn safe_diagnostic(message: &str) -> String {
+pub(crate) fn safe_diagnostic(message: &str) -> String {
     let mut diagnostic = message
         .lines()
         .map(|line| {
