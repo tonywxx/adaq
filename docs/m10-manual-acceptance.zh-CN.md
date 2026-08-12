@@ -169,7 +169,7 @@ macOS 使用 `shasum -a 256 <path>`，Windows PowerShell 使用 `Get-FileHash -A
 | 运行 `cd src-tauri && cargo fmt --all --check`。 | Rust formatting 通过。本次复核运行通过，无 diff。 | Revision 和完整 diff。 |
 | 运行 `cd src-tauri && cargo test --workspace`。 | 所有 Rust workspace tests 与 doctests 通过；适用时记录被 ignored 的长时间 benchmark。本次复核运行通过：307 passed / 0 failed / 4 ignored，共 24 个 test binaries（ignored 为两个 `--ignored` benchmark workloads 与两个 generator-gated tests）。 | Revision、完整未过滤输出、失败测试和平台。 |
 | 运行 `cd src-tauri && cargo check --workspace`。 | Native workspace type-check 通过。本次复核运行通过。 | Revision 和完整输出。 |
-| 运行 `pnpm exec jest --watchman=false --runInBand`。 | 所有 frontend tests 通过。本次复核运行通过 23 个 suites、91 个 tests；此前唯一失败是 M10 README-link contract test，已由本步骤的 README 更新解决。 | Revision、suite/test 和完整输出。 |
+| 运行 `pnpm exec jest --watchman=false --runInBand`。 | 所有 frontend tests 通过。本次复核运行通过 23 个 suites、92 个 tests，且无失败。 | Revision、suite/test 和完整输出。 |
 | 运行 `pnpm run build`。 | Strict TypeScript check 与 Vite production build 通过。本次复核运行通过。 | Revision 和完整输出。 |
 | 运行 `pnpm run lint`。 | Lint 通过；既有 warnings 与新增 findings 分开记录。本次复核运行通过，含 12 个既有 warnings，均不在四个 M10 acceptance 文件中。 | Revision、file/rule 和完整输出。 |
 | 运行 `git diff --check`。 | 没有 whitespace errors。本次复核运行 clean。 | Revision 和完整输出。 |
@@ -179,14 +179,15 @@ macOS 使用 `shasum -a 256 <path>`，Windows PowerShell 使用 `Get-FileHash -A
 
 Native matrix 定义在 [`.github/workflows/indicator-engine.yml`](../.github/workflows/indicator-engine.yml)，是可手动 dispatch、覆盖 macOS ARM64、Windows x86_64 和 Linux x86_64 的三平台 matrix；release packaging 定义在 [`.github/workflows/release.yml`](../.github/workflows/release.yml)。Local pass 不能替代要求的平台证据。Acceptance record 必须区分 reviewed M10 revision 与旧 platform baseline。
 
-以下是 unchanged native/fixture 与 packaging path 的已记录平台证据：
+以下是 reviewed native/fixture 与 packaging path 的已记录平台证据：
 
 | Workflow evidence | Revision | Jobs | Result |
 | --- | --- | --- | --- |
+| [Indicator engine acceptance run 31561728146](https://github.com/tonywxx/adaq/actions/runs/31561728146) | `f8a7053328da1f0de22f702d248d16043e84ea94` | [macOS ARM64](https://github.com/tonywxx/adaq/actions/runs/31561728146/job/94005262752)、[Windows x86_64](https://github.com/tonywxx/adaq/actions/runs/31561728146/job/94005262760)、[Linux x86_64](https://github.com/tonywxx/adaq/actions/runs/31561728146/job/94005262757) | Success（三个平台） |
 | [Indicator engine acceptance run 31062405209](https://github.com/tonywxx/adaq/actions/runs/31062405209) | `34d63ab1688b7dbeff8f5cd394a848895381ec08` | macOS ARM64、Windows x86_64 | Success |
 | [Release run 31282997179](https://github.com/tonywxx/adaq/actions/runs/31282997179) | `5d1d236999984ef4a8bcc646b8e927e37e9fb708` | Validate release、macOS ARM64、Windows x86_64、publish | Success |
 
-#87 变更只包含文档、README/roadmap 和 frontend acceptance-contract tests，没有改变 Rust/provider、fixture 或 packaging code，因此上面的 local gates 验证 reviewed revision，已记录的 indicator-engine run 保留适用的跨平台 baseline，已记录的 release run 保留 unchanged release path 的 packaging baseline。Linux x86_64 matrix entry 是在该已记录 baseline 之后引入的，目前尚无任何完整三平台 run 成功过；完整 matrix 将由下一次 native（`src-tauri/**`）变更提供证据，在此之前 Linux x86_64 是一项明确记录的未解决风险。
+#87 implementation 变更包含双语 acceptance 文档、README/roadmap、frontend acceptance-contract tests、workflow 中的 Linux prerequisite installation，以及跨平台 test/resource cleanup。当前 reviewed native/workflow revision 是 `f8a7053328da1f0de22f702d248d16043e84ea94`，其 indicator-engine matrix 已在 macOS ARM64、Windows x86_64 和 Linux x86_64 上全部成功。已记录的 release run 继续作为 unchanged release path 的 packaging baseline。该 run 之后的 documentation、README 或 frontend contract-test commit 不会改变 native/workflow inputs；其 frontend gates 已在本地记录。
 
 <!-- m10-acceptance:acceptance-matrix -->
 ## 15. 最终验收矩阵
@@ -208,7 +209,7 @@ Native matrix 定义在 [`.github/workflows/indicator-engine.yml`](../.github/wo
 | P9 | M11 只能选择 Completed Feature Datasets；M10 不新增 Factor research、Model training、Paper order、Bot、Marketplace、script engine 或 Feature Component ABI。 | Routes/DTOs 只暴露 Feature evidence；Section 11 与 scope statement。 | Sections 1、11、13。 | 无。 |
 | P10 | English 与 Simplified Chinese 架构文档及最终人工验收文档语义等价。 | `docs/m10-manual-acceptance.md`、`.zh-CN.md`、`src/m10-manual-acceptance.test.ts`；`docs/m10-feature-engineering.md`、`.zh-CN.md`。 | Sections 1–15。 | Parity test 后无。 |
 | P11 | 每条 criterion 都映射到 implementation 与 focused/broad evidence；issue closure 本身不是证据。 | 本节及下方 child matrix。 | Sections 1–14。 | Review 后无。 |
-| P12 | Rust formatting/tests/checks、frontend Jest/build/lint、diff checks、accessibility review 和 supported-platform CI 在 final revision 通过。 | 上方 gate table；`src/loading-boundaries.test.ts` 覆盖 accessibility 相关状态。 | Sections 11、14。 | macOS ARM64 与 Windows x86_64 已由已记录 baseline run 覆盖；Linux x86_64 matrix entry 在该 baseline 之后引入，仍是明确记录的未解决风险，直到下一次 native（`src-tauri/**`）变更提供完整三平台 run 证据。 |
+| P12 | Rust formatting/tests/checks、frontend Jest/build/lint、diff checks、accessibility review 和 supported-platform CI 在 final revision 通过。 | 上方 gate table；`src/loading-boundaries.test.ts` 覆盖 accessibility 相关状态。 | Sections 11、14。 | local gates 与当前 SHA 的三平台 matrix 通过后无。 |
 | P13 | 在关闭 parent 前发布英文 completion comment，记录 implementation、exact commands、results、revision 与 CI links。 | Issue #87 completion comment 引用 final revision 与 commands。 | 下方 Acceptance record。 | Parent closure 是 maintainer 明确要求的独立动作。 |
 
 ### M10.1–M10.10 slice matrix
@@ -224,12 +225,14 @@ Native matrix 定义在 [`.github/workflows/indicator-engine.yml`](../.github/wo
 | M10.7 / #84 | User-scoped Feature APIs 与 FIFO background runner，带 cancellation 与 restart recovery。 | `src-tauri/src/features/tests.rs`；`src/tauri-command-scheduling.test.ts`。 | Sections 3、4、10 与两套 gate suites。 | 无。 |
 | M10.8 / #85 | 本地化 `/features` workspace：Definitions、Fitting、Materialization、Datasets、Preview。 | `src/features/features/features-data.test.ts`；`src/lib/i18n.test.ts`；`src/loading-boundaries.test.ts`。 | Sections 2、11 与 full Jest/build gates。 | OS visual differences 仍需人工 evidence。 |
 | M10.9 / #86 | 三市场 fixtures、benchmarks 与 hardening。 | `adaq-feature-engine/tests/reference_fixtures.rs`、`benchmarks.rs`；`fixtures/feature-reference-vectors.json`；`fixtures/feature-benchmark-baseline.json`。 | Sections 6–8、12 与 Rust gates。 | Benchmark 数值仅为记录式平台证据。 |
-| M10.10 / #87 | 本双语、跨平台 acceptance contract 与 evidence record。 | `src/m10-manual-acceptance.test.ts`、全部 required gates。 | Sections 1–15 与 issue comment。 | Linux x86_64 仍是明确记录的未解决风险，直到完整三平台 run 成功；其余所有 row 已记录。 |
+| M10.10 / #87 | 本双语、跨平台 acceptance contract 与 evidence record。 | `src/m10-manual-acceptance.test.ts`、全部 required gates。 | Sections 1–15 与 issue comment。 | 当前 SHA 的三平台 matrix 与全部 required gates 通过后无。 |
 
 <!-- m10-acceptance:acceptance-record -->
 ## 16. 验收记录与清理
 
-记录 reviewed revision、OS/architecture/display scale、Node/pnpm/Rust versions、command outputs、focused test counts、full-gate conclusions、Dataset/Artifact/Attempt IDs、content-hash 与 reference-vector digests、revision 与 deletion-lock evidence、脱敏 User IDs、Route screenshots、keyboard/accessibility observations，以及 exact CI run URLs/SHA/conclusions。同时记录 Linux x86_64 说明：该 matrix entry 在已记录 baseline 之后引入，在下一次 native（`src-tauri/**`）变更提供完整三平台 run 证据之前，保持为明确记录的未解决风险。不要在记录中保存 credentials、tokens、private paths 或 private market data。
+记录 reviewed revision、OS/architecture/display scale、Node/pnpm/Rust versions、command outputs、focused test counts、full-gate conclusions、Dataset/Artifact/Attempt IDs、content-hash 与 reference-vector digests、revision 与 deletion-lock evidence、脱敏 User IDs、Route screenshots、keyboard/accessibility observations，以及 exact CI run URLs/SHA/conclusions。当前 #87 record 包含 native/workflow revision `f8a7053328da1f0de22f702d248d16043e84ea94`、run [31561728146](https://github.com/tonywxx/adaq/actions/runs/31561728146)，以及成功的 macOS ARM64、Windows x86_64 和 Linux x86_64 jobs。最终 documentation、README 和 frontend contract-test commit 不会改变这些 native/workflow inputs；其 frontend gates 已在本地记录。不要在记录中保存 credentials、tokens、private paths 或 private market data。
+
+已执行的本地 GUI evidence：使用 signed-in fixture session 在 desktop browser shell 中以 1024×768 打开 `/features`。在 en-US 与 zh-CN 中，Route 都暴露 `Features` heading、四个有 label 的 tabs、可 focus 的 tab panel，以及由 owning control 管理的 `Retry loading` states；通过 keyboard focus 加 ArrowRight/Enter 在两个 locale 中依次激活 Definitions、Fitting Attempts、Materialization Attempts 与 Datasets。Accessibility tree 暴露了对应的 tab/tab-panel roles 与 labels。没有使用真实 credentials 或 provider data。
 
 Fixture acceptance 后，只删除本次运行创建的 disposable profiles、临时 acquisition directories、generated package/build outputs 和 test databases。不要删除 repository fixtures 或 finalized evidence。如果某个平台仍持有 file handle，先停止拥有它的进程再清理，并记录平台结果。
 

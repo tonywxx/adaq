@@ -74,8 +74,17 @@ test("both READMEs link to both M10 acceptance guides", () => {
 	for (const readme of [read("README.md"), read("README.zh-CN.md")]) {
 		const m10Row = readme.split("\n").find((line) => line.startsWith("| M10 |"));
 		expect(m10Row).toBeDefined();
-		expect(m10Row).toContain("docs/m10-manual-acceptance.md");
-		expect(m10Row).toContain("docs/m10-manual-acceptance.zh-CN.md");
+		const acceptedMarker = m10Row?.includes("Status: Accepted")
+			? "Status: Accepted"
+			: "状态：已接受";
+		const acceptedAt = m10Row?.indexOf(acceptedMarker) ?? -1;
+		expect(acceptedAt).toBeGreaterThanOrEqual(0);
+		for (const guide of [
+			"docs/m10-manual-acceptance.md",
+			"docs/m10-manual-acceptance.zh-CN.md",
+		]) {
+			expect(m10Row?.indexOf(guide) ?? -1).toBeGreaterThan(acceptedAt);
+		}
 	}
 });
 
