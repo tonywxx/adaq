@@ -119,6 +119,7 @@ fn harness(name: &str) -> Harness {
 }
 
 fn finish(harness: Harness) {
+    drop(harness.watchlist);
     drop(harness.state);
     fs::remove_dir_all(harness.root).unwrap();
 }

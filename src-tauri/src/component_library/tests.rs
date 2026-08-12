@@ -200,6 +200,8 @@ fn harness(name: &str) -> Harness {
 }
 
 fn finish(harness: Harness) {
+    // Break the test-only source cycle so Windows can remove the SQLite file.
+    harness.source.backtests.lock().unwrap().take();
     drop(harness.components);
     drop(harness.backtests);
     drop(harness.source);

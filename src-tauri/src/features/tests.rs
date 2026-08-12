@@ -193,8 +193,10 @@ fn wait_for_materialization(
                     | MaterializationAttemptStatus::Failed
                     | MaterializationAttemptStatus::Cancelled
             ),
-            "Attempt {attempt_id} reached {:?} before {expected:?}",
-            attempt.status
+            "Attempt {attempt_id} reached {:?} before {expected:?} ({:?}: {:?})",
+            attempt.status,
+            attempt.failure_code,
+            attempt.diagnostic
         );
         assert!(
             Instant::now() < deadline,
