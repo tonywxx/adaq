@@ -72,32 +72,63 @@ fn verify(cwd: &Path, package_path: &str, previous_path: Option<&String>) -> Res
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentBuildOutput {
+    pub package_path: PathBuf,
+    pub diagnostics: String,
+}
+
 pub fn build_project(root: &Path) -> Result<PathBuf, String> {
+    build_project_with_mode(root, false).map(|output| output.package_path)
+}
+
+pub fn build_project_offline_with_diagnostics(root: &Path) -> Result<ComponentBuildOutput, String> {
+    build_project_with_mode(root, true)
+}
+
+fn build_project_with_mode(root: &Path, offline: bool) -> Result<ComponentBuildOutput, String> {
     let manifest_path = root.join("manifest.json");
     let manifest: ComponentManifest =
         serde_json::from_slice(&fs::read(&manifest_path).map_err(string)?).map_err(string)?;
     let cargo_toml = fs::read_to_string(root.join("Cargo.toml")).map_err(string)?;
     let crate_name = cargo_package_name(&cargo_toml)?;
-    run(
-        Command::new("cargo").arg("test").current_dir(root),
-        "cargo test",
-    )?;
+    let mut diagnostics = String::new();
+    let mut tests = Command::new("cargo");
+    tests.arg("test");
+    if offline {
+        tests.args(["--offline", "--locked"]);
+        tests.env("CARGO_NET_OFFLINE", "true");
+    }
+    tests.current_dir(root);
+    append_command_output(
+        &mut diagnostics,
+        if offline {
+            run_capture(&mut tests, "cargo test --offline --locked")?
+        } else {
+            run(&mut tests, "cargo test")?;
+            String::new()
+        },
+    );
     let path = rust_toolchain_path()?;
     let mut component = Command::new("rustup");
+    component.args(["run", "stable", "cargo", "component", "build"]);
+    if offline {
+        component.args(["--offline", "--locked"]);
+        component.env("CARGO_NET_OFFLINE", "true");
+    }
     component
-        .args([
-            "run",
-            "stable",
-            "cargo",
-            "component",
-            "build",
-            "--release",
-            "--target",
-            "wasm32-unknown-unknown",
-        ])
+        .args(["--release", "--target", "wasm32-unknown-unknown"])
         .current_dir(root)
         .env("PATH", path);
-    run(&mut component, "cargo component build")?;
+    append_command_output(
+        &mut diagnostics,
+        if offline {
+            run_capture(&mut component, "cargo component build --offline --locked")?
+        } else {
+            run(&mut component, "cargo component build")?;
+            String::new()
+        },
+    );
     let wasm_path = root
         .join("target/wasm32-unknown-unknown/release")
         .join(format!("{}.wasm", crate_name.replace('-', "_")));
@@ -108,7 +139,10 @@ pub fn build_project(root: &Path) -> Result<PathBuf, String> {
     fs::create_dir_all(&dist).map_err(string)?;
     let output = dist.join(format!("{}-{}.adaq", crate_name, package.manifest.version));
     fs::write(&output, bytes).map_err(string)?;
-    Ok(output)
+    Ok(ComponentBuildOutput {
+        package_path: output,
+        diagnostics,
+    })
 }
 
 fn cargo_package_name(cargo_toml: &str) -> Result<&str, String> {
@@ -138,6 +172,33 @@ fn run(command: &mut Command, label: &str) -> Result<(), String> {
     } else {
         Err(format!("{label} failed with {status}"))
     }
+}
+
+fn run_capture(command: &mut Command, label: &str) -> Result<String, String> {
+    let output = command.output().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            format!("{label} is unavailable; install Rust and cargo-component")
+        } else {
+            error.to_string()
+        }
+    })?;
+    let diagnostics = format!(
+        "{label}\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if output.status.success() {
+        Ok(diagnostics)
+    } else {
+        Err(format!(
+            "{diagnostics}\n{label} failed with {}",
+            output.status
+        ))
+    }
+}
+
+fn append_command_output(diagnostics: &mut String, output: String) {
+    diagnostics.push_str(&output);
 }
 
 fn rust_toolchain_path() -> Result<OsString, String> {

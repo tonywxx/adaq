@@ -5,7 +5,9 @@ mod plan;
 mod runtime;
 mod templates;
 
-pub use cli::{build_project, run_cli};
+pub use cli::{
+    ComponentBuildOutput, build_project, build_project_offline_with_diagnostics, run_cli,
+};
 pub use conformance::{component_parameters, verify_package};
 pub use package::{
     BuiltinForecastTarget, ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,

@@ -1,15 +1,19 @@
 //! Tauri-independent Factor research contracts for M11.
 
 mod abi;
+mod candidate;
 mod catalog;
 mod contracts;
+mod materialization;
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 pub use abi::*;
+pub use candidate::*;
 pub use catalog::*;
 pub use contracts::*;
+pub use materialization::*;
 
 pub const FACTOR_RESEARCH_SCHEMA_VERSION: &str = "1.0.0";
 pub const FACTOR_ABI_VERSION: &str = "2.0.0";

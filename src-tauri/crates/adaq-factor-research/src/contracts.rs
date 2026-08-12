@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
@@ -51,6 +50,63 @@ pub struct FactorParameter {
     pub allowed_values: Vec<String>,
 }
 
+/// A Declarative Candidate is a reference to an already-frozen M10 Feature
+/// Plan projection. Factor Research does not introduce a second expression
+/// language or silently re-evaluate Feature definitions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeclarativeFactorDefinition {
+    pub feature_plan_hash: String,
+    pub operator_catalog_version: String,
+    pub outputs: Vec<DeclarativeFactorOutputBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeclarativeFactorOutputBinding {
+    pub output_name: String,
+    pub feature_slot: String,
+}
+
+impl DeclarativeFactorDefinition {
+    pub fn validate(
+        &self,
+        feature_slots: &[FactorFeatureSlot],
+        outputs: &[FactorOutput],
+    ) -> Result<(), ContractError> {
+        if !is_sha256(&self.feature_plan_hash)
+            || self.operator_catalog_version
+                != adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION
+            || self.outputs.len() != outputs.len()
+        {
+            return Err(ContractError::Invalid(
+                "Declarative Factor must bind one current Feature Plan and its operator catalog"
+                    .into(),
+            ));
+        }
+        let slot_names = feature_slots
+            .iter()
+            .map(|slot| slot.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let output_names = outputs
+            .iter()
+            .map(|output| output.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut seen = BTreeSet::new();
+        if self.outputs.iter().any(|binding| {
+            !output_names.contains(binding.output_name.as_str())
+                || !slot_names.contains(binding.feature_slot.as_str())
+                || !seen.insert(binding.output_name.as_str())
+        }) || seen.len() != output_names.len()
+        {
+            return Err(ContractError::Invalid(
+                "Declarative Factor outputs must map exactly to ordered Feature Slots".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactorOutput {
@@ -60,10 +116,12 @@ pub struct FactorOutput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CandidateBuildProvenance {
+    pub attempt_id: Uuid,
     pub source_sha256: String,
     pub sdk_version: String,
     pub abi_version: String,
     pub toolchain: String,
+    pub compiler: String,
     pub target: String,
     pub commands: Vec<String>,
     #[serde(default)]
@@ -84,8 +142,12 @@ pub struct FactorResourcePolicy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum FactorCandidateSource {
-    Declarative { definition: Value },
-    Custom { build: CandidateBuildProvenance },
+    Declarative {
+        definition: DeclarativeFactorDefinition,
+    },
+    Custom {
+        build: CandidateBuildProvenance,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -136,6 +198,9 @@ impl FactorCandidate {
             &draft.outputs,
         )?;
         validate_candidate_source(&draft.source)?;
+        if let FactorCandidateSource::Declarative { definition } = &draft.source {
+            definition.validate(&draft.feature_slots, &draft.outputs)?;
+        }
         if draft.candidate_id.is_nil() || draft.revision == 0 {
             return Err(ContractError::Invalid(
                 "Factor Candidate requires a non-nil identity and positive revision".into(),
@@ -173,6 +238,9 @@ impl FactorCandidate {
             &self.outputs,
         )?;
         validate_candidate_source(&self.source)?;
+        if let FactorCandidateSource::Declarative { definition } = &self.source {
+            definition.validate(&self.feature_slots, &self.outputs)?;
+        }
         if !is_sha256(&self.candidate_hash) || self.candidate_hash != content_hash(&self.content())?
         {
             return Err(ContractError::HashMismatch);
@@ -318,7 +386,7 @@ fn unique_names<'a>(
 
 fn validate_candidate_source(source: &FactorCandidateSource) -> Result<(), ContractError> {
     match source {
-        FactorCandidateSource::Declarative { definition } => canonical_json(definition).map(|_| ()),
+        FactorCandidateSource::Declarative { .. } => Ok(()),
         FactorCandidateSource::Custom { build } => {
             if build.abi_version != FACTOR_ABI_VERSION {
                 return Err(ContractError::ResetRequired {
@@ -326,8 +394,10 @@ fn validate_candidate_source(source: &FactorCandidateSource) -> Result<(), Contr
                     guidance: "incompatible Factor ABI evidence requires an explicit device-level reset; no migration or automatic deletion is performed".into(),
                 });
             }
-            if build.sdk_version.is_empty()
+            if build.attempt_id.is_nil()
+                || build.sdk_version.is_empty()
                 || build.toolchain.is_empty()
+                || build.compiler.is_empty()
                 || build.target.is_empty()
                 || build.commands.is_empty()
                 || build.resource_policy.fuel_per_call == 0
@@ -677,6 +747,7 @@ impl AttemptStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactorMaterializationAttempt {
     pub attempt_id: Uuid,
+    pub user_id: Uuid,
     pub protocol_hash: String,
     pub status: AttemptStatus,
     pub source_attempt_id: Option<Uuid>,
@@ -685,14 +756,19 @@ pub struct FactorMaterializationAttempt {
 }
 
 impl FactorMaterializationAttempt {
-    pub fn new(attempt_id: Uuid, protocol_hash: String) -> Result<Self, ContractError> {
-        if attempt_id.is_nil() || !is_sha256(&protocol_hash) {
+    pub fn new(
+        attempt_id: Uuid,
+        user_id: Uuid,
+        protocol_hash: String,
+    ) -> Result<Self, ContractError> {
+        if attempt_id.is_nil() || user_id.is_nil() || !is_sha256(&protocol_hash) {
             return Err(ContractError::Invalid(
                 "Factor Materialization Attempt identity is invalid".into(),
             ));
         }
         Ok(Self {
             attempt_id,
+            user_id,
             protocol_hash,
             status: AttemptStatus::Pending,
             source_attempt_id: None,
@@ -723,13 +799,18 @@ impl FactorMaterializationAttempt {
     }
 
     pub fn retry(&self, attempt_id: Uuid) -> Result<Self, ContractError> {
-        if !self.status.terminal() || attempt_id.is_nil() {
+        if !matches!(
+            self.status,
+            AttemptStatus::Failed | AttemptStatus::Cancelled
+        ) || attempt_id.is_nil()
+        {
             return Err(ContractError::Invalid(
                 "only a terminal Attempt can be retried with a new identity".into(),
             ));
         }
         Ok(Self {
             attempt_id,
+            user_id: self.user_id,
             protocol_hash: self.protocol_hash.clone(),
             status: AttemptStatus::Pending,
             source_attempt_id: Some(self.attempt_id),
@@ -1472,7 +1553,15 @@ mod tests {
                 name: "momentum".into(),
             }],
             source: FactorCandidateSource::Declarative {
-                definition: serde_json::json!({"operator":"difference"}),
+                definition: DeclarativeFactorDefinition {
+                    feature_plan_hash: "a".repeat(64),
+                    operator_catalog_version: adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION
+                        .into(),
+                    outputs: vec![DeclarativeFactorOutputBinding {
+                        output_name: "momentum".into(),
+                        feature_slot: "close".into(),
+                    }],
+                },
             },
         })
         .unwrap();
@@ -1484,10 +1573,12 @@ mod tests {
 
         let source = FactorCandidateSource::Custom {
             build: CandidateBuildProvenance {
+                attempt_id: Uuid::new_v4(),
                 source_sha256: "a".repeat(64),
                 sdk_version: "0.1.0".into(),
                 abi_version: "1.0.0".into(),
                 toolchain: "stable".into(),
+                compiler: "rustc 1.0.0".into(),
                 target: "wasm".into(),
                 commands: vec!["cargo component build".into()],
                 environment: BTreeMap::new(),
@@ -1518,7 +1609,8 @@ mod tests {
     #[test]
     fn materialization_attempts_retain_retry_lineage() {
         let mut attempt =
-            FactorMaterializationAttempt::new(Uuid::new_v4(), "a".repeat(64)).unwrap();
+            FactorMaterializationAttempt::new(Uuid::new_v4(), Uuid::new_v4(), "a".repeat(64))
+                .unwrap();
         attempt.transition(AttemptStatus::Running).unwrap();
         attempt.transition(AttemptStatus::Failed).unwrap();
         let retry = attempt.retry(Uuid::new_v4()).unwrap();

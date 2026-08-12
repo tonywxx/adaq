@@ -128,6 +128,8 @@ dependencies = [
 name = "adaq-factor-research"
 version = "0.1.0"
 dependencies = [
+ "adaq-component-sdk",
+ "adaq-component-tooling",
  "adaq-feature-engine",
  "serde",
  "serde_json",
