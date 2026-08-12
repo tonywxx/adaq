@@ -146,7 +146,7 @@ macOS 使用 `shasum -a 256 <path>`，Windows PowerShell 使用 `Get-FileHash -A
 
 | 精确操作 | 预期结果 | 失败时保留 |
 | --- | --- | --- |
-| 运行 `cd src-tauri && cargo test -p adaq-feature-engine --release --test benchmarks -- --ignored --test-threads=1`。 | 两个规范 workload 串行完成：1,000,000-Bar Time-Series workload 与 10,000-Instrument × 252-Observation Cross-Sectional workload。本次复核运行串行总耗时 ~171.8 s：Time-Series 17,469 ms（cancellation stop 150 ms）、Cross-Sectional 58,076 ms，进程 peak RSS 437,321,728 bytes。 | Revision、完整输出、workload 和平台。 |
+| 运行 `cd src-tauri && cargo test -p adaq-feature-engine --release --test benchmarks -- --ignored --test-threads=1`。 | 两个规范 workload 串行完成：1,000,000-Bar Time-Series workload 与 10,000-Instrument × 252-Observation Cross-Sectional workload。本次最终复核运行完成 2 个 workload，0 个失败，总耗时 164.27 s。 | Revision、完整输出、workload 和平台。 |
 | 与 `src-tauri/crates/adaq-feature-engine/fixtures/feature-benchmark-baseline.json` 对比结果。 | Baseline 使用 schema `adaq-feature-benchmark-baseline@1.0.0`，记录于 macOS ARM64（`aarch64-apple-darwin`），记录值：Time-Series 20155 ms，Cross-Sectional 64828 ms，peak RSS 439,386,112 bytes（进程 high-water mark，`ru_maxrss`）。Baseline 仅为记录：不设定虚构的延迟或 RSS 目标。本次复核运行的实测值持平或优于上述记录值，且 baseline 文件重新生成后无差异（`git diff --exit-code` clean）。 | Baseline 文件 hash、实测数值和平台差异。 |
 | 在长时间 Materialization 或 Fitting Attempt 运行期间观察 GUI。 | GUI 绝不冻结：重型工作运行在 supervised worker 中，UI 保持响应。 | Attempt ID、UI 响应证据和截图。 |
 | 在运行期间与结束后翻页查看大型 Completed Dataset。 | Dataset pagination 在负载下仍保持每页 50 rows 的有界窗口。 | Page index、row count 和截图。 |
