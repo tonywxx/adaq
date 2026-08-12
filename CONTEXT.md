@@ -515,7 +515,7 @@ Immutable evidence produced from one Factor Evaluation Protocol, recording cover
 _Avoid_: Validation Report, Factor Dataset, Factor Promotion Decision
 
 **Factor Promotion Decision**:
-An immutable User decision of Approved or Rejected that cites exact Factor Evaluation Reports and the applied acceptance policy. It does not alter those Reports or turn their historical evidence into a timeless `valid` property.
+An immutable User decision of Rejected, Research Validated, or Component Eligible that cites exact Factor Evaluation Reports and the applied acceptance policy. A Candidate has no Promotion Decision yet; Research Validated evidence may be selected by Model research but cannot enter Component Generation, while Component Eligible also permits a User-controlled qualification and packaging attempt. The Decision does not alter its Reports or turn their historical evidence into a timeless `valid` property.
 _Avoid_: Automatic validity flag, Factor Evaluation Report, Component trust
 
 **Forecast Evaluation Report**:
@@ -862,8 +862,28 @@ _Avoid_: Best Factor, best Strategy, guaranteed winner
 The device-local GUI presentation preference selected in Settings > General and applied through `i18next` and `react-i18next`. V1 provides exactly two resource locales, English (United States) `en-US` and Simplified Chinese `zh-CN`, plus a System selection that resolves a Chinese system language to `zh-CN` and every other language to `en-US`. It changes translated interface copy and locale-aware display formatting immediately without changing canonical domain values, identifiers, exported evidence, provider payloads, Venue times, or user-authored names; missing translations fall back to `en-US` rather than blank copy.
 _Avoid_: Data locale, Venue Time Zone, translation of research evidence
 
+**Operational Responsibility**:
+A current condition that requires the User's operational attention even when no Bot Worker is actively evaluating: any Bot Runtime Attempt in Starting, Reconciling, WarmingUp, Running, Pausing, Paused, Stopping, or Faulted; Reconciliation Required; a retained Paper position or non-terminal Paper Order; or an Active Warning or Critical Operational Alert. It ends only when every Bot is safely Stopped and all listed positions, orders, reconciliation conditions, and Alerts are resolved.
+_Avoid_: Running process, Bot Lifecycle State, dashboard visibility flag
+
+**Workflow Foundations**:
+The unnumbered Markets and Data plus Feature Engineering prerequisites that feed the ten-step Research-to-Paper workflow. One research context is ready when it has a compatible readable Market Data Snapshot, Point-in-Time Instrument Universe, and Completed Feature Dataset; ADAQ does not require every supported market to be ready before Factor research can begin.
+_Avoid_: Step 0, global readiness flag, three-market completion gate
+
+**Workflow Guide**:
+The localized, read-only presentation of ADAQ's Foundations and ordered ten-step Research-to-Paper workflow. It distinguishes Workflow Capability State from evidence-backed Workflow Step State, exposes the next eligible entry point, remains directly accessible from Help, and is the default GUI home only while no Operational Responsibility exists. Users may inspect downstream steps while their actions remain gated by exact prerequisites, and ambiguous evidence lineages require explicit selection rather than an inferred global project.
+_Avoid_: Operations Dashboard, workflow record, global completion percentage
+
+**Workflow Capability State**:
+The release-level availability of one Workflow Guide entry: Available when its accepted end-to-end V1 action exists, Partial when only a proper subset exists, or Planned with its owning Milestone when the action is not yet delivered. A Partial entry may expose existing evidence counts but cannot claim the complete step is finished; Capability State never represents User progress or unlocks an action whose evidence prerequisites are missing.
+_Avoid_: Workflow Step State, feature availability, optimistic completion
+
+**Workflow Step State**:
+A user-scoped read projection derived from authoritative domain records as Not Started, In Progress, Needs Review, Blocked, or Complete under that step's exact evidence gate. It is not a persisted generic workflow record; continuous Monitoring uses Bot Health States instead of pretending to become Complete.
+_Avoid_: Workflow Capability State, mutable checklist, global completion percentage
+
 **Operations Dashboard**:
-The localized Tauri and React GUI home at `/` that projects global Paper Trading, Bot, account, Alert, infrastructure, data, Factor, Model, Component-build, Backtest, and Validation status and exposes host-controlled emergency actions. It is an overview and drill-down entry point, not the Crypto market page, a TUI, an authoritative event store, or a direct provider client.
+The localized Tauri and React GUI operational view that projects global Paper Trading, Bot, account, Alert, infrastructure, data, Factor, Model, Component-build, Backtest, and Validation status and exposes host-controlled emergency actions. It is the default GUI home whenever any Operational Responsibility exists and is an overview and drill-down entry point, not the Workflow Guide, Crypto market page, a TUI, an authoritative event store, or a direct provider client.
 _Avoid_: Market Workspace, status database, remote operations console
 
 **Dashboard Projection**:

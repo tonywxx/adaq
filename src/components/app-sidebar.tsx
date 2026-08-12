@@ -1,4 +1,3 @@
-import { NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
 import { NavUser } from "@/components/nav-user";
 import {
@@ -16,131 +15,81 @@ import {
 	SidebarMenuSubButton,
 	SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
+import { workflowModules, workflowSteps } from "@/features/workflow/workflow";
 import { Link, useLocation } from "@tanstack/react-router";
 import {
-	CameraIcon,
+	CandlestickChart,
 	ChartBarIcon,
+	ChevronDownIcon,
+	CircleHelpIcon,
 	CommandIcon,
 	FileTextIcon,
-	QrCodeIcon,
+	GitCompareArrows,
 	LayoutDashboardIcon,
 	ListIcon,
+	QrCodeIcon,
 	Settings2Icon,
-	GitCompareArrows,
-	CandlestickChart,
 	SigmaIcon,
 } from "lucide-react";
+import {
+	useEffect,
+	useState,
+	type ComponentProps,
+	type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
-import type * as React from "react";
 
-const data = {
-	navMain: [
-		{
-			titleKey: "nav.dashboard",
-			url: "/",
-			icon: <LayoutDashboardIcon />,
-		},
-		{
-			titleKey: "nav.components",
-			url: "/components",
-			icon: <ListIcon />,
-		},
-		{
-			titleKey: "nav.models",
-			url: "/models",
-			icon: <CommandIcon />,
-		},
-		{
-			titleKey: "nav.backtest",
-			url: "/backtest",
-			icon: <ChartBarIcon />,
-		},
-		{
-			titleKey: "nav.validation",
-			url: "/validation",
-			icon: <FileTextIcon />,
-		},
-		{
-			titleKey: "nav.features",
-			url: "/features",
-			icon: <SigmaIcon />,
-		},
-	],
-	navClouds: [
-		{
-			title: "Capture",
-			icon: <CameraIcon />,
-			isActive: true,
-			url: "#",
-			items: [
-				{
-					title: "Active Proposals",
-					url: "#",
-				},
-				{
-					title: "Archived",
-					url: "#",
-				},
-			],
-		},
-		{
-			title: "Proposal",
-			icon: <FileTextIcon />,
-			url: "#",
-			items: [
-				{
-					title: "Active Proposals",
-					url: "#",
-				},
-				{
-					title: "Archived",
-					url: "#",
-				},
-			],
-		},
-		{
-			title: "Prompts",
-			icon: <FileTextIcon />,
-			url: "#",
-			items: [
-				{
-					title: "Active Proposals",
-					url: "#",
-				},
-				{
-					title: "Archived",
-					url: "#",
-				},
-			],
-		},
-	],
-	navSecondary: [
-		{
-			titleKey: "nav.settings",
-			url: "/settings/general",
-			icon: <Settings2Icon />,
-		},
-		{
-			titleKey: "nav.github",
-			url: "https://github.com/tonywxx/adaq",
-			icon: <GitCompareArrows />,
-		},
-		{
-			titleKey: "nav.wechat",
-			url: "https://mp.weixin.qq.com/s/fHFDyntJ7PRwrsRJqfLnaA", // https://weixin.qq.com/r/mp/TC_Pl63E2vClren093pe
-			icon: <QrCodeIcon />,
-		},
-	],
+const moduleIcons: Record<(typeof workflowModules)[number]["id"], ReactNode> = {
+	factor: <SigmaIcon aria-hidden="true" />,
+	model: <CommandIcon aria-hidden="true" />,
+	strategy: <FileTextIcon aria-hidden="true" />,
+	operations: <ChartBarIcon aria-hidden="true" />,
 };
 
-export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+const secondaryItems = [
+	{
+		titleKey: "nav.help",
+		url: "/help/workflow",
+		icon: <CircleHelpIcon />,
+	},
+	{
+		titleKey: "nav.settings",
+		url: "/settings/general",
+		icon: <Settings2Icon />,
+	},
+	{
+		titleKey: "nav.github",
+		url: "https://github.com/tonywxx/adaq",
+		icon: <GitCompareArrows />,
+	},
+	{
+		titleKey: "nav.wechat",
+		url: "https://mp.weixin.qq.com/s/fHFDyntJ7PRwrsRJqfLnaA",
+		icon: <QrCodeIcon />,
+	},
+];
+
+export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 	const { t } = useTranslation();
 	const location = useLocation();
-	const navMain = data.navMain.map((item) => ({
-		...item,
-		title: t(item.titleKey),
-	}));
-	const navSecondary = data.navSecondary.map((item) => ({
+	const activeStep = workflowSteps.find(
+		(step) => location.pathname === `/help/workflow/${step.id}`,
+	);
+	const activeModule =
+		location.pathname === "/operations" ? "operations" : activeStep?.module;
+	const [openModules, setOpenModules] = useState<Set<string>>(
+		() => new Set([activeModule ?? "factor"]),
+	);
+
+	useEffect(() => {
+		if (!activeModule) return;
+		setOpenModules((current) => {
+			if (current.has(activeModule)) return current;
+			return new Set([...current, activeModule]);
+		});
+	}, [activeModule]);
+
+	const navSecondary = secondaryItems.map((item) => ({
 		...item,
 		title: t(item.titleKey),
 	}));
@@ -155,7 +104,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 							className="data-[slot=sidebar-menu-button]:p-1.5!"
 						>
 							<Link to="/">
-								<CandlestickChart className="size-5!" />
+								<CandlestickChart className="size-5!" aria-hidden="true" />
 								<span className="text-base font-semibold">AdaQ</span>
 							</Link>
 						</SidebarMenuButton>
@@ -163,66 +112,155 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 				</SidebarMenu>
 			</SidebarHeader>
 			<SidebarContent>
-				<NavMain items={navMain} />
 				<SidebarGroup>
-					<SidebarGroupLabel>{t("nav.markets")}</SidebarGroupLabel>
 					<SidebarGroupContent>
 						<SidebarMenu>
-							<SidebarMenuItem>
-								<SidebarMenuButton
-									asChild
-									isActive={location.pathname.startsWith("/markets")}
-									tooltip={t("nav.markets")}
-								>
-									<Link to="/markets">
-										<CandlestickChart aria-hidden="true" />
-										<span>{t("nav.markets")}</span>
-									</Link>
-								</SidebarMenuButton>
-								<SidebarMenuSub>
-									<SidebarMenuSubItem>
-										<SidebarMenuSubButton
-											asChild
-											isActive={location.pathname === "/markets"}
-										>
-											<Link to="/markets">{t("nav.marketsOverview")}</Link>
-										</SidebarMenuSubButton>
-									</SidebarMenuSubItem>
-									<SidebarMenuSubItem>
-										<SidebarMenuSubButton
-											asChild
-											isActive={location.pathname === "/markets/crypto"}
-										>
-											<Link to="/markets/crypto">{t("nav.crypto")}</Link>
-										</SidebarMenuSubButton>
-									</SidebarMenuSubItem>
-									<SidebarMenuSubItem>
-										<SidebarMenuSubButton
-											asChild
-											isActive={location.pathname === "/markets/a-shares"}
-										>
-											<Link to="/markets/a-shares">{t("nav.aShares")}</Link>
-										</SidebarMenuSubButton>
-									</SidebarMenuSubItem>
-									<SidebarMenuSubItem>
-										<SidebarMenuSubButton
-											asChild
-											isActive={location.pathname === "/markets/us-equities"}
-										>
-											<Link to="/markets/us-equities">{t("nav.usEquities")}</Link>
-										</SidebarMenuSubButton>
-									</SidebarMenuSubItem>
-								</SidebarMenuSub>
-							</SidebarMenuItem>
+							<SidebarLink
+								to="/"
+								label={t("nav.home")}
+								icon={<LayoutDashboardIcon aria-hidden="true" />}
+								active={location.pathname === "/"}
+							/>
 						</SidebarMenu>
 					</SidebarGroupContent>
 				</SidebarGroup>
-				{/* <NavDocuments items={data.documents} /> */}
+
+				<SidebarGroup>
+					<SidebarGroupLabel>{t("nav.foundations")}</SidebarGroupLabel>
+					<SidebarGroupContent>
+						<SidebarMenu>
+							<SidebarLink
+								to="/markets"
+								label={t("nav.marketsData")}
+								icon={<CandlestickChart aria-hidden="true" />}
+								active={location.pathname.startsWith("/markets")}
+							/>
+							<SidebarLink
+								to="/features"
+								label={t("nav.featureEngineering")}
+								icon={<SigmaIcon aria-hidden="true" />}
+								active={location.pathname === "/features"}
+							/>
+						</SidebarMenu>
+					</SidebarGroupContent>
+				</SidebarGroup>
+
+				{workflowModules.map((module) => {
+					const open = openModules.has(module.id);
+					return (
+						<SidebarGroup key={module.id}>
+							<SidebarGroupLabel asChild>
+								<button
+									type="button"
+									className="w-full justify-between"
+									aria-expanded={open}
+									aria-controls={`sidebar-workflow-${module.id}`}
+									onClick={() =>
+										setOpenModules((current) => {
+											const next = new Set(current);
+											if (open) next.delete(module.id);
+											else next.add(module.id);
+											return next;
+										})
+									}
+								>
+									<span>{t(`workflow.modules.${module.id}.title`)}</span>
+									<span className="flex items-center gap-1 font-mono text-[10px]">
+										{module.steps}
+										<ChevronDownIcon
+											className={`transition-transform ${open ? "rotate-180" : ""}`}
+											aria-hidden="true"
+										/>
+									</span>
+								</button>
+							</SidebarGroupLabel>
+							{open ? (
+								<SidebarGroupContent id={`sidebar-workflow-${module.id}`}>
+									<SidebarMenu>
+										{module.id === "operations" ? (
+											<SidebarLink
+												to="/operations"
+												label={t("nav.operationsDashboard")}
+												icon={moduleIcons[module.id]}
+												active={location.pathname === "/operations"}
+											/>
+										) : null}
+										<SidebarMenuItem>
+											<div className="flex h-8 items-center gap-2 rounded-md px-2 text-sm text-sidebar-foreground/80 [&>svg]:size-4">
+												{moduleIcons[module.id]}
+												<span>{t("nav.workflowSteps")}</span>
+											</div>
+											<SidebarMenuSub>
+												{workflowSteps
+													.filter((step) => step.module === module.id)
+													.map((step) => (
+														<SidebarMenuSubItem key={step.id}>
+															<SidebarMenuSubButton
+																asChild
+																isActive={location.pathname === `/help/workflow/${step.id}`}
+															>
+																<Link
+																	to="/help/workflow/$step"
+																	params={{ step: String(step.id) }}
+																>
+																	<span className="font-mono text-[10px] text-muted-foreground">
+																		{step.id}
+																	</span>
+																	<span>{t(`workflow.steps.${step.id}.shortTitle`)}</span>
+																</Link>
+															</SidebarMenuSubButton>
+														</SidebarMenuSubItem>
+													))}
+											</SidebarMenuSub>
+										</SidebarMenuItem>
+									</SidebarMenu>
+								</SidebarGroupContent>
+							) : null}
+						</SidebarGroup>
+					);
+				})}
+
+				<SidebarGroup>
+					<SidebarGroupContent>
+						<SidebarMenu>
+							<SidebarLink
+								to="/components"
+								label={t("nav.componentLibrary")}
+								icon={<ListIcon aria-hidden="true" />}
+								active={location.pathname === "/components"}
+							/>
+						</SidebarMenu>
+					</SidebarGroupContent>
+				</SidebarGroup>
+
 				<NavSecondary items={navSecondary} className="mt-auto" />
 			</SidebarContent>
 			<SidebarFooter>
 				<NavUser />
 			</SidebarFooter>
 		</Sidebar>
+	);
+}
+
+function SidebarLink({
+	to,
+	label,
+	icon,
+	active,
+}: {
+	to: "/" | "/markets" | "/features" | "/operations" | "/components";
+	label: string;
+	icon: ReactNode;
+	active: boolean;
+}) {
+	return (
+		<SidebarMenuItem>
+			<SidebarMenuButton asChild isActive={active} tooltip={label}>
+				<Link to={to}>
+					{icon}
+					<span>{label}</span>
+				</Link>
+			</SidebarMenuButton>
+		</SidebarMenuItem>
 	);
 }

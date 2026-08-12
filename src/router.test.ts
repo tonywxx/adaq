@@ -1,6 +1,7 @@
 /// <reference types="node" />
 
 import { readFileSync } from "node:fs";
+import { workflowModules, workflowSteps } from "@/features/workflow/workflow";
 
 test("workspace navigation keeps one authenticated shell mounted", () => {
 	const source = readFileSync(new URL("./router.tsx", import.meta.url), "utf8");
@@ -15,7 +16,7 @@ test("workspace navigation keeps one authenticated shell mounted", () => {
 	expect(source).toMatch(/path: "\/settings\/\$section"/);
 });
 
-test("reserves Operations at root and exposes localized market workspaces", () => {
+test("routes adaptive home, Help, Operations, and localized market workspaces", () => {
 	const routerSource = readFileSync(
 		new URL("./router.tsx", import.meta.url),
 		"utf8",
@@ -29,7 +30,12 @@ test("reserves Operations at root and exposes localized market workspaces", () =
 		"utf8",
 	);
 
-	expect(routerSource).toMatch(/path: "\/",\s*component: OperationsDashboard/);
+	expect(routerSource).toMatch(/path: "\/",\s*component: WorkflowHomePage/);
+	expect(routerSource).toMatch(
+		/path: "\/operations",\s*component: OperationsDashboard/,
+	);
+	expect(routerSource).toContain('path: "/help/workflow"');
+	expect(routerSource).toContain('path: "/help/workflow/$step"');
 	for (const path of [
 		"/markets",
 		"/markets/crypto",
@@ -39,13 +45,36 @@ test("reserves Operations at root and exposes localized market workspaces", () =
 		expect(routerSource).toContain(`path: "${path}"`);
 	}
 	expect(routerSource).not.toMatch(/path: "\/",\s*component: Dashboard/);
-	expect(sidebarSource).toMatch(/t\("nav\.markets"\)/);
+	expect(sidebarSource).toMatch(/t\("nav\.marketsData"\)/);
 	expect(sidebarSource).toMatch(/startsWith\("\/markets"\)/);
+	expect(sidebarSource).toContain('url: "/help/workflow"');
 	expect(marketsSource).toMatch(/staleTime: 5 \* 60_000/);
 	expect(marketsSource).toMatch(/gcTime: 30 \* 60_000/);
 	expect(marketsSource).toMatch(/aria-busy=/);
 	expect(marketsSource).toMatch(/role="alert"/);
 	expect(marketsSource).toMatch(/gapsUnknown/);
+});
+
+test("keeps the ten-step workflow ordered and mapped to four modules", () => {
+	expect(workflowSteps.map((step) => step.id)).toEqual([
+		1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+	]);
+	expect(
+		workflowModules.map((module) => [
+			module.id,
+			workflowSteps
+				.filter((step) => step.module === module.id)
+				.map((step) => step.id),
+		]),
+	).toEqual([
+		["factor", [1, 2, 3]],
+		["model", [4, 5, 6]],
+		["strategy", [7, 8]],
+		["operations", [9, 10]],
+	]);
+	for (const step of workflowSteps) {
+		expect(step.capability === "partial" || step.milestone).toBeTruthy();
+	}
 });
 
 test("Models switches immediately and keeps loading inside its controls", () => {

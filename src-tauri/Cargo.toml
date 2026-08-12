@@ -1,6 +1,6 @@
 [package]
 name = "adaq"
-version = "0.8.10"
+version = "0.9.0"
 description = "AI Quant Trading"
 authors = ["TONy.W"]
 edition = "2024"
@@ -52,15 +52,32 @@ sha2 = "0.11"
 hmac = "0.13"
 base64 = "0.22"
 rand = "0.8"
-chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "blocking", "rustls", "webpki-roots"] }
+chrono = { version = "0.4", default-features = false, features = [
+    "std",
+    "clock",
+    "serde",
+] }
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+    "crypto-rust",
+] }
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "blocking",
+    "rustls",
+    "webpki-roots",
+] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 arrow-array = "59.2"
 arrow-schema = "59.2"
 bytes = "1"
-parquet = { version = "59.2", default-features = false, features = ["arrow", "snap"] }
+parquet = { version = "59.2", default-features = false, features = [
+    "arrow",
+    "snap",
+] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

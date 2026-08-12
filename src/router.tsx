@@ -15,6 +15,10 @@ import {
 	MarketsOverview,
 	OperationsDashboard,
 } from "@/features/markets/markets-page";
+import {
+	WorkflowGuidePage,
+	WorkflowHomePage,
+} from "@/features/workflow/workflow-page";
 import Home from "@/layout/home";
 import { lazy, Suspense, useEffect } from "react";
 import { LAST_APP_PATH_KEY } from "@/lib/app-settings";
@@ -52,7 +56,25 @@ const rootRoute = createRootRoute({
 const appRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/",
+	component: WorkflowHomePage,
+});
+
+const operationsRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/operations",
 	component: OperationsDashboard,
+});
+
+const workflowGuideRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/help/workflow",
+	component: WorkflowGuidePage,
+});
+
+const workflowStepRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/help/workflow/$step",
+	component: WorkflowStepGuidePage,
 });
 
 const marketsRoute = createRoute({
@@ -154,8 +176,16 @@ function AppShell() {
 	);
 }
 
+function WorkflowStepGuidePage() {
+	const { step } = workflowStepRoute.useParams();
+	return <WorkflowGuidePage selectedStepId={Number(step)} />;
+}
+
 const routeTree = rootRoute.addChildren([
 	appRoute,
+	operationsRoute,
+	workflowGuideRoute,
+	workflowStepRoute,
 	marketsRoute,
 	cryptoMarketRoute,
 	ashareMarketRoute,

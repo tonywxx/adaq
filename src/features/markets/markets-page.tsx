@@ -153,6 +153,17 @@ export function OperationsDashboard() {
 		>
 			<Card>
 				<CardHeader>
+					<CardTitle>{t("operations.paperOperations")}</CardTitle>
+					<CardDescription>
+						{t("operations.paperOperationsDescription")}
+					</CardDescription>
+					<CardAction>
+						<Badge variant="outline">{t("operations.planned")}</Badge>
+					</CardAction>
+				</CardHeader>
+			</Card>
+			<Card>
+				<CardHeader>
 					<CardTitle>{t("operations.marketSessions")}</CardTitle>
 					<CardDescription>
 						{t("operations.marketSessionsDescription")}

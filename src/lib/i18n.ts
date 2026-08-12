@@ -14,6 +14,14 @@ const english = {
 	},
 	nav: {
 		dashboard: "Dashboard",
+		home: "Home",
+		help: "Help",
+		foundations: "Foundations",
+		marketsData: "Markets & Data",
+		featureEngineering: "Feature Engineering",
+		operationsDashboard: "Operations Dashboard",
+		workflowSteps: "Workflow steps",
+		componentLibrary: "Component Library",
 		components: "Components",
 		models: "Models",
 		backtest: "Backtest",
@@ -207,9 +215,179 @@ const english = {
 		title: "Operations Dashboard",
 		description:
 			"A focused home for system status and links to operational evidence.",
+		paperOperations: "Paper operations",
+		paperOperationsDescription:
+			"Bot deployment, reconciliation, orders, positions, alerts, and performance monitoring are planned for M15–M18.",
+		planned: "Planned · M15–M18",
 		marketSessions: "Market sessions",
 		marketSessionsDescription:
 			"Inspect each Venue without inventing a cross-market total.",
+	},
+	workflow: {
+		eyebrow: "Research-to-paper workflow",
+		title: "Build evidence, one decision at a time",
+		description:
+			"Follow the ten-step path from factor discovery to paper operations. Every step shows its entry, current capability, required evidence, and output.",
+		reviewFoundations: "Review foundations",
+		browseSteps: "Browse all steps",
+		openWorkspace: "Open workspace",
+		notImplemented: "Not implemented yet",
+		stepsTitle: "Ten-step workflow",
+		stepsDescription:
+			"Select a step to inspect its contract and open the capability that exists today.",
+		stepRange: "Steps {{range}}",
+		capability: {
+			available: "Available",
+			partial: "Partial",
+			planned: "Planned · {{milestone}}",
+		},
+		foundations: {
+			title: "Foundations",
+			description:
+				"Research starts from readable market evidence and reproducible features.",
+			data: {
+				title: "Markets & Data",
+				description:
+					"Inspect provider evidence, readable Snapshots, and point-in-time Universes.",
+			},
+			features: {
+				title: "Feature Engineering",
+				description:
+					"Define, fit, materialize, and inspect reproducible Feature Datasets.",
+			},
+		},
+		map: {
+			title: "Workflow map",
+			description:
+				"The visual overview loads independently; the semantic step list below is always available.",
+			graphTitle: "AdaQ Workflow",
+			graphDescription: "Ten evidence steps",
+			feedback:
+				"Step 10 feeds review decisions back into steps 1, 4, and 7 as new research attempts.",
+			loading: "Loading workflow infographic…",
+			unavailable: "Infographic unavailable",
+			unavailableDescription:
+				"Use the complete semantic step list below; no workflow action is hidden by this visual.",
+		},
+		modules: {
+			factor: { title: "Factor Research" },
+			model: { title: "Model Research" },
+			strategy: { title: "Strategy Validation" },
+			operations: { title: "Paper Operations" },
+		},
+		detail: {
+			output: "Primary output",
+			requirement: "Required evidence",
+			currentEntry: "Current entry",
+			plannedEntry:
+				"The contract is visible now; the executable workspace is planned for the listed milestone.",
+		},
+		evidence: {
+			title: "Workflow evidence boundaries",
+			recentTitle: "Recent Work",
+			recentDescription:
+				"Cross-workflow lineage aggregation is not implemented. Open the owning workspace to inspect its current evidence.",
+			blockersTitle: "Active Blockers",
+			blockersDescription:
+				"No synthetic blocker summary is shown. Existing workspaces remain the authority until V1 aggregation is available.",
+		},
+		steps: {
+			1: {
+				title: "Discover Factors",
+				shortTitle: "Discover",
+				summary:
+					"Explore hypotheses and record a reproducible Factor Candidate without treating discovery as validation.",
+				output: "Factor Candidate",
+				requirement: "Readable market evidence and a completed Feature Dataset.",
+				entry: "Dedicated Factor Discovery workspace planned for M11.",
+			},
+			2: {
+				title: "Evaluate & Promote Factors",
+				shortTitle: "Evaluate & promote",
+				summary:
+					"Evaluate a candidate and record Rejected, Research Validated, or Component Eligible.",
+				output: "Factor Promotion Decision",
+				requirement: "A selected Factor Candidate and frozen evaluation evidence.",
+				entry: "Factor evaluation and promotion workflow planned for M11.",
+			},
+			3: {
+				title: "Qualify, Package & Import Factor",
+				shortTitle: "Package factor",
+				summary:
+					"Qualify Component Eligible factor logic, package it, and import the component with explicit metadata.",
+				output: "Qualified Factor Package + Component Meta",
+				requirement: "A Component Eligible Factor Promotion Decision.",
+				entry: "Component Library import and qualification evidence.",
+			},
+			4: {
+				title: "Train Model",
+				shortTitle: "Train",
+				summary:
+					"Choose model and training method, bind validated research inputs, and produce a frozen artifact.",
+				output: "Validated Model Artifact",
+				requirement:
+					"Research Validated factors or qualified factor components plus a Feature Dataset.",
+				entry: "Dedicated Model Training workspace planned for M12.",
+			},
+			5: {
+				title: "Evaluate Model",
+				shortTitle: "Evaluate",
+				summary:
+					"Inspect forecast quality and limitations without promoting partial evidence as deployment proof.",
+				output: "Forecast Evaluation Report",
+				requirement: "A validated Model Artifact and frozen evaluation inputs.",
+				entry: "Models workspace · Evaluation Reports.",
+			},
+			6: {
+				title: "Qualify Model Deployment",
+				shortTitle: "Qualify deployment",
+				summary:
+					"Package and import Portable models, or runtime-qualify a Local Qlib Paper model.",
+				output: "Model Runtime Qualification Report",
+				requirement:
+					"A reviewed Forecast Evaluation Report and selected deployment path.",
+				entry: "Models workspace for package, evaluation, and runtime evidence.",
+			},
+			7: {
+				title: "Build Strategy",
+				shortTitle: "Build strategy",
+				summary:
+					"Bind qualified signals, parameters, and risk rules into a reproducible Strategy Candidate.",
+				output: "Strategy Candidate",
+				requirement:
+					"Qualified model runtime evidence and explicit strategy inputs.",
+				entry: "Dedicated Strategy Builder planned for M13.",
+			},
+			8: {
+				title: "Backtest, Validate & Qualify Strategy",
+				shortTitle: "Backtest & qualify",
+				summary:
+					"Run reproducible backtests, validate results, and qualify only evidence that passes review.",
+				output: "Validation Report + Qualified Strategy Package",
+				requirement:
+					"A Strategy Candidate, frozen inputs, and a compatible Snapshot.",
+				entry: "Backtest workspace; Validation remains available at /validation.",
+			},
+			9: {
+				title: "Prepare Paper Account & Deploy Bot",
+				shortTitle: "Deploy bot",
+				summary:
+					"Prepare a paper account, freeze the deployment bundle, and start the first Bot Runtime Attempt.",
+				output: "Bot Deployment Bundle + first Running Attempt",
+				requirement: "A Qualified Strategy Package and reconciled paper account.",
+				entry: "Paper deployment workflow planned for M15–M16.",
+			},
+			10: {
+				title: "Monitor, Diagnose & Review",
+				shortTitle: "Monitor & review",
+				summary:
+					"Monitor health, events, alerts, orders, positions, and paper outcomes; return findings to research.",
+				output: "Operational evidence + Research Review Decision",
+				requirement:
+					"An operational Bot Runtime Attempt or retained paper responsibility.",
+				entry: "Bot monitoring and research review planned for M17–M18.",
+			},
+		},
 	},
 	sidebar: {
 		title: "Sidebar",
@@ -717,6 +895,14 @@ const simplifiedChinese = {
 	},
 	nav: {
 		dashboard: "仪表盘",
+		home: "首页",
+		help: "帮助",
+		foundations: "基础准备",
+		marketsData: "市场与数据",
+		featureEngineering: "特征工程",
+		operationsDashboard: "运行仪表盘",
+		workflowSteps: "流程步骤",
+		componentLibrary: "组件库",
 		components: "组件",
 		models: "模型",
 		backtest: "回测",
@@ -905,8 +1091,156 @@ const simplifiedChinese = {
 	operations: {
 		title: "Operations Dashboard",
 		description: "用于系统状态与运行证据链接的聚焦首页。",
+		paperOperations: "模拟运行",
+		paperOperationsDescription:
+			"Bot 部署、对账、订单、持仓、告警与效果监测计划在 M15–M18 实现。",
+		planned: "计划中 · M15–M18",
 		marketSessions: "Market Sessions",
 		marketSessionsDescription: "检查每个 Venue，不制造跨市场总值。",
+	},
+	workflow: {
+		eyebrow: "从研究到模拟执行",
+		title: "用证据推动每一次决策",
+		description:
+			"沿着十个步骤，从因子发掘走到模拟运行。每一步都明确当前入口、能力状态、所需证据与产出。",
+		reviewFoundations: "检查基础准备",
+		browseSteps: "浏览全部步骤",
+		openWorkspace: "打开工作区",
+		notImplemented: "尚未实现",
+		stepsTitle: "十步工作流",
+		stepsDescription: "选择步骤查看契约，并进入当前已经存在的能力。",
+		stepRange: "步骤 {{range}}",
+		capability: {
+			available: "可用",
+			partial: "部分可用",
+			planned: "计划中 · {{milestone}}",
+		},
+		foundations: {
+			title: "基础准备",
+			description: "研究从可读取的市场证据与可复现的特征开始。",
+			data: {
+				title: "市场与数据",
+				description: "检查 Provider 证据、可读 Snapshot 与时点 Universe。",
+			},
+			features: {
+				title: "特征工程",
+				description: "定义、拟合、物化并检查可复现的 Feature Dataset。",
+			},
+		},
+		map: {
+			title: "流程图",
+			description: "流程图独立加载；下方的语义化步骤列表始终可用。",
+			graphTitle: "AdaQ 工作流",
+			graphDescription: "十个证据步骤",
+			feedback: "步骤 10 会把复盘决策反馈到步骤 1、4、7，并创建新的研究尝试。",
+			loading: "正在加载流程图…",
+			unavailable: "流程图暂不可用",
+			unavailableDescription:
+				"请使用下方完整步骤列表；任何操作都不会仅存在于图中。",
+		},
+		modules: {
+			factor: { title: "因子研究" },
+			model: { title: "模型研究" },
+			strategy: { title: "策略验证" },
+			operations: { title: "模拟运行" },
+		},
+		detail: {
+			output: "主要产出",
+			requirement: "所需证据",
+			currentEntry: "当前入口",
+			plannedEntry: "当前可查看步骤契约；可执行工作区将在所列里程碑中实现。",
+		},
+		evidence: {
+			title: "流程证据边界",
+			recentTitle: "最近工作",
+			recentDescription: "跨流程血缘聚合尚未实现。请打开所属工作区检查当前证据。",
+			blockersTitle: "当前阻塞",
+			blockersDescription:
+				"这里不展示虚构的阻塞汇总；V1 聚合完成前，以现有工作区为准。",
+		},
+		steps: {
+			1: {
+				title: "发掘因子",
+				shortTitle: "发掘",
+				summary: "探索研究假设并记录可复现的因子候选，不把发掘误当成验证。",
+				output: "因子候选",
+				requirement: "可读取的市场证据与已完成的 Feature Dataset。",
+				entry: "专用因子发掘工作区计划在 M11 实现。",
+			},
+			2: {
+				title: "评估并晋级因子",
+				shortTitle: "评估与晋级",
+				summary: "评估候选，并记录拒绝、研究验证通过或组件合格。",
+				output: "因子晋级决策",
+				requirement: "已选因子候选与冻结的评估证据。",
+				entry: "因子评估与晋级流程计划在 M11 实现。",
+			},
+			3: {
+				title: "鉴定、打包并导入因子",
+				shortTitle: "打包因子",
+				summary: "鉴定组件合格的因子逻辑，完成打包、导入，并记录明确元数据。",
+				output: "合格因子包 + 组件元数据",
+				requirement: "组件合格的因子晋级决策。",
+				entry: "组件库中的导入与鉴定证据。",
+			},
+			4: {
+				title: "训练模型",
+				shortTitle: "训练",
+				summary: "选择模型与训练方法，绑定已验证研究输入，并产出冻结工件。",
+				output: "已验证模型工件",
+				requirement: "研究验证通过的因子或合格因子组件，以及 Feature Dataset。",
+				entry: "专用模型训练工作区计划在 M12 实现。",
+			},
+			5: {
+				title: "评估模型",
+				shortTitle: "评估",
+				summary: "检查预测质量与局限，不把部分证据误当成部署证明。",
+				output: "预测评估报告",
+				requirement: "已验证模型工件与冻结的评估输入。",
+				entry: "模型工作区 · 评估报告。",
+			},
+			6: {
+				title: "鉴定模型部署",
+				shortTitle: "部署鉴定",
+				summary:
+					"打包并导入 Portable 模型，或对 Local Qlib Paper 模型完成运行时鉴定。",
+				output: "模型运行时鉴定报告",
+				requirement: "已复核预测评估报告与选定的部署路径。",
+				entry: "模型工作区中的包、评估与运行证据。",
+			},
+			7: {
+				title: "构建策略",
+				shortTitle: "构建策略",
+				summary: "把合格信号、参数与风控规则绑定成可复现的策略候选。",
+				output: "策略候选",
+				requirement: "合格模型运行证据与明确策略输入。",
+				entry: "专用策略构建器计划在 M13 实现。",
+			},
+			8: {
+				title: "回测、验证并鉴定策略",
+				shortTitle: "回测与鉴定",
+				summary: "运行可复现回测、验证结果，只晋级通过复核的证据。",
+				output: "验证报告 + 合格策略包",
+				requirement: "策略候选、冻结输入与兼容 Snapshot。",
+				entry: "回测工作区；验证仍可通过 /validation 访问。",
+			},
+			9: {
+				title: "准备模拟账户并部署 Bot",
+				shortTitle: "部署 Bot",
+				summary: "准备模拟账户、冻结部署包，并启动首个 Bot Runtime Attempt。",
+				output: "Bot 部署包 + 首个运行尝试",
+				requirement: "合格策略包与完成对账的模拟账户。",
+				entry: "模拟部署流程计划在 M15–M16 实现。",
+			},
+			10: {
+				title: "监测、诊断并复盘",
+				shortTitle: "监测与复盘",
+				summary: "监测健康、事件、告警、订单、持仓与模拟结果，并把结论返回研究。",
+				output: "运行证据 + 研究复盘决策",
+				requirement: "运行中的 Bot Runtime Attempt 或留存的模拟运行责任。",
+				entry: "Bot 监测与研究复盘计划在 M17–M18 实现。",
+			},
+		},
 	},
 	sidebar: {
 		title: "侧边栏",
