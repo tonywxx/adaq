@@ -631,6 +631,8 @@ pub struct FeatureSlot {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FeatureFactor {
     pub alias: String,
+    #[serde(default)]
+    pub feature_slots: Vec<String>,
     pub parameters: Vec<Value>,
     pub output_names: Vec<String>,
     pub warmup_bars: u32,
@@ -913,6 +915,19 @@ impl FeaturePlan {
             .and_then(Value::as_str)
             .map(str::to_owned);
         if stored_schema_version.as_deref() != Some(FEATURE_PLAN_SCHEMA_VERSION) {
+            return Err(PlanLoadError::ResetRequired {
+                stored_schema_version,
+            });
+        }
+        if raw
+            .get("factors")
+            .and_then(Value::as_array)
+            .is_some_and(|factors| {
+                factors
+                    .iter()
+                    .any(|factor| factor.get("featureSlots").is_none())
+            })
+        {
             return Err(PlanLoadError::ResetRequired {
                 stored_schema_version,
             });
@@ -1526,6 +1541,18 @@ fn validate_factors(factors: &[FeatureFactor], issues: &mut Vec<ValidationIssue>
         if factor.output_names.is_empty() || factor.output_names.len() > MAX_FEATURE_OUTPUTS {
             issues.push(issue("invalid-factor-contract", Some(factor.alias.clone())));
         }
+        let mut feature_slots = BTreeSet::new();
+        if factor.feature_slots.len() > MAX_FEATURE_OUTPUTS
+            || factor
+                .feature_slots
+                .iter()
+                .any(|name| !is_lower_kebab(name) || !feature_slots.insert(name))
+        {
+            issues.push(issue(
+                "invalid-factor-feature-slots",
+                Some(factor.alias.clone()),
+            ));
+        }
         let mut outputs = BTreeSet::new();
         if factor
             .output_names
@@ -2008,6 +2035,16 @@ pub fn is_lower_kebab(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_factor_plan_shape_requires_explicit_reset() {
+        let error = FeaturePlan::load_for_engine(
+            br#"{"planSchemaVersion":"2.0.0","factors":[{"alias":"legacy"}]}"#,
+            &FeatureEngineIdentity::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, PlanLoadError::ResetRequired { .. }));
+    }
 
     #[test]
     fn jcs_sorts_property_names_by_utf16_code_units() {

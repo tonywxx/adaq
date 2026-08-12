@@ -2484,15 +2484,23 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
-    fn bar(open_time_ms: i64, close: &str) -> factor_abi::exports::adaq::factor::api::ClosedBar {
-        factor_abi::exports::adaq::factor::api::ClosedBar {
-            open_time_ms,
-            open: close.to_owned(),
-            high: close.to_owned(),
-            low: close.to_owned(),
-            close: close.to_owned(),
-            base_volume: "1".to_owned(),
-            quote_volume: close.to_owned(),
+    fn bar(
+        open_time_ms: i64,
+        close: &str,
+    ) -> factor_abi::exports::adaq::factor::time_series_api::TimeSeriesRow {
+        factor_abi::exports::adaq::factor::time_series_api::TimeSeriesRow {
+            instrument_id: "component-run".into(),
+            observation_time_ms: open_time_ms,
+            slots: vec![
+                factor_abi::exports::adaq::factor::time_series_api::FeatureValue {
+                    value: close.parse().unwrap(),
+                    available_at_ms: open_time_ms,
+                },
+                factor_abi::exports::adaq::factor::time_series_api::FeatureValue {
+                    value: 1.0,
+                    available_at_ms: open_time_ms,
+                },
+            ],
         }
     }
 
@@ -2500,6 +2508,16 @@ mod tests {
     fn factor_loader_starts_empty() {
         let error = WasmLoader::default().describe_factor().err().unwrap();
         assert_eq!(error, "Factor component is not loaded");
+    }
+
+    #[test]
+    fn factor_loader_derives_v2_slots_for_schema_only_loading() {
+        let loader = WasmLoader::default();
+        loader.load(&fixture("factor")).unwrap();
+        assert_eq!(
+            loader.describe_factor().unwrap().feature_slots,
+            ["close", "base-volume"]
+        );
     }
 
     #[test]
@@ -2512,7 +2530,20 @@ mod tests {
         ];
 
         let whole = WasmLoader::default();
-        whole.load(&path).unwrap();
+        whole
+            .load_factor_time_series_bytes(
+                &std::fs::read(&path).unwrap(),
+                vec![
+                    factor_abi::exports::adaq::factor::time_series_api::FeatureSlot {
+                        name: "close".into(),
+                    },
+                    factor_abi::exports::adaq::factor::time_series_api::FeatureSlot {
+                        name: "base-volume".into(),
+                    },
+                ],
+                &[],
+            )
+            .unwrap();
         assert_eq!(
             whole.describe_factor().unwrap().output_names,
             ["close-change"]
@@ -2520,13 +2551,28 @@ mod tests {
         let one_chunk = whole.process_factor(bars.clone()).unwrap();
 
         let chunked = WasmLoader::default();
-        chunked.load(&path).unwrap();
+        chunked
+            .load_factor_time_series_bytes(
+                &std::fs::read(&path).unwrap(),
+                vec![
+                    factor_abi::exports::adaq::factor::time_series_api::FeatureSlot {
+                        name: "close".into(),
+                    },
+                    factor_abi::exports::adaq::factor::time_series_api::FeatureSlot {
+                        name: "base-volume".into(),
+                    },
+                ],
+                &[],
+            )
+            .unwrap();
         let mut two_chunks = chunked.process_factor(bars[..1].to_vec()).unwrap();
         two_chunks.extend(chunked.process_factor(bars[1..].to_vec()).unwrap());
 
         assert_eq!(one_chunk.len(), two_chunks.len());
         for (whole, chunked) in one_chunk.iter().zip(two_chunks.iter()) {
-            match (whole, chunked) {
+            assert_eq!(whole.instrument_id, chunked.instrument_id);
+            assert_eq!(whole.observation_time_ms, chunked.observation_time_ms);
+            match (&whole.values, &chunked.values) {
                 (None, None) => {}
                 (Some(whole), Some(chunked)) => {
                     assert_eq!(whole.len(), chunked.len());
@@ -2538,8 +2584,11 @@ mod tests {
                 _ => panic!("chunk boundaries changed Factor warmup output"),
             }
         }
-        assert!(one_chunk[0].is_none());
-        assert_eq!(one_chunk[1].as_ref().unwrap()[0].name, "close-change");
+        assert!(one_chunk[0].values.is_none());
+        assert_eq!(
+            one_chunk[1].values.as_ref().unwrap()[0].name,
+            "close-change"
+        );
     }
 
     #[test]

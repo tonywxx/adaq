@@ -1,0 +1,12 @@
+{
+  "manifestSchemaVersion": "1.0.0",
+  "componentId": "77777777-7777-4777-8777-777777777777",
+  "version": "1.0.0",
+  "name": "Cross-Sectional Factor Fixture",
+  "kind": "factor",
+  "sdkVersion": "0.1.0",
+  "abiVersion": "2.0.0",
+  "factorScope": "cross-sectional",
+  "featureSlots": [{"name": "close", "source": {"kind": "market", "field": "close"}}],
+  "outputNames": ["cross-sectional-score"]
+}

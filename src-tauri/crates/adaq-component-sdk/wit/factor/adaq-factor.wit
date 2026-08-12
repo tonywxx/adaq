@@ -1,7 +1,7 @@
-package adaq:factor@1.0.0;
+package adaq:factor@2.0.0;
 
-interface api {
-    /// Exact base-10 text: -?(0|[1-9][0-9]*)(\.[0-9]+)?
+interface time-series-api {
+    /// Exact base-10 text for parameter values.
     type decimal = string;
 
     variant parameter-value {
@@ -11,14 +11,51 @@ interface api {
         text(string),
     }
 
-    record closed-bar {
-        open-time-ms: s64,
-        open: decimal,
-        high: decimal,
-        low: decimal,
-        close: decimal,
-        base-volume: decimal,
-        quote-volume: decimal,
+    enum parameter-type {
+        decimal,
+        integer,
+        boolean,
+        text,
+    }
+
+    record parameter-definition {
+        name: string,
+        parameter-type: parameter-type,
+        default-value: string,
+    }
+
+    record feature-slot {
+        /// Ordered, immutable host-bound Feature Slot.
+        name: string,
+    }
+
+    enum factor-scope {
+        time-series,
+        cross-sectional,
+    }
+
+    enum unavailability-reason {
+        warmup,
+        bar-gap,
+        missing-input,
+        missing-dependency,
+        not-yet-available,
+        unknown-universe,
+        insufficient-coverage,
+        undefined-arithmetic,
+        invalid-upstream,
+    }
+
+    record feature-value {
+        value: f64,
+        available-at-ms: s64,
+    }
+
+    record time-series-row {
+        instrument-id: string,
+        observation-time-ms: s64,
+        /// Dense Present values in the same order as create(feature-slots).
+        slots: list<feature-value>,
     }
 
     record named-scalar {
@@ -27,22 +64,131 @@ interface api {
     }
 
     record factor-schema {
-        /// Unique component-defined names in fixed order.
+        scope: factor-scope,
+        /// Exact schema identity paired with the Factor ABI version.
+        schema-version: string,
+        feature-slots: list<feature-slot>,
+        parameters: list<parameter-definition>,
         output-names: list<string>,
-        /// Number of initial Closed Bars that may produce `none`.
         warmup-bars: u32,
     }
 
+    record factor-result {
+        instrument-id: string,
+        observation-time-ms: s64,
+        /// none is a typed warmup or unavailable result; identity is still required.
+        values: option<list<named-scalar>>,
+    }
+
     resource instance {
-        /// Input and output are chronological. State continues across calls.
-        process: func(bars: list<closed-bar>)
-            -> result<list<option<list<named-scalar>>>, string>;
+        /// Input and output preserve causal row identity and order. State continues across calls.
+        process: func(rows: list<time-series-row>)
+            -> result<list<factor-result>, string>;
     }
 
     describe: func() -> result<factor-schema, string>;
-    create: func(parameters: list<parameter-value>) -> result<instance, string>;
+    create: func(feature-slots: list<feature-slot>, parameters: list<parameter-value>)
+        -> result<instance, string>;
 }
 
-world factor {
-    export api;
+interface cross-sectional-api {
+    type decimal = string;
+
+    variant parameter-value {
+        decimal(decimal),
+        integer(s64),
+        boolean(bool),
+        text(string),
+    }
+
+    enum parameter-type {
+        decimal,
+        integer,
+        boolean,
+        text,
+    }
+
+    record parameter-definition {
+        name: string,
+        parameter-type: parameter-type,
+        default-value: string,
+    }
+
+    record feature-slot {
+        name: string,
+    }
+
+    enum factor-scope {
+        time-series,
+        cross-sectional,
+    }
+
+    enum unavailability-reason {
+        warmup,
+        bar-gap,
+        missing-input,
+        missing-dependency,
+        not-yet-available,
+        unknown-universe,
+        insufficient-coverage,
+        undefined-arithmetic,
+        invalid-upstream,
+    }
+
+    record feature-value {
+        value: f64,
+        available-at-ms: s64,
+    }
+
+    variant feature-cell {
+        available(feature-value),
+        unavailable(unavailability-reason),
+    }
+
+    record cross-sectional-row {
+        instrument-id: string,
+        observation-time-ms: s64,
+        /// Every Point-in-Time Universe member remains in deterministic order.
+        slots: list<feature-cell>,
+    }
+
+    record named-scalar {
+        name: string,
+        value: f64,
+    }
+
+    record factor-schema {
+        scope: factor-scope,
+        /// Exact schema identity paired with the Factor ABI version.
+        schema-version: string,
+        feature-slots: list<feature-slot>,
+        parameters: list<parameter-definition>,
+        output-names: list<string>,
+        warmup-bars: u32,
+    }
+
+    record factor-result {
+        instrument-id: string,
+        observation-time-ms: s64,
+        /// One identity-preserving result is required for every Universe member.
+        values: option<list<named-scalar>>,
+    }
+
+    resource instance {
+        /// Input and output preserve Point-in-Time Universe identity and order.
+        process: func(rows: list<cross-sectional-row>)
+            -> result<list<factor-result>, string>;
+    }
+
+    describe: func() -> result<factor-schema, string>;
+    create: func(feature-slots: list<feature-slot>, parameters: list<parameter-value>)
+        -> result<instance, string>;
+}
+
+world time-series {
+    export time-series-api;
+}
+
+world cross-sectional {
+    export cross-sectional-api;
 }

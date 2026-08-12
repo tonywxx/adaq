@@ -1,0 +1,13 @@
+[package]
+name = "adaq-factor-research"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Tauri-independent Factor research contracts and metric catalog"
+repository = "https://github.com/tonywxx/adaq"
+
+[dependencies]
+adaq-feature-engine = { path = "../adaq-feature-engine" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["serde", "v4"] }

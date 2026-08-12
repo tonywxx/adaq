@@ -13,10 +13,11 @@
     "name": {"type": "string", "minLength": 1, "description": "Human-readable Component name."},
     "kind": {"enum": ["factor", "strategy", "model"], "description": "Component ABI kind."},
     "sdkVersion": {"const": "0.1.0", "description": "Exact SDK version."},
-    "abiVersion": {"const": "1.0.0", "description": "Exact Component ABI version."},
+    "abiVersion": {"description": "Exact Component ABI version for the declared Component kind."},
     "wasmSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "SHA-256 of component.wasm; set during packaging."},
     "parameters": {"type": "array", "items": {"$ref": "#/$defs/parameter"}, "description": "Declared Component parameters with typed defaults."},
-    "featureSlots": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/slot"}, "description": "Ordered Strategy Feature Slots. Strategy requires one or more; Factor forbids them."},
+    "factorScope": {"enum": ["time-series", "cross-sectional"], "description": "The single Factor ABI v2 execution scope."},
+    "featureSlots": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/slot"}, "description": "Ordered host-bound Feature Slots. Factor ABI v2 and Strategy require one or more; Model requires one or more."},
     "outputNames": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/identifier"}, "description": "Ordered Factor output identifiers. Factor permits at most 64."},
     "dependencies": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/dependency"}, "description": "External Factor dependencies with unique aliases."},
     "warmupBars": {"type": "integer", "minimum": 0, "description": "Factor output availability Warmup; it is not convergence."},
@@ -25,9 +26,9 @@
     "modelOutputs": {"type":"array", "minItems":1, "maxItems":64, "items":{"type":"object","additionalProperties":false,"required":["name","predictionKind","forecastTarget","valueScale","horizonBars"],"properties":{"name":{"$ref":"#/$defs/identifier"},"predictionKind":{"$ref":"#/$defs/predictionKind"},"forecastTarget":{"$ref":"#/$defs/forecastTarget"},"valueScale":{"$ref":"#/$defs/valueScale"},"horizonBars":{"type":"integer","minimum":1}}}}
   },
   "allOf": [
-    {"if": {"properties": {"kind": {"const": "strategy"}}}, "then": {"required": ["featureSlots"], "properties": {"featureSlots": {"minItems": 1}, "outputNames": {"maxItems": 0}}}},
-    {"if": {"properties": {"kind": {"const": "factor"}}}, "then": {"properties": {"featureSlots": {"maxItems": 0}}}},
-    {"if":{"properties":{"kind":{"const":"model"}}},"then":{"required":["featureSlots","modelScope","modelArtifact","modelOutputs"],"properties":{"featureSlots":{"minItems":1},"outputNames":{"maxItems":0},"modelScope":{"const":"single-instrument"}}}}
+    {"if": {"properties": {"kind": {"const": "factor"}}}, "then": {"required": ["factorScope", "featureSlots"], "properties": {"abiVersion": {"const": "2.0.0"}, "factorScope": {"enum": ["time-series", "cross-sectional"]}, "featureSlots": {"minItems": 1, "maxItems": 64}, "outputNames": {"minItems": 1, "maxItems": 64}}}},
+    {"if": {"properties": {"kind": {"const": "strategy"}}}, "then": {"required": ["featureSlots"], "properties": {"abiVersion": {"const": "1.0.0"}, "featureSlots": {"minItems": 1}, "outputNames": {"maxItems": 0}}}},
+    {"if":{"properties":{"kind":{"const":"model"}}},"then":{"required":["featureSlots","modelScope","modelArtifact","modelOutputs"],"properties":{"abiVersion":{"const":"1.0.0"},"featureSlots":{"minItems":1},"outputNames":{"maxItems":0},"modelScope":{"const":"single-instrument"}}}}
   ],
   "$defs": {
     "identifier": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$", "maxLength": 64},

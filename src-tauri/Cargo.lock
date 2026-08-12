@@ -125,6 +125,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "adaq-factor-research"
+version = "0.1.0"
+dependencies = [
+ "adaq-feature-engine",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "adaq-feature-engine"
 version = "0.1.0"
 dependencies = [

@@ -1,6 +1,7 @@
-use adaq_component_sdk::factor::{
-    ClosedBar, FactorSchema, Guest, GuestInstance, Instance as FactorInstance, NamedScalar,
-    ParameterValue,
+use adaq_component_sdk::factor::time_series::{
+    FactorResult, FactorSchema, FactorScope, FeatureSlot, Guest, GuestInstance,
+    Instance as FactorInstance, NamedScalar, ParameterDefinition, ParameterType, ParameterValue,
+    TimeSeriesRow,
 };
 use adaq_component_sdk::{decimal_to_f64, parse_decimal};
 use core::cell::Cell;
@@ -16,12 +17,30 @@ impl Guest for Component {
 
     fn describe() -> Result<FactorSchema, String> {
         Ok(FactorSchema {
+            scope: FactorScope::TimeSeries,
+            schema_version: adaq_component_sdk::FACTOR_SCHEMA_VERSION.into(),
+            feature_slots: vec![
+                FeatureSlot {
+                    name: "close".into(),
+                },
+                FeatureSlot {
+                    name: "base-volume".into(),
+                },
+            ],
+            parameters: vec![ParameterDefinition {
+                name: "period".into(),
+                parameter_type: ParameterType::Integer,
+                default_value: "1".into(),
+            }],
             output_names: vec!["close-change".to_owned()],
             warmup_bars: 1,
         })
     }
 
-    fn create(_parameters: Vec<ParameterValue>) -> Result<FactorInstance, String> {
+    fn create(
+        _feature_slots: Vec<FeatureSlot>,
+        _parameters: Vec<ParameterValue>,
+    ) -> Result<FactorInstance, String> {
         Ok(FactorInstance::new(Instance {
             previous_close: Cell::new(None),
         }))
@@ -29,34 +48,45 @@ impl Guest for Component {
 }
 
 impl GuestInstance for Instance {
-    fn process(&self, bars: Vec<ClosedBar>) -> Result<Vec<Option<Vec<NamedScalar>>>, String> {
-        bars.into_iter()
-            .map(|bar| {
-                let close = parse_decimal(&bar.close)?;
+    fn process(&self, rows: Vec<TimeSeriesRow>) -> Result<Vec<FactorResult>, String> {
+        rows.into_iter()
+            .map(|row| {
+                let close = parse_decimal(&row.slots[0].value.to_string())?;
                 if close.is_zero() {
                     self.previous_close.set(Some(close));
-                    return Ok(None);
+                    return Ok(FactorResult {
+                        instrument_id: row.instrument_id,
+                        observation_time_ms: row.observation_time_ms,
+                        values: None,
+                    });
                 }
-                if parse_decimal(&bar.base_volume)?.is_zero() {
-                    return Ok(Some(vec![NamedScalar {
-                        name: "wrong-output".to_owned(),
-                        value: 0.0,
-                    }]));
+                if row.slots[1].value == 0.0 {
+                    return Ok(FactorResult {
+                        instrument_id: row.instrument_id,
+                        observation_time_ms: row.observation_time_ms,
+                        values: Some(vec![NamedScalar {
+                            name: "wrong-output".to_owned(),
+                            value: 0.0,
+                        }]),
+                    });
                 }
-                let output = match self.previous_close.get() {
-                    Some(previous_close) => Some(vec![NamedScalar {
+                let values = self.previous_close.get().map(|previous_close| {
+                    vec![NamedScalar {
                         name: "close-change".to_owned(),
-                        value: decimal_to_f64(close - previous_close)?,
-                    }]),
-                    None => None,
-                };
+                        value: decimal_to_f64(close - previous_close).unwrap_or(f64::NAN),
+                    }]
+                });
                 self.previous_close.set(Some(close));
-                Ok(output)
+                Ok(FactorResult {
+                    instrument_id: row.instrument_id,
+                    observation_time_ms: row.observation_time_ms,
+                    values,
+                })
             })
             .collect()
     }
 }
 
-adaq_component_sdk::factor::bindings::export_factor!(
-    Component with_types_in adaq_component_sdk::factor::bindings
+adaq_component_sdk::factor::time_series::bindings::export_factor!(
+    Component with_types_in adaq_component_sdk::factor::time_series::bindings
 );

@@ -1,17 +1,58 @@
-use adaq_component_sdk::factor::{ClosedBar, FactorSchema, Guest, GuestInstance, Instance, NamedScalar, ParameterValue};
-use adaq_component_sdk::decimal_to_f64;
-
+use adaq_component_sdk::factor::time_series::{
+    FactorResult, FactorSchema, FactorScope, FeatureSlot, Guest, GuestInstance,
+    Instance as FactorInstance, NamedScalar, ParameterValue, TimeSeriesRow,
+};
 struct Component;
 struct Values;
 
 impl Guest for Component {
     type Instance = Values;
-    fn describe() -> Result<FactorSchema, String> { Ok(FactorSchema { output_names: vec!["close".into(), "quote-volume".into()], warmup_bars: 0 }) }
-    fn create(_: Vec<ParameterValue>) -> Result<Instance, String> { Ok(Instance::new(Values)) }
-}
-impl GuestInstance for Values {
-    fn process(&self, bars: Vec<ClosedBar>) -> Result<Vec<Option<Vec<NamedScalar>>>, String> {
-        bars.into_iter().map(|bar| Ok(Some(vec![NamedScalar { name: "close".into(), value: decimal_to_f64(adaq_component_sdk::parse_decimal(&bar.close)?)? }, NamedScalar { name: "quote-volume".into(), value: decimal_to_f64(adaq_component_sdk::parse_decimal(&bar.quote_volume)?)? }]))).collect()
+
+    fn describe() -> Result<FactorSchema, String> {
+        Ok(FactorSchema {
+            scope: FactorScope::TimeSeries,
+            schema_version: adaq_component_sdk::FACTOR_SCHEMA_VERSION.into(),
+            feature_slots: vec![
+                FeatureSlot { name: "close".into() },
+                FeatureSlot { name: "quote-volume".into() },
+            ],
+            parameters: vec![],
+            output_names: vec!["close".into(), "quote-volume".into()],
+            warmup_bars: 0,
+        })
+    }
+
+    fn create(
+        _feature_slots: Vec<FeatureSlot>,
+        _parameters: Vec<ParameterValue>,
+    ) -> Result<FactorInstance, String> {
+        Ok(FactorInstance::new(Values))
     }
 }
-adaq_component_sdk::factor::bindings::export_factor!(Component with_types_in adaq_component_sdk::factor::bindings);
+
+impl GuestInstance for Values {
+    fn process(&self, rows: Vec<TimeSeriesRow>) -> Result<Vec<FactorResult>, String> {
+        rows.into_iter()
+            .map(|row| {
+                Ok(FactorResult {
+                    instrument_id: row.instrument_id,
+                    observation_time_ms: row.observation_time_ms,
+                    values: Some(vec![
+                        NamedScalar {
+                            name: "close".into(),
+                            value: row.slots[0].value,
+                        },
+                        NamedScalar {
+                            name: "quote-volume".into(),
+                            value: row.slots[1].value,
+                        },
+                    ]),
+                })
+            })
+            .collect()
+    }
+}
+
+adaq_component_sdk::factor::time_series::bindings::export_factor!(
+    Component with_types_in adaq_component_sdk::factor::time_series::bindings
+);

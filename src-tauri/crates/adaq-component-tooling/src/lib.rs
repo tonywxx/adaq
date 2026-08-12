@@ -9,7 +9,7 @@ pub use cli::{build_project, run_cli};
 pub use conformance::{component_parameters, verify_package};
 pub use package::{
     BuiltinForecastTarget, ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
-    FeatureSlotDefinition, FeatureSlotSource, ForecastTarget, ForecastTargetValueType,
+    FactorScope, FeatureSlotDefinition, FeatureSlotSource, ForecastTarget, ForecastTargetValueType,
     ForecastValueScale, MarketField, ModelArtifact, ModelOutput, ModelScope, PackageError,
     ParameterDefinition, ParameterType, PredictionKind, StrategyArchitecture,
     check_manifest_compatibility, pack_component, strategy_architecture, validate_model_outputs,
@@ -23,5 +23,7 @@ pub use plan::{
     validate_and_freeze_feature_plan_with_factors,
     validate_and_freeze_feature_plan_with_factors_and_parameters,
 };
-pub use runtime::{ComponentParameterValue, FactorSchema, RunLimits, WasmLoader};
+pub use runtime::{
+    ComponentParameterValue, FactorParameterSchema, FactorSchema, RunLimits, WasmLoader,
+};
 pub use templates::{ComponentTemplate, create_project};

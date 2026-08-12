@@ -47,7 +47,7 @@ Large Python/PyTorch models use the [External Kronos Adapter boundary](../../exa
 
 ## Factors
 
-Factors receive exact decimal-string OHLCV Bars and return declared named finite `f64` outputs. Keep financial arithmetic decimal until conversion is necessary for analysis. `outputNames` is ordered, unique lower-kebab-case, and limited to 64; every present result row must supply exactly that declaration and order. `warmupBars` declares initial absence, not convergence. Factors cannot declare Feature Slots.
+Factor ABI v2 Components declare exactly one `factorScope` (`time-series` or `cross-sectional`) and an ordered, non-empty `featureSlots` list. Time-series Factors receive dense host-resolved Feature values for one instrument in causal order; Cross-sectional Factors receive complete, deterministically ordered Point-in-Time Universe rows, including typed unavailable cells. Neither scope fetches data or reads files. Keep financial arithmetic decimal until conversion is necessary for analysis. `outputNames` is ordered, unique lower-kebab-case, and limited to 64; every result must preserve row identity/order and return exactly that declaration with finite values or typed absence. `warmupBars` declares initial absence, not convergence. Factor ABI v1 packages are incompatible and require an explicit device-level reset; ADAQ does not migrate or dual-read them.
 
 Factor aliases identify Factor Instances, not Component IDs: the same package may occur more than once under different aliases and parameter bindings. Each alias is independently recreated after a Bar Gap.
 

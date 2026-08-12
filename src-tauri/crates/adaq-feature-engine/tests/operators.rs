@@ -185,6 +185,7 @@ fn dependency_slots_share_batch_and_stateful_evaluation() {
     let plan = FeaturePlan::freeze(FeaturePlanDraft {
         factors: vec![adaq_feature_engine::FeatureFactor {
             alias: "momentum".into(),
+            feature_slots: Vec::new(),
             parameters: Vec::new(),
             output_names: vec!["score".into()],
             warmup_bars: 1,
@@ -298,6 +299,7 @@ fn restart_replay_and_chunk_partitions_are_bit_identical_across_gaps_dependencie
         definitions: vec![definition],
         factors: vec![FeatureFactor {
             alias: "momentum".into(),
+            feature_slots: Vec::new(),
             parameters: Vec::new(),
             output_names: vec!["score".into()],
             warmup_bars: 0,

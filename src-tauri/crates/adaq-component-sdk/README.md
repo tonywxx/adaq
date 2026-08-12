@@ -8,7 +8,7 @@ Start from an `adaq-component new` template instead of wiring the SDK manually. 
 
 ## Component contract
 
-- A Factor receives Closed Bars and returns named analytical values. Prices, quantities, and volumes enter as decimal strings; parse them with `parse_decimal`. Convert to `f64` only for analytical output.
+- A Factor ABI v2 Component declares one scope and ordered Feature Slots. Time-series Factors receive host-resolved rows for one instrument; Cross-sectional Factors receive ordered Point-in-Time Universe rows with typed unavailable cells. Prices, quantities, and volumes remain decimal in the host contract; convert to `f64` only for analytical output. Factor results preserve identity/order and return 1–64 declared finite outputs or typed absence.
 - A Strategy receives pre-bound numeric Feature Slots and returns one complete Target Exposure decimal string per frame.
 - Do not read files, the network, environment variables, clocks, or randomness. The host rejects ambient WASI imports and verifies deterministic replay and chunk independence.
 - Keep `sdkVersion` and `abiVersion` in `manifest.json` unchanged unless the matching SDK and host contract are intentionally upgraded.

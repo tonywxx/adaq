@@ -22,7 +22,7 @@ adaq-component new strategy strategy-momentum-trend
 
 ## 2. 理解 Factor
 
-Factor 接收使用精确十进制字符串表示的 OHLCV Closed Bars。它保留最近五个收盘价并输出：
+时间序列 Factor 声明一个有序的 `close` 功能槽位。它接收主机解析的单 instrument 行，保留最近五个收盘价并输出：
 
 ```text
 close-momentum-5 =（当前收盘价 - 五根 Bar 前收盘价）/ 五根 Bar 前收盘价

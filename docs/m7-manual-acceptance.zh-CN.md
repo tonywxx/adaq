@@ -30,38 +30,50 @@ SDK 尚未单独发布。在每个生成的 `Cargo.toml` 中，把 `adaq-compone
 在 `m7-close-change/src/lib.rs` 中用以下内容替换生成的源码：
 
 ```rust
-use adaq_component_sdk::{decimal_to_f64, parse_decimal};
-use adaq_component_sdk::factor::{ClosedBar, FactorSchema, Guest, GuestInstance, Instance as FactorInstance, NamedScalar, ParameterValue};
 use core::cell::Cell;
+use adaq_component_sdk::factor::time_series::{
+    FactorResult, FactorSchema, FactorScope, FeatureSlot, Guest, GuestInstance,
+    Instance as FactorInstance, NamedScalar, ParameterValue, TimeSeriesRow,
+};
 
 struct Component;
-struct Instance { previous_close: Cell<Option<adaq_component_sdk::Decimal>> }
+struct Instance { previous_close: Cell<Option<f64>> }
 
 impl Guest for Component {
     type Instance = Instance;
     fn describe() -> Result<FactorSchema, String> {
-        Ok(FactorSchema { output_names: vec!["close-change".to_owned()], warmup_bars: 1 })
+        Ok(FactorSchema {
+            scope: FactorScope::TimeSeries,
+            schema_version: adaq_component_sdk::FACTOR_SCHEMA_VERSION.into(),
+            feature_slots: vec![FeatureSlot { name: "close".into() }],
+            parameters: vec![],
+            output_names: vec!["close-change".into()],
+            warmup_bars: 1,
+        })
     }
-    fn create(_parameters: Vec<ParameterValue>) -> Result<FactorInstance, String> {
+    fn create(_feature_slots: Vec<FeatureSlot>, _parameters: Vec<ParameterValue>) -> Result<FactorInstance, String> {
         Ok(FactorInstance::new(Instance { previous_close: Cell::new(None) }))
     }
 }
 impl GuestInstance for Instance {
-    fn process(&self, bars: Vec<ClosedBar>) -> Result<Vec<Option<Vec<NamedScalar>>>, String> {
-        bars.into_iter().map(|bar| {
-            let close = parse_decimal(&bar.close)?;
-            let output = match self.previous_close.get() {
-                Some(previous) => Some(vec![NamedScalar {
-                    name: "close-change".to_owned(), value: decimal_to_f64(close - previous)?,
-                }]),
-                None => None,
-            };
+    fn process(&self, rows: Vec<TimeSeriesRow>) -> Result<Vec<FactorResult>, String> {
+        rows.into_iter().map(|row| {
+            let close = row.slots.first().ok_or("missing close Feature Slot")?.value;
+            let output = self.previous_close.get().map(|previous| vec![NamedScalar {
+                name: "close-change".into(), value: (close - previous) / previous,
+            }]);
             self.previous_close.set(Some(close));
-            Ok(output)
+            Ok(FactorResult {
+                instrument_id: row.instrument_id,
+                observation_time_ms: row.observation_time_ms,
+                values: output,
+            })
         }).collect()
     }
 }
-adaq_component_sdk::factor::bindings::export_factor!(Component with_types_in adaq_component_sdk::factor::bindings);
+adaq_component_sdk::factor::time_series::bindings::export_factor!(
+    Component with_types_in adaq_component_sdk::factor::time_series::bindings
+);
 ```
 
 在 `m7-close-change/manifest.json` 中保留生成的 `componentId`、`sdkVersion` 和 `name`；完整 Factor 契约如下：
@@ -74,7 +86,9 @@ adaq_component_sdk::factor::bindings::export_factor!(Component with_types_in ada
   "name": "M7 Close Change",
   "kind": "factor",
   "sdkVersion": "<generated sdkVersion>",
-  "abiVersion": "1.0.0",
+  "abiVersion": "2.0.0",
+  "factorScope": "time-series",
+  "featureSlots": [{"name": "close", "source": {"kind": "market", "field": "close"}}],
   "outputNames": ["close-change"],
   "warmupBars": 1
 }

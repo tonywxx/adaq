@@ -341,12 +341,49 @@
       "if": {
         "properties": {
           "kind": {
+            "const": "factor"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "abiVersion": {
+            "const": "2.0.0"
+          },
+          "factorScope": {
+            "enum": [
+              "time-series",
+              "cross-sectional"
+            ]
+          },
+          "featureSlots": {
+            "maxItems": 64,
+            "minItems": 1
+          },
+          "outputNames": {
+            "maxItems": 64,
+            "minItems": 1
+          }
+        },
+        "required": [
+          "factorScope",
+          "featureSlots"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
             "const": "strategy"
           }
         }
       },
       "then": {
         "properties": {
+          "abiVersion": {
+            "const": "1.0.0"
+          },
           "featureSlots": {
             "minItems": 1
           },
@@ -363,28 +400,15 @@
       "if": {
         "properties": {
           "kind": {
-            "const": "factor"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "featureSlots": {
-            "maxItems": 0
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "kind": {
             "const": "model"
           }
         }
       },
       "then": {
         "properties": {
+          "abiVersion": {
+            "const": "1.0.0"
+          },
           "featureSlots": {
             "minItems": 1
           },
@@ -407,8 +431,7 @@
   "description": "The machine-readable Manifest 1.0.0 contract for ADAQ Factor, Strategy, and Model Components.",
   "properties": {
     "abiVersion": {
-      "const": "1.0.0",
-      "description": "Exact Component ABI version."
+      "description": "Exact Component ABI version for the declared Component kind."
     },
     "componentId": {
       "description": "Immutable Component identity.",
@@ -423,12 +446,19 @@
       "maxItems": 64,
       "type": "array"
     },
+    "factorScope": {
+      "description": "The single Factor ABI v2 execution scope.",
+      "enum": [
+        "time-series",
+        "cross-sectional"
+      ]
+    },
     "featureSlots": {
-      "description": "Ordered Strategy Feature Slots. Strategy requires one or more; Factor forbids them.",
+      "description": "Ordered host-bound Feature Slots. Factor ABI v2 and Strategy require one or more; Model requires one or more.",
       "items": {
         "$ref": "#/$defs/slot"
       },
-      "maxItems": 256,
+      "maxItems": 64,
       "type": "array"
     },
     "kind": {

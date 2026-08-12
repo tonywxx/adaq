@@ -1,3 +1,1 @@
-{
-  "manifestSchemaVersion": "1.0.0", "componentId": "55555555-5555-4555-8555-555555555555", "version": "1.0.0", "name": "Multi Output Fixture", "kind": "factor", "sdkVersion": "0.1.0", "abiVersion": "1.0.0", "outputNames": ["close", "quote-volume"]
-}
+{"manifestSchemaVersion":"1.0.0","componentId":"55555555-5555-4555-8555-555555555555","version":"1.0.0","name":"Multi Output Fixture","kind":"factor","sdkVersion":"0.1.0","abiVersion":"2.0.0","factorScope":"time-series","featureSlots":[{"name":"close","source":{"kind":"market","field":"close"}},{"name":"quote-volume","source":{"kind":"market","field":"quote-volume"}}],"outputNames":["close","quote-volume"]}

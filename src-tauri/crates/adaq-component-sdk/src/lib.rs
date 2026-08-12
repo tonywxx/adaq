@@ -2,21 +2,46 @@ pub use rust_decimal::Decimal;
 
 pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const ABI_VERSION: &str = "1.0.0";
+pub const FACTOR_ABI_VERSION: &str = "2.0.0";
+pub const FACTOR_SCHEMA_VERSION: &str = "adaq-factor-schema@2.0.0";
 
 #[cfg(feature = "factor")]
 pub mod factor {
-    pub mod bindings {
-        wit_bindgen::generate!({
-            path: "wit/factor",
-            world: "factor",
-            pub_export_macro: true,
-            export_macro_name: "export_factor",
-        });
+    pub mod time_series {
+        pub mod bindings {
+            wit_bindgen::generate!({
+                path: "wit/factor",
+                world: "time-series",
+                pub_export_macro: true,
+                export_macro_name: "export_factor",
+            });
+        }
+
+        pub use bindings::exports::adaq::factor::time_series_api::{
+            FactorResult, FactorSchema, FactorScope, FeatureSlot, FeatureValue, Guest,
+            GuestInstance, Instance, NamedScalar, ParameterDefinition, ParameterType,
+            ParameterValue, TimeSeriesRow,
+        };
     }
 
-    pub use bindings::exports::adaq::factor::api::{
-        ClosedBar, FactorSchema, Guest, GuestInstance, Instance, NamedScalar, ParameterValue,
-    };
+    pub mod cross_sectional {
+        pub mod bindings {
+            wit_bindgen::generate!({
+                path: "wit/factor",
+                world: "cross-sectional",
+                pub_export_macro: true,
+                export_macro_name: "export_factor",
+            });
+        }
+
+        pub use bindings::exports::adaq::factor::cross_sectional_api::{
+            CrossSectionalRow, FactorResult, FactorSchema, FactorScope, FeatureCell, FeatureSlot,
+            FeatureValue, Guest, GuestInstance, Instance, NamedScalar, ParameterDefinition,
+            ParameterType, ParameterValue,
+        };
+    }
+
+    pub use time_series::*;
 }
 
 #[cfg(feature = "strategy")]
@@ -95,12 +120,21 @@ pub mod model {
 
 #[cfg(feature = "host")]
 pub mod host {
-    pub mod factor_abi {
+    pub mod factor_time_series_abi {
         wasmtime::component::bindgen!({
             path: "wit/factor",
-            world: "factor",
+            world: "time-series",
         });
     }
+
+    pub mod factor_cross_sectional_abi {
+        wasmtime::component::bindgen!({
+            path: "wit/factor",
+            world: "cross-sectional",
+        });
+    }
+
+    pub use factor_time_series_abi as factor_abi;
 
     pub mod strategy_abi {
         wasmtime::component::bindgen!({

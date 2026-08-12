@@ -217,6 +217,7 @@ impl FrozenFeaturePlan {
             .zip(self.factor_parameters.iter())
             .map(|(factor, parameters)| FrozenFactorView {
                 alias: &factor.alias,
+                feature_slots: &factor.feature_slots,
                 parameters,
                 output_names: &factor.output_names,
                 warmup_bars: factor.warmup_bars,
@@ -270,6 +271,7 @@ pub enum FrozenSourceView<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct FrozenFactorView<'a> {
     pub alias: &'a str,
+    pub feature_slots: &'a [String],
     pub parameters: &'a [ComponentParameterValue],
     pub output_names: &'a [String],
     pub warmup_bars: u32,
@@ -642,6 +644,12 @@ pub fn validate_and_freeze_feature_plan_with_bindings_and_parameters(
         .values()
         .map(|input| FeatureFactor {
             alias: input.alias.to_owned(),
+            feature_slots: input
+                .manifest
+                .feature_slots
+                .iter()
+                .map(|slot| slot.name.clone())
+                .collect(),
             parameters: input
                 .parameters
                 .iter()
@@ -971,6 +979,7 @@ mod tests {
             version: Version::new(1, 0, 0),
             name: "Market Strategy".into(),
             kind: ComponentKind::Strategy,
+            factor_scope: None,
             sdk_version: Version::parse(adaq_component_sdk::SDK_VERSION).unwrap(),
             abi_version: Version::parse(adaq_component_sdk::ABI_VERSION).unwrap(),
             wasm_sha256: String::new(),

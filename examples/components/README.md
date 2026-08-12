@@ -22,7 +22,7 @@ adaq-component new strategy strategy-momentum-trend
 
 ## 2. Understand the Factor
 
-The Factor receives exact decimal-string OHLCV Closed Bars. It keeps the latest five closes and emits:
+The time-series Factor declares one ordered `close` Feature Slot. It receives host-resolved rows for one instrument, keeps the latest five closes, and emits:
 
 ```text
 close-momentum-5 = (current close - close five Bars ago) / close five Bars ago

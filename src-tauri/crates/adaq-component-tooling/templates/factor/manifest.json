@@ -5,7 +5,9 @@
   "name": "{{display_name}}",
   "kind": "factor",
   "sdkVersion": "{{sdk_version}}",
-  "abiVersion": "1.0.0",
+  "abiVersion": "2.0.0",
+  "factorScope": "time-series",
+  "featureSlots": [{"name": "close", "source": {"kind": "market", "field": "close"}}],
   "outputNames": ["close-change"],
   "warmupBars": 1
 }

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use adaq_backtest_core::TargetDecision;
+use adaq_component_sdk::host::factor_abi;
 use adaq_component_sdk::host::strategy_abi;
 use adaq_component_tooling::{
     ComponentParameterValue, FrozenFeaturePlan, FrozenSourceView, RunLimits, WasmLoader,
@@ -11,7 +12,7 @@ use adaq_feature_engine::{
     FeatureInputEvent, FeatureMarketBar, FeatureObservation, FeatureObservationValue,
     FeatureUnavailabilityReason,
 };
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 
 const MAX_CLOSED_BARS: usize = 1_000_000;
 const MAX_GUEST_CAUSE_BYTES: usize = 4 * 1024;
@@ -526,10 +527,25 @@ fn evaluate_factors(
     let mut evaluated = HashMap::new();
     for factor in request.plan.factors() {
         let loader = WasmLoader::with_limits(request.limits);
-        loader.load_with_parameters(paths[factor.alias], factor.parameters)?;
+        loader.load_factor_time_series_bytes(
+            &std::fs::read(paths[factor.alias]).map_err(|error| error.to_string())?,
+            factor
+                .feature_slots
+                .iter()
+                .map(
+                    |name| factor_abi::exports::adaq::factor::time_series_api::FeatureSlot {
+                        name: name.clone(),
+                    },
+                )
+                .collect(),
+            factor.parameters,
+        )?;
         let mut rows = Vec::with_capacity(bars.len());
         for chunk in bars.chunks(4096) {
-            let input = chunk.iter().map(factor_bar).collect::<Vec<_>>();
+            let input = chunk
+                .iter()
+                .map(|bar| factor_row(factor.feature_slots, bar))
+                .collect::<Result<Vec<_>, _>>()?;
             let output = loader.process_factor(input).map_err(|error| {
                 let (cause, _) = bounded_context(&error);
                 format!("factor-guest-error:{}:{cause}", factor.alias)
@@ -544,7 +560,15 @@ fn evaluate_factors(
             }
             for (offset, row) in output.into_iter().enumerate() {
                 let bar = &chunk[offset];
-                let row = row.map(|values| {
+                if row.instrument_id != "component-run"
+                    || row.observation_time_ms != bar.open_time_ms
+                {
+                    return Err(format!(
+                        "Factor {} returned an invalid row identity at Bar {}",
+                        factor.alias, bar.open_time_ms
+                    ));
+                }
+                let row = row.values.map(|values| {
                     validate_factor_row(
                         factor.alias,
                         factor.output_names,
@@ -572,24 +596,47 @@ fn bounded_context(value: &str) -> (String, bool) {
     (value[..end].into(), true)
 }
 
-fn factor_bar(
+fn factor_row(
+    feature_slots: &[String],
     bar: &OhlcvBar,
-) -> adaq_component_sdk::host::factor_abi::exports::adaq::factor::api::ClosedBar {
-    adaq_component_sdk::host::factor_abi::exports::adaq::factor::api::ClosedBar {
-        open_time_ms: bar.open_time_ms,
-        open: bar.open.to_string(),
-        high: bar.high.to_string(),
-        low: bar.low.to_string(),
-        close: bar.close.to_string(),
-        base_volume: bar.base_volume.to_string(),
-        quote_volume: bar.quote_volume.to_string(),
-    }
+) -> Result<factor_abi::exports::adaq::factor::time_series_api::TimeSeriesRow, String> {
+    let slots = feature_slots
+        .iter()
+        .map(|slot| {
+            let value = match slot.as_str() {
+                "open" => bar.open,
+                "high" => bar.high,
+                "low" => bar.low,
+                "close" => bar.close,
+                "base-volume" => bar.base_volume,
+                "quote-volume" => bar.quote_volume,
+                other => return Err(format!("Factor Feature Slot has no host binding: {other}")),
+            };
+            let value = value
+                .to_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| format!("Factor Feature Slot is not finite: {slot}"))?;
+            Ok(
+                factor_abi::exports::adaq::factor::time_series_api::FeatureValue {
+                    value,
+                    available_at_ms: bar.open_time_ms,
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(
+        factor_abi::exports::adaq::factor::time_series_api::TimeSeriesRow {
+            instrument_id: "component-run".into(),
+            observation_time_ms: bar.open_time_ms,
+            slots,
+        },
+    )
 }
 
 fn validate_factor_row<'a>(
     alias: &str,
     expected: &[String],
-    values: Vec<adaq_component_sdk::host::factor_abi::exports::adaq::factor::api::NamedScalar>,
+    values: Vec<factor_abi::exports::adaq::factor::time_series_api::NamedScalar>,
     open_time_ms: i64,
     retained: impl Iterator<Item = &'a str>,
 ) -> Result<HashMap<String, f64>, String> {

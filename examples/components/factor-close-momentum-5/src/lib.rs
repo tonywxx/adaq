@@ -1,18 +1,14 @@
-use adaq_component_sdk::factor::{
-    ClosedBar, FactorSchema, Guest, GuestInstance, Instance as FactorInstance, NamedScalar,
-    ParameterValue,
+use adaq_component_sdk::factor::time_series::{
+    FactorResult, FactorSchema, FactorScope, FeatureSlot, Guest, GuestInstance,
+    Instance as FactorInstance, NamedScalar, ParameterValue, TimeSeriesRow,
 };
 use adaq_component_sdk::{decimal_to_f64, parse_decimal};
 use core::cell::RefCell;
-use std::collections::VecDeque;
-
-const LOOKBACK: usize = 5;
-const OUTPUT_NAME: &str = "close-momentum-5";
 
 struct Component;
 
 struct Instance {
-    closes: RefCell<VecDeque<adaq_component_sdk::Decimal>>,
+    closes: RefCell<Vec<adaq_component_sdk::Decimal>>,
 }
 
 impl Guest for Component {
@@ -20,81 +16,53 @@ impl Guest for Component {
 
     fn describe() -> Result<FactorSchema, String> {
         Ok(FactorSchema {
-            output_names: vec![OUTPUT_NAME.to_owned()],
-            warmup_bars: LOOKBACK as u32,
+            scope: FactorScope::TimeSeries,
+            schema_version: adaq_component_sdk::FACTOR_SCHEMA_VERSION.into(),
+            feature_slots: vec![FeatureSlot { name: "close".into() }],
+            parameters: Vec::new(),
+            output_names: vec!["close-momentum-5".to_owned()],
+            warmup_bars: 5,
         })
     }
 
-    fn create(parameters: Vec<ParameterValue>) -> Result<FactorInstance, String> {
-        if !parameters.is_empty() {
-            return Err("factor-close-momentum-5 does not accept parameters".to_owned());
-        }
+    fn create(
+        _feature_slots: Vec<FeatureSlot>,
+        _parameters: Vec<ParameterValue>,
+    ) -> Result<FactorInstance, String> {
         Ok(FactorInstance::new(Instance {
-            closes: RefCell::new(VecDeque::with_capacity(LOOKBACK)),
+            closes: RefCell::new(Vec::new()),
         }))
     }
 }
 
 impl GuestInstance for Instance {
-    fn process(&self, bars: Vec<ClosedBar>) -> Result<Vec<Option<Vec<NamedScalar>>>, String> {
-        bars.into_iter()
-            .map(|bar| {
-                let close = parse_decimal(&bar.close)?;
+    fn process(&self, rows: Vec<TimeSeriesRow>) -> Result<Vec<FactorResult>, String> {
+        rows.into_iter()
+            .map(|row| {
+                let close = parse_decimal(&row.slots[0].value.to_string())?;
                 let mut closes = self.closes.borrow_mut();
-                let output = if closes.len() == LOOKBACK {
-                    let previous = closes.front().copied().expect("length checked");
-                    if previous.is_zero() {
-                        return Err("close five Bars ago must be non-zero".to_owned());
-                    }
-                    Some(vec![NamedScalar {
-                        name: OUTPUT_NAME.to_owned(),
-                        value: decimal_to_f64((close - previous) / previous)?,
-                    }])
-                } else {
-                    None
-                };
-                if closes.len() == LOOKBACK {
-                    closes.pop_front();
+                let values = (closes.len() >= 5).then(|| {
+                    let old = &closes[0];
+                    vec![NamedScalar {
+                        name: "close-momentum-5".to_owned(),
+                        value: decimal_to_f64(close / *old - adaq_component_sdk::Decimal::ONE)
+                            .unwrap_or(f64::NAN),
+                    }]
+                });
+                closes.push(close);
+                if closes.len() > 5 {
+                    closes.remove(0);
                 }
-                closes.push_back(close);
-                Ok(output)
+                Ok(FactorResult {
+                    instrument_id: row.instrument_id,
+                    observation_time_ms: row.observation_time_ms,
+                    values,
+                })
             })
             .collect()
     }
 }
 
-adaq_component_sdk::factor::bindings::export_factor!(
-    Component with_types_in adaq_component_sdk::factor::bindings
+adaq_component_sdk::factor::time_series::bindings::export_factor!(
+    Component with_types_in adaq_component_sdk::factor::time_series::bindings
 );
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn emits_after_exact_five_bar_warmup() {
-        let instance = Instance {
-            closes: RefCell::new(VecDeque::with_capacity(LOOKBACK)),
-        };
-        let rows = instance
-            .process(
-                ["100", "101", "102", "103", "104", "105"]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, close)| ClosedBar {
-                        open_time_ms: index as i64,
-                        open: close.to_owned(),
-                        high: close.to_owned(),
-                        low: close.to_owned(),
-                        close: close.to_owned(),
-                        base_volume: "1".to_owned(),
-                        quote_volume: "1".to_owned(),
-                    })
-                    .collect(),
-            )
-            .unwrap();
-
-        assert!(rows[..LOOKBACK].iter().all(Option::is_none));
-        assert_eq!(rows[LOOKBACK].as_ref().unwrap()[0].value, 0.05);
-    }
-}

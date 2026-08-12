@@ -27,6 +27,13 @@ pub enum ComponentKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum FactorScope {
+    TimeSeries,
+    CrossSectional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum StrategyArchitecture {
     SignalDriven,
     Composed,
@@ -156,6 +163,8 @@ pub struct ComponentManifest {
     pub version: Version,
     pub name: String,
     pub kind: ComponentKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factor_scope: Option<FactorScope>,
     pub sdk_version: Version,
     pub abi_version: Version,
     #[serde(default)]
@@ -343,6 +352,7 @@ pub fn check_manifest_compatibility(
 
     let breaking = previous.manifest_schema_version != current.manifest_schema_version
         || previous.abi_version != current.abi_version
+        || previous.factor_scope != current.factor_scope
         || previous.feature_slots != current.feature_slots
         || previous.dependencies != current.dependencies
         || previous.warmup_bars != current.warmup_bars
@@ -371,10 +381,21 @@ pub fn check_manifest_compatibility(
 }
 
 fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), PackageError> {
+    let expected_abi = if manifest.kind == ComponentKind::Factor {
+        Version::parse(adaq_component_sdk::FACTOR_ABI_VERSION).unwrap()
+    } else {
+        Version::parse(adaq_component_sdk::ABI_VERSION).unwrap()
+    };
+    if manifest.kind == ComponentKind::Factor && manifest.abi_version != expected_abi {
+        return Err(PackageError(format!(
+            "reset-required: Factor ABI {} is incompatible with Factor ABI v2; perform an explicit device-level reset",
+            manifest.abi_version
+        )));
+    }
     if manifest.name.trim().is_empty()
         || manifest.manifest_schema_version != Version::new(1, 0, 0)
         || manifest.sdk_version != Version::parse(adaq_component_sdk::SDK_VERSION).unwrap()
-        || manifest.abi_version != Version::parse(adaq_component_sdk::ABI_VERSION).unwrap()
+        || manifest.abi_version != expected_abi
         || manifest.wasm_sha256 != sha256(wasm)
         || !wasm.starts_with(b"\0asm")
     {
@@ -412,9 +433,19 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
         "parameter",
     )?;
     match manifest.kind {
-        ComponentKind::Factor if !manifest.feature_slots.is_empty() => {
+        ComponentKind::Factor if manifest.factor_scope.is_none() => {
             return Err(PackageError(
-                "Factor manifests cannot declare Feature Slots".into(),
+                "Factor manifests must declare exactly one factorScope".into(),
+            ));
+        }
+        ComponentKind::Factor if manifest.feature_slots.is_empty() => {
+            return Err(PackageError(
+                "Factor manifests must declare ordered Feature Slots".into(),
+            ));
+        }
+        ComponentKind::Factor if manifest.output_names.is_empty() => {
+            return Err(PackageError(
+                "Factor manifests must declare 1..=64 outputs".into(),
             ));
         }
         ComponentKind::Strategy if manifest.feature_slots.is_empty() => {
@@ -456,6 +487,11 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
         manifest.feature_slots.iter().map(|slot| slot.name.as_str()),
         "Feature Slot",
     )?;
+    if manifest.feature_slots.len() > 64 {
+        return Err(PackageError(
+            "Components may declare at most 64 Feature Slots".into(),
+        ));
+    }
     if manifest.output_names.len() > 64 {
         return Err(PackageError(
             "Factor Components may declare at most 64 outputs".into(),
@@ -735,11 +771,17 @@ mod tests {
             version: Version::new(1, 2, 3),
             name: "Fixture".into(),
             kind: ComponentKind::Factor,
+            factor_scope: Some(FactorScope::TimeSeries),
             sdk_version: Version::parse(adaq_component_sdk::SDK_VERSION).unwrap(),
-            abi_version: Version::new(1, 0, 0),
+            abi_version: Version::parse(adaq_component_sdk::FACTOR_ABI_VERSION).unwrap(),
             wasm_sha256: String::new(),
             parameters: vec![],
-            feature_slots: vec![],
+            feature_slots: vec![FeatureSlotDefinition {
+                name: "close".into(),
+                source: FeatureSlotSource::Market {
+                    field: MarketField::Close,
+                },
+            }],
             output_names: vec!["value".into()],
             dependencies: vec![],
             warmup_bars: 0,
@@ -747,6 +789,14 @@ mod tests {
             model_outputs: vec![],
             model_artifact: None,
         }
+    }
+
+    fn strategy_manifest() -> ComponentManifest {
+        let mut manifest = manifest();
+        manifest.kind = ComponentKind::Strategy;
+        manifest.factor_scope = None;
+        manifest.abi_version = Version::parse(adaq_component_sdk::ABI_VERSION).unwrap();
+        manifest
     }
 
     #[test]
@@ -780,6 +830,25 @@ mod tests {
         invalid.manifest_schema_version = Version::new(2, 0, 0);
         invalid.wasm_sha256 = sha256(wasm);
         assert!(validate_manifest(&invalid, wasm).is_err());
+    }
+
+    #[test]
+    fn factor_manifests_require_outputs_and_reset_incompatible_abi() {
+        let wasm = b"\0asm\x0d\0\x01\0";
+        let mut invalid = manifest();
+        invalid.output_names.clear();
+        invalid.wasm_sha256 = sha256(wasm);
+        assert!(validate_manifest(&invalid, wasm).is_err());
+
+        invalid = manifest();
+        invalid.abi_version = Version::new(3, 0, 0);
+        invalid.wasm_sha256 = sha256(wasm);
+        assert!(
+            validate_manifest(&invalid, wasm)
+                .unwrap_err()
+                .0
+                .starts_with("reset-required:")
+        );
     }
 
     #[test]
@@ -827,7 +896,7 @@ mod tests {
                 horizon_bars: 1,
             },
         };
-        let mut strategy = manifest();
+        let mut strategy = strategy_manifest();
         strategy.kind = ComponentKind::Strategy;
         strategy.output_names.clear();
         strategy.feature_slots = vec![signal.clone()];
@@ -867,7 +936,7 @@ mod tests {
             vec!["é"],
             vec!["a2345678901234567890123456789012345678901234567890123456789012345"],
         ] {
-            let mut manifest = manifest();
+            let mut manifest = strategy_manifest();
             manifest.kind = ComponentKind::Strategy;
             manifest.output_names.clear();
             manifest.feature_slots = names
@@ -887,7 +956,7 @@ mod tests {
     #[test]
     fn external_slots_require_declared_and_used_dependencies() {
         let wasm = b"\0asm\x0d\0\x01\0";
-        let mut strategy = manifest();
+        let mut strategy = strategy_manifest();
         strategy.kind = ComponentKind::Strategy;
         strategy.output_names.clear();
         strategy.feature_slots = vec![FeatureSlotDefinition {
@@ -937,7 +1006,7 @@ mod tests {
     #[test]
     fn strategy_manifests_cannot_treat_outputs_as_a_minor_capability() {
         let wasm = b"\0asm\x0d\0\x01\0";
-        let mut strategy = manifest();
+        let mut strategy = strategy_manifest();
         strategy.kind = ComponentKind::Strategy;
         strategy.feature_slots = vec![FeatureSlotDefinition {
             name: "close".into(),
@@ -952,7 +1021,7 @@ mod tests {
     #[test]
     fn model_contract_requires_a_valid_aligned_forecast_definition() {
         let wasm = b"\0asm\x0d\0\x01\0";
-        let mut model = manifest();
+        let mut model = strategy_manifest();
         model.kind = ComponentKind::Model;
         model.output_names.clear();
         model.feature_slots = vec![FeatureSlotDefinition {

@@ -1,0 +1,12 @@
+[package]
+name = "m11-cross-sectional-factor-fixture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+adaq-component-sdk = { path = "../../crates/adaq-component-sdk", features = ["factor"] }
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]

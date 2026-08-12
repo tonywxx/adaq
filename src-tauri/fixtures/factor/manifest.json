@@ -5,7 +5,9 @@
   "name": "Close Change Fixture",
   "kind": "factor",
   "sdkVersion": "0.1.0",
-  "abiVersion": "1.0.0",
+  "abiVersion": "2.0.0",
+  "factorScope": "time-series",
+  "featureSlots": [{"name": "close", "source": {"kind": "market", "field": "close"}}, {"name": "base-volume", "source": {"kind": "market", "field": "base-volume"}}],
   "parameters": [
     {
       "name": "period",
