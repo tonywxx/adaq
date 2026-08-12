@@ -1,8 +1,8 @@
-# ADAQ V1 Delivery Roadmap after M9
+# ADAQ V1 Delivery Roadmap after M10
 
 [简体中文](./v1-roadmap.zh-CN.md)
 
-Status: accepted V1 architecture and dependency-ordered delivery baseline. M1 through M9 are the implemented research and multi-market foundation; every milestone from M10 through M18 is required before the expanded V1 is declared usable.
+Status: accepted V1 architecture and dependency-ordered delivery baseline. M1 through M10 are the implemented research, multi-market, and Feature Engineering foundation; every milestone from M11 through M18 is required before the expanded V1 is declared usable.
 
 This roadmap implements the complete research-to-Paper feedback system. It is not a reduced demonstration loop. Real-money order submission remains a separately qualified post-V1 capability.
 
@@ -180,7 +180,7 @@ flowchart TD
     I --> J
 ```
 
-M9 stops at trustworthy multi-market data, secure non-ordering provider connections, localization, and market inspection. Feature computation starts in M10; Factor, Model, Strategy, Paper order submission, Bot execution, Monitoring, and feedback remain required later V1 milestones rather than M9 placeholders.
+M10 stops at finalized immutable Feature Datasets and the equivalent Feature Engine; Factor research begins in M11.
 
 The initial executable frontier is #67, #68, and #69. They have no open blockers and may proceed independently; all later children carry native GitHub `blocked_by` edges matching the diagram.
 

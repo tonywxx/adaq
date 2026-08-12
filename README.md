@@ -26,7 +26,7 @@ AdaQ V1 is a local-first research, backtesting, and simulation desktop app. It d
 
 AdaQ V1 is a **local-first research, backtesting, and simulation** desktop app. It executes no real account orders. The closed loop you can use today is: inspect OKX Spot, China A-share, and U.S. equity market evidence; develop or import a Component; prepare exact Market Data Snapshots and Feature Plans; generate or import immutable Forecast Signal evidence; evaluate predictions; run a Dataset-first sandboxed Strategy Backtest; inspect persisted provenance and results; and produce research-validation evidence.
 
-Not included in the current M9 delivery (roadmap M10–M18): Feature Engineering, Factor research, Qlib Model training, portfolio Strategies, Paper Trading accounts and execution, supervised Trading Bots, Marketplace publishing, and any real-money trading.
+Not included in the current M10 delivery (roadmap M11–M18): Factor research, Qlib Model training, portfolio Strategies, Paper Trading accounts and execution, supervised Trading Bots, Marketplace publishing, and any real-money trading.
 
 ## Screenshots
 
@@ -51,8 +51,9 @@ Not included in the current M9 delivery (roadmap M10–M18): Feature Engineering
 | M7 | Research Workspace Productization. Components, Backtest, and Validation provide guided, auditable desktop workflows over immutable local evidence; the [bilingual manual acceptance guides](docs/m7-manual-acceptance.md) cover the complete from-empty-project path. |
 | M8 | Model research and Dataset-first Backtests. Native Model Components and external `.adaq-signals` evidence produce immutable Forecast Signal Datasets, Forecast Evaluation Reports, and compatible Signal-driven or Hybrid Strategy Runs. The [bilingual manual acceptance guides](docs/m8-manual-acceptance.md) cover the complete reviewed path. |
 | M9 | Multi-market data and platform foundation. OKX Spot, China A-shares through `akshare-rs`, and U.S. equities through Alpaca Basic provide inspectable Source/Canonical/Quality/Snapshot evidence, secure non-ordering Paper/Demo connections, bilingual Markets routes, and one user-scoped Watchlist. The [M9 bilingual manual acceptance guides](docs/m9-manual-acceptance.md) cover the final cross-platform review path. |
+| M10 | Feature Engineering. Causal Feature Definitions and Feature Plan 2.0 form immutable revision chains; Fitting Protocols publish fitted Transformation Artifacts; materialization publishes immutable Parquet Feature Datasets with atomic completion and recovery; batch and observation evaluation are equivalent under one evaluator; User-scoped Feature APIs run over one persistent FIFO background runner; and the localized `/features` workspace covers Definitions, Fitting, Materialization, Datasets, and Preview. The [M10 bilingual manual acceptance guides](docs/m10-manual-acceptance.md) cover the final cross-platform review path. |
 
-Together, M1-M9 provide the current closed loop: inspect trustworthy multi-market evidence, develop or import a Component, freeze exact market data and Feature Plans, produce or import immutable Forecast Signal evidence, evaluate predictions, run a Dataset-first sandboxed Strategy Backtest, inspect persisted provenance and results, and produce research-validation evidence.
+Together, M1-M10 provide the current closed loop: inspect trustworthy multi-market evidence, develop or import a Component, freeze exact market data and Feature Plans, compute Features and finalize immutable Feature Datasets, produce or import immutable Forecast Signal evidence, evaluate predictions, run a Dataset-first sandboxed Strategy Backtest, inspect persisted provenance and results, and produce research-validation evidence.
 
 ## Getting Started
 
@@ -182,8 +183,9 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 | [M7 Manual Acceptance](docs/m7-manual-acceptance.md) | [M7 人工验收中文](docs/m7-manual-acceptance.zh-CN.md) | Complete human-reviewed research-workspace acceptance path |
 | [M8 Manual Acceptance](docs/m8-manual-acceptance.md) | [M8 人工验收中文](docs/m8-manual-acceptance.zh-CN.md) | Complete Model, Forecast Evaluation, and Dataset-first Backtest acceptance path |
 | [M9 Manual Acceptance](docs/m9-manual-acceptance.md) | [M9 人工验收中文](docs/m9-manual-acceptance.zh-CN.md) | Bilingual cross-platform acceptance path for localization, connections, three markets, quality, Snapshots, and GUI boundaries |
+| [M10 Manual Acceptance](docs/m10-manual-acceptance.md) | [M10 人工验收中文](docs/m10-manual-acceptance.zh-CN.md) | Bilingual cross-platform acceptance path for Feature Definitions, fitting, materialization, Feature Datasets, and the `/features` workspace |
 | [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | External `Kronos-small` inference, canonical Forecast Signals, evaluation, and Dataset-first Backtest |
-| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | M10–M18 delivery plan after the M9 data foundation (Paper Trading, Bots, and later V1 work) |
+| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | M11–M18 delivery plan after the M10 Feature Engineering foundation (Factor research, Paper Trading, Bots, and later V1 work) |
 
 Microsoft Qlib training integration is future work (M12) and will use the same External Model Adapter boundary. M8 does not include training, an embedded or controlled Python Runner, Verified external inference, or Marketplace publishing.
 

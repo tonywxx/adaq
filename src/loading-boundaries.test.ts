@@ -10,8 +10,9 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	const components = read("./features/components/components-page.tsx");
 	const models = read("./features/models/models-page.tsx");
 	const validation = read("./features/validation/validation-page.tsx");
+	const features = read("./features/features/features-page.tsx");
 
-	for (const source of [backtest, components, models, validation]) {
+	for (const source of [backtest, components, models, validation, features]) {
 		expect(source).not.toMatch(/if \(pageLoading\) return <PageLoadingSkeleton/);
 	}
 	expect(backtest).toMatch(/loading\.runHistory/);
@@ -36,4 +37,25 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	expect(validation).toMatch(/loading\.completedRuns/);
 	expect(validation).toMatch(/loading\.protocols/);
 	expect(validation).toMatch(/loading\.reports/);
+
+	// The /features shell paints immediately; session wait shows bounded
+	// aria-busy feedback, and each owning view manages its own loading state.
+	expect(features).toMatch(/aria-busy="true"/);
+	expect(features).toMatch(
+		/<DefinitionsView userId=\{userId\} adapter=\{adapter\} \/>/,
+	);
+	expect(features).toMatch(
+		/<FittingView userId=\{userId\} adapter=\{adapter\} \/>/,
+	);
+	expect(features).toMatch(
+		/<MaterializationView userId=\{userId\} adapter=\{adapter\} \/>/,
+	);
+	expect(features).toMatch(
+		/<DatasetsView userId=\{userId\} adapter=\{adapter\} \/>/,
+	);
+	const definitions = read("./features/features/definitions-view.tsx");
+	expect(definitions).toMatch(/useState<"validate" \| "publish" \| null>/);
+	expect(definitions).toMatch(
+		/<FeaturesLoading label=\{t\("features.loading"\)\} \/>/,
+	);
 });

@@ -1,8 +1,8 @@
-# M9 之后的 ADAQ V1 交付 Roadmap
+# M10 之后的 ADAQ V1 交付 Roadmap
 
 [English](./v1-roadmap.md)
 
-状态：已接受的 V1 架构与依赖顺序交付基线。M1–M9 是已经实现的研究与多市场基础；扩展后的 V1 只有在 M10–M18 全部完成后才能声明真正可用。
+状态：已接受的 V1 架构与依赖顺序交付基线。M1–M10 是已经实现的研究、多市场与 Feature Engineering 基础；扩展后的 V1 只有在 M11–M18 全部完成后才能声明真正可用。
 
 本 Roadmap 实现完整的“研究 → Paper Trading → 反馈”系统，不是缩减版演示闭环。真实资金下单仍然属于独立资格认证后的 V1 后能力。
 
@@ -180,7 +180,7 @@ flowchart TD
     I --> J
 ```
 
-M9 的终点是可信的 Multi-market Data、安全且不下单的 Provider Connection、Localization 与 Market Inspection。Feature 从 M10 开始；Factor、Model、Strategy、Paper Order Submission、Bot Execution、Monitoring 与 Feedback 都是后续必须完成的 V1 Milestone，不是 M9 Placeholder。
+M10 的终点是 finalized immutable Feature Datasets 与等价的 Feature Engine；Factor research 从 M11 开始。
 
 初始可执行 Frontier 是 #67、#68、#69；它们没有 Open Blocker，可以独立进行。其余 Child 已按上图写入 GitHub 原生 `blocked_by` 依赖。
 
