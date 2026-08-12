@@ -999,6 +999,7 @@ fn cancellation_reaches_running_attempts_before_terminal_evidence() {
             .unwrap_err(),
         "Feature Materialization Attempt cannot be cancelled"
     );
+    *state.features.inner.attempt_started_hook.lock().unwrap() = None;
     drop(state);
     fs::remove_dir_all(root).unwrap();
 }
