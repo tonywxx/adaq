@@ -11,6 +11,7 @@ dependencies = [
  "adaq-component-tooling",
  "adaq-data-core",
  "adaq-data-pipeline",
+ "adaq-factor-research",
  "adaq-feature-engine",
  "adaq-indicator-engine",
  "arrow-array",

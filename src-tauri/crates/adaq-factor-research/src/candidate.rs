@@ -275,6 +275,7 @@ impl CandidateBuildAttempt {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidateBuildResult {
     pub package: ComponentPackage,
+    pub package_bytes: Vec<u8>,
     pub provenance: CandidateBuildProvenance,
     pub diagnostics: String,
 }
@@ -416,6 +417,7 @@ fn build_candidate_package(
     };
     Ok(CandidateBuildResult {
         package,
+        package_bytes: bytes,
         provenance,
         diagnostics: build.diagnostics,
     })

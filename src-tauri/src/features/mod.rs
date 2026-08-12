@@ -26,6 +26,7 @@ use std::{
 };
 
 use adaq_backtest_core::MarketDataUniverseSnapshot;
+use adaq_factor_research::CompletedFeatureDataset;
 use adaq_feature_engine::{
     DefinitionDraft, FeatureDatasetFilter, FeatureDatasetPage, FeatureDefinition,
     FeatureMaterializationRequest, FeatureMaterializationStore, FeatureObservation,
@@ -312,6 +313,17 @@ pub(super) struct QueueState {
     shutdown: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FactorQueueItem {
+    pub(super) attempt_id: String,
+    pub(super) created_at_ms: i64,
+}
+
+pub(super) trait FactorQueueWork: Send + Sync {
+    fn next_pending(&self) -> Result<Option<FactorQueueItem>, String>;
+    fn execute(&self, item: FactorQueueItem);
+}
+
 pub(super) struct FeaturesInner {
     pub(super) source: Arc<dyn FeatureSource>,
     pub(super) materialization: FeatureMaterializationStore,
@@ -323,6 +335,7 @@ pub(super) struct FeaturesInner {
     pub(super) reset_wait_timeout: Mutex<Duration>,
     pub(super) queue: Mutex<QueueState>,
     pub(super) queue_changed: Condvar,
+    pub(super) factor: Mutex<Option<Arc<dyn FactorQueueWork>>>,
     /// Private controllable runner seam: deterministic scheduling,
     /// cancellation, and race tests observe Attempts right after they
     /// become Running. Not part of the module interface.
@@ -379,6 +392,7 @@ impl Features {
                 shutdown: false,
             }),
             queue_changed: Condvar::new(),
+            factor: Mutex::new(None),
             #[cfg(test)]
             attempt_started_hook: Mutex::new(None),
         });
@@ -788,6 +802,60 @@ impl Features {
         Ok(dataset_view(dataset))
     }
 
+    pub(crate) fn materialization_store(&self) -> FeatureMaterializationStore {
+        self.inner.materialization.clone()
+    }
+
+    pub(crate) fn completed_dataset_from_store(
+        store: &FeatureMaterializationStore,
+        user_id: &str,
+        dataset_id: &str,
+    ) -> Result<CompletedFeatureDataset, String> {
+        validate_user(user_id)?;
+        let dataset = store
+            .dataset(user_id, dataset_id)
+            .map_err(|error| error.to_string())?;
+        let row_capacity = usize::try_from(dataset.manifest.row_count)
+            .map_err(|_| "Feature Dataset row count exceeds the host allocation limit")?;
+        let mut rows = Vec::with_capacity(row_capacity);
+        let mut offset = 0usize;
+        loop {
+            let page = store
+                .page(
+                    user_id,
+                    dataset_id,
+                    FeatureDatasetFilter {
+                        limit: adaq_feature_engine::FEATURE_DATASET_MAX_PAGE_SIZE,
+                        ..FeatureDatasetFilter::default()
+                    },
+                    offset,
+                )
+                .map_err(|error| error.to_string())?;
+            rows.extend(page.rows);
+            match page.next_offset {
+                Some(next) => offset = next,
+                None => break,
+            }
+        }
+        CompletedFeatureDataset::new(
+            user_id,
+            dataset.dataset_id,
+            dataset.manifest.request.feature_plan_hash,
+            serde_json::to_vec(&dataset.manifest.plan_json).map_err(string)?,
+            dataset.manifest.engine_identity,
+            dataset.manifest.request.snapshot_id,
+            dataset.manifest.request.point_in_time_universe_id,
+            dataset
+                .manifest
+                .outputs
+                .into_iter()
+                .map(|output| output.output_name)
+                .collect(),
+            rows,
+        )
+        .map_err(|error| error.to_string())
+    }
+
     pub(crate) fn dataset_summary(
         &self,
         request: FeatureDatasetRequest,
@@ -875,6 +943,25 @@ impl Features {
             queue.signaled = true;
             self.inner.queue_changed.notify_one();
         }
+    }
+
+    pub(crate) fn attach_factor(&self, factor: Arc<dyn FactorQueueWork>) {
+        if let Ok(mut attached) = self.inner.factor.lock() {
+            *attached = Some(factor);
+        }
+        self.notify_runner();
+    }
+
+    pub(crate) fn queue_notifier(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let weak = Arc::downgrade(&self.inner);
+        Arc::new(move || {
+            if let Some(inner) = weak.upgrade()
+                && let Ok(mut queue) = inner.queue.lock()
+            {
+                queue.signaled = true;
+                inner.queue_changed.notify_one();
+            }
+        })
     }
 }
 

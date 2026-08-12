@@ -38,6 +38,7 @@ use crate::{
         ComponentLibrary, ComponentLockSource, ComponentSource, finish_staged_files, stage_files,
     },
     dataset_generation::{DatasetGeneration, GenerationSource},
+    factor_research::{FactorResearch, FactorResearchSource, user_uuid},
     features::{FeatureSource, Features},
     forecast_signal_dataset::{BacktestSignalDataset, backtest_signal_datasets},
     market_data_snapshot::{LocalSnapshotSource, MarketDataSnapshots},
@@ -58,6 +59,7 @@ pub struct LocalResearchState {
     source: Arc<LocalGenerationSource>,
     pub(crate) generation: DatasetGeneration,
     pub(crate) features: Features,
+    pub(crate) factor: FactorResearch,
     pub(crate) validation: ValidationStudies,
     pub(crate) backtests: Backtests,
     pub(crate) connections: crate::connections::ConnectionManager,
@@ -199,6 +201,90 @@ impl FeatureSource for LocalFeatureSource {
     ) -> Result<adaq_backtest_core::MarketDataUniverseSnapshot, String> {
         self.snapshots
             .universe_snapshot_for_user(user_id, snapshot_id)
+    }
+}
+
+pub(crate) struct LocalFactorSource {
+    database: Arc<Mutex<Connection>>,
+    root: PathBuf,
+    feature_materialization: adaq_feature_engine::FeatureMaterializationStore,
+    snapshots: MarketDataSnapshots,
+    components: ComponentLibrary,
+}
+
+impl FactorResearchSource for LocalFactorSource {
+    fn database(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.database.lock().map_err(string)
+    }
+
+    fn dataset_directory(&self) -> Result<PathBuf, String> {
+        let directory = self.root.join("factor-datasets");
+        fs::create_dir_all(&directory).map_err(string)?;
+        Ok(directory)
+    }
+
+    fn feature_dataset(
+        &self,
+        user_id: &str,
+        dataset_id: &str,
+    ) -> Result<adaq_factor_research::CompletedFeatureDataset, String> {
+        let mut dataset = Features::completed_dataset_from_store(
+            &self.feature_materialization,
+            user_id,
+            dataset_id,
+        )?;
+        dataset.user_id = user_uuid(user_id).to_string();
+        dataset.validate().map_err(|error| error.to_string())?;
+        Ok(dataset)
+    }
+
+    fn point_in_time_universe(
+        &self,
+        user_id: &str,
+        universe_id: &str,
+    ) -> Result<Vec<String>, String> {
+        Ok(self
+            .snapshots
+            .universe_snapshot_for_user(user_id, universe_id)?
+            .universe
+            .instruments
+            .into_iter()
+            .map(|instrument| format!("{}:{}", instrument.venue.id, instrument.code))
+            .collect())
+    }
+
+    fn component_package(
+        &self,
+        user_id: &str,
+        archive_sha256: &str,
+    ) -> Result<ComponentPackage, String> {
+        self.components.package_for_user(user_id, archive_sha256)
+    }
+
+    fn import_component_package(&self, user_id: &str, package_bytes: &[u8]) -> Result<(), String> {
+        self.components.import(user_id, package_bytes).map(|_| ())
+    }
+
+    fn reference_feature_dataset(
+        &self,
+        user_id: &str,
+        dataset_id: &str,
+        reference_id: &str,
+    ) -> Result<(), String> {
+        self.feature_materialization
+            .reference_dataset(user_id, dataset_id, user_id, reference_id)
+            .map_err(|error| error.to_string())
+    }
+
+    fn unreference_feature_dataset(
+        &self,
+        user_id: &str,
+        dataset_id: &str,
+        reference_id: &str,
+    ) -> Result<(), String> {
+        self.feature_materialization
+            .unreference_dataset(user_id, dataset_id, reference_id)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -454,6 +540,15 @@ impl LocalResearchState {
             root: root.clone(),
         });
         let features = Features::open(feature_source)?;
+        let factor_source = Arc::new(LocalFactorSource {
+            database: database.clone(),
+            root: root.clone(),
+            feature_materialization: features.materialization_store(),
+            snapshots: snapshots.clone(),
+            components: components.clone(),
+        });
+        let factor = FactorResearch::open(factor_source, features.queue_notifier())?;
+        features.attach_factor(Arc::new(factor.clone()));
         let validation_source = Arc::new(LocalValidationSource {
             database: database.clone(),
             state: Mutex::new(Weak::new()),
@@ -480,6 +575,7 @@ impl LocalResearchState {
                 source,
                 generation,
                 features,
+                factor,
                 validation,
                 backtests,
                 connections,
@@ -555,10 +651,10 @@ impl LocalResearchState {
         } else {
             None
         };
-        // Feature Materialization evidence lives behind the engine store's
-        // own connection; reset it before the shared transaction so a
-        // failure deletes nothing else.
+        // Factor evidence owns references into Feature Datasets, so release
+        // those references before the Feature store prunes its content.
         if matches!(kind, LocalDataResetKind::All) {
+            self.factor.reset_for_user(user_id)?;
             self.features.reset_materialization_for_user(user_id)?;
         }
         let resets_ashare = matches!(

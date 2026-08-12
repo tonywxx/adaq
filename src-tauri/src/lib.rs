@@ -2,6 +2,7 @@ mod backtest;
 mod component_library;
 mod connections;
 mod dataset_generation;
+mod factor_research;
 mod features;
 mod forecast_evaluation;
 mod forecast_signal_dataset;
@@ -190,6 +191,184 @@ fn dataset_generation_cancel(
 ) -> Result<(), String> {
     state.generation.cancel(&attempt_id, &user_id)
 }
+
+macro_rules! factor_blocking_command {
+    ($name:ident, $request:ty, $method:ident, $result:ty) => {
+        #[tauri::command]
+        async fn $name(request: $request, app: tauri::AppHandle) -> Result<$result, String> {
+            tauri::async_runtime::spawn_blocking(move || {
+                app.state::<Arc<LocalResearchState>>()
+                    .factor
+                    .$method(request)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+        }
+    };
+}
+
+factor_blocking_command!(
+    factor_candidate_build,
+    factor_research::FactorCandidateBuildRequest,
+    build_candidate,
+    factor_research::FactorAttemptView
+);
+factor_blocking_command!(
+    factor_candidate_list,
+    factor_research::FactorPageRequest,
+    list_candidates,
+    factor_research::FactorPage<factor_research::FactorCandidateView>
+);
+factor_blocking_command!(
+    factor_candidate_get,
+    factor_research::FactorEvidenceRequest,
+    get_candidate,
+    factor_research::FactorCandidateView
+);
+factor_blocking_command!(
+    factor_materialization_start,
+    factor_research::FactorMaterializationStartRequest,
+    start_materialization,
+    factor_research::FactorAttemptView
+);
+factor_blocking_command!(
+    factor_evaluation_start,
+    factor_research::FactorEvaluationStartRequest,
+    start_evaluation,
+    factor_research::FactorAttemptView
+);
+factor_blocking_command!(
+    factor_attempt_list,
+    factor_research::FactorPageRequest,
+    list_attempts,
+    factor_research::FactorPage<factor_research::FactorAttemptView>
+);
+factor_blocking_command!(
+    factor_attempt_get,
+    factor_research::FactorAttemptRequest,
+    get_attempt,
+    factor_research::FactorAttemptView
+);
+factor_blocking_command!(
+    factor_attempt_cancel,
+    factor_research::FactorAttemptRequest,
+    cancel,
+    ()
+);
+factor_blocking_command!(
+    factor_attempt_retry,
+    factor_research::FactorAttemptRequest,
+    retry,
+    factor_research::FactorAttemptView
+);
+factor_blocking_command!(
+    factor_dataset_list,
+    factor_research::FactorPageRequest,
+    list_datasets,
+    factor_research::FactorPage<factor_research::FactorDatasetView>
+);
+factor_blocking_command!(
+    factor_dataset_get,
+    factor_research::FactorEvidenceRequest,
+    get_dataset,
+    factor_research::FactorDatasetView
+);
+factor_blocking_command!(
+    factor_dataset_rows,
+    factor_research::FactorDatasetRowsRequest,
+    dataset_rows,
+    factor_research::FactorDatasetRowsPage
+);
+factor_blocking_command!(
+    factor_dataset_delete,
+    factor_research::FactorEvidenceRequest,
+    delete_dataset,
+    ()
+);
+factor_blocking_command!(
+    factor_report_list,
+    factor_research::FactorPageRequest,
+    list_reports,
+    factor_research::FactorPage<factor_research::FactorReportView>
+);
+factor_blocking_command!(
+    factor_report_get,
+    factor_research::FactorEvidenceRequest,
+    get_report,
+    factor_research::FactorReportView
+);
+factor_blocking_command!(
+    factor_family_register,
+    factor_research::FactorFamilyRegisterRequest,
+    register_family,
+    factor_research::FactorFamilyView
+);
+factor_blocking_command!(
+    factor_family_list,
+    factor_research::FactorPageRequest,
+    list_families,
+    factor_research::FactorPage<factor_research::FactorFamilyView>
+);
+factor_blocking_command!(
+    factor_family_get,
+    factor_research::FactorEvidenceRequest,
+    get_family,
+    factor_research::FactorFamilyView
+);
+factor_blocking_command!(
+    factor_trial_update,
+    factor_research::FactorTrialUpdateRequest,
+    update_trial,
+    ()
+);
+factor_blocking_command!(
+    factor_lineage_get,
+    factor_research::FactorEvidenceRequest,
+    lineage,
+    factor_research::FactorLineageView
+);
+factor_blocking_command!(
+    factor_policy_save,
+    factor_research::FactorPolicySaveRequest,
+    save_policy,
+    factor_research::FactorPolicyView
+);
+factor_blocking_command!(
+    factor_policy_list,
+    factor_research::FactorPageRequest,
+    list_policies,
+    factor_research::FactorPage<factor_research::FactorPolicyView>
+);
+factor_blocking_command!(
+    factor_decision_save,
+    factor_research::FactorDecisionSaveRequest,
+    save_decision,
+    factor_research::FactorDecisionView
+);
+factor_blocking_command!(
+    factor_decision_list,
+    factor_research::FactorPageRequest,
+    list_decisions,
+    factor_research::FactorPage<factor_research::FactorDecisionView>
+);
+factor_blocking_command!(
+    factor_reference_add,
+    factor_research::FactorReferenceRequest,
+    add_reference,
+    ()
+);
+factor_blocking_command!(
+    factor_reference_remove,
+    factor_research::FactorReferenceRequest,
+    remove_reference,
+    ()
+);
+factor_blocking_command!(
+    factor_m12_eligibility,
+    factor_research::FactorM12Request,
+    m12_eligibility,
+    adaq_factor_research::M12Eligibility
+);
 
 /// Tauri Feature commands are thin adapters: they deserialize the existing
 /// contract, delegate to the Tauri-independent Feature lifecycle module,
@@ -2421,6 +2600,33 @@ pub fn run() {
             dataset_generation_retry,
             dataset_generation_list,
             dataset_generation_cancel,
+            factor_candidate_build,
+            factor_candidate_list,
+            factor_candidate_get,
+            factor_materialization_start,
+            factor_evaluation_start,
+            factor_attempt_list,
+            factor_attempt_get,
+            factor_attempt_cancel,
+            factor_attempt_retry,
+            factor_dataset_list,
+            factor_dataset_get,
+            factor_dataset_rows,
+            factor_dataset_delete,
+            factor_report_list,
+            factor_report_get,
+            factor_family_register,
+            factor_family_list,
+            factor_family_get,
+            factor_trial_update,
+            factor_lineage_get,
+            factor_policy_save,
+            factor_policy_list,
+            factor_decision_save,
+            factor_decision_list,
+            factor_reference_add,
+            factor_reference_remove,
+            factor_m12_eligibility,
             feature_definition_validate,
             feature_definition_publish,
             feature_definition_list,

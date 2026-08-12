@@ -23,8 +23,8 @@ use adaq_feature_engine::{
 };
 
 use super::{
-    ActiveAttempt, FeaturesInner, FittingAttemptRecord, UserFeatureResetBlock, bounded_diagnostic,
-    instrument_id_for, store, string,
+    ActiveAttempt, FactorQueueItem, FeaturesInner, FittingAttemptRecord, UserFeatureResetBlock,
+    bounded_diagnostic, instrument_id_for, store, string,
 };
 use crate::{forecast_signal_dataset::hash, user::validate_user};
 
@@ -43,10 +43,11 @@ pub(super) fn new_attempt_id(seed: &str) -> String {
 enum Work {
     Fitting(FittingAttemptRecord, String),
     Materialization(MaterializationAttempt),
+    Factor(FactorQueueItem),
 }
 
-/// The persistent FIFO worker: drains the oldest Pending Fitting or
-/// Materialization Attempt one at a time until the queue is empty, then
+/// The persistent FIFO worker: drains the oldest Pending heavy Attempt one at
+/// a time until the queue is empty, then
 /// waits for the next signal or shutdown.
 pub(super) fn run_worker(inner: Arc<FeaturesInner>) {
     loop {
@@ -101,32 +102,86 @@ fn shutdown_requested(inner: &FeaturesInner) -> bool {
         .unwrap_or(true)
 }
 
-/// Selects the oldest Pending Attempt across both kinds in persistent FIFO
-/// order; ties prefer the earlier creation instant, then Fitting.
+/// Selects the oldest Pending Attempt across all heavy kinds in persistent
+/// FIFO order; ties prefer the earlier creation instant, then Feature work.
 fn next_work(inner: &FeaturesInner) -> Result<Option<Work>, String> {
     let fitting = {
         let database = inner.source.database()?;
         store::FeatureStore::new(&database).next_pending_fitting()?
     };
     let materialization = inner.materialization.next_pending().map_err(string)?;
-    Ok(match (fitting, materialization) {
-        (Some((record, protocol_json)), Some(attempt)) => {
+    let factor = inner
+        .factor
+        .lock()
+        .map_err(string)?
+        .as_ref()
+        .map(|factor| factor.next_pending())
+        .transpose()?
+        .flatten();
+    Ok(match (fitting, materialization, factor) {
+        (Some((record, protocol_json)), Some(attempt), Some(factor)) => {
+            let feature = Work::Fitting(record, protocol_json);
+            let materialization = Work::Materialization(attempt);
+            let factor = Work::Factor(factor);
+            [
+                (work_created_at(&feature), 0, feature),
+                (work_created_at(&materialization), 1, materialization),
+                (work_created_at(&factor), 2, factor),
+            ]
+            .into_iter()
+            .min_by_key(|(created_at, priority, _)| (*created_at, *priority))
+            .map(|(_, _, work)| work)
+        }
+        (Some((record, protocol_json)), Some(attempt), None) => {
             if record.created_at_ms <= attempt.created_at_ms {
                 Some(Work::Fitting(record, protocol_json))
             } else {
                 Some(Work::Materialization(attempt))
             }
         }
-        (Some((record, protocol_json)), None) => Some(Work::Fitting(record, protocol_json)),
-        (None, Some(attempt)) => Some(Work::Materialization(attempt)),
-        (None, None) => None,
+        (Some((record, protocol_json)), None, Some(factor)) => {
+            if record.created_at_ms <= factor.created_at_ms {
+                Some(Work::Fitting(record, protocol_json))
+            } else {
+                Some(Work::Factor(factor))
+            }
+        }
+        (None, Some(attempt), Some(factor)) => {
+            if attempt.created_at_ms <= factor.created_at_ms {
+                Some(Work::Materialization(attempt))
+            } else {
+                Some(Work::Factor(factor))
+            }
+        }
+        (Some((record, protocol_json)), None, None) => Some(Work::Fitting(record, protocol_json)),
+        (None, Some(attempt), None) => Some(Work::Materialization(attempt)),
+        (None, None, Some(factor)) => Some(Work::Factor(factor)),
+        (None, None, None) => None,
     })
+}
+
+fn work_created_at(work: &Work) -> i64 {
+    match work {
+        Work::Fitting(record, _) => record.created_at_ms,
+        Work::Materialization(attempt) => attempt.created_at_ms,
+        Work::Factor(item) => item.created_at_ms,
+    }
 }
 
 fn execute(inner: &FeaturesInner, work: Work) {
     match work {
         Work::Fitting(record, protocol_json) => run_fitting(inner, &record, &protocol_json),
         Work::Materialization(attempt) => run_materialization(inner, &attempt),
+        Work::Factor(item) => {
+            let factor = inner
+                .factor
+                .lock()
+                .ok()
+                .and_then(|factor| factor.as_ref().cloned());
+            if let Some(factor) = factor {
+                factor.execute(item);
+            }
+        }
     }
 }
 
