@@ -73,6 +73,8 @@ flowchart LR
 
 完成 Gate：晋升 Factor 必须绑定精确 Feature、Snapshot、Universe、Evaluation Protocol、Report 与 Decision Evidence，且可被 Model Research 选择；失败或不完整 Study 保持可检查，但不能进入 Promoted Library。
 
+已接受的双语 [M11 Factor Research 架构](./m11-factor-research.zh-CN.md)定义 Native-only Research Engine Boundary、Factor ABI v2、Immutable Dataset-first Evaluation、Research Family Lineage、User-owned Promotion、`/factors` Workspace 与 [Parent Issue #88](https://github.com/tonywxx/adaq/issues/88) 下的八个 Delivery Slice。Planning 不代表已有 Implementation。
+
 ### M12 — Qlib-first Model Lab
 
 交付受控 Model Training/Fitting：Microsoft Qlib 为主要流程，ADAQ Native 为可选流程。支持 Single-Instrument 与 Cross-Sectional Model Scope、不可变 Experiment、Training/Validation Window、Point-in-Time Training Universe、Feature/Factor Selection、Seed、Environment、Artifact、Metric、Diagnostic 与 Forecast Signal Dataset。
@@ -236,6 +238,49 @@ flowchart TD
 ```
 
 #78 是唯一初始可执行 Frontier。其余 Child 已按本图写入 GitHub 原生 `blocked_by` 关系。M10 终点是 Completed Feature Dataset 与等价 Feature Engine；Factor Evaluation 从 M11 开始。
+
+## M11 可执行交付图
+
+M11 已发布为 [Parent Issue #88](https://github.com/tonywxx/adaq/issues/88)，并由双语 [M11 Factor Research 架构](./m11-factor-research.zh-CN.md)定义：
+
+1. [#92 — Core Contract、Factor ABI v2 与 Factor Metric Catalog](https://github.com/tonywxx/adaq/issues/92)。
+2. [#90 — Declarative/Custom Candidate Execution 与 Factor Dataset Materialization](https://github.com/tonywxx/adaq/issues/90)。
+3. [#89 — Target、Lens、Neutralization、Economic Diagnostic 与 Robustness Evaluation](https://github.com/tonywxx/adaq/issues/89)。
+4. [#91 — Research Family、Grid Search、Multiple Testing、Promotion Policy 与 Decision](https://github.com/tonywxx/adaq/issues/91)。
+5. [#95 — SQLite/Parquet Evidence、Shared Research FIFO 与 User-scoped Native API](https://github.com/tonywxx/adaq/issues/95)。
+6. [#96 — Localized `/factors` Workspace](https://github.com/tonywxx/adaq/issues/96)。
+7. [#94 — Three-market Fixture、Benchmark、Resource Limit 与 Hardening](https://github.com/tonywxx/adaq/issues/94)。
+8. [#93 — Bilingual Cross-platform Acceptance、Manual Guide 与 Roadmap Closure](https://github.com/tonywxx/adaq/issues/93)。
+
+```mermaid
+flowchart TD
+    A["M11.1 Contract 与 ABI v2"]
+    B["M11.2 Candidate 与 Dataset"]
+    C["M11.3 Evaluation"]
+    D["M11.4 Family 与 Promotion"]
+    E["M11.5 Evidence 与 Native API"]
+    F["M11.6 Factor Workspace"]
+    G["M11.7 Hardening"]
+    H["M11.8 Acceptance"]
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    B --> G
+    C --> G
+    D --> G
+    E --> G
+    A --> H
+    B --> H
+    C --> H
+    D --> H
+    E --> H
+    F --> H
+    G --> H
+```
+
+#92 是唯一初始 Executable Frontier。所有 Slice 提供各自 Acceptance Evidence 前，M11 保持未实现状态。
 
 ## Roadmap 全局完成规则
 

@@ -298,8 +298,12 @@ _Avoid_: Raw provider payload, anonymous tensor, Component-owned data fetch
 An immutable collection of named Factor observations keyed by Instrument ID and Observation Time, bound to the exact Factor Package or research definition, Factor Scope, parameters, Feature Plan, Feature Dataset, Point-in-Time Instrument Universe when applicable, availability, missingness, runtime identity, and provenance.
 _Avoid_: Mutable factor table, Feature Dataset, Validation Report
 
+**Factor Candidate**:
+An exact Declarative Factor Definition revision or non-imported Custom Factor Package selected for materialization and research before any Promotion Decision exists.
+_Avoid_: Promoted Factor, Component Library package, editable draft
+
 **Declarative Factor Definition**:
-A versioned, immutable Factor specification built only from supported Feature Slots, parameters, operations, outputs, and one Factor Scope. Because it contains no arbitrary source code, ADAQ can evaluate it directly and deterministically generate an equivalent Rust SDK project.
+A versioned, immutable Factor specification built from ordered Feature Slots, parameters, Feature Operator Catalog semantics, named outputs, and one Factor Scope. Because it contains no arbitrary source code, ADAQ can evaluate it directly and deterministically generate an equivalent Rust SDK project.
 _Avoid_: Custom Factor Project, notebook code, Factor Component
 
 **Custom Factor Project**:
@@ -503,20 +507,52 @@ One declared way of examining a Factor Dataset independently from its Factor Sco
 _Avoid_: Factor Scope, Strategy Backtest, metric preset name
 
 **Factor Research Family**:
-An immutable hypothesis and trial namespace grouping related Factor definitions, parameter searches, targets, and Evaluation Protocols so selection-bias adjustments can account for what was tried rather than only the winning Report.
+An immutable hypothesis and trial namespace grouping related Factor definitions, parameter searches, targets, Evaluation Protocols, and known derived Families so selection-bias adjustments account for what was tried rather than only the winning Report.
 _Avoid_: Factor Tag, Component family, deletable experiment folder
 
+**Factor Trial**:
+One registered Candidate, parameter set, Target, market context, and Evaluation Protocol within a Factor Research Family lineage, retained whether it completes, fails, is cancelled, or is superseded.
+_Avoid_: Winning Report, temporary run, deletable search result
+
+**Factor Materialization Protocol**:
+An immutable, content-addressed specification binding one Factor Candidate to exact Feature evidence, parameters, market context, runtime identity, observation range, and Seed for Factor Dataset production.
+_Avoid_: Factor Evaluation Protocol, mutable Factor form, Feature Materialization Request
+
+**Factor Materialization Attempt**:
+A lifecycle record for executing one Factor Materialization Protocol through Pending, Running, and exactly one terminal state: Completed, Failed, or Cancelled. Only a Completed Attempt may atomically publish a Factor Dataset.
+_Avoid_: Factor Dataset, Factor Evaluation Report, generic Job
+
 **Factor Evaluation Protocol**:
-An immutable, content-addressed specification binding one exact Factor Dataset or candidate definition to its Forecast Targets and horizons, Market Data and Feature evidence, Point-in-Time Instrument Universe, Research Engine, Evaluation Lenses, chronological or walk-forward windows, purge and embargo rules, neutralization, portfolio-sort and cost assumptions, and Factor Research Family trial identity.
+An immutable, content-addressed specification binding one exact Factor Dataset output to its Forecast Target and horizons, Market Data and Feature evidence, Point-in-Time Instrument Universe, Research Engine, Evaluation Lenses, chronological or walk-forward windows, purge and embargo rules, neutralization, portfolio-sort and cost assumptions, and Factor Research Family Trial identity.
 _Avoid_: Validation Protocol, editable Factor test form, Factor Evaluation Report
 
 **Factor Evaluation Report**:
 Immutable evidence produced from one Factor Evaluation Protocol, recording coverage, missingness, stability, decay, scope-appropriate Temporal or Cross-Sectional statistics, standardized Economic results, subperiod and regime behavior, multiple-testing adjustments, diagnostics, and Evaluation Evidence State. It never declares universal validity or future profitability.
 _Avoid_: Validation Report, Factor Dataset, Factor Promotion Decision
 
+**Factor Metric Catalog**:
+The versioned authoritative registry of Factor evaluation metrics, formulas, directions, ranges, undefined states, and evidence requirements shared by every Research Engine and the GUI.
+_Avoid_: UI metric labels, Qlib metric names, Strategy Metric Catalog
+
+**Factor Orientation**:
+The Positive or Negative direction frozen for one Factor output and Forecast Target in an Evaluation Protocol. It controls interpretation and Economic sorting without changing the Factor Dataset's raw values.
+_Avoid_: Factor value sign, automatic validity, Dataset transformation
+
+**Factor Regime Definition**:
+An immutable partition of evaluation observations into deterministic buckets using one causal Feature and thresholds fitted only from an exact selection window and then applied unchanged.
+_Avoid_: Subjective bull or bear label, current market state, mutable threshold
+
+**Factor Promotion Policy**:
+An immutable, versioned set of evidence-completeness and metric thresholds that a User applies when recording a Factor Promotion Decision. It constrains eligibility without automatically making the decision.
+_Avoid_: Automatic promotion rule, universal profitability threshold, mutable preference
+
 **Factor Promotion Decision**:
 An immutable User decision of Rejected, Research Validated, or Component Eligible that cites exact Factor Evaluation Reports and the applied acceptance policy. A Candidate has no Promotion Decision yet; Research Validated evidence may be selected by Model research but cannot enter Component Generation, while Component Eligible also permits a User-controlled qualification and packaging attempt. The Decision does not alter its Reports or turn their historical evidence into a timeless `valid` property.
 _Avoid_: Automatic validity flag, Factor Evaluation Report, Component trust
+
+**Promoted Factor Library**:
+A User-scoped read-only projection of exact Factor outputs with current Research Validated or Component Eligible Decisions. It references evidence in place and never copies Datasets, Reports, Decisions, or Component Packages.
+_Avoid_: Component Library, latest Factor pointer, mutable factor store
 
 **Forecast Evaluation Report**:
 Immutable evidence of Forecast Signal quality bound to the exact Model Producer Segments, Forecast Signal Dataset, Market Data Snapshot, Forecast Targets, inference trust state, evaluation window, and evaluation configuration. It labels its Evidence State as Out-of-sample, Overlapping, or Unknown from the recorded training, fitting, and normalization windows; it evaluates predictions rather than Strategy decisions or profitability.

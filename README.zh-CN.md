@@ -184,6 +184,7 @@ adaq-component verify dist/my-factor-0.1.0.adaq --previous ../my-factor-0.1.0/ma
 | [M8 Manual Acceptance](docs/m8-manual-acceptance.md) | [M8 人工验收中文](docs/m8-manual-acceptance.zh-CN.md) | 完整的 Model、Forecast Evaluation 与 Dataset-first Backtest 验收路径 |
 | [M9 Manual Acceptance](docs/m9-manual-acceptance.md) | [M9 人工验收中文](docs/m9-manual-acceptance.zh-CN.md) | 本地化、Connections、三个市场、Quality、Snapshot 与 GUI 边界的双语跨平台验收路径 |
 | [M10 Manual Acceptance](docs/m10-manual-acceptance.md) | [M10 人工验收中文](docs/m10-manual-acceptance.zh-CN.md) | Feature Definitions、fitting、materialization、Feature Datasets 与 `/features` workspace 的双语跨平台验收路径 |
+| [M11 Factor Research Architecture](docs/m11-factor-research.md) | [M11 Factor Research 架构中文](docs/m11-factor-research.zh-CN.md) | 已接受但尚未实现的 Factor Lab、ABI v2、Evaluation、Promotion 与交付基线 |
 | [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | 外部 `Kronos-small` 推理、规范 Forecast Signals、评估与 Dataset-first Backtest |
 | [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | M10 Feature Engineering 基础之后的 M11–M18 交付计划（Factor 研究、Paper Trading、Bot 与后续 V1 能力） |
 

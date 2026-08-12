@@ -73,6 +73,8 @@ Deliver one Factor Lab with explicit Time-Series and Cross-Sectional scopes, poi
 
 Completion gate: promoted Factors bind exact Feature, Snapshot, Universe, evaluation protocol, report, and decision evidence and can be selected by Model research; failed or incomplete studies remain inspectable and cannot enter the promoted library.
 
+The accepted bilingual [M11 Factor Research architecture](./m11-factor-research.md) defines the Native-only Research Engine boundary, Factor ABI v2, immutable Dataset-first evaluation, Research Family lineage, User-owned promotion, `/factors` workspace, and eight delivery slices published under [parent issue #88](https://github.com/tonywxx/adaq/issues/88). Planning does not claim implementation.
+
 ### M12 — Qlib-first Model Lab
 
 Deliver controlled Model training and fitting with Microsoft Qlib as the primary workflow and ADAQ Native as an optional workflow. Support Single-Instrument and Cross-Sectional Model scopes, immutable Experiments, training and validation windows, Point-in-Time Training Universes, Feature and Factor selection, seeds, environments, artifacts, metrics, diagnostics, and Forecast Signal Datasets.
@@ -236,6 +238,49 @@ flowchart TD
 ```
 
 #78 is the only initial executable frontier. All later children carry native GitHub `blocked_by` edges matching this graph. M10 stops at finalized Feature Datasets and the equivalent Feature Engine; Factor evaluation begins in M11.
+
+## M11 executable delivery map
+
+M11 is published as [parent issue #88](https://github.com/tonywxx/adaq/issues/88) and specified in the bilingual [M11 Factor Research architecture](./m11-factor-research.md):
+
+1. [#92 — Core contracts, Factor ABI v2, and Factor Metric Catalog](https://github.com/tonywxx/adaq/issues/92).
+2. [#90 — Declarative and Custom Candidate execution and Factor Dataset materialization](https://github.com/tonywxx/adaq/issues/90).
+3. [#89 — Targets, Lenses, neutralization, Economic diagnostics, and robustness evaluation](https://github.com/tonywxx/adaq/issues/89).
+4. [#91 — Research Families, Grid Search, multiple testing, Promotion Policies, and Decisions](https://github.com/tonywxx/adaq/issues/91).
+5. [#95 — SQLite/Parquet evidence, shared research FIFO, and User-scoped native APIs](https://github.com/tonywxx/adaq/issues/95).
+6. [#96 — Localized `/factors` workspace](https://github.com/tonywxx/adaq/issues/96).
+7. [#94 — Three-market fixtures, benchmarks, resource limits, and hardening](https://github.com/tonywxx/adaq/issues/94).
+8. [#93 — Bilingual cross-platform acceptance, manual guide, and roadmap closure](https://github.com/tonywxx/adaq/issues/93).
+
+```mermaid
+flowchart TD
+    A["M11.1 Contracts and ABI v2"]
+    B["M11.2 Candidates and Datasets"]
+    C["M11.3 Evaluation"]
+    D["M11.4 Families and Promotion"]
+    E["M11.5 Evidence and Native APIs"]
+    F["M11.6 Factor Workspace"]
+    G["M11.7 Hardening"]
+    H["M11.8 Acceptance"]
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    B --> G
+    C --> G
+    D --> G
+    E --> G
+    A --> H
+    B --> H
+    C --> H
+    D --> H
+    E --> H
+    F --> H
+    G --> H
+```
+
+#92 is the only initial executable frontier. M11 remains unimplemented until every slice supplies its own acceptance evidence.
 
 ## Roadmap-wide completion rules
 

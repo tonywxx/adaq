@@ -184,6 +184,7 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 | [M8 Manual Acceptance](docs/m8-manual-acceptance.md) | [M8 人工验收中文](docs/m8-manual-acceptance.zh-CN.md) | Complete Model, Forecast Evaluation, and Dataset-first Backtest acceptance path |
 | [M9 Manual Acceptance](docs/m9-manual-acceptance.md) | [M9 人工验收中文](docs/m9-manual-acceptance.zh-CN.md) | Bilingual cross-platform acceptance path for localization, connections, three markets, quality, Snapshots, and GUI boundaries |
 | [M10 Manual Acceptance](docs/m10-manual-acceptance.md) | [M10 人工验收中文](docs/m10-manual-acceptance.zh-CN.md) | Bilingual cross-platform acceptance path for Feature Definitions, fitting, materialization, Feature Datasets, and the `/features` workspace |
+| [M11 Factor Research Architecture](docs/m11-factor-research.md) | [M11 Factor Research 架构中文](docs/m11-factor-research.zh-CN.md) | Accepted, not-yet-implemented Factor Lab, ABI v2, evaluation, promotion, and delivery baseline |
 | [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | External `Kronos-small` inference, canonical Forecast Signals, evaluation, and Dataset-first Backtest |
 | [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | M11–M18 delivery plan after the M10 Feature Engineering foundation (Factor research, Paper Trading, Bots, and later V1 work) |
 
