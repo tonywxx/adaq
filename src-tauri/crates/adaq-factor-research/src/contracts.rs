@@ -849,7 +849,7 @@ pub enum FactorOrientation {
     Negative,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FactorLens {
     Temporal,
@@ -1082,8 +1082,12 @@ impl FactorEvaluationProtocol {
             || draft.point_in_time_universe.is_empty()
             || !is_lower_kebab(&draft.output_name)
             || draft.horizon_bars.is_empty()
+            || draft.horizon_bars.len() > crate::MAX_FACTOR_EVALUATION_HORIZONS
             || draft.horizon_bars.iter().any(|horizon| *horizon == 0)
             || draft.windows.is_empty()
+            || draft.windows.len() > crate::MAX_FACTOR_EVALUATION_FOLDS
+            || draft.lenses.len() > crate::MAX_FACTOR_EVALUATION_LENSES
+            || draft.nuisance_feature_names.len() > crate::MAX_FACTOR_NUISANCE_FEATURES
         {
             return Err(ContractError::Invalid(
                 "Factor Evaluation Protocol identity or horizon is invalid".into(),
@@ -1127,6 +1131,11 @@ impl FactorEvaluationProtocol {
         if draft.horizon_bars.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(ContractError::Invalid(
                 "Factor Evaluation horizons must be unique and ascending".into(),
+            ));
+        }
+        if draft.lenses.iter().collect::<BTreeSet<_>>().len() != draft.lenses.len() {
+            return Err(ContractError::Invalid(
+                "Factor Evaluation Lenses must be unique".into(),
             ));
         }
         let mut fold_ids = BTreeSet::new();
@@ -1195,8 +1204,10 @@ impl FactorEvaluationProtocol {
             || self.point_in_time_universe.is_empty()
             || !is_lower_kebab(&self.output_name)
             || self.horizon_bars.is_empty()
+            || self.horizon_bars.len() > crate::MAX_FACTOR_EVALUATION_HORIZONS
             || self.horizon_bars.iter().any(|horizon| *horizon == 0)
             || self.windows.is_empty()
+            || self.windows.len() > crate::MAX_FACTOR_EVALUATION_FOLDS
             || !is_sha256(&self.protocol_hash)
             || self.protocol_hash != content_hash(&self.content())?
         {
@@ -1224,9 +1235,16 @@ impl FactorEvaluationProtocol {
             || (self.lenses.contains(&FactorLens::Regime) && self.regime.is_none())
             || (!self.lenses.contains(&FactorLens::Regime) && self.regime.is_some())
             || self.horizon_bars.windows(2).any(|pair| pair[0] >= pair[1])
+            || self.lenses.len() > crate::MAX_FACTOR_EVALUATION_LENSES
+            || self.nuisance_feature_names.len() > crate::MAX_FACTOR_NUISANCE_FEATURES
         {
             return Err(ContractError::Invalid(
                 "Factor Evaluation Lenses and provenance are incompatible with the Scope".into(),
+            ));
+        }
+        if self.lenses.iter().collect::<BTreeSet<_>>().len() != self.lenses.len() {
+            return Err(ContractError::Invalid(
+                "Factor Evaluation Lenses must be unique".into(),
             ));
         }
         let mut fold_ids = BTreeSet::new();

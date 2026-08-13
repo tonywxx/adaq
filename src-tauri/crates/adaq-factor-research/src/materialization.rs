@@ -19,7 +19,7 @@ use crate::{
     run_limits,
 };
 
-pub const MAX_FACTOR_DATASET_ROWS: usize = 1_000_000;
+pub const MAX_FACTOR_DATASET_ROWS: usize = 2_520_000;
 const MAX_DIAGNOSTIC_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

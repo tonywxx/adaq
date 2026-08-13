@@ -1,0 +1,31 @@
+{
+  "crossSectional": {
+    "candidatePackageSha256": "9f354d1cb96310107b5dfe7b415548aa180242be9b7a65097b1a3c8f328fd6f2",
+    "chunkRows": 10000,
+    "instruments": 10000,
+    "observations": 252,
+    "outputs": 1,
+    "runtimeMs": 1548
+  },
+  "limits": {
+    "maxDatasetRows": 2520000,
+    "maxEvaluationFolds": 32,
+    "maxEvaluationHorizons": 16,
+    "maxEvaluationLenses": 5,
+    "maxNuisanceFeatures": 16,
+    "workerCount": 1
+  },
+  "peakProcessRssBytes": 29884416,
+  "recordedArchitecture": "aarch64",
+  "targetTriple": "aarch64-apple-darwin",
+  "recordedPlatform": "macos",
+  "rssSemantics": "serial process high-water RSS (ru_maxrss)",
+  "schemaVersion": "adaq-factor-benchmark-baseline@1.0.0",
+  "timeSeries": {
+    "bars": 1000000,
+    "candidatePackageSha256": "34761f59c2e17453f469a98e62cca04688e0816c8c25c3f7533102d8be5a0e83",
+    "chunkRows": 512,
+    "outputs": 1,
+    "runtimeMs": 723
+  }
+}

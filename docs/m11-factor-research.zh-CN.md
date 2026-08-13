@@ -2,7 +2,7 @@
 
 [English](./m11-factor-research.md)
 
-状态：已接受的架构与可执行交付基线，已发布为 [Parent Issue #88](https://github.com/tonywxx/adaq/issues/88)。M10 已完成；本文档不声称已有任何 M11 Production Implementation。
+状态：已接受的架构与可执行交付基线，已发布为 [Parent Issue #88](https://github.com/tonywxx/adaq/issues/88)。M10 与 M11.1–M11.6 Implementation Slice 已完成；下方记录 M11.7 Hardening Evidence。
 
 ## 最终结果
 
@@ -146,6 +146,14 @@ M11 保留既有 1 MiB Canonical JSON、64-output、WASM Fuel/Memory Limit，并
 
 Performance Acceptance 使用 1,000,000-observation Time-Series Workload 与 10,000-Instrument × 252-Observation-Time Cross-Sectional Workload，证明 Bounded Memory、Cancellation、Chunk Equivalence、Determinism、Restart Recovery 与 Responsive GUI Scheduling，并记录 Canonical macOS ARM64 Baseline，不预先编造 Latency/RSS Target。
 
+## M11.7 Hardening Evidence
+
+Issue #94 根据 Canonical Candidate Workload 冻结以下 Public Ceiling，而不是虚构 Latency SLA：2,520,000 Factor Dataset Rows（10,000 Instruments × 252 Observations）、32 Evaluation Folds、16 Horizons、5 Lenses、16 Nuisance Features，以及一个 Device-wide Research Worker。Dataset 或 Evaluation Allocation 前执行 Checked Arithmetic。
+
+独立 Evidence 位于：`factor-reference-vectors.json`（OKX、China A-share、U.S. Cross-Sectional 三条 Journey）、`factor-metric-golden.json`（Literal Rank/Undefined/Singular OLS/p-value/Holm/Cost Vector）、`factor-metric-catalog.json`（Generated Catalog Drift Gate）与 `factor-benchmark-baseline.json`（macOS ARM64 实测 Runtime/RSS/Package Hash）。Cross-platform Floating-point Comparison 声明 `1e-12` Metric Tolerance，并对 Normalized Vector Hash；Identity、Unavailable Reason、Sample 与 Ordering 仍然 Exact。Baseline 是记录值，不是 SLA Threshold。可复现命令与 English 文档一致：`cd src-tauri && cargo test -p adaq-factor-research --test reference_fixtures`、`cargo test -p adaq-factor-research --test metric_golden`、`cargo test -p adaq-factor-research --test benchmarks -- --test-threads=1`、`cargo test -p adaq-factor-research --release --test benchmarks -- --ignored --test-threads=1`、`sh crates/adaq-factor-research/scripts/check_generated.sh`。
+
+Native Factor Tests 继续覆盖 Parquet Atomic Publication、Cancellation、Restart Recovery、Queue Fairness、User Isolation、Deletion Lock 与 Credential/Path Redaction；Supported-platform Workflow 在 macOS ARM64 运行 Generated-reference 与 Canonical Benchmark，并在 Windows x86_64/Linux x86_64 运行完整 Workspace Matrix。
+
 ## Acceptance
 
 Reference Journey 包含：
@@ -171,4 +179,4 @@ M11 已通过八个 Dependency-ordered Slice 发布：
 7. [#94 — Three-market Fixture、Benchmark、Resource Limit 与 Hardening](https://github.com/tonywxx/adaq/issues/94)。
 8. [#93 — Bilingual Cross-platform Acceptance、Manual Guide 与 Roadmap Closure](https://github.com/tonywxx/adaq/issues/93)。
 
-依赖为 `#92 → #90 → #89 → #91 → #95 → #96`、`{#90,#89,#91,#95} → #94`、`{#92,#90,#89,#91,#95,#96,#94} → #93`。#92 是唯一初始 Executable Frontier。Planning 不产生 Production Evidence；只有每个 Slice 通过自己的 Acceptance Gate，M11 才能声明实现。
+依赖为 `#92 → #90 → #89 → #91 → #95 → #96`、`{#90,#89,#91,#95} → #94`、`{#92,#90,#89,#91,#95,#96,#94} → #93`。#92 曾是唯一初始 Executable Frontier。Planning 不产生 Production Evidence；M11 仍等待最终 #93 Acceptance，所有 Slice 必须先通过各自 Gate。

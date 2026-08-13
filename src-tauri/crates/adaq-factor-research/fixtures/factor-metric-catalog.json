@@ -1,0 +1,266 @@
+{
+  "schemaVersion": "adaq-factor-metric-catalog-reference@1.0.0",
+  "catalog": {
+    "catalogHash": "0c4a6cff1fb2cec9bdcb07767e9b8e7f9c14189f1930943c6ee7438181f7bc60",
+    "catalogVersion": "adaq-factor-metric-catalog@1.0.0",
+    "definitions": [
+      {
+        "direction": "higher-better",
+        "formula": {
+          "denominator": "eligible-observations",
+          "kind": "coverage",
+          "numerator": "available-observations"
+        },
+        "id": "coverage",
+        "minimumSamples": 1,
+        "range": {
+          "maximum": 1,
+          "minimum": 0
+        },
+        "undefinedReasons": [
+          "no-eligible-observations"
+        ]
+      },
+      {
+        "direction": "lower-better",
+        "formula": {
+          "denominator": "eligible-observations",
+          "kind": "missingness",
+          "numerator": "unavailable-observations"
+        },
+        "id": "missingness",
+        "minimumSamples": 1,
+        "range": {
+          "maximum": 1,
+          "minimum": 0
+        },
+        "undefinedReasons": [
+          "no-eligible-observations"
+        ]
+      },
+      {
+        "direction": "higher-better",
+        "formula": {
+          "factor": "factor-output",
+          "kind": "correlation",
+          "method": "pearson",
+          "target": "future-close-return"
+        },
+        "id": "ic",
+        "minimumSamples": 3,
+        "range": {
+          "maximum": 1,
+          "minimum": -1
+        },
+        "undefinedReasons": [
+          "insufficient-samples",
+          "constant-values",
+          "unavailable-target",
+          "no-eligible-observations"
+        ]
+      },
+      {
+        "direction": "higher-better",
+        "formula": {
+          "factor": "average-rank-factor-output",
+          "kind": "correlation",
+          "method": "spearman-average-rank",
+          "target": "average-rank-future-close-return"
+        },
+        "id": "rank-ic",
+        "minimumSamples": 3,
+        "range": {
+          "maximum": 1,
+          "minimum": -1
+        },
+        "undefinedReasons": [
+          "insufficient-samples",
+          "constant-values",
+          "unavailable-target",
+          "no-eligible-observations"
+        ]
+      },
+      {
+        "direction": "lower-better",
+        "formula": {
+          "estimator": "mean-absolute-weight-change",
+          "kind": "turnover",
+          "weighting": "equal-weight"
+        },
+        "id": "turnover",
+        "minimumSamples": 2,
+        "range": {
+          "maximum": null,
+          "minimum": 0
+        },
+        "undefinedReasons": [
+          "insufficient-samples",
+          "no-eligible-observations",
+          "not-applicable"
+        ]
+      },
+      {
+        "direction": "descriptive",
+        "formula": {
+          "estimator": "lagged-metric-path",
+          "horizons": [
+            1,
+            2,
+            3,
+            5,
+            10
+          ],
+          "kind": "decay"
+        },
+        "id": "decay",
+        "minimumSamples": 3,
+        "range": null,
+        "undefinedReasons": [
+          "insufficient-samples",
+          "no-eligible-observations"
+        ]
+      },
+      {
+        "direction": "higher-better",
+        "formula": {
+          "aggregation": "signed-count-over-subperiods",
+          "estimator": "subperiod-sign-consistency",
+          "kind": "stability"
+        },
+        "id": "stability",
+        "minimumSamples": 2,
+        "range": {
+          "maximum": 1,
+          "minimum": 0
+        },
+        "undefinedReasons": [
+          "insufficient-samples",
+          "no-eligible-observations"
+        ]
+      },
+      {
+        "direction": "higher-better",
+        "formula": {
+          "kind": "economic",
+          "next_eligible_bar": true,
+          "portfolios": [
+            "top",
+            "top-minus-bottom"
+          ],
+          "quantiles": 5,
+          "weighting": "equal-weight"
+        },
+        "id": "economic",
+        "minimumSamples": 5,
+        "range": null,
+        "undefinedReasons": [
+          "insufficient-samples",
+          "missing-input",
+          "no-eligible-observations",
+          "not-applicable"
+        ]
+      },
+      {
+        "direction": "descriptive",
+        "formula": {
+          "assignment": "causal-feature-buckets",
+          "kind": "regime",
+          "threshold_fit_window": "selection-window-only"
+        },
+        "id": "regime",
+        "minimumSamples": 2,
+        "range": null,
+        "undefinedReasons": [
+          "insufficient-samples",
+          "missing-input",
+          "no-eligible-observations"
+        ]
+      },
+      {
+        "direction": "higher-better",
+        "formula": {
+          "estimator": "cross-sectional-ols",
+          "intercept": true,
+          "kind": "neutralized"
+        },
+        "id": "neutralized",
+        "minimumSamples": 3,
+        "range": {
+          "maximum": 1,
+          "minimum": -1
+        },
+        "undefinedReasons": [
+          "insufficient-samples",
+          "singular-matrix",
+          "constant-values",
+          "invalid-requirement",
+          "missing-input",
+          "no-eligible-observations"
+        ]
+      },
+      {
+        "direction": "descriptive",
+        "formula": {
+          "kind": "sample-count",
+          "source": "complete-metric-observations"
+        },
+        "id": "sample-count",
+        "minimumSamples": 0,
+        "range": {
+          "maximum": null,
+          "minimum": 0
+        },
+        "undefinedReasons": []
+      },
+      {
+        "direction": "descriptive",
+        "formula": {
+          "kind": "raw-statistic",
+          "statistic": "registered-trial-statistic"
+        },
+        "id": "raw-statistic",
+        "minimumSamples": 1,
+        "range": null,
+        "undefinedReasons": [
+          "insufficient-samples",
+          "not-applicable"
+        ]
+      },
+      {
+        "direction": "lower-better",
+        "formula": {
+          "kind": "p-value",
+          "method": "declared-statistical-test"
+        },
+        "id": "p-value",
+        "minimumSamples": 1,
+        "range": {
+          "maximum": 1,
+          "minimum": 0
+        },
+        "undefinedReasons": [
+          "insufficient-samples",
+          "not-applicable"
+        ]
+      },
+      {
+        "direction": "lower-better",
+        "formula": {
+          "correction": "holm-bonferroni-family-wise-error",
+          "kind": "holm-adjusted"
+        },
+        "id": "holm-adjusted",
+        "minimumSamples": 1,
+        "range": {
+          "maximum": 1,
+          "minimum": 0
+        },
+        "undefinedReasons": [
+          "insufficient-samples",
+          "not-applicable"
+        ]
+      }
+    ],
+    "schemaVersion": "1.0.0"
+  }
+}

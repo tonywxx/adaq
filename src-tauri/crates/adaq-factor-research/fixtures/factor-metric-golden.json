@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "adaq-factor-metric-golden@1.0.0",
+  "averageRankTies": [1.5, 1.5, 3.0, 4.0, 5.0],
+  "rankIc": 0.9746794344808964,
+  "constant": {
+    "reason": "constant-values",
+    "sampleCount": 3
+  },
+  "singularMatrix": {
+    "reason": "singular-matrix",
+    "sampleCount": 5
+  },
+  "rawPValue": {
+    "value": 0.01,
+    "sampleCount": 42
+  },
+  "holm": {
+    "familySize": 3,
+    "adjustedPValues": [0.03, 0.04, 1.0],
+    "sampleCounts": [42, 43, 0]
+  },
+  "costs": {
+    "topOnly": 0.0385,
+    "topMinusBottom": 0.032
+  }
+}

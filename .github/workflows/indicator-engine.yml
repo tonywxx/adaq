@@ -67,7 +67,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for fixture in strategy factor model external-strategy mixed-strategy multi-output-factor repeated-factor-strategy; do
+          for fixture in strategy factor model external-strategy mixed-strategy multi-output-factor repeated-factor-strategy cross-sectional-factor; do
             cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
           done
       - name: Build and verify public Component examples
@@ -90,6 +90,10 @@ jobs:
         working-directory: src-tauri
         shell: bash
         run: sh crates/adaq-feature-engine/scripts/check_generated.sh
+      - name: Verify Factor references regenerate without diff
+        working-directory: src-tauri
+        shell: bash
+        run: sh crates/adaq-factor-research/scripts/check_generated.sh
       - name: Run official TA-Lib C regression suite
         working-directory: src-tauri
         shell: bash
@@ -103,3 +107,9 @@ jobs:
         run: |
           cargo test -p adaq-feature-engine --release --test benchmarks -- --ignored --test-threads=1
           git diff --exit-code -- crates/adaq-feature-engine/fixtures
+      - name: Run Factor benchmark workloads
+        if: matrix.architecture == 'arm64'
+        working-directory: src-tauri
+        run: |
+          cargo test -p adaq-factor-research --release --test benchmarks -- --ignored --test-threads=1
+          git diff --exit-code -- crates/adaq-factor-research/fixtures

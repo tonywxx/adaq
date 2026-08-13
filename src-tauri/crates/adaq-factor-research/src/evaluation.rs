@@ -12,7 +12,7 @@ use crate::{
     TargetUnavailableReason,
 };
 
-const MAX_EVALUATION_ROWS: usize = 1_000_000;
+const MAX_EVALUATION_ROWS: usize = crate::MAX_FACTOR_DATASET_ROWS;
 const MIN_CORRELATION_SAMPLES: usize = 3;
 const BASIS_EPSILON: f64 = 1e-12;
 
@@ -309,6 +309,11 @@ struct TargetValue {
 
 fn validate_input(input: &FactorEvaluationInput<'_>) -> Result<(), EvaluationError> {
     input.protocol.validate()?;
+    crate::checked_product([
+        input.dataset.rows.len() as u64,
+        input.protocol.horizon_bars.len() as u64,
+    ])
+    .map_err(EvaluationError::from)?;
     input
         .dataset
         .validate()

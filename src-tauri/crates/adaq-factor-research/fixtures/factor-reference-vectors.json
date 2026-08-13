@@ -1,0 +1,1113 @@
+{
+  "schemaVersion": "adaq-factor-reference-vectors@1.0.0",
+  "journeys": {
+    "cn-a-share-time-series": {
+      "marketContext": {
+        "venue": "sse",
+        "assetClass": "equity-cn",
+        "barInterval": "1d",
+        "priceBasis": "adjusted-total-return",
+        "valuationCurrency": "CNY",
+        "pointInTimeUniverseId": "cn-a-share-reference"
+      },
+      "candidateHash": "0d396471d5d18118fa7785b7adc8478322ba24f89950a4386291f0bac6c7db9c",
+      "featurePlanHash": "fb9d1ba4c942ffaae90453d298ce14319d6b5cf3d0bd59bb4a244f6b4cb819e3",
+      "datasetId": "1e446500fc0b5ac1a6bcb82df07237e0284eb9a25a86652f1da6d84b7d692839",
+      "protocolHash": "fb70a1d0595b9118c6a948d683fe8704f9d18f539d85e2a808a77ea781c40d7e",
+      "evidenceState": "out-of-sample",
+      "metricDigest": "04dd042c2700f24f22d03694b1ec96a0b3db710738de585c572284583e9f1d5a",
+      "targetUnavailable": [
+        {
+          "instrumentId": "600000.SH",
+          "observationTimeMs": 604800000,
+          "horizonBars": 1,
+          "reason": "missing-close"
+        },
+        {
+          "instrumentId": "600000.SH",
+          "observationTimeMs": 691200000,
+          "horizonBars": 1,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "600000.SH",
+          "observationTimeMs": 518400000,
+          "horizonBars": 2,
+          "reason": "missing-close"
+        },
+        {
+          "instrumentId": "600000.SH",
+          "observationTimeMs": 604800000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "600000.SH",
+          "observationTimeMs": 691200000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        }
+      ],
+      "metrics": [
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "coverage",
+          "value": 0.5,
+          "undefinedReason": null,
+          "sampleCount": 6
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "missingness",
+          "value": 0.5,
+          "undefinedReason": null,
+          "sampleCount": 6
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "sample-count",
+          "value": 3.0,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "ic",
+          "value": 0.197152894561,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "rank-ic",
+          "value": 0.5,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH-top-only",
+          "horizonBars": 1,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH-top-minus-bottom",
+          "horizonBars": 1,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH-turnover",
+          "horizonBars": 1,
+          "lens": "economic",
+          "metric": "turnover",
+          "value": null,
+          "undefinedReason": "not-applicable",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH",
+          "horizonBars": 2,
+          "lens": "temporal",
+          "metric": "coverage",
+          "value": 0.33333333333299997,
+          "undefinedReason": null,
+          "sampleCount": 6
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH",
+          "horizonBars": 2,
+          "lens": "temporal",
+          "metric": "missingness",
+          "value": 0.666666666667,
+          "undefinedReason": null,
+          "sampleCount": 6
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH",
+          "horizonBars": 2,
+          "lens": "temporal",
+          "metric": "sample-count",
+          "value": 2.0,
+          "undefinedReason": null,
+          "sampleCount": 2
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH",
+          "horizonBars": 2,
+          "lens": "temporal",
+          "metric": "ic",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 2
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH",
+          "horizonBars": 2,
+          "lens": "temporal",
+          "metric": "rank-ic",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 2
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH-top-only",
+          "horizonBars": 2,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH-top-minus-bottom",
+          "horizonBars": 2,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "600000.SH-turnover",
+          "horizonBars": 2,
+          "lens": "economic",
+          "metric": "turnover",
+          "value": null,
+          "undefinedReason": "not-applicable",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "600000.SH",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "decay",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "600000.SH",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "stability",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 1
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "600000.SH",
+          "horizonBars": 2,
+          "lens": "temporal",
+          "metric": "decay",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "600000.SH",
+          "horizonBars": 2,
+          "lens": "temporal",
+          "metric": "stability",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 0
+        }
+      ],
+      "checks": {
+        "corporate-action-evidence-is-verified": true,
+        "engine-identity-stays-distinct": true,
+        "factor-abi-v1-reset": true,
+        "malformed-evidence-reset": true,
+        "missing-close-is-typed": true,
+        "nonfinite-output-rejected": true,
+        "report-validates": true,
+        "scheduled-closure-is-not-a-bar-gap": true,
+        "target-availability-remains-causal": true
+      }
+    },
+    "okx-spot-time-series": {
+      "marketContext": {
+        "venue": "okx",
+        "assetClass": "crypto-spot",
+        "barInterval": "1h",
+        "priceBasis": "unadjusted",
+        "valuationCurrency": "USDT",
+        "pointInTimeUniverseId": "okx-spot-reference"
+      },
+      "candidateHash": "7c66becd18b34b173736b294ea16cf495bcffae7f06603cb11fe304f6878ffdc",
+      "featurePlanHash": "fb9d1ba4c942ffaae90453d298ce14319d6b5cf3d0bd59bb4a244f6b4cb819e3",
+      "datasetId": "fc5d4319458b9e230cea1a3a9bad0426641c7d66b271c24a55623cd95e0a5f1c",
+      "protocolHash": "2ebb66405c5746d59b16a374d7cdf484ac401d3502a744b4e0da407eb2089e04",
+      "evidenceState": "out-of-sample",
+      "metricDigest": "a7db98062841464f35a0db03a4881521200a684d6706f8657783a2134c27a8bf",
+      "targetUnavailable": [
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 7200000,
+          "horizonBars": 1,
+          "reason": "bar-gap"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 10800000,
+          "horizonBars": 1,
+          "reason": "bar-gap"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 39600000,
+          "horizonBars": 1,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 0,
+          "horizonBars": 3,
+          "reason": "bar-gap"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 3600000,
+          "horizonBars": 3,
+          "reason": "bar-gap"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 7200000,
+          "horizonBars": 3,
+          "reason": "bar-gap"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 10800000,
+          "horizonBars": 3,
+          "reason": "bar-gap"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 32400000,
+          "horizonBars": 3,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 36000000,
+          "horizonBars": 3,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 39600000,
+          "horizonBars": 3,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 0,
+          "horizonBars": 5,
+          "reason": "bar-gap"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 3600000,
+          "horizonBars": 5,
+          "reason": "bar-gap"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 7200000,
+          "horizonBars": 5,
+          "reason": "bar-gap"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 10800000,
+          "horizonBars": 5,
+          "reason": "bar-gap"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 25200000,
+          "horizonBars": 5,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 28800000,
+          "horizonBars": 5,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 32400000,
+          "horizonBars": 5,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 36000000,
+          "horizonBars": 5,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "BTC-USDT",
+          "observationTimeMs": 39600000,
+          "horizonBars": 5,
+          "reason": "insufficient-coverage"
+        }
+      ],
+      "metrics": [
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "coverage",
+          "value": 0.75,
+          "undefinedReason": null,
+          "sampleCount": 8
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "missingness",
+          "value": 0.25,
+          "undefinedReason": null,
+          "sampleCount": 8
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "sample-count",
+          "value": 6.0,
+          "undefinedReason": null,
+          "sampleCount": 6
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "ic",
+          "value": 0.595975176948,
+          "undefinedReason": null,
+          "sampleCount": 6
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "rank-ic",
+          "value": 0.371428571429,
+          "undefinedReason": null,
+          "sampleCount": 6
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT-top-only",
+          "horizonBars": 1,
+          "lens": "economic",
+          "metric": "economic",
+          "value": 0.016518018018,
+          "undefinedReason": null,
+          "sampleCount": 6
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT-top-minus-bottom",
+          "horizonBars": 1,
+          "lens": "economic",
+          "metric": "economic",
+          "value": 0.005539132124,
+          "undefinedReason": null,
+          "sampleCount": 6
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT-turnover",
+          "horizonBars": 1,
+          "lens": "economic",
+          "metric": "turnover",
+          "value": null,
+          "undefinedReason": "not-applicable",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 3,
+          "lens": "temporal",
+          "metric": "coverage",
+          "value": 0.5,
+          "undefinedReason": null,
+          "sampleCount": 8
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 3,
+          "lens": "temporal",
+          "metric": "missingness",
+          "value": 0.5,
+          "undefinedReason": null,
+          "sampleCount": 8
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 3,
+          "lens": "temporal",
+          "metric": "sample-count",
+          "value": 4.0,
+          "undefinedReason": null,
+          "sampleCount": 4
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 3,
+          "lens": "temporal",
+          "metric": "ic",
+          "value": 0.779801054686,
+          "undefinedReason": null,
+          "sampleCount": 4
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 3,
+          "lens": "temporal",
+          "metric": "rank-ic",
+          "value": 0.19999999999999998,
+          "undefinedReason": null,
+          "sampleCount": 4
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT-top-only",
+          "horizonBars": 3,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT-top-minus-bottom",
+          "horizonBars": 3,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT-turnover",
+          "horizonBars": 3,
+          "lens": "economic",
+          "metric": "turnover",
+          "value": null,
+          "undefinedReason": "not-applicable",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 5,
+          "lens": "temporal",
+          "metric": "coverage",
+          "value": 0.375,
+          "undefinedReason": null,
+          "sampleCount": 8
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 5,
+          "lens": "temporal",
+          "metric": "missingness",
+          "value": 0.625,
+          "undefinedReason": null,
+          "sampleCount": 8
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 5,
+          "lens": "temporal",
+          "metric": "sample-count",
+          "value": 3.0,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 5,
+          "lens": "temporal",
+          "metric": "ic",
+          "value": 0.927111439142,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT",
+          "horizonBars": 5,
+          "lens": "temporal",
+          "metric": "rank-ic",
+          "value": 1.0,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT-top-only",
+          "horizonBars": 5,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT-top-minus-bottom",
+          "horizonBars": 5,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "BTC-USDT-turnover",
+          "horizonBars": 5,
+          "lens": "economic",
+          "metric": "turnover",
+          "value": null,
+          "undefinedReason": "not-applicable",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "BTC-USDT",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "decay",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 1
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "BTC-USDT",
+          "horizonBars": 1,
+          "lens": "temporal",
+          "metric": "stability",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 1
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "BTC-USDT",
+          "horizonBars": 3,
+          "lens": "temporal",
+          "metric": "decay",
+          "value": 0.183825877739,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "BTC-USDT",
+          "horizonBars": 3,
+          "lens": "temporal",
+          "metric": "stability",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 1
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "BTC-USDT",
+          "horizonBars": 5,
+          "lens": "temporal",
+          "metric": "decay",
+          "value": 0.331136262195,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "BTC-USDT",
+          "horizonBars": 5,
+          "lens": "temporal",
+          "metric": "stability",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 1
+        }
+      ],
+      "checks": {
+        "bar-gap-restarts-evidence": true,
+        "engine-identity-stays-distinct": true,
+        "factor-abi-v1-reset": true,
+        "malformed-evidence-reset": true,
+        "multi-horizon-decay-and-stability-retained": true,
+        "nonfinite-output-rejected": true,
+        "report-validates": true,
+        "warmup-preserved": true
+      }
+    },
+    "us-equity-cross-sectional": {
+      "marketContext": {
+        "venue": "nyse",
+        "assetClass": "us-equity",
+        "barInterval": "1d",
+        "priceBasis": "unadjusted",
+        "valuationCurrency": "USD",
+        "pointInTimeUniverseId": "us-equity-pit-reference"
+      },
+      "candidateHash": "b76cc0cfc8fbe9b27c6b575a327df77d020c22ad17c920b3858810653a10f0b8",
+      "featurePlanHash": "fa9fe90c4e113748a05bf3fa74b5e6061d6ecfd5562a826d825d07e01d9d0481",
+      "datasetId": "87b3fd3fa32424bf5198b5c9d22f56667506e17c1ac9881a4840064a1e04814c",
+      "protocolHash": "40d7fc2c30ffb91afbe53d5ad0b7460316551cc05f1fedee541f74bd07bc16f8",
+      "evidenceState": "out-of-sample",
+      "metricDigest": "27e86d0360dd4973539bf18242b748a57de32554b7ac0c0d4e28912d13d0c872",
+      "targetUnavailable": [
+        {
+          "instrumentId": "AAA",
+          "observationTimeMs": 604800000,
+          "horizonBars": 1,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "BBB",
+          "observationTimeMs": 604800000,
+          "horizonBars": 1,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "CCC",
+          "observationTimeMs": 604800000,
+          "horizonBars": 1,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "DDD",
+          "observationTimeMs": 604800000,
+          "horizonBars": 1,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "EEE",
+          "observationTimeMs": 604800000,
+          "horizonBars": 1,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "AAA",
+          "observationTimeMs": 518400000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "AAA",
+          "observationTimeMs": 604800000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "BBB",
+          "observationTimeMs": 518400000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "BBB",
+          "observationTimeMs": 604800000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "CCC",
+          "observationTimeMs": 518400000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "CCC",
+          "observationTimeMs": 604800000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "DDD",
+          "observationTimeMs": 518400000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "DDD",
+          "observationTimeMs": 604800000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "EEE",
+          "observationTimeMs": 518400000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        },
+        {
+          "instrumentId": "EEE",
+          "observationTimeMs": 604800000,
+          "horizonBars": 2,
+          "reason": "insufficient-coverage"
+        }
+      ],
+      "metrics": [
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 1,
+          "lens": "cross-sectional",
+          "metric": "coverage",
+          "value": 0.7999999999999999,
+          "undefinedReason": null,
+          "sampleCount": 25
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 1,
+          "lens": "cross-sectional",
+          "metric": "missingness",
+          "value": 0.19999999999999998,
+          "undefinedReason": null,
+          "sampleCount": 25
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 1,
+          "lens": "cross-sectional",
+          "metric": "sample-count",
+          "value": 20.0,
+          "undefinedReason": null,
+          "sampleCount": 20
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 1,
+          "lens": "cross-sectional",
+          "metric": "ic",
+          "value": 0.96313420916,
+          "undefinedReason": null,
+          "sampleCount": 4
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 1,
+          "lens": "cross-sectional",
+          "metric": "rank-ic",
+          "value": 0.974679434481,
+          "undefinedReason": null,
+          "sampleCount": 4
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 1,
+          "lens": "neutralized",
+          "metric": "neutralized",
+          "value": -0.368486553688,
+          "undefinedReason": null,
+          "sampleCount": 4
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "top-only",
+          "horizonBars": 1,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 4
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "top-minus-bottom",
+          "horizonBars": 1,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 4
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "top-only",
+          "horizonBars": 1,
+          "lens": "economic",
+          "metric": "turnover",
+          "value": 0.0,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "regime-1",
+          "horizonBars": 1,
+          "lens": "regime",
+          "metric": "regime",
+          "value": 0.009570473567,
+          "undefinedReason": null,
+          "sampleCount": 4
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "regime-2",
+          "horizonBars": 1,
+          "lens": "regime",
+          "metric": "regime",
+          "value": 0.021494335427,
+          "undefinedReason": null,
+          "sampleCount": 8
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "regime-3",
+          "horizonBars": 1,
+          "lens": "regime",
+          "metric": "regime",
+          "value": 0.034387159467,
+          "undefinedReason": null,
+          "sampleCount": 8
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 2,
+          "lens": "cross-sectional",
+          "metric": "coverage",
+          "value": 0.6,
+          "undefinedReason": null,
+          "sampleCount": 25
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 2,
+          "lens": "cross-sectional",
+          "metric": "missingness",
+          "value": 0.39999999999999997,
+          "undefinedReason": null,
+          "sampleCount": 25
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 2,
+          "lens": "cross-sectional",
+          "metric": "sample-count",
+          "value": 15.0,
+          "undefinedReason": null,
+          "sampleCount": 15
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 2,
+          "lens": "cross-sectional",
+          "metric": "ic",
+          "value": 0.963828245745,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 2,
+          "lens": "cross-sectional",
+          "metric": "rank-ic",
+          "value": 0.974679434481,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "all",
+          "horizonBars": 2,
+          "lens": "neutralized",
+          "metric": "neutralized",
+          "value": -0.365803010078,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "top-only",
+          "horizonBars": 2,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "top-minus-bottom",
+          "horizonBars": 2,
+          "lens": "economic",
+          "metric": "economic",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "top-only",
+          "horizonBars": 2,
+          "lens": "economic",
+          "metric": "turnover",
+          "value": 0.0,
+          "undefinedReason": null,
+          "sampleCount": 2
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "regime-1",
+          "horizonBars": 2,
+          "lens": "regime",
+          "metric": "regime",
+          "value": 0.019231954669,
+          "undefinedReason": null,
+          "sampleCount": 3
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "regime-2",
+          "horizonBars": 2,
+          "lens": "regime",
+          "metric": "regime",
+          "value": 0.043456610227,
+          "undefinedReason": null,
+          "sampleCount": 6
+        },
+        {
+          "foldId": "fold-1",
+          "variant": "regime-3",
+          "horizonBars": 2,
+          "lens": "regime",
+          "metric": "regime",
+          "value": 0.069936940054,
+          "undefinedReason": null,
+          "sampleCount": 6
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "all",
+          "horizonBars": 1,
+          "lens": "cross-sectional",
+          "metric": "decay",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "all",
+          "horizonBars": 1,
+          "lens": "cross-sectional",
+          "metric": "stability",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 1
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "all",
+          "horizonBars": 2,
+          "lens": "cross-sectional",
+          "metric": "decay",
+          "value": null,
+          "undefinedReason": "no-eligible-observations",
+          "sampleCount": 0
+        },
+        {
+          "foldId": "aggregate",
+          "variant": "all",
+          "horizonBars": 2,
+          "lens": "cross-sectional",
+          "metric": "stability",
+          "value": null,
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 1
+        }
+      ],
+      "checks": {
+        "cross-sectional-economic-costs-are-present": true,
+        "cross-sectional-neutralization-is-present": true,
+        "cross-sectional-regime-is-present": true,
+        "engine-identity-stays-distinct": true,
+        "factor-abi-v1-reset": true,
+        "malformed-evidence-reset": true,
+        "missing-universe-member-rejected": true,
+        "nonfinite-output-rejected": true,
+        "permuted-universe-rejected": true,
+        "report-validates": true,
+        "unavailable-universe-member-is-retained": true
+      }
+    }
+  }
+}

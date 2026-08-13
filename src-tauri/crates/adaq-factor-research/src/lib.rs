@@ -27,6 +27,11 @@ pub const MAX_CANONICAL_JSON_BYTES: usize = 1024 * 1024;
 pub const MAX_FACTOR_OUTPUTS: usize = 64;
 pub const MAX_FACTOR_SLOTS: usize = 64;
 pub const MAX_GRID_SEARCH_TRIALS: u64 = 256;
+pub const MAX_FACTOR_EVALUATION_FOLDS: usize = 32;
+pub const MAX_FACTOR_EVALUATION_HORIZONS: usize = 16;
+pub const MAX_FACTOR_EVALUATION_LENSES: usize = 5;
+pub const MAX_FACTOR_NUISANCE_FEATURES: usize = 16;
+pub const MAX_FACTOR_WORKERS: usize = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractError {
