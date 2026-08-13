@@ -119,7 +119,7 @@ export function WorkflowGuidePage({
 			</section>
 
 			<section aria-labelledby="workflow-map-title">
-				<div className="mb-3">
+				<div className="mb-1">
 					<h2 id="workflow-map-title" className="text-lg font-semibold">
 						{t("workflow.map.title")}
 					</h2>
@@ -320,8 +320,6 @@ function WorkflowInfographic({
 	const [state, setState] = useState<"loading" | "ready" | "error">("loading");
 	const data = useMemo(
 		() => ({
-			title: t("workflow.map.graphTitle"),
-			desc: t("workflow.map.graphDescription"),
 			lists: workflowSteps.map((step) => ({
 				label: String(step.id).padStart(2, "0"),
 				desc: t(`workflow.steps.${step.id}.shortTitle`),

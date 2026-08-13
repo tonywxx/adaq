@@ -261,8 +261,6 @@ const english = {
 			title: "Workflow map",
 			description:
 				"The visual overview loads independently; the semantic step list below is always available.",
-			graphTitle: "AdaQ Workflow",
-			graphDescription: "Ten evidence steps",
 			feedback:
 				"Step 10 feeds review decisions back into steps 1, 4, and 7 as new research attempts.",
 			loading: "Loading workflow infographic…",
@@ -1776,8 +1774,6 @@ const simplifiedChinese = {
 		map: {
 			title: "流程图",
 			description: "流程图独立加载；下方的语义化步骤列表始终可用。",
-			graphTitle: "AdaQ 工作流",
-			graphDescription: "十个证据步骤",
 			feedback: "步骤 10 会把复盘决策反馈到步骤 1、4、7，并创建新的研究尝试。",
 			loading: "正在加载流程图…",
 			unavailable: "流程图暂不可用",

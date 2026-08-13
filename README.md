@@ -30,13 +30,7 @@ Not included in the current M11 delivery (roadmap M12–M18): Qlib Model trainin
 
 ## Screenshots
 
-| Dashboard | Components |
-|:---:|:---:|
-| ![Dashboard](screenshots/1-dashboard.png) | ![Components](screenshots/2-components.png) |
-| **Models** | **Backtest** |
-| ![Models](screenshots/3-models.png) | ![Backtest](screenshots/4-backtest.png) |
-| **Validation** |
-| ![Validation](screenshots/5-validation.png) |
+![AdaQ workflow](screenshots/adaq-workflow.png)
 
 ## Implemented Milestones
 
