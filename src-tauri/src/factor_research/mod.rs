@@ -22,12 +22,14 @@ use adaq_factor_research::{
     AttemptStatus, CandidateBuildRequest, CompletedFeatureDataset, ComponentEligibilityEvidence,
     EvaluationFeatureEvidence, FactorCandidate, FactorCandidateDraft, FactorCandidateSource,
     FactorDataset, FactorDatasetManifest, FactorDatasetRow, FactorEvaluationInput,
-    FactorEvaluationProtocol, FactorEvaluationReport, FactorEvaluator, FactorMaterializationInput,
-    FactorMaterializationProtocol, FactorMaterializer, FactorObservationValue,
-    FactorPresentationMetadata, FactorPromotionDecision, FactorUnavailabilityReason,
-    PromotionEligibility, PromotionPolicy, PromotionProtocol, ResearchFamily,
+    FactorEvaluationProtocol, FactorEvaluationProtocolDraft, FactorEvaluationReport,
+    FactorEvaluator, FactorMaterializationInput, FactorMaterializationProtocol,
+    FactorMaterializationProtocolDraft, FactorMaterializer, FactorObservationValue,
+    FactorPresentationMetadata, FactorPromotionDecision, FactorTarget, FactorUnavailabilityReason,
+    GridSearchFamilyDraft, GridSearchParameter, ObservationRange, PromotionEligibility,
+    PromotionPolicy, PromotionProtocol, ResearchFamily, ResearchFamilyDraft,
     ResearchFamilyRegistration, ResearchLineage, ResearchRegistry, ResearchTrial,
-    ResearchTrialRegistration, canonical_json,
+    ResearchTrialDraft, ResearchTrialRegistration, canonical_json,
 };
 use arrow_array::{Array, ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -42,7 +44,7 @@ use crate::{
     user::validate_user,
 };
 
-const STORAGE_SCHEMA_VERSION: &str = "1.0.0";
+const STORAGE_SCHEMA_VERSION: &str = "1.1.0";
 const MAX_PAGE_SIZE: u32 = 100;
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_JOB_BYTES: usize = 64 * 1024 * 1024;
@@ -74,14 +76,6 @@ pub(crate) trait FactorResearchSource: Send + Sync {
         _archive_sha256: &str,
     ) -> Result<ComponentPackage, String> {
         Err("Component Package source is not configured".into())
-    }
-
-    fn import_component_package(
-        &self,
-        _user_id: &str,
-        _package_bytes: &[u8],
-    ) -> Result<(), String> {
-        Err("Component Package import is not configured".into())
     }
 
     fn reference_feature_dataset(
@@ -169,6 +163,7 @@ pub(crate) struct FactorFamilyView {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FactorReportView {
     pub report: FactorEvaluationReport,
+    pub protocol: Option<FactorEvaluationProtocol>,
     pub locked_by: Vec<String>,
     pub created_at_ms: i64,
 }
@@ -185,6 +180,7 @@ pub(crate) struct FactorPolicyView {
 pub(crate) struct FactorDecisionView {
     pub decision: FactorPromotionDecision,
     pub promotion_protocol_hash: String,
+    pub eligibility_gates: Vec<adaq_factor_research::PromotionGateResult>,
     pub created_at_ms: i64,
 }
 
@@ -193,6 +189,8 @@ pub(crate) struct FactorDecisionView {
 pub(crate) struct FactorLineageView {
     pub lineage: ResearchLineage,
     pub trials: Vec<ResearchTrial>,
+    pub registrations: Vec<ResearchTrialRegistration>,
+    pub protocols: Vec<FactorEvaluationProtocol>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -219,6 +217,14 @@ pub(crate) struct FactorCandidateBuildRequest {
     pub presentation: FactorPresentationMetadata,
     #[serde(default)]
     pub build: Option<FactorControlledBuildRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorCandidatePublishRequest {
+    pub user_id: String,
+    pub draft: FactorCandidateDraft,
+    pub presentation: FactorPresentationMetadata,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -288,6 +294,13 @@ pub(crate) struct FactorMaterializationStartRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorMaterializationProtocolFreezeRequest {
+    pub user_id: String,
+    pub draft: FactorMaterializationProtocolDraft,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FactorEvaluationStartRequest {
     pub user_id: String,
     pub protocol: FactorEvaluationProtocol,
@@ -299,11 +312,36 @@ pub(crate) struct FactorEvaluationStartRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorEvaluationProtocolFreezeRequest {
+    pub user_id: String,
+    pub draft: FactorEvaluationProtocolDraft,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FactorFamilyRegisterRequest {
     pub user_id: String,
     pub registration: ResearchFamilyRegistration,
     #[serde(default)]
     pub trials: Vec<ResearchTrial>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorGridFamilyRegisterRequest {
+    pub user_id: String,
+    pub family_id: Uuid,
+    pub candidate_hash: String,
+    #[serde(default)]
+    pub parent_family_id: Option<Uuid>,
+    pub parameters: Vec<GridSearchParameter>,
+    pub target: FactorTarget,
+    pub market_context: adaq_factor_research::FactorMarketContext,
+    pub point_in_time_universe_id: String,
+    pub observation_range: ObservationRange,
+    pub base_protocol_hash: String,
+    #[serde(default)]
+    pub derivation_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -436,6 +474,23 @@ impl FactorResearch {
         self.enqueue(&request.user_id, "candidate-build", &job)
     }
 
+    pub(crate) fn publish_candidate(
+        &self,
+        request: FactorCandidatePublishRequest,
+    ) -> Result<FactorCandidateView, String> {
+        validate_user(&request.user_id)?;
+        request.presentation.validate().map_err(string)?;
+        let candidate = FactorCandidate::freeze(request.draft).map_err(string)?;
+        let database = self.inner.source.database()?;
+        ResearchStore::new(&database).save_candidate(
+            &request.user_id,
+            &candidate,
+            &request.presentation,
+        )?;
+        ResearchStore::new(&database)
+            .candidate_for_user(&request.user_id, &candidate.candidate_hash)
+    }
+
     pub(crate) fn start_materialization(
         &self,
         request: FactorMaterializationStartRequest,
@@ -475,6 +530,19 @@ impl FactorResearch {
         self.enqueue(&request.user_id, "factor-materialization", &job)
     }
 
+    pub(crate) fn freeze_materialization_protocol(
+        &self,
+        request: FactorMaterializationProtocolFreezeRequest,
+    ) -> Result<FactorMaterializationProtocol, String> {
+        validate_user(&request.user_id)?;
+        if request.draft.user_id != user_uuid(&request.user_id) {
+            return Err(
+                "Factor Materialization Draft User identity differs from the request".into(),
+            );
+        }
+        FactorMaterializationProtocol::freeze(request.draft).map_err(string)
+    }
+
     pub(crate) fn start_evaluation(
         &self,
         request: FactorEvaluationStartRequest,
@@ -506,6 +574,17 @@ impl FactorResearch {
             ResearchStore::new(&database).save_evaluation_protocol(&request.protocol)?;
         }
         self.enqueue(&request.user_id, "factor-evaluation", &job)
+    }
+
+    pub(crate) fn freeze_evaluation_protocol(
+        &self,
+        request: FactorEvaluationProtocolFreezeRequest,
+    ) -> Result<FactorEvaluationProtocol, String> {
+        validate_user(&request.user_id)?;
+        if request.draft.user_id != user_uuid(&request.user_id) {
+            return Err("Factor Evaluation Draft User identity differs from the request".into());
+        }
+        FactorEvaluationProtocol::freeze(request.draft).map_err(string)
     }
 
     pub(crate) fn list_attempts(
@@ -610,6 +689,7 @@ impl FactorResearch {
             &request.dataset_id,
             request.offset,
             request.limit,
+            request.instrument_id.as_deref(),
         )
     }
 
@@ -656,6 +736,100 @@ impl FactorResearch {
         }
         let database = self.inner.source.database()?;
         ResearchStore::new(&database).save_family(&registration, &request.trials)
+    }
+
+    pub(crate) fn register_grid_family(
+        &self,
+        request: FactorGridFamilyRegisterRequest,
+    ) -> Result<FactorAttemptView, String> {
+        validate_user(&request.user_id)?;
+        self.enqueue(&request.user_id, "factor-family-grid", &request)
+    }
+
+    fn execute_grid_family(
+        &self,
+        user_id: &str,
+        request_json: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<String, String> {
+        let request: FactorGridFamilyRegisterRequest =
+            serde_json::from_str(request_json).map_err(string)?;
+        if request.user_id != user_id || cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        let user = user_uuid(&request.user_id);
+        let database = self.inner.source.database()?;
+        let store = ResearchStore::new(&database);
+        store.candidate_for_user(&request.user_id, &request.candidate_hash)?;
+        let mut registry = ResearchRegistry::default();
+        if let Some(parent_family_id) = request.parent_family_id {
+            let parent = store.family_registration(user, parent_family_id)?;
+            registry
+                .register_family(ResearchFamilyDraft {
+                    family_id: parent.family.family_id,
+                    user_id: parent.family.user_id,
+                    root_candidate_hash: parent.family.root_candidate_hash.clone(),
+                    parent_family_id: None,
+                    trials: parent
+                        .trials
+                        .iter()
+                        .map(|trial| ResearchTrialDraft {
+                            trial_id: trial.trial_id,
+                            candidate_hash: trial.candidate_hash.clone(),
+                            parameter_set_hash: trial.parameter_set_hash.clone(),
+                            target: trial.target,
+                            market_context: trial.market_context.clone(),
+                            point_in_time_universe_id: trial.point_in_time_universe_id.clone(),
+                            observation_range: trial.observation_range.clone(),
+                            evaluation_protocol_hash: trial.evaluation_protocol_hash.clone(),
+                            derivation_hash: trial.derivation_hash.clone(),
+                        })
+                        .collect(),
+                })
+                .map_err(string)?;
+        }
+        let draft = GridSearchFamilyDraft {
+            family_id: request.family_id,
+            user_id: user,
+            candidate_hash: request.candidate_hash,
+            parent_family_id: request.parent_family_id,
+            plan: adaq_factor_research::GridSearchPlan::new(request.parameters).map_err(string)?,
+            target: request.target,
+            market_context: request.market_context,
+            point_in_time_universe_id: request.point_in_time_universe_id,
+            observation_range: request.observation_range,
+            base_protocol_hash: request.base_protocol_hash,
+            derivation_hash: request.derivation_hash,
+        };
+        let registration = registry
+            .register_grid_search_family(draft)
+            .map_err(string)?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        let trials = registration
+            .family
+            .trials
+            .iter()
+            .map(|trial| ResearchTrial {
+                trial_id: trial.trial_id,
+                family_id: trial.family_id,
+                candidate_hash: trial.candidate_hash.clone(),
+                protocol_hash: trial.evaluation_protocol_hash.clone(),
+                status: adaq_factor_research::ResearchTrialStatus::Registered,
+                report_hash: None,
+                raw_statistic: None,
+                p_value: None,
+                holm_adjusted: None,
+                related_trial_ids: Vec::new(),
+                diagnostic: None,
+            })
+            .collect::<Vec<_>>();
+        let family = store.save_family(&registration.family, &trials)?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        Ok(family.family.family_id.to_string())
     }
 
     pub(crate) fn update_trial(&self, request: FactorTrialUpdateRequest) -> Result<(), String> {
@@ -729,6 +903,15 @@ impl FactorResearch {
         validate_user(&request.user_id)?;
         let database = self.inner.source.database()?;
         ResearchStore::new(&database).list_decisions(&request)
+    }
+
+    pub(crate) fn list_decision_library(
+        &self,
+        request: FactorPageRequest,
+    ) -> Result<FactorPage<FactorDecisionView>, String> {
+        validate_user(&request.user_id)?;
+        let database = self.inner.source.database()?;
+        ResearchStore::new(&database).list_decision_library(&request)
     }
 
     pub(crate) fn add_reference(&self, request: FactorReferenceRequest) -> Result<(), String> {
@@ -873,6 +1056,9 @@ impl FactorResearch {
                 "factor-evaluation" => {
                     self.execute_evaluation(&user_id, &item.attempt_id, &request_json, &cancelled)
                 }
+                "factor-family-grid" => {
+                    self.execute_grid_family(&user_id, &request_json, &cancelled)
+                }
                 _ => Err("unknown Factor research Attempt kind".into()),
             }
         };
@@ -966,9 +1152,6 @@ impl FactorResearch {
                 },
             })
             .map_err(string)?;
-            self.inner
-                .source
-                .import_component_package(user_id, &build_result.package_bytes)?;
             let database = self.inner.source.database()?;
             return ResearchStore::new(&database).save_candidate(
                 user_id,
@@ -1171,6 +1354,8 @@ pub(crate) struct FactorDatasetRowsRequest {
     pub dataset_id: String,
     pub offset: u64,
     pub limit: u32,
+    #[serde(default)]
+    pub instrument_id: Option<String>,
 }
 
 fn string(error: impl std::fmt::Display) -> String {
@@ -1889,7 +2074,7 @@ impl<'a> ResearchStore<'a> {
             .map_err(|_| "Factor Candidate was not found".to_owned())?;
         let candidate = FactorCandidate::load(candidate_json.as_bytes()).map_err(string)?;
         let presentation = serde_json::from_str(&presentation_json).map_err(string)?;
-        let locked_by = self.locked_by("candidate", candidate_hash)?;
+        let locked_by = self.locked_by(user_id, "candidate", candidate_hash)?;
         Ok(FactorCandidateView {
             candidate,
             presentation,
@@ -2154,7 +2339,7 @@ impl<'a> ResearchStore<'a> {
         Ok(FactorDatasetView {
             manifest,
             byte_size,
-            locked_by: self.locked_by("dataset", dataset_id)?,
+            locked_by: self.locked_by(user_id, "dataset", dataset_id)?,
             created_at_ms: created_at,
         })
     }
@@ -2182,7 +2367,7 @@ impl<'a> ResearchStore<'a> {
             return Err("Factor Dataset Parquet content hash mismatch".into());
         }
         let (rows, total) =
-            read_factor_rows(Path::new(&path), &manifest.output_names, 0, u32::MAX)?;
+            read_factor_rows(Path::new(&path), &manifest.output_names, 0, u32::MAX, None)?;
         if total != manifest.observation_count {
             return Err("Factor Dataset row count does not match its manifest".into());
         }
@@ -2237,6 +2422,7 @@ impl<'a> ResearchStore<'a> {
         dataset_id: &str,
         offset: u64,
         limit: u32,
+        instrument_id: Option<&str>,
     ) -> Result<FactorDatasetRowsPage, String> {
         if limit == 0 || limit > MAX_PAGE_SIZE {
             return Err("Factor Dataset row page size is invalid".into());
@@ -2257,9 +2443,14 @@ impl<'a> ResearchStore<'a> {
         if hash_bytes(&fs::read(&path).map_err(string)?) != parquet_sha256 {
             return Err("Factor Dataset Parquet content hash mismatch".into());
         }
-        let (rows, total) =
-            read_factor_rows(Path::new(&path), &manifest.output_names, offset, limit)?;
-        if total != manifest.observation_count {
+        let (rows, total) = read_factor_rows(
+            Path::new(&path),
+            &manifest.output_names,
+            offset,
+            limit,
+            instrument_id,
+        )?;
+        if instrument_id.is_none() && total != manifest.observation_count {
             return Err("Factor Dataset row count does not match its manifest".into());
         }
         let next_offset = (offset.saturating_add(rows.len() as u64) < total)
@@ -2386,9 +2577,23 @@ impl<'a> ResearchStore<'a> {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|_| "Factor Evaluation Report was not found".to_owned())?;
+        let report: FactorEvaluationReport = serde_json::from_str(&json).map_err(string)?;
+        let protocol_json: Option<String> = self
+            .database
+            .query_row(
+                "SELECT protocol_json FROM factor_research_protocols
+                 WHERE protocol_hash = ?1 AND user_id = ?2 AND kind = 'evaluation'",
+                params![&report.protocol_hash, user_uuid(user_id).to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(string)?;
         Ok(FactorReportView {
-            report: serde_json::from_str(&json).map_err(string)?,
-            locked_by: self.locked_by("report", report_hash)?,
+            protocol: protocol_json
+                .map(|json| serde_json::from_str(&json).map_err(string))
+                .transpose()?,
+            report,
+            locked_by: self.locked_by(user_id, "report", report_hash)?,
             created_at_ms: created_at,
         })
     }
@@ -2520,6 +2725,55 @@ impl<'a> ResearchStore<'a> {
         })
     }
 
+    fn family_registration(
+        &self,
+        user_id: Uuid,
+        family_id: Uuid,
+    ) -> Result<ResearchFamilyRegistration, String> {
+        let family_json: String = self
+            .database
+            .query_row(
+                "SELECT family_json FROM factor_research_families WHERE family_id = ?1 AND user_id = ?2",
+                params![family_id.to_string(), user_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Research Family was not found".to_owned())?;
+        let family: ResearchFamily = serde_json::from_str(&family_json).map_err(string)?;
+        family.validate().map_err(string)?;
+        let mut statement = self
+            .database
+            .prepare(
+                "SELECT registration_json FROM factor_research_registrations
+                 WHERE family_id = ?1 AND user_id = ?2 ORDER BY trial_id",
+            )
+            .map_err(string)?;
+        let trials = statement
+            .query_map(params![family_id.to_string(), user_id.to_string()], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(string)?
+            .map(|json| {
+                let trial: ResearchTrialRegistration =
+                    serde_json::from_str(&json.map_err(string)?).map_err(string)?;
+                trial.validate().map_err(string)?;
+                Ok(trial)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let trial_ids = trials
+            .iter()
+            .map(|trial| trial.trial_id)
+            .collect::<Vec<_>>();
+        if family.user_id != user_id
+            || trial_ids != family.registered_trial_ids
+            || trials
+                .iter()
+                .any(|trial| trial.family_id != family.family_id)
+        {
+            return Err("Research Family registration is incomplete".into());
+        }
+        Ok(ResearchFamilyRegistration { family, trials })
+    }
+
     fn list_families(
         &self,
         request: &FactorPageRequest,
@@ -2644,7 +2898,44 @@ impl<'a> ResearchStore<'a> {
             })
             .map(|json| serde_json::from_str::<ResearchTrial>(&json).map_err(string))
             .collect::<Result<Vec<ResearchTrial>, String>>()?;
-        Ok(FactorLineageView { lineage, trials })
+        let registrations = lineage
+            .trial_ids
+            .iter()
+            .map(|id| {
+                self.database
+                    .query_row(
+                        "SELECT registration_json FROM factor_research_registrations
+                         WHERE trial_id = ?1 AND user_id = ?2",
+                        params![id.to_string(), user_id.to_string()],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|_| "Research Trial registration was not found".to_owned())
+                    .and_then(|json| serde_json::from_str(&json).map_err(string))
+            })
+            .collect::<Result<Vec<ResearchTrialRegistration>, String>>()?;
+        let protocols = registrations
+            .iter()
+            .filter_map(|registration| {
+                let json: Option<String> = self
+                    .database
+                    .query_row(
+                        "SELECT protocol_json FROM factor_research_protocols
+                         WHERE protocol_hash = ?1 AND user_id = ?2 AND kind = 'evaluation'",
+                        params![registration.evaluation_protocol_hash, user_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .ok()
+                    .flatten();
+                json.map(|json| serde_json::from_str(&json).map_err(string))
+            })
+            .collect::<Result<Vec<FactorEvaluationProtocol>, String>>()?;
+        Ok(FactorLineageView {
+            lineage,
+            trials,
+            registrations,
+            protocols,
+        })
     }
 
     fn save_policy(
@@ -2842,6 +3133,8 @@ impl<'a> ResearchStore<'a> {
         let record = adaq_factor_research::PromotionDecisionRecord {
             decision: decision.clone(),
             promotion_protocol_hash: protocol.protocol_hash.clone(),
+            eligibility_gates: eligibility.gates().to_vec(),
+            component: request.component,
         };
         let json = serde_json::to_string(&record).map_err(string)?;
         let promotion_json =
@@ -2887,6 +3180,7 @@ impl<'a> ResearchStore<'a> {
         Ok(FactorDecisionView {
             decision,
             promotion_protocol_hash: protocol.protocol_hash,
+            eligibility_gates: record.eligibility_gates,
             created_at_ms: now_ms(),
         })
     }
@@ -2918,12 +3212,73 @@ impl<'a> ResearchStore<'a> {
                 Ok(FactorDecisionView {
                     decision: record.decision,
                     promotion_protocol_hash: record.promotion_protocol_hash,
+                    eligibility_gates: record.eligibility_gates,
                     created_at_ms,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(FactorPage {
             items,
+            page,
+            page_size: limit,
+            total,
+        })
+    }
+
+    fn list_decision_library(
+        &self,
+        request: &FactorPageRequest,
+    ) -> Result<FactorPage<FactorDecisionView>, String> {
+        let (page, limit, offset) = page_params(request)?;
+        let user = user_uuid(&request.user_id).to_string();
+        let mut statement = self
+            .database
+            .prepare(
+                "SELECT record_json, created_at_ms
+                   FROM factor_promotion_decisions
+                  WHERE user_id = ?1
+                  ORDER BY created_at_ms DESC, decision_id",
+            )
+            .map_err(string)?;
+        let records = statement
+            .query_map([user], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(string)?
+            .map(|row| {
+                let (json, created_at_ms) = row.map_err(string)?;
+                let record: adaq_factor_research::PromotionDecisionRecord =
+                    serde_json::from_str(&json).map_err(string)?;
+                Ok((record, created_at_ms))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let superseded = records
+            .iter()
+            .filter_map(|(record, _)| record.decision.supersedes)
+            .collect::<Vec<_>>();
+        let items = records
+            .into_iter()
+            .filter(|(record, _)| {
+                matches!(
+                    record.decision.state,
+                    adaq_factor_research::PromotionDecisionState::ResearchValidated
+                        | adaq_factor_research::PromotionDecisionState::ComponentEligible
+                ) && !superseded.contains(&record.decision.decision_id)
+            })
+            .map(|(record, created_at_ms)| FactorDecisionView {
+                decision: record.decision,
+                promotion_protocol_hash: record.promotion_protocol_hash,
+                eligibility_gates: record.eligibility_gates,
+                created_at_ms,
+            })
+            .collect::<Vec<_>>();
+        let total = items.len() as u64;
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(items.len());
+        let paged = items.into_iter().skip(start).take(limit as usize).collect();
+        Ok(FactorPage {
+            items: paged,
             page,
             page_size: limit,
             total,
@@ -3072,34 +3427,81 @@ impl<'a> ResearchStore<'a> {
         manifest.validate().map_err(string)?;
         let policy_json: String = self.database.query_row("SELECT policy_json FROM factor_promotion_policies WHERE policy_hash = ?1 AND user_id = ?2", params![protocol.policy_hash, user_id.to_string()], |row| row.get(0)).map_err(|_| "Promotion Policy was not found".to_owned())?;
         let policy: PromotionPolicy = serde_json::from_str(&policy_json).map_err(string)?;
+        let candidate_json: String = self
+            .database
+            .query_row(
+                "SELECT c.candidate_json FROM factor_candidate_access a
+                 JOIN factor_candidate_content c USING(candidate_hash)
+                  WHERE a.user_id = ?1 AND a.candidate_hash = ?2",
+                params![owner_id, protocol.candidate_hash],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Promotion Candidate was not found".to_owned())?;
+        let candidate = FactorCandidate::load(candidate_json.as_bytes()).map_err(string)?;
+        let reports = protocol
+            .report_hashes
+            .iter()
+            .map(|hash| {
+                let json: String = self
+                    .database
+                    .query_row(
+                        "SELECT r.report_json FROM factor_evaluation_report_access a
+                         JOIN factor_evaluation_reports r USING(report_hash)
+                         WHERE a.user_id = ?1 AND a.report_hash = ?2",
+                        params![owner_id, hash],
+                        |row| row.get(0),
+                    )
+                    .map_err(|_| "Promotion Report was not found".to_owned())?;
+                serde_json::from_str::<FactorEvaluationReport>(&json).map_err(string)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let lineage = self
+            .lineage_for_user(user_id, &protocol.trial_id.to_string())?
+            .lineage;
+        let eligibility = PromotionEligibility::check(adaq_factor_research::PromotionEvidence {
+            candidate: &candidate,
+            dataset: &manifest,
+            dataset_status: adaq_factor_research::FactorDatasetStatus::Completed,
+            evaluation_protocol: &evaluation,
+            reports: &reports,
+            policy: &policy,
+            lineage: &lineage,
+            promotion_protocol: protocol,
+            component: record.component,
+        })
+        .map_err(string)?;
         let eligible = matches!(
             record.decision.state,
             adaq_factor_research::PromotionDecisionState::ResearchValidated
                 | adaq_factor_research::PromotionDecisionState::ComponentEligible
         ) && record.promotion_protocol_hash == protocol.protocol_hash
-            && report.evidence_state == adaq_factor_research::EvaluationEvidenceState::OutOfSample
-            && report.report_hash == *report_hash
-            && report.protocol_hash == evaluation.protocol_hash
-            && report.factor_dataset_id == manifest.dataset_id
-            && protocol.policy_hash == policy.policy_hash
-            && manifest.candidate_hash == protocol.candidate_hash
-            && evaluation.family_id == protocol.family_id
-            && evaluation.trial_id == protocol.trial_id
-            && evaluation.output_name == protocol.output_name;
+            && eligibility.research_validated()
+            && (record.decision.state
+                != adaq_factor_research::PromotionDecisionState::ComponentEligible
+                || eligibility.component_eligible());
         Ok(adaq_factor_research::M12Eligibility {
             eligible,
             reason: (!eligible)
                 .then_some("completed output lacks a current frozen promotion evidence set"),
+            gates: eligibility.gates().to_vec(),
         })
     }
 
-    fn locked_by(&self, kind: &str, evidence_id: &str) -> Result<Vec<String>, String> {
+    fn locked_by(
+        &self,
+        user_id: &str,
+        kind: &str,
+        evidence_id: &str,
+    ) -> Result<Vec<String>, String> {
         let mut statement = self
             .database
-            .prepare("SELECT reference_id FROM factor_references WHERE evidence_kind = ?1 AND evidence_id = ?2 ORDER BY reference_id")
+            .prepare("SELECT reference_id FROM factor_references WHERE evidence_kind = ?1 AND evidence_id = ?2 AND referencing_user_id = ?3 ORDER BY reference_id")
             .map_err(string)?;
         statement
-            .query_map(params![kind, evidence_id], |row| row.get::<_, String>(0))
+            .query_map(
+                params![kind, evidence_id, user_uuid_string(user_id)],
+                |row| row.get::<_, String>(0),
+            )
             .map_err(string)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(string)
@@ -3394,6 +3796,7 @@ fn read_factor_rows(
     output_names: &[String],
     offset: u64,
     limit: u32,
+    instrument_id: Option<&str>,
 ) -> Result<(Vec<FactorDatasetRow>, u64), String> {
     let file = File::open(path).map_err(string)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(string)?;
@@ -3403,7 +3806,7 @@ fn read_factor_rows(
     }
     let reader = builder.with_batch_size(8192).build().map_err(string)?;
     let mut rows = Vec::new();
-    let mut row_index = 0u64;
+    let mut matched_rows = 0u64;
     for batch in reader {
         let batch = batch.map_err(string)?;
         let instruments = array::<StringArray>(&batch, 0)?;
@@ -3451,17 +3854,22 @@ fn read_factor_rows(
                     Ok((name.clone(), value))
                 })
                 .collect::<Result<BTreeMap<_, _>, String>>()?;
-            if row_index >= offset && rows.len() < limit as usize {
+            let matches_filter = instrument_id
+                .map(|filter| instruments.value(index).contains(filter))
+                .unwrap_or(true);
+            if matches_filter && matched_rows >= offset && rows.len() < limit as usize {
                 rows.push(FactorDatasetRow {
                     instrument_id: instruments.value(index).into(),
                     observation_time_ms: times.value(index),
                     values,
                 });
             }
-            row_index = row_index.saturating_add(1);
+            if matches_filter {
+                matched_rows = matched_rows.saturating_add(1);
+            }
         }
     }
-    Ok((rows, row_index))
+    Ok((rows, matched_rows))
 }
 
 fn array<T: Array + 'static>(batch: &RecordBatch, index: usize) -> Result<&T, String> {
@@ -3711,7 +4119,8 @@ mod tests {
             },
         ];
         write_factor_parquet(&path, &["momentum".into()], &rows).unwrap();
-        let (selected, total) = read_factor_rows(&path, &["momentum".into()], 0, 100).unwrap();
+        let (selected, total) =
+            read_factor_rows(&path, &["momentum".into()], 0, 100, None).unwrap();
         assert_eq!(total, 2);
         assert_eq!(selected, rows);
         fs::remove_dir_all(directory).unwrap();
@@ -3754,8 +4163,25 @@ mod tests {
             reference_id: "report-1".into(),
         };
         store.add_reference(&reference).unwrap();
+        database
+            .execute(
+                "INSERT INTO factor_references(evidence_kind, evidence_id, referencing_user_id, reference_id)
+                 VALUES ('dataset', 'dataset-1', ?1, 'other-user-report')",
+                [user_uuid_string("bob")],
+            )
+            .unwrap();
+        assert_eq!(
+            store.locked_by("alice", "dataset", "dataset-1").unwrap(),
+            vec!["report-1"]
+        );
         assert!(store.delete_dataset("alice", "dataset-1").is_err());
         store.remove_reference(&reference).unwrap();
+        database
+            .execute(
+                "DELETE FROM factor_references WHERE evidence_kind = 'dataset' AND evidence_id = 'dataset-1' AND referencing_user_id = ?1",
+                [user_uuid_string("bob")],
+            )
+            .unwrap();
         store.delete_dataset("alice", "dataset-1").unwrap();
         assert!(!path.exists());
         fs::remove_dir_all(directory).unwrap();

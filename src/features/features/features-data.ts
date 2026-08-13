@@ -284,34 +284,3 @@ export function camelReason(reason: string): string {
 		letter.toUpperCase(),
 	);
 }
-
-// ---- User-scoped current-session list caches ----
-// The cache renders re-entries instantly and is invalidated by User; a
-// background refresh always runs and only replaces the cache on success.
-
-const sessionCaches: Map<string, unknown> = new Map();
-
-function sessionCacheKey(userId: string, resource: string): string {
-	return `${userId}:${resource}`;
-}
-
-export function readSessionCache(
-	userId: string | null,
-	resource: string,
-): unknown {
-	if (!userId) return undefined;
-	return sessionCaches.get(sessionCacheKey(userId, resource));
-}
-
-export function writeSessionCache(
-	userId: string | null,
-	resource: string,
-	value: unknown,
-): void {
-	if (!userId) return;
-	sessionCaches.set(sessionCacheKey(userId, resource), value);
-}
-
-export function clearSessionCache(): void {
-	sessionCaches.clear();
-}

@@ -169,9 +169,10 @@ export function OperationsDashboard() {
 						{t("operations.marketSessionsDescription")}
 					</CardDescription>
 				</CardHeader>
-				<CardContent className="grid gap-2 sm:grid-cols-3">
+				<CardContent className="grid gap-2 sm:grid-cols-4">
 					{(
 						[
+							["/factors", t("nav.factorResearch")],
 							["/markets/crypto", t("markets.crypto.title")],
 							["/markets/a-shares", t("markets.aShares.title")],
 							["/markets/us-equities", t("markets.usEquities.title")],

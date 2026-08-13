@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { AuthGate } from "@/components/auth-gate";
 import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
+import { FactorsPage } from "@/features/factors/factors-page";
 import { ModelsPage } from "@/features/models/models-page";
 import {
 	CryptoMarketPage,
@@ -142,6 +143,15 @@ const modelsRoute = createRoute({
 	path: "/models",
 	component: ModelsPage,
 });
+const factorsRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/factors",
+	staticData: {
+		titleKey: "factors.title",
+		breadcrumbKey: "factors.breadcrumb",
+	},
+	component: FactorsPage,
+});
 const settingsIndexRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/settings",
@@ -195,6 +205,7 @@ const routeTree = rootRoute.addChildren([
 	validationRoute,
 	featuresRoute,
 	modelsRoute,
+	factorsRoute,
 	settingsIndexRoute,
 	settingsRoute,
 ]);

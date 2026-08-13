@@ -36,6 +36,10 @@ test("routes adaptive home, Help, Operations, and localized market workspaces", 
 	);
 	expect(routerSource).toContain('path: "/help/workflow"');
 	expect(routerSource).toContain('path: "/help/workflow/$step"');
+	expect(routerSource).toMatch(
+		/path: "\/factors"[\s\S]*?component: FactorsPage/,
+	);
+	expect(routerSource).toContain('titleKey: "factors.title"');
 	for (const path of [
 		"/markets",
 		"/markets/crypto",
@@ -46,6 +50,8 @@ test("routes adaptive home, Help, Operations, and localized market workspaces", 
 	}
 	expect(routerSource).not.toMatch(/path: "\/",\s*component: Dashboard/);
 	expect(sidebarSource).toMatch(/t\("nav\.marketsData"\)/);
+	expect(sidebarSource).toMatch(/to="\/factors"/);
+	expect(sidebarSource).toMatch(/t\("nav\.factorResearch"\)/);
 	expect(sidebarSource).toMatch(/startsWith\("\/markets"\)/);
 	expect(sidebarSource).toContain('url: "/help/workflow"');
 	expect(marketsSource).toMatch(/staleTime: 5 \* 60_000/);
@@ -75,6 +81,10 @@ test("keeps the ten-step workflow ordered and mapped to four modules", () => {
 	for (const step of workflowSteps) {
 		expect(step.capability === "partial" || step.milestone).toBeTruthy();
 	}
+	expect(workflowSteps.slice(0, 2)).toEqual([
+		{ id: 1, module: "factor", capability: "partial", target: "/factors" },
+		{ id: 2, module: "factor", capability: "partial", target: "/factors" },
+	]);
 });
 
 test("Models switches immediately and keeps loading inside its controls", () => {

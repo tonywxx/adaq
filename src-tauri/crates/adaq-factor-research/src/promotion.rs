@@ -497,6 +497,10 @@ impl PromotionEligibility {
             .find(|result| result.gate == gate)
             .is_some_and(|result| result.passed)
     }
+
+    pub fn gates(&self) -> &[PromotionGateResult] {
+        &self.gates
+    }
 }
 
 fn gate(gate: PromotionGate, passed: bool) -> PromotionGateResult {
@@ -591,6 +595,8 @@ impl FactorPromotionDecision {
 pub struct PromotionDecisionRecord {
     pub decision: FactorPromotionDecision,
     pub promotion_protocol_hash: String,
+    pub eligibility_gates: Vec<PromotionGateResult>,
+    pub component: ComponentEligibilityEvidence,
 }
 
 impl PromotionDecisionRecord {
@@ -712,6 +718,8 @@ impl PromotionDecisionLedger {
         let record = PromotionDecisionRecord {
             decision,
             promotion_protocol_hash: protocol.protocol_hash.clone(),
+            eligibility_gates: eligibility.gates().to_vec(),
+            component: ComponentEligibilityEvidence::default(),
         };
         record.validate()?;
         self.records
@@ -826,6 +834,10 @@ impl PromotionDecisionLedger {
             &input.promotion_protocol.candidate_hash,
             &input.promotion_protocol.output_name,
         );
+        let gates = current
+            .as_ref()
+            .map(|record| record.eligibility_gates.clone())
+            .unwrap_or_default();
         let valid = input.dataset_status == FactorDatasetStatus::Completed
             && input.dataset.validate().is_ok()
             && input.evaluation_protocol.validate().is_ok()
@@ -863,7 +875,7 @@ impl PromotionDecisionLedger {
                 == input.promotion_protocol.engine_identity
             && input.dataset.engine_identity == input.evaluation_protocol.engine_identity
             && input.report.evidence_state == EvaluationEvidenceState::OutOfSample
-            && current.is_some_and(|record| {
+            && current.as_ref().is_some_and(|record| {
                 matches!(
                     record.decision.state,
                     PromotionDecisionState::ResearchValidated
@@ -874,6 +886,7 @@ impl PromotionDecisionLedger {
             eligible: valid,
             reason: (!valid)
                 .then_some("completed output lacks a current frozen promotion evidence set"),
+            gates,
         }
     }
 }
@@ -894,6 +907,7 @@ pub struct M12EligibilityInput<'a> {
 pub struct M12Eligibility {
     pub eligible: bool,
     pub reason: Option<&'static str>,
+    pub gates: Vec<PromotionGateResult>,
 }
 
 #[cfg(test)]
@@ -1282,6 +1296,8 @@ mod tests {
                 PromotionDecisionRecord {
                     decision,
                     promotion_protocol_hash: "e".repeat(64),
+                    eligibility_gates: Vec::new(),
+                    component: ComponentEligibilityEvidence::default(),
                 },
             );
         }

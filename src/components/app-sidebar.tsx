@@ -76,7 +76,11 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 		(step) => location.pathname === `/help/workflow/${step.id}`,
 	);
 	const activeModule =
-		location.pathname === "/operations" ? "operations" : activeStep?.module;
+		location.pathname === "/operations"
+			? "operations"
+			: location.pathname === "/factors"
+				? "factor"
+				: activeStep?.module;
 	const [openModules, setOpenModules] = useState<Set<string>>(
 		() => new Set([activeModule ?? "factor"]),
 	);
@@ -177,6 +181,14 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 							{open ? (
 								<SidebarGroupContent id={`sidebar-workflow-${module.id}`}>
 									<SidebarMenu>
+										{module.id === "factor" ? (
+											<SidebarLink
+												to="/factors"
+												label={t("nav.factorResearch")}
+												icon={<SigmaIcon aria-hidden="true" />}
+												active={location.pathname === "/factors"}
+											/>
+										) : null}
 										{module.id === "operations" ? (
 											<SidebarLink
 												to="/operations"
@@ -248,7 +260,13 @@ function SidebarLink({
 	icon,
 	active,
 }: {
-	to: "/" | "/markets" | "/features" | "/operations" | "/components";
+	to:
+		| "/"
+		| "/markets"
+		| "/features"
+		| "/factors"
+		| "/operations"
+		| "/components";
 	label: string;
 	icon: ReactNode;
 	active: boolean;

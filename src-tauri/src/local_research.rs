@@ -261,10 +261,6 @@ impl FactorResearchSource for LocalFactorSource {
         self.components.package_for_user(user_id, archive_sha256)
     }
 
-    fn import_component_package(&self, user_id: &str, package_bytes: &[u8]) -> Result<(), String> {
-        self.components.import(user_id, package_bytes).map(|_| ())
-    }
-
     fn reference_feature_dataset(
         &self,
         user_id: &str,

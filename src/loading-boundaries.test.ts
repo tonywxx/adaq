@@ -11,9 +11,18 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	const models = read("./features/models/models-page.tsx");
 	const validation = read("./features/validation/validation-page.tsx");
 	const features = read("./features/features/features-page.tsx");
+	const factors = read("./features/factors/factors-page.tsx");
+	const factorAdapter = read("./features/factors/factor-adapter.ts");
 	const workflow = read("./features/workflow/workflow-page.tsx");
 
-	for (const source of [backtest, components, models, validation, features]) {
+	for (const source of [
+		backtest,
+		components,
+		models,
+		validation,
+		features,
+		factors,
+	]) {
 		expect(source).not.toMatch(/if \(pageLoading\) return <PageLoadingSkeleton/);
 	}
 	expect(backtest).toMatch(/loading\.runHistory/);
@@ -54,6 +63,10 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	expect(features).toMatch(
 		/<DatasetsView userId=\{userId\} adapter=\{adapter\} \/>/,
 	);
+	expect(factors).toMatch(/data-route="factors"/);
+	expect(factors).toMatch(/readFactorCache/);
+	expect(factors).toMatch(/const version = useRef\(0\)/);
+	expect(factorAdapter).toMatch(/factor_materialization_start/);
 	expect(workflow).toMatch(
 		/requestAnimationFrame\([\s\S]*?requestAnimationFrame\([\s\S]*?import\("@antv\/infographic"\)/,
 	);

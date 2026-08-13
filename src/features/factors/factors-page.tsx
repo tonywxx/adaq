@@ -1,0 +1,3319 @@
+import { invoke } from "@tauri-apps/api/core";
+import {
+	ChevronDownIcon,
+	DatabaseIcon,
+	GitBranchIcon,
+	GavelIcon,
+	LockKeyholeIcon,
+	PlusIcon,
+	RefreshCwIcon,
+	SigmaIcon,
+	Trash2Icon,
+} from "lucide-react";
+import {
+	useCallback,
+	useEffect,
+	useId,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
+import { useTranslation } from "react-i18next";
+import { Link } from "@tanstack/react-router";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+	Breadcrumb,
+	BreadcrumbItem,
+	BreadcrumbLink,
+	BreadcrumbList,
+	BreadcrumbPage,
+	BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
+import {
+	Card,
+	CardContent,
+	CardDescription,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { formatDateTime, formatNumber } from "@/lib/i18n";
+import { useMarketSessionStore } from "@/lib/market-session";
+import { createFactorAdapter, type FactorAdapter } from "./factor-adapter";
+import {
+	FACTOR_PAGE_SIZE,
+	finiteGridTrialCount,
+	factorHash,
+	factorJsonArray,
+	factorPageCount,
+	factorString,
+	formatFactorError,
+	formatFactorJson,
+	isGridWithinLimit,
+	isTerminalFactorAttempt,
+	parseFactorJson,
+	parseFactorJsonArray,
+	readFactorCache,
+	shortFactorHash,
+	writeFactorCache,
+} from "./factor-data";
+import type {
+	FactorAttemptView,
+	FactorDatasetRow,
+	FactorDatasetView,
+	FactorJson,
+	FactorLineageView,
+	FactorMetricCatalogView,
+	FactorPage,
+	FactorReportView,
+	M12Eligibility,
+} from "./factor-types";
+
+type FactorTab =
+	| "families"
+	| "candidates"
+	| "datasets"
+	| "evaluations"
+	| "decisions";
+
+const afterPaint = () =>
+	new Promise<void>((resolve) => {
+		if (typeof requestAnimationFrame === "undefined") {
+			resolve();
+			return;
+		}
+		requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+	});
+
+function newUuid() {
+	if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+	const bytes = new Uint8Array(16);
+	if (globalThis.crypto?.getRandomValues) {
+		globalThis.crypto.getRandomValues(bytes);
+	} else {
+		for (let index = 0; index < bytes.length; index += 1) {
+			bytes[index] = Math.floor(Math.random() * 256);
+		}
+	}
+	bytes[6] = (bytes[6] & 0x0f) | 0x40;
+	bytes[8] = (bytes[8] & 0x3f) | 0x80;
+	const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+	return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex
+		.slice(6, 8)
+		.join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+}
+
+function valueAt(value: unknown, path: string): unknown {
+	return path.split(".").reduce<unknown>((current, part) => {
+		if (!current || typeof current !== "object" || Array.isArray(current))
+			return undefined;
+		return (current as FactorJson)[part];
+	}, value);
+}
+
+function textAt(value: unknown, path: string, fallback = "—") {
+	return factorString(valueAt(value, path), fallback);
+}
+
+function localizedFactorCode(
+	code: string,
+	t: (key: string, options?: Record<string, unknown>) => string,
+) {
+	return t(`factors.codes.${code}`, { defaultValue: code });
+}
+
+function localizedFactorReason(
+	reason: string,
+	t: (key: string, options?: Record<string, unknown>) => string,
+) {
+	if (
+		reason === "completed output lacks a current frozen promotion evidence set"
+	) {
+		return t("factors.decisions.currentEvidenceMissing");
+	}
+	return localizedFactorCode(reason, t);
+}
+
+function jsonText(value: unknown) {
+	return formatFactorJson(value) ?? "null";
+}
+
+function lines(value: string) {
+	return value
+		.split(/\r?\n/)
+		.map((item) => item.trim())
+		.filter(Boolean);
+}
+
+function commaSeparated(value: string) {
+	const items = value
+		.split(",")
+		.map((item) => item.trim())
+		.filter(Boolean);
+	return items.length > 0 ? items : undefined;
+}
+
+function commaSeparatedNumbers(value: string) {
+	const items = commaSeparated(value);
+	if (!items) return undefined;
+	const numbers = items.map(Number);
+	return numbers.every(Number.isFinite) ? numbers : undefined;
+}
+
+function optionalNumber(value: string) {
+	if (!value.trim()) return undefined;
+	const number = Number(value);
+	return Number.isFinite(number) ? number : undefined;
+}
+
+function mergeFactorFields(
+	raw: string,
+	label: string,
+	fields: Record<string, unknown>,
+) {
+	const draft = { ...parseFactorJson(raw, label) };
+	for (const [key, value] of Object.entries(fields)) {
+		if (value !== undefined && value !== "") draft[key] = value;
+	}
+	return draft;
+}
+
+function Feedback({
+	message,
+	tone = "error",
+}: {
+	message?: string;
+	tone?: "error" | "success";
+}) {
+	if (!message) return null;
+	return (
+		<p
+			role={tone === "error" ? "alert" : "status"}
+			aria-live="polite"
+			className={
+				tone === "error" ? "text-sm text-destructive" : "text-sm text-emerald-600"
+			}
+		>
+			{message}
+		</p>
+	);
+}
+
+function LoadingState({ label }: { label: string }) {
+	return (
+		<div
+			className="py-8 text-center text-sm text-muted-foreground"
+			aria-busy="true"
+			role="status"
+		>
+			{label}
+		</div>
+	);
+}
+
+function EmptyState({ message }: { message: string }) {
+	return (
+		<p className="py-8 text-center text-sm text-muted-foreground">{message}</p>
+	);
+}
+
+function ErrorState({
+	message,
+	onRetry,
+	retryLabel,
+}: {
+	message: string;
+	onRetry: () => void;
+	retryLabel: string;
+}) {
+	return (
+		<div
+			className="space-y-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4"
+			role="alert"
+		>
+			<p className="text-sm text-destructive">{message}</p>
+			<Button type="button" variant="outline" size="sm" onClick={onRetry}>
+				<RefreshCwIcon aria-hidden="true" />
+				{retryLabel}
+			</Button>
+		</div>
+	);
+}
+
+function EvidenceJson({ label, value }: { label: string; value: unknown }) {
+	return (
+		<details className="rounded-md border bg-muted/20 p-3">
+			<summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium [&::-webkit-details-marker]:hidden">
+				<ChevronDownIcon
+					className="size-4 transition-transform details-open:rotate-180"
+					aria-hidden="true"
+				/>
+				{label}
+			</summary>
+			<pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">
+				{jsonText(value)}
+			</pre>
+		</details>
+	);
+}
+
+function PageControls({
+	page,
+	total,
+	pageSize,
+	onPage,
+}: {
+	page: number;
+	total: number;
+	pageSize: number;
+	onPage: (page: number) => void;
+}) {
+	const { t } = useTranslation();
+	const pages = factorPageCount(total, pageSize || FACTOR_PAGE_SIZE);
+	return (
+		<div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-xs text-muted-foreground">
+			<span>
+				{page} / {pages} · {formatNumber(total)}
+			</span>
+			<div className="flex gap-2">
+				<Button
+					type="button"
+					size="sm"
+					variant="outline"
+					disabled={page <= 1}
+					onClick={() => onPage(page - 1)}
+				>
+					{t("factors.pagination.previous")}
+				</Button>
+				<Button
+					type="button"
+					size="sm"
+					variant="outline"
+					disabled={page >= pages}
+					onClick={() => onPage(page + 1)}
+				>
+					{t("factors.pagination.next")}
+				</Button>
+			</div>
+		</div>
+	);
+}
+
+function useFactorPage<T>(
+	userId: string,
+	resource: string,
+	loadPage: (userId: string, page: number) => Promise<FactorPage<T>>,
+) {
+	const [data, setData] = useState<FactorPage<T>>();
+	const [loading, setLoading] = useState(true);
+	const [error, setError] = useState<string>();
+	const version = useRef(0);
+	const load = useCallback(
+		async (page = 1) => {
+			const current = ++version.current;
+			setLoading(true);
+			setError(undefined);
+			await afterPaint();
+			if (current !== version.current) return;
+			try {
+				const next = await loadPage(userId, page);
+				if (current !== version.current) return;
+				setData(next);
+				writeFactorCache(userId, resource, next);
+			} catch (loadError) {
+				if (current === version.current) setError(formatFactorError(loadError));
+			} finally {
+				if (current === version.current) setLoading(false);
+			}
+		},
+		[loadPage, resource, userId],
+	);
+
+	useEffect(() => {
+		setData(readFactorCache<FactorPage<T>>(userId, resource));
+		void load();
+		return () => {
+			version.current += 1;
+		};
+	}, [load, resource, userId]);
+
+	return { data, error, loading, load };
+}
+
+function useFactorAdapter() {
+	return useMemo(() => createFactorAdapter(invoke), []);
+}
+
+export function FactorsPage() {
+	const { t } = useTranslation();
+	const userId = useMarketSessionStore((state) => state.userId);
+	const adapter = useFactorAdapter();
+	const [tab, setTab] = useState<FactorTab>("families");
+
+	useEffect(() => {
+		const previousTitle = document.title;
+		document.title = `${t("factors.title")} · AdaQ`;
+		return () => {
+			document.title = previousTitle;
+		};
+	}, [t]);
+
+	return (
+		<main
+			className="mx-auto min-w-0 max-w-7xl flex-1 space-y-5 p-4 md:p-6"
+			data-route="factors"
+		>
+			<Breadcrumb aria-label={t("factors.breadcrumb")}>
+				<BreadcrumbList>
+					<BreadcrumbItem>
+						<BreadcrumbLink asChild>
+							<Link to="/">{t("nav.home")}</Link>
+						</BreadcrumbLink>
+					</BreadcrumbItem>
+					<BreadcrumbSeparator />
+					<BreadcrumbItem>
+						<BreadcrumbPage>{t("factors.title")}</BreadcrumbPage>
+					</BreadcrumbItem>
+				</BreadcrumbList>
+			</Breadcrumb>
+
+			<header className="space-y-2">
+				<div className="flex flex-wrap items-center gap-2">
+					<SigmaIcon className="size-5 text-primary" aria-hidden="true" />
+					<p className="font-mono text-xs tracking-[0.18em] text-muted-foreground uppercase">
+						M11 · {t("factors.eyebrow")}
+					</p>
+				</div>
+				<h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
+					{t("factors.title")}
+				</h1>
+				<p className="max-w-4xl text-sm leading-6 text-muted-foreground">
+					{t("factors.description")}
+				</p>
+				<div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-muted-foreground">
+					{t("factors.historicalEvidenceNote")}
+				</div>
+			</header>
+
+			{!userId ? (
+				<LoadingState label={t("factors.loading")} />
+			) : (
+				<Tabs value={tab} onValueChange={(value) => setTab(value as FactorTab)}>
+					<TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
+						<TabsTrigger value="families">{t("factors.tabs.families")}</TabsTrigger>
+						<TabsTrigger value="candidates">
+							{t("factors.tabs.candidates")}
+						</TabsTrigger>
+						<TabsTrigger value="datasets">{t("factors.tabs.datasets")}</TabsTrigger>
+						<TabsTrigger value="evaluations">
+							{t("factors.tabs.evaluations")}
+						</TabsTrigger>
+						<TabsTrigger value="decisions">{t("factors.tabs.decisions")}</TabsTrigger>
+					</TabsList>
+					<TabsContent value="families" className="mt-4">
+						<FamiliesWorkspace key={userId} userId={userId} adapter={adapter} />
+					</TabsContent>
+					<TabsContent value="candidates" className="mt-4">
+						<CandidatesWorkspace key={userId} userId={userId} adapter={adapter} />
+					</TabsContent>
+					<TabsContent value="datasets" className="mt-4">
+						<DatasetsWorkspace key={userId} userId={userId} adapter={adapter} />
+					</TabsContent>
+					<TabsContent value="evaluations" className="mt-4">
+						<EvaluationsWorkspace key={userId} userId={userId} adapter={adapter} />
+					</TabsContent>
+					<TabsContent value="decisions" className="mt-4">
+						<DecisionsWorkspace key={userId} userId={userId} adapter={adapter} />
+					</TabsContent>
+				</Tabs>
+			)}
+		</main>
+	);
+}
+
+function FamiliesWorkspace({
+	userId,
+	adapter,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+}) {
+	const { t } = useTranslation();
+	const families = useFactorPage(userId, "families", adapter.listFamilies);
+	const [lineage, setLineage] = useState<Record<string, FactorLineageView>>({});
+	const [lineageLoading, setLineageLoading] = useState<string>();
+	const [feedback, setFeedback] = useState<string>();
+	const [attemptRefresh, setAttemptRefresh] = useState(0);
+
+	const inspect = async (familyId: string, trialId: string) => {
+		setLineageLoading(familyId);
+		setFeedback(undefined);
+		try {
+			const details = await adapter.getLineage(userId, trialId);
+			setLineage((current) => ({ ...current, [familyId]: details }));
+		} catch (error) {
+			setFeedback(formatFactorError(error));
+		} finally {
+			setLineageLoading(undefined);
+		}
+	};
+
+	return (
+		<div className="space-y-5">
+			<Card>
+				<CardHeader>
+					<CardTitle className="flex items-center gap-2">
+						<GitBranchIcon className="size-4" aria-hidden="true" />
+						{t("factors.families.heading")}
+					</CardTitle>
+					<CardDescription>{t("factors.families.description")}</CardDescription>
+				</CardHeader>
+				<CardContent className="space-y-4">
+					{feedback && <Feedback message={feedback} />}
+					{families.error && !families.data ? (
+						<ErrorState
+							message={families.error}
+							onRetry={() => void families.load()}
+							retryLabel={t("factors.retry")}
+						/>
+					) : null}
+					{families.loading && !families.data ? (
+						<LoadingState label={t("factors.loading")} />
+					) : null}
+					{families.data && families.data.items.length === 0 ? (
+						<EmptyState message={t("factors.families.empty")} />
+					) : null}
+					{families.data && families.data.items.length > 0 ? (
+						<div className="space-y-3">
+							<div className="max-w-full overflow-x-auto">
+								<table className="w-full min-w-[720px] text-sm">
+									<caption className="sr-only">{t("factors.families.heading")}</caption>
+									<thead>
+										<tr className="border-b text-left text-muted-foreground">
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.common.identity")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.common.candidate")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.families.trials")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.families.lineage")}
+											</th>
+											<th scope="col" className="py-2 text-right">
+												{t("factors.common.actions")}
+											</th>
+										</tr>
+									</thead>
+									<tbody>
+										{families.data.items.map((item) => {
+											const id = textAt(item.family, "familyId");
+											const registeredTrialIds = valueAt(
+												item.family,
+												"registeredTrialIds",
+											) as unknown[] | undefined;
+											const trialId =
+												Array.isArray(registeredTrialIds) && registeredTrialIds[0]
+													? factorString(registeredTrialIds[0])
+													: id;
+											return (
+												<tr key={id} className="border-b align-top">
+													<td className="py-3 pr-4 font-mono text-xs">{id}</td>
+													<td className="py-3 pr-4 font-mono text-xs">
+														{shortFactorHash(valueAt(item.family, "rootCandidateHash"))}
+													</td>
+													<td className="py-3 pr-4">{formatNumber(item.trialCount)}</td>
+													<td className="py-3 pr-4 font-mono text-xs">
+														{shortFactorHash(item.lineageHash)}
+													</td>
+													<td className="py-3 text-right">
+														<Button
+															type="button"
+															variant="outline"
+															size="sm"
+															loading={lineageLoading === id}
+															onClick={() => void inspect(id, trialId)}
+														>
+															{t("factors.families.inspectLineage")}
+														</Button>
+													</td>
+												</tr>
+											);
+										})}
+									</tbody>
+								</table>
+							</div>
+							{families.data.items.map((item) => {
+								const details = lineage[textAt(item.family, "familyId")];
+								if (!details) return null;
+								return (
+									<LineageDetails key={textAt(item.family, "familyId")} view={details} />
+								);
+							})}
+							<PageControls
+								page={families.data.page}
+								total={families.data.total}
+								pageSize={families.data.pageSize}
+								onPage={(page) => void families.load(page)}
+							/>
+						</div>
+					) : null}
+				</CardContent>
+			</Card>
+			<GridSetup
+				userId={userId}
+				adapter={adapter}
+				onCreated={() => {
+					setAttemptRefresh((current) => current + 1);
+					void families.load();
+				}}
+			/>
+			<AttemptsPanel
+				userId={userId}
+				adapter={adapter}
+				kind="factor-family-grid"
+				refreshKey={attemptRefresh}
+			/>
+		</div>
+	);
+}
+
+function LineageDetails({ view }: { view: FactorLineageView }) {
+	const { t } = useTranslation();
+	const registration = view.registrations[0];
+	const protocol = view.protocols[0];
+	const relatedFamilies = Array.isArray(valueAt(view.lineage, "familyIds"))
+		? (valueAt(view.lineage, "familyIds") as unknown[])
+				.map((value) => factorString(value))
+				.join(", ")
+		: "—";
+	return (
+		<div className="space-y-3 rounded-lg border bg-muted/10 p-4">
+			<div className="flex flex-wrap items-center gap-2">
+				<Badge variant="outline">{t("factors.families.lineage")}</Badge>
+				<span className="font-mono text-xs">
+					{textAt(view.lineage, "lineageHash")}
+				</span>
+			</div>
+			<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+				<Detail
+					label={t("factors.families.target")}
+					value={textAt(registration, "target")}
+				/>
+				<Detail
+					label={t("factors.families.context")}
+					value={[
+						textAt(registration, "marketContext.venue"),
+						textAt(registration, "marketContext.barInterval"),
+					].join(" · ")}
+				/>
+				<Detail
+					label={t("factors.families.relatedFamilies")}
+					value={relatedFamilies}
+					mono
+				/>
+				<Detail
+					label={t("factors.families.holmPopulation")}
+					value={formatNumber(view.trials.length)}
+				/>
+			</div>
+			<div className="grid gap-3 lg:grid-cols-2">
+				<EvidenceJson
+					label={t("factors.families.searchSpace")}
+					value={{
+						parameterSetHashes: view.registrations.map((item) =>
+							textAt(item, "parameterSetHash"),
+						),
+						horizons: valueAt(protocol, "horizonBars"),
+						folds: valueAt(protocol, "windows"),
+					}}
+				/>
+				<EvidenceJson
+					label={t("factors.families.protocolEvidence")}
+					value={view.protocols}
+				/>
+			</div>
+			<div className="max-w-full overflow-x-auto">
+				<table className="w-full min-w-[720px] text-xs">
+					<thead>
+						<tr className="border-b text-left text-muted-foreground">
+							<th scope="col" className="py-2 pr-3">
+								{t("factors.families.trial")}
+							</th>
+							<th scope="col" className="py-2 pr-3">
+								{t("factors.families.status")}
+							</th>
+							<th scope="col" className="py-2 pr-3">
+								{t("factors.families.report")}
+							</th>
+							<th scope="col" className="py-2 pr-3">
+								{t("factors.families.adjusted")}
+							</th>
+							<th scope="col" className="py-2">
+								{t("factors.families.diagnostic")}
+							</th>
+						</tr>
+					</thead>
+					<tbody>
+						{view.trials.map((trial) => (
+							<tr key={textAt(trial, "trialId")} className="border-b">
+								<td className="py-2 pr-3 font-mono">
+									{shortFactorHash(textAt(trial, "trialId"), 12)}
+								</td>
+								<td className="py-2 pr-3">
+									<Badge
+										variant={
+											textAt(trial, "status") === "completed" ? "secondary" : "outline"
+										}
+									>
+										{localizedFactorCode(textAt(trial, "status"), t)}
+									</Badge>
+								</td>
+								<td className="py-2 pr-3 font-mono">
+									{shortFactorHash(valueAt(trial, "reportHash"))}
+								</td>
+								<td className="py-2 pr-3 font-mono">
+									{
+										metricObservation(
+											(valueAt(trial, "holmAdjusted") ?? {}) as FactorJson,
+										).value
+									}
+									<span className="ml-2 text-muted-foreground">
+										{localizedFactorReason(
+											metricObservation(
+												(valueAt(trial, "holmAdjusted") ?? {}) as FactorJson,
+											).reason,
+											t,
+										)}
+									</span>
+								</td>
+								<td className="py-2 text-muted-foreground">
+									{textAt(trial, "diagnostic")}
+								</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+			</div>
+			<EvidenceJson label={t("factors.common.rawEvidence")} value={view} />
+		</div>
+	);
+}
+
+function GridSetup({
+	userId,
+	adapter,
+	onCreated,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+	onCreated: () => void;
+}) {
+	const { t } = useTranslation();
+	const [candidateHash, setCandidateHash] = useState("");
+	const [baseProtocolHash, setBaseProtocolHash] = useState("");
+	const [familyId, setFamilyId] = useState<string>(newUuid());
+	const [parentFamilyId, setParentFamilyId] = useState("");
+	const [parameterRows, setParameterRows] = useState([
+		{ id: newUuid(), name: "lookback", values: "5, 10" },
+	]);
+	const [context, setContext] = useState({
+		venue: "",
+		assetClass: "",
+		barInterval: "1d",
+		priceBasis: "unadjusted",
+		valuationCurrency: "",
+		universe: "",
+	});
+	const [range, setRange] = useState({ start: "", end: "" });
+	const [busy, setBusy] = useState(false);
+	const [feedback, setFeedback] = useState<string>();
+	const cardinalities = parameterRows.map(
+		(row) => lines(row.values.replaceAll(",", "\n")).length,
+	);
+	const trialCount = finiteGridTrialCount(cardinalities);
+
+	const register = async () => {
+		setBusy(true);
+		setFeedback(undefined);
+		try {
+			if (
+				!factorHash(candidateHash) ||
+				!factorHash(baseProtocolHash) ||
+				!range.start ||
+				!range.end ||
+				trialCount === null ||
+				!isGridWithinLimit(cardinalities)
+			)
+				throw new Error(t("factors.families.gridInvalid"));
+			await adapter.registerGridFamily(userId, {
+				familyId,
+				candidateHash,
+				parentFamilyId: parentFamilyId || null,
+				parameters: parameterRows.map((row) => ({
+					name: row.name.trim(),
+					values: lines(row.values.replaceAll(",", "\n")).map((value) => ({
+						text: value,
+					})),
+				})),
+				target: "future-close-return",
+				marketContext: {
+					venue: context.venue,
+					assetClass: context.assetClass,
+					barInterval: context.barInterval,
+					priceBasis: context.priceBasis,
+					valuationCurrency: context.valuationCurrency,
+					pointInTimeUniverseId: context.universe,
+				},
+				pointInTimeUniverseId: context.universe,
+				observationRange: {
+					startTimeMs: Number(range.start),
+					endTimeMs: Number(range.end),
+				},
+				baseProtocolHash,
+				derivationHash: null,
+			});
+			setFeedback(t("factors.families.gridQueued"));
+			setFamilyId(newUuid());
+			onCreated();
+		} catch (error) {
+			setFeedback(formatFactorError(error));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	return (
+		<Card>
+			<CardHeader>
+				<CardTitle className="flex items-center gap-2">
+					<PlusIcon className="size-4" aria-hidden="true" />
+					{t("factors.families.gridHeading")}
+				</CardTitle>
+				<CardDescription>{t("factors.families.gridDescription")}</CardDescription>
+			</CardHeader>
+			<CardContent className="space-y-4">
+				<div className="grid gap-3 md:grid-cols-2">
+					<Field
+						label={t("factors.common.candidateHash")}
+						value={candidateHash}
+						onChange={setCandidateHash}
+						placeholder="64-char SHA-256"
+						mono
+					/>
+					<Field
+						label={t("factors.families.baseProtocol")}
+						value={baseProtocolHash}
+						onChange={setBaseProtocolHash}
+						placeholder="64-char SHA-256"
+						mono
+					/>
+					<Field
+						label={t("factors.families.familyId")}
+						value={familyId}
+						onChange={setFamilyId}
+						mono
+					/>
+					<Field
+						label={t("factors.families.parentFamily")}
+						value={parentFamilyId}
+						onChange={setParentFamilyId}
+						placeholder={t("factors.common.optional")}
+						mono
+					/>
+				</div>
+				<div className="space-y-2">
+					<div className="flex items-center justify-between">
+						<Label>{t("factors.families.searchSpace")}</Label>
+						<span className="text-xs text-muted-foreground">
+							{trialCount === null
+								? t("factors.families.gridIncomplete")
+								: t("factors.families.trialCount", { count: trialCount })}
+						</span>
+					</div>
+					{parameterRows.map((row, index) => (
+						<div className="flex flex-wrap gap-2" key={row.id}>
+							<Input
+								aria-label={t("factors.families.parameterName")}
+								value={row.name}
+								onChange={(event) =>
+									setParameterRows((current) =>
+										current.map((item, position) =>
+											position === index ? { ...item, name: event.target.value } : item,
+										),
+									)
+								}
+								placeholder="lower-kebab-name"
+								className="max-w-56"
+							/>
+							<Input
+								aria-label={t("factors.families.parameterValues")}
+								value={row.values}
+								onChange={(event) =>
+									setParameterRows((current) =>
+										current.map((item, position) =>
+											position === index ? { ...item, values: event.target.value } : item,
+										),
+									)
+								}
+								placeholder="5, 10"
+								className="min-w-56 flex-1"
+							/>
+							{parameterRows.length > 1 ? (
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon-sm"
+									aria-label={t("factors.families.removeParameter")}
+									onClick={() =>
+										setParameterRows((current) =>
+											current.filter((_, position) => position !== index),
+										)
+									}
+								>
+									<Trash2Icon aria-hidden="true" />
+								</Button>
+							) : null}
+						</div>
+					))}
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onClick={() =>
+							setParameterRows((current) => [
+								...current,
+								{ id: newUuid(), name: "parameter", values: "" },
+							])
+						}
+					>
+						<PlusIcon aria-hidden="true" />
+						{t("factors.families.addParameter")}
+					</Button>
+				</div>
+				<div className="grid gap-3 md:grid-cols-3">
+					<Field
+						label={t("factors.families.venue")}
+						value={context.venue}
+						onChange={(value) =>
+							setContext((current) => ({ ...current, venue: value }))
+						}
+					/>
+					<Field
+						label={t("factors.families.assetClass")}
+						value={context.assetClass}
+						onChange={(value) =>
+							setContext((current) => ({ ...current, assetClass: value }))
+						}
+					/>
+					<Field
+						label={t("factors.families.interval")}
+						value={context.barInterval}
+						onChange={(value) =>
+							setContext((current) => ({ ...current, barInterval: value }))
+						}
+					/>
+					<Field
+						label={t("factors.families.priceBasis")}
+						value={context.priceBasis}
+						onChange={(value) =>
+							setContext((current) => ({ ...current, priceBasis: value }))
+						}
+					/>
+					<Field
+						label={t("factors.families.currency")}
+						value={context.valuationCurrency}
+						onChange={(value) =>
+							setContext((current) => ({ ...current, valuationCurrency: value }))
+						}
+					/>
+					<Field
+						label={t("factors.families.universe")}
+						value={context.universe}
+						onChange={(value) =>
+							setContext((current) => ({ ...current, universe: value }))
+						}
+						mono
+					/>
+				</div>
+				<div className="grid gap-3 md:grid-cols-2">
+					<Field
+						label={t("factors.families.startMs")}
+						value={range.start}
+						onChange={(value) =>
+							setRange((current) => ({ ...current, start: value }))
+						}
+						type="number"
+					/>
+					<Field
+						label={t("factors.families.endMs")}
+						value={range.end}
+						onChange={(value) => setRange((current) => ({ ...current, end: value }))}
+						type="number"
+					/>
+				</div>
+				<div className="flex flex-wrap items-center gap-3">
+					<Button
+						type="button"
+						loading={busy}
+						loadingText={t("factors.common.saving")}
+						onClick={() => void register()}
+						disabled={trialCount === null || !isGridWithinLimit(cardinalities)}
+					>
+						{t("factors.families.registerGrid")}
+					</Button>
+					<span className="text-xs text-muted-foreground">
+						{t("factors.families.gridLimit", { limit: 256 })}
+					</span>
+				</div>
+				<Feedback
+					message={feedback}
+					tone={feedback === t("factors.families.gridQueued") ? "success" : "error"}
+				/>
+			</CardContent>
+		</Card>
+	);
+}
+
+function CandidatesWorkspace({
+	userId,
+	adapter,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+}) {
+	const { t } = useTranslation();
+	const candidates = useFactorPage(userId, "candidates", adapter.listCandidates);
+	const [feedback, setFeedback] = useState<string>();
+	const [busy, setBusy] = useState(false);
+	const [attemptRefresh, setAttemptRefresh] = useState(0);
+	const [draft, setDraft] = useState<{
+		candidateId: string;
+		revision: string;
+		scope: string;
+		featurePlanHash: string;
+		operatorCatalogVersion: string;
+		slots: string;
+		outputs: string;
+		parameters: string;
+		name: string;
+		description: string;
+		tags: string;
+	}>({
+		candidateId: newUuid(),
+		revision: "1",
+		scope: "time-series",
+		featurePlanHash: "",
+		operatorCatalogVersion: "adaq-feature-operator-catalog@1.0.0",
+		slots: "feature-1",
+		outputs: "factor-value",
+		parameters: "[]",
+		name: "",
+		description: "",
+		tags: "",
+	});
+
+	const publish = async () => {
+		setBusy(true);
+		setFeedback(undefined);
+		try {
+			const slots = lines(draft.slots).map((name) => ({ name }));
+			const outputNames = lines(draft.outputs).map((name) => ({ name }));
+			if (
+				!draft.name.trim() ||
+				slots.length === 0 ||
+				outputNames.length === 0 ||
+				slots.length !== outputNames.length
+			)
+				throw new Error(t("factors.candidates.invalidDraft"));
+			const parameters = parseFactorJsonArray(
+				draft.parameters,
+				t("factors.candidates.parameters"),
+			);
+			await adapter.publishCandidate(
+				userId,
+				{
+					candidateId: draft.candidateId,
+					revision: Number(draft.revision),
+					scope: draft.scope,
+					featureSlots: slots,
+					parameters,
+					outputs: outputNames,
+					source: {
+						kind: "declarative",
+						definition: {
+							featurePlanHash: draft.featurePlanHash,
+							operatorCatalogVersion: draft.operatorCatalogVersion,
+							outputs: outputNames.map((output, index) => ({
+								outputName: output.name,
+								featureSlot: slots[index].name,
+							})),
+						},
+					},
+				},
+				{
+					name: draft.name.trim(),
+					description: draft.description,
+					tags: lines(draft.tags.replaceAll(",", "\n")),
+				},
+			);
+			setFeedback(t("factors.candidates.published"));
+			setDraft((current) => ({
+				...current,
+				candidateId: newUuid(),
+				revision: String(Number(current.revision) + 1),
+			}));
+			await candidates.load();
+		} catch (error) {
+			setFeedback(formatFactorError(error));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	return (
+		<div className="space-y-5">
+			<Card>
+				<CardHeader>
+					<CardTitle>{t("factors.candidates.heading")}</CardTitle>
+					<CardDescription>{t("factors.candidates.description")}</CardDescription>
+				</CardHeader>
+				<CardContent className="space-y-4">
+					<div className="grid gap-3 md:grid-cols-2">
+						<Field
+							label={t("factors.candidates.name")}
+							value={draft.name}
+							onChange={(value) =>
+								setDraft((current) => ({ ...current, name: value }))
+							}
+						/>
+						<Field
+							label={t("factors.candidates.candidateId")}
+							value={draft.candidateId}
+							onChange={(value) =>
+								setDraft((current) => ({ ...current, candidateId: value }))
+							}
+							mono
+						/>
+						<Field
+							label={t("factors.candidates.revision")}
+							value={draft.revision}
+							onChange={(value) =>
+								setDraft((current) => ({ ...current, revision: value }))
+							}
+							type="number"
+						/>
+						<Field
+							label={t("factors.candidates.scope")}
+							value={draft.scope}
+							onChange={(value) =>
+								setDraft((current) => ({ ...current, scope: value }))
+							}
+						/>
+						<Field
+							label={t("factors.candidates.featurePlanHash")}
+							value={draft.featurePlanHash}
+							onChange={(value) =>
+								setDraft((current) => ({ ...current, featurePlanHash: value }))
+							}
+							mono
+						/>
+						<Field
+							label={t("factors.candidates.operatorCatalog")}
+							value={draft.operatorCatalogVersion}
+							onChange={(value) =>
+								setDraft((current) => ({ ...current, operatorCatalogVersion: value }))
+							}
+							mono
+						/>
+					</div>
+					<div className="grid gap-3 md:grid-cols-2">
+						<TextField
+							label={t("factors.candidates.featureSlots")}
+							value={draft.slots}
+							onChange={(value) =>
+								setDraft((current) => ({ ...current, slots: value }))
+							}
+							hint={t("factors.candidates.onePerLine")}
+						/>
+						<TextField
+							label={t("factors.candidates.outputs")}
+							value={draft.outputs}
+							onChange={(value) =>
+								setDraft((current) => ({ ...current, outputs: value }))
+							}
+							hint={t("factors.candidates.onePerLine")}
+						/>
+						<TextField
+							label={t("factors.candidates.parameters")}
+							value={draft.parameters}
+							onChange={(value) =>
+								setDraft((current) => ({ ...current, parameters: value }))
+							}
+							hint={t("factors.candidates.parametersHint")}
+						/>
+						<TextField
+							label={t("factors.candidates.tags")}
+							value={draft.tags}
+							onChange={(value) =>
+								setDraft((current) => ({ ...current, tags: value }))
+							}
+							hint={t("factors.candidates.tagsHint")}
+						/>
+					</div>
+					<TextField
+						label={t("factors.candidates.descriptionField")}
+						value={draft.description}
+						onChange={(value) =>
+							setDraft((current) => ({ ...current, description: value }))
+						}
+					/>
+					<div className="flex flex-wrap items-center gap-3">
+						<Button
+							type="button"
+							loading={busy}
+							loadingText={t("factors.common.saving")}
+							onClick={() => void publish()}
+						>
+							<SigmaIcon aria-hidden="true" />
+							{t("factors.candidates.publish")}
+						</Button>
+						<span className="text-xs text-muted-foreground">
+							{t("factors.candidates.draftNote")}
+						</span>
+					</div>
+					<Feedback
+						message={feedback}
+						tone={
+							feedback === t("factors.candidates.published") ? "success" : "error"
+						}
+					/>
+				</CardContent>
+			</Card>
+			<CustomBuildWorkspace
+				userId={userId}
+				adapter={adapter}
+				onQueued={() => setAttemptRefresh((current) => current + 1)}
+			/>
+			<AttemptsPanel
+				userId={userId}
+				adapter={adapter}
+				kind="candidate-build"
+				refreshKey={attemptRefresh}
+			/>
+			<Card>
+				<CardHeader>
+					<CardTitle>{t("factors.candidates.heading")}</CardTitle>
+					<CardDescription>
+						{t("factors.candidates.listDescription")}
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="space-y-4">
+					{candidates.error && !candidates.data ? (
+						<ErrorState
+							message={candidates.error}
+							onRetry={() => void candidates.load()}
+							retryLabel={t("factors.retry")}
+						/>
+					) : null}
+					{candidates.loading && !candidates.data ? (
+						<LoadingState label={t("factors.loading")} />
+					) : null}
+					{candidates.data && candidates.data.items.length === 0 ? (
+						<EmptyState message={t("factors.candidates.empty")} />
+					) : null}
+					{candidates.data && candidates.data.items.length > 0 ? (
+						<>
+							<div className="max-w-full overflow-x-auto">
+								<table className="w-full min-w-[760px] text-sm">
+									<caption className="sr-only">
+										{t("factors.candidates.heading")}
+									</caption>
+									<thead>
+										<tr className="border-b text-left text-muted-foreground">
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.common.identity")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.common.scope")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.candidates.source")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.candidates.lock")}
+											</th>
+											<th scope="col" className="py-2">
+												{t("factors.common.rawEvidence")}
+											</th>
+										</tr>
+									</thead>
+									<tbody>
+										{candidates.data.items.map((item) => (
+											<tr
+												key={textAt(item.candidate, "candidateHash")}
+												className="border-b align-top"
+											>
+												<td className="py-3 pr-4">
+													<div className="font-mono text-xs">
+														{shortFactorHash(valueAt(item.candidate, "candidateHash"))}
+													</div>
+													<div className="text-xs text-muted-foreground">
+														r{textAt(item.candidate, "revision")}
+													</div>
+												</td>
+												<td className="py-3 pr-4">{textAt(item.candidate, "scope")}</td>
+												<td className="py-3 pr-4">
+													{textAt(item.candidate, "source.kind")}
+												</td>
+												<td className="py-3 pr-4">
+													{item.lockedBy.length ? (
+														<Badge variant="outline">
+															<LockKeyholeIcon aria-hidden="true" />
+															{t("factors.common.locked")}
+														</Badge>
+													) : (
+														<Badge variant="secondary">{t("factors.common.unlocked")}</Badge>
+													)}
+												</td>
+												<td className="py-3">
+													<EvidenceJson
+														label={item.presentation.name || t("factors.candidates.details")}
+														value={item}
+													/>
+												</td>
+											</tr>
+										))}
+									</tbody>
+								</table>
+							</div>
+							<PageControls
+								page={candidates.data.page}
+								total={candidates.data.total}
+								pageSize={candidates.data.pageSize}
+								onPage={(page) => void candidates.load(page)}
+							/>
+						</>
+					) : null}
+				</CardContent>
+			</Card>
+		</div>
+	);
+}
+
+function CustomBuildWorkspace({
+	userId,
+	adapter,
+	onQueued,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+	onQueued: () => void;
+}) {
+	const { t } = useTranslation();
+	const [candidate, setCandidate] = useState("");
+	const [name, setName] = useState("");
+	const [projectRoot, setProjectRoot] = useState("");
+	const [sourceSha256, setSourceSha256] = useState("");
+	const [sdkVersion, setSdkVersion] = useState("");
+	const [fuel, setFuel] = useState("1000000");
+	const [memory, setMemory] = useState("67108864");
+	const [busy, setBusy] = useState(false);
+	const [feedback, setFeedback] = useState<string>();
+	const build = async () => {
+		setBusy(true);
+		setFeedback(undefined);
+		try {
+			await adapter.buildCandidate(
+				userId,
+				parseFactorJson(candidate, t("factors.candidates.template")),
+				{ name, description: "", tags: [] },
+				{
+					projectRoot,
+					sourceSha256,
+					sdkVersion,
+					toolchain: "stable",
+					target: "wasm32-unknown-unknown",
+					resourcePolicy: { fuelPerCall: Number(fuel), memoryBytes: Number(memory) },
+				},
+			);
+			setFeedback(t("factors.candidates.buildQueued"));
+			onQueued();
+		} catch (error) {
+			setFeedback(formatFactorError(error));
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<Card>
+			<CardHeader>
+				<CardTitle>{t("factors.candidates.customHeading")}</CardTitle>
+				<CardDescription>
+					{t("factors.candidates.customDescription")}
+				</CardDescription>
+			</CardHeader>
+			<CardContent className="space-y-4">
+				<TextField
+					label={t("factors.candidates.customTemplate")}
+					value={candidate}
+					onChange={setCandidate}
+					hint={t("factors.candidates.customTemplateHint")}
+				/>
+				<div className="grid gap-3 md:grid-cols-2">
+					<Field
+						label={t("factors.candidates.name")}
+						value={name}
+						onChange={setName}
+					/>
+					<Field
+						label={t("factors.candidates.projectRoot")}
+						value={projectRoot}
+						onChange={setProjectRoot}
+						mono
+					/>
+					<Field
+						label={t("factors.candidates.sourceHash")}
+						value={sourceSha256}
+						onChange={setSourceSha256}
+						mono
+					/>
+					<Field
+						label={t("factors.candidates.sdkVersion")}
+						value={sdkVersion}
+						onChange={setSdkVersion}
+					/>
+					<Field
+						label={t("factors.candidates.fuel")}
+						value={fuel}
+						onChange={setFuel}
+						type="number"
+					/>
+					<Field
+						label={t("factors.candidates.memory")}
+						value={memory}
+						onChange={setMemory}
+						type="number"
+					/>
+				</div>
+				<div className="flex flex-wrap items-center gap-3">
+					<Button
+						type="button"
+						loading={busy}
+						loadingText={t("factors.common.queueing")}
+						onClick={() => void build()}
+					>
+						{t("factors.candidates.build")}
+					</Button>
+					<span className="text-xs text-muted-foreground">
+						{t("factors.candidates.notImported")}
+					</span>
+				</div>
+				<Feedback
+					message={feedback}
+					tone={
+						feedback === t("factors.candidates.buildQueued") ? "success" : "error"
+					}
+				/>
+			</CardContent>
+		</Card>
+	);
+}
+
+function MaterializationStart({
+	userId,
+	adapter,
+	onStarted,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+	onStarted: () => void;
+}) {
+	const { t } = useTranslation();
+	const [protocol, setProtocol] = useState("{}");
+	const [dataset, setDataset] = useState("");
+	const [candidateHash, setCandidateHash] = useState("");
+	const [featureDatasetId, setFeatureDatasetId] = useState("");
+	const [featurePlanHash, setFeaturePlanHash] = useState("");
+	const [snapshotId, setSnapshotId] = useState("");
+	const [universeId, setUniverseId] = useState("");
+	const [seed, setSeed] = useState("");
+	const [busy, setBusy] = useState(false);
+	const [feedback, setFeedback] = useState<string>();
+	const [frozenHash, setFrozenHash] = useState<string>();
+	const start = async () => {
+		setBusy(true);
+		setFeedback(undefined);
+		try {
+			const frozen = await adapter.freezeMaterializationProtocol(
+				userId,
+				mergeFactorFields(protocol, t("factors.datasets.materializationProtocol"), {
+					candidateHash,
+					featureDatasetId,
+					featurePlanHash,
+					marketDataSnapshotId: snapshotId,
+					pointInTimeUniverseId: universeId,
+					seed: optionalNumber(seed),
+				}),
+			);
+			setFrozenHash(textAt(frozen, "protocolHash"));
+			await adapter.startMaterialization(
+				userId,
+				frozen,
+				dataset.trim()
+					? parseFactorJson(dataset, t("factors.datasets.materializationDataset"))
+					: undefined,
+			);
+			setFeedback(t("factors.datasets.materializationStarted"));
+			onStarted();
+		} catch (error) {
+			setFeedback(formatFactorError(error));
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<Card>
+			<CardHeader>
+				<CardTitle>{t("factors.datasets.materializationHeading")}</CardTitle>
+				<CardDescription>
+					{t("factors.datasets.materializationDescription")}
+				</CardDescription>
+			</CardHeader>
+			<CardContent className="space-y-4">
+				<div className="grid gap-3 md:grid-cols-2">
+					<Field
+						label={t("factors.common.candidateHash")}
+						value={candidateHash}
+						onChange={setCandidateHash}
+						mono
+					/>
+					<Field
+						label={t("factors.datasets.featureDataset")}
+						value={featureDatasetId}
+						onChange={setFeatureDatasetId}
+						mono
+					/>
+					<Field
+						label={t("factors.candidates.featurePlanHash")}
+						value={featurePlanHash}
+						onChange={setFeaturePlanHash}
+						mono
+					/>
+					<Field
+						label={t("factors.datasets.snapshot")}
+						value={snapshotId}
+						onChange={setSnapshotId}
+						mono
+					/>
+					<Field
+						label={t("factors.datasets.universe")}
+						value={universeId}
+						onChange={setUniverseId}
+						mono
+					/>
+					<Field
+						label={t("features.materialization.seed")}
+						value={seed}
+						onChange={setSeed}
+						type="number"
+					/>
+				</div>
+				<JsonEditor
+					label={t("factors.datasets.materializationProtocol")}
+					value={protocol}
+					onChange={setProtocol}
+					hint={t("factors.datasets.materializationProtocolHint")}
+				/>
+				{frozenHash ? (
+					<Detail
+						label={t("factors.datasets.frozenProtocolHash")}
+						value={frozenHash}
+						mono
+					/>
+				) : null}
+				<JsonEditor
+					label={t("factors.datasets.materializationDataset")}
+					value={dataset}
+					onChange={setDataset}
+					hint={t("factors.datasets.materializationDatasetHint")}
+				/>
+				<div className="flex flex-wrap items-center gap-3">
+					<Button
+						type="button"
+						loading={busy}
+						loadingText={t("factors.common.queueing")}
+						onClick={() => void start()}
+					>
+						{t("factors.datasets.materializationStart")}
+					</Button>
+					<Feedback
+						message={feedback}
+						tone={
+							feedback === t("factors.datasets.materializationStarted")
+								? "success"
+								: "error"
+						}
+					/>
+				</div>
+			</CardContent>
+		</Card>
+	);
+}
+
+function DatasetsWorkspace({
+	userId,
+	adapter,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+}) {
+	const { t } = useTranslation();
+	const datasets = useFactorPage(userId, "datasets", adapter.listDatasets);
+	const [selected, setSelected] = useState<FactorDatasetView>();
+	const [feedback, setFeedback] = useState<string>();
+	const [attemptRefresh, setAttemptRefresh] = useState(0);
+	const [loadingAction, setLoadingAction] = useState<string>();
+	const [deletingId, setDeletingId] = useState<string>();
+	const lastFocus = useRef<HTMLElement | null>(null);
+	const inspect = async (item: FactorDatasetView) => {
+		const id = textAt(item.manifest, "datasetId");
+		lastFocus.current = document.activeElement as HTMLElement | null;
+		setLoadingAction(id);
+		setFeedback(undefined);
+		try {
+			setSelected(await adapter.getDataset(userId, id));
+		} catch (error) {
+			setFeedback(formatFactorError(error));
+		} finally {
+			setLoadingAction(undefined);
+		}
+	};
+	const remove = async (item: FactorDatasetView) => {
+		const id = textAt(item.manifest, "datasetId");
+		setDeletingId(id);
+		setFeedback(undefined);
+		try {
+			await adapter.deleteDataset(userId, id);
+			setSelected(undefined);
+			setFeedback(t("factors.datasets.deleted"));
+			await datasets.load();
+		} catch (error) {
+			setFeedback(formatFactorError(error));
+		} finally {
+			setDeletingId(undefined);
+		}
+	};
+	useEffect(() => {
+		if (!selected) lastFocus.current?.focus();
+	}, [selected]);
+	return (
+		<div className="space-y-5">
+			<MaterializationStart
+				userId={userId}
+				adapter={adapter}
+				onStarted={() => setAttemptRefresh((current) => current + 1)}
+			/>
+			<Card>
+				<CardHeader>
+					<CardTitle className="flex items-center gap-2">
+						<DatabaseIcon className="size-4" aria-hidden="true" />
+						{t("factors.datasets.heading")}
+					</CardTitle>
+					<CardDescription>{t("factors.datasets.description")}</CardDescription>
+				</CardHeader>
+				<CardContent className="space-y-4">
+					{feedback && (
+						<Feedback
+							message={feedback}
+							tone={feedback === t("factors.datasets.deleted") ? "success" : "error"}
+						/>
+					)}
+					{datasets.error && !datasets.data ? (
+						<ErrorState
+							message={datasets.error}
+							onRetry={() => void datasets.load()}
+							retryLabel={t("factors.retry")}
+						/>
+					) : null}
+					{datasets.loading && !datasets.data ? (
+						<LoadingState label={t("factors.loading")} />
+					) : null}
+					{datasets.data && datasets.data.items.length === 0 ? (
+						<EmptyState message={t("factors.datasets.empty")} />
+					) : null}
+					{datasets.data && datasets.data.items.length > 0 ? (
+						<>
+							<div className="max-w-full overflow-x-auto">
+								<table className="w-full min-w-[820px] text-sm">
+									<caption className="sr-only">{t("factors.datasets.heading")}</caption>
+									<thead>
+										<tr className="border-b text-left text-muted-foreground">
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.datasets.identity")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.datasets.candidate")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.datasets.context")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.datasets.rows")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.datasets.lock")}
+											</th>
+											<th scope="col" className="py-2 text-right">
+												{t("factors.common.actions")}
+											</th>
+										</tr>
+									</thead>
+									<tbody>
+										{datasets.data.items.map((item) => {
+											const id = textAt(item.manifest, "datasetId");
+											const locked = item.lockedBy.length > 0;
+											return (
+												<tr key={id} className="border-b align-top">
+													<td className="py-3 pr-4 font-mono text-xs">
+														{shortFactorHash(id)}
+													</td>
+													<td className="py-3 pr-4 font-mono text-xs">
+														{shortFactorHash(valueAt(item.manifest, "candidateHash"))}
+													</td>
+													<td className="py-3 pr-4">
+														{textAt(item.manifest, "marketContext.venue")} ·{" "}
+														{textAt(item.manifest, "marketContext.barInterval")}
+													</td>
+													<td className="py-3 pr-4">
+														{formatNumber(
+															Number(valueAt(item.manifest, "observationCount") ?? 0),
+														)}
+													</td>
+													<td className="py-3 pr-4">
+														{locked ? (
+															<Badge variant="outline">
+																<LockKeyholeIcon aria-hidden="true" />
+																{t("factors.common.locked")}
+															</Badge>
+														) : (
+															<Badge variant="secondary">{t("factors.common.unlocked")}</Badge>
+														)}
+														{locked ? (
+															<p className="mt-1 max-w-56 break-words text-xs text-muted-foreground">
+																{t("factors.datasets.lockReferences", {
+																	references: item.lockedBy.join(", "),
+																})}
+															</p>
+														) : null}
+													</td>
+													<td className="py-3 text-right">
+														<div className="flex justify-end gap-2">
+															<Button
+																type="button"
+																variant="outline"
+																size="sm"
+																loading={loadingAction === id}
+																loadingText={t("factors.loading")}
+																onClick={() => void inspect(item)}
+															>
+																{t("factors.datasets.inspect")}
+															</Button>
+															<Button
+																type="button"
+																variant="destructive"
+																size="sm"
+																loading={deletingId === id}
+																loadingText={t("factors.loading")}
+																disabled={locked || Boolean(deletingId)}
+																aria-label={
+																	locked
+																		? t("factors.datasets.locked")
+																		: t("factors.datasets.delete")
+																}
+																onClick={() => void remove(item)}
+															>
+																<Trash2Icon aria-hidden="true" />
+																{t("factors.datasets.delete")}
+															</Button>
+														</div>
+													</td>
+												</tr>
+											);
+										})}
+									</tbody>
+								</table>
+							</div>
+							<PageControls
+								page={datasets.data.page}
+								total={datasets.data.total}
+								pageSize={datasets.data.pageSize}
+								onPage={(page) => void datasets.load(page)}
+							/>
+						</>
+					) : null}
+				</CardContent>
+			</Card>
+			{selected ? (
+				<DatasetInspector
+					userId={userId}
+					adapter={adapter}
+					dataset={selected}
+					onClose={() => setSelected(undefined)}
+				/>
+			) : null}
+			<AttemptsPanel
+				userId={userId}
+				adapter={adapter}
+				kind="factor-materialization"
+				refreshKey={attemptRefresh}
+			/>
+		</div>
+	);
+}
+
+function DatasetInspector({
+	userId,
+	adapter,
+	dataset,
+	onClose,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+	dataset: FactorDatasetView;
+	onClose: () => void;
+}) {
+	const { t } = useTranslation();
+	const datasetId = textAt(dataset.manifest, "datasetId");
+	const [rows, setRows] = useState<FactorDatasetRow[]>([]);
+	const [offset, setOffset] = useState(0);
+	const [nextOffset, setNextOffset] = useState<number | null>();
+	const [total, setTotal] = useState(0);
+	const [loading, setLoading] = useState(true);
+	const [error, setError] = useState<string>();
+	const [instrument, setInstrument] = useState("");
+	const requestVersion = useRef(0);
+	const loadRows = useCallback(
+		async (next = 0, filter = "") => {
+			const version = ++requestVersion.current;
+			setLoading(true);
+			setError(undefined);
+			try {
+				const page = await adapter.datasetRows(userId, datasetId, next, 50, filter);
+				if (version !== requestVersion.current) return;
+				setRows(page.rows);
+				setOffset(page.offset);
+				setNextOffset(page.nextOffset ?? null);
+				setTotal(page.total);
+			} catch (loadError) {
+				if (version !== requestVersion.current) return;
+				setError(formatFactorError(loadError));
+			} finally {
+				if (version === requestVersion.current) setLoading(false);
+			}
+		},
+		[adapter, datasetId, userId],
+	);
+	useEffect(() => {
+		void loadRows();
+		return () => {
+			requestVersion.current += 1;
+		};
+	}, [loadRows]);
+	return (
+		<Card>
+			<CardHeader className="flex-row items-start justify-between space-y-0">
+				<div>
+					<CardTitle>{t("factors.datasets.inspector")}</CardTitle>
+					<CardDescription className="font-mono">{datasetId}</CardDescription>
+				</div>
+				<Button type="button" variant="outline" size="sm" onClick={onClose}>
+					{t("factors.datasets.close")}
+				</Button>
+			</CardHeader>
+			<CardContent className="space-y-4">
+				<div className="grid gap-3 md:grid-cols-3">
+					<Detail
+						label={t("factors.datasets.featureDataset")}
+						value={textAt(dataset.manifest, "featureDatasetId")}
+						mono
+					/>
+					<Detail
+						label={t("factors.datasets.snapshot")}
+						value={textAt(dataset.manifest, "marketDataSnapshotId")}
+						mono
+					/>
+					<Detail
+						label={t("factors.datasets.universe")}
+						value={textAt(dataset.manifest, "pointInTimeUniverseId")}
+						mono
+					/>
+					<Detail
+						label={t("factors.datasets.payload")}
+						value={shortFactorHash(valueAt(dataset.manifest, "payloadSha256"))}
+						mono
+					/>
+					<Detail
+						label={t("factors.datasets.size")}
+						value={formatNumber(dataset.byteSize)}
+					/>
+					<Detail
+						label={t("factors.datasets.created")}
+						value={formatDateTime(dataset.createdAtMs, {
+							dateStyle: "medium",
+							timeStyle: "short",
+						})}
+					/>
+				</div>
+				<EvidenceJson
+					label={t("factors.datasets.manifest")}
+					value={dataset.manifest}
+				/>
+				<div className="flex flex-wrap items-end gap-3">
+					<div className="grid gap-1.5">
+						<Label htmlFor="factor-row-instrument">
+							{t("factors.datasets.filterInstrument")}
+						</Label>
+						<Input
+							id="factor-row-instrument"
+							value={instrument}
+							onChange={(event) => setInstrument(event.target.value)}
+							placeholder="venue:instrument"
+						/>
+					</div>
+					<Button
+						type="button"
+						variant="outline"
+						loading={loading}
+						loadingText={t("factors.loadingRows")}
+						onClick={() => void loadRows(0, instrument)}
+					>
+						{t("factors.datasets.applyFilter")}
+					</Button>
+				</div>
+				{error ? <Feedback message={error} /> : null}
+				{loading ? (
+					<LoadingState label={t("factors.loadingRows")} />
+				) : (
+					<>
+						<div className="max-w-full overflow-x-auto">
+							<table className="w-full min-w-[760px] text-sm">
+								<caption className="sr-only">{t("factors.datasets.rows")}</caption>
+								<thead>
+									<tr className="border-b text-left text-muted-foreground">
+										<th scope="col" className="py-2 pr-4">
+											{t("factors.datasets.instrument")}
+										</th>
+										<th scope="col" className="py-2 pr-4">
+											{t("factors.datasets.observationTime")}
+										</th>
+										<th scope="col" className="py-2">
+											{t("factors.datasets.values")}
+										</th>
+									</tr>
+								</thead>
+								<tbody>
+									{rows.map((row) => (
+										<tr key={JSON.stringify(row)} className="border-b">
+											<td className="py-2 pr-4 font-mono text-xs">
+												{row.instrumentId ?? "—"}
+											</td>
+											<td className="py-2 pr-4">
+												{row.observationTimeMs
+													? formatDateTime(row.observationTimeMs, {
+															dateStyle: "medium",
+															timeStyle: "short",
+															timeZone: "UTC",
+														})
+													: "—"}
+											</td>
+											<td className="py-2">
+												<pre className="max-w-xl whitespace-pre-wrap break-words font-mono text-xs">
+													{jsonText(row.values ?? row)}
+												</pre>
+											</td>
+										</tr>
+									))}
+								</tbody>
+							</table>
+						</div>
+						<div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+							<span>
+								{formatNumber(offset)}–{formatNumber(offset + rows.length)} /{" "}
+								{formatNumber(total)}
+							</span>
+							<div className="flex gap-2">
+								<Button
+									type="button"
+									size="sm"
+									variant="outline"
+									disabled={offset === 0}
+									onClick={() => void loadRows(Math.max(0, offset - 50), instrument)}
+								>
+									{t("factors.datasets.previous")}
+								</Button>
+								<Button
+									type="button"
+									size="sm"
+									variant="outline"
+									disabled={nextOffset == null}
+									onClick={() => void loadRows(nextOffset ?? offset, instrument)}
+								>
+									{t("factors.datasets.next")}
+								</Button>
+							</div>
+						</div>
+					</>
+				)}
+			</CardContent>
+		</Card>
+	);
+}
+
+function EvaluationsWorkspace({
+	userId,
+	adapter,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+}) {
+	const { t } = useTranslation();
+	const reports = useFactorPage(userId, "reports", adapter.listReports);
+	const [selected, setSelected] = useState<FactorReportView>();
+	const [metricDefinitions, setMetricDefinitions] = useState<FactorJson[]>();
+	const [feedback, setFeedback] = useState<string>();
+	const [attemptRefresh, setAttemptRefresh] = useState(0);
+	const [loadingReportId, setLoadingReportId] = useState<string>();
+	const lastFocus = useRef<HTMLElement | null>(null);
+	useEffect(() => {
+		if (!selected) lastFocus.current?.focus();
+	}, [selected]);
+	useEffect(() => {
+		let active = true;
+		void adapter
+			.metricCatalog()
+			.then((catalog: FactorMetricCatalogView) => {
+				if (active) setMetricDefinitions(catalog.definitions);
+			})
+			.catch(() => undefined);
+		return () => {
+			active = false;
+		};
+	}, [adapter]);
+	return (
+		<div className="space-y-5">
+			<EvaluationStart
+				userId={userId}
+				adapter={adapter}
+				onStarted={() => {
+					setFeedback(t("factors.evaluations.started"));
+					setAttemptRefresh((current) => current + 1);
+				}}
+			/>
+			<AttemptsPanel
+				userId={userId}
+				adapter={adapter}
+				kind="factor-evaluation"
+				refreshKey={attemptRefresh}
+			/>
+			<Card>
+				<CardHeader>
+					<CardTitle>{t("factors.evaluations.heading")}</CardTitle>
+					<CardDescription>{t("factors.evaluations.description")}</CardDescription>
+				</CardHeader>
+				<CardContent className="space-y-4">
+					<Feedback message={feedback} tone="success" />
+					{reports.error && !reports.data ? (
+						<ErrorState
+							message={reports.error}
+							onRetry={() => void reports.load()}
+							retryLabel={t("factors.retry")}
+						/>
+					) : null}
+					{reports.loading && !reports.data ? (
+						<LoadingState label={t("factors.loading")} />
+					) : null}
+					{reports.data && reports.data.items.length === 0 ? (
+						<EmptyState message={t("factors.evaluations.empty")} />
+					) : null}
+					{reports.data && reports.data.items.length > 0 ? (
+						<>
+							<div className="max-w-full overflow-x-auto">
+								<table className="w-full min-w-[820px] text-sm">
+									<caption className="sr-only">
+										{t("factors.evaluations.heading")}
+									</caption>
+									<thead>
+										<tr className="border-b text-left text-muted-foreground">
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.evaluations.report")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.evaluations.output")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.evaluations.state")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.evaluations.target")}
+											</th>
+											<th scope="col" className="py-2 text-right">
+												{t("factors.common.actions")}
+											</th>
+										</tr>
+									</thead>
+									<tbody>
+										{reports.data.items.map((item) => (
+											<tr key={textAt(item.report, "reportHash")} className="border-b">
+												<td className="py-3 pr-4 font-mono text-xs">
+													{shortFactorHash(valueAt(item.report, "reportHash"))}
+												</td>
+												<td className="py-3 pr-4">{textAt(item.report, "outputName")}</td>
+												<td className="py-3 pr-4">
+													<Badge
+														variant={
+															textAt(item.report, "evidenceState") === "out-of-sample"
+																? "secondary"
+																: "outline"
+														}
+													>
+														{localizedFactorCode(textAt(item.report, "evidenceState"), t)}
+													</Badge>
+												</td>
+												<td className="py-3 pr-4">{textAt(item.report, "target")}</td>
+												<td className="py-3 text-right">
+													<Button
+														type="button"
+														size="sm"
+														variant="outline"
+														loading={loadingReportId === textAt(item.report, "reportHash")}
+														loadingText={t("factors.loading")}
+														onClick={async () => {
+															const reportHash = textAt(item.report, "reportHash");
+															lastFocus.current = document.activeElement as HTMLElement | null;
+															setLoadingReportId(reportHash);
+															try {
+																setSelected(await adapter.getReport(userId, reportHash));
+															} catch (error) {
+																setFeedback(formatFactorError(error));
+															} finally {
+																setLoadingReportId(undefined);
+															}
+														}}
+													>
+														{t("factors.evaluations.inspect")}
+													</Button>
+												</td>
+											</tr>
+										))}
+									</tbody>
+								</table>
+							</div>
+							<PageControls
+								page={reports.data.page}
+								total={reports.data.total}
+								pageSize={reports.data.pageSize}
+								onPage={(page) => void reports.load(page)}
+							/>
+						</>
+					) : null}
+				</CardContent>
+			</Card>
+			{selected ? (
+				<ReportInspector
+					report={selected}
+					onClose={() => setSelected(undefined)}
+					metricDefinitions={metricDefinitions}
+				/>
+			) : null}
+		</div>
+	);
+}
+
+function EvaluationStart({
+	userId,
+	adapter,
+	onStarted,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+	onStarted: () => void;
+}) {
+	const { t } = useTranslation();
+	const [protocol, setProtocol] = useState("{}");
+	const [marketSeries, setMarketSeries] = useState("[]");
+	const [featureEvidence, setFeatureEvidence] = useState("");
+	const [factorDatasetId, setFactorDatasetId] = useState("");
+	const [featureDatasetId, setFeatureDatasetId] = useState("");
+	const [featurePlanHash, setFeaturePlanHash] = useState("");
+	const [snapshotId, setSnapshotId] = useState("");
+	const [universeId, setUniverseId] = useState("");
+	const [pointInTimeUniverse, setPointInTimeUniverse] = useState("");
+	const [outputName, setOutputName] = useState("");
+	const [scope, setScope] = useState("");
+	const [target, setTarget] = useState("");
+	const [horizonBars, setHorizonBars] = useState("");
+	const [orientation, setOrientation] = useState("");
+	const [purgeBars, setPurgeBars] = useState("");
+	const [embargoBars, setEmbargoBars] = useState("");
+	const [lenses, setLenses] = useState("");
+	const [nuisanceFeatureNames, setNuisanceFeatureNames] = useState("");
+	const [familyId, setFamilyId] = useState("");
+	const [trialId, setTrialId] = useState("");
+	const [seed, setSeed] = useState("");
+	const [busy, setBusy] = useState(false);
+	const [feedback, setFeedback] = useState<string>();
+	const [frozenHash, setFrozenHash] = useState<string>();
+	const start = async () => {
+		setBusy(true);
+		setFeedback(undefined);
+		try {
+			const frozen = await adapter.freezeEvaluationProtocol(
+				userId,
+				mergeFactorFields(protocol, t("factors.evaluations.protocol"), {
+					factorDatasetId,
+					featureDatasetId,
+					featurePlanHash,
+					marketDataSnapshotId: snapshotId,
+					pointInTimeUniverseId: universeId,
+					pointInTimeUniverse: commaSeparated(pointInTimeUniverse),
+					outputName,
+					scope,
+					target,
+					horizonBars: commaSeparatedNumbers(horizonBars),
+					orientation,
+					purgeBars: optionalNumber(purgeBars),
+					embargoBars: optionalNumber(embargoBars),
+					lenses: commaSeparated(lenses),
+					nuisanceFeatureNames: commaSeparated(nuisanceFeatureNames),
+					familyId,
+					trialId,
+					seed: optionalNumber(seed),
+				}),
+			);
+			setFrozenHash(textAt(frozen, "protocolHash"));
+			await adapter.startEvaluation(
+				userId,
+				frozen,
+				factorJsonArray(JSON.parse(marketSeries)),
+				featureEvidence.trim()
+					? parseFactorJson(
+							featureEvidence,
+							t("factors.evaluations.featureEvidence"),
+						)
+					: undefined,
+			);
+			setFeedback(t("factors.evaluations.started"));
+			onStarted();
+		} catch (error) {
+			setFeedback(formatFactorError(error));
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<Card>
+			<CardHeader>
+				<CardTitle>{t("factors.evaluations.startHeading")}</CardTitle>
+				<CardDescription>
+					{t("factors.evaluations.startDescription")}
+				</CardDescription>
+			</CardHeader>
+			<CardContent className="space-y-4">
+				<div className="grid gap-3 md:grid-cols-2">
+					<Field
+						label={t("factors.evaluations.dataset")}
+						value={factorDatasetId}
+						onChange={setFactorDatasetId}
+						mono
+					/>
+					<Field
+						label={t("factors.datasets.featureDataset")}
+						value={featureDatasetId}
+						onChange={setFeatureDatasetId}
+						mono
+					/>
+					<Field
+						label={t("factors.candidates.featurePlanHash")}
+						value={featurePlanHash}
+						onChange={setFeaturePlanHash}
+						mono
+					/>
+					<Field
+						label={t("factors.datasets.snapshot")}
+						value={snapshotId}
+						onChange={setSnapshotId}
+						mono
+					/>
+					<Field
+						label={t("factors.datasets.universe")}
+						value={universeId}
+						onChange={setUniverseId}
+						mono
+					/>
+					<Field
+						label={t("factors.evaluations.output")}
+						value={outputName}
+						onChange={setOutputName}
+						mono
+					/>
+					<Field
+						label={t("factors.evaluations.target")}
+						value={target}
+						onChange={setTarget}
+						placeholder="future-close-return"
+					/>
+					<Field
+						label={t("factors.common.scope")}
+						value={scope}
+						onChange={setScope}
+						placeholder="pooled"
+					/>
+					<Field
+						label={t("factors.evaluations.orientation")}
+						value={orientation}
+						onChange={setOrientation}
+						placeholder="positive"
+					/>
+					<Field
+						label={t("factors.evaluations.horizons")}
+						value={horizonBars}
+						onChange={setHorizonBars}
+						placeholder="1, 5, 20"
+					/>
+					<Field
+						label={t("factors.evaluations.purgeEmbargo")}
+						value={purgeBars}
+						onChange={setPurgeBars}
+						type="number"
+						placeholder="purge bars"
+					/>
+					<Field
+						label={t("factors.evaluations.embargoBars")}
+						value={embargoBars}
+						onChange={setEmbargoBars}
+						type="number"
+						placeholder="embargo bars"
+					/>
+					<Field
+						label={t("factors.evaluations.lenses")}
+						value={lenses}
+						onChange={setLenses}
+						placeholder="temporal, economic"
+					/>
+					<Field
+						label={t("factors.evaluations.pointInTimeUniverse")}
+						value={pointInTimeUniverse}
+						onChange={setPointInTimeUniverse}
+						placeholder="VENUE:SYMBOL, ..."
+						mono
+					/>
+					<Field
+						label={t("factors.evaluations.nuisance")}
+						value={nuisanceFeatureNames}
+						onChange={setNuisanceFeatureNames}
+						placeholder="feature-a, feature-b"
+					/>
+					<Field
+						label={t("factors.families.familyId")}
+						value={familyId}
+						onChange={setFamilyId}
+						mono
+					/>
+					<Field
+						label={t("factors.families.trialId")}
+						value={trialId}
+						onChange={setTrialId}
+						mono
+					/>
+					<Field
+						label={t("features.materialization.seed")}
+						value={seed}
+						onChange={setSeed}
+						type="number"
+					/>
+				</div>
+				<TextField
+					label={t("factors.evaluations.protocol")}
+					value={protocol}
+					onChange={setProtocol}
+					hint={t("factors.evaluations.protocolHint")}
+				/>
+				{frozenHash ? (
+					<Detail
+						label={t("factors.evaluations.frozenProtocolHash")}
+						value={frozenHash}
+						mono
+					/>
+				) : null}
+				<TextField
+					label={t("factors.evaluations.marketSeries")}
+					value={marketSeries}
+					onChange={setMarketSeries}
+					hint={t("factors.evaluations.marketSeriesHint")}
+				/>
+				<TextField
+					label={t("factors.evaluations.featureEvidence")}
+					value={featureEvidence}
+					onChange={setFeatureEvidence}
+					hint={t("factors.evaluations.featureEvidenceHint")}
+				/>
+				<div className="flex flex-wrap items-center gap-3">
+					<Button
+						type="button"
+						loading={busy}
+						loadingText={t("factors.common.queueing")}
+						onClick={() => void start()}
+					>
+						{t("factors.evaluations.start")}
+					</Button>
+					<span className="text-xs text-muted-foreground">
+						{t("factors.evaluations.noRandomSplit")}
+					</span>
+				</div>
+				<Feedback
+					message={feedback}
+					tone={feedback === t("factors.evaluations.started") ? "success" : "error"}
+				/>
+			</CardContent>
+		</Card>
+	);
+}
+
+function ReportInspector({
+	report,
+	onClose,
+	metricDefinitions,
+}: {
+	report: FactorReportView;
+	onClose: () => void;
+	metricDefinitions?: FactorJson[];
+}) {
+	const { t } = useTranslation();
+	const metrics = Array.isArray(report.report.metrics)
+		? report.report.metrics
+		: [];
+	return (
+		<Card>
+			<CardHeader className="flex-row items-start justify-between space-y-0">
+				<div>
+					<CardTitle>{t("factors.evaluations.inspector")}</CardTitle>
+					<CardDescription className="font-mono">
+						{textAt(report.report, "reportHash")}
+					</CardDescription>
+				</div>
+				<Button type="button" variant="outline" size="sm" onClick={onClose}>
+					{t("factors.datasets.close")}
+				</Button>
+			</CardHeader>
+			<CardContent className="space-y-4">
+				<div className="grid gap-3 md:grid-cols-4">
+					<Detail
+						label={t("factors.evaluations.state")}
+						value={textAt(report.report, "evidenceState")}
+					/>
+					<Detail
+						label={t("factors.evaluations.output")}
+						value={textAt(report.report, "outputName")}
+						mono
+					/>
+					<Detail
+						label={t("factors.evaluations.dataset")}
+						value={shortFactorHash(valueAt(report.report, "factorDatasetId"))}
+						mono
+					/>
+					<Detail
+						label={t("factors.evaluations.protocolHash")}
+						value={shortFactorHash(valueAt(report.report, "protocolHash"))}
+						mono
+					/>
+					<Detail
+						label={t("factors.evaluations.targetUnavailable")}
+						value={formatNumber(
+							Array.isArray(valueAt(report.report, "targetUnavailable"))
+								? (valueAt(report.report, "targetUnavailable") as unknown[]).length
+								: 0,
+						)}
+					/>
+					<Detail
+						label={t("factors.evaluations.regimeEvidence")}
+						value={formatNumber(
+							Array.isArray(valueAt(report.report, "regimeEvidence"))
+								? (valueAt(report.report, "regimeEvidence") as unknown[]).length
+								: 0,
+						)}
+					/>
+				</div>
+				{report.protocol ? (
+					<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+						<Detail
+							label={t("factors.evaluations.orientation")}
+							value={textAt(report.protocol, "orientation")}
+						/>
+						<Detail
+							label={t("factors.evaluations.horizons")}
+							value={jsonText(valueAt(report.protocol, "horizonBars"))}
+						/>
+						<Detail
+							label={t("factors.evaluations.folds")}
+							value={jsonText(valueAt(report.protocol, "windows"))}
+						/>
+						<Detail
+							label={t("factors.evaluations.purgeEmbargo")}
+							value={`${textAt(report.protocol, "purgeBars")} / ${textAt(report.protocol, "embargoBars")}`}
+						/>
+						<Detail
+							label={t("factors.evaluations.lenses")}
+							value={jsonText(valueAt(report.protocol, "lenses"))}
+						/>
+						<Detail
+							label={t("factors.evaluations.nuisance")}
+							value={jsonText(valueAt(report.protocol, "nuisanceFeatureNames"))}
+						/>
+						<Detail
+							label={t("factors.evaluations.regime")}
+							value={jsonText(valueAt(report.protocol, "regime"))}
+						/>
+						<Detail
+							label={t("factors.evaluations.economic")}
+							value={jsonText(valueAt(report.protocol, "economic"))}
+						/>
+					</div>
+				) : null}
+				<div className="rounded-lg border p-3 text-sm text-muted-foreground">
+					{t("factors.evaluations.guaranteeNote")}
+				</div>
+				<MetricTable metrics={metrics} metricDefinitions={metricDefinitions} />
+				{report.protocol ? (
+					<EvidenceJson
+						label={t("factors.evaluations.frozenProtocol")}
+						value={report.protocol}
+					/>
+				) : null}
+				<EvidenceJson label={t("factors.common.rawEvidence")} value={report} />
+			</CardContent>
+		</Card>
+	);
+}
+
+function MetricTable({
+	metrics,
+	metricDefinitions,
+}: {
+	metrics: FactorJson[];
+	metricDefinitions?: FactorJson[];
+}) {
+	const { t } = useTranslation();
+	return (
+		<div className="max-w-full overflow-x-auto">
+			<table className="w-full min-w-[1120px] text-sm">
+				<caption className="sr-only">{t("factors.evaluations.metrics")}</caption>
+				<thead>
+					<tr className="border-b text-left text-muted-foreground">
+						<th scope="col" className="py-2 pr-4">
+							{t("factors.evaluations.metric")}
+						</th>
+						<th scope="col" className="py-2 pr-4">
+							{t("factors.evaluations.lens")}
+						</th>
+						<th scope="col" className="py-2 pr-4">
+							{t("factors.evaluations.output")}
+						</th>
+						<th scope="col" className="py-2 pr-4">
+							{t("factors.evaluations.variant")}
+						</th>
+						<th scope="col" className="py-2 pr-4">
+							{t("factors.evaluations.horizon")}
+						</th>
+						<th scope="col" className="py-2 pr-4">
+							{t("factors.evaluations.fold")}
+						</th>
+						<th scope="col" className="py-2 pr-4">
+							{t("factors.evaluations.value")}
+						</th>
+						<th scope="col" className="py-2">
+							{t("factors.evaluations.samples")}
+						</th>
+					</tr>
+				</thead>
+				<tbody>
+					{metrics.map((metric) => (
+						<tr key={JSON.stringify(metric)} className="border-b">
+							<td className="py-2 pr-4">
+								<span className="font-mono text-xs">{textAt(metric, "metric")}</span>
+								<MetricDefinition metric={metric} definitions={metricDefinitions} />
+							</td>
+							<td className="py-2 pr-4">{textAt(metric, "lens")}</td>
+							<td className="py-2 pr-4">{textAt(metric, "outputName")}</td>
+							<td className="py-2 pr-4">{textAt(metric, "variant")}</td>
+							<td className="py-2 pr-4">{textAt(metric, "horizonBars")}</td>
+							<td className="py-2 pr-4">{textAt(metric, "foldId")}</td>
+							<td className="py-2 pr-4 font-mono">
+								{metricObservation(metric).value}
+								<span className="ml-2 text-xs text-muted-foreground">
+									{localizedFactorCode(metricObservation(metric).reason, t)}
+								</span>
+							</td>
+							<td className="py-2">{metricObservation(metric).sampleCount}</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+		</div>
+	);
+}
+
+function metricObservation(metric: FactorJson) {
+	const observation = valueAt(metric, "observation");
+	const available = valueAt(observation, "available");
+	const unavailable = valueAt(observation, "unavailable");
+	if (available && typeof available === "object") {
+		return {
+			value: factorString(valueAt(available, "value"), "unavailable"),
+			reason: "",
+			sampleCount: factorString(valueAt(available, "sampleCount")),
+		};
+	}
+	if (unavailable && typeof unavailable === "object") {
+		return {
+			value: "unavailable",
+			reason: factorString(valueAt(unavailable, "reason")),
+			sampleCount: factorString(valueAt(unavailable, "sampleCount")),
+		};
+	}
+	return {
+		value: textAt(
+			metric,
+			"observation.value",
+			textAt(metric, "value", "unavailable"),
+		),
+		reason: textAt(metric, "observation.reason", ""),
+		sampleCount: textAt(
+			metric,
+			"observation.sampleCount",
+			textAt(metric, "sampleCount"),
+		),
+	};
+}
+
+function MetricDefinition({
+	metric,
+	definitions,
+}: {
+	metric: FactorJson;
+	definitions?: FactorJson[];
+}) {
+	const { t } = useTranslation();
+	const definition = definitions?.find(
+		(item) => textAt(item, "id") === textAt(metric, "metric"),
+	);
+	return (
+		<details className="mt-1 text-xs text-muted-foreground">
+			<summary className="cursor-pointer">
+				{t("factors.evaluations.definition")}
+			</summary>
+			<pre className="mt-1 max-w-[32rem] whitespace-pre-wrap break-words font-mono">
+				{definition
+					? jsonText(definition)
+					: t("factors.evaluations.catalogUnavailable")}
+			</pre>
+		</details>
+	);
+}
+
+function DecisionsWorkspace({
+	userId,
+	adapter,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+}) {
+	const { t } = useTranslation();
+	const policies = useFactorPage(userId, "policies", adapter.listPolicies);
+	const decisions = useFactorPage(userId, "decisions", adapter.listDecisions);
+	const libraryPage = useFactorPage(
+		userId,
+		"decision-library",
+		adapter.listDecisionLibrary,
+	);
+	const [policy, setPolicy] = useState("{}");
+	const [decision, setDecision] = useState("{}");
+	const [protocol, setProtocol] = useState("{}");
+	const [component, setComponent] = useState("{}");
+	const [eligibilityProtocol, setEligibilityProtocol] = useState("{}");
+	const [feedback, setFeedback] = useState<string>();
+	const [feedbackTone, setFeedbackTone] = useState<"error" | "success">("error");
+	const [eligibility, setEligibility] = useState<M12Eligibility>();
+	const [policyBusy, setPolicyBusy] = useState(false);
+	const [decisionBusy, setDecisionBusy] = useState(false);
+	const [eligibilityBusy, setEligibilityBusy] = useState(false);
+	const savePolicy = async () => {
+		setPolicyBusy(true);
+		setFeedbackTone("error");
+		setFeedback(undefined);
+		try {
+			await adapter.savePolicy(
+				userId,
+				parseFactorJson(policy, t("factors.decisions.policy")),
+			);
+			setFeedbackTone("success");
+			setFeedback(t("factors.decisions.policySaved"));
+			await policies.load();
+		} catch (error) {
+			setFeedback(formatFactorError(error));
+		} finally {
+			setPolicyBusy(false);
+		}
+	};
+	const saveDecision = async () => {
+		setDecisionBusy(true);
+		setFeedbackTone("error");
+		setFeedback(undefined);
+		try {
+			await adapter.saveDecision(
+				userId,
+				parseFactorJson(decision, t("factors.decisions.decision")),
+				parseFactorJson(protocol, t("factors.decisions.protocol")),
+				parseFactorJson(component, t("factors.decisions.component")),
+			);
+			setFeedbackTone("success");
+			setFeedback(t("factors.decisions.decisionSaved"));
+			await decisions.load();
+			await libraryPage.load();
+		} catch (error) {
+			setFeedback(formatFactorError(error));
+		} finally {
+			setDecisionBusy(false);
+		}
+	};
+	const checkEligibility = async () => {
+		setEligibilityBusy(true);
+		setFeedbackTone("success");
+		setFeedback(undefined);
+		try {
+			const result = await adapter.m12Eligibility(
+				userId,
+				parseFactorJson(eligibilityProtocol, t("factors.decisions.protocol")),
+			);
+			setEligibility(result);
+			setFeedback(
+				result.eligible
+					? t("factors.decisions.eligible")
+					: `${t("factors.decisions.ineligible")}: ${
+							result.reason
+								? localizedFactorReason(result.reason, t)
+								: t("factors.decisions.noReason")
+						}`,
+			);
+		} catch (error) {
+			setFeedbackTone("error");
+			setFeedback(formatFactorError(error));
+		} finally {
+			setEligibilityBusy(false);
+		}
+	};
+	const library = libraryPage.data?.items ?? [];
+	return (
+		<div className="space-y-5">
+			<Card>
+				<CardHeader>
+					<CardTitle className="flex items-center gap-2">
+						<GavelIcon className="size-4" aria-hidden="true" />
+						{t("factors.decisions.heading")}
+					</CardTitle>
+					<CardDescription>{t("factors.decisions.description")}</CardDescription>
+				</CardHeader>
+				<CardContent className="space-y-4">
+					<div className="grid gap-4 xl:grid-cols-2">
+						<JsonEditor
+							label={t("factors.decisions.policyEditor")}
+							value={policy}
+							onChange={setPolicy}
+							hint={t("factors.decisions.policyHint")}
+						/>
+						<JsonEditor
+							label={t("factors.decisions.decisionEditor")}
+							value={decision}
+							onChange={setDecision}
+							hint={t("factors.decisions.decisionHint")}
+						/>
+						<JsonEditor
+							label={t("factors.decisions.protocolEditor")}
+							value={protocol}
+							onChange={setProtocol}
+							hint={t("factors.decisions.protocolHint")}
+						/>
+						<JsonEditor
+							label={t("factors.decisions.componentEditor")}
+							value={component}
+							onChange={setComponent}
+							hint={t("factors.decisions.componentHint")}
+						/>
+					</div>
+					<div className="flex flex-wrap gap-3">
+						<Button
+							type="button"
+							loading={policyBusy}
+							onClick={() => void savePolicy()}
+						>
+							{t("factors.decisions.savePolicy")}
+						</Button>
+						<Button
+							type="button"
+							variant="outline"
+							loading={decisionBusy}
+							onClick={() => void saveDecision()}
+						>
+							{t("factors.decisions.recordDecision")}
+						</Button>
+					</div>
+					<Feedback message={feedback} tone={feedbackTone} />
+				</CardContent>
+			</Card>
+			<Card>
+				<CardHeader>
+					<CardTitle>{t("factors.decisions.eligibilityHeading")}</CardTitle>
+					<CardDescription>
+						{t("factors.decisions.eligibilityDescription")}
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="space-y-3">
+					<JsonEditor
+						label={t("factors.decisions.protocolEditor")}
+						value={eligibilityProtocol}
+						onChange={setEligibilityProtocol}
+						hint={t("factors.decisions.eligibilityHint")}
+					/>
+					<Button
+						type="button"
+						variant="outline"
+						loading={eligibilityBusy}
+						onClick={() => void checkEligibility()}
+					>
+						{t("factors.decisions.checkEligibility")}
+					</Button>
+					{eligibility ? (
+						<div className="space-y-2" aria-live="polite">
+							<p className="text-sm font-medium">
+								{eligibility.eligible
+									? t("factors.decisions.eligible")
+									: t("factors.decisions.ineligible")}
+							</p>
+							<ul
+								className="grid gap-2 sm:grid-cols-2"
+								aria-label={t("factors.decisions.gates")}
+							>
+								{eligibility.gates.map((gate) => (
+									<li
+										key={gate.gate}
+										className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
+									>
+										<span className="font-mono text-xs">
+											{localizedFactorCode(gate.gate, t)}
+										</span>
+										<Badge variant={gate.passed ? "secondary" : "destructive"}>
+											{gate.passed
+												? t("factors.decisions.passed")
+												: t("factors.decisions.failed")}
+										</Badge>
+									</li>
+								))}
+							</ul>
+						</div>
+					) : null}
+				</CardContent>
+			</Card>
+			<Card>
+				<CardHeader>
+					<CardTitle>{t("factors.decisions.libraryHeading")}</CardTitle>
+					<CardDescription>
+						{t("factors.decisions.libraryDescription")}
+					</CardDescription>
+				</CardHeader>
+				<CardContent>
+					{libraryPage.loading && !libraryPage.data ? (
+						<LoadingState label={t("factors.loading")} />
+					) : null}
+					{libraryPage.error && !libraryPage.data ? (
+						<ErrorState
+							message={libraryPage.error}
+							onRetry={() => void libraryPage.load()}
+							retryLabel={t("factors.retry")}
+						/>
+					) : null}
+					{library.length ? (
+						<div className="max-w-full overflow-x-auto">
+							<table className="w-full min-w-[720px] text-sm">
+								<caption className="sr-only">
+									{t("factors.decisions.libraryHeading")}
+								</caption>
+								<thead>
+									<tr className="border-b text-left text-muted-foreground">
+										<th scope="col" className="py-2 pr-4">
+											{t("factors.common.candidate")}
+										</th>
+										<th scope="col" className="py-2 pr-4">
+											{t("factors.decisions.output")}
+										</th>
+										<th scope="col" className="py-2 pr-4">
+											{t("factors.decisions.state")}
+										</th>
+										<th scope="col" className="py-2">
+											{t("factors.decisions.reports")}
+										</th>
+									</tr>
+								</thead>
+								<tbody>
+									{library.map((item) => (
+										<tr key={textAt(item.decision, "decisionHash")} className="border-b">
+											<td className="py-2 pr-4 font-mono text-xs">
+												{shortFactorHash(valueAt(item.decision, "candidateHash"))}
+											</td>
+											<td className="py-2 pr-4">{textAt(item.decision, "outputName")}</td>
+											<td className="py-2 pr-4">
+												<Badge variant="secondary">
+													{localizedFactorCode(textAt(item.decision, "state"), t)}
+												</Badge>
+											</td>
+											<td className="py-2 font-mono text-xs">
+												{Array.isArray(valueAt(item.decision, "reportHashes"))
+													? `${(valueAt(item.decision, "reportHashes") as unknown[]).length}`
+													: "—"}
+											</td>
+										</tr>
+									))}
+								</tbody>
+							</table>
+							<PageControls
+								page={libraryPage.data?.page ?? 1}
+								total={libraryPage.data?.total ?? 0}
+								pageSize={libraryPage.data?.pageSize ?? 50}
+								onPage={(page) => void libraryPage.load(page)}
+							/>
+						</div>
+					) : (
+						<EmptyState message={t("factors.decisions.libraryEmpty")} />
+					)}
+				</CardContent>
+			</Card>
+			<Card>
+				<CardHeader>
+					<CardTitle>{t("factors.decisions.historyHeading")}</CardTitle>
+					<CardDescription>
+						{t("factors.decisions.historyDescription")}
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="space-y-4">
+					{decisions.error && !decisions.data ? (
+						<ErrorState
+							message={decisions.error}
+							onRetry={() => void decisions.load()}
+							retryLabel={t("factors.retry")}
+						/>
+					) : null}
+					{decisions.loading && !decisions.data ? (
+						<LoadingState label={t("factors.loading")} />
+					) : null}
+					{decisions.data && decisions.data.items.length === 0 ? (
+						<EmptyState message={t("factors.decisions.empty")} />
+					) : null}
+					{decisions.data && decisions.data.items.length > 0 ? (
+						<>
+							<div className="max-w-full overflow-x-auto">
+								<table className="w-full min-w-[760px] text-sm">
+									<caption className="sr-only">
+										{t("factors.decisions.historyHeading")}
+									</caption>
+									<thead>
+										<tr className="border-b text-left text-muted-foreground">
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.decisions.decision")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.common.candidate")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.decisions.state")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.decisions.output")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.decisions.reports")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.decisions.gates")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.decisions.policy")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.decisions.protocol")}
+											</th>
+											<th scope="col" className="py-2 pr-4">
+												{t("factors.decisions.supersedes")}
+											</th>
+											<th scope="col" className="py-2">
+												{t("factors.decisions.lock")}
+											</th>
+										</tr>
+									</thead>
+									<tbody>
+										{decisions.data.items.map((item) => (
+											<tr key={textAt(item.decision, "decisionHash")} className="border-b">
+												<td className="py-2 pr-4 font-mono text-xs">
+													{shortFactorHash(valueAt(item.decision, "decisionHash"))}
+												</td>
+												<td className="py-2 pr-4 font-mono text-xs">
+													{shortFactorHash(valueAt(item.decision, "candidateHash"))}
+												</td>
+												<td className="py-2 pr-4">
+													{localizedFactorCode(textAt(item.decision, "state"), t)}
+												</td>
+												<td className="py-2 pr-4">{textAt(item.decision, "outputName")}</td>
+												<td className="py-2 pr-4 font-mono text-xs">
+													{Array.isArray(valueAt(item.decision, "reportHashes"))
+														? (valueAt(item.decision, "reportHashes") as unknown[]).length
+														: 0}
+												</td>
+												<td className="py-2 pr-4 font-mono text-xs">
+													{item.eligibilityGates.filter((gate) => gate.passed).length}/
+													{item.eligibilityGates.length}
+												</td>
+												<td className="py-2 pr-4 font-mono text-xs">
+													{shortFactorHash(valueAt(item.decision, "policyHash"))}
+												</td>
+												<td className="py-2 pr-4 font-mono text-xs">
+													{shortFactorHash(item.promotionProtocolHash)}
+												</td>
+												<td className="py-2 pr-4 font-mono text-xs">
+													{shortFactorHash(valueAt(item.decision, "supersedes"))}
+												</td>
+												<td className="py-2">
+													<EvidenceJson
+														label={t("factors.common.rawEvidence")}
+														value={item}
+													/>
+												</td>
+											</tr>
+										))}
+									</tbody>
+								</table>
+							</div>
+							<PageControls
+								page={decisions.data.page}
+								total={decisions.data.total}
+								pageSize={decisions.data.pageSize}
+								onPage={(page) => void decisions.load(page)}
+							/>
+						</>
+					) : null}
+				</CardContent>
+			</Card>
+			<Card>
+				<CardHeader>
+					<CardTitle>{t("factors.decisions.policyHistory")}</CardTitle>
+				</CardHeader>
+				<CardContent>
+					{policies.error && !policies.data ? (
+						<ErrorState
+							message={policies.error}
+							onRetry={() => void policies.load()}
+							retryLabel={t("factors.retry")}
+						/>
+					) : null}
+					{policies.data?.items.length ? (
+						policies.data.items.map((item) => (
+							<div
+								className="border-b py-3 last:border-0"
+								key={textAt(item.policy, "policyHash")}
+							>
+								<div className="flex flex-wrap items-center gap-2">
+									<Badge variant="outline">r{textAt(item.policy, "revision")}</Badge>
+									<span className="font-mono text-xs">
+										{shortFactorHash(valueAt(item.policy, "policyHash"))}
+									</span>
+								</div>
+								<div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+									<Detail
+										label={t("factors.codes.required-lenses")}
+										value={jsonText(valueAt(item.policy, "requiredLenses"))}
+									/>
+									<Detail
+										label={t("factors.codes.minimum-coverage")}
+										value={textAt(item.policy, "minimumCoverage")}
+									/>
+									<Detail
+										label={t("factors.codes.minimum-samples")}
+										value={textAt(item.policy, "minimumSamples")}
+									/>
+									<Detail
+										label={t("factors.codes.holm-adjusted-significance")}
+										value={textAt(item.policy, "maximumHolmPValue")}
+									/>
+									<Detail
+										label={t("factors.codes.subperiod-sign-consistency")}
+										value={textAt(item.policy, "requireSubperiodSignConsistency")}
+									/>
+									<Detail
+										label={t("factors.codes.cost-aware-outcome")}
+										value={textAt(item.policy, "requireCostAwareEconomic")}
+									/>
+								</div>
+								<EvidenceJson
+									label={t("factors.decisions.policyDetails")}
+									value={item.policy}
+								/>
+							</div>
+						))
+					) : policies.loading ? (
+						<LoadingState label={t("factors.loading")} />
+					) : (
+						<EmptyState message={t("factors.decisions.noPolicies")} />
+					)}
+				</CardContent>
+			</Card>
+		</div>
+	);
+}
+
+function AttemptsPanel({
+	userId,
+	adapter,
+	kind,
+	refreshKey = 0,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+	kind: string;
+	refreshKey?: number;
+}) {
+	const { t } = useTranslation();
+	const attempts = useFactorPage(
+		userId,
+		`attempts:${kind}`,
+		adapter.listAttempts,
+	);
+	const [feedback, setFeedback] = useState<string>();
+	const [actionKey, setActionKey] = useState<string>();
+	useEffect(() => {
+		if (refreshKey > 0) void attempts.load();
+	}, [attempts.load, refreshKey]);
+	useEffect(() => {
+		if (
+			!attempts.data?.items.some(
+				(item) => item.kind === kind && !isTerminalFactorAttempt(item.status),
+			)
+		)
+			return;
+		const timer = window.setInterval(
+			() => void attempts.load(attempts.data?.page ?? 1),
+			3_000,
+		);
+		return () => window.clearInterval(timer);
+	}, [attempts.data, attempts.load, kind]);
+	const visible =
+		attempts.data?.items.filter((item) => item.kind === kind) ?? [];
+	const action = async (
+		attempt: FactorAttemptView,
+		type: "cancel" | "retry",
+	) => {
+		const key = `${attempt.attemptId}:${type}`;
+		setActionKey(key);
+		setFeedback(undefined);
+		try {
+			if (type === "cancel")
+				await adapter.cancelAttempt(userId, attempt.attemptId);
+			else await adapter.retryAttempt(userId, attempt.attemptId);
+			await attempts.load(attempts.data?.page ?? 1);
+		} catch (error) {
+			setFeedback(formatFactorError(error));
+		} finally {
+			setActionKey(undefined);
+		}
+	};
+	return (
+		<Card>
+			<CardHeader>
+				<CardTitle>{t("factors.attempts.heading")}</CardTitle>
+				<CardDescription>{t("factors.attempts.description")}</CardDescription>
+			</CardHeader>
+			<CardContent className="space-y-3">
+				{feedback && <Feedback message={feedback} />}
+				{attempts.loading && !attempts.data ? (
+					<LoadingState label={t("factors.loading")} />
+				) : visible.length === 0 ? (
+					<EmptyState message={t("factors.attempts.empty")} />
+				) : (
+					visible.map((attempt) => (
+						<div key={attempt.attemptId} className="rounded-md border p-3 text-sm">
+							<div className="flex flex-wrap items-center gap-2">
+								<span className="font-mono text-xs">
+									{shortFactorHash(attempt.attemptId, 12)}
+								</span>
+								<Badge
+									variant={attempt.status === "completed" ? "secondary" : "outline"}
+								>
+									{t(`factors.status.${attempt.status}`)}
+								</Badge>
+								<span className="text-xs text-muted-foreground">
+									{formatNumber(attempt.completedUnits)} /{" "}
+									{formatNumber(attempt.progressTotal)}
+								</span>
+								<span className="text-xs text-muted-foreground">
+									{formatDateTime(attempt.createdAtMs, {
+										dateStyle: "medium",
+										timeStyle: "short",
+									})}
+								</span>
+								<div className="ml-auto flex gap-2">
+									{attempt.status === "pending" || attempt.status === "running" ? (
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											loading={actionKey === `${attempt.attemptId}:cancel`}
+											onClick={() => void action(attempt, "cancel")}
+										>
+											{t("factors.attempts.cancel")}
+										</Button>
+									) : null}
+									{attempt.status === "failed" || attempt.status === "cancelled" ? (
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											loading={actionKey === `${attempt.attemptId}:retry`}
+											onClick={() => void action(attempt, "retry")}
+										>
+											{t("factors.attempts.retry")}
+										</Button>
+									) : null}
+								</div>
+							</div>
+							{attempt.progressTotal > 0 ? (
+								<progress
+									className="mt-3 h-2 w-full"
+									value={attempt.completedUnits}
+									max={attempt.progressTotal}
+									aria-label={t("factors.attempts.progress")}
+								/>
+							) : null}
+							{attempt.diagnostic ? (
+								<p className="mt-2 break-words text-xs text-destructive">
+									{attempt.diagnostic}
+								</p>
+							) : null}
+						</div>
+					))
+				)}
+			</CardContent>
+		</Card>
+	);
+}
+
+function Field({
+	label,
+	value,
+	onChange,
+	type = "text",
+	placeholder,
+	mono = false,
+}: {
+	label: string;
+	value: string;
+	onChange: (value: string) => void;
+	type?: string;
+	placeholder?: string;
+	mono?: boolean;
+}) {
+	const id = useId();
+	return (
+		<div className="grid gap-1.5">
+			<Label htmlFor={id}>{label}</Label>
+			<Input
+				id={id}
+				type={type}
+				value={value}
+				placeholder={placeholder}
+				className={mono ? "font-mono text-xs" : undefined}
+				onChange={(event) => onChange(event.target.value)}
+			/>
+		</div>
+	);
+}
+
+function TextField({
+	label,
+	value,
+	onChange,
+	hint,
+}: {
+	label: string;
+	value: string;
+	onChange: (value: string) => void;
+	hint?: string;
+}) {
+	const id = useId();
+	const hintId = hint ? `${id}-hint` : undefined;
+	return (
+		<div className="grid gap-1.5">
+			<Label htmlFor={id}>{label}</Label>
+			<textarea
+				id={id}
+				className="min-h-24 w-full rounded-md border bg-background px-3 py-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				value={value}
+				onChange={(event) => onChange(event.target.value)}
+				aria-label={label}
+				aria-describedby={hintId}
+			/>
+			{hint ? (
+				<p id={hintId} className="text-xs text-muted-foreground">
+					{hint}
+				</p>
+			) : null}
+		</div>
+	);
+}
+
+function JsonEditor({
+	label,
+	value,
+	onChange,
+	hint,
+}: {
+	label: string;
+	value: string;
+	onChange: (value: string) => void;
+	hint?: string;
+}) {
+	return (
+		<TextField label={label} value={value} onChange={onChange} hint={hint} />
+	);
+}
+
+function Detail({
+	label,
+	value,
+	mono = false,
+}: {
+	label: string;
+	value: string;
+	mono?: boolean;
+}) {
+	return (
+		<div className="min-w-0">
+			<dt className="text-xs text-muted-foreground">{label}</dt>
+			<dd
+				className={`mt-1 break-all ${mono ? "font-mono text-xs" : "font-medium"}`}
+			>
+				{value}
+			</dd>
+		</div>
+	);
+}

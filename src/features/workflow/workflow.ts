@@ -14,10 +14,10 @@ export const workflowSteps: readonly {
 	module: WorkflowModuleId;
 	capability: WorkflowCapability;
 	milestone?: string;
-	target?: "/components" | "/models" | "/backtest";
+	target?: "/factors" | "/components" | "/models" | "/backtest";
 }[] = [
-	{ id: 1, module: "factor", capability: "planned", milestone: "M11" },
-	{ id: 2, module: "factor", capability: "planned", milestone: "M11" },
+	{ id: 1, module: "factor", capability: "partial", target: "/factors" },
+	{ id: 2, module: "factor", capability: "partial", target: "/factors" },
 	{ id: 3, module: "factor", capability: "partial", target: "/components" },
 	{ id: 4, module: "model", capability: "planned", milestone: "M12" },
 	{ id: 5, module: "model", capability: "partial", target: "/models" },

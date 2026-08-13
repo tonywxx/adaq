@@ -74,6 +74,11 @@ fn get_factor_schema(loader: State<'_, WasmLoader>) -> Result<FactorSchema, Stri
     loader.describe_factor()
 }
 
+#[tauri::command]
+fn factor_metric_catalog() -> adaq_factor_research::FactorMetricCatalog {
+    adaq_factor_research::FactorMetricCatalog::initial()
+}
+
 /// Tauri Component Library commands are thin adapters: they deserialize
 /// the existing contract, delegate to the Tauri-independent Component
 /// Library module, and serialize the result. Command names and camelCase
@@ -214,6 +219,12 @@ factor_blocking_command!(
     factor_research::FactorAttemptView
 );
 factor_blocking_command!(
+    factor_candidate_publish,
+    factor_research::FactorCandidatePublishRequest,
+    publish_candidate,
+    factor_research::FactorCandidateView
+);
+factor_blocking_command!(
     factor_candidate_list,
     factor_research::FactorPageRequest,
     list_candidates,
@@ -232,10 +243,22 @@ factor_blocking_command!(
     factor_research::FactorAttemptView
 );
 factor_blocking_command!(
+    factor_materialization_protocol_freeze,
+    factor_research::FactorMaterializationProtocolFreezeRequest,
+    freeze_materialization_protocol,
+    adaq_factor_research::FactorMaterializationProtocol
+);
+factor_blocking_command!(
     factor_evaluation_start,
     factor_research::FactorEvaluationStartRequest,
     start_evaluation,
     factor_research::FactorAttemptView
+);
+factor_blocking_command!(
+    factor_evaluation_protocol_freeze,
+    factor_research::FactorEvaluationProtocolFreezeRequest,
+    freeze_evaluation_protocol,
+    adaq_factor_research::FactorEvaluationProtocol
 );
 factor_blocking_command!(
     factor_attempt_list,
@@ -304,6 +327,12 @@ factor_blocking_command!(
     factor_research::FactorFamilyView
 );
 factor_blocking_command!(
+    factor_family_grid_register,
+    factor_research::FactorGridFamilyRegisterRequest,
+    register_grid_family,
+    factor_research::FactorAttemptView
+);
+factor_blocking_command!(
     factor_family_list,
     factor_research::FactorPageRequest,
     list_families,
@@ -349,6 +378,12 @@ factor_blocking_command!(
     factor_decision_list,
     factor_research::FactorPageRequest,
     list_decisions,
+    factor_research::FactorPage<factor_research::FactorDecisionView>
+);
+factor_blocking_command!(
+    factor_decision_library,
+    factor_research::FactorPageRequest,
+    list_decision_library,
     factor_research::FactorPage<factor_research::FactorDecisionView>
 );
 factor_blocking_command!(
@@ -2512,6 +2547,7 @@ pub fn run() {
             greet,
             load_factor_component,
             get_factor_schema,
+            factor_metric_catalog,
             market_list_spot_instruments,
             market_get_bar_series,
             market_workspace_get_bars,
@@ -2601,10 +2637,13 @@ pub fn run() {
             dataset_generation_list,
             dataset_generation_cancel,
             factor_candidate_build,
+            factor_candidate_publish,
             factor_candidate_list,
             factor_candidate_get,
             factor_materialization_start,
+            factor_materialization_protocol_freeze,
             factor_evaluation_start,
+            factor_evaluation_protocol_freeze,
             factor_attempt_list,
             factor_attempt_get,
             factor_attempt_cancel,
@@ -2616,6 +2655,7 @@ pub fn run() {
             factor_report_list,
             factor_report_get,
             factor_family_register,
+            factor_family_grid_register,
             factor_family_list,
             factor_family_get,
             factor_trial_update,
@@ -2624,6 +2664,7 @@ pub fn run() {
             factor_policy_list,
             factor_decision_save,
             factor_decision_list,
+            factor_decision_library,
             factor_reference_add,
             factor_reference_remove,
             factor_m12_eligibility,

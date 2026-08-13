@@ -3,7 +3,6 @@ import {
 	attemptProgressFraction,
 	buildDatasetFilter,
 	camelReason,
-	clearSessionCache,
 	createEmptyDraft,
 	datasetPageOffset,
 	defaultNodeId,
@@ -12,11 +11,14 @@ import {
 	moveNode,
 	parseParameterValue,
 	parseStoredDefinition,
-	readSessionCache,
 	removeNode,
 	updateNode,
-	writeSessionCache,
 } from "./features-data";
+import {
+	clearSessionCache,
+	readSessionCache,
+	writeSessionCache,
+} from "@/lib/session-cache";
 
 test("creates a draft with one ordered node and one bound output", () => {
 	const draft = createEmptyDraft();
