@@ -73,7 +73,7 @@ Deliver one Factor Lab with explicit Time-Series and Cross-Sectional scopes, poi
 
 Completion gate: promoted Factors bind exact Feature, Snapshot, Universe, evaluation protocol, report, and decision evidence and can be selected by Model research; failed or incomplete studies remain inspectable and cannot enter the promoted library.
 
-The accepted bilingual [M11 Factor Research architecture](./m11-factor-research.md) defines the Native-only Research Engine boundary, Factor ABI v2, immutable Dataset-first evaluation, Research Family lineage, User-owned promotion, `/factors` workspace, and eight delivery slices published under [parent issue #88](https://github.com/tonywxx/adaq/issues/88). Planning does not claim implementation.
+The accepted bilingual [M11 Factor Research architecture](./m11-factor-research.md) and [manual acceptance guide](./m11-manual-acceptance.md) define the completed Native-only Research Engine boundary, Factor ABI v2, immutable Dataset-first evaluation, Research Family lineage, User-owned promotion, `/factors` workspace, and eight delivered slices published under [parent issue #88](https://github.com/tonywxx/adaq/issues/88).
 
 ### M12 — Qlib-first Model Lab
 
@@ -280,7 +280,7 @@ flowchart TD
     G --> H
 ```
 
-#92 is the only initial executable frontier. M11 remains unimplemented until every slice supplies its own acceptance evidence.
+#92 was the only initial executable frontier. M11 is accepted after the eight slice comments, the bilingual acceptance matrix, final local gates, and supported-platform evidence are all recorded.
 
 ## Roadmap-wide completion rules
 

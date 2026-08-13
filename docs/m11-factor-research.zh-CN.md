@@ -2,7 +2,7 @@
 
 [English](./m11-factor-research.md)
 
-状态：已接受的架构与可执行交付基线，已发布为 [Parent Issue #88](https://github.com/tonywxx/adaq/issues/88)。M10 与 M11.1–M11.6 Implementation Slice 已完成；下方记录 M11.7 Hardening Evidence。
+状态：已接受的 M11 架构与交付，已发布为 [Parent Issue #88](https://github.com/tonywxx/adaq/issues/88)。M10 与 M11.1–M11.7 已完成；M11.8 Acceptance Evidence 记录在[双语人工验收指南](./m11-manual-acceptance.zh-CN.md)中。
 
 ## 最终结果
 
@@ -58,7 +58,7 @@ Factor Candidate 是一个精确 Declarative Factor Definition Revision 或私�
 - Cross-Sectional Execution 接收一个 Observation Time 下确定排序的完整 Point-in-Time Instrument Universe。每个 Slot Cell 是 Available 或 Typed Unavailable；Component 必须为每个成员按原 Identity/Order 返回结果，不得删行或重排。
 - Host 在发布前验证 Membership、Order、Row/Output Count、Availability、Finite Value、Determinism、Fuel、Memory 与 Output Identity。
 
-Factor ABI v2 直接替换 pre-v1 Factor ABI v1。不兼容 Stored Package/Evidence 以明确 Device-level Reset Guidance 拒绝；M11 不提供 Migration、Dual Reader 或 Automatic Deletion。
+Factor ABI v2 直接替换 pre-v1 Factor ABI v1。不兼容 Stored Package/Evidence 以 Typed `reset-required` 与明确 Device-level Reset Guidance 拒绝；M11 不提供 Migration、Dual Reader 或 Automatic Deletion。
 
 ## Materialization 与 Storage
 
@@ -179,4 +179,4 @@ M11 已通过八个 Dependency-ordered Slice 发布：
 7. [#94 — Three-market Fixture、Benchmark、Resource Limit 与 Hardening](https://github.com/tonywxx/adaq/issues/94)。
 8. [#93 — Bilingual Cross-platform Acceptance、Manual Guide 与 Roadmap Closure](https://github.com/tonywxx/adaq/issues/93)。
 
-依赖为 `#92 → #90 → #89 → #91 → #95 → #96`、`{#90,#89,#91,#95} → #94`、`{#92,#90,#89,#91,#95,#96,#94} → #93`。#92 曾是唯一初始 Executable Frontier。Planning 不产生 Production Evidence；M11 仍等待最终 #93 Acceptance，所有 Slice 必须先通过各自 Gate。
+依赖为 `#92 → #90 → #89 → #91 → #95 → #96`、`{#90,#89,#91,#95} → #94`、`{#92,#90,#89,#91,#95,#96,#94} → #93`。#92 曾是唯一初始 Executable Frontier。最终 Cross-slice Evidence 与 Supported-platform Record 维护在[M11 人工验收指南](./m11-manual-acceptance.zh-CN.md)中；#93 是已完成 Milestone 的 Acceptance Record。

@@ -300,7 +300,7 @@ const english = {
 					"Explore hypotheses and record a reproducible Factor Candidate without treating discovery as validation.",
 				output: "Factor Candidate",
 				requirement: "Readable market evidence and a completed Feature Dataset.",
-				entry: "Dedicated Factor Discovery workspace planned for M11.",
+				entry: "Open the localized Factor Lab at /factors.",
 			},
 			2: {
 				title: "Evaluate & Promote Factors",
@@ -309,7 +309,7 @@ const english = {
 					"Evaluate a candidate and record Rejected, Research Validated, or Component Eligible.",
 				output: "Factor Promotion Decision",
 				requirement: "A selected Factor Candidate and frozen evaluation evidence.",
-				entry: "Factor evaluation and promotion workflow planned for M11.",
+				entry: "Open Families, Evaluations, and Decisions in /factors.",
 			},
 			3: {
 				title: "Qualify, Package & Import Factor",
@@ -1811,7 +1811,7 @@ const simplifiedChinese = {
 				summary: "探索研究假设并记录可复现的因子候选，不把发掘误当成验证。",
 				output: "因子候选",
 				requirement: "可读取的市场证据与已完成的 Feature Dataset。",
-				entry: "专用因子发掘工作区计划在 M11 实现。",
+				entry: "在 /factors 打开本地化因子实验室。",
 			},
 			2: {
 				title: "评估并晋级因子",
@@ -1819,7 +1819,7 @@ const simplifiedChinese = {
 				summary: "评估候选，并记录拒绝、研究验证通过或组件合格。",
 				output: "因子晋级决策",
 				requirement: "已选因子候选与冻结的评估证据。",
-				entry: "因子评估与晋级流程计划在 M11 实现。",
+				entry: "在 /factors 打开 Family、Evaluation 与 Decision。",
 			},
 			3: {
 				title: "鉴定、打包并导入因子",

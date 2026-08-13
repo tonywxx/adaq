@@ -45,8 +45,8 @@ Existing workspace URLs remain stable. Planned steps open an inspectable guide d
 
 | Step | Capability | Primary output | Current entry |
 | --- | --- | --- | --- |
-| 1 Discover Factors | Planned · M11 | Factor Candidate | Guide detail |
-| 2 Evaluate & Promote Factors | Planned · M11 | Factor Promotion Decision | Guide detail |
+| 1 Discover Factors | Available · M11 | Factor Candidate | `/factors` |
+| 2 Evaluate & Promote Factors | Available · M11 | Factor Promotion Decision | `/factors` |
 | 3 Qualify, Package & Import Factor | Partial | Qualified Factor Package + Component Meta | Component Library |
 | 4 Train Model | Planned · M12 | Validated Model Artifact | Guide detail |
 | 5 Evaluate Model | Partial | Forecast Evaluation Report | Models |

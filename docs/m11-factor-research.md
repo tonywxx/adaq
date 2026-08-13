@@ -2,7 +2,7 @@
 
 [简体中文](./m11-factor-research.zh-CN.md)
 
-Status: accepted architecture and executable delivery baseline, published as [parent issue #88](https://github.com/tonywxx/adaq/issues/88). M10 and the M11.1-M11.6 implementation slices are complete; M11.7 hardening evidence is recorded below.
+Status: accepted M11 architecture and delivery, published as [parent issue #88](https://github.com/tonywxx/adaq/issues/88). M10 and M11.1-M11.7 are complete; M11.8 acceptance evidence is recorded in the [bilingual manual acceptance guide](./m11-manual-acceptance.md).
 
 ## Outcome
 
@@ -58,7 +58,7 @@ Every Factor declares one Scope, ordered Feature Slots, parameters, one through 
 - Cross-Sectional execution receives every deterministically ordered member of one Point-in-Time Instrument Universe at one Observation Time. Each Slot cell is Available or typed Unavailable. The Component returns one identity-preserving result per member and may not delete or reorder rows.
 - The host validates membership, order, row and output counts, availability, finite values, determinism, fuel, memory, and output identity before publication.
 
-Factor ABI v2 directly replaces pre-v1 Factor ABI v1. Incompatible stored packages and evidence are rejected with explicit device-level Reset guidance; M11 adds no migration, dual reader, or automatic deletion.
+Factor ABI v2 directly replaces pre-v1 Factor ABI v1. Incompatible stored packages and evidence are rejected with typed `reset-required` and explicit device-level Reset guidance; M11 adds no migration, dual reader, or automatic deletion.
 
 ## Materialization and storage
 
@@ -194,4 +194,4 @@ M11 is published through eight dependency-ordered slices:
 7. [#94 — Three-market fixtures, benchmarks, resource limits, and hardening](https://github.com/tonywxx/adaq/issues/94).
 8. [#93 — Bilingual cross-platform acceptance, manual guide, and roadmap closure](https://github.com/tonywxx/adaq/issues/93).
 
-Dependencies are `#92 → #90 → #89 → #91 → #95 → #96`, `{#90,#89,#91,#95} → #94`, and `{#92,#90,#89,#91,#95,#96,#94} → #93`. #92 was the only initial executable frontier. Planning creates no production evidence; M11 remains pending final #93 acceptance until every slice passes its own gate.
+Dependencies are `#92 → #90 → #89 → #91 → #95 → #96`, `{#90,#89,#91,#95} → #94`, and `{#92,#90,#89,#91,#95,#96,#94} → #93`. #92 was the only initial executable frontier. The final cross-slice evidence and supported-platform record are maintained in the [M11 manual acceptance guide](./m11-manual-acceptance.md); #93 is the acceptance record for this completed milestone.

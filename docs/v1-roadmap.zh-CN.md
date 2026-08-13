@@ -73,7 +73,7 @@ flowchart LR
 
 完成 Gate：晋升 Factor 必须绑定精确 Feature、Snapshot、Universe、Evaluation Protocol、Report 与 Decision Evidence，且可被 Model Research 选择；失败或不完整 Study 保持可检查，但不能进入 Promoted Library。
 
-已接受的双语 [M11 Factor Research 架构](./m11-factor-research.zh-CN.md)定义 Native-only Research Engine Boundary、Factor ABI v2、Immutable Dataset-first Evaluation、Research Family Lineage、User-owned Promotion、`/factors` Workspace 与 [Parent Issue #88](https://github.com/tonywxx/adaq/issues/88) 下的八个 Delivery Slice。Planning 不代表已有 Implementation。
+已接受的双语 [M11 Factor Research 架构](./m11-factor-research.zh-CN.md)与[人工验收指南](./m11-manual-acceptance.zh-CN.md)定义已完成的 Native-only Research Engine Boundary、Factor ABI v2、Immutable Dataset-first Evaluation、Research Family Lineage、User-owned Promotion、`/factors` Workspace，以及 [Parent Issue #88](https://github.com/tonywxx/adaq/issues/88) 下已交付的八个 Delivery Slice。
 
 ### M12 — Qlib-first Model Lab
 
@@ -280,7 +280,7 @@ flowchart TD
     G --> H
 ```
 
-#92 是唯一初始 Executable Frontier。所有 Slice 提供各自 Acceptance Evidence 前，M11 保持未实现状态。
+#92 曾是唯一初始 Executable Frontier。八个 Slice Comment、双语 Acceptance Matrix、Final Local Gate 与 Supported-platform Evidence 全部记录后，M11 已接受。
 
 ## Roadmap 全局完成规则
 
