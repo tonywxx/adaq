@@ -28,7 +28,7 @@ AdaQ V1 is a **local-first research, backtesting, and simulation** desktop app. 
 
 Not included in the current M11 delivery (roadmap M12–M18): Qlib Model training, portfolio Strategies, Paper Trading accounts and execution, supervised Trading Bots, Marketplace publishing, and any real-money trading.
 
-## Screenshots
+## AdaQ workflow
 
 ![AdaQ workflow](screenshots/adaq-workflow.png)
 
@@ -56,13 +56,17 @@ Together, M1-M11 provide the current research loop: inspect trustworthy multi-ma
 
 - **Desktop build toolchain for Tauri 2** — install the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS (WebKit/WebView2, a C/C++ build toolchain, and on macOS the Xcode Command Line Tools).
 - **Rust stable toolchain** — required to build the native Tauri shell:
+
   ```sh
   rustup toolchain install stable
   ```
+
 - **Node.js 20 LTS or newer** and **pnpm 11**:
+
   ```sh
   npm install -g pnpm      # or enable corepack
   ```
+
 - *(Component development only)* the `wasm32-unknown-unknown` target plus the component tooling — see [Develop a Component](#develop-a-component).
 
 ### Install
@@ -77,7 +81,7 @@ pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-This starts the Vite dev server (http://localhost:1420) and opens the native desktop window.
+This starts the Vite dev server (<http://localhost:1420>) and opens the native desktop window.
 
 ### Build (production / release)
 

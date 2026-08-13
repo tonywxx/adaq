@@ -28,7 +28,7 @@ AdaQ V1 是一个**本地优先的研究、回测与模拟**桌面应用，不�
 
 当前 M11 交付不包含（路线图 M12–M18）：Qlib Model 训练、Portfolio Strategy、Paper Trading 账户与执行、受监督 Trading Bot、Marketplace 发布，以及任何真实资金交易。
 
-## 截图预览
+## AdaQ 工作流
 
 ![AdaQ 工作流](screenshots/adaq-workflow.png)
 
@@ -56,13 +56,17 @@ M1-M11 合起来形成当前研究闭环：检查可信的多市场证据，开�
 
 - **Tauri 2 桌面构建工具链** —— 安装对应操作系统的 [Tauri 2 前置依赖](https://v2.tauri.app/start/prerequisites/)（WebKit/WebView2、C/C++ 构建工具链；macOS 需 Xcode Command Line Tools）。
 - **Rust stable 工具链** —— 构建原生 Tauri 壳层所必需：
+
   ```sh
   rustup toolchain install stable
   ```
+
 - **Node.js 20 LTS 或更新版本** 与 **pnpm 11**：
+
   ```sh
   npm install -g pnpm      # 或启用 corepack
   ```
+
 - *（仅组件开发需要）* `wasm32-unknown-unknown` 目标，以及组件工具链 —— 见[开发组件](#开发组件)。
 
 ### 安装
@@ -77,7 +81,7 @@ pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-该命令会启动 Vite 开发服务器（http://localhost:1420）并打开原生桌面窗口。
+该命令会启动 Vite 开发服务器（<http://localhost:1420）并打开原生桌面窗口。>
 
 ### 构建（生产 / 发布）
 
