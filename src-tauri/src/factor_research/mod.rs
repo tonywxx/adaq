@@ -3411,6 +3411,26 @@ impl<'a> ResearchStore<'a> {
             )
             .map_err(|_| "Promotion Candidate was not found for this User".to_owned())?;
         let candidate = FactorCandidate::load(candidate_json.as_bytes()).map_err(string)?;
+        if let FactorCandidateSource::Python { binding } = &candidate.source {
+            if !matches!(
+                &decision.state,
+                adaq_factor_research::PromotionDecisionState::Rejected
+            ) && !binding.repeatability_verified
+            {
+                return Err("Python Factor repeatability is not verified".into());
+            }
+            if matches!(
+                &decision.state,
+                adaq_factor_research::PromotionDecisionState::ComponentEligible
+            ) && !matches!(
+                binding.mode,
+                adaq_factor_research::PythonFactorMode::PortableDefinition
+            ) {
+                return Err(
+                    "Imperative Python Factors require an accepted Portable Definition for Component eligibility".into(),
+                );
+            }
+        }
         let reports = protocol
             .report_hashes
             .iter()

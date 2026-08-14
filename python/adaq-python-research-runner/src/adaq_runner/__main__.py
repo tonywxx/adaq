@@ -107,11 +107,92 @@ def _environment_handshake() -> dict[str, object]:
     return values
 
 
-def _execute_project(
-    project_root: pathlib.Path, entry_point: str, sdk_wheel: str | None
+def _factor_payload(
+    project_factory: object,
+    project_kind: str,
+    project_root: pathlib.Path,
+    execution: dict[str, object],
 ) -> dict[str, object]:
+    mode = _read_manifest(project_root).get("mode")
+    if mode == "portable-definition":
+        project = project_factory()
+        if getattr(project, "kind", None) != project_kind:
+            raise ValueError("runner-project-kind-mismatch")
+        define = getattr(project, "define", None)
+        if not callable(define):
+            raise ValueError("runner-factor-definition-missing")
+        return {"definition": _jsonable(define(None))}
+    if mode != "imperative-python":
+        raise ValueError("runner-factor-mode-unsupported")
+    input_value = execution.get("input")
+    if not isinstance(input_value, dict):
+        raise ValueError("runner-factor-input-missing")
+    universe = input_value.get("universe")
+    segments = input_value.get("segments")
+    if not isinstance(universe, list) or not all(isinstance(item, str) for item in universe):
+        raise ValueError("runner-factor-input-universe-invalid")
+    if not isinstance(segments, list) or not segments:
+        raise ValueError("runner-factor-input-segments-invalid")
+    from adaq import FactorContext, Parameter
+
+    parameters = tuple(
+        Parameter(id=key, value=value)
+        for key, value in sorted(execution.get("parameters", {}).items())
+    )
+    outputs = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            raise ValueError("runner-factor-input-segment-invalid")
+        segment_id = segment.get("segmentId")
+        batches = segment.get("batches")
+        if not isinstance(segment_id, str) or not segment_id:
+            raise ValueError("runner-factor-input-segment-invalid")
+        if not isinstance(batches, list) or not batches:
+            raise ValueError("runner-factor-input-batches-invalid")
+        project = project_factory()
+        if getattr(project, "kind", None) != project_kind:
+            raise ValueError("runner-project-kind-mismatch")
+        evaluate = getattr(project, "evaluate", None)
+        if not callable(evaluate):
+            raise ValueError("runner-factor-evaluator-missing")
+        public_batches = []
+        for batch in batches:
+            if not isinstance(batch, dict) or not isinstance(batch.get("rows"), list):
+                raise ValueError("runner-factor-input-batch-invalid")
+            rows = []
+            for row in batch["rows"]:
+                if not isinstance(row, dict):
+                    raise ValueError("runner-factor-input-row-invalid")
+                rows.append(
+                    {
+                        "instrumentId": row.get("instrumentId"),
+                        "eventTimeMs": row.get("observationTimeMs"),
+                        "inputs": {"close": row.get("close")},
+                    }
+                )
+            public_batches.append({"segmentId": segment_id, "rows": rows})
+        context = FactorContext(
+            parameters=parameters,
+            seed=execution.get("seed", 0),
+            inputs={"universe": tuple(universe), "segmentId": segment_id},
+        )
+        result = evaluate(context, public_batches)
+        outputs.extend(_jsonable(list(result)))
+    return {"output_names": list(execution.get("outputNames", [])), "outputs": outputs}
+
+
+def _read_manifest(project_root: pathlib.Path) -> dict[str, object]:
     with (project_root / "adaq-project.toml").open("rb") as manifest_file:
-        manifest = tomllib.load(manifest_file)
+        return tomllib.load(manifest_file)
+
+
+def _execute_project(
+    project_root: pathlib.Path,
+    entry_point: str,
+    sdk_wheel: str | None,
+    execution: dict[str, object],
+) -> dict[str, object]:
+    manifest = _read_manifest(project_root)
     project_id = manifest.get("project-id")
     project_kind = manifest.get("kind")
     if not all(isinstance(value, str) and value for value in (project_id, project_kind)):
@@ -125,12 +206,20 @@ def _execute_project(
     if not separator or not module_name or not function_name:
         raise ValueError("runner-entry-point-invalid")
     with contextlib.redirect_stdout(sys.stderr):
-        result = getattr(importlib.import_module(module_name), function_name)()
-    payload: object | None
-    if isinstance(result, dict):
-        payload = result
-    else:
-        payload = _project_payload(result, project_kind)
+        project_factory = getattr(importlib.import_module(module_name), function_name)
+        if not callable(project_factory):
+            raise ValueError("runner-entry-point-not-callable")
+        if project_kind == "factor":
+            payload = _factor_payload(project_factory, project_kind, project_root, execution)
+            result = None
+        else:
+            result = project_factory()
+            payload = None
+    if payload is None:
+        if isinstance(result, dict):
+            payload = result
+        else:
+            payload = _project_payload(result, project_kind)
     return {
         "attemptId": os.environ.get("ADAQ_EXPECTED_ATTEMPT_ID", ""),
         "projectId": project_id,
@@ -165,7 +254,7 @@ def _write_staged_result(
 
 
 def _validate_execution(value: object, entry_point: str) -> int:
-    if not isinstance(value, dict) or set(value) != {
+    required = {
         "sdkArtifactSha256",
         "runtimeArtifactSha256",
         "entryPoint",
@@ -173,7 +262,12 @@ def _validate_execution(value: object, entry_point: str) -> int:
         "parameters",
         "seed",
         "outputNames",
-    }:
+    }
+    if (
+        not isinstance(value, dict)
+        or not required.issubset(value)
+        or set(value) - required - {"input"}
+    ):
         raise ValueError("runner-execution-contract-invalid")
     if value["entryPoint"] != entry_point:
         raise ValueError("runner-execution-entry-point-mismatch")
@@ -304,7 +398,9 @@ def run_socket(
                     return 0
                 if kind == "execute":
                     try:
-                        result = _execute_project(project_root, entry_point, sdk_wheel)
+                        result = _execute_project(
+                            project_root, entry_point, sdk_wheel, command.get("execution", {})
+                        )
                     except Exception as error:  # noqa: BLE001
                         _write_frame(
                             stream,

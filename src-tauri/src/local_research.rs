@@ -1115,6 +1115,20 @@ pub async fn local_data_reset(
     .map_err(string)?
 }
 
+#[tauri::command]
+pub async fn factor_research_reset(
+    request: LocalDataRequest,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .factor
+            .reset_for_user(&request.user_id)
+    })
+    .await
+    .map_err(string)?
+}
+
 fn reset_watchlist(database: &mut Connection, user_id: &str) -> Result<(), String> {
     let transaction = database.transaction().map_err(string)?;
     transaction

@@ -139,6 +139,74 @@ pub struct FactorResourcePolicy {
     pub memory_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PythonFactorResourcePolicy {
+    pub policy_id: String,
+    pub max_wall_ms: u64,
+    pub max_memory_bytes: u64,
+    pub max_threads: u32,
+    pub max_processes: u32,
+    pub max_input_rows: u64,
+    pub max_input_columns: u32,
+    pub max_input_cells: u64,
+    pub max_output_rows: u64,
+    pub max_control_bytes: u64,
+    pub max_arrow_bytes: u64,
+    pub max_staged_bytes: u64,
+    pub max_artifact_bytes: u64,
+    pub max_checkpoint_bytes: u64,
+    pub max_log_bytes: u64,
+}
+
+impl Default for PythonFactorResourcePolicy {
+    fn default() -> Self {
+        Self {
+            policy_id: "test-python-resource-policy@1".into(),
+            max_wall_ms: 1,
+            max_memory_bytes: 1,
+            max_threads: 1,
+            max_processes: 1,
+            max_input_rows: 1,
+            max_input_columns: 1,
+            max_input_cells: 1,
+            max_output_rows: 1,
+            max_control_bytes: 1,
+            max_arrow_bytes: 1,
+            max_staged_bytes: 1,
+            max_artifact_bytes: 1,
+            max_checkpoint_bytes: 1,
+            max_log_bytes: 1,
+        }
+    }
+}
+
+impl PythonFactorResourcePolicy {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.policy_id.trim().is_empty()
+            || self.max_wall_ms == 0
+            || self.max_memory_bytes == 0
+            || self.max_threads == 0
+            || self.max_processes == 0
+            || self.max_input_rows == 0
+            || self.max_input_columns == 0
+            || self.max_input_cells == 0
+            || self.max_output_rows == 0
+            || self.max_control_bytes == 0
+            || self.max_arrow_bytes == 0
+            || self.max_staged_bytes == 0
+            || self.max_artifact_bytes == 0
+            || self.max_checkpoint_bytes == 0
+            || self.max_log_bytes == 0
+        {
+            return Err(ContractError::Invalid(
+                "Python Factor resource policy is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PythonFactorMode {
@@ -148,16 +216,65 @@ pub enum PythonFactorMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PythonRepeatabilityReport {
+    pub first_process_sha256: String,
+    pub replay_process_sha256: String,
+    pub first_output_sha256: String,
+    pub replay_output_sha256: String,
+    pub exact: bool,
+    pub partitions: Vec<String>,
+}
+
+impl PythonRepeatabilityReport {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if !is_sha256(&self.first_process_sha256)
+            || !is_sha256(&self.replay_process_sha256)
+            || !is_sha256(&self.first_output_sha256)
+            || !is_sha256(&self.replay_output_sha256)
+            || self.partitions.is_empty()
+            || (self.exact
+                && (self.first_process_sha256 != self.replay_process_sha256
+                    || self.first_output_sha256 != self.replay_output_sha256))
+            || self
+                .partitions
+                .iter()
+                .any(|partition| partition.trim().is_empty())
+            || !self
+                .partitions
+                .iter()
+                .any(|partition| partition == "fresh-process")
+        {
+            return Err(ContractError::Invalid(
+                "Python Factor repeatability report is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PythonFactorBinding {
     pub project_id: String,
     pub project_revision_sha256: String,
     pub environment_sha256: String,
+    pub input_bindings: BTreeMap<String, String>,
+    pub snapshot_id: String,
+    pub snapshot_bindings: BTreeMap<String, String>,
+    pub point_in_time_universe_id: String,
+    pub feature_evidence_sha256: String,
+    pub feature_dataset_bindings: BTreeMap<String, String>,
+    pub normalized_parameters: BTreeMap<String, String>,
+    pub engine_identity: String,
+    pub repeatability_report_sha256: String,
+    pub repeatability_verified: bool,
+    pub repeatability_report: BTreeMap<String, PythonRepeatabilityReport>,
     pub sdk_artifact_sha256: String,
     pub entry_point: String,
     pub mode: PythonFactorMode,
     pub feature_plan_hash: String,
     pub operator_catalog_version: String,
-    pub resource_policy: FactorResourcePolicy,
+    pub resource_policy: PythonFactorResourcePolicy,
     pub seed: u64,
 }
 
@@ -166,13 +283,46 @@ impl PythonFactorBinding {
         if self.project_id != "py-factor-cross-sectional-momentum"
             || !is_sha256(&self.project_revision_sha256)
             || !is_sha256(&self.environment_sha256)
+            || self.input_bindings.len() != 1
+            || self.input_bindings.get("close") != Some(&"host:market-close".into())
+            || self.snapshot_id.trim().is_empty()
+            || self.snapshot_bindings.is_empty()
+            || self.snapshot_bindings.iter().any(|(instrument, snapshot)| {
+                instrument.trim().is_empty() || snapshot.trim().is_empty()
+            })
+            || self.point_in_time_universe_id.trim().is_empty()
+            || !is_sha256(&self.feature_evidence_sha256)
+            || self.feature_dataset_bindings.is_empty()
+            || self
+                .feature_dataset_bindings
+                .iter()
+                .any(|(instrument, dataset)| {
+                    instrument.trim().is_empty() || dataset.trim().is_empty()
+                })
+            || self.normalized_parameters.get("lookback").is_none()
+            || self.engine_identity.trim().is_empty()
+            || !is_sha256(&self.repeatability_report_sha256)
+            || self.repeatability_report.len() != 3
+            || ["5", "20", "60"]
+                .iter()
+                .any(|lookback| !self.repeatability_report.contains_key(*lookback))
+            || self
+                .repeatability_report
+                .values()
+                .any(|report| report.validate().is_err())
+            || content_hash(&self.repeatability_report).ok().as_deref()
+                != Some(self.repeatability_report_sha256.as_str())
+            || self.repeatability_verified
+                != self
+                    .repeatability_report
+                    .values()
+                    .all(|report| report.exact)
             || !is_sha256(&self.sdk_artifact_sha256)
             || self.entry_point != "project:create_project"
             || !is_sha256(&self.feature_plan_hash)
             || self.operator_catalog_version
                 != adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION
-            || self.resource_policy.fuel_per_call == 0
-            || self.resource_policy.memory_bytes == 0
+            || self.resource_policy.validate().is_err()
         {
             return Err(ContractError::Invalid(
                 "Python Factor binding is incomplete or invalid".into(),
@@ -2146,6 +2296,23 @@ mod tests {
 
     #[test]
     fn python_candidate_binds_exact_revision_environment_and_operator_catalog() {
+        let repeatability_report = ["5", "20", "60"]
+            .into_iter()
+            .map(|lookback| {
+                (
+                    lookback.into(),
+                    PythonRepeatabilityReport {
+                        first_process_sha256: "a".repeat(64),
+                        replay_process_sha256: "b".repeat(64),
+                        first_output_sha256: "c".repeat(64),
+                        replay_output_sha256: "d".repeat(64),
+                        exact: false,
+                        partitions: vec!["fresh-process".into()],
+                    },
+                )
+            })
+            .collect();
+        let repeatability_report_sha256 = content_hash(&repeatability_report).unwrap();
         let candidate = FactorCandidate::freeze(FactorCandidateDraft {
             candidate_id: Uuid::new_v4(),
             revision: 1,
@@ -2167,22 +2334,35 @@ mod tests {
                     project_id: "py-factor-cross-sectional-momentum".into(),
                     project_revision_sha256: "a".repeat(64),
                     environment_sha256: "b".repeat(64),
+                    input_bindings: BTreeMap::from([("close".into(), "host:market-close".into())]),
+                    snapshot_id: "snapshot".into(),
+                    snapshot_bindings: BTreeMap::from([("AAA".into(), "snapshot".into())]),
+                    point_in_time_universe_id: "universe".into(),
+                    feature_evidence_sha256: "e".repeat(64),
+                    feature_dataset_bindings: BTreeMap::from([("AAA".into(), "dataset".into())]),
+                    normalized_parameters: BTreeMap::from([("lookback".into(), "20".into())]),
+                    engine_identity: "adaq-python-factor@1".into(),
+                    repeatability_report_sha256,
+                    repeatability_verified: false,
+                    repeatability_report,
                     sdk_artifact_sha256: "c".repeat(64),
                     entry_point: "project:create_project".into(),
                     mode: PythonFactorMode::PortableDefinition,
                     feature_plan_hash: "d".repeat(64),
                     operator_catalog_version: adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION
                         .into(),
-                    resource_policy: FactorResourcePolicy {
-                        fuel_per_call: 1,
-                        memory_bytes: 1,
-                    },
+                    resource_policy: PythonFactorResourcePolicy::default(),
                     seed: 7,
                 },
             },
         })
         .unwrap();
         assert!(candidate.validate().is_ok());
+        let mut unverifiable = candidate.clone();
+        if let FactorCandidateSource::Python { binding } = &mut unverifiable.source {
+            binding.repeatability_verified = true;
+        }
+        assert!(unverifiable.validate().is_err());
         let mut invalid = candidate.clone();
         if let FactorCandidateSource::Python { binding } = &mut invalid.source {
             binding.project_revision_sha256 = "not-a-hash".into();

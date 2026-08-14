@@ -145,8 +145,8 @@ pub fn wheelhouse_catalog(
         file_name: "adaq_python_research_runner-1.0.0-py3-none-any.whl".into(),
         package: "adaq-python-research-runner".into(),
         version: "1.0.0".into(),
-        sha256: "a934a611d9e6d7a493c448b0dbda0ace473ad9bb474f4e5ac736eee83de89e46".into(),
-        size: 5_164,
+        sha256: "ef131c0b7ebd45bc0b2cd8064784846437d29a62ad25b3b925d79d762c78b75a".into(),
+        size: 5_900,
         platform_tags: vec!["any".into()],
     };
     let qlib_adapter = WheelIdentity {

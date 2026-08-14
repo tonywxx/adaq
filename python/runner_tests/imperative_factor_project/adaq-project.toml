@@ -1,0 +1,5 @@
+schema-version = "1.0.0"
+project-id = "py-factor-imperative-test"
+kind = "factor"
+mode = "imperative-python"
+entry-point = "project:create_project"

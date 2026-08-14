@@ -168,6 +168,102 @@ pub struct MomentumInputRow {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PythonFactorInput {
+    pub universe: Vec<String>,
+    pub segments: Vec<PythonFactorSegment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PythonFactorSegment {
+    pub segment_id: String,
+    pub batches: Vec<PythonFactorBatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PythonFactorBatch {
+    pub rows: Vec<MomentumInputRow>,
+}
+
+impl PythonFactorInput {
+    pub fn validate(&self) -> Result<(), PythonResearchError> {
+        if self.universe.is_empty() || self.segments.is_empty() {
+            return Err(invalid("python-factor-input-empty"));
+        }
+        let universe = self.universe.iter().cloned().collect::<BTreeSet<_>>();
+        if universe.len() != self.universe.len()
+            || self.universe.iter().any(|member| member.trim().is_empty())
+        {
+            return Err(invalid("python-factor-input-universe-invalid"));
+        }
+        let mut segments = BTreeSet::new();
+        let mut rows = BTreeSet::new();
+        let mut members_by_time = BTreeMap::<i64, BTreeSet<String>>::new();
+        let universe_order = self
+            .universe
+            .iter()
+            .enumerate()
+            .map(|(index, member)| (member.as_str(), index))
+            .collect::<BTreeMap<_, _>>();
+        for segment in &self.segments {
+            if segment.segment_id.trim().is_empty() || !segments.insert(&segment.segment_id) {
+                return Err(invalid("python-factor-input-segment-invalid"));
+            }
+            if segment.batches.is_empty() {
+                return Err(invalid("python-factor-input-batch-empty"));
+            }
+            let mut previous = None;
+            let mut previous_universe_index = None;
+            for batch in &segment.batches {
+                if batch.rows.is_empty() {
+                    return Err(invalid("python-factor-input-batch-empty"));
+                }
+                for row in &batch.rows {
+                    if row.instrument_id.trim().is_empty()
+                        || !universe.contains(&row.instrument_id)
+                        || row.close.is_some_and(|value| !value.is_finite())
+                        || !rows.insert((row.observation_time_ms, row.instrument_id.clone()))
+                    {
+                        return Err(invalid("python-factor-input-row-invalid"));
+                    }
+                    if previous.is_some_and(|previous| {
+                        (row.observation_time_ms, row.instrument_id.as_str()) < previous
+                    }) {
+                        return Err(invalid("python-factor-input-order-invalid"));
+                    }
+                    let universe_index = universe_order[row.instrument_id.as_str()];
+                    if previous.is_some_and(|previous| previous.0 == row.observation_time_ms)
+                        && previous_universe_index
+                            .is_some_and(|previous_index| universe_index <= previous_index)
+                    {
+                        return Err(invalid("python-factor-input-universe-order-invalid"));
+                    }
+                    previous = Some((row.observation_time_ms, row.instrument_id.as_str()));
+                    previous_universe_index = Some(universe_index);
+                    members_by_time
+                        .entry(row.observation_time_ms)
+                        .or_default()
+                        .insert(row.instrument_id.clone());
+                }
+            }
+        }
+        if rows.is_empty()
+            || members_by_time.values().any(|members| {
+                members.len() != universe.len()
+                    || members.iter().any(|member| !universe.contains(member))
+            })
+        {
+            return Err(invalid(
+                "python-factor-input-universe-membership-incomplete",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MomentumOutputRow {
     pub instrument_id: String,
     pub observation_time_ms: i64,
@@ -309,6 +405,122 @@ pub fn validate_momentum_output(
     Ok(())
 }
 
+pub fn validate_imperative_factor_payload(
+    payload: &Value,
+    input: &PythonFactorInput,
+) -> Result<Vec<MomentumOutputRow>, PythonResearchError> {
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "snake_case", deny_unknown_fields)]
+    struct Payload {
+        output_names: Vec<String>,
+        outputs: Vec<OutputBatch>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "snake_case", deny_unknown_fields)]
+    struct OutputBatch {
+        segment_id: String,
+        rows: Vec<OutputRow>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "snake_case", deny_unknown_fields)]
+    struct OutputRow {
+        instrument_id: String,
+        event_time_ms: i64,
+        value: Value,
+    }
+
+    input.validate()?;
+    let payload = serde_json::from_value::<Payload>(payload.clone())
+        .map_err(|error| invalid(format!("python-factor-output-invalid:{error}")))?;
+    if payload.output_names.len() != 1 || payload.output_names[0] != MOMENTUM_OUTPUT_ID {
+        return Err(invalid("python-factor-output-names-invalid"));
+    }
+    let mut actual_segment_ids = Vec::new();
+    for batch in &payload.outputs {
+        if batch.rows.is_empty() || actual_segment_ids.last() != Some(&batch.segment_id) {
+            actual_segment_ids.push(batch.segment_id.clone());
+        }
+    }
+    let expected_segment_ids = input
+        .segments
+        .iter()
+        .map(|segment| segment.segment_id.clone())
+        .collect::<Vec<_>>();
+    if actual_segment_ids != expected_segment_ids {
+        return Err(invalid("python-factor-output-segment-invalid"));
+    }
+
+    let expected = input
+        .segments
+        .iter()
+        .flat_map(|segment| segment.batches.iter().flat_map(|batch| &batch.rows))
+        .collect::<Vec<_>>();
+    let actual = payload
+        .outputs
+        .iter()
+        .flat_map(|batch| batch.rows.iter())
+        .collect::<Vec<_>>();
+    if actual.len() != expected.len() {
+        return Err(invalid("python-factor-output-row-count-invalid"));
+    }
+    let mut output = Vec::with_capacity(expected.len());
+    for (expected_row, actual_row) in expected.iter().zip(actual) {
+        if expected_row.instrument_id != actual_row.instrument_id
+            || expected_row.observation_time_ms != actual_row.event_time_ms
+        {
+            return Err(invalid("python-factor-output-identity-or-order-invalid"));
+        }
+        let (value, unavailable_reason) = if let Some(value) = actual_row.value.as_f64() {
+            if !value.is_finite() {
+                return Err(invalid("python-factor-output-non-finite"));
+            }
+            (Some(value), None)
+        } else {
+            let object = actual_row
+                .value
+                .as_object()
+                .ok_or_else(|| invalid("python-factor-output-value-invalid"))?;
+            if object.len() != 1 {
+                return Err(invalid("python-factor-output-unavailable-invalid"));
+            }
+            let reason = object
+                .get("reason")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("python-factor-output-unavailable-invalid"))?;
+            let reason = match reason {
+                "warmup" => FactorUnavailableReason::Warmup,
+                "missing-input" => FactorUnavailableReason::MissingInput,
+                "bar-gap" => FactorUnavailableReason::BarGap,
+                _ => return Err(invalid("python-factor-output-unavailable-reason-invalid")),
+            };
+            (None, Some(reason))
+        };
+        if expected_row.close.is_none()
+            && unavailable_reason != Some(FactorUnavailableReason::MissingInput)
+        {
+            return Err(invalid("python-factor-missing-input-not-preserved"));
+        }
+        if expected_row.close.is_some()
+            && unavailable_reason == Some(FactorUnavailableReason::MissingInput)
+        {
+            return Err(invalid("python-factor-spurious-missing-input"));
+        }
+        if expected_row.close.is_some() && unavailable_reason.is_some() {
+            return Err(invalid("python-factor-present-input-unavailable"));
+        }
+        output.push(MomentumOutputRow {
+            instrument_id: actual_row.instrument_id.clone(),
+            observation_time_ms: actual_row.event_time_ms,
+            value,
+            unavailable_reason,
+        });
+    }
+    validate_momentum_output(&output, expected.len())?;
+    Ok(output)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RepeatabilityReport {
@@ -407,10 +619,111 @@ mod tests {
     }
 
     #[test]
+    fn input_requires_declared_universe_order() {
+        let input = PythonFactorInput {
+            universe: vec!["BBB".into(), "AAA".into()],
+            segments: vec![PythonFactorSegment {
+                segment_id: "continuous-1".into(),
+                batches: vec![PythonFactorBatch { rows: rows() }],
+            }],
+        };
+        assert_eq!(
+            input.validate().unwrap_err().to_string(),
+            "python-factor-input-universe-order-invalid"
+        );
+    }
+
+    #[test]
+    fn present_inputs_cannot_report_host_owned_unavailability() {
+        let input = PythonFactorInput {
+            universe: vec!["AAA".into(), "BBB".into()],
+            segments: vec![PythonFactorSegment {
+                segment_id: "continuous-1".into(),
+                batches: vec![PythonFactorBatch {
+                    rows: vec![
+                        MomentumInputRow {
+                            instrument_id: "AAA".into(),
+                            observation_time_ms: 1,
+                            close: Some(1.0),
+                        },
+                        MomentumInputRow {
+                            instrument_id: "BBB".into(),
+                            observation_time_ms: 1,
+                            close: Some(2.0),
+                        },
+                    ],
+                }],
+            }],
+        };
+        let payload = serde_json::json!({
+            "output_names": ["momentum-score"],
+            "outputs": [{
+                "segment_id": "continuous-1",
+                "rows": [
+                    {"instrument_id": "AAA", "event_time_ms": 1, "value": {"reason": "warmup"}},
+                    {"instrument_id": "BBB", "event_time_ms": 1, "value": 0.5}
+                ]
+            }]
+        });
+        assert_eq!(
+            validate_imperative_factor_payload(&payload, &input)
+                .unwrap_err()
+                .to_string(),
+            "python-factor-present-input-unavailable"
+        );
+    }
+
+    #[test]
+    fn golden_output_preserves_cross_sectional_percentiles() {
+        let input = (1..=6)
+            .flat_map(|time| {
+                [
+                    ("AAA", time as f64),
+                    ("BBB", (time * 2) as f64),
+                    ("CCC", (time * time) as f64),
+                ]
+                .into_iter()
+                .map(move |(instrument, close)| MomentumInputRow {
+                    instrument_id: instrument.into(),
+                    observation_time_ms: time,
+                    close: Some(close),
+                })
+            })
+            .collect::<Vec<_>>();
+        let output =
+            materialize_momentum(&input, &["AAA".into(), "BBB".into(), "CCC".into()], 5).unwrap();
+        let final_rows = output
+            .into_iter()
+            .filter(|row| row.observation_time_ms == 6)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            final_rows
+                .iter()
+                .map(|row| (row.instrument_id.as_str(), row.value))
+                .collect::<Vec<_>>(),
+            vec![
+                ("AAA", Some(2.0 / 3.0)),
+                ("BBB", Some(2.0 / 3.0)),
+                ("CCC", Some(1.0))
+            ]
+        );
+    }
+
+    #[test]
     fn exact_replay_produces_an_identity_report() {
         let first = materialize_momentum(&rows(), &["AAA".into(), "BBB".into()], 5).unwrap();
         let report = RepeatabilityReport::exact(&first, &first).unwrap();
         assert!(report.exact);
         assert_eq!(report.first_output_sha256, report.replay_output_sha256);
+    }
+
+    #[test]
+    fn divergent_replay_remains_explicitly_unverified() {
+        let first = materialize_momentum(&rows(), &["AAA".into(), "BBB".into()], 5).unwrap();
+        let mut replay = first.clone();
+        replay[0].unavailable_reason = Some(FactorUnavailableReason::BarGap);
+        let report = RepeatabilityReport::exact(&first, &replay).unwrap();
+        assert!(!report.exact);
+        assert_ne!(report.first_output_sha256, report.replay_output_sha256);
     }
 }

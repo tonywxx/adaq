@@ -660,6 +660,8 @@ pub struct AttemptExecution {
     pub seed: u64,
     #[serde(default)]
     pub output_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1889,6 +1891,127 @@ mod tests {
         let payload = result.payload.unwrap();
         assert_eq!(payload["definition"]["scope"], "cross-sectional");
         assert_eq!(payload["definition"]["outputs"][0], "momentum-score");
+    }
+
+    #[test]
+    fn loopback_runner_preserves_imperative_factor_batches_and_missing_input() {
+        let token = "z".repeat(64);
+        let python_executable =
+            test_python_executable("Python is required for the imperative Factor test");
+        let staging = tempdir().unwrap();
+        let input = crate::factor::PythonFactorInput {
+            universe: vec!["AAA".into(), "BBB".into()],
+            segments: vec![
+                crate::factor::PythonFactorSegment {
+                    segment_id: "continuous-1".into(),
+                    batches: vec![
+                        crate::factor::PythonFactorBatch {
+                            rows: vec![
+                                crate::factor::MomentumInputRow {
+                                    instrument_id: "AAA".into(),
+                                    observation_time_ms: 1,
+                                    close: Some(1.0),
+                                },
+                                crate::factor::MomentumInputRow {
+                                    instrument_id: "BBB".into(),
+                                    observation_time_ms: 1,
+                                    close: Some(2.0),
+                                },
+                            ],
+                        },
+                        crate::factor::PythonFactorBatch {
+                            rows: vec![
+                                crate::factor::MomentumInputRow {
+                                    instrument_id: "AAA".into(),
+                                    observation_time_ms: 2,
+                                    close: None,
+                                },
+                                crate::factor::MomentumInputRow {
+                                    instrument_id: "BBB".into(),
+                                    observation_time_ms: 2,
+                                    close: Some(3.0),
+                                },
+                            ],
+                        },
+                    ],
+                },
+                crate::factor::PythonFactorSegment {
+                    segment_id: "after-gap".into(),
+                    batches: vec![crate::factor::PythonFactorBatch {
+                        rows: vec![
+                            crate::factor::MomentumInputRow {
+                                instrument_id: "AAA".into(),
+                                observation_time_ms: 3,
+                                close: Some(4.0),
+                            },
+                            crate::factor::MomentumInputRow {
+                                instrument_id: "BBB".into(),
+                                observation_time_ms: 3,
+                                close: Some(5.0),
+                            },
+                        ],
+                    }],
+                },
+            ],
+        };
+        let execution = AttemptExecution {
+            sdk_artifact_sha256: hash("sdk"),
+            runtime_artifact_sha256: hash("runtime"),
+            entry_point: "project:create_project".into(),
+            parameters: BTreeMap::from([("lookback".into(), "20".into())]),
+            seed: 7,
+            output_names: vec!["momentum-score".into()],
+            input: Some(serde_json::to_value(&input).unwrap()),
+            ..AttemptExecution::default()
+        };
+        let spec = RunnerLaunchSpec {
+            python_executable,
+            runner_script: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../python/adaq-python-research-runner/src/adaq_runner/__main__.py"),
+            runner_wheel: None,
+            project_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../python/runner_tests/imperative_factor_project"),
+            entry_point: "project:create_project".into(),
+            sdk_wheel: Some(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../python/adaq-research-sdk/src"),
+            ),
+            handshake: Handshake {
+                protocol: RUNNER_PROTOCOL_VERSION.into(),
+                sdk_artifact_sha256: hash("sdk"),
+                revision_sha256: hash("revision"),
+                environment_sha256: hash("environment"),
+                attempt_id: "imperative-factor-attempt".into(),
+                loopback: true,
+                one_time_token: token,
+            },
+            environment: PrivateChildEnvironment::from_allowlist(BTreeMap::new()).unwrap(),
+            staging_root: staging.path().to_path_buf(),
+            staged_result_path: staging.path().join("conformance-result.json"),
+            staged_result_relative_path: "conformance-result.json".into(),
+            execution,
+            seed: 7,
+            max_wall_ms: 10_000,
+            max_memory_bytes: policy().max_memory_bytes,
+            max_processes: policy().max_processes,
+            max_control_bytes: MAX_CONTROL_MESSAGE_BYTES,
+            max_arrow_bytes: policy().max_arrow_bytes as usize,
+            max_staged_bytes: policy().max_staged_bytes as usize,
+            max_artifact_bytes: policy().max_artifact_bytes as usize,
+            max_log_bytes: 4096,
+        };
+        let payload = run_process(&spec, || false)
+            .unwrap()
+            .conformance
+            .unwrap()
+            .payload
+            .unwrap();
+        let rows = crate::factor::validate_imperative_factor_payload(&payload, &input).unwrap();
+        assert_eq!(rows.len(), 6);
+        assert_eq!(
+            rows[2].unavailable_reason,
+            Some(crate::factor::FactorUnavailableReason::MissingInput)
+        );
     }
 
     #[test]

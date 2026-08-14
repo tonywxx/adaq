@@ -2110,6 +2110,23 @@ mod tests {
         })
         .unwrap();
         let plan_hash = plan.plan_hash().to_owned();
+        let repeatability_report = ["5", "20", "60"]
+            .into_iter()
+            .map(|lookback| {
+                (
+                    lookback.into(),
+                    crate::PythonRepeatabilityReport {
+                        first_process_sha256: "a".repeat(64),
+                        replay_process_sha256: "b".repeat(64),
+                        first_output_sha256: "c".repeat(64),
+                        replay_output_sha256: "d".repeat(64),
+                        exact: false,
+                        partitions: vec!["fresh-process".into()],
+                    },
+                )
+            })
+            .collect();
+        let repeatability_report_sha256 = crate::content_hash(&repeatability_report).unwrap();
         let (candidate, _) = crate::PythonFactorDraft {
             user_id,
             candidate_id: Uuid::new_v4(),
@@ -2131,16 +2148,24 @@ mod tests {
                 project_id: "py-factor-cross-sectional-momentum".into(),
                 project_revision_sha256: "a".repeat(64),
                 environment_sha256: "b".repeat(64),
+                input_bindings: BTreeMap::from([("close".into(), "host:market-close".into())]),
+                snapshot_id: "snapshot".into(),
+                snapshot_bindings: BTreeMap::from([("AAA".into(), "snapshot".into())]),
+                point_in_time_universe_id: "universe".into(),
+                feature_evidence_sha256: "e".repeat(64),
+                feature_dataset_bindings: BTreeMap::from([("AAA".into(), "dataset".into())]),
+                normalized_parameters: BTreeMap::from([("lookback".into(), "20".into())]),
+                engine_identity: "adaq-python-factor@1".into(),
+                repeatability_report_sha256,
+                repeatability_verified: false,
+                repeatability_report,
                 sdk_artifact_sha256: "c".repeat(64),
                 entry_point: "project:create_project".into(),
                 mode: crate::PythonFactorMode::PortableDefinition,
                 feature_plan_hash: plan_hash.clone(),
                 operator_catalog_version: adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION
                     .into(),
-                resource_policy: crate::FactorResourcePolicy {
-                    fuel_per_call: 1,
-                    memory_bytes: 1,
-                },
+                resource_policy: crate::PythonFactorResourcePolicy::default(),
                 seed: 7,
             },
             presentation: crate::FactorPresentationMetadata {
