@@ -9,6 +9,7 @@ mod forecast_signal_dataset;
 mod local_research;
 mod market_data_pipeline;
 mod market_data_snapshot;
+mod python_research;
 mod run_engine;
 mod user;
 mod validation;
@@ -2486,7 +2487,16 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
             let database_path = database_path(&app_data_dir);
-            app.manage(LocalResearchState::open(&app_data_dir).map_err(std::io::Error::other)?);
+            let local_research =
+                LocalResearchState::open(&app_data_dir).map_err(std::io::Error::other)?;
+            let python_research =
+                Arc::new(python_research::PythonResearchState::open(&app_data_dir));
+            local_research
+                .features
+                .attach_python(python_research.clone());
+            python_research.attach_queue(local_research.features.queue_notifier());
+            app.manage(local_research);
+            app.manage(python_research);
             app.manage(WatchlistDb::open(&database_path).map_err(std::io::Error::other)?);
             let handle = app.handle();
             let app_menu = SubmenuBuilder::new(handle, "adaq")
@@ -2545,6 +2555,37 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            python_research::project_list,
+            python_research::project_create,
+            python_research::project_import,
+            python_research::project_validate,
+            python_research::project_freeze,
+            python_research::project_export,
+            python_research::research_reset,
+            python_research::trust_revision,
+            python_research::attempt_list,
+            python_research::attempt_start,
+            python_research::attempt_begin,
+            python_research::attempt_cancel,
+            python_research::attempt_fail,
+            python_research::attempt_retry,
+            python_research::python_factor_demo,
+            python_research::python_factor_trial_select,
+            python_research::python_factor_promote,
+            python_research::model_demo_run,
+            python_research::model_experiment_register,
+            python_research::model_trial_complete,
+            python_research::model_trial_fail,
+            python_research::model_selection_record,
+            python_research::model_final_evaluate,
+            python_research::runtime_profile,
+            python_research::runtime_prepare,
+            python_research::runtime_prepare_managed,
+            python_research::environment_sync,
+            python_research::environment_prepare,
+            python_research::environment_prepare_managed,
+            python_research::environment_for_project,
+            python_research::cache_evict,
             load_factor_component,
             get_factor_schema,
             factor_metric_catalog,

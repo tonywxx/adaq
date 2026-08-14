@@ -10,6 +10,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as chooseFile, save } from "@tauri-apps/plugin-dialog";
 import { open, readFile } from "@tauri-apps/plugin-fs";
 import { useTranslation } from "react-i18next";
+import { PythonProjectsPanel } from "@/features/python-research/python-projects-panel";
+import { PythonModelLabPanel } from "@/features/python-research/python-model-lab-panel";
 import { useCallback, useEffect, useState } from "react";
 import {
 	datasetGenerationRequest,
@@ -583,6 +585,8 @@ export function ModelsPage() {
 					Generate immutable forecast evidence from a verified Model Package.
 				</p>
 			</header>
+			{userId ? <PythonProjectsPanel userId={userId} kind="model" /> : null}
+			{userId ? <PythonModelLabPanel userId={userId} /> : null}
 			<Tabs value={tab} onValueChange={setTab}>
 				<TabsList className="max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
 					<TabsTrigger value="create">Create Dataset</TabsTrigger>

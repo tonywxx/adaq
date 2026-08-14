@@ -7,7 +7,8 @@ use crate::{
     ContractError, EvaluationEvidenceState, FactorCandidate, FactorDatasetManifest,
     FactorEvaluationProtocol, FactorEvaluationReport, FactorLens, FactorPromotionDecision,
     FactorScope, MetricId, PromotedFactorLibrary, PromotionDecisionState, PromotionPolicy,
-    ResearchEngineProvenance, ResearchLineage, content_hash, is_lower_kebab, is_sha256,
+    ResearchEngineProvenance, ResearchLineage, ResearchTrial, content_hash, is_lower_kebab,
+    is_sha256,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -98,7 +99,7 @@ pub struct PromotionProtocol {
 }
 
 impl PromotionProtocol {
-    pub(crate) fn freeze(
+    pub fn freeze(
         draft: PromotionProtocolDraft,
         lineage_hash: String,
     ) -> Result<Self, ContractError> {
@@ -301,6 +302,13 @@ impl PromotionEligibility {
     }
 
     pub fn check(evidence: PromotionEvidence<'_>) -> Result<Self, ContractError> {
+        Self::check_with_trial(evidence, None)
+    }
+
+    pub fn check_with_trial(
+        evidence: PromotionEvidence<'_>,
+        trial: Option<&ResearchTrial>,
+    ) -> Result<Self, ContractError> {
         evidence.candidate.validate()?;
         evidence.dataset.validate()?;
         evidence.evaluation_protocol.validate()?;
@@ -343,6 +351,22 @@ impl PromotionEligibility {
         {
             return Err(ContractError::Invalid(
                 "Promotion output is not an exact Dataset and Candidate output".into(),
+            ));
+        }
+        if let Some(trial) = trial
+            && (trial.trial_id != evidence.promotion_protocol.trial_id
+                || trial.family_id != evidence.promotion_protocol.family_id
+                || trial.candidate_hash != evidence.candidate.candidate_hash
+                || trial.report_hash.as_deref().is_none_or(|hash| {
+                    !evidence
+                        .promotion_protocol
+                        .report_hashes
+                        .iter()
+                        .any(|item| item == hash)
+                }))
+        {
+            return Err(ContractError::Invalid(
+                "Promotion Trial is not bound to the exact Promotion Protocol".into(),
             ));
         }
 
@@ -394,7 +418,7 @@ impl PromotionEligibility {
         );
         let policy_report = reports.iter().any(|report| {
             report.evidence_state == EvaluationEvidenceState::OutOfSample
-                && report_satisfies_policy(report, evidence.policy)
+                && report_satisfies_policy(report, evidence.policy, trial)
         });
         let lineage_passed = lineage.passed;
         let out_of_sample_passed = out_of_sample.passed;
@@ -429,6 +453,12 @@ impl PromotionEligibility {
                     has_threshold(report, MetricId::HolmAdjusted, |value| {
                         value <= evidence.policy.maximum_holm_p_value
                     })
+                }) || trial.is_some_and(|trial| {
+                    trial
+                        .holm_adjusted
+                        .as_ref()
+                        .and_then(crate::MetricObservation::value)
+                        .is_some_and(|value| value <= evidence.policy.maximum_holm_p_value)
                 }),
             ),
             gate(
@@ -536,7 +566,11 @@ fn has_threshold(
         .any(|record| record.metric == metric && record.observation.value().is_some_and(&predicate))
 }
 
-fn report_satisfies_policy(report: &FactorEvaluationReport, policy: &PromotionPolicy) -> bool {
+fn report_satisfies_policy(
+    report: &FactorEvaluationReport,
+    policy: &PromotionPolicy,
+    trial: Option<&ResearchTrial>,
+) -> bool {
     has_required_lenses(report, policy)
         && has_threshold(report, MetricId::Coverage, |value| {
             value >= policy.minimum_coverage
@@ -544,9 +578,15 @@ fn report_satisfies_policy(report: &FactorEvaluationReport, policy: &PromotionPo
         && has_threshold(report, MetricId::SampleCount, |value| {
             value >= policy.minimum_samples as f64
         })
-        && has_threshold(report, MetricId::HolmAdjusted, |value| {
+        && (has_threshold(report, MetricId::HolmAdjusted, |value| {
             value <= policy.maximum_holm_p_value
-        })
+        }) || trial.is_some_and(|trial| {
+            trial
+                .holm_adjusted
+                .as_ref()
+                .and_then(crate::MetricObservation::value)
+                .is_some_and(|value| value <= policy.maximum_holm_p_value)
+        }))
         && (!policy.require_subperiod_sign_consistency
             || has_threshold(report, MetricId::Stability, |value| value >= 1.0))
         && (!policy.require_cost_aware_economic || has_cost_aware_outcome(report))

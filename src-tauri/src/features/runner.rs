@@ -23,8 +23,8 @@ use adaq_feature_engine::{
 };
 
 use super::{
-    ActiveAttempt, FactorQueueItem, FeaturesInner, FittingAttemptRecord, UserFeatureResetBlock,
-    bounded_diagnostic, instrument_id_for, store, string,
+    ActiveAttempt, FactorQueueItem, FeaturesInner, FittingAttemptRecord, PythonQueueItem,
+    UserFeatureResetBlock, bounded_diagnostic, instrument_id_for, store, string,
 };
 use crate::{forecast_signal_dataset::hash, user::validate_user};
 
@@ -44,6 +44,7 @@ enum Work {
     Fitting(FittingAttemptRecord, String),
     Materialization(MaterializationAttempt),
     Factor(FactorQueueItem),
+    Python(PythonQueueItem),
 }
 
 /// The persistent FIFO worker: drains the oldest Pending heavy Attempt one at
@@ -118,54 +119,35 @@ fn next_work(inner: &FeaturesInner) -> Result<Option<Work>, String> {
         .map(|factor| factor.next_pending())
         .transpose()?
         .flatten();
-    Ok(match (fitting, materialization, factor) {
-        (Some((record, protocol_json)), Some(attempt), Some(factor)) => {
-            let feature = Work::Fitting(record, protocol_json);
-            let materialization = Work::Materialization(attempt);
-            let factor = Work::Factor(factor);
-            [
-                (work_created_at(&feature), 0, feature),
-                (work_created_at(&materialization), 1, materialization),
-                (work_created_at(&factor), 2, factor),
-            ]
-            .into_iter()
-            .min_by_key(|(created_at, priority, _)| (*created_at, *priority))
-            .map(|(_, _, work)| work)
-        }
-        (Some((record, protocol_json)), Some(attempt), None) => {
-            if record.created_at_ms <= attempt.created_at_ms {
-                Some(Work::Fitting(record, protocol_json))
-            } else {
-                Some(Work::Materialization(attempt))
-            }
-        }
-        (Some((record, protocol_json)), None, Some(factor)) => {
-            if record.created_at_ms <= factor.created_at_ms {
-                Some(Work::Fitting(record, protocol_json))
-            } else {
-                Some(Work::Factor(factor))
-            }
-        }
-        (None, Some(attempt), Some(factor)) => {
-            if attempt.created_at_ms <= factor.created_at_ms {
-                Some(Work::Materialization(attempt))
-            } else {
-                Some(Work::Factor(factor))
-            }
-        }
-        (Some((record, protocol_json)), None, None) => Some(Work::Fitting(record, protocol_json)),
-        (None, Some(attempt), None) => Some(Work::Materialization(attempt)),
-        (None, None, Some(factor)) => Some(Work::Factor(factor)),
-        (None, None, None) => None,
-    })
-}
-
-fn work_created_at(work: &Work) -> i64 {
-    match work {
-        Work::Fitting(record, _) => record.created_at_ms,
-        Work::Materialization(attempt) => attempt.created_at_ms,
-        Work::Factor(item) => item.created_at_ms,
+    let python = inner
+        .python
+        .lock()
+        .map_err(string)?
+        .as_ref()
+        .map(|python| python.next_runnable())
+        .transpose()?
+        .flatten();
+    let mut candidates = Vec::new();
+    if let Some((record, protocol_json)) = fitting {
+        candidates.push((
+            record.created_at_ms,
+            0,
+            Work::Fitting(record, protocol_json),
+        ));
     }
+    if let Some(attempt) = materialization {
+        candidates.push((attempt.created_at_ms, 1, Work::Materialization(attempt)));
+    }
+    if let Some(factor) = factor {
+        candidates.push((factor.created_at_ms, 2, Work::Factor(factor)));
+    }
+    if let Some(python) = python {
+        candidates.push((python.created_at_ms, 3, Work::Python(python)));
+    }
+    Ok(candidates
+        .into_iter()
+        .min_by_key(|(created_at, priority, _)| (*created_at, *priority))
+        .map(|(_, _, work)| work))
 }
 
 fn execute(inner: &FeaturesInner, work: Work) {
@@ -180,6 +162,16 @@ fn execute(inner: &FeaturesInner, work: Work) {
                 .and_then(|factor| factor.as_ref().cloned());
             if let Some(factor) = factor {
                 factor.execute(item);
+            }
+        }
+        Work::Python(item) => {
+            let python = inner
+                .python
+                .lock()
+                .ok()
+                .and_then(|python| python.as_ref().cloned());
+            if let Some(python) = python {
+                python.execute(item);
             }
         }
     }

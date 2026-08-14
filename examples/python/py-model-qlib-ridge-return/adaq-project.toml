@@ -1,0 +1,45 @@
+schema-version = "1.0.0"
+project-id = "py-model-qlib-ridge-return"
+kind = "model"
+scope = "cross-sectional"
+entry-point = "project:create_project"
+sdk-profile = "adaq-research-sdk@1"
+runtime-profile = "adaq-python@1"
+source-files = ["src/project.py"]
+dependency-lock-sha256 = "b027f63f692a8cbb9e0fe806da51f0bc4bf15c1fdff7fdd3608d934b15ad660f"
+license = "Apache-2.0"
+
+[[parameters]]
+id = "alpha"
+type = "decimal"
+default = "1"
+allowed-values = ["0.1", "1", "10"]
+
+[[input-slots]]
+id = "promoted-factor"
+role = "promoted-factor"
+scope = "cross-sectional"
+required = true
+
+[[outputs]]
+id = "forecast"
+value-type = "finite-f64"
+required = true
+
+[target]
+id = "future-close-return"
+kind = "continuous-future-close-return"
+horizon-bars = 5
+value-scale = "return"
+
+[signal]
+id = "forecast"
+kind = "forecast"
+value-scale = "native"
+
+[resource-request]
+max-wall-ms = 1800000
+max-memory-bytes = 4294967296
+max-threads = 64
+max-input-rows = 10000000
+max-output-rows = 10000000

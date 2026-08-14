@@ -1,0 +1,55 @@
+"""Public ``adaq`` namespace for source-visible Python Research Projects."""
+
+from ._contracts import (
+    FactorContext,
+    FactorDefinition,
+    FactorOutput,
+    FactorOutputBatch,
+    FactorProject,
+    Forecast,
+    InputSlot,
+    ModelArtifact,
+    ModelContext,
+    ModelProject,
+    Output,
+    Parameter,
+    ProjectKind,
+    ResourcePolicy,
+    Scope,
+    Signal,
+    StrategyContext,
+    StrategyProject,
+    Target,
+    Unavailable,
+    create_factor_definition,
+    finite,
+)
+from ._contracts import RuntimeCallbacks as RuntimeCallbacks
+
+__all__ = [
+    "FactorContext",
+    "FactorDefinition",
+    "FactorOutput",
+    "FactorOutputBatch",
+    "FactorProject",
+    "Forecast",
+    "InputSlot",
+    "ModelArtifact",
+    "ModelContext",
+    "ModelProject",
+    "Output",
+    "Parameter",
+    "ProjectKind",
+    "ResourcePolicy",
+    "RuntimeCallbacks",
+    "Scope",
+    "Signal",
+    "StrategyContext",
+    "StrategyProject",
+    "Target",
+    "Unavailable",
+    "create_factor_definition",
+    "finite",
+]
+
+__version__ = "1.0.0"

@@ -324,6 +324,18 @@ pub(super) trait FactorQueueWork: Send + Sync {
     fn execute(&self, item: FactorQueueItem);
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PythonQueueItem {
+    pub(crate) attempt_id: String,
+    pub(crate) created_at_ms: i64,
+}
+
+pub(crate) trait PythonQueueWork: Send + Sync {
+    fn next_runnable(&self) -> Result<Option<PythonQueueItem>, String>;
+    fn execute(&self, item: PythonQueueItem);
+    fn shutdown(&self);
+}
+
 pub(super) struct FeaturesInner {
     pub(super) source: Arc<dyn FeatureSource>,
     pub(super) materialization: FeatureMaterializationStore,
@@ -336,6 +348,7 @@ pub(super) struct FeaturesInner {
     pub(super) queue: Mutex<QueueState>,
     pub(super) queue_changed: Condvar,
     pub(super) factor: Mutex<Option<Arc<dyn FactorQueueWork>>>,
+    pub(super) python: Mutex<Option<Arc<dyn PythonQueueWork>>>,
     /// Private controllable runner seam: deterministic scheduling,
     /// cancellation, and race tests observe Attempts right after they
     /// become Running. Not part of the module interface.
@@ -354,6 +367,11 @@ pub(crate) struct Features {
 
 impl Drop for Features {
     fn drop(&mut self) {
+        if let Ok(python) = self.inner.python.lock()
+            && let Some(python) = python.as_ref()
+        {
+            python.shutdown();
+        }
         if let Ok(mut queue) = self.inner.queue.lock() {
             queue.shutdown = true;
             self.inner.queue_changed.notify_one();
@@ -393,6 +411,7 @@ impl Features {
             }),
             queue_changed: Condvar::new(),
             factor: Mutex::new(None),
+            python: Mutex::new(None),
             #[cfg(test)]
             attempt_started_hook: Mutex::new(None),
         });
@@ -948,6 +967,13 @@ impl Features {
     pub(crate) fn attach_factor(&self, factor: Arc<dyn FactorQueueWork>) {
         if let Ok(mut attached) = self.inner.factor.lock() {
             *attached = Some(factor);
+        }
+        self.notify_runner();
+    }
+
+    pub(crate) fn attach_python(&self, python: Arc<dyn PythonQueueWork>) {
+        if let Ok(mut attached) = self.inner.python.lock() {
+            *attached = Some(python);
         }
         self.notify_runner();
     }

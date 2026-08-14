@@ -1,0 +1,40 @@
+schema-version = "1.0.0"
+project-id = "py-strategy-top-n-forecast"
+kind = "strategy"
+mode = "portable-definition"
+scope = "cross-sectional"
+entry-point = "project:create_project"
+sdk-profile = "adaq-research-sdk@1"
+runtime-profile = "adaq-python@1"
+source-files = ["src/project.py"]
+dependency-lock-sha256 = "b027f63f692a8cbb9e0fe806da51f0bc4bf15c1fdff7fdd3608d934b15ad660f"
+license = "Apache-2.0"
+
+[[parameters]]
+id = "top-n"
+type = "integer"
+default = "3"
+allowed-values = ["1", "3", "5"]
+
+[[input-slots]]
+id = "forecast"
+role = "forecast-signal"
+scope = "cross-sectional"
+required = true
+
+[[outputs]]
+id = "target-weight"
+value-type = "decimal-weight"
+required = true
+
+[signal]
+id = "target-weight"
+kind = "portfolio-target"
+value-scale = "decimal"
+
+[resource-request]
+max-wall-ms = 1800000
+max-memory-bytes = 4294967296
+max-threads = 64
+max-input-rows = 10000000
+max-output-rows = 10000000

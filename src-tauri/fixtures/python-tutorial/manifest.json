@@ -1,0 +1,9 @@
+{
+  "fixtureId": "python-tutorial-a-share@1",
+  "synthetic": true,
+  "instrumentCount": 12,
+  "sessionCount": 180,
+  "calendarSha256": "2e423b9b46a4af56729da0fee4298ed47cdaee70b6e0bc4e4e8f5fb03cd978a9",
+  "barsSha256": "fd4dc3bcccb554ad29ca08e89c35c220dafcb546db4df436009612f795a2bb4e",
+  "contentSha256": "471f2683bb2b3f794285ab278eee212bb5ddf52e71ad890a65520a78bc12296d"
+}

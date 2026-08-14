@@ -216,7 +216,7 @@ impl FactorDataset {
                 "Factor Dataset payload hash does not match its rows".into(),
             ));
         }
-        if !is_dataset_id(&self.manifest.dataset_id, &self.manifest) {
+        if self.manifest.content_id()? != self.manifest.dataset_id {
             return Err(MaterializationError::Invalid(
                 "Factor Dataset identity does not match its manifest".into(),
             ));
@@ -269,39 +269,20 @@ fn parameter_value_matches(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DatasetIdentity<'a> {
-    schema_version: &'a str,
-    protocol_hash: &'a str,
-    candidate_hash: &'a str,
-    scope: crate::FactorScope,
-    feature_dataset_id: &'a str,
-    feature_plan_hash: &'a str,
-    market_data_snapshot_id: &'a str,
-    point_in_time_universe_id: &'a str,
-    market_context: &'a crate::FactorMarketContext,
-    output_names: &'a [String],
-    observation_count: u64,
-    payload_sha256: &'a str,
-    engine_identity: &'a crate::ResearchEngineProvenance,
-}
-
-fn is_dataset_id(dataset_id: &str, manifest: &FactorDatasetManifest) -> bool {
-    content_hash(&DatasetIdentity {
-        schema_version: &manifest.schema_version,
-        protocol_hash: &manifest.protocol_hash,
-        candidate_hash: &manifest.candidate_hash,
-        scope: manifest.scope,
-        feature_dataset_id: &manifest.feature_dataset_id,
-        feature_plan_hash: &manifest.feature_plan_hash,
-        market_data_snapshot_id: &manifest.market_data_snapshot_id,
-        point_in_time_universe_id: &manifest.point_in_time_universe_id,
-        market_context: &manifest.market_context,
-        output_names: &manifest.output_names,
-        observation_count: manifest.observation_count,
-        payload_sha256: &manifest.payload_sha256,
-        engine_identity: &manifest.engine_identity,
-    })
-    .is_ok_and(|hash| hash == dataset_id)
+pub(crate) struct DatasetIdentity<'a> {
+    pub(crate) schema_version: &'a str,
+    pub(crate) protocol_hash: &'a str,
+    pub(crate) candidate_hash: &'a str,
+    pub(crate) scope: crate::FactorScope,
+    pub(crate) feature_dataset_id: &'a str,
+    pub(crate) feature_plan_hash: &'a str,
+    pub(crate) market_data_snapshot_id: &'a str,
+    pub(crate) point_in_time_universe_id: &'a str,
+    pub(crate) market_context: &'a crate::FactorMarketContext,
+    pub(crate) output_names: &'a [String],
+    pub(crate) observation_count: u64,
+    pub(crate) payload_sha256: &'a str,
+    pub(crate) engine_identity: &'a crate::ResearchEngineProvenance,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -471,6 +452,26 @@ impl FactorMaterializer {
                     input.point_in_time_universe,
                 )?
             }
+            (FactorCandidateSource::Python { binding }, FactorScope::CrossSectional) => {
+                if binding.feature_plan_hash != input.protocol.feature_plan_hash {
+                    return Err(MaterializationError::Invalid(
+                        "Python Factor binding does not match the Materialization Protocol Feature Plan".into(),
+                    ));
+                }
+                materialize_python_cross_sectional(
+                    binding,
+                    &input.protocol.parameters,
+                    &slots,
+                    &output_names,
+                    &source_rows,
+                    input.point_in_time_universe,
+                )?
+            }
+            (FactorCandidateSource::Python { .. }, FactorScope::TimeSeries) => {
+                return Err(MaterializationError::Invalid(
+                    "Python momentum Factor currently requires Cross-sectional scope".into(),
+                ));
+            }
         };
         let mut rows = rows;
         if let FactorCandidateSource::Declarative { definition } = &input.candidate.source {
@@ -581,6 +582,186 @@ fn materialize_declarative_cross_sectional(
     let rows = materialize_declarative_time_series(definition, outputs, rows)?;
     validate_cross_sectional_dataset_rows(&rows, universe)?;
     Ok(rows)
+}
+
+fn materialize_python_cross_sectional(
+    binding: &crate::PythonFactorBinding,
+    parameters: &[FactorParameterValue],
+    slots: &[String],
+    outputs: &[String],
+    rows: &[FeatureDatasetRow],
+    universe: &[String],
+) -> Result<Vec<FactorDatasetRow>, MaterializationError> {
+    binding.validate()?;
+    if slots != ["close"] || outputs != ["momentum-score"] || parameters.len() != 1 {
+        return Err(MaterializationError::Invalid(
+            "Python momentum Factor requires the canonical close and momentum-score contract"
+                .into(),
+        ));
+    }
+    let lookback = match parameters.first() {
+        Some(FactorParameterValue::Integer(value)) if matches!(value, 5 | 20 | 60) => {
+            *value as usize
+        }
+        _ => {
+            return Err(MaterializationError::Invalid(
+                "Python momentum Factor lookback parameter is invalid".into(),
+            ));
+        }
+    };
+    validate_universe(universe)?;
+    let mut by_instrument = BTreeMap::<String, Vec<&FeatureDatasetRow>>::new();
+    for row in rows {
+        by_instrument
+            .entry(row.instrument_id.clone())
+            .or_default()
+            .push(row);
+    }
+    if by_instrument
+        .keys()
+        .any(|instrument| !universe.iter().any(|expected| expected == instrument))
+    {
+        return Err(MaterializationError::Invalid(
+            "Python Factor input contains an instrument outside the Point-in-Time Universe".into(),
+        ));
+    }
+    let expected_times = by_instrument
+        .values()
+        .next()
+        .map(|rows| {
+            rows.iter()
+                .map(|row| row.observation_time_ms)
+                .collect::<Vec<_>>()
+        })
+        .ok_or_else(|| MaterializationError::Invalid("Python Factor input is empty".into()))?;
+    if by_instrument.values().any(|instrument_rows| {
+        instrument_rows
+            .windows(2)
+            .any(|rows| rows[0].observation_time_ms >= rows[1].observation_time_ms)
+            || instrument_rows
+                .iter()
+                .map(|row| row.observation_time_ms)
+                .collect::<Vec<_>>()
+                != expected_times
+    }) {
+        return Err(MaterializationError::Invalid(
+            "Python Factor input must preserve one complete ordered Universe panel".into(),
+        ));
+    }
+    let mut returns = BTreeMap::<i64, BTreeMap<String, (Option<f64>, i64)>>::new();
+    for instrument in universe {
+        let instrument_rows = by_instrument.get(instrument).ok_or_else(|| {
+            MaterializationError::Invalid(
+                "Python Factor requires complete Point-in-Time Universe membership".into(),
+            )
+        })?;
+        for (index, row) in instrument_rows.iter().enumerate() {
+            let cell = row.values.get("close").ok_or_else(|| {
+                MaterializationError::Invalid("Python Factor close slot is absent".into())
+            })?;
+            let Some(previous) = index
+                .checked_sub(lookback)
+                .and_then(|index| instrument_rows.get(index))
+            else {
+                returns
+                    .entry(row.observation_time_ms)
+                    .or_default()
+                    .insert(instrument.clone(), (None, row.observation_time_ms));
+                continue;
+            };
+            let current = match cell {
+                FeatureDatasetCell::Available {
+                    value,
+                    available_at_ms,
+                } => (*value, *available_at_ms),
+                FeatureDatasetCell::Unavailable { .. } => {
+                    returns
+                        .entry(row.observation_time_ms)
+                        .or_default()
+                        .insert(instrument.clone(), (None, row.observation_time_ms));
+                    continue;
+                }
+            };
+            let prior = match previous.values.get("close") {
+                Some(FeatureDatasetCell::Available {
+                    value,
+                    available_at_ms,
+                }) => (*value, *available_at_ms),
+                _ => {
+                    returns
+                        .entry(row.observation_time_ms)
+                        .or_default()
+                        .insert(instrument.clone(), (None, row.observation_time_ms));
+                    continue;
+                }
+            };
+            if !current.0.is_finite() || !prior.0.is_finite() || prior.0 == 0.0 {
+                returns
+                    .entry(row.observation_time_ms)
+                    .or_default()
+                    .insert(instrument.clone(), (None, row.observation_time_ms));
+                continue;
+            }
+            let value = current.0 / prior.0 - 1.0;
+            if !value.is_finite() {
+                return Err(MaterializationError::Invalid(
+                    "Python Factor produced a non-finite momentum value".into(),
+                ));
+            }
+            returns
+                .entry(row.observation_time_ms)
+                .or_default()
+                .insert(instrument.clone(), (Some(value), current.1.max(prior.1)));
+        }
+    }
+    let mut result = Vec::with_capacity(rows.len());
+    for row in rows {
+        let time_returns = returns.get(&row.observation_time_ms).ok_or_else(|| {
+            MaterializationError::Invalid("Python Factor return identity is incomplete".into())
+        })?;
+        let available = time_returns
+            .values()
+            .filter_map(|(value, _)| *value)
+            .collect::<Vec<_>>();
+        let current = time_returns.get(&row.instrument_id).ok_or_else(|| {
+            MaterializationError::Invalid("Python Factor return identity is incomplete".into())
+        })?;
+        let value = current.0.map(|value| {
+            let less_or_equal = available.iter().filter(|other| **other <= value).count();
+            less_or_equal as f64 / available.len().max(1) as f64
+        });
+        let observation = match value {
+            Some(value) if value.is_finite() => FactorObservationValue::Available {
+                value,
+                available_at_ms: current.1,
+            },
+            Some(_) => {
+                return Err(MaterializationError::Invalid(
+                    "Python Factor percentile is non-finite".into(),
+                ));
+            }
+            None => FactorObservationValue::Unavailable {
+                reason: if row.observation_time_ms
+                    < rows
+                        .iter()
+                        .filter(|candidate| candidate.instrument_id == row.instrument_id)
+                        .nth(lookback)
+                        .map(|candidate| candidate.observation_time_ms)
+                        .unwrap_or(i64::MAX)
+                {
+                    crate::FactorUnavailabilityReason::Warmup
+                } else {
+                    crate::FactorUnavailabilityReason::MissingInput
+                },
+            },
+        };
+        result.push(FactorDatasetRow {
+            instrument_id: row.instrument_id.clone(),
+            observation_time_ms: row.observation_time_ms,
+            values: BTreeMap::from([("momentum-score".into(), observation)]),
+        });
+    }
+    Ok(result)
 }
 
 fn materialize_custom_time_series(
@@ -1542,6 +1723,20 @@ mod tests {
         }
     }
 
+    fn close_row(instrument_id: &str, time: i64, value: f64) -> FeatureDatasetRow {
+        FeatureDatasetRow {
+            instrument_id: instrument_id.into(),
+            observation_time_ms: time,
+            values: BTreeMap::from([(
+                "close".into(),
+                FeatureDatasetCell::Available {
+                    value,
+                    available_at_ms: time,
+                },
+            )]),
+        }
+    }
+
     fn unavailable_row(
         instrument_id: &str,
         time: i64,
@@ -1897,6 +2092,121 @@ mod tests {
                 reason: FactorUnavailabilityReason::MissingInput
             }
         ));
+    }
+
+    #[test]
+    fn python_momentum_materialization_reuses_m11_dataset_contracts() {
+        let user_id = Uuid::new_v4();
+        let plan = FeaturePlan::freeze(adaq_feature_engine::FeaturePlanDraft {
+            slots: vec![adaq_feature_engine::FeatureSlot {
+                name: "close".into(),
+                source: adaq_feature_engine::FeatureSource::Market {
+                    field: adaq_feature_engine::MarketField::Close,
+                },
+                warmup_bars: 0,
+            }],
+            engine_identity: FeatureEngineIdentity::for_tests(),
+            ..Default::default()
+        })
+        .unwrap();
+        let plan_hash = plan.plan_hash().to_owned();
+        let (candidate, _) = crate::PythonFactorDraft {
+            user_id,
+            candidate_id: Uuid::new_v4(),
+            revision: 1,
+            scope: FactorScope::CrossSectional,
+            feature_slots: vec![crate::FactorFeatureSlot {
+                name: "close".into(),
+            }],
+            parameters: vec![crate::FactorParameter {
+                name: "lookback".into(),
+                parameter_type: crate::FactorParameterType::Integer,
+                default_value: "20".into(),
+                allowed_values: vec!["5".into(), "20".into(), "60".into()],
+            }],
+            outputs: vec![crate::FactorOutput {
+                name: "momentum-score".into(),
+            }],
+            binding: crate::PythonFactorBinding {
+                project_id: "py-factor-cross-sectional-momentum".into(),
+                project_revision_sha256: "a".repeat(64),
+                environment_sha256: "b".repeat(64),
+                sdk_artifact_sha256: "c".repeat(64),
+                entry_point: "project:create_project".into(),
+                mode: crate::PythonFactorMode::PortableDefinition,
+                feature_plan_hash: plan_hash.clone(),
+                operator_catalog_version: adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION
+                    .into(),
+                resource_policy: crate::FactorResourcePolicy {
+                    fuel_per_call: 1,
+                    memory_bytes: 1,
+                },
+                seed: 7,
+            },
+            presentation: crate::FactorPresentationMetadata {
+                name: "Python momentum".into(),
+                ..Default::default()
+            },
+        }
+        .publish()
+        .unwrap();
+        let rows = ["a", "b"]
+            .into_iter()
+            .flat_map(|instrument| {
+                (1..=6).map(move |time| close_row(instrument, time, 100.0 + time as f64))
+            })
+            .collect::<Vec<_>>();
+        let feature_dataset = CompletedFeatureDataset::new(
+            user_id.to_string(),
+            "feature-dataset",
+            plan_hash.clone(),
+            plan.to_json(),
+            plan.engine_identity(),
+            "snapshot",
+            "universe",
+            vec!["close".into()],
+            rows,
+        )
+        .unwrap();
+        let protocol = crate::FactorMaterializationProtocol::freeze(
+            crate::FactorMaterializationProtocolDraft {
+                protocol_id: Uuid::new_v4(),
+                user_id,
+                candidate_hash: candidate.candidate_hash.clone(),
+                feature_dataset_id: feature_dataset.dataset_id.clone(),
+                feature_plan_hash: plan_hash,
+                parameters: vec![crate::FactorParameterValue::Integer(5)],
+                market_data_snapshot_id: "snapshot".into(),
+                point_in_time_universe_id: "universe".into(),
+                observation_range: crate::ObservationRange {
+                    start_time_ms: 1,
+                    end_time_ms: 7,
+                },
+                market_context: context(),
+                engine_identity: engine(),
+                seed: 7,
+            },
+        )
+        .unwrap();
+        let dataset = FactorMaterializer::materialize(FactorMaterializationInput {
+            candidate: &candidate,
+            protocol: &protocol,
+            feature_dataset: &feature_dataset,
+            point_in_time_universe: &["b".into(), "a".into()],
+            custom_package: None,
+        })
+        .unwrap();
+        assert_eq!(dataset.rows.len(), 12);
+        assert!(matches!(
+            dataset.rows[0].values["momentum-score"],
+            FactorObservationValue::Unavailable {
+                reason: FactorUnavailabilityReason::Warmup
+            }
+        ));
+        assert!(dataset.rows.iter().any(|row| matches!(
+            row.values["momentum-score"],
+            FactorObservationValue::Available { .. }
+        )));
     }
 
     #[test]

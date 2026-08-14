@@ -1,0 +1,16 @@
+[build-system]
+requires = []
+build-backend = "adaq_qlib_adapter_build_backend"
+backend-path = ["."]
+
+[project]
+name = "adaq-qlib-ridge-adapter"
+version = "1.0.0"
+description = "Managed Host-fed Qlib Ridge Adapter contract"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = []
+
+[tool.adaq]
+adapter-id = "qlib-linear-ridge@1"
+bridge-version = "adaq.qlib@1"

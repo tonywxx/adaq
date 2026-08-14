@@ -20,7 +20,8 @@ use uuid::Uuid;
 use crate::{
     CandidateBuildProvenance, ContractError, DeclarativeFactorDefinition, FACTOR_ABI_VERSION,
     FactorCandidate, FactorCandidateDraft, FactorCandidateSource, FactorFeatureSlot, FactorOutput,
-    FactorParameter, FactorResourcePolicy, FactorScope, is_lower_kebab, is_sha256,
+    FactorParameter, FactorResourcePolicy, FactorScope, PythonFactorBinding, is_lower_kebab,
+    is_sha256,
 };
 
 const FIXED_BUILD_COMMANDS: &[&str] = &[
@@ -95,6 +96,48 @@ pub struct CustomFactorDraft {
     pub outputs: Vec<FactorOutput>,
     pub build: CandidateBuildProvenance,
     pub presentation: FactorPresentationMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PythonFactorDraft {
+    pub user_id: Uuid,
+    pub candidate_id: Uuid,
+    pub revision: u64,
+    pub scope: FactorScope,
+    pub feature_slots: Vec<FactorFeatureSlot>,
+    pub parameters: Vec<FactorParameter>,
+    pub outputs: Vec<FactorOutput>,
+    pub binding: PythonFactorBinding,
+    pub presentation: FactorPresentationMetadata,
+}
+
+impl PythonFactorDraft {
+    pub fn publish(self) -> Result<(FactorCandidate, FactorPresentationRecord), ContractError> {
+        self.presentation.validate()?;
+        if self.user_id.is_nil() {
+            return Err(ContractError::Invalid(
+                "Python Factor User identity is invalid".into(),
+            ));
+        }
+        let candidate = FactorCandidate::freeze(FactorCandidateDraft {
+            candidate_id: self.candidate_id,
+            revision: self.revision,
+            scope: self.scope,
+            feature_slots: self.feature_slots,
+            parameters: self.parameters,
+            outputs: self.outputs,
+            source: FactorCandidateSource::Python {
+                binding: self.binding,
+            },
+        })?;
+        let presentation = FactorPresentationRecord {
+            user_id: self.user_id,
+            candidate_hash: candidate.candidate_hash.clone(),
+            metadata: self.presentation,
+        };
+        Ok((candidate, presentation))
+    }
 }
 
 impl CustomFactorDraft {

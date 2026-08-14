@@ -1,7 +1,7 @@
 {
   "schemaVersion": "adaq-factor-metric-catalog-reference@1.0.0",
   "catalog": {
-    "catalogHash": "0c4a6cff1fb2cec9bdcb07767e9b8e7f9c14189f1930943c6ee7438181f7bc60",
+    "catalogHash": "3ce3210e6a87088dce6ee39c36ea3104d18d354ba6be511b38624ec2897a8992",
     "catalogVersion": "adaq-factor-metric-catalog@1.0.0",
     "definitions": [
       {
@@ -261,6 +261,6 @@
         ]
       }
     ],
-    "schemaVersion": "1.0.0"
+    "schemaVersion": "1.1.0"
   }
 }

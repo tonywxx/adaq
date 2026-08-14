@@ -41,7 +41,7 @@ flowchart LR
     M8["M8: Model research foundation"] --> M9["M9: Multi-market data and platform foundation"]
     M9 --> M10["M10: Feature Engineering"]
     M10 --> M11["M11: Factor Research"]
-    M11 --> M12["M12: Qlib-first Model Lab"]
+    M11 --> M12["M12: Python Research SDK and Qlib-first Model Lab"]
     M12 --> M13["M13: Strategy and Portfolio Backtest"]
     M13 --> M14["M14: Component Generation and Qualification"]
     M14 --> M15["M15: Secure Paper Trading"]
@@ -75,27 +75,29 @@ Completion gate: promoted Factors bind exact Feature, Snapshot, Universe, evalua
 
 The accepted bilingual [M11 Factor Research architecture](./m11-factor-research.md) and [manual acceptance guide](./m11-manual-acceptance.md) define the completed Native-only Research Engine boundary, Factor ABI v2, immutable Dataset-first evaluation, Research Family lineage, User-owned promotion, `/factors` workspace, and eight delivered slices published under [parent issue #88](https://github.com/tonywxx/adaq/issues/88).
 
-### M12 — Qlib-first Model Lab
+### M12 — Python Research SDK and Qlib-first Model Lab
 
-Deliver controlled Model training and fitting with Microsoft Qlib as the primary workflow and ADAQ Native as an optional workflow. Support Single-Instrument and Cross-Sectional Model scopes, immutable Experiments, training and validation windows, Point-in-Time Training Universes, Feature and Factor selection, seeds, environments, artifacts, metrics, diagnostics, and Forecast Signal Datasets.
+First deliver the shared Python Research SDK with one explicit `create_project()` entry point and typed Factor, Model, and Strategy lifecycles, the fixed source-visible Project Layout and inert import/export validation, portable Input Slots, ADAQ-managed Python Runtime and locked environments, explicit Sync Environment, Project/Revision/Attempt lifecycle, trusted child-process Research Runner, versioned loopback protocol, Host-validated atomic result publication, cancellation and restart recovery, bounded resources, Host-owned finite parameter Grids, Repeatability Reports, and Python Factor Candidate integration through the existing M11 Dataset, evaluation, Research Family, and Promotion evidence. Then deliver controlled Model training with the Qlib Ridge Adapter over Host-fed Train, Validation, and feature-only Test partitions, one Forecast per Project, and a canonical data-only Linear Model Artifact; ADAQ Native remains an optional future Research Engine. Support Single-Instrument and Cross-Sectional Model scopes, immutable Experiments, separated Selection and Final Evaluation windows, Point-in-Time Training Universes, Feature and Factor selection, seeds, environments, artifacts, metrics, diagnostics, and Forecast Signal Datasets.
 
-Qualify three deployment outcomes: portable WASI Model Component, portable ONNX model under a controlled runner, and Local Qlib Paper under a supervised Python sidecar. An artifact that cannot be exported or pass equivalence remains Research Only; an explicitly qualified Local Qlib artifact may run in Paper without credentials or order authority.
+Keep WASI Model Component, controlled ONNX, and Local Qlib Paper as distinct truthful Deployment Profiles. M12 freezes only the canonical Linear Model Artifact and its explicit eligibility contract; M14 implements the first Artifact-to-WASI Exporter. ONNX and Local Qlib require later registered Adapters and demonstrated need; an Artifact without an eligible Exporter and equivalence remains Research Only rather than receiving a false portable profile.
 
-Completion gate: an end-to-end Qlib experiment can be reproduced, evaluated out of sample, inspected, and classified into one truthful deployment profile without weakening M8 Forecast Signal contracts.
+Completion gate: the Apache-2.0 `py-factor-cross-sectional-momentum` and `py-model-qlib-ridge-return` Projects run without network data or extra wheels against the immutable 12-Instrument × 180-session `python-tutorial-a-share@1` fixture, fixed Train/Purge/Selection/Embargo/Final windows, managed environments, Host-owned Grids, explicit User Decisions, and existing evidence contracts on every supported platform. Golden Factor evidence is exact; the Ridge experiment publishes and reloads a pickle-free Linear Model Artifact under its strict finite tolerance and remains eligible only for the explicit WASI export path without weakening M8 Forecast Signal contracts.
+
+The consolidated bilingual planning contract is the [M12 Python Research and Model Lab architecture](./m12-python-research-and-model-lab.md) plus its [manual acceptance guide](./m12-python-research-manual-acceptance.md). Planning approval is not implementation or acceptance evidence.
 
 ### M13 — Strategy and Portfolio Backtest
 
 Deliver Single-Instrument and Portfolio Strategy construction over promoted Factors and qualified Model Signals. Freeze the Strategy Target → Host Risk → Approved Target → Execution Plan boundary, capital allocation, position limits, rebalancing, stop rules, costs, liquidity, settlement, calendars, and provider-specific market constraints. Extend immutable Backtest and Validation evidence with portfolio performance, risk, attribution, turnover, capacity, and like-for-like optimization comparisons.
 
-Completion gate: a Strategy cannot emit orders, bypass hard Risk, use unavailable inputs, mix accounts or currencies, or claim a result without exact Snapshot, Feature, Model, Risk, Execution, and evaluation provenance.
+Completion gate: the Apache-2.0 `py-strategy-top-n-forecast` Project uses its fixed Host-owned Grid and finite Portable Strategy operation catalog to combine the M12 tutorial Factor and Forecast Signals, deterministically select Top-N, and produce an exact Golden Long-only Portfolio Target whose nonnegative Decimal weights plus Cash Reserve equal one; missing required input pauses before invocation. A Strategy cannot emit orders, bypass hard Risk, mix accounts or currencies, or claim a result without exact Snapshot, Feature, Model, Risk, Execution, and evaluation provenance.
 
 ### M14 — Component Generation and Qualification
 
-Deliver the user-controlled workflow that converts eligible Factor, Model, and Strategy research objects into SDK projects, builds them, verifies package and runtime conformance, runs numerical or behavioral equivalence against the source research evidence, assigns immutable identity and version, packages `.adaq`, and imports the result into the Component Library.
+Deliver the user-controlled workflow that feeds eligible canonical Factor or Strategy Definitions and supported Model Artifacts into fixed Rust SDK Generators, builds them, verifies package and runtime conformance for every allowed portable parameter combination, runs numerical or behavioral equivalence against the source research evidence, assigns immutable identity and version, packages Python-free `.adaq` Components, and imports them into the Component Library.
 
-Local Qlib Paper remains a qualified Deployment Profile rather than a fake portable Component. Marketplace publication is not part of V1; the documented future publishing gates remain separate from local deployment qualification.
+The first Model exporter converts only `adaq:linear-model@1` to a WASI Model Component. ONNX and Local Qlib Paper remain explicit future Deployment Profiles rather than fake portable Components; Marketplace publication is not part of V1, and the documented future publishing gates remain separate from local deployment qualification.
 
-Completion gate: no generated package is imported as qualified unless build, conformance, provenance, equivalence, resource, and trust gates pass; failures retain evidence and never overwrite an existing Package identity/version.
+Completion gate: no generated package is imported as qualified unless build, numeric-boundary validation, conformance, provenance, equivalence, resource, and trust gates pass; failures retain evidence and never overwrite an existing Package identity/version.
 
 ### M15 — Secure Paper Trading Accounts and Execution
 
@@ -131,7 +133,7 @@ Completion gate: the complete three-market workflow passes automated and reviewe
 | 2. Clean and preprocess data | M9 lossless Canonicalization, quarantine, gaps, quality reports; M10 research transformations |
 | 3. Compute indicators and Features | M10 `adaq-feature-engine` with `adaq-indicator-engine` as a subengine |
 | 4. Research, evaluate, and save Factors | M11 Factor Lab; M14 Component generation and import |
-| 5. Train and evaluate Models | M12 Qlib-first Model Lab; M14 portable or Local Qlib qualification |
+| 5. Train and evaluate Models | M12 Python Research SDK and Qlib-first Model Lab; M14 portable or Local Qlib qualification |
 | 6. Build and backtest Strategies | M13 Strategy/Portfolio Backtest; M14 Component generation and import |
 | 7. Deploy Trading Bots | M16 Supervisor plus per-Bot worker, over M15 Paper accounts |
 | 8. Monitor and alert | M17 Health, events, alerts, safety actions, notifications |
@@ -282,6 +284,37 @@ flowchart TD
 
 #92 was the only initial executable frontier. M11 is accepted after the eight slice comments, the bilingual acceptance matrix, final local gates, and supported-platform evidence are all recorded.
 
+## M12 planned delivery map
+
+M12 is published as [parent specification #97](https://github.com/tonywxx/adaq/issues/97) with seven independently closable but dependency-ordered child issues:
+
+1. **[#98 — M12.1 Project, Archive, SDK, and static validation](https://github.com/tonywxx/adaq/issues/98).**
+2. **[#99 — M12.2 Managed Runtime, Wheelhouse, Lock, Sync, and Environment lifecycle](https://github.com/tonywxx/adaq/issues/99).**
+3. **[#100 — M12.3 Runner, Attempt, Trust, resources, cancellation, recovery, and shared Queue integration](https://github.com/tonywxx/adaq/issues/100).**
+4. **[#101 — M12.4 Python Factor Candidate, Factor schema/reset, Factor Lab, and `py-factor-cross-sectional-momentum`](https://github.com/tonywxx/adaq/issues/101).**
+5. **[#102 — M12.5 Qlib Dataset Bridge, Ridge Adapter, Host transformations, and Linear Model Artifact](https://github.com/tonywxx/adaq/issues/102).**
+6. **[#103 — M12.6 Model Lab, Grid, Selection, Repeatability, Final Evaluation, and `py-model-qlib-ridge-return`](https://github.com/tonywxx/adaq/issues/103).**
+7. **[#104 — M12.7 Guided Factor/Model tutorial, synthetic fixture, failure matrix, bilingual docs, and three-platform acceptance](https://github.com/tonywxx/adaq/issues/104).**
+
+```mermaid
+flowchart TD
+    A["#98 M12.1 Project, Archive, and SDK"]
+    B["#99 M12.2 Runtime and Environment"]
+    C["#100 M12.3 Runner and lifecycle"]
+    D["#101 M12.4 Python Factor"]
+    E["#102 M12.5 Qlib Ridge core"]
+    F["#103 M12.6 Model Lab"]
+    G["#104 M12.7 Tutorial and acceptance"]
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+```
+
+#98 is the only initial executable frontier. Every later child carries a native GitHub `blocked_by` edge matching this graph. M13 owns Python Strategy execution and `py-strategy-top-n-forecast`; M14 owns generation, Build, Conformance, Equivalence, `.adaq` packaging, and import.
+
 ## Roadmap-wide completion rules
 
 Every milestone and child issue must:
@@ -292,6 +325,7 @@ Every milestone and child issue must:
 - Retain failed, cancelled, late, degraded, and recovery evidence instead of presenting only successes.
 - Add English (US) and Simplified Chinese user documentation and accessible GUI copy for user-facing behavior.
 - Pass focused tests first, then the applicable Rust workspace, frontend Jest, production build, formatting, secret-scan, and supported-platform CI gates.
+- Keep every bundled Python example executable and bilingual: pull requests run the complete offline tutorial on Linux plus fast contracts on all platforms, while main, Release, manual acceptance, and the accepting M12–M14 slice record the full three-platform Golden and failure-path matrix.
 - Preserve unrelated user changes and never close a parent issue from a child unless explicitly authorized.
 
 The final V1 manual acceptance must exercise three reference journeys—OKX Crypto Paper, A-share local Paper, and Alpaca U.S. Equity Paper—and failure journeys for missing data, provider disconnect, clock skew, Worker crash, uncertain order state, credential rotation, and restart reconciliation.

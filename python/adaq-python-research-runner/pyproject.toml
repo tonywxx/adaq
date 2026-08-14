@@ -1,0 +1,16 @@
+[build-system]
+requires = []
+build-backend = "adaq_runner_build_backend"
+backend-path = ["."]
+
+[project]
+name = "adaq-python-research-runner"
+version = "1.0.0"
+description = "Private ADAQ-managed Python Research Runner"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = []
+
+[tool.adaq]
+private = true
+entry-point = "adaq_runner"

@@ -139,6 +139,49 @@ pub struct FactorResourcePolicy {
     pub memory_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PythonFactorMode {
+    ImperativePython,
+    PortableDefinition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PythonFactorBinding {
+    pub project_id: String,
+    pub project_revision_sha256: String,
+    pub environment_sha256: String,
+    pub sdk_artifact_sha256: String,
+    pub entry_point: String,
+    pub mode: PythonFactorMode,
+    pub feature_plan_hash: String,
+    pub operator_catalog_version: String,
+    pub resource_policy: FactorResourcePolicy,
+    pub seed: u64,
+}
+
+impl PythonFactorBinding {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.project_id != "py-factor-cross-sectional-momentum"
+            || !is_sha256(&self.project_revision_sha256)
+            || !is_sha256(&self.environment_sha256)
+            || !is_sha256(&self.sdk_artifact_sha256)
+            || self.entry_point != "project:create_project"
+            || !is_sha256(&self.feature_plan_hash)
+            || self.operator_catalog_version
+                != adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION
+            || self.resource_policy.fuel_per_call == 0
+            || self.resource_policy.memory_bytes == 0
+        {
+            return Err(ContractError::Invalid(
+                "Python Factor binding is incomplete or invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum FactorCandidateSource {
@@ -147,6 +190,9 @@ pub enum FactorCandidateSource {
     },
     Custom {
         build: CandidateBuildProvenance,
+    },
+    Python {
+        binding: PythonFactorBinding,
     },
 }
 
@@ -198,8 +244,12 @@ impl FactorCandidate {
             &draft.outputs,
         )?;
         validate_candidate_source(&draft.source)?;
-        if let FactorCandidateSource::Declarative { definition } = &draft.source {
-            definition.validate(&draft.feature_slots, &draft.outputs)?;
+        match &draft.source {
+            FactorCandidateSource::Declarative { definition } => {
+                definition.validate(&draft.feature_slots, &draft.outputs)?;
+            }
+            FactorCandidateSource::Python { binding } => binding.validate()?,
+            FactorCandidateSource::Custom { .. } => {}
         }
         if draft.candidate_id.is_nil() || draft.revision == 0 {
             return Err(ContractError::Invalid(
@@ -238,8 +288,12 @@ impl FactorCandidate {
             &self.outputs,
         )?;
         validate_candidate_source(&self.source)?;
-        if let FactorCandidateSource::Declarative { definition } = &self.source {
-            definition.validate(&self.feature_slots, &self.outputs)?;
+        match &self.source {
+            FactorCandidateSource::Declarative { definition } => {
+                definition.validate(&self.feature_slots, &self.outputs)?;
+            }
+            FactorCandidateSource::Python { binding } => binding.validate()?,
+            FactorCandidateSource::Custom { .. } => {}
         }
         if !is_sha256(&self.candidate_hash) || self.candidate_hash != content_hash(&self.content())?
         {
@@ -387,6 +441,7 @@ fn unique_names<'a>(
 fn validate_candidate_source(source: &FactorCandidateSource) -> Result<(), ContractError> {
     match source {
         FactorCandidateSource::Declarative { .. } => Ok(()),
+        FactorCandidateSource::Python { binding } => binding.validate(),
         FactorCandidateSource::Custom { build } => {
             if build.abi_version != FACTOR_ABI_VERSION {
                 return Err(ContractError::ResetRequired {
@@ -513,6 +568,24 @@ pub struct FactorDatasetManifest {
 }
 
 impl FactorDatasetManifest {
+    pub fn content_id(&self) -> Result<String, ContractError> {
+        content_hash(&crate::materialization::DatasetIdentity {
+            schema_version: &self.schema_version,
+            protocol_hash: &self.protocol_hash,
+            candidate_hash: &self.candidate_hash,
+            scope: self.scope,
+            feature_dataset_id: &self.feature_dataset_id,
+            feature_plan_hash: &self.feature_plan_hash,
+            market_data_snapshot_id: &self.market_data_snapshot_id,
+            point_in_time_universe_id: &self.point_in_time_universe_id,
+            market_context: &self.market_context,
+            output_names: &self.output_names,
+            observation_count: self.observation_count,
+            payload_sha256: &self.payload_sha256,
+            engine_identity: &self.engine_identity,
+        })
+    }
+
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.schema_version != FACTOR_RESEARCH_SCHEMA_VERSION
             || self.dataset_id.is_empty()
@@ -2069,6 +2142,52 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn python_candidate_binds_exact_revision_environment_and_operator_catalog() {
+        let candidate = FactorCandidate::freeze(FactorCandidateDraft {
+            candidate_id: Uuid::new_v4(),
+            revision: 1,
+            scope: FactorScope::CrossSectional,
+            feature_slots: vec![FactorFeatureSlot {
+                name: "close".into(),
+            }],
+            parameters: vec![FactorParameter {
+                name: "lookback".into(),
+                parameter_type: FactorParameterType::Integer,
+                default_value: "20".into(),
+                allowed_values: vec!["5".into(), "20".into(), "60".into()],
+            }],
+            outputs: vec![FactorOutput {
+                name: "momentum-score".into(),
+            }],
+            source: FactorCandidateSource::Python {
+                binding: PythonFactorBinding {
+                    project_id: "py-factor-cross-sectional-momentum".into(),
+                    project_revision_sha256: "a".repeat(64),
+                    environment_sha256: "b".repeat(64),
+                    sdk_artifact_sha256: "c".repeat(64),
+                    entry_point: "project:create_project".into(),
+                    mode: PythonFactorMode::PortableDefinition,
+                    feature_plan_hash: "d".repeat(64),
+                    operator_catalog_version: adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION
+                        .into(),
+                    resource_policy: FactorResourcePolicy {
+                        fuel_per_call: 1,
+                        memory_bytes: 1,
+                    },
+                    seed: 7,
+                },
+            },
+        })
+        .unwrap();
+        assert!(candidate.validate().is_ok());
+        let mut invalid = candidate.clone();
+        if let FactorCandidateSource::Python { binding } = &mut invalid.source {
+            binding.project_revision_sha256 = "not-a-hash".into();
+        }
+        assert!(invalid.validate().is_err());
     }
 
     #[test]

@@ -10,10 +10,10 @@
         "valuationCurrency": "CNY",
         "pointInTimeUniverseId": "cn-a-share-reference"
       },
-      "candidateHash": "0d396471d5d18118fa7785b7adc8478322ba24f89950a4386291f0bac6c7db9c",
+      "candidateHash": "14fa4eb489f601ecd94b9c1871007e76625040739ecccd80e2b5616d39c4aee8",
       "featurePlanHash": "fb9d1ba4c942ffaae90453d298ce14319d6b5cf3d0bd59bb4a244f6b4cb819e3",
-      "datasetId": "1e446500fc0b5ac1a6bcb82df07237e0284eb9a25a86652f1da6d84b7d692839",
-      "protocolHash": "fb70a1d0595b9118c6a948d683fe8704f9d18f539d85e2a808a77ea781c40d7e",
+      "datasetId": "ea0f9abf7034d47f0a5797e7faac8fdb47612466c257ef763a9e8221b6bed581",
+      "protocolHash": "748c734d11368842f8665b779ba589527b22340653104896e8f2fab196354da1",
       "evidenceState": "out-of-sample",
       "metricDigest": "04dd042c2700f24f22d03694b1ec96a0b3db710738de585c572284583e9f1d5a",
       "targetUnavailable": [
@@ -271,10 +271,10 @@
         "valuationCurrency": "USDT",
         "pointInTimeUniverseId": "okx-spot-reference"
       },
-      "candidateHash": "7c66becd18b34b173736b294ea16cf495bcffae7f06603cb11fe304f6878ffdc",
+      "candidateHash": "5d6e64b6e54f29252a058862c77a6784c2c7471b4567a5cd13dabba2df64098e",
       "featurePlanHash": "fb9d1ba4c942ffaae90453d298ce14319d6b5cf3d0bd59bb4a244f6b4cb819e3",
-      "datasetId": "fc5d4319458b9e230cea1a3a9bad0426641c7d66b271c24a55623cd95e0a5f1c",
-      "protocolHash": "2ebb66405c5746d59b16a374d7cdf484ac401d3502a744b4e0da407eb2089e04",
+      "datasetId": "261a7cb0637e96041ad184e38881ca112e56701db66e03abd47d9fae9424ccd9",
+      "protocolHash": "d76f10e690c094a539bfd6d6c19adbad646321df769d54086ee786607fd533ed",
       "evidenceState": "out-of-sample",
       "metricDigest": "a7db98062841464f35a0db03a4881521200a684d6706f8657783a2134c27a8bf",
       "targetUnavailable": [
@@ -715,10 +715,10 @@
         "valuationCurrency": "USD",
         "pointInTimeUniverseId": "us-equity-pit-reference"
       },
-      "candidateHash": "b76cc0cfc8fbe9b27c6b575a327df77d020c22ad17c920b3858810653a10f0b8",
+      "candidateHash": "aefa48b74ff2e28f1db5807edb7848907559a17edb3c061c174d8c7b440f5a62",
       "featurePlanHash": "fa9fe90c4e113748a05bf3fa74b5e6061d6ecfd5562a826d825d07e01d9d0481",
-      "datasetId": "87b3fd3fa32424bf5198b5c9d22f56667506e17c1ac9881a4840064a1e04814c",
-      "protocolHash": "40d7fc2c30ffb91afbe53d5ad0b7460316551cc05f1fedee541f74bd07bc16f8",
+      "datasetId": "5017609cf39d91247591ed0b885ebbdad1aec70b6114d777a95cda2b2723a08b",
+      "protocolHash": "095887051b04ff39e0e24df4e73cee144b5bcbe29ab1da307aa699f1bdc7277f",
       "evidenceState": "out-of-sample",
       "metricDigest": "27e86d0360dd4973539bf18242b748a57de32554b7ac0c0d4e28912d13d0c872",
       "targetUnavailable": [

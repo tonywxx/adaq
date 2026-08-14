@@ -21,7 +21,7 @@ pub use materialization::*;
 pub use promotion::*;
 pub use research::*;
 
-pub const FACTOR_RESEARCH_SCHEMA_VERSION: &str = "1.0.0";
+pub const FACTOR_RESEARCH_SCHEMA_VERSION: &str = "1.1.0";
 pub const FACTOR_ABI_VERSION: &str = "2.0.0";
 pub const MAX_CANONICAL_JSON_BYTES: usize = 1024 * 1024;
 pub const MAX_FACTOR_OUTPUTS: usize = 64;

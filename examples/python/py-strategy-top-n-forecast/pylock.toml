@@ -1,0 +1,5 @@
+format = "adaq-lock-v1"
+runtime-profile = "adaq-python@1"
+sdk = "adaq-research-sdk@1"
+platform = "managed"
+dependencies = []

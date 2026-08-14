@@ -27,9 +27,9 @@ use adaq_factor_research::{
     FactorMaterializationProtocolDraft, FactorMaterializer, FactorObservationValue,
     FactorPresentationMetadata, FactorPromotionDecision, FactorTarget, FactorUnavailabilityReason,
     GridSearchFamilyDraft, GridSearchParameter, ObservationRange, PromotionEligibility,
-    PromotionPolicy, PromotionProtocol, ResearchFamily, ResearchFamilyDraft,
-    ResearchFamilyRegistration, ResearchLineage, ResearchRegistry, ResearchTrial,
-    ResearchTrialDraft, ResearchTrialRegistration, canonical_json,
+    PromotionPolicy, PromotionProtocol, PromotionProtocolDraft, ResearchFamily,
+    ResearchFamilyDraft, ResearchFamilyRegistration, ResearchLineage, ResearchRegistry,
+    ResearchTrial, ResearchTrialDraft, ResearchTrialRegistration, canonical_json,
 };
 use arrow_array::{Array, ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -182,6 +182,38 @@ pub(crate) struct FactorDecisionView {
     pub promotion_protocol_hash: String,
     pub eligibility_gates: Vec<adaq_factor_research::PromotionGateResult>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorTrialSelectionRequest {
+    pub user_id: String,
+    pub candidate_hash: String,
+    pub family_id: Uuid,
+    pub trial_id: Uuid,
+    pub policy_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FactorSelectionView {
+    pub candidate_hash: String,
+    pub family_id: Uuid,
+    pub selected_trial_id: Uuid,
+    pub selection_hash: String,
+    pub promotion_protocol_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FactorModelInputBinding {
+    pub decision_hash: String,
+    pub promotion_protocol: PromotionProtocol,
+    pub factor_dataset_id: String,
+    pub feature_dataset_id: String,
+    pub feature_plan_hash: String,
+    pub snapshot_id: String,
+    pub universe_id: String,
+    pub lookback: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -886,6 +918,35 @@ impl FactorResearch {
         ResearchStore::new(&database).list_policies(&request)
     }
 
+    pub(crate) fn select_trial(
+        &self,
+        request: FactorTrialSelectionRequest,
+    ) -> Result<FactorSelectionView, String> {
+        validate_user(&request.user_id)?;
+        let database = self.inner.source.database()?;
+        ResearchStore::new(&database).select_trial(&request)
+    }
+
+    pub(crate) fn selected_trial(
+        &self,
+        user_id: &str,
+        candidate_hash: &str,
+    ) -> Result<(FactorSelectionView, PromotionProtocol), String> {
+        validate_user(user_id)?;
+        let database = self.inner.source.database()?;
+        ResearchStore::new(&database).selected_trial(user_id, candidate_hash)
+    }
+
+    pub(crate) fn model_input_binding(
+        &self,
+        user_id: &str,
+        decision_hash: &str,
+    ) -> Result<FactorModelInputBinding, String> {
+        validate_user(user_id)?;
+        let database = self.inner.source.database()?;
+        ResearchStore::new(&database).model_input_binding(user_id, decision_hash)
+    }
+
     pub(crate) fn save_decision(
         &self,
         request: FactorDecisionSaveRequest,
@@ -1108,6 +1169,12 @@ impl FactorResearch {
                             .into(),
                     );
                 }
+                FactorCandidateSource::Python { .. } => {
+                    return Err(
+                        "controlled Candidate builds require a Custom Factor candidate schema"
+                            .into(),
+                    );
+                }
             };
             let attempt_id = Uuid::parse_str(attempt_id)
                 .map_err(|_| "Factor Candidate Build Attempt identity is invalid".to_owned())?;
@@ -1202,6 +1269,7 @@ impl FactorResearch {
                         .component_package(user_id, &build.package_sha256)?,
                 ),
                 FactorCandidateSource::Declarative { .. } => None,
+                FactorCandidateSource::Python { .. } => None,
             };
             FactorMaterializer::materialize(FactorMaterializationInput {
                 candidate: &candidate,
@@ -1527,6 +1595,16 @@ impl<'a> ResearchStore<'a> {
                     record_json TEXT NOT NULL,
                     promotion_protocol_hash TEXT NOT NULL,
                     created_at_ms INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS factor_parameter_selections (
+                    selection_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    candidate_hash TEXT NOT NULL,
+                    family_id TEXT NOT NULL,
+                    trial_id TEXT NOT NULL,
+                    promotion_protocol_hash TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    UNIQUE(user_id, candidate_hash)
                  );
                  CREATE TABLE IF NOT EXISTS factor_references (
                     evidence_kind TEXT NOT NULL,
@@ -2974,6 +3052,300 @@ impl<'a> ResearchStore<'a> {
         })
     }
 
+    fn select_trial(
+        &self,
+        request: &FactorTrialSelectionRequest,
+    ) -> Result<FactorSelectionView, String> {
+        let user_id = user_uuid(&request.user_id);
+        let _: String = self
+            .database
+            .query_row(
+                "SELECT candidate_hash FROM factor_candidate_access
+                 WHERE user_id = ?1 AND candidate_hash = ?2",
+                params![request.user_id, request.candidate_hash],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Factor Candidate was not found for this User".to_owned())?;
+        let policy_json: String = self
+            .database
+            .query_row(
+                "SELECT policy_json FROM factor_promotion_policies
+                 WHERE policy_hash = ?1 AND user_id = ?2",
+                params![request.policy_hash, user_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Promotion Policy was not found for this User".to_owned())?;
+        let policy: PromotionPolicy = serde_json::from_str(&policy_json).map_err(string)?;
+        policy.validate().map_err(string)?;
+        let lineage = self.lineage_for_user(user_id, &request.trial_id.to_string())?;
+        let trial = lineage
+            .trials
+            .iter()
+            .find(|trial| trial.trial_id == request.trial_id)
+            .ok_or_else(|| "Research Trial was not found".to_owned())?;
+        if trial.family_id != request.family_id
+            || trial.candidate_hash != request.candidate_hash
+            || trial.status != adaq_factor_research::ResearchTrialStatus::Completed
+        {
+            return Err("Research Trial binding is invalid".into());
+        }
+        let report_hash = trial
+            .report_hash
+            .clone()
+            .ok_or_else(|| "Parameter Selection requires a completed Report".to_owned())?;
+        let report_json: String = self
+            .database
+            .query_row(
+                "SELECT r.report_json FROM factor_evaluation_report_access a
+                 JOIN factor_evaluation_reports r USING(report_hash)
+                 WHERE a.user_id = ?1 AND a.report_hash = ?2",
+                params![request.user_id, report_hash],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Factor Evaluation Report was not found".to_owned())?;
+        let report: FactorEvaluationReport = serde_json::from_str(&report_json).map_err(string)?;
+        let evaluation_json: String = self
+            .database
+            .query_row(
+                "SELECT protocol_json FROM factor_research_protocols
+                 WHERE protocol_hash = ?1 AND user_id = ?2 AND kind = 'evaluation'",
+                params![report.protocol_hash, user_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Evaluation Protocol was not found".to_owned())?;
+        let evaluation: FactorEvaluationProtocol =
+            serde_json::from_str(&evaluation_json).map_err(string)?;
+        let protocol = PromotionProtocol::freeze(
+            PromotionProtocolDraft {
+                protocol_id: user_uuid(&format!(
+                    "factor-promotion-protocol:{}:{}:{}",
+                    request.candidate_hash, request.trial_id, request.policy_hash
+                )),
+                user_id,
+                candidate_hash: request.candidate_hash.clone(),
+                output_name: evaluation.output_name.clone(),
+                family_id: request.family_id,
+                trial_id: request.trial_id,
+                lineage_trial_ids: lineage.lineage.trial_ids.clone(),
+                report_hashes: vec![report_hash],
+                policy_hash: policy.policy_hash,
+                engine_identity: evaluation.engine_identity,
+            },
+            lineage.lineage.lineage_hash.clone(),
+        )
+        .map_err(string)?;
+        let selection_content = serde_json::json!({
+            "userId": user_id,
+            "candidateHash": request.candidate_hash,
+            "familyId": request.family_id,
+            "trialId": request.trial_id,
+            "promotionProtocolHash": protocol.protocol_hash.clone(),
+        });
+        let selection_hash = hash_bytes(&canonical_json(&selection_content).map_err(string)?);
+        let existing: Option<(String, String, String, String)> = self
+            .database
+            .query_row(
+                "SELECT selection_hash, family_id, trial_id, promotion_protocol_hash
+                 FROM factor_parameter_selections
+                 WHERE user_id = ?1 AND candidate_hash = ?2",
+                params![request.user_id, request.candidate_hash],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(string)?;
+        if let Some((existing_hash, family_id, trial_id, protocol_hash)) = existing {
+            if family_id == request.family_id.to_string()
+                && trial_id == request.trial_id.to_string()
+                && protocol_hash == protocol.protocol_hash
+            {
+                return Ok(FactorSelectionView {
+                    candidate_hash: request.candidate_hash.clone(),
+                    family_id: request.family_id,
+                    selected_trial_id: request.trial_id,
+                    selection_hash: existing_hash,
+                    promotion_protocol_hash: protocol.protocol_hash,
+                });
+            }
+            return Err("a different Parameter Selection is already recorded".into());
+        }
+        let protocol_json =
+            String::from_utf8(canonical_json(&protocol).map_err(string)?).map_err(string)?;
+        let transaction = self.database.unchecked_transaction().map_err(string)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO factor_research_protocols(
+                    protocol_hash, user_id, kind, protocol_json, created_at_ms
+                 ) VALUES (?1, ?2, 'promotion', ?3, ?4)",
+                params![
+                    protocol.protocol_hash,
+                    user_id.to_string(),
+                    protocol_json,
+                    now_ms()
+                ],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "INSERT INTO factor_parameter_selections(
+                    selection_hash, user_id, candidate_hash, family_id, trial_id,
+                    promotion_protocol_hash, created_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    selection_hash,
+                    request.user_id,
+                    request.candidate_hash,
+                    request.family_id.to_string(),
+                    request.trial_id.to_string(),
+                    protocol.protocol_hash,
+                    now_ms()
+                ],
+            )
+            .map_err(string)?;
+        transaction.commit().map_err(string)?;
+        Ok(FactorSelectionView {
+            candidate_hash: request.candidate_hash.clone(),
+            family_id: request.family_id,
+            selected_trial_id: request.trial_id,
+            selection_hash,
+            promotion_protocol_hash: protocol.protocol_hash.clone(),
+        })
+    }
+
+    fn selected_trial(
+        &self,
+        user_id: &str,
+        candidate_hash: &str,
+    ) -> Result<(FactorSelectionView, PromotionProtocol), String> {
+        let (selection_hash, family_id, trial_id, protocol_hash): (String, String, String, String) =
+            self.database
+                .query_row(
+                    "SELECT selection_hash, family_id, trial_id, promotion_protocol_hash
+                     FROM factor_parameter_selections
+                     WHERE user_id = ?1 AND candidate_hash = ?2",
+                    params![user_id, candidate_hash],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(|_| "Parameter Selection was not found".to_owned())?;
+        let protocol_json: String = self
+            .database
+            .query_row(
+                "SELECT protocol_json FROM factor_research_protocols
+                 WHERE protocol_hash = ?1 AND user_id = ?2 AND kind = 'promotion'",
+                params![protocol_hash, user_uuid(user_id).to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Promotion Protocol was not found".to_owned())?;
+        let protocol: PromotionProtocol = serde_json::from_str(&protocol_json).map_err(string)?;
+        Ok((
+            FactorSelectionView {
+                candidate_hash: candidate_hash.into(),
+                family_id: Uuid::parse_str(&family_id)
+                    .map_err(|_| "Parameter Selection family is invalid".to_owned())?,
+                selected_trial_id: Uuid::parse_str(&trial_id)
+                    .map_err(|_| "Parameter Selection trial is invalid".to_owned())?,
+                selection_hash,
+                promotion_protocol_hash: protocol_hash,
+            },
+            protocol,
+        ))
+    }
+
+    fn model_input_binding(
+        &self,
+        user_id: &str,
+        decision_hash: &str,
+    ) -> Result<FactorModelInputBinding, String> {
+        let record_json: String = self
+            .database
+            .query_row(
+                "SELECT record_json FROM factor_promotion_decisions
+                 WHERE user_id = ?1 AND decision_hash = ?2",
+                params![user_uuid(user_id).to_string(), decision_hash],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Promotion Decision was not found".to_owned())?;
+        let record: adaq_factor_research::PromotionDecisionRecord =
+            serde_json::from_str(&record_json).map_err(string)?;
+        record.decision.validate().map_err(string)?;
+        if !matches!(
+            record.decision.state,
+            adaq_factor_research::PromotionDecisionState::ResearchValidated
+                | adaq_factor_research::PromotionDecisionState::ComponentEligible
+        ) {
+            return Err("Model input requires a positive Promotion Decision".into());
+        }
+        let protocol_json: String = self
+            .database
+            .query_row(
+                "SELECT protocol_json FROM factor_research_protocols
+                 WHERE protocol_hash = ?1 AND user_id = ?2 AND kind = 'promotion'",
+                params![
+                    record.promotion_protocol_hash,
+                    user_uuid(user_id).to_string()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Promotion Protocol was not found".to_owned())?;
+        let promotion_protocol: PromotionProtocol =
+            serde_json::from_str(&protocol_json).map_err(string)?;
+        promotion_protocol.validate().map_err(string)?;
+        let report_hash = promotion_protocol
+            .report_hashes
+            .first()
+            .ok_or_else(|| "Promotion Report was not found".to_owned())?;
+        let report_json: String = self
+            .database
+            .query_row(
+                "SELECT r.report_json FROM factor_evaluation_report_access a
+                 JOIN factor_evaluation_reports r USING(report_hash)
+                 WHERE a.user_id = ?1 AND a.report_hash = ?2",
+                params![user_id, report_hash],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Promotion Report was not found".to_owned())?;
+        let report: FactorEvaluationReport = serde_json::from_str(&report_json).map_err(string)?;
+        let evaluation_json: String = self
+            .database
+            .query_row(
+                "SELECT protocol_json FROM factor_research_protocols
+                 WHERE protocol_hash = ?1 AND user_id = ?2 AND kind = 'evaluation'",
+                params![report.protocol_hash, user_uuid(user_id).to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Evaluation Protocol was not found".to_owned())?;
+        let evaluation: FactorEvaluationProtocol =
+            serde_json::from_str(&evaluation_json).map_err(string)?;
+        let dataset_json: String = self
+            .database
+            .query_row(
+                "SELECT c.manifest_json FROM factor_dataset_access a
+                 JOIN factor_dataset_content c USING(dataset_id)
+                 WHERE a.user_id = ?1 AND a.dataset_id = ?2",
+                params![user_id, evaluation.factor_dataset_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Promotion Factor Dataset was not found".to_owned())?;
+        let dataset: FactorDatasetManifest = serde_json::from_str(&dataset_json).map_err(string)?;
+        dataset.validate().map_err(string)?;
+        let lookback = promotion_protocol
+            .engine_identity
+            .parameters
+            .get("lookback")
+            .ok_or_else(|| "Promotion Factor lookback is not bound".to_owned())?
+            .parse::<u32>()
+            .map_err(|_| "Promotion Factor lookback is invalid".to_owned())?;
+        Ok(FactorModelInputBinding {
+            decision_hash: record.decision.decision_hash,
+            promotion_protocol,
+            factor_dataset_id: evaluation.factor_dataset_id,
+            feature_dataset_id: evaluation.feature_dataset_id,
+            feature_plan_hash: evaluation.feature_plan_hash,
+            snapshot_id: evaluation.market_data_snapshot_id,
+            universe_id: evaluation.point_in_time_universe_id,
+            lookback,
+        })
+    }
+
     fn list_policies(
         &self,
         request: &FactorPageRequest,
@@ -3093,20 +3465,26 @@ impl<'a> ResearchStore<'a> {
         dataset.validate().map_err(string)?;
         let policy_json: String = self.database.query_row("SELECT policy_json FROM factor_promotion_policies WHERE policy_hash = ?1 AND user_id = ?2", params![protocol.policy_hash, user_id.to_string()], |row| row.get(0)).map_err(|_| "Promotion Policy was not found for this User".to_owned())?;
         let policy: PromotionPolicy = serde_json::from_str(&policy_json).map_err(string)?;
-        let lineage = self
-            .lineage_for_user(user_id, &protocol.trial_id.to_string())?
-            .lineage;
-        let eligibility = PromotionEligibility::check(adaq_factor_research::PromotionEvidence {
-            candidate: &candidate,
-            dataset: &dataset,
-            dataset_status: adaq_factor_research::FactorDatasetStatus::Completed,
-            evaluation_protocol: &evaluation_protocol,
-            reports: &reports,
-            policy: &policy,
-            lineage: &lineage,
-            promotion_protocol: &protocol,
-            component: request.component,
-        })
+        let lineage_view = self.lineage_for_user(user_id, &protocol.trial_id.to_string())?;
+        let trial = lineage_view
+            .trials
+            .iter()
+            .find(|trial| trial.trial_id == protocol.trial_id)
+            .ok_or_else(|| "Promotion Research Trial was not found".to_owned())?;
+        let eligibility = PromotionEligibility::check_with_trial(
+            adaq_factor_research::PromotionEvidence {
+                candidate: &candidate,
+                dataset: &dataset,
+                dataset_status: adaq_factor_research::FactorDatasetStatus::Completed,
+                evaluation_protocol: &evaluation_protocol,
+                reports: &reports,
+                policy: &policy,
+                lineage: &lineage_view.lineage,
+                promotion_protocol: &protocol,
+                component: request.component,
+            },
+            Some(trial),
+        )
         .map_err(string)?;
         if matches!(
             decision.state,
@@ -3577,6 +3955,7 @@ impl<'a> ResearchStore<'a> {
             "factor_research_trials",
             "factor_promotion_policies",
             "factor_promotion_decisions",
+            "factor_parameter_selections",
         ] {
             transaction
                 .execute(

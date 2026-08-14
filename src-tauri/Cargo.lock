@@ -14,6 +14,7 @@ dependencies = [
  "adaq-factor-research",
  "adaq-feature-engine",
  "adaq-indicator-engine",
+ "adaq-python-research",
  "arrow-array",
  "arrow-schema",
  "base64 0.22.1",
@@ -171,6 +172,22 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tar",
+]
+
+[[package]]
+name = "adaq-python-research"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "hmac 0.13.0",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "toml 0.8.2",
+ "zip 8.6.0",
 ]
 
 [[package]]

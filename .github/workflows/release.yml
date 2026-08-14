@@ -73,6 +73,10 @@ jobs:
             platform: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: nsis
+          - name: Linux x86_64
+            platform: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
     runs-on: ${{ matrix.platform }}
 
     steps:
@@ -93,6 +97,12 @@ jobs:
       - name: Setup MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -154,7 +164,7 @@ jobs:
 
           const latest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
           const platforms = Object.keys(latest.platforms ?? {})
-          for (const expected of ['darwin-aarch64', 'windows-x86_64']) {
+          for (const expected of ['darwin-aarch64', 'windows-x86_64', 'linux-x86_64']) {
             if (!platforms.some((platform) => platform === expected || platform.startsWith(`${expected}-`))) {
               throw new Error(`latest.json is missing ${expected}`)
             }

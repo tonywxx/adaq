@@ -1,0 +1,16 @@
+[build-system]
+requires = []
+build-backend = "adaq_build_backend"
+backend-path = ["."]
+
+[project]
+name = "adaq-research-sdk"
+version = "1.0.0"
+description = "Public source-visible Python Research SDK for ADAQ"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = []
+
+[tool.adaq]
+namespace = "adaq"
+private_runner_api = false

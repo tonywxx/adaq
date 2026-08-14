@@ -26,6 +26,7 @@ import { checkStrongPassword } from "@/lib/password";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { ConnectionsSettings } from "@/features/settings/connections-settings";
+import { PythonRuntimeSettings } from "@/features/python-research/python-runtime-settings";
 import type { User } from "@supabase/supabase-js";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
@@ -589,6 +590,7 @@ function AccountSettings() {
 				description={t("settings.account.description")}
 			/>
 			<div className="grid gap-5">
+				<PythonRuntimeSettings userId={user?.id} />
 				<Card>
 					<CardHeader>
 						<CardTitle>{t("settings.account.email")}</CardTitle>

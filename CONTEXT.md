@@ -248,6 +248,10 @@ _Avoid_: Company, Spot Instrument, generic symbol
 A price, quantity, volume, notional, balance, fee, or other amount whose base-10 representation must remain exact across domain and IPC boundaries.
 _Avoid_: Float, approximate number
 
+**Analytical Scalar**:
+A Feature, Factor, or Forecast value represented at Python, Arrow, Host, and Component boundaries as one finite IEEE 754 binary64 value or an explicit Unavailable state with a reason. NaN, positive or negative infinity, object dtype, and pandas-inferred identity or numeric types are invalid boundary values; financial amounts, parameters, and target weights remain canonical Decimal strings instead.
+_Avoid_: Financial Value, nullable object column, sentinel NaN
+
 **Base Volume**:
 The traded quantity in an Instrument's primary quantity unit during an OHLCV Bar: base-asset units for a Spot Instrument or shares for an Equity Instrument.
 _Avoid_: Volume
@@ -303,7 +307,7 @@ An exact Declarative Factor Definition revision or non-imported Custom Factor Pa
 _Avoid_: Promoted Factor, Component Library package, editable draft
 
 **Declarative Factor Definition**:
-A versioned, immutable Factor specification built from ordered Feature Slots, parameters, Feature Operator Catalog semantics, named outputs, and one Factor Scope. Because it contains no arbitrary source code, ADAQ can evaluate it directly and deterministically generate an equivalent Rust SDK project.
+A versioned, immutable Factor specification built from an existing Feature Definition graph and frozen Feature Plan, ordered Feature Slots, Portable Parameter References, Feature Operator Catalog semantics, named outputs, and one Factor Scope. A Python Portable Definition builder constructs this canonical Host contract rather than introducing Python operators; because the Definition contains no arbitrary source code, ADAQ can evaluate it directly and deterministically generate an equivalent Rust SDK project.
 _Avoid_: Custom Factor Project, notebook code, Factor Component
 
 **Custom Factor Project**:
@@ -321,6 +325,18 @@ _Avoid_: Factor copy, Component alias
 **Strategy Component**:
 An independently packaged Component that consumes host-supplied, identity-preserving inputs and emits a complete Target Decision or Portfolio Target under one declared Strategy Scope.
 _Avoid_: Order executor, broker plugin
+
+**Declarative Strategy Definition**:
+A versioned, immutable Strategy specification assembled from one exact Declarative Strategy Operation Catalog, ordered required Input Slots, Portable Parameter References, and one Strategy Scope, producing scope-correct Target Decisions or Portfolio Targets. A Python builder may construct it, but arbitrary Python execution is not part of the Definition or its generated Component.
+_Avoid_: Python Strategy Project, Strategy Component, order script
+
+**Declarative Strategy Operation Catalog**:
+The versioned Host-owned operation set that V1 limits to finite `weighted-sum`, deterministic `top-n`, `equal-weight`, and `cash-reserve` nodes. `top-n` sorts by descending finite score and then ascending Instrument ID, while loops, callbacks, optimizers, stops, orders, and Execution logic are not portable operations.
+_Avoid_: Python standard library, Strategy ABI, plugin catalog
+
+**Portable Parameter Reference**:
+A typed Factor or Strategy Definition reference to one Manifest parameter whose V1 value set is finite and explicitly allowlisted. The selected research value becomes the generated Component default, every allowed combination must fit the Host cap and pass M14 conformance and equivalence, and Model training hyperparameters never become inference parameters through this mechanism.
+_Avoid_: Arbitrary expression, floating parameter range, Model hyperparameter
 
 **Strategy Scope**:
 The declared Instrument dependency and decision cardinality of a Strategy: Single Instrument controls one Instrument independently, while Portfolio jointly allocates one exact Point-in-Time Instrument Universe.
@@ -347,11 +363,11 @@ The host-owned workflow that freezes training inputs and one Research Engine, la
 _Avoid_: Training framework, notebook process, Model Component
 
 **Model Training Runner**:
-A versioned, host-managed runtime that receives one frozen Model Training Protocol and local immutable inputs, executes its selected Research Engine adapter under explicit resources and cancellation, and returns candidate artifacts, metrics, diagnostics, and logs without writing ADAQ's authoritative records directly.
+A versioned Model-kind execution contract that receives one frozen Model Training Protocol and local immutable inputs, runs its selected Research Engine Adapter through the Python Research Runner under explicit resources and cancellation, and returns candidate artifacts, metrics, diagnostics, and logs without writing ADAQ's authoritative records directly. It is not the separately qualified inference-only Local Qlib Paper runner.
 _Avoid_: Model Component, arbitrary shell, Tauri command body
 
 **Model Training Protocol**:
-An immutable, content-addressed specification of the exact Feature and Factor inputs, Training Universe, Forecast Targets, training, validation and test windows, fitting transformations, algorithm and hyperparameters, Research Engine, framework and Adapter versions, Seed, environment identity, and resource policy for one model experiment.
+An immutable, content-addressed specification of the exact Feature and Factor inputs, Training Universe, Forecast Targets, training, validation and test windows, Host-owned fitting transformations, algorithm and hyperparameters, Research Engine, Model Research Adapter version, Seed, environment identity, and resource policy for one model experiment.
 _Avoid_: Editable training form, Model Training Attempt, Model Artifact
 
 **Model Training Attempt**:
@@ -361,6 +377,14 @@ _Avoid_: Model Training Protocol, Model Artifact, Dataset Generation Attempt
 **Model Exporter**:
 A versioned adapter that converts one supported Model Artifact into deterministic inference payloads and packaging inputs for a WASI or ONNX Model Profile, declaring its supported algorithms, Artifact schema, numeric semantics, and runtime limits. An Artifact without a compatible export may qualify separately for Local Qlib Paper but never receives a false portable wrapper.
 _Avoid_: Model Training Runner, External Model Adapter, generic serializer
+
+**Model Research Adapter**:
+A versioned, allowlisted bridge for one explicitly supported training algorithm and mode, defining its accepted typed parameters, Dataset view, fitting and prediction calls, canonical Artifact extraction and reload, random sources, repeatability rule, and eligible Model Exporters or Deployment Profiles. Importability or inheritance from a framework base class does not make an algorithm supported.
+_Avoid_: Model Exporter, generic Python serializer, framework package
+
+**Qlib Ridge Adapter**:
+The first Model Research Adapter, supporting only Microsoft Qlib `LinearModel` in Ridge mode over the Qlib Dataset Bridge, one declared Continuous Forecast Target, and one Forecast Signal. It extracts and reloads a Linear Model Artifact rather than treating a Python pickle as authoritative.
+_Avoid_: all Qlib models, Qlib data Provider, generic sklearn adapter
 
 **Model Deployment Profile**:
 The declared portability and runtime boundary under which a Model Artifact may perform inference: WASI Model, ONNX Model, or Local Qlib Paper. The Profile determines eligible execution contexts and required qualification evidence rather than model quality.
@@ -431,7 +455,7 @@ The scheduled event-time boundary at which one Strategy decision's eligible inpu
 _Avoid_: Processing completion time, order submission time, wall-clock now
 
 **Decision Batch**:
-The complete scope-correct, identity-preserving input supplied for one Decision Time after Warmup and availability validation. A Time-Series Decision Batch belongs to one Instrument and Closed Bar, while a Cross-Sectional Decision Batch contains its exact deterministic Point-in-Time Instrument Universe and explicit missingness without silently dropping late members.
+The complete scope-correct, identity-preserving input supplied for one Decision Time after Warmup and availability validation. A Time-Series Decision Batch belongs to one Instrument and Closed Bar, while a Cross-Sectional Decision Batch contains its exact deterministic Point-in-Time Instrument Universe and explicit missingness without silently dropping late members. If any required Strategy Input Slot is unavailable for any required member, the Host records `Run Pause::MissingInput` and does not invoke the Strategy; an optional Eligibility Definition would require a future explicit auditable contract.
 _Avoid_: Tick callback, partial Watchlist, anonymous feature matrix
 
 **Decision Deadline**:
@@ -463,7 +487,7 @@ Immutable evidence that one candidate Package reproduces the approved research d
 _Avoid_: Factor Evaluation Report, Component validation, approximate manual comparison
 
 **Generated Component Provenance**:
-An immutable host record linking one generated Component Package hash to its source definition or project, Promotion Decision, Build Attempt, Component Equivalence Report, generator, SDK, ABI, and toolchain identities. Research metrics remain in their Reports rather than being copied into Component Meta.
+An immutable host record linking one generated Component Package hash to its exact Python Project Revision and canonical Declarative Definition or Linear Model Artifact, parameter schema, Promotion or Selection Decision, Build Attempt, Component Equivalence Report, generator, SDK, ABI, and toolchain identities. Generated `.adaq` packages contain the Rust-generated WASM and Component metadata, not Python source, Runtime, wheels, environment, or Dependency Lock; research metrics remain in their Reports rather than being copied into Component Meta.
 _Avoid_: Component Meta, build log, performance claim
 
 **Component Library**:
@@ -543,7 +567,7 @@ An immutable partition of evaluation observations into deterministic buckets usi
 _Avoid_: Subjective bull or bear label, current market state, mutable threshold
 
 **Factor Promotion Policy**:
-An immutable, versioned set of evidence-completeness and metric thresholds that a User applies when recording a Factor Promotion Decision. It constrains eligibility without automatically making the decision.
+An immutable, versioned set of evidence-completeness, repeatability, and metric thresholds that a User applies when recording a Factor Promotion Decision. It constrains eligibility without automatically making the decision; a Python Candidate cannot be promoted from an exploratory result whose Repeatability State is Unverified or Divergent.
 _Avoid_: Automatic promotion rule, universal profitability threshold, mutable preference
 
 **Factor Promotion Decision**:
@@ -559,8 +583,12 @@ Immutable evidence of Forecast Signal quality bound to the exact Model Producer 
 _Avoid_: Validation Report, Backtest result, profitability claim
 
 **Evaluation Evidence State**:
-The relationship between evaluation observations and the recorded research, training, fitting, normalization, parameter-selection, and target-construction windows that influenced a Factor or Model. Out-of-sample requires complete evidence and no overlap, Overlapping records known reuse of evaluation observations, and Unknown preserves incomplete provenance without inventing an out-of-sample claim.
+The relationship between evaluation observations and the recorded research, training, fitting, normalization, parameter-selection, target-construction, and prior result-review windows that influenced a Factor, Model, or Strategy. Out-of-sample requires complete evidence, a frozen Parameter Selection Decision, and no overlap or prior use of its Final Evaluation results; Overlapping records known reuse or feedback, and Unknown preserves incomplete provenance without inventing an out-of-sample claim.
 _Avoid_: Model trust state, performance grade, automatic validation
+
+**Parameter Selection Decision**:
+An immutable User choice of one exact Factor, Model, or Strategy Trial after comparing only its declared Selection Window evidence. It freezes the selected Project Revision, parameter set, inputs, lineage, and selection metrics before one disjoint Final Evaluation may expose its result; using that result to modify or choose another candidate creates derived lineage whose affected evidence is Overlapping.
+_Avoid_: Factor Promotion Decision, automatic best Trial, editable winner flag
 
 **Paper Feedback Snapshot**:
 An immutable, time-bounded selection of one exact Bot Deployment Bundle's Paper market observations, Decision Batches, Feature and Forecast outputs, Strategy Targets, Risk Decisions, Orders, Fills, account and reconciliation events, operational conditions, realized outcomes, and completeness evidence. It references Canonical Market Data and execution journals without converting account events into market data.
@@ -596,9 +624,165 @@ _Avoid_: Market Data Provider, Model Component, deployment runtime
 The default Research Engine for ADAQ V1, using Microsoft Qlib semantics over immutable ADAQ inputs and preserving Qlib-labelled outputs and reports. It is not an independent source of authoritative market data or a direct trading runtime.
 _Avoid_: Qlib data downloader, ADAQ deployment engine, Python Bot
 
+**Qlib Dataset Bridge**:
+The read-only `adaq.qlib` adapter view that converts Host-supplied Arrow partitions into stable pandas tables indexed by `(datetime, instrument)` and implements only the supported `DatasetH.prepare()` surface for `train`, `valid`, and feature-only `test` Segments. It never initializes a Qlib data Provider, downloads data, constructs Alpha158 inputs, queries a network, or makes Qlib storage authoritative.
+_Avoid_: Qlib data directory, Provider URI, Dataset cache
+
 **ADAQ Native Research Engine**:
 The optional Research Engine that uses ADAQ's existing Feature, Factor, Model, and Run semantics. Its results remain distinct from Qlib results unless an explicit equivalence check establishes the claimed relationship.
 _Avoid_: Legacy mode, Qlib compatibility mode
+
+**Python Research SDK**:
+The single versioned public contract through which a Python Research Project receives ADAQ-authorized frozen inputs and returns typed Factor, Model, or Strategy research outputs through kind-specific modules. Its source lives at `python/adaq-research-sdk/`, and its public wheel is distributed as `adaq-research-sdk` with the `adaq` import namespace and public `adaq.qlib` bridge, while ADAQ executes only the exact bundled SDK Artifact frozen by a Project Revision; it grants no generic data-query surface or direct access to authoritative stores, credentials, order APIs, or deployment authority.
+_Avoid_: Component SDK, Qlib API, trading API
+
+**Python Research Core**:
+The Tauri-independent Rust crate at `src-tauri/crates/adaq-python-research` that owns Python Manifest, Archive, Revision, Trust, Protocol, Resource, and staged Result contracts without owning SQLite, files, processes, Factor evidence, Model evidence, or GUI state.
+_Avoid_: Python Research SDK, Tauri command module, Factor Research Store
+
+**Python Research Control Plane**:
+The native application module at `src-tauri/src/python_research/` that owns Python Research SQLite lifecycle, Working Copy and Archive files, Runtime and Environment management, Runner supervision, and attachment to the existing shared Research Queue. Factor and Model modules retain their existing evidence Stores and receive only validated Host results.
+_Avoid_: Python Research Runner, Python Research Core, Tauri UI thread work
+
+**Python Research Project**:
+A User-authored, locally editable source project whose immutable lower-kebab-case ID begins with `py-factor-`, `py-model-`, or `py-strategy-` exactly matching its declared Kind. It exposes one stable Python Project Entry Point and uses the Python Research SDK for offline research. It may contain multiple Python modules and outputs, remains private unless explicitly exported, and a shared Project includes its source; notebooks may explore it but are not authoritative execution or publication sources.
+_Avoid_: Python Component, Python Bot, notebook-to-WASM package, multipurpose research pipeline
+
+**Python Project Layout**:
+The fixed source-visible root containing `adaq-project.toml`, `pyproject.toml`, ADAQ-generated `pylock.toml`, `src/project.py`, `README.md`, and `LICENSE`, with optional additional declared Python modules under `src/` and declared localized documentation such as `README.zh-CN.md`. The default entry point is `project:create_project`; `setup.py`, `requirements.txt`, shell launchers, Datasets, environments, and results are not authoritative Project files.
+_Avoid_: Python Project Environment, notebook folder, arbitrary application repository
+
+**Python Project Entry Point**:
+The exact Manifest `module:function` reference to a zero-argument `create_project()` function. After the User trusts the exact Revision, the Runner imports that module, calls the function once for the current lifecycle boundary, and requires the returned SDK object to match the declared Kind and Mode; it performs no file, class, decorator, or framework discovery, and supplies parameters, Seed, data, progress, and diagnostics only through later typed Context calls.
+_Avoid_: Import-time project object, plugin scan, command-line entry point
+
+**Python Project Kind**:
+The single Factor, Model, or Strategy contract declared by a Python Research Project, determining its typed inputs, outputs, and evidence lifecycle without combining those domains into one executable project.
+_Avoid_: Python package type, Research Engine, mixed Factor-Model-Strategy script
+
+**Python Project Mode**:
+The explicit authoring boundary of a Factor- or Strategy-kind Python Research Project: Imperative Python executes the Project for Research Only, while Portable Definition uses Python only to construct a canonical Declarative Factor or Strategy Definition for Host execution and later Component generation. Model Projects use registered Model Exporters instead of this Mode.
+_Avoid_: Automatic Python transpilation, inferred portability, Model Deployment Profile
+
+**Python Project Manifest**:
+The exact-schema `adaq-project.toml` execution contract declaring one Project's immutable Kind-prefixed ID, Kind, Mode when applicable, Scope, stable entry point, SDK and Runtime Profiles, typed parameters, ordered Python Input Slots and outputs, Target or Signal contracts, Dependency Lock hash, and resource requests that cannot exceed the Host's Python Resource Policy. It declares portable requirements rather than local Dataset IDs. Unknown fields, enum values, and unsupported schema versions fail static validation and cannot Prepare or Run; incompatible source and historical evidence remain inspectable and exportable without automatic rewriting. Name, description, tags, README, and licence are presentation or distribution metadata rather than execution identity.
+_Avoid_: Component Manifest, README, setup script
+
+**Python Input Slot**:
+One stable, ordered Manifest requirement for a scope-correct Market, Feature, Factor, Forecast Signal, Target, or Portfolio input contract. A Lab Run binds each Slot to an exact local Snapshot, Dataset, Universe, Promoted Factor, or other compatible evidence identity and freezes that binding in the Attempt; Project code cannot query a latest or similarly named local object dynamically.
+_Avoid_: Local Dataset ID in source, dynamic data query, pandas column guess
+
+**Python Project Working Copy**:
+The User-scoped mutable Project directory created or copied into ADAQ local data and opened in the User's external editor. Its independently visible state is Clean, Dirty, or Invalid; file changes mark it Dirty but never execute automatically or alter evidence. Run freezes the current content as a new Python Project Revision, and an imported external directory is not kept in implicit synchronization. Project ID changes create a different Project rather than renaming historical identity.
+_Avoid_: Python Project Revision, external linked folder, built-in template
+
+**Python Project Revision**:
+An immutable, content-addressed snapshot of one Python Research Project's Manifest and declared source that resolves its Runtime Profile to an exact platform-specific Runtime artifact. Editing the working Project creates another Revision and never changes a running or historical Attempt.
+_Avoid_: Mutable project folder, notebook checkpoint, Git branch
+
+**Python Project Archive**:
+A content-addressed deterministic ZIP containing exactly one validated Python Project Layout, with no Dataset, result, environment, cache, secret, or undeclared file. Offline import rejects absolute or parent-traversing paths, symbolic or hard links, duplicate or case-fold-colliding paths, undeclared entries, count or size limit violations, and Lock hash mismatch before copying an inert Untrusted Working Copy; import never loads a module, prepares an Environment, or executes code. It is source-visible and uses no opaque ADAQ-specific binary extension.
+_Avoid_: Component Package, Python wheel, project directory with local artifacts
+
+**Python Project Licence**:
+The required Manifest declaration and matching `LICENSE` content governing an exported Project Archive. Local private Projects may use `LicenseRef-Proprietary`; a future zero-price Community Python Project must instead use an explicit SPDX open-source licence that permits source redistribution, because zero price alone grants no rights.
+_Avoid_: Component Entitlement, missing licence, zero-price permission
+
+**Python Project Trust Decision**:
+An explicit User authorization to execute one exact Python Project Revision locally. A tutorial may present several exact Revisions in one confirmation but records one Decision per Revision; import, installation, bundled-example provenance, Marketplace review, name continuity, and trust in another Revision do not grant it, and any source, entry-point, or Dependency Lock change requires a new Decision for only the changed Project.
+_Avoid_: Package installation, publisher reputation, permanent project trust
+
+**Python Dependency Lock**:
+The ADAQ-generated `pylock.toml` containing the exact resolved Python runtime and wheel identities, versions, hashes, and platform constraints required to prepare a reproducible Project Environment. `pyproject.toml` records editable dependency intent; explicit Sync Environment resolves it under trusted-index, wheel-only, and hash policies and atomically replaces the Lock. Run never resolves or rewrites dependencies, and manual Lock edits must pass structural and hash validation. Dependency ranges alone, source distributions, the system Python, and a mutable virtual environment are not Locks.
+_Avoid_: requirements range, active virtualenv, runtime pip install
+
+**ADAQ Python Runtime**:
+An exact, platform-specific CPython distribution installed on demand and managed only inside ADAQ local data for compatible Python Project environments. A system interpreter, User-selected executable, or silently upgraded Runtime is not an ADAQ Python Runtime.
+_Avoid_: System Python, custom interpreter path, active virtualenv
+
+**Python Runtime Profile**:
+A versioned logical compatibility contract declared by a Python Project Manifest and resolved by ADAQ to one supported CPython version and exact platform Artifact hash. Publishing a new Profile never changes the Runtime identity frozen by an existing Project Revision or Attempt.
+_Avoid_: Python version range, latest Python, local interpreter discovery
+
+**Python Project Environment**:
+A prepared, content-addressed binding of one exact ADAQ Python Runtime and Python Dependency Lock used to execute compatible Project Revisions. Its cached bytes may be removed and reconstructed without deleting the identities retained by historical evidence.
+_Avoid_: Active virtualenv, system site-packages, Python Project Revision
+
+**Python Environment Preparation Attempt**:
+A lifecycle record created by explicit Sync or Prepare Environment that downloads, verifies, and stages one exact Python Project Environment before atomically publishing it as usable. Matching active requests coalesce, Failed or Cancelled staging is never executable, and Retry creates a new Attempt. Preparation does not grant Project execution trust.
+_Avoid_: Python Research Attempt, pip install during Run, terminal setup
+
+**Python Research Schema**:
+The exact device-local `PYTHON_RESEARCH_SCHEMA_VERSION`, initially `1.0.0`, governing Project Revision, Attempt, Trust, local binding, and result metadata owned by the Python Research Control Plane. An incompatible value blocks Python Research until an explicit device-level Reset Python Research Evidence; no migration, dual reader, or automatic deletion is implied.
+_Avoid_: Factor Research Schema, Python SDK version, SQLite application version
+
+**Reset Python Research Evidence**:
+The explicit device-level operation that stops Python research and removes Python Revision, Attempt, Trust, binding, and result metadata while preserving User-authored Working Copies and exported Project Archives. Runtime, Wheelhouse, and Environment bytes remain independently evictable Cache, and Factor evidence uses its separate Factor Research Reset.
+_Avoid_: delete Python projects, remove all local data, cache cleanup
+
+**Python Research Runner**:
+The private bundled wheel sourced from `python/adaq-python-research-runner/` and launched by managed CPython in isolated mode as `-I -m adaq_runner` to execute exactly one Python Research Attempt for one Factor, Model, or Strategy Project Revision before exiting. It connects only to a random Host-owned loopback port using a one-time token, completes an exact Protocol, SDK, Revision, and Attempt handshake, and treats stdout and stderr only as capped logs. It never survives across Attempts, publishes authoritative records, exposes its protocol client as public SDK API, or serves as the separately qualified Local Qlib Paper inference runner.
+_Avoid_: Python Project, Model Component, Local Qlib Paper runner
+
+**Python Runner Protocol**:
+The versioned private cross-process contract between the Host and one Python Research Runner. Length-prefixed canonical JSON carries bounded control messages, Arrow IPC carries typed tabular frames, and large artifacts pass only through a private Attempt Staging Area with declared hashes; incompatible handshakes fail before Project execution.
+_Avoid_: Public network API, stdout JSON protocol, shared temporary file
+
+**Python Attempt Staging Area**:
+The private, Attempt-scoped filesystem area where a Runner may place declared candidate outputs before Host validation. The Runner cannot write ADAQ's database or final Dataset locations; the Host verifies identity, ordering, schema, availability, finite values, Decimal rules, size, and hashes before atomic publication, and discards non-diagnostic partial outputs after Failure or Cancellation.
+_Avoid_: Final Dataset, Project workspace, shared artifact directory
+
+**Python Resource Policy**:
+The versioned Host-owned limits for Python wall time, memory, threads, input rows, columns and cells, protocol and artifact sizes, declared diagnostic checkpoints, logs, and Strategy decision deadlines. A Project may request smaller values but cannot raise Host caps; exact supported-platform values are fixed from implementation benchmarks rather than guessed in the Manifest.
+_Avoid_: User-unbounded resources, Project-owned timeout, framework default
+
+**Research Queue**:
+The persistent device-wide FIFO that serializes heavy Feature, Factor, Python, Model, and Strategy research work while retaining User-scoped Attempts and evidence. Environment preparation is separately serialized and does not create a competing heavy-research worker pool.
+_Avoid_: Tauri command body, Python worker pool, UI loading queue
+
+**Python Research Attempt**:
+An append-only execution record binding one Python Project Revision and prepared environment to exact frozen Input Slot bindings, one normalized parameter set, Seed, deterministic runtime settings, resource policy, status, outputs, diagnostics, and logs. Before importing Project code, the Runner applies the Attempt Seed to `PYTHONHASHSEED` and the registered Adapter's Python, NumPy, and framework random sources and applies Host thread limits. Cancel requests are cooperative for a bounded grace period and then terminate the process tree; Cancelled is recorded only after Runner exit and staging isolation, while a stale Running Attempt recovered after restart becomes Failed with an Interrupted reason. Source edits, parameter changes, and Retry create new Attempts, and late Runner results never mutate prior evidence.
+_Avoid_: Python process, terminal session, hidden parameter sweep
+
+**Python Research Context**:
+The kind- and phase-specific immutable SDK view of Host-authorized parameters, Seed, identities, frozen inputs, event times, and bounded `progress` and `diagnostic` emitters supplied after Project creation. It exposes no current wall clock, GUI object, or authoritative store; reading ambient time or using undeclared randomness is outside the reproducible contract. Stdout and stderr remain capped unstructured logs, while an uncaught exception or invalid required result fails the Attempt without falling back to historical output.
+_Avoid_: Global application object, mutable Dataset handle, logging backend
+
+**Python Parameter Grid**:
+A finite Host-owned Cartesian product of typed Manifest parameter values. ADAQ normalizes and bounds the combinations, registers each as a separate Trial and Python Research Attempt in the appropriate Factor Family, Model Experiment, or Strategy study, and never accepts a hidden script-owned Sweep as equivalent evidence.
+_Avoid_: Optuna study, Bayesian optimizer, loop inside one Attempt
+
+**Python Repeatability Report**:
+Immutable evidence from replaying one exact Project Revision, Environment, Input bindings, parameter set, and Seed in a fresh process, including permitted Batch partitions. Its Repeatability State is Unverified, Verified, or Divergent; Factor and Strategy require exact output equality, while a Model's registered Deployment Profile declares exact or bounded numeric tolerance. Exploratory outputs remain inspectable when Unverified or Divergent, but they cannot pass Promotion, Component Generation, or Runtime Qualification gates.
+_Avoid_: Component Equivalence Report, successful first run, cross-version benchmark
+
+**Python Tutorial Fixture**:
+The Host-owned immutable `python-tutorial-a-share@1` synthetic Dataset fixture stored outside every Project Archive under `src-tauri/fixtures/python-tutorial/`. Its Manifest binds clearly fictional identities, Instrument Master, Calendar, and daily Bars for exactly 12 A-share-like Instruments across 180 Trading Sessions; it requires no network and makes no claim about an issuer, live market, or profitable pattern.
+_Avoid_: bundled Project data, provider sample, historical A-share Dataset
+
+**Python Research Tutorial**:
+The guided bilingual Factor → Model → Strategy journey launched by Run Python Tutorial using the three bundled `py-` Projects and one Python Tutorial Fixture. It may automate validation, preparation, Attempts, and navigation but cannot create a Factor Promotion Decision, Parameter Selection Decision, Final Evaluation claim, or Project Trust Decision without explicit User confirmation at the relevant boundary.
+_Avoid_: unattended benchmark, automatic promotion pipeline, profitability demo
+
+**Python Factor Candidate**:
+A Factor Candidate whose source binds one exact Factor-kind Python Project Revision and environment and whose execution materializes the standard Factor Dataset consumed by existing evaluation, Research Family, and Promotion workflows. A Portable Definition Project implements `define(context)` without Dataset access and returns one canonical Declarative Factor Definition. An Imperative Python Project implements `evaluate(context, batches)` and yields scope-correct Factor Output Batches without crossing Host-declared Continuous Bar Segment boundaries; a Bar Gap creates a new Project object. Arbitrary Python may become Research Validated after repeatability and existing evidence gates pass, but is not Component Eligible unless re-expressed through a supported portable definition.
+_Avoid_: Declarative Factor Definition, Custom Factor Package, Python Factor Component
+
+**Python Model Project**:
+A Model-kind Python Research Project that trains against Host-frozen partitions and returns a typed Model Artifact and Forecast Signals through a declared Model Research Adapter. Its `fit(context)` phase can see only Train and Validation inputs and labels; the Adapter persists and reloads the exact candidate Artifact before `predict(context, fitted_model)` produces Validation or Test Forecasts. Test labels remain Host-only and all final evaluation metrics are Host-computed. The first Qlib Ridge Adapter accepts exactly one Target, horizon, and Forecast Signal per Project. Custom Python preprocessing or another framework remains Research Only unless its complete transformation provenance, Adapter, Exporter, and Deployment Profile are separately qualified.
+_Avoid_: Qlib notebook, Model Component, Python trading runtime
+
+**Python Strategy Project**:
+A Strategy-kind Python Research Project whose `start(context)` creates one Strategy Session for a Host-declared continuous input segment. The Host then serially calls `decide(decision_batch, portfolio_state)` at each Decision Time and accepts only one complete Target Decision or Portfolio Target before applying Host-owned Risk, Execution, and Portfolio updates; the Project cannot prefetch future batches, and a Bar Gap creates a new Project and Session. It never emits orders, owns Risk or Execution, or turns a Qlib-native backtest into an ADAQ Backtest.
+_Avoid_: Python Bot, order script, Qlib Research Backtest
+
+**Python Strategy Session**:
+The Attempt-local causal object returned by a Python Strategy Project's `start(context)` and invoked exactly once per ordered Decision Batch until its Host-declared segment ends. Supported mutable causal state lives only in the returned Project or Session object and is discarded at the segment boundary; mutable module globals, ambient disk caches, and cross-Attempt state are outside the contract. Calls are never pipelined; a missed deadline, exception, incomplete Target, identity change, or invalid value fails the whole Attempt and publishes no partial Backtest result.
+_Avoid_: Trading Bot, Portfolio State, whole-history backtest function
+
+**Community Python Project**:
+A future Marketplace listing for one immutable, source-visible Python Research Project version under an explicit SPDX open-source licence and a fixed zero price. Listing, installation, and popularity grant no execution trust, research validity, Component eligibility, Paper Trading authority, or Real Trading Qualification.
+_Avoid_: Marketplace Component Product, free trial, trusted Python package
 
 **Research Engine Provenance**:
 The immutable binding of a research result to its exact Research Engine, version, Adapter, environment, parameters, and input identities. Results from different engines are compared side by side rather than silently merged as equivalent evidence.
@@ -721,7 +905,7 @@ A lifecycle record for executing one Transformation Fitting Protocol through Pen
 _Avoid_: Feature Materialization Attempt, Model Training Attempt, implicit fit
 
 **Fitted Transformation Artifact**:
-Immutable transformation parameters learned only from an exact recorded fitting window and applied unchanged to later validation, test, inference, or Paper Trading observations. Its deterministic Eligible At is the latest Available At among its fitting inputs, while Created At records local operational completion without changing historical Feature identity.
+Immutable Host-owned transformation parameters learned only from an exact recorded fitting window and applied unchanged to later validation, test, inference, or Paper Trading observations. Its deterministic Eligible At is the latest Available At among its fitting inputs, while Created At records local operational completion without changing historical Feature identity. A Python script may explore custom preprocessing, but that path remains Research Only unless the operation and Artifact schema become an explicit supported transformation.
 _Avoid_: Model Artifact, full-history scaler, mutable preprocessing state
 
 **Causal Corporate Action Transformation**:
@@ -755,6 +939,10 @@ _Avoid_: Latest market data, mutable cache
 **Model Artifact**:
 The immutable fitted result of one successfully validated Model Training Attempt, bound to its exact Model Training Protocol, training evidence, payload hashes, schema, and provenance. It becomes deployable only through a qualified Model Deployment Profile.
 _Avoid_: Model Component, mutable checkpoint, training project
+
+**Linear Model Artifact**:
+The canonical `adaq:linear-model@1` fitted payload containing ordered Python Input Slot identities, finite coefficients, intercept, numeric representation, exact Fitted Transformation Artifact, one Forecast Signal contract, and Qlib Ridge Adapter provenance. The Adapter must reload this data-only schema before producing published Forecasts; no Python pickle, executable object graph, Dataset, or training code belongs to the Artifact.
+_Avoid_: Qlib pickle, ONNX graph, Model Component
 
 **Model Provenance**:
 The traceable origin and formation record of a Model Artifact, including exact source revisions, weight and preprocessing identities, runtime and Adapter versions, licence, and known training, fitting, validation, and normalization-reference windows. Unknown facts remain explicitly unknown.
@@ -845,7 +1033,7 @@ The complete Target Exposure emitted by a Strategy Instance for one Closed Bar; 
 _Avoid_: Buy signal, sell signal, optional decision
 
 **Portfolio Target**:
-The complete Instrument-keyed target-weight allocation and cash reserve emitted by one Portfolio Strategy for an exact decision time and Point-in-Time Instrument Universe. It expresses desired allocation rather than orders, and omitted members are invalid rather than implicit holds or exits.
+The complete Instrument-keyed target-weight allocation and cash reserve emitted by one Portfolio Strategy for an exact decision time and Point-in-Time Instrument Universe. It expresses desired allocation rather than orders, and omitted members are invalid rather than implicit holds or exits. V1 Portable Definitions are Long-only: every Universe member has a canonical Decimal target weight of zero or greater, Cash Reserve is zero or greater, and their exact sum is one; Short and Leverage require a later explicit Position Mode contract.
 _Avoid_: sparse trade list, order basket, independent Target Decisions
 
 **Risk Policy**:

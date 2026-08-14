@@ -15,6 +15,7 @@ members = [
     "crates/adaq-factor-research",
     "crates/adaq-feature-engine",
     "crates/adaq-indicator-engine",
+    "crates/adaq-python-research",
 ]
 resolver = "2"
 
@@ -39,6 +40,7 @@ adaq-component-tooling = { path = "crates/adaq-component-tooling" }
 adaq-factor-research = { path = "crates/adaq-factor-research" }
 adaq-feature-engine = { path = "crates/adaq-feature-engine" }
 adaq-indicator-engine = { path = "crates/adaq-indicator-engine" }
+adaq-python-research = { path = "crates/adaq-python-research" }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"

@@ -71,6 +71,8 @@ import type {
 	FactorReportView,
 	M12Eligibility,
 } from "./factor-types";
+import { PythonProjectsPanel } from "@/features/python-research/python-projects-panel";
+import { PythonFactorLabPanel } from "@/features/python-research/python-factor-lab-panel";
 
 type FactorTab =
 	| "families"
@@ -397,6 +399,9 @@ export function FactorsPage() {
 					{t("factors.historicalEvidenceNote")}
 				</div>
 			</header>
+
+			{userId ? <PythonProjectsPanel userId={userId} kind="factor" /> : null}
+			{userId ? <PythonFactorLabPanel userId={userId} /> : null}
 
 			{!userId ? (
 				<LoadingState label={t("factors.loading")} />
