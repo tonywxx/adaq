@@ -17,6 +17,7 @@ tony/
 .pnpm-store/
 .npm-cache/
 supabase/
+bak/
 
 # Editor directories and files
 .vscode/*
@@ -30,14 +31,22 @@ supabase/
 
 # AI related files
 .codegraph/
+.codex/
 .playwright-mcp/
 .cursor/
 .claude/
 .agent/
 .scratch/
 .qoder/
+.sisyphus/
 
 # Generated Component Model fixture outputs.
 src-tauri/fixtures/*/src/bindings.rs
 src-tauri/fixtures/*/target/
 .tokensave
+graphify-out/
+
+# Python Research contract-test outputs.
+__pycache__/
+*.py[cod]
+.venv/
