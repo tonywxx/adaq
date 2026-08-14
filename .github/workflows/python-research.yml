@@ -52,6 +52,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Factor build target
         run: rustup target add wasm32-unknown-unknown
+      - name: Fetch offline Factor fixture dependencies
+        run: cargo fetch --locked --manifest-path src-tauri/fixtures/factor/Cargo.toml
       - name: Install cargo-component
         run: cargo install cargo-component --locked
       - name: Install Linux Tauri dependencies
@@ -113,6 +115,8 @@ jobs:
           python-version: "3.12"
       - name: Install Factor build target
         run: rustup target add wasm32-unknown-unknown
+      - name: Fetch offline Factor fixture dependencies
+        run: cargo fetch --locked --manifest-path src-tauri/fixtures/factor/Cargo.toml
       - name: Install cargo-component
         run: cargo install cargo-component --locked
       - name: Install Linux Tauri dependencies
