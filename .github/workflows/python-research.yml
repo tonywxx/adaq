@@ -52,6 +52,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Factor build target
         run: rustup target add wasm32-unknown-unknown
+      - name: Install cargo-component
+        run: cargo install cargo-component --locked
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
         run: |
@@ -111,6 +113,8 @@ jobs:
           python-version: "3.12"
       - name: Install Factor build target
         run: rustup target add wasm32-unknown-unknown
+      - name: Install cargo-component
+        run: cargo install cargo-component --locked
       - name: Install Linux Tauri dependencies
         run: |
           sudo apt-get update
