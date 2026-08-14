@@ -60,6 +60,7 @@ import {
 	type FormEvent,
 	type ReactNode,
 	useEffect,
+	useId,
 	useMemo,
 	useRef,
 	useState,
@@ -837,6 +838,7 @@ function ResetAction({
 }) {
 	const { t } = useTranslation();
 	const dialog = useRef<HTMLDialogElement>(null);
+	const confirmationId = useId();
 	const [confirmation, setConfirmation] = useState("");
 	const [running, setRunning] = useState(false);
 	const deviceWide = kind === "factorResearch";
@@ -918,7 +920,7 @@ function ResetAction({
 					) : null}
 					{kind === "all" || deviceWide ? (
 						<div className="grid gap-2">
-							<Label htmlFor="reset-confirmation">
+								<Label htmlFor={confirmationId}>
 								{t(
 									deviceWide
 										? "settings.dataStorage.typeFactorResearchReset"
@@ -926,7 +928,7 @@ function ResetAction({
 								)}
 							</Label>
 							<Input
-								id="reset-confirmation"
+									id={confirmationId}
 								value={confirmation}
 								onChange={(event) => setConfirmation(event.target.value)}
 								autoComplete="off"
