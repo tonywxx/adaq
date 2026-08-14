@@ -316,7 +316,7 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 						</p>
 						<p className="break-all font-mono text-xs text-muted-foreground">
 							{t("pythonResearch.factorLab.attempt")} {run.attemptId} ·{" "}
-							{t("pythonResearch.factorLab.family")} {run.familyId ?? "pending"}
+							{t("pythonResearch.factorLab.family")} {run.familyId ?? t("pythonResearch.factorLab.pending")}
 						</p>
 						{run.projectRevisionSha256 || run.snapshotId || run.engineIdentity ? (
 							<div className="grid gap-1 break-all font-mono text-xs text-muted-foreground">
@@ -418,7 +418,7 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 										<div className="mt-1 grid gap-1 break-all font-mono text-xs text-muted-foreground">
 											{Object.entries(run.repeatabilityReport).map(([lookback, report]) => (
 												<p key={lookback}>
-													{lookback}: {report.exact ? "exact" : "divergent"}; {report.partitions.join(", ")}; {report.firstProcessSha256} / {report.replayProcessSha256}
+													{lookback}: {report.exact ? t("pythonResearch.factorLab.exact") : t("pythonResearch.factorLab.divergent")}; {report.partitions.join(", ")}; {report.firstProcessSha256} / {report.replayProcessSha256}
 												</p>
 											))}
 										</div>

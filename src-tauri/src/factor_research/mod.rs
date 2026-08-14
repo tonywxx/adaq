@@ -259,6 +259,14 @@ pub(crate) struct FactorCandidatePublishRequest {
     pub presentation: FactorPresentationMetadata,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PythonHostEvidence {
+    pub project_revision_sha256: String,
+    pub environment_sha256: String,
+    pub repeatability_report_sha256: String,
+    pub attempt_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FactorControlledBuildRequest {
@@ -511,6 +519,11 @@ impl FactorResearch {
         request: FactorCandidatePublishRequest,
     ) -> Result<FactorCandidateView, String> {
         validate_user(&request.user_id)?;
+        if matches!(&request.draft.source, FactorCandidateSource::Python { .. }) {
+            return Err(
+                "Python Factor candidates require a Host-validated runner evidence path".into(),
+            );
+        }
         request.presentation.validate().map_err(string)?;
         let candidate = FactorCandidate::freeze(request.draft).map_err(string)?;
         let database = self.inner.source.database()?;
@@ -518,6 +531,46 @@ impl FactorResearch {
             &request.user_id,
             &candidate,
             &request.presentation,
+        )?;
+        ResearchStore::new(&database)
+            .candidate_for_user(&request.user_id, &candidate.candidate_hash)
+    }
+
+    pub(crate) fn publish_python_candidate(
+        &self,
+        request: FactorCandidatePublishRequest,
+        host_evidence: PythonHostEvidence,
+    ) -> Result<FactorCandidateView, String> {
+        validate_user(&request.user_id)?;
+        request.presentation.validate().map_err(string)?;
+        let binding = match &request.draft.source {
+            FactorCandidateSource::Python { binding } => binding,
+            _ => return Err("Host Python evidence requires a Python candidate".into()),
+        };
+        if host_evidence.project_revision_sha256 != binding.project_revision_sha256
+            || host_evidence.environment_sha256 != binding.environment_sha256
+            || host_evidence.repeatability_report_sha256 != binding.repeatability_report_sha256
+            || host_evidence.attempt_ids.is_empty()
+            || host_evidence
+                .attempt_ids
+                .iter()
+                .any(|attempt| Uuid::parse_str(attempt).is_err())
+            || host_evidence.attempt_ids.len()
+                != host_evidence
+                    .attempt_ids
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+        {
+            return Err("Python Host evidence does not match the candidate binding".into());
+        }
+        let candidate = FactorCandidate::freeze(request.draft).map_err(string)?;
+        let database = self.inner.source.database()?;
+        ResearchStore::new(&database).save_candidate_with_python_evidence(
+            &request.user_id,
+            &candidate,
+            &request.presentation,
+            &host_evidence,
         )?;
         ResearchStore::new(&database)
             .candidate_for_user(&request.user_id, &candidate.candidate_hash)
@@ -1015,6 +1068,17 @@ impl FactorResearch {
         )
     }
 
+    pub(crate) fn reset_for_device(&self) -> Result<(), String> {
+        let users = {
+            let database = self.inner.source.database()?;
+            ResearchStore::new(&database).user_ids()?
+        };
+        for user_id in users {
+            self.reset_for_user(&user_id)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn reset_for_user(&self, user_id: &str) -> Result<(), String> {
         validate_user(user_id)?;
         {
@@ -1488,6 +1552,23 @@ impl<'a> ResearchStore<'a> {
         Self { database }
     }
 
+    fn user_ids(&self) -> Result<Vec<String>, String> {
+        let mut statement = self
+            .database
+            .prepare(
+                "SELECT user_id FROM factor_candidate_access
+                 UNION SELECT user_id FROM factor_candidate_presentations
+                 UNION SELECT user_id FROM factor_research_attempts
+                 ORDER BY user_id",
+            )
+            .map_err(string)?;
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(string)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(string)
+    }
+
     fn initialize(&self) -> Result<(), String> {
         self.database
             .execute_batch(
@@ -1511,6 +1592,11 @@ impl<'a> ResearchStore<'a> {
                     candidate_hash TEXT NOT NULL,
                     presentation_json TEXT NOT NULL,
                     PRIMARY KEY(user_id, candidate_hash)
+                 );
+                 CREATE TABLE IF NOT EXISTS factor_python_host_evidence (
+                    candidate_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL
                  );
                  CREATE TABLE IF NOT EXISTS factor_research_protocols (
                     protocol_hash TEXT PRIMARY KEY,
@@ -2130,6 +2216,44 @@ impl<'a> ResearchStore<'a> {
             .map_err(string)?;
         transaction.commit().map_err(string)?;
         Ok(candidate.candidate_hash.clone())
+    }
+
+    fn save_candidate_with_python_evidence(
+        &self,
+        user_id: &str,
+        candidate: &FactorCandidate,
+        presentation: &FactorPresentationMetadata,
+        evidence: &PythonHostEvidence,
+    ) -> Result<String, String> {
+        let candidate_hash = self.save_candidate(user_id, candidate, presentation)?;
+        let evidence_json = serde_json::to_string(evidence).map_err(string)?;
+        self.database
+            .execute(
+                "INSERT INTO factor_python_host_evidence(candidate_hash, user_id, evidence_json)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(candidate_hash) DO UPDATE SET user_id = excluded.user_id,
+                 evidence_json = excluded.evidence_json",
+                params![candidate_hash, user_id, evidence_json],
+            )
+            .map_err(string)?;
+        Ok(candidate_hash)
+    }
+
+    fn python_host_evidence(
+        &self,
+        user_id: &str,
+        candidate_hash: &str,
+    ) -> Result<PythonHostEvidence, String> {
+        let evidence_json: String = self
+            .database
+            .query_row(
+                "SELECT evidence_json FROM factor_python_host_evidence
+                  WHERE user_id = ?1 AND candidate_hash = ?2",
+                params![user_id, candidate_hash],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Python Candidate Host evidence was not found".to_owned())?;
+        serde_json::from_str(&evidence_json).map_err(string)
     }
 
     fn candidate_for_user(
@@ -3412,6 +3536,21 @@ impl<'a> ResearchStore<'a> {
             .map_err(|_| "Promotion Candidate was not found for this User".to_owned())?;
         let candidate = FactorCandidate::load(candidate_json.as_bytes()).map_err(string)?;
         if let FactorCandidateSource::Python { binding } = &candidate.source {
+            let positive_decision = !matches!(
+                &decision.state,
+                adaq_factor_research::PromotionDecisionState::Rejected
+            );
+            if positive_decision {
+                let host_evidence =
+                    self.python_host_evidence(owner_id, &decision.candidate_hash)?;
+                if host_evidence.project_revision_sha256 != binding.project_revision_sha256
+                    || host_evidence.environment_sha256 != binding.environment_sha256
+                    || host_evidence.repeatability_report_sha256
+                        != binding.repeatability_report_sha256
+                {
+                    return Err("Python Candidate Host evidence does not match the binding".into());
+                }
+            }
             if !matches!(
                 &decision.state,
                 adaq_factor_research::PromotionDecisionState::Rejected
@@ -4001,6 +4140,7 @@ impl<'a> ResearchStore<'a> {
         transaction.execute("DELETE FROM factor_dataset_content WHERE NOT EXISTS (SELECT 1 FROM factor_dataset_access a WHERE a.dataset_id = factor_dataset_content.dataset_id)", []).map_err(string)?;
         transaction.execute("DELETE FROM factor_evaluation_reports WHERE NOT EXISTS (SELECT 1 FROM factor_evaluation_report_access a WHERE a.report_hash = factor_evaluation_reports.report_hash)", []).map_err(string)?;
         transaction.execute("DELETE FROM factor_candidate_content WHERE NOT EXISTS (SELECT 1 FROM factor_candidate_access a WHERE a.candidate_hash = factor_candidate_content.candidate_hash)", []).map_err(string)?;
+        transaction.execute("DELETE FROM factor_python_host_evidence WHERE NOT EXISTS (SELECT 1 FROM factor_candidate_access a WHERE a.candidate_hash = factor_python_host_evidence.candidate_hash)", []).map_err(string)?;
         transaction.commit().map_err(string)?;
         for path in dataset_paths.into_iter().chain(report_paths) {
             remove_owned_path(directory, &path)?;

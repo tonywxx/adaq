@@ -2121,7 +2121,7 @@ mod tests {
                         first_output_sha256: "c".repeat(64),
                         replay_output_sha256: "d".repeat(64),
                         exact: false,
-                        partitions: vec!["fresh-process".into()],
+                        partitions: vec!["fresh-process".into(), "portable-definition".into()],
                     },
                 )
             })

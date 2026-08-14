@@ -887,42 +887,27 @@ fn normal_upper_tail(value: f64) -> f64 {
 }
 
 fn factor_repeatability_reports(
-    fixture: &SyntheticTutorialFixture,
-    first_outputs: Option<&BTreeMap<u32, Vec<MomentumOutputRow>>>,
-    replay_outputs: Option<&BTreeMap<u32, Vec<MomentumOutputRow>>>,
+    first_outputs: &BTreeMap<u32, Vec<MomentumOutputRow>>,
+    replay_outputs: &BTreeMap<u32, Vec<MomentumOutputRow>>,
     process_hashes: &BTreeMap<u32, (String, String)>,
     process_replay_exact: bool,
+    mode: PythonFactorMode,
 ) -> Result<BTreeMap<String, PythonRepeatabilityReport>, PythonResearchError> {
     let mut reports = BTreeMap::new();
     for lookback in expand_momentum_grid() {
         let first = first_outputs
-            .and_then(|outputs| outputs.get(&lookback))
+            .get(&lookback)
             .cloned()
-            .unwrap_or(materialize_momentum(
-                &fixture.momentum_rows(),
-                &fixture.instruments,
-                lookback,
-            )?);
+            .ok_or_else(|| PythonResearchError("python-factor-first-output-missing".into()))?;
         let replay = replay_outputs
-            .and_then(|outputs| outputs.get(&lookback))
+            .get(&lookback)
             .cloned()
-            .unwrap_or(materialize_momentum(
-                &fixture.momentum_rows(),
-                &fixture.instruments,
-                lookback,
-            )?);
+            .ok_or_else(|| PythonResearchError("python-factor-replay-output-missing".into()))?;
         let output_report = RepeatabilityReport::exact(&first, &replay)?;
-        let (first_process_sha256, replay_process_sha256) =
-            process_hashes.get(&lookback).cloned().unwrap_or((
-                sha256(
-                    &serde_json::to_vec(&first)
-                        .map_err(|error| PythonResearchError(error.to_string()))?,
-                ),
-                sha256(
-                    &serde_json::to_vec(&replay)
-                        .map_err(|error| PythonResearchError(error.to_string()))?,
-                ),
-            ));
+        let (first_process_sha256, replay_process_sha256) = process_hashes
+            .get(&lookback)
+            .cloned()
+            .ok_or_else(|| PythonResearchError("python-factor-process-evidence-missing".into()))?;
         reports.insert(
             lookback.to_string(),
             PythonRepeatabilityReport {
@@ -933,14 +918,15 @@ fn factor_repeatability_reports(
                 exact: output_report.exact
                     && first_process_sha256 == replay_process_sha256
                     && process_replay_exact,
-                partitions: if first_outputs.is_some() {
-                    vec![
+                partitions: match mode {
+                    PythonFactorMode::ImperativePython => vec![
                         "fresh-process".into(),
                         "single-batch".into(),
                         "split-batch".into(),
-                    ]
-                } else {
-                    vec!["fresh-process".into(), "portable-definition".into()]
+                    ],
+                    PythonFactorMode::PortableDefinition => {
+                        vec!["fresh-process".into(), "portable-definition".into()]
+                    }
                 },
             },
         );
@@ -966,15 +952,6 @@ fn python_factor_resource_policy(policy: &HostResourcePolicy) -> PythonFactorRes
         max_checkpoint_bytes: policy.max_checkpoint_bytes,
         max_log_bytes: policy.max_log_bytes,
     }
-}
-
-fn factor_dataset_input(
-    fixture: &SyntheticTutorialFixture,
-    protocol: &adaq_factor_research::FactorMaterializationProtocol,
-    lookback: u32,
-) -> Result<FactorDatasetInput, PythonResearchError> {
-    let output = materialize_momentum(&fixture.momentum_rows(), &fixture.instruments, lookback)?;
-    factor_dataset_input_from_output(protocol, output)
 }
 
 fn factor_dataset_input_from_output(
@@ -1421,7 +1398,7 @@ fn run_factor_evidence(
     request: &FactorRunRequest,
     candidate_hash: &str,
     feature_evidence: &FactorFeatureEvidence,
-    python_outputs: Option<&BTreeMap<u32, Vec<MomentumOutputRow>>>,
+    python_outputs: &BTreeMap<u32, Vec<MomentumOutputRow>>,
 ) -> Result<FactorEvidenceRun, PythonResearchError> {
     let fixture = SyntheticTutorialFixture::m12()?;
     fixture.validate()?;
@@ -1554,16 +1531,13 @@ fn run_factor_evidence(
             },
         )
         .map_err(|error| PythonResearchError(error.to_string()))?;
-        let dataset = match python_outputs {
-            Some(outputs) => factor_dataset_input_from_output(
-                &protocol,
-                outputs
-                    .get(&lookback)
-                    .cloned()
-                    .ok_or_else(|| PythonResearchError("python-factor-output-missing".into()))?,
-            )?,
-            None => factor_dataset_input(&fixture, &protocol, lookback)?,
-        };
+        let dataset = factor_dataset_input_from_output(
+            &protocol,
+            python_outputs
+                .get(&lookback)
+                .cloned()
+                .ok_or_else(|| PythonResearchError("python-factor-output-missing".into()))?,
+        )?;
         let materialization = local_state
             .factor
             .start_materialization(crate::factor_research::FactorMaterializationStartRequest {
@@ -2763,6 +2737,52 @@ fn validate_portable_factor_source(
     Ok(())
 }
 
+fn portable_factor_outputs(
+    payload: &serde_json::Value,
+    fixture: &SyntheticTutorialFixture,
+) -> Result<BTreeMap<u32, Vec<MomentumOutputRow>>, PythonResearchError> {
+    validate_portable_definition_payload(payload)?;
+    expand_momentum_grid()
+        .into_iter()
+        .map(|lookback| {
+            Ok((
+                lookback,
+                materialize_momentum(&fixture.momentum_rows(), &fixture.instruments, lookback)?,
+            ))
+        })
+        .collect()
+}
+
+fn runner_process_identity_sha256(
+    context: &AttemptContext,
+    request: &FactorRunRequest,
+    execution: &RunnerExecution,
+    parameters: &BTreeMap<String, String>,
+    seed: u64,
+) -> Result<String, PythonResearchError> {
+    let result = execution
+        .conformance
+        .as_ref()
+        .ok_or_else(|| PythonResearchError("runner-process-identity-missing".into()))?;
+    let identity = serde_json::json!({
+        "contract": "adaq-python-factor-process@1",
+        "projectRevisionSha256": request.project_revision_sha256,
+        "environmentSha256": request.environment_sha256,
+        "sdkArtifactSha256": context.revision.sdk_artifact_sha256,
+        "projectId": result.project_id,
+        "projectKind": result.project_kind,
+        "entryPoint": result.entry_point,
+        "mode": context.manifest.mode,
+        "parameters": parameters,
+        "seed": seed,
+        "inputSlots": context.manifest.input_slots,
+        "outputs": context.manifest.outputs,
+    });
+    let bytes =
+        serde_json::to_vec(&identity).map_err(|error| PythonResearchError(error.to_string()))?;
+    Ok(sha256(&bytes))
+}
+
 fn normalize_parameters_for_attempt(
     manifest: &ProjectManifest,
     overrides: Option<&BTreeMap<String, String>>,
@@ -3504,12 +3524,12 @@ pub async fn python_factor_demo(
             .manifest
             .mode
             .ok_or_else(|| "factor-project-mode-missing".to_string())?;
-        let mut first_outputs = None;
-        let mut replay_outputs = None;
         let mut process_replay_exact = true;
         let mut logs = Vec::new();
         let mut process_hashes = BTreeMap::new();
-        let attempt_id = match mode {
+        let mut host_attempt_ids = Vec::new();
+        let default_parameters = normalize_parameters(&context.manifest).map_err(map_error)?;
+        let (attempt_id, first_outputs, replay_outputs) = match mode {
             ProjectMode::PortableDefinition => {
                 let first = research_state
                     .run_trusted_project_with_seed(
@@ -3531,6 +3551,11 @@ pub async fn python_factor_demo(
                     .map_err(map_error)?;
                 append_runner_log(&mut logs, &first);
                 append_runner_log(&mut logs, &replay);
+                for execution in [&first, &replay] {
+                    if let Some(result) = execution.conformance.as_ref() {
+                        host_attempt_ids.push(result.attempt_id.clone());
+                    }
+                }
                 let first_payload = first
                     .conformance
                     .as_ref()
@@ -3542,22 +3567,38 @@ pub async fn python_factor_demo(
                     .and_then(|result| result.payload.as_ref())
                     .ok_or_else(|| "factor-runner-replay-result-missing".to_string())?;
                 process_replay_exact = first_payload == replay_payload;
-                let first_process_sha256 =
-                    sha256(&serde_json::to_vec(first_payload).map_err(|error| error.to_string())?);
-                let replay_process_sha256 =
-                    sha256(&serde_json::to_vec(replay_payload).map_err(|error| error.to_string())?);
+                let first_process_sha256 = runner_process_identity_sha256(
+                    &context,
+                    &request,
+                    &first,
+                    &default_parameters,
+                    7,
+                )
+                .map_err(map_error)?;
+                let replay_process_sha256 = runner_process_identity_sha256(
+                    &context,
+                    &request,
+                    &replay,
+                    &default_parameters,
+                    7,
+                )
+                .map_err(map_error)?;
                 for lookback in expand_momentum_grid() {
                     process_hashes.insert(
                         lookback,
                         (first_process_sha256.clone(), replay_process_sha256.clone()),
                     );
                 }
+                let first_outputs =
+                    portable_factor_outputs(first_payload, &fixture).map_err(map_error)?;
+                let replay_outputs =
+                    portable_factor_outputs(replay_payload, &fixture).map_err(map_error)?;
                 let attempt_id = first
                     .conformance
                     .as_ref()
                     .map(|result| result.attempt_id.clone())
                     .ok_or_else(|| "factor-runner-result-missing".to_string())?;
-                attempt_id
+                (attempt_id, Some(first_outputs), Some(replay_outputs))
             }
             ProjectMode::ImperativePython => {
                 let input =
@@ -3595,6 +3636,11 @@ pub async fn python_factor_demo(
                         .map_err(map_error)?;
                     append_runner_log(&mut logs, &execution);
                     append_runner_log(&mut logs, &replay_execution);
+                    for current in [&execution, &replay_execution] {
+                        if let Some(result) = current.conformance.as_ref() {
+                            host_attempt_ids.push(result.attempt_id.clone());
+                        }
+                    }
                     let input_contract = serde_json::from_value::<PythonFactorInput>(input.clone())
                         .map_err(|error| error.to_string())?;
                     let replay_input_contract =
@@ -3616,19 +3662,23 @@ pub async fn python_factor_demo(
                         validate_imperative_factor_payload(replay_output, &replay_input_contract)
                             .map_err(map_error)?;
                     process_replay_exact &= first_rows == replay_rows;
-                    process_hashes.insert(
-                        lookback,
-                        (
-                            sha256(
-                                &serde_json::to_vec(&first_rows)
-                                    .map_err(|error| error.to_string())?,
-                            ),
-                            sha256(
-                                &serde_json::to_vec(&replay_rows)
-                                    .map_err(|error| error.to_string())?,
-                            ),
-                        ),
-                    );
+                    let process_sha256 = runner_process_identity_sha256(
+                        &context,
+                        &request,
+                        &execution,
+                        &parameters,
+                        7,
+                    )
+                    .map_err(map_error)?;
+                    let replay_process_sha256 = runner_process_identity_sha256(
+                        &context,
+                        &request,
+                        &replay_execution,
+                        &parameters,
+                        7,
+                    )
+                    .map_err(map_error)?;
+                    process_hashes.insert(lookback, (process_sha256, replay_process_sha256));
                     first.insert(lookback, first_rows);
                     replay.insert(lookback, replay_rows);
                     if lookback == 20 {
@@ -3638,17 +3688,27 @@ pub async fn python_factor_demo(
                             .map(|result| result.attempt_id.clone());
                     }
                 }
-                first_outputs = Some(first);
-                replay_outputs = Some(replay);
-                attempt_id.ok_or_else(|| "factor-runner-result-missing".to_string())?
+                let attempt_id =
+                    attempt_id.ok_or_else(|| "factor-runner-result-missing".to_string())?;
+                (attempt_id, Some(first), Some(replay))
             }
         };
+        let factor_mode = match mode {
+            ProjectMode::ImperativePython => PythonFactorMode::ImperativePython,
+            ProjectMode::PortableDefinition => PythonFactorMode::PortableDefinition,
+        };
+        let first_outputs = first_outputs
+            .as_ref()
+            .ok_or_else(|| "python-factor-output-missing".to_string())?;
+        let replay_outputs = replay_outputs
+            .as_ref()
+            .ok_or_else(|| "python-factor-replay-output-missing".to_string())?;
         let repeatability_report = factor_repeatability_reports(
-            &fixture,
-            first_outputs.as_ref(),
-            replay_outputs.as_ref(),
+            first_outputs,
+            replay_outputs,
             &process_hashes,
             process_replay_exact,
+            factor_mode,
         )
         .map_err(map_error)?;
         let repeatability_verified = repeatability_report.values().all(|report| report.exact);
@@ -3708,27 +3768,35 @@ pub async fn python_factor_demo(
         };
         let candidate_view = local_state
             .factor
-            .publish_candidate(crate::factor_research::FactorCandidatePublishRequest {
-                user_id: request.user_id.clone(),
-                draft: candidate_draft,
-                presentation: FactorPresentationMetadata {
-                    name: "Python Cross-sectional Momentum".into(),
-                    description: "Synthetic M12 portable Python Factor candidate".into(),
-                    tags: vec!["python".into(), "momentum".into(), "synthetic".into()],
+            .publish_python_candidate(
+                crate::factor_research::FactorCandidatePublishRequest {
+                    user_id: request.user_id.clone(),
+                    draft: candidate_draft,
+                    presentation: FactorPresentationMetadata {
+                        name: "Python Cross-sectional Momentum".into(),
+                        description: "Synthetic M12 portable Python Factor candidate".into(),
+                        tags: vec!["python".into(), "momentum".into(), "synthetic".into()],
+                    },
                 },
-            })
+                crate::factor_research::PythonHostEvidence {
+                    project_revision_sha256: request.project_revision_sha256.clone(),
+                    environment_sha256: request.environment_sha256.clone(),
+                    repeatability_report_sha256: repeatability_report_sha256.clone(),
+                    attempt_ids: host_attempt_ids,
+                },
+            )
             .map_err(|error| error.to_string())?;
         let evidence = run_factor_evidence(
             &local_state,
             &request,
             &candidate_view.candidate.candidate_hash,
             &feature_evidence,
-            first_outputs.as_ref(),
+            first_outputs,
         )
         .map_err(map_error)?;
         let mut run = demo_factor_run_with_outputs(
-            first_outputs.as_ref(),
-            replay_outputs.as_ref(),
+            Some(first_outputs),
+            Some(replay_outputs),
             process_replay_exact,
         )
         .map_err(map_error)?;
@@ -4746,10 +4814,6 @@ mod tests {
         };
         let fixture = SyntheticTutorialFixture::m12().unwrap();
         let feature_evidence = prepare_factor_feature_evidence(&local, &request, &fixture).unwrap();
-        let repeatability_report =
-            factor_repeatability_reports(&fixture, None, None, &BTreeMap::new(), true).unwrap();
-        let repeatability_report_sha256 =
-            adaq_factor_research::content_hash(&repeatability_report).unwrap();
         let python_outputs = expand_momentum_grid()
             .into_iter()
             .map(|lookback| {
@@ -4760,76 +4824,103 @@ mod tests {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let process_hashes = expand_momentum_grid()
+            .into_iter()
+            .map(|lookback| {
+                (
+                    lookback,
+                    (sha256(b"vertical-process"), sha256(b"vertical-process")),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let repeatability_report = factor_repeatability_reports(
+            &python_outputs,
+            &python_outputs,
+            &process_hashes,
+            true,
+            PythonFactorMode::PortableDefinition,
+        )
+        .unwrap();
+        let repeatability_report_sha256 =
+            adaq_factor_research::content_hash(&repeatability_report).unwrap();
         let candidate = local
             .factor
-            .publish_candidate(crate::factor_research::FactorCandidatePublishRequest {
-                user_id: request.user_id.clone(),
-                draft: FactorCandidateDraft {
-                    candidate_id: uuid::Uuid::from_u128(0x6d120101000000000000000000000001),
-                    revision: 1,
-                    scope: FactorScope::CrossSectional,
-                    feature_slots: vec![FactorFeatureSlot {
-                        name: "close".into(),
-                    }],
-                    parameters: vec![FactorParameter {
-                        name: "lookback".into(),
-                        parameter_type: FactorParameterType::Integer,
-                        default_value: "20".into(),
-                        allowed_values: vec!["5".into(), "20".into(), "60".into()],
-                    }],
-                    outputs: vec![FactorOutput {
-                        name: "momentum-score".into(),
-                    }],
-                    source: FactorCandidateSource::Python {
-                        binding: PythonFactorBinding {
-                            project_id: request.project_id.clone(),
-                            project_revision_sha256: request.project_revision_sha256.clone(),
-                            environment_sha256: request.environment_sha256.clone(),
-                            input_bindings: BTreeMap::from([(
-                                "close".into(),
-                                "host:market-close".into(),
-                            )]),
-                            snapshot_id: feature_evidence.snapshot_id.clone(),
-                            snapshot_bindings: feature_evidence.snapshot_bindings.clone(),
-                            point_in_time_universe_id: sha256(
-                                b"python-tutorial-a-share@1:point-in-time-universe",
-                            ),
-                            feature_evidence_sha256: feature_evidence.evidence_sha256.clone(),
-                            feature_dataset_bindings: feature_evidence.dataset_bindings.clone(),
-                            normalized_parameters: BTreeMap::from([(
-                                "lookback".into(),
-                                "20".into(),
-                            )]),
-                            engine_identity: "adaq-python-factor@1".into(),
-                            repeatability_report_sha256,
-                            repeatability_verified: true,
-                            repeatability_report,
-                            sdk_artifact_sha256: PUBLIC_SDK_ARTIFACT_SHA256.into(),
-                            entry_point: "project:create_project".into(),
-                            mode: PythonFactorMode::PortableDefinition,
-                            feature_plan_hash: feature_evidence.plan_hash.clone(),
-                            operator_catalog_version:
-                                adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION.into(),
-                            resource_policy: python_factor_resource_policy(
-                                &HostResourcePolicy::m12_default(),
-                            ),
-                            seed: 7,
+            .publish_python_candidate(
+                crate::factor_research::FactorCandidatePublishRequest {
+                    user_id: request.user_id.clone(),
+                    draft: FactorCandidateDraft {
+                        candidate_id: uuid::Uuid::from_u128(0x6d120101000000000000000000000001),
+                        revision: 1,
+                        scope: FactorScope::CrossSectional,
+                        feature_slots: vec![FactorFeatureSlot {
+                            name: "close".into(),
+                        }],
+                        parameters: vec![FactorParameter {
+                            name: "lookback".into(),
+                            parameter_type: FactorParameterType::Integer,
+                            default_value: "20".into(),
+                            allowed_values: vec!["5".into(), "20".into(), "60".into()],
+                        }],
+                        outputs: vec![FactorOutput {
+                            name: "momentum-score".into(),
+                        }],
+                        source: FactorCandidateSource::Python {
+                            binding: PythonFactorBinding {
+                                project_id: request.project_id.clone(),
+                                project_revision_sha256: request.project_revision_sha256.clone(),
+                                environment_sha256: request.environment_sha256.clone(),
+                                input_bindings: BTreeMap::from([(
+                                    "close".into(),
+                                    "host:market-close".into(),
+                                )]),
+                                snapshot_id: feature_evidence.snapshot_id.clone(),
+                                snapshot_bindings: feature_evidence.snapshot_bindings.clone(),
+                                point_in_time_universe_id: sha256(
+                                    b"python-tutorial-a-share@1:point-in-time-universe",
+                                ),
+                                feature_evidence_sha256: feature_evidence.evidence_sha256.clone(),
+                                feature_dataset_bindings: feature_evidence.dataset_bindings.clone(),
+                                normalized_parameters: BTreeMap::from([(
+                                    "lookback".into(),
+                                    "20".into(),
+                                )]),
+                                engine_identity: "adaq-python-factor@1".into(),
+                                repeatability_report_sha256: repeatability_report_sha256.clone(),
+                                repeatability_verified: true,
+                                repeatability_report,
+                                sdk_artifact_sha256: PUBLIC_SDK_ARTIFACT_SHA256.into(),
+                                entry_point: "project:create_project".into(),
+                                mode: PythonFactorMode::PortableDefinition,
+                                feature_plan_hash: feature_evidence.plan_hash.clone(),
+                                operator_catalog_version:
+                                    adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION.into(),
+                                resource_policy: python_factor_resource_policy(
+                                    &HostResourcePolicy::m12_default(),
+                                ),
+                                seed: 7,
+                            },
                         },
                     },
+                    presentation: FactorPresentationMetadata {
+                        name: "Python Cross-sectional Momentum".into(),
+                        description: "Synthetic M12 portable Python Factor candidate".into(),
+                        tags: vec!["python".into(), "momentum".into(), "synthetic".into()],
+                    },
                 },
-                presentation: FactorPresentationMetadata {
-                    name: "Python Cross-sectional Momentum".into(),
-                    description: "Synthetic M12 portable Python Factor candidate".into(),
-                    tags: vec!["python".into(), "momentum".into(), "synthetic".into()],
+                crate::factor_research::PythonHostEvidence {
+                    project_revision_sha256: request.project_revision_sha256.clone(),
+                    environment_sha256: request.environment_sha256.clone(),
+                    repeatability_report_sha256,
+                    attempt_ids: vec![uuid::Uuid::new_v4().to_string()],
                 },
-            })
+            )
             .unwrap();
         let evidence = run_factor_evidence(
             &local,
             &request,
             &candidate.candidate.candidate_hash,
             &feature_evidence,
-            Some(&python_outputs),
+            &python_outputs,
         )
         .unwrap();
         assert_eq!(evidence.trial_ids.len(), 3);

@@ -2669,7 +2669,7 @@ pub fn run() {
             backtest_delete,
             local_research::local_data_summary,
             local_research::local_data_reset,
-            local_research::factor_research_reset,
+            local_research::factor_research_device_reset,
             validation_protocol_create,
             validation_protocol_list,
             validation_report_run,

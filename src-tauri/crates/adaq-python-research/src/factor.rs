@@ -507,9 +507,6 @@ pub fn validate_imperative_factor_payload(
         {
             return Err(invalid("python-factor-spurious-missing-input"));
         }
-        if expected_row.close.is_some() && unavailable_reason.is_some() {
-            return Err(invalid("python-factor-present-input-unavailable"));
-        }
         output.push(MomentumOutputRow {
             instrument_id: actual_row.instrument_id.clone(),
             observation_time_ms: actual_row.event_time_ms,
@@ -634,7 +631,47 @@ mod tests {
     }
 
     #[test]
-    fn present_inputs_cannot_report_host_owned_unavailability() {
+    fn present_inputs_cannot_report_spurious_missing_input() {
+        let input = PythonFactorInput {
+            universe: vec!["AAA".into(), "BBB".into()],
+            segments: vec![PythonFactorSegment {
+                segment_id: "continuous-1".into(),
+                batches: vec![PythonFactorBatch {
+                    rows: vec![
+                        MomentumInputRow {
+                            instrument_id: "AAA".into(),
+                            observation_time_ms: 1,
+                            close: Some(1.0),
+                        },
+                        MomentumInputRow {
+                            instrument_id: "BBB".into(),
+                            observation_time_ms: 1,
+                            close: Some(2.0),
+                        },
+                    ],
+                }],
+            }],
+        };
+        let payload = serde_json::json!({
+            "output_names": ["momentum-score"],
+            "outputs": [{
+                "segment_id": "continuous-1",
+                "rows": [
+                    {"instrument_id": "AAA", "event_time_ms": 1, "value": {"reason": "missing-input"}},
+                    {"instrument_id": "BBB", "event_time_ms": 1, "value": 0.5}
+                ]
+            }]
+        });
+        assert_eq!(
+            validate_imperative_factor_payload(&payload, &input)
+                .unwrap_err()
+                .to_string(),
+            "python-factor-spurious-missing-input"
+        );
+    }
+
+    #[test]
+    fn present_inputs_may_report_warmup_before_full_window() {
         let input = PythonFactorInput {
             universe: vec!["AAA".into(), "BBB".into()],
             segments: vec![PythonFactorSegment {
@@ -661,16 +698,11 @@ mod tests {
                 "segment_id": "continuous-1",
                 "rows": [
                     {"instrument_id": "AAA", "event_time_ms": 1, "value": {"reason": "warmup"}},
-                    {"instrument_id": "BBB", "event_time_ms": 1, "value": 0.5}
+                    {"instrument_id": "BBB", "event_time_ms": 1, "value": {"reason": "warmup"}}
                 ]
             }]
         });
-        assert_eq!(
-            validate_imperative_factor_payload(&payload, &input)
-                .unwrap_err()
-                .to_string(),
-            "python-factor-present-input-unavailable"
-        );
+        assert!(validate_imperative_factor_payload(&payload, &input).is_ok());
     }
 
     #[test]

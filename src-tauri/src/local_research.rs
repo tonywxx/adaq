@@ -1116,14 +1116,11 @@ pub async fn local_data_reset(
 }
 
 #[tauri::command]
-pub async fn factor_research_reset(
-    request: LocalDataRequest,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn factor_research_device_reset(app: tauri::AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .factor
-            .reset_for_user(&request.user_id)
+            .reset_for_device()
     })
     .await
     .map_err(string)?

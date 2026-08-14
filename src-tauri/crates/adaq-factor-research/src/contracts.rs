@@ -227,11 +227,15 @@ pub struct PythonRepeatabilityReport {
 
 impl PythonRepeatabilityReport {
     pub fn validate(&self) -> Result<(), ContractError> {
+        let mut partitions = self.partitions.clone();
+        partitions.sort();
+        partitions.dedup();
         if !is_sha256(&self.first_process_sha256)
             || !is_sha256(&self.replay_process_sha256)
             || !is_sha256(&self.first_output_sha256)
             || !is_sha256(&self.replay_output_sha256)
             || self.partitions.is_empty()
+            || partitions.len() != self.partitions.len()
             || (self.exact
                 && (self.first_process_sha256 != self.replay_process_sha256
                     || self.first_output_sha256 != self.replay_output_sha256))
@@ -246,6 +250,20 @@ impl PythonRepeatabilityReport {
         {
             return Err(ContractError::Invalid(
                 "Python Factor repeatability report is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_for_mode(&self, mode: PythonFactorMode) -> Result<(), ContractError> {
+        self.validate()?;
+        let expected: &[&str] = match mode {
+            PythonFactorMode::ImperativePython => &["fresh-process", "single-batch", "split-batch"],
+            PythonFactorMode::PortableDefinition => &["fresh-process", "portable-definition"],
+        };
+        if self.partitions.as_slice() != expected {
+            return Err(ContractError::Invalid(
+                "Python Factor repeatability partitions do not match execution mode".into(),
             ));
         }
         Ok(())
@@ -309,7 +327,7 @@ impl PythonFactorBinding {
             || self
                 .repeatability_report
                 .values()
-                .any(|report| report.validate().is_err())
+                .any(|report| report.validate_for_mode(self.mode).is_err())
             || content_hash(&self.repeatability_report).ok().as_deref()
                 != Some(self.repeatability_report_sha256.as_str())
             || self.repeatability_verified
@@ -2307,7 +2325,7 @@ mod tests {
                         first_output_sha256: "c".repeat(64),
                         replay_output_sha256: "d".repeat(64),
                         exact: false,
-                        partitions: vec!["fresh-process".into()],
+                        partitions: vec!["fresh-process".into(), "portable-definition".into()],
                     },
                 )
             })
