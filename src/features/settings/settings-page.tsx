@@ -843,10 +843,9 @@ function ResetAction({
 	const [running, setRunning] = useState(false);
 	const deviceWide = kind === "factorResearch";
 	const requiredConfirmation = deviceWide ? "RESET FACTOR RESEARCH" : "RESET";
-	const blocked =
-		deviceWide
-			? false
-			: kind === "components"
+	const blocked = deviceWide
+		? false
+		: kind === "components"
 			? (summary?.componentBlockingRunCount ?? 0) > 0
 			: kind === "marketData"
 				? (summary?.marketDataBlockingRecordCount ?? 0) > 0
@@ -920,7 +919,7 @@ function ResetAction({
 					) : null}
 					{kind === "all" || deviceWide ? (
 						<div className="grid gap-2">
-								<Label htmlFor={confirmationId}>
+							<Label htmlFor={confirmationId}>
 								{t(
 									deviceWide
 										? "settings.dataStorage.typeFactorResearchReset"
@@ -928,7 +927,7 @@ function ResetAction({
 								)}
 							</Label>
 							<Input
-									id={confirmationId}
+								id={confirmationId}
 								value={confirmation}
 								onChange={(event) => setConfirmation(event.target.value)}
 								autoComplete="off"
@@ -1028,7 +1027,9 @@ function ResetDetails({
 			</li>,
 		);
 	if (kind === "factorResearch")
-		rows.push(<li key="factorResearch">{t("settings.dataStorage.factorResearchData")}</li>);
+		rows.push(
+			<li key="factorResearch">{t("settings.dataStorage.factorResearchData")}</li>,
+		);
 	return (
 		<div className="rounded-lg border bg-muted/30 p-4 text-sm">
 			<p className="mb-2 font-medium">{t("settings.dataStorage.dataToReset")}</p>
