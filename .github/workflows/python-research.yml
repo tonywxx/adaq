@@ -27,6 +27,8 @@ jobs:
   contracts:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    env:
+      Platform: ${{ matrix.runner == 'windows-latest' && 'x64' || '' }}
     strategy:
       fail-fast: false
       matrix:
