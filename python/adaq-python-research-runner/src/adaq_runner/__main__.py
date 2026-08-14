@@ -10,10 +10,11 @@ import json
 import contextlib
 import dataclasses
 import enum
+import hashlib
 import importlib
-import io
 import os
 import pathlib
+import random
 import socket
 import struct
 import sys
@@ -43,7 +44,13 @@ def _read_frame(stream: BinaryIO) -> dict[str, object] | None:
 
 
 def _write_frame(stream: BinaryIO, value: dict[str, object]) -> None:
-    body = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+    body = json.dumps(
+        value,
+        separators=(",", ":"),
+        sort_keys=True,
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode()
     if len(body) > MAX_FRAME:
         raise ValueError("runner-control-message-too-large")
     stream.write(struct.pack(">I", len(body)))
@@ -64,8 +71,16 @@ def _validate_handshake(value: dict[str, object]) -> None:
     handshake = value.get("handshake")
     if value.get("kind") != "hello" or not isinstance(handshake, dict):
         raise ValueError("runner-handshake-rejected")
+    if set(handshake) != set(expected):
+        raise ValueError("runner-handshake-rejected")
     if any(handshake.get(key) != expected_value for key, expected_value in expected.items()):
         raise ValueError("runner-handshake-rejected")
+    if any(
+        not isinstance(expected[key], str) or len(expected[key]) != 64
+        or any(character not in "0123456789abcdef" for character in expected[key])
+        for key in ("sdkArtifactSha256", "revisionSha256", "environmentSha256")
+    ):
+        raise ValueError("runner-handshake-identities-invalid")
     token = expected["oneTimeToken"]
     if not isinstance(token, str) or len(token) < 32:
         raise ValueError("runner-handshake-token-invalid")
@@ -83,6 +98,12 @@ def _environment_handshake() -> dict[str, object]:
     }
     if any(not isinstance(value, str) for value in values.values() if value is not True):
         raise ValueError("runner-handshake-environment-invalid")
+    if any(
+        len(values[key]) != 64
+        or any(character not in "0123456789abcdef" for character in values[key])
+        for key in ("sdkArtifactSha256", "revisionSha256", "environmentSha256")
+    ):
+        raise ValueError("runner-handshake-identities-invalid")
     return values
 
 
@@ -103,9 +124,7 @@ def _execute_project(
     module_name, separator, function_name = entry_point.partition(":")
     if not separator or not module_name or not function_name:
         raise ValueError("runner-entry-point-invalid")
-    stdout = io.StringIO()
-    stderr = io.StringIO()
-    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+    with contextlib.redirect_stdout(sys.stderr):
         result = getattr(importlib.import_module(module_name), function_name)()
     payload: object | None
     if isinstance(result, dict):
@@ -117,9 +136,109 @@ def _execute_project(
         "projectId": project_id,
         "projectKind": project_kind,
         "entryPoint": entry_point,
-        "output": (stdout.getvalue() + stderr.getvalue())[:4096],
         "payload": payload,
     }
+
+
+def _write_staged_result(
+    result: dict[str, object], result_path: pathlib.Path, result_name: str
+) -> dict[str, object]:
+    body = json.dumps(
+        result,
+        separators=(",", ":"),
+        sort_keys=True,
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode()
+    max_bytes = int(os.environ.get("ADAQ_MAX_ARTIFACT_BYTES", "134217728"))
+    if len(body) > max_bytes:
+        raise ValueError("runner-artifact-too-large")
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_bytes(body)
+    return {
+        "attemptId": os.environ.get("ADAQ_EXPECTED_ATTEMPT_ID", ""),
+        "relativePath": result_name,
+        "mediaType": "application/json",
+        "byteSize": len(body),
+        "sha256": hashlib.sha256(body).hexdigest(),
+    }
+
+
+def _validate_execution(value: object, entry_point: str) -> int:
+    if not isinstance(value, dict) or set(value) != {
+        "sdkArtifactSha256",
+        "runtimeArtifactSha256",
+        "entryPoint",
+        "inputBindings",
+        "parameters",
+        "seed",
+        "outputNames",
+    }:
+        raise ValueError("runner-execution-contract-invalid")
+    if value["entryPoint"] != entry_point:
+        raise ValueError("runner-execution-entry-point-mismatch")
+    if (
+        not isinstance(value["sdkArtifactSha256"], str)
+        or value["sdkArtifactSha256"]
+        != os.environ.get("ADAQ_EXPECTED_SDK_SHA256")
+        or not isinstance(value["runtimeArtifactSha256"], str)
+        or len(value["runtimeArtifactSha256"]) != 64
+        or any(character not in "0123456789abcdef" for character in value["runtimeArtifactSha256"])
+    ):
+        raise ValueError("runner-execution-identity-invalid")
+    if (
+        not isinstance(value["inputBindings"], dict)
+        or not all(
+            isinstance(key, str) and isinstance(item, str)
+            for key, item in value["inputBindings"].items()
+        )
+        or not isinstance(value["parameters"], dict)
+        or not all(
+            isinstance(key, str) and isinstance(item, str)
+            for key, item in value["parameters"].items()
+        )
+        or not isinstance(value["outputNames"], list)
+        or not all(isinstance(item, str) for item in value["outputNames"])
+    ):
+        raise ValueError("runner-execution-contract-invalid")
+    seed = value["seed"]
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("runner-execution-seed-invalid")
+    return seed
+
+
+def _apply_resource_policy(seed: int) -> None:
+    random.seed(seed)
+    try:
+        import numpy
+
+        numpy.random.seed(seed % (2**32))
+    except (ImportError, ValueError):
+        pass
+    try:
+        import resource
+    except ImportError:
+        # Windows has no stdlib resource module; the Host still enforces wall,
+        # protocol, artifact, log, and process-tree limits.
+        return
+    memory = int(os.environ["ADAQ_MAX_MEMORY_BYTES"])
+    try:
+        _, memory_hard = resource.getrlimit(resource.RLIMIT_AS)
+        if memory_hard != resource.RLIM_INFINITY:
+            memory = min(memory, memory_hard)
+        resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
+    except (ValueError, OSError):
+        # Some Unix hosts reject lowering an unlimited address-space limit.
+        pass
+    processes = int(os.environ["ADAQ_MAX_PROCESSES"])
+    if hasattr(resource, "RLIMIT_NPROC"):
+        current, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+        # RLIMIT_NPROC is per-user, so lowering it below the already-running
+        # process count is invalid; the Host owns process-tree termination.
+        if current != resource.RLIM_INFINITY and processes >= current:
+            if hard != resource.RLIM_INFINITY:
+                processes = min(processes, hard)
+            resource.setrlimit(resource.RLIMIT_NPROC, (processes, processes))
 
 
 def _project_payload(project: object, project_kind: str) -> object:
@@ -162,6 +281,8 @@ def run_socket(
     project_root: pathlib.Path,
     entry_point: str,
     sdk_wheel: str | None,
+    result_path: pathlib.Path,
+    result_name: str,
 ) -> int:
     host, separator, port = address.rpartition(":")
     if separator != ":" or host != "127.0.0.1":
@@ -174,6 +295,8 @@ def run_socket(
                 if command and command.get("kind") in {"cancel", "shutdown"}:
                     return 0
                 raise ValueError("runner-execute-required")
+            seed = _validate_execution(command.get("execution"), entry_point)
+            _apply_resource_policy(seed)
             message = command
             while True:
                 kind = message["kind"]
@@ -192,19 +315,8 @@ def run_socket(
                             },
                         )
                         return 1
-                    output = result.pop("output")
-                    if output:
-                        _write_frame(
-                            stream,
-                            {
-                                "kind": "diagnostic",
-                                "code": "runner-project-output",
-                                "message": output,
-                            },
-                        )
-                    _write_frame(
-                        stream, {"kind": "conformance-result", "result": result}
-                    )
+                    artifact = _write_staged_result(result, result_path, result_name)
+                    _write_frame(stream, {"kind": "artifact", "artifact": artifact})
                     message = _read_frame(stream)
                     if message is None:
                         return 1
@@ -251,6 +363,8 @@ if __name__ == "__main__":
                     pathlib.Path(argument("--project-root") or ""),
                     argument("--entry-point") or "",
                     argument("--sdk-wheel", required=False),
+                    pathlib.Path(argument("--result-path") or ""),
+                    argument("--result-name", required=False) or "conformance-result.json",
                 )
             )
         raise SystemExit(run())

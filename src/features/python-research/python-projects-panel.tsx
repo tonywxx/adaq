@@ -35,6 +35,8 @@ type ResearchAttempt = {
 	failureCode?: string;
 	diagnostic?: string;
 	log?: string;
+	progressCompleted?: number;
+	progressTotal?: number;
 	stagedResultSha256?: string;
 };
 
@@ -44,6 +46,42 @@ type EnvironmentRecord = {
 
 type EnvironmentSyncResult = {
 	lockSha256: string;
+};
+
+type AttemptPreview = {
+	projectId: string;
+	revisionSha256: string;
+	entryPoint: string;
+	sourceFiles: Record<string, string>;
+	lock: {
+		lockSha256: string;
+		runtimeArtifactSha256: string;
+		wheelhouseIdentity: string;
+		platform: string;
+		wheels: Array<{
+			fileName: string;
+			package: string;
+			version: string;
+			sha256: string;
+			size: number;
+		}>;
+	};
+	environmentSha256: string;
+	runtime: {
+		profile: string;
+		version: string;
+		platform: string;
+		artifactSha256: string;
+		source: string;
+		signature: string;
+	};
+	sdkArtifactSha256: string;
+	inputBindings: Record<string, string>;
+	normalizedParameters: Record<string, string>;
+	seed: number;
+	resourcePolicy: Record<string, number | string>;
+	trustDecision?: { decisionId: string };
+	trustedCodeWarning: string;
 };
 
 type Props = {
@@ -69,11 +107,14 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 	const [busy, setBusy] = useState("");
 	const [error, setError] = useState("");
 	const [revisions, setRevisions] = useState<Record<string, string>>({});
-	const [trusted, setTrusted] = useState<Record<string, boolean>>({});
 	const [attempts, setAttempts] = useState<ResearchAttempt[]>([]);
 	const [environmentSha256, setEnvironmentSha256] = useState<
 		Record<string, string>
 	>({});
+	const [preview, setPreview] = useState<{
+		project: WorkingCopy;
+		value: AttemptPreview;
+	} | null>(null);
 
 	const refreshAttempts = useCallback(async () => {
 		if (!isTauriRuntime()) return;
@@ -100,6 +141,12 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 				]);
 				setProjects(nextProjects);
 				setAttempts(nextAttempts);
+				setRevisions(
+					nextProjects.reduce<Record<string, string>>((result, project) => {
+						if (project.revisionSha256) result[project.projectId] = project.revisionSha256;
+						return result;
+					}, {}),
+				);
 				if (notify) window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
 			} catch (reason) {
 				setError(String(reason));
@@ -221,17 +268,22 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 		}
 	};
 
-	const trust = async (project: WorkingCopy) => {
+	const openPreview = async (project: WorkingCopy) => {
 		const revision = revisions[project.projectId];
 		if (!revision) return;
-		setBusy(`${project.projectId}:trust`);
+		setBusy(`${project.projectId}:preview`);
 		setError("");
 		await afterPaint();
 		try {
-			await invoke("trust_revision", {
-				request: { userId, projectId: project.projectId, revisionSha256: revision },
+			const value = await invoke<AttemptPreview>("attempt_preview", {
+				request: {
+					userId,
+					projectId: project.projectId,
+					revisionSha256: revision,
+					seed: 0,
+				},
 			});
-			setTrusted((current) => ({ ...current, [project.projectId]: true }));
+			setPreview({ project, value });
 		} catch (reason) {
 			setError(String(reason));
 		} finally {
@@ -239,22 +291,33 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 		}
 	};
 
-	const startAttempt = async (project: WorkingCopy) => {
-		const revision = revisions[project.projectId];
-		const environment = environmentSha256[project.projectId];
-		if (!revision || !trusted[project.projectId] || !environment) return;
+	const confirmPreview = async () => {
+		if (!preview) return;
+		const { project, value } = preview;
 		setBusy(`${project.projectId}:start`);
 		setError("");
 		await afterPaint();
 		try {
+			if (!value.trustDecision) {
+				await invoke("trust_revision", {
+					request: {
+						userId,
+						projectId: value.projectId,
+						revisionSha256: value.revisionSha256,
+					},
+				});
+			}
 			await invoke("attempt_start", {
 				request: {
 					userId,
-					projectId: project.projectId,
-					revisionSha256: revision,
-					environmentSha256: environment,
+					projectId: value.projectId,
+					revisionSha256: value.revisionSha256,
+					environmentSha256: value.environmentSha256,
+					resourcePolicy: value.resourcePolicy,
+					seed: value.seed,
 				},
 			});
+			setPreview(null);
 			await refresh(true);
 		} catch (reason) {
 			setError(String(reason));
@@ -300,11 +363,6 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 				return next;
 			});
 			setRevisions((current) => {
-				const next = { ...current };
-				delete next[project.projectId];
-				return next;
-			});
-			setTrusted((current) => {
 				const next = { ...current };
 				delete next[project.projectId];
 				return next;
@@ -361,6 +419,7 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 		attempt.projectId.startsWith(`py-${kind}-`),
 	);
 	return (
+		<>
 		<Card>
 			<CardHeader>
 				<div className="flex flex-wrap items-start justify-between gap-3">
@@ -468,13 +527,11 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 									type="button"
 									size="sm"
 									variant="outline"
-									onClick={() => void trust(project)}
-									disabled={!revisions[project.projectId]}
-									loading={busy === `${project.projectId}:trust`}
+									onClick={() => void openPreview(project)}
+									disabled={!revisions[project.projectId] || project.state !== "clean"}
+									loading={busy === `${project.projectId}:preview`}
 								>
-									{trusted[project.projectId]
-										? t("pythonResearch.projects.trusted")
-										: t("pythonResearch.projects.trust")}
+									{t("pythonResearch.projects.reviewTrust")}
 								</Button>
 								<Button
 									type="button"
@@ -500,11 +557,11 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 									type="button"
 									size="sm"
 									variant="outline"
-									onClick={() => void startAttempt(project)}
+									onClick={() => void openPreview(project)}
 									disabled={
-										!trusted[project.projectId] || !environmentSha256[project.projectId]
+										!revisions[project.projectId] || project.state !== "clean"
 									}
-									loading={busy === `${project.projectId}:start`}
+									loading={busy === `${project.projectId}:preview`}
 								>
 									{t("pythonResearch.projects.start")}
 								</Button>
@@ -561,6 +618,12 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 								)}
 							</div>
 						</div>
+						{attempt.progressTotal ? (
+							<p className="text-xs text-muted-foreground">
+								{t("pythonResearch.projects.progress")}: {attempt.progressCompleted ?? 0}/
+								{attempt.progressTotal}
+							</p>
+						) : null}
 						{attempt.failureCode || attempt.diagnostic || attempt.log ? (
 							<p className="break-all text-xs text-muted-foreground">
 								{attempt.failureCode ?? ""} {attempt.diagnostic ?? attempt.log ?? ""}
@@ -575,5 +638,105 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 				))}
 			</CardContent>
 		</Card>
+		{preview ? (
+			<div
+				className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-background/80 p-4"
+				role="dialog"
+				aria-modal="true"
+				aria-labelledby="python-research-preview-title"
+			>
+				<Card className="max-h-[90vh] w-full max-w-3xl overflow-y-auto">
+					<CardHeader>
+						<CardTitle id="python-research-preview-title">
+							{t("pythonResearch.projects.review.title")}
+						</CardTitle>
+						<CardDescription>
+							{t("pythonResearch.projects.review.description")}
+						</CardDescription>
+					</CardHeader>
+					<CardContent className="grid gap-3 text-sm">
+						<div className="grid gap-1">
+							<strong>{t("pythonResearch.projects.review.revision")}</strong>
+							<code className="break-all">{preview.value.revisionSha256}</code>
+						</div>
+						<div className="grid gap-1">
+							<strong>{t("pythonResearch.projects.review.entryPoint")}</strong>
+							<code>{preview.value.entryPoint}</code>
+						</div>
+						<div className="grid gap-1">
+							<strong>{t("pythonResearch.projects.review.sourceFiles")}</strong>
+							{Object.entries(preview.value.sourceFiles).map(([path, hash]) => (
+								<code className="break-all" key={path}>
+									{path}: {hash}
+								</code>
+							))}
+						</div>
+						<div className="grid gap-1">
+							<strong>{t("pythonResearch.projects.review.runtime")}</strong>
+							<code className="break-all">
+								{preview.value.runtime.profile} · {preview.value.runtime.version} ·{" "}
+								{preview.value.runtime.platform} · {preview.value.runtime.artifactSha256}
+							</code>
+						</div>
+						<div className="grid gap-1">
+							<strong>{t("pythonResearch.projects.review.sdk")}</strong>
+							<code className="break-all">{preview.value.sdkArtifactSha256}</code>
+						</div>
+						<div className="grid gap-1">
+							<strong>{t("pythonResearch.projects.review.environment")}</strong>
+							<code className="break-all">{preview.value.environmentSha256}</code>
+						</div>
+						<div className="grid gap-1">
+							<strong>{t("pythonResearch.projects.review.inputBindings")}</strong>
+							<pre className="overflow-x-auto rounded bg-muted p-2 text-xs">
+								{JSON.stringify(preview.value.inputBindings, null, 2)}
+							</pre>
+						</div>
+						<div className="grid gap-1">
+							<strong>{t("pythonResearch.projects.review.parameters")}</strong>
+							<pre className="overflow-x-auto rounded bg-muted p-2 text-xs">
+								{JSON.stringify(preview.value.normalizedParameters, null, 2)}
+							</pre>
+						</div>
+						<div className="grid gap-1">
+							<strong>{t("pythonResearch.projects.review.seed")}</strong>
+							<code>{preview.value.seed}</code>
+						</div>
+						<div className="grid gap-1">
+							<strong>{t("pythonResearch.projects.review.lock")}</strong>
+							<pre className="max-h-48 overflow-auto rounded bg-muted p-2 text-xs">
+								{JSON.stringify(preview.value.lock, null, 2)}
+							</pre>
+						</div>
+						<div className="grid gap-1">
+							<strong>{t("pythonResearch.projects.review.resourcePolicy")}</strong>
+							<pre className="max-h-48 overflow-auto rounded bg-muted p-2 text-xs">
+								{JSON.stringify(preview.value.resourcePolicy, null, 2)}
+							</pre>
+						</div>
+						<p className="rounded border border-destructive/50 p-3 text-destructive" role="alert">
+							{preview.value.trustDecision
+								? t("pythonResearch.projects.review.alreadyTrusted")
+								: preview.value.trustedCodeWarning}
+						</p>
+						<div className="flex justify-end gap-2">
+							<Button type="button" variant="outline" onClick={() => setPreview(null)}>
+								{t("pythonResearch.projects.review.decline")}
+							</Button>
+							<Button
+								type="button"
+								onClick={() => void confirmPreview()}
+								loading={busy === `${preview.project.projectId}:start`}
+							>
+								{preview.value.trustDecision
+									? t("pythonResearch.projects.start")
+									: t("pythonResearch.projects.review.trustAndRun")}
+							</Button>
+						</div>
+					</CardContent>
+				</Card>
+			</div>
+		) : null}
+		</>
 	);
 }

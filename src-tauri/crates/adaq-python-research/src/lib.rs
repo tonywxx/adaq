@@ -40,6 +40,10 @@ pub const MAX_RESOURCE_THREADS: u32 = 64;
 pub const MAX_RESOURCE_INPUT_ROWS: u64 = 10_000_000;
 pub const MAX_RESOURCE_OUTPUT_ROWS: u64 = 10_000_000;
 
+fn default_max_output_rows() -> u64 {
+    MAX_RESOURCE_OUTPUT_ROWS
+}
+
 const REQUIRED_FILES: [&str; 6] = [
     "adaq-project.toml",
     "pyproject.toml",
@@ -216,6 +220,8 @@ pub struct HostResourcePolicy {
     pub max_input_rows: u64,
     pub max_input_columns: u32,
     pub max_input_cells: u64,
+    #[serde(default = "default_max_output_rows")]
+    pub max_output_rows: u64,
     pub max_control_bytes: u64,
     pub max_arrow_bytes: u64,
     pub max_staged_bytes: u64,
@@ -235,6 +241,7 @@ impl HostResourcePolicy {
             max_input_rows: 10_000_000,
             max_input_columns: 1024,
             max_input_cells: 100_000_000,
+            max_output_rows: 10_000_000,
             max_control_bytes: 16 * 1024 * 1024,
             max_arrow_bytes: 256 * 1024 * 1024,
             max_staged_bytes: 512 * 1024 * 1024,
@@ -253,6 +260,7 @@ impl HostResourcePolicy {
             || self.max_input_rows == 0
             || self.max_input_columns == 0
             || self.max_input_cells == 0
+            || self.max_output_rows == 0
             || self.max_control_bytes == 0
             || self.max_arrow_bytes == 0
             || self.max_staged_bytes == 0
@@ -282,6 +290,7 @@ impl HostResourcePolicy {
                 self.max_input_columns as u64,
             ),
             (request.max_input_cells, self.max_input_cells),
+            (request.max_output_rows, self.max_output_rows),
             (request.max_control_bytes, self.max_control_bytes),
             (request.max_arrow_bytes, self.max_arrow_bytes),
             (request.max_staged_bytes, self.max_staged_bytes),
@@ -293,6 +302,20 @@ impl HostResourcePolicy {
             return Err(invalid("resource-policy-request-exceeds-host"));
         }
         Ok(request.clone())
+    }
+
+    pub fn lowered_by_request(
+        &self,
+        request: &ResourceRequest,
+    ) -> Result<Self, PythonResearchError> {
+        request.validate()?;
+        let mut lowered = self.clone();
+        lowered.max_wall_ms = request.max_wall_ms;
+        lowered.max_memory_bytes = request.max_memory_bytes;
+        lowered.max_threads = request.max_threads;
+        lowered.max_input_rows = request.max_input_rows;
+        lowered.max_output_rows = request.max_output_rows;
+        self.lowered_by(&lowered)
     }
 }
 
@@ -778,6 +801,18 @@ impl ProjectStore {
             })
             .cloned()
             .ok_or_else(|| invalid("project-revision-not-found"))
+    }
+
+    pub fn revision_manifest(
+        &self,
+        user_id: &str,
+        project_id: &str,
+        revision_sha256: &str,
+    ) -> Result<ProjectManifest, PythonResearchError> {
+        self.ensure_compatible()?;
+        let archive = self.revision_archive_path(user_id, project_id, revision_sha256)?;
+        let bytes = fs::read(archive)?;
+        Ok(validate_archive(&bytes)?.manifest)
     }
 
     pub fn materialize_revision(
@@ -1322,6 +1357,7 @@ pub struct ImportedArchive {
     pub project_id: String,
     pub revision_sha256: String,
     pub untrusted: bool,
+    pub manifest: ProjectManifest,
 }
 
 pub fn validate_archive(bytes: &[u8]) -> Result<ImportedArchive, PythonResearchError> {
@@ -1410,9 +1446,10 @@ pub fn validate_archive(bytes: &[u8]) -> Result<ImportedArchive, PythonResearchE
     let revision = result?;
     Ok(ImportedArchive {
         files: files.keys().cloned().collect(),
-        project_id: manifest.project_id,
+        project_id: manifest.project_id.clone(),
         revision_sha256: revision.revision_sha256,
         untrusted: true,
+        manifest,
     })
 }
 

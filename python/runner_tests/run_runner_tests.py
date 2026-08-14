@@ -47,6 +47,14 @@ def main() -> None:
     output = io.BytesIO()
     assert run(io.BytesIO(frame(hello) + frame({"kind": "shutdown"})), output) == 0
     assert json.loads(output.getvalue()[4:]) == {"kind": "ready"}
+    malformed = json.loads(json.dumps(hello))
+    malformed["handshake"]["unexpected"] = True
+    try:
+        run(io.BytesIO(frame(malformed)), io.BytesIO())
+    except ValueError as error:
+        assert str(error) == "runner-handshake-rejected"
+    else:
+        raise AssertionError("unknown handshake fields must fail closed")
     try:
         run(io.BytesIO(struct.pack(">I", 16 * 1024 * 1024 + 1)), io.BytesIO())
     except ValueError as error:
@@ -63,7 +71,7 @@ def main() -> None:
         "cross-sectional-percentile",
         "rename",
     ]
-    print("Runner contract checks: 3 passed")
+    print("Runner contract checks: 4 passed")
 
 
 if __name__ == "__main__":

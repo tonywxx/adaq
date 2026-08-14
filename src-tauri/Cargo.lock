@@ -178,6 +178,9 @@ dependencies = [
 name = "adaq-python-research"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
  "flate2",
  "hmac 0.13.0",
  "libc",

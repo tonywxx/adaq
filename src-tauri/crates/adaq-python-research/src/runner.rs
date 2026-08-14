@@ -8,13 +8,16 @@ use crate::{
     HostResourcePolicy, PythonResearchError, TrustDecision, invalid, is_sha256, sha256,
     validate_user_id,
 };
+use arrow_array::{Array, Float32Array, Float64Array, StringArray};
+use arrow_ipc::reader::StreamReader;
+use arrow_schema::DataType;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     net::{TcpListener, TcpStream},
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -75,9 +78,10 @@ impl Handshake {
 pub enum ControlMessage {
     Hello { handshake: Handshake },
     Ready,
-    Execute,
+    Execute { execution: AttemptExecution },
     Progress { completed: u64, total: u64 },
     Diagnostic { code: String, message: String },
+    Artifact { artifact: StagedArtifact },
     Result { result: StagedResult },
     ConformanceResult { result: ConformanceResult },
     Cancel,
@@ -105,8 +109,18 @@ pub struct RunnerLaunchSpec {
     pub sdk_wheel: Option<PathBuf>,
     pub handshake: Handshake,
     pub environment: PrivateChildEnvironment,
+    pub staging_root: PathBuf,
+    pub staged_result_path: PathBuf,
+    pub staged_result_relative_path: String,
+    pub execution: AttemptExecution,
+    pub seed: u64,
     pub max_wall_ms: u64,
+    pub max_memory_bytes: u64,
+    pub max_processes: u32,
     pub max_control_bytes: usize,
+    pub max_arrow_bytes: usize,
+    pub max_staged_bytes: usize,
+    pub max_artifact_bytes: usize,
     pub max_log_bytes: usize,
 }
 
@@ -114,6 +128,7 @@ pub struct RunnerLaunchSpec {
 pub struct RunnerExecution {
     pub conformance: Option<ConformanceResult>,
     pub staged_result: Option<StagedResult>,
+    pub staged_artifact: Option<StagedArtifact>,
     pub log: Vec<u8>,
     pub log_truncated: bool,
 }
@@ -123,8 +138,14 @@ pub fn run_process(
     cancelled: impl Fn() -> bool,
 ) -> Result<RunnerExecution, PythonResearchError> {
     if spec.max_wall_ms == 0
+        || spec.max_memory_bytes == 0
+        || spec.max_processes == 0
         || spec.max_control_bytes == 0
         || spec.max_control_bytes > MAX_CONTROL_MESSAGE_BYTES
+        || spec.max_arrow_bytes == 0
+        || spec.max_staged_bytes == 0
+        || spec.max_artifact_bytes == 0
+        || spec.max_artifact_bytes > spec.max_staged_bytes
         || spec.max_log_bytes == 0
     {
         return Err(invalid("runner-process-policy-invalid"));
@@ -161,6 +182,10 @@ pub fn run_process(
         .arg(&spec.project_root)
         .arg("--entry-point")
         .arg(&spec.entry_point)
+        .arg("--result-path")
+        .arg(&spec.staged_result_path)
+        .arg("--result-name")
+        .arg(&spec.staged_result_relative_path)
         .env_clear()
         .env(
             "ADAQ_EXPECTED_SDK_SHA256",
@@ -176,8 +201,15 @@ pub fn run_process(
         )
         .env("ADAQ_EXPECTED_ATTEMPT_ID", &spec.handshake.attempt_id)
         .env("ADAQ_RUNNER_TOKEN", &spec.handshake.one_time_token)
+        .env("ADAQ_ATTEMPT_SEED", spec.seed.to_string())
+        .env("ADAQ_MAX_MEMORY_BYTES", spec.max_memory_bytes.to_string())
+        .env(
+            "ADAQ_MAX_ARTIFACT_BYTES",
+            spec.max_artifact_bytes.to_string(),
+        )
+        .env("ADAQ_MAX_PROCESSES", spec.max_processes.to_string())
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]
     if let Some(system_root) = std::env::var_os("SystemRoot") {
@@ -199,23 +231,13 @@ pub fn run_process(
         .spawn()
         .map_err(|error| invalid(format!("runner-process-spawn-failed:{error}")))?;
     let log = Arc::new(Mutex::new(BoundedLog::new(spec.max_log_bytes)?));
-    let log_reader = child.stderr.take().map(|mut stderr| {
-        let log = log.clone();
-        thread::spawn(move || {
-            let mut buffer = [0u8; 4096];
-            loop {
-                match stderr.read(&mut buffer) {
-                    Ok(0) | Err(_) => break,
-                    Ok(size) => {
-                        let text = String::from_utf8_lossy(&buffer[..size]);
-                        if let Ok(mut log) = log.lock() {
-                            log.append(&text);
-                        }
-                    }
-                }
-            }
-        })
-    });
+    let mut log_readers = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        log_readers.push(spawn_log_reader(stdout, log.clone()));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        log_readers.push(spawn_log_reader(stderr, log.clone()));
+    }
     let deadline = Instant::now()
         .checked_add(Duration::from_millis(spec.max_wall_ms))
         .unwrap_or_else(Instant::now);
@@ -223,9 +245,7 @@ pub fn run_process(
         Ok(stream) => stream,
         Err(error) => {
             terminate_child(&mut child);
-            if let Some(reader) = log_reader {
-                let _ = reader.join();
-            }
+            join_log_readers(log_readers);
             let diagnostic = log
                 .lock()
                 .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
@@ -237,21 +257,22 @@ pub fn run_process(
             });
         }
     };
-    stream
-        .set_nonblocking(true)
-        .map_err(|error| invalid(format!("runner-stream-configure-failed:{error}")))?;
+    if let Err(error) = stream.set_nonblocking(true) {
+        terminate_child(&mut child);
+        join_log_readers(log_readers);
+        return Err(invalid(format!("runner-stream-configure-failed:{error}")));
+    }
     let hello = match read_control_poll(&mut stream, deadline, &|| false, spec.max_control_bytes) {
         Ok(message) => message,
         Err(error) => {
             terminate_child(&mut child);
-            if let Some(reader) = log_reader {
-                let _ = reader.join();
-            }
+            join_log_readers(log_readers);
             return Err(error);
         }
     };
     let ControlMessage::Hello { handshake } = hello else {
         terminate_child(&mut child);
+        join_log_readers(log_readers);
         return Err(invalid("runner-handshake-required"));
     };
     if let Err(error) = handshake.validate(
@@ -262,13 +283,21 @@ pub fn run_process(
         &spec.handshake.one_time_token,
     ) {
         terminate_child(&mut child);
+        join_log_readers(log_readers);
         return Err(error);
     }
-    if let Err(error) = write_control_poll(&mut stream, &ControlMessage::Execute, deadline) {
+    if let Err(error) = write_control_poll(
+        &mut stream,
+        &ControlMessage::Execute {
+            execution: spec.execution.clone(),
+        },
+        deadline,
+    ) {
         terminate_child(&mut child);
+        join_log_readers(log_readers);
         return Err(error);
     }
-    let result = loop {
+    let mut result = loop {
         if cancelled() {
             cancel_child(&mut child, &mut stream, deadline);
             break Err(invalid("runner-cancelled"));
@@ -283,28 +312,78 @@ pub fn run_process(
                     output.append(&format!("{code}: {message}"));
                 }
             }
-            Ok(ControlMessage::ConformanceResult { result }) => {
+            Ok(ControlMessage::Artifact { artifact }) => {
+                let artifact_limit = if artifact.media_type == "application/vnd.apache.arrow.stream"
+                {
+                    spec.max_arrow_bytes.min(spec.max_artifact_bytes)
+                } else {
+                    spec.max_artifact_bytes
+                };
+                let bytes = match read_staged_artifact(
+                    &spec.staging_root,
+                    &artifact,
+                    &spec.handshake.attempt_id,
+                    artifact_limit,
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        terminate_child(&mut child);
+                        break Err(error);
+                    }
+                };
+                let validated = (|| -> Result<Option<ConformanceResult>, PythonResearchError> {
+                    match artifact.media_type.as_str() {
+                        "application/json" => Ok(Some(
+                            serde_json::from_value(parse_canonical_json(&bytes)?).map_err(
+                                |error| invalid(format!("runner-result-invalid:{error}")),
+                            )?,
+                        )),
+                        "application/vnd.apache.arrow.stream" => {
+                            let descriptor = ArrowTableDescriptor {
+                                columns: artifact
+                                    .columns
+                                    .clone()
+                                    .ok_or_else(|| invalid("runner-arrow-descriptor-missing"))?,
+                                row_count: artifact
+                                    .row_count
+                                    .ok_or_else(|| invalid("runner-arrow-descriptor-missing"))?,
+                                artifact: artifact.clone(),
+                            };
+                            validate_arrow_ipc(
+                                &spec.staging_root,
+                                &descriptor,
+                                &spec.handshake.attempt_id,
+                                artifact_limit,
+                            )?;
+                            Ok(None)
+                        }
+                        _ => Err(invalid("runner-artifact-media-type-invalid")),
+                    }
+                })();
+                let conformance = match validated {
+                    Ok(conformance) => conformance,
+                    Err(error) => {
+                        terminate_child(&mut child);
+                        break Err(error);
+                    }
+                };
                 let _ = write_control_poll(&mut stream, &ControlMessage::Shutdown, deadline);
                 break Ok(RunnerExecution {
-                    conformance: Some(result),
+                    conformance,
                     staged_result: None,
+                    staged_artifact: Some(artifact),
                     log: Vec::new(),
                     log_truncated: false,
                 });
             }
-            Ok(ControlMessage::Result { result }) => {
-                let _ = write_control_poll(&mut stream, &ControlMessage::Shutdown, deadline);
-                break Ok(RunnerExecution {
-                    conformance: None,
-                    staged_result: Some(result),
-                    log: Vec::new(),
-                    log_truncated: false,
-                });
+            Ok(ControlMessage::ConformanceResult { .. } | ControlMessage::Result { .. }) => {
+                terminate_child(&mut child);
+                break Err(invalid("runner-inline-result-rejected"));
             }
             Ok(ControlMessage::Progress { .. } | ControlMessage::Ready) => {}
             Ok(
                 ControlMessage::Hello { .. }
-                | ControlMessage::Execute
+                | ControlMessage::Execute { .. }
                 | ControlMessage::Cancel
                 | ControlMessage::Shutdown,
             ) => {
@@ -328,10 +407,11 @@ pub fn run_process(
             break Err(invalid("runner-process-exited-without-result"));
         }
     };
-    let _ = child.wait();
-    if let Some(reader) = log_reader {
-        let _ = reader.join();
+    if !wait_child_until(&mut child, deadline) {
+        terminate_child(&mut child);
+        result = Err(invalid("runner-process-did-not-exit"));
     }
+    join_log_readers(log_readers);
     let (log, log_truncated) = log
         .lock()
         .map(|value| (value.as_bytes().to_vec(), value.truncated()))
@@ -349,6 +429,42 @@ pub fn run_process(
             String::from_utf8_lossy(&log)
         ))),
     }
+}
+
+fn spawn_log_reader<R>(mut reader: R, log: Arc<Mutex<BoundedLog>>) -> thread::JoinHandle<()>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(size) => {
+                    let text = String::from_utf8_lossy(&buffer[..size]);
+                    if let Ok(mut log) = log.lock() {
+                        log.append(&text);
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn join_log_readers(readers: Vec<thread::JoinHandle<()>>) {
+    for reader in readers {
+        let _ = reader.join();
+    }
+}
+
+fn parse_canonical_json(bytes: &[u8]) -> Result<serde_json::Value, PythonResearchError> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| invalid(format!("runner-result-json-invalid:{error}")))?;
+    let canonical = serde_json::to_vec(&value).map_err(|error| invalid(error.to_string()))?;
+    if canonical != bytes {
+        return Err(invalid("runner-result-json-not-canonical"));
+    }
+    Ok(value)
 }
 
 fn accept_runner(
@@ -484,6 +600,16 @@ fn cancel_child(child: &mut std::process::Child, stream: &mut TcpStream, deadlin
     }
 }
 
+fn wait_child_until(child: &mut std::process::Child, deadline: Instant) -> bool {
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
+            Ok(None) | Err(_) => return false,
+        }
+    }
+}
+
 pub fn encode_control(message: &ControlMessage) -> Result<Vec<u8>, PythonResearchError> {
     let body = serde_json::to_vec(message).map_err(|error| invalid(error.to_string()))?;
     if body.len() > MAX_CONTROL_MESSAGE_BYTES || body.len() > u32::MAX as usize {
@@ -517,6 +643,25 @@ pub enum AttemptStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttemptExecution {
+    #[serde(default)]
+    pub sdk_artifact_sha256: String,
+    #[serde(default)]
+    pub runtime_artifact_sha256: String,
+    #[serde(default)]
+    pub entry_point: String,
+    #[serde(default)]
+    pub input_bindings: BTreeMap<String, String>,
+    #[serde(default)]
+    pub parameters: BTreeMap<String, String>,
+    #[serde(default)]
+    pub seed: u64,
+    #[serde(default)]
+    pub output_names: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResearchAttempt {
@@ -534,6 +679,12 @@ pub struct ResearchAttempt {
     #[serde(default)]
     pub log: Option<String>,
     pub resource_policy: HostResourcePolicy,
+    #[serde(default)]
+    pub execution: AttemptExecution,
+    #[serde(default)]
+    pub progress_completed: u64,
+    #[serde(default)]
+    pub progress_total: u64,
     pub staged_result_sha256: Option<String>,
     #[serde(default)]
     pub cancel_requested: bool,
@@ -572,6 +723,9 @@ impl ResearchAttempt {
             diagnostic: None,
             log: None,
             resource_policy,
+            execution: AttemptExecution::default(),
+            progress_completed: 0,
+            progress_total: 1,
             staged_result_sha256: None,
             cancel_requested: false,
             created_at_ms: now,
@@ -584,6 +738,8 @@ impl ResearchAttempt {
             return Err(invalid("research-attempt-transition-invalid"));
         }
         self.status = AttemptStatus::Running;
+        self.progress_completed = 0;
+        self.progress_total = 1;
         self.updated_at_ms = now_ms();
         Ok(())
     }
@@ -596,6 +752,8 @@ impl ResearchAttempt {
             return Err(invalid("research-attempt-transition-invalid"));
         }
         self.status = AttemptStatus::Completed;
+        self.progress_completed = self.progress_total.max(1);
+        self.progress_total = self.progress_completed;
         self.staged_result_sha256 = Some(result_sha256);
         self.updated_at_ms = now_ms();
         Ok(())
@@ -624,6 +782,20 @@ impl ResearchAttempt {
             return Err(invalid("research-attempt-transition-invalid"));
         }
         self.log = Some(bounded_diagnostic(&value.into()));
+        self.updated_at_ms = now_ms();
+        Ok(())
+    }
+
+    pub fn record_progress(
+        &mut self,
+        completed: u64,
+        total: u64,
+    ) -> Result<(), PythonResearchError> {
+        if self.status != AttemptStatus::Running || total == 0 || completed > total {
+            return Err(invalid("research-attempt-progress-invalid"));
+        }
+        self.progress_completed = completed;
+        self.progress_total = total;
         self.updated_at_ms = now_ms();
         Ok(())
     }
@@ -666,6 +838,7 @@ impl ResearchAttempt {
             self.resource_policy.clone(),
         )?;
         next.source_attempt_id = Some(self.attempt_id.clone());
+        next.execution = self.execution.clone();
         Ok(next)
     }
 }
@@ -713,6 +886,25 @@ impl AttemptStore {
         environment_sha256: impl Into<String>,
         policy: HostResourcePolicy,
     ) -> Result<ResearchAttempt, PythonResearchError> {
+        self.enqueue_with_execution(
+            user_id,
+            project_id,
+            revision_sha256,
+            environment_sha256,
+            policy,
+            AttemptExecution::default(),
+        )
+    }
+
+    pub fn enqueue_with_execution(
+        &self,
+        user_id: impl Into<String>,
+        project_id: impl Into<String>,
+        revision_sha256: impl Into<String>,
+        environment_sha256: impl Into<String>,
+        policy: HostResourcePolicy,
+        execution: AttemptExecution,
+    ) -> Result<ResearchAttempt, PythonResearchError> {
         let user_id = user_id.into();
         let project_id = project_id.into();
         let revision_sha256 = revision_sha256.into();
@@ -724,6 +916,8 @@ impl AttemptStore {
                 && attempt.project_id == project_id
                 && attempt.revision_sha256 == revision_sha256
                 && attempt.environment_sha256 == environment_sha256
+                && attempt.execution == execution
+                && attempt.resource_policy == policy
                 && matches!(
                     attempt.status,
                     AttemptStatus::Pending | AttemptStatus::Running
@@ -740,6 +934,8 @@ impl AttemptStore {
             database.next_sequence,
             policy,
         )?;
+        let mut attempt = attempt;
+        attempt.execution = execution;
         database
             .attempts
             .insert(attempt.attempt_id.clone(), attempt.clone());
@@ -757,6 +953,37 @@ impl AttemptStore {
             .collect::<Vec<_>>();
         attempts.sort_by_key(|attempt| attempt.queue_sequence);
         Ok(attempts)
+    }
+
+    pub fn cancel_user(&self, user_id: &str) -> Result<(), PythonResearchError> {
+        validate_user_id(user_id)?;
+        let mut database = self.lock()?;
+        let mut changed = false;
+        for attempt in database.attempts.values_mut().filter(|attempt| {
+            attempt.user_id == user_id
+                && matches!(
+                    attempt.status,
+                    AttemptStatus::Pending | AttemptStatus::Running
+                )
+        }) {
+            attempt.cancel()?;
+            changed = true;
+        }
+        if changed {
+            self.persist_locked(&database)?;
+        }
+        Ok(())
+    }
+
+    pub fn has_active_for_user(&self, user_id: &str) -> Result<bool, PythonResearchError> {
+        validate_user_id(user_id)?;
+        Ok(self.lock()?.attempts.values().any(|attempt| {
+            attempt.user_id == user_id
+                && matches!(
+                    attempt.status,
+                    AttemptStatus::Pending | AttemptStatus::Running
+                )
+        }))
     }
 
     pub fn get(&self, attempt_id: &str) -> Result<ResearchAttempt, PythonResearchError> {
@@ -828,6 +1055,9 @@ impl AttemptStore {
             AttemptTransition::Cancel => attempt.cancel()?,
             AttemptTransition::FinishCancel => attempt.finish_cancel()?,
             AttemptTransition::RecordLog { value } => attempt.record_log(value)?,
+            AttemptTransition::RecordProgress { completed, total } => {
+                attempt.record_progress(completed, total)?
+            }
         }
         let result = attempt.clone();
         self.persist_locked(&database)?;
@@ -979,6 +1209,7 @@ pub enum AttemptTransition {
     Cancel,
     FinishCancel,
     RecordLog { value: String },
+    RecordProgress { completed: u64, total: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1115,6 +1346,180 @@ pub struct StagedCell {
 pub struct StagedRow {
     pub row_key: String,
     pub cells: BTreeMap<String, StagedCell>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StagedArtifact {
+    pub attempt_id: String,
+    pub relative_path: String,
+    pub media_type: String,
+    pub byte_size: u64,
+    pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<ArrowColumn>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArrowColumn {
+    pub name: String,
+    pub data_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArrowTableDescriptor {
+    pub artifact: StagedArtifact,
+    pub columns: Vec<ArrowColumn>,
+    pub row_count: u64,
+}
+
+pub fn validate_arrow_ipc(
+    root: &Path,
+    descriptor: &ArrowTableDescriptor,
+    expected_attempt_id: &str,
+    max_bytes: usize,
+) -> Result<(), PythonResearchError> {
+    if descriptor.artifact.media_type != "application/vnd.apache.arrow.stream"
+        || descriptor.columns.is_empty()
+        || descriptor.columns[0].name != "rowKey"
+    {
+        return Err(invalid("runner-arrow-descriptor-invalid"));
+    }
+    let bytes = read_staged_artifact(root, &descriptor.artifact, expected_attempt_id, max_bytes)?;
+    let mut reader = StreamReader::try_new(Cursor::new(bytes), None)
+        .map_err(|error| invalid(format!("runner-arrow-stream-invalid:{error}")))?;
+    let schema = reader.schema();
+    let columns = schema
+        .fields()
+        .iter()
+        .map(|field| ArrowColumn {
+            name: field.name().clone(),
+            data_type: format!("{:?}", field.data_type()),
+        })
+        .collect::<Vec<_>>();
+    if columns != descriptor.columns {
+        return Err(invalid("runner-arrow-schema-invalid"));
+    }
+    let mut row_count = 0u64;
+    let mut previous_key = None;
+    for batch in &mut reader {
+        let batch =
+            batch.map_err(|error| invalid(format!("runner-arrow-batch-invalid:{error}")))?;
+        if batch.num_columns() != columns.len() {
+            return Err(invalid("runner-arrow-column-count-invalid"));
+        }
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| invalid("runner-arrow-row-key-type-invalid"))?;
+        for row in 0..batch.num_rows() {
+            let key = keys
+                .is_valid(row)
+                .then(|| keys.value(row).to_owned())
+                .ok_or_else(|| invalid("runner-arrow-row-key-missing"))?;
+            if previous_key
+                .as_deref()
+                .is_some_and(|previous| previous >= key.as_str())
+            {
+                return Err(invalid("runner-arrow-row-order-invalid"));
+            }
+            previous_key = Some(key);
+        }
+        for (index, field) in schema.fields().iter().enumerate() {
+            match field.data_type() {
+                DataType::Float32 => {
+                    let values = batch
+                        .column(index)
+                        .as_any()
+                        .downcast_ref::<Float32Array>()
+                        .ok_or_else(|| invalid("runner-arrow-float-type-invalid"))?;
+                    if (0..values.len())
+                        .any(|row| values.is_valid(row) && !values.value(row).is_finite())
+                    {
+                        return Err(invalid("runner-arrow-non-finite-value"));
+                    }
+                }
+                DataType::Float64 => {
+                    let values = batch
+                        .column(index)
+                        .as_any()
+                        .downcast_ref::<Float64Array>()
+                        .ok_or_else(|| invalid("runner-arrow-float-type-invalid"))?;
+                    if (0..values.len())
+                        .any(|row| values.is_valid(row) && !values.value(row).is_finite())
+                    {
+                        return Err(invalid("runner-arrow-non-finite-value"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        row_count = row_count
+            .checked_add(batch.num_rows() as u64)
+            .ok_or_else(|| invalid("runner-arrow-row-count-overflow"))?;
+        if row_count > MAX_RESULT_ROWS as u64 {
+            return Err(invalid("runner-arrow-row-limit-exceeded"));
+        }
+    }
+    if row_count != descriptor.row_count {
+        return Err(invalid("runner-arrow-row-count-mismatch"));
+    }
+    Ok(())
+}
+
+pub fn read_staged_artifact(
+    root: &Path,
+    artifact: &StagedArtifact,
+    expected_attempt_id: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>, PythonResearchError> {
+    if artifact.attempt_id != expected_attempt_id
+        || artifact.relative_path.is_empty()
+        || !matches!(
+            artifact.media_type.as_str(),
+            "application/json" | "application/vnd.apache.arrow.stream" | "application/octet-stream"
+        )
+        || artifact.byte_size > max_bytes as u64
+        || !is_sha256(&artifact.sha256)
+    {
+        return Err(invalid("runner-staged-artifact-identity-invalid"));
+    }
+    let relative = Path::new(&artifact.relative_path);
+    let mut path = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(invalid("runner-staged-artifact-path-invalid"));
+        };
+        path.push(component);
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|_| invalid("runner-staged-artifact-not-found"))?;
+        if metadata.file_type().is_symlink() {
+            return Err(invalid("runner-staged-artifact-symlink-not-allowed"));
+        }
+    }
+    let file = fs::File::open(&path).map_err(|_| invalid("runner-staged-artifact-not-found"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| invalid("runner-staged-artifact-not-found"))?;
+    if !metadata.is_file() {
+        return Err(invalid("runner-staged-artifact-not-file"));
+    }
+    #[cfg(unix)]
+    if std::os::unix::fs::MetadataExt::nlink(&metadata) > 1 {
+        return Err(invalid("runner-staged-artifact-hard-link-not-allowed"));
+    }
+    let mut bytes = Vec::new();
+    file.take((max_bytes as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != artifact.byte_size || sha256(&bytes) != artifact.sha256 {
+        return Err(invalid("runner-staged-artifact-hash-invalid"));
+    }
+    Ok(bytes)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1268,6 +1673,97 @@ mod tests {
         }
     }
 
+    #[test]
+    fn staged_artifacts_are_attempt_bound_and_hash_checked() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("result.json");
+        let bytes = br#"{"ok":true}"#;
+        fs::write(&path, bytes).unwrap();
+        let artifact = StagedArtifact {
+            attempt_id: "attempt".into(),
+            relative_path: "result.json".into(),
+            media_type: "application/json".into(),
+            byte_size: bytes.len() as u64,
+            sha256: sha256(bytes),
+            columns: None,
+            row_count: None,
+        };
+        assert_eq!(
+            read_staged_artifact(directory.path(), &artifact, "attempt", 1024).unwrap(),
+            bytes
+        );
+        let mut wrong_attempt = artifact.clone();
+        wrong_attempt.attempt_id = "other".into();
+        assert!(read_staged_artifact(directory.path(), &wrong_attempt, "attempt", 1024).is_err());
+        let mut wrong_hash = artifact.clone();
+        wrong_hash.sha256 = hash("wrong");
+        assert!(read_staged_artifact(directory.path(), &wrong_hash, "attempt", 1024).is_err());
+        let mut unsafe_path = artifact.clone();
+        unsafe_path.relative_path = "../result.json".into();
+        assert!(read_staged_artifact(directory.path(), &unsafe_path, "attempt", 1024).is_err());
+        assert!(read_staged_artifact(directory.path(), &artifact, "attempt", 1).is_err());
+    }
+
+    #[test]
+    fn arrow_streams_preserve_row_identity_schema_and_finite_values() {
+        let directory = tempdir().unwrap();
+        let schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("rowKey", DataType::Utf8, false),
+            arrow_schema::Field::new("score", DataType::Float64, true),
+        ]));
+        let write_stream = |values: Vec<Option<f64>>| {
+            let batch = arrow_array::RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    std::sync::Arc::new(StringArray::from(vec!["a", "b"])),
+                    std::sync::Arc::new(Float64Array::from(values)),
+                ],
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            {
+                let mut writer =
+                    arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &schema).unwrap();
+                writer.write(&batch).unwrap();
+                writer.finish().unwrap();
+            }
+            bytes
+        };
+        let bytes = write_stream(vec![Some(1.0), None]);
+        let path = directory.path().join("table.arrow");
+        fs::write(&path, &bytes).unwrap();
+        let descriptor = ArrowTableDescriptor {
+            artifact: StagedArtifact {
+                attempt_id: "attempt".into(),
+                relative_path: "table.arrow".into(),
+                media_type: "application/vnd.apache.arrow.stream".into(),
+                byte_size: bytes.len() as u64,
+                sha256: sha256(&bytes),
+                columns: None,
+                row_count: None,
+            },
+            columns: vec![
+                ArrowColumn {
+                    name: "rowKey".into(),
+                    data_type: "Utf8".into(),
+                },
+                ArrowColumn {
+                    name: "score".into(),
+                    data_type: "Float64".into(),
+                },
+            ],
+            row_count: 2,
+        };
+        validate_arrow_ipc(directory.path(), &descriptor, "attempt", 4096).unwrap();
+
+        let bad_bytes = write_stream(vec![Some(f64::NAN), None]);
+        fs::write(&path, &bad_bytes).unwrap();
+        let mut bad_descriptor = descriptor;
+        bad_descriptor.artifact.byte_size = bad_bytes.len() as u64;
+        bad_descriptor.artifact.sha256 = sha256(&bad_bytes);
+        assert!(validate_arrow_ipc(directory.path(), &bad_descriptor, "attempt", 4096).is_err());
+    }
+
     fn test_python_executable(message: &str) -> PathBuf {
         let names: &[&str] = if cfg!(windows) {
             &["python.exe", "python3.exe", "python"]
@@ -1291,6 +1787,7 @@ mod tests {
         let token = "x".repeat(64);
         let python_executable =
             test_python_executable("Python is required for the runner conformance test");
+        let staging = tempdir().unwrap();
         let spec = RunnerLaunchSpec {
             python_executable,
             runner_script: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1310,8 +1807,23 @@ mod tests {
                 one_time_token: token,
             },
             environment: PrivateChildEnvironment::from_allowlist(BTreeMap::new()).unwrap(),
+            staging_root: staging.path().to_path_buf(),
+            staged_result_path: staging.path().join("conformance-result.json"),
+            staged_result_relative_path: "conformance-result.json".into(),
+            execution: AttemptExecution {
+                sdk_artifact_sha256: hash("sdk"),
+                runtime_artifact_sha256: hash("runtime"),
+                entry_point: "project:create_project".into(),
+                ..AttemptExecution::default()
+            },
+            seed: 0,
             max_wall_ms: 10_000,
+            max_memory_bytes: policy().max_memory_bytes,
+            max_processes: policy().max_processes,
             max_control_bytes: MAX_CONTROL_MESSAGE_BYTES,
+            max_arrow_bytes: policy().max_arrow_bytes as usize,
+            max_staged_bytes: policy().max_staged_bytes as usize,
+            max_artifact_bytes: policy().max_artifact_bytes as usize,
             max_log_bytes: 4096,
         };
         let execution = run_process(&spec, || false).unwrap();
@@ -1327,6 +1839,7 @@ mod tests {
         let token = "y".repeat(64);
         let python_executable =
             test_python_executable("Python is required for the runner descriptor test");
+        let staging = tempdir().unwrap();
         let spec = RunnerLaunchSpec {
             python_executable,
             runner_script: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1352,8 +1865,23 @@ mod tests {
                 one_time_token: token,
             },
             environment: PrivateChildEnvironment::from_allowlist(BTreeMap::new()).unwrap(),
+            staging_root: staging.path().to_path_buf(),
+            staged_result_path: staging.path().join("conformance-result.json"),
+            staged_result_relative_path: "conformance-result.json".into(),
+            execution: AttemptExecution {
+                sdk_artifact_sha256: hash("sdk"),
+                runtime_artifact_sha256: hash("runtime"),
+                entry_point: "project:create_project".into(),
+                ..AttemptExecution::default()
+            },
+            seed: 0,
             max_wall_ms: 10_000,
+            max_memory_bytes: policy().max_memory_bytes,
+            max_processes: policy().max_processes,
             max_control_bytes: MAX_CONTROL_MESSAGE_BYTES,
+            max_arrow_bytes: policy().max_arrow_bytes as usize,
+            max_staged_bytes: policy().max_staged_bytes as usize,
+            max_artifact_bytes: policy().max_artifact_bytes as usize,
             max_log_bytes: 4096,
         };
         let result = run_process(&spec, || false).unwrap().conformance.unwrap();
@@ -1415,6 +1943,97 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_a_user_marks_pending_and_running_attempts_before_reset() {
+        let directory = tempdir().unwrap();
+        let store = AttemptStore::open(directory.path().join("attempts.json")).unwrap();
+        let pending = store
+            .enqueue(
+                "alice",
+                "runner-conformance@1",
+                hash("pending-revision"),
+                hash("pending-environment"),
+                policy(),
+            )
+            .unwrap();
+        let running = store
+            .enqueue(
+                "alice",
+                "runner-factor@1",
+                hash("running-revision"),
+                hash("running-environment"),
+                policy(),
+            )
+            .unwrap();
+        store
+            .transition(&running.attempt_id, AttemptTransition::Begin)
+            .unwrap();
+        store.cancel_user("alice").unwrap();
+        assert_eq!(
+            store.get(&pending.attempt_id).unwrap().status,
+            AttemptStatus::Cancelled
+        );
+        assert!(store.get(&running.attempt_id).unwrap().cancel_requested);
+        assert!(store.has_active_for_user("alice").unwrap());
+        store
+            .transition(&running.attempt_id, AttemptTransition::FinishCancel)
+            .unwrap();
+        assert!(!store.has_active_for_user("alice").unwrap());
+    }
+
+    #[test]
+    fn attempt_progress_is_bounded_and_terminal() {
+        let directory = tempdir().unwrap();
+        let store = AttemptStore::open(directory.path().join("attempts.json")).unwrap();
+        let attempt = store
+            .enqueue(
+                "alice",
+                "runner-conformance@1",
+                hash("revision"),
+                hash("environment"),
+                policy(),
+            )
+            .unwrap();
+        store
+            .transition(&attempt.attempt_id, AttemptTransition::Begin)
+            .unwrap();
+        store
+            .transition(
+                &attempt.attempt_id,
+                AttemptTransition::RecordProgress {
+                    completed: 2,
+                    total: 3,
+                },
+            )
+            .unwrap();
+        let current = store.get(&attempt.attempt_id).unwrap();
+        assert_eq!((current.progress_completed, current.progress_total), (2, 3));
+        assert!(
+            store
+                .transition(
+                    &attempt.attempt_id,
+                    AttemptTransition::RecordProgress {
+                        completed: 4,
+                        total: 3,
+                    },
+                )
+                .is_err()
+        );
+        store
+            .transition(
+                &attempt.attempt_id,
+                AttemptTransition::Complete {
+                    result_sha256: hash("result"),
+                },
+            )
+            .unwrap();
+        let completed = store.get(&attempt.attempt_id).unwrap();
+        assert_eq!(
+            (completed.progress_completed, completed.progress_total),
+            (3, 3)
+        );
+    }
+
+    #[test]
     fn cancellation_and_resource_policy_are_host_owned() {
         let mut cancellation = CancellationController::default();
         cancellation.request();
@@ -1425,6 +2044,17 @@ mod tests {
         let mut request = policy();
         request.max_threads = policy().max_threads + 1;
         assert!(policy().lowered_by(&request).is_err());
+        let mut project_request = crate::ResourceRequest {
+            max_wall_ms: 1000,
+            max_memory_bytes: 1024 * 1024,
+            max_threads: 2,
+            max_input_rows: 100,
+            max_output_rows: 50,
+        };
+        let lowered = policy().lowered_by_request(&project_request).unwrap();
+        assert_eq!(lowered.max_output_rows, 50);
+        project_request.max_threads = policy().max_threads + 1;
+        assert!(policy().lowered_by_request(&project_request).is_err());
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -33,9 +33,9 @@ use adaq_feature_engine::{
     FeaturePlanDraft, FeatureScope, MaterializationAttemptStatus, ObservationRange,
 };
 use adaq_python_research::{
-    HostResourcePolicy, PUBLIC_SDK_ARTIFACT_SHA256, ProjectKind, ProjectMode, ProjectRevision,
-    ProjectStore, PythonResearchError, PythonResearchResetReport, ValidationReport,
-    WorkingCopySummary,
+    HostResourcePolicy, PUBLIC_SDK_ARTIFACT_SHA256, ParameterType, ProjectKind, ProjectManifest,
+    ProjectMode, ProjectRevision, ProjectStore, PythonResearchError, PythonResearchResetReport,
+    ValidationReport, WorkingCopySummary,
     factor::{
         FactorUnavailableReason, RepeatabilityReport, expand_momentum_grid, materialize_momentum,
         validate_portable_definition_payload,
@@ -48,8 +48,9 @@ use adaq_python_research::{
         validate_model_project_payload,
     },
     runner::{
-        AttemptStore, AttemptTransition, Handshake, PrivateChildEnvironment, ResearchAttempt,
-        RunnerExecution, RunnerLaunchSpec, TrustStore, run_process,
+        AttemptExecution, AttemptStore, AttemptTransition, Handshake, PrivateChildEnvironment,
+        ResearchAttempt, RunnerExecution, RunnerLaunchSpec, StagedArtifact, TrustStore,
+        read_staged_artifact, run_process,
     },
     runtime::{
         DependencyIntent, EnvironmentLock, EnvironmentRecord, EnvironmentStore, PreparationAttempt,
@@ -91,7 +92,7 @@ pub struct PythonResearchState {
     root: PathBuf,
     examples_root: PathBuf,
     queue_notifier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    completed_results: Mutex<BTreeMap<String, RunnerExecution>>,
+    completed_results: Arc<Mutex<BTreeMap<String, RunnerExecution>>>,
     runtime_cancellations: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
     runtime_progress: Arc<Mutex<BTreeMap<String, RuntimePreparationProgress>>>,
     shutdown: AtomicBool,
@@ -1417,7 +1418,7 @@ impl PythonResearchState {
             root,
             examples_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/python"),
             queue_notifier: Mutex::new(None),
-            completed_results: Mutex::new(BTreeMap::new()),
+            completed_results: Arc::new(Mutex::new(BTreeMap::new())),
             runtime_cancellations: Mutex::new(BTreeMap::new()),
             runtime_progress: Arc::new(Mutex::new(BTreeMap::new())),
             shutdown: AtomicBool::new(false),
@@ -1460,8 +1461,9 @@ impl PythonResearchState {
             Ok(RunnerExecution {
                 conformance: Some(result),
                 staged_result: None,
+                staged_artifact: Some(artifact),
                 log,
-                log_truncated: _,
+                log_truncated,
             }) if result.attempt_id == attempt_id && result.project_id == attempt.project_id => {
                 if !log.is_empty() {
                     let _ = self.attempt_store.transition(
@@ -1471,32 +1473,33 @@ impl PythonResearchState {
                         },
                     );
                 }
-                let Ok(bytes) = serde_json::to_vec(&result) else {
-                    let _ = self.attempt_store.transition(
-                        &attempt_id,
-                        AttemptTransition::Fail {
-                            code: "conformance-result-serialization-failed".into(),
-                            diagnostic: "Host could not serialize the conformance result".into(),
-                        },
-                    );
-                    return;
-                };
-                let _ = self.attempt_store.transition(
-                    &attempt_id,
-                    AttemptTransition::Complete {
-                        result_sha256: sha256(&bytes),
-                    },
-                );
-                if let Ok(mut results) = self.completed_results.lock() {
-                    results.insert(
-                        attempt_id.clone(),
-                        RunnerExecution {
-                            conformance: Some(result),
-                            staged_result: None,
-                            log,
-                            log_truncated: false,
-                        },
-                    );
+                let result_sha256 = artifact.sha256.clone();
+                if self
+                    .attempt_store
+                    .transition(&attempt_id, AttemptTransition::Complete { result_sha256 })
+                    .is_ok()
+                {
+                    if let Ok(mut results) = self.completed_results.lock() {
+                        results.insert(
+                            attempt_id.clone(),
+                            RunnerExecution {
+                                conformance: Some(result),
+                                staged_result: None,
+                                staged_artifact: Some(artifact),
+                                log,
+                                log_truncated,
+                            },
+                        );
+                    }
+                } else if self
+                    .attempt_store
+                    .get(&attempt_id)
+                    .map(|current| current.cancel_requested)
+                    .unwrap_or(false)
+                {
+                    let _ = self
+                        .attempt_store
+                        .transition(&attempt_id, AttemptTransition::FinishCancel);
                 }
             }
             Err(error) if error.0 == "runner-cancelled" => {
@@ -1505,22 +1508,43 @@ impl PythonResearchState {
                     .transition(&attempt_id, AttemptTransition::FinishCancel);
             }
             Ok(_) => {
-                let _ = self.attempt_store.transition(
-                    &attempt_id,
-                    AttemptTransition::Fail {
-                        code: "runner-result-invalid".into(),
-                        diagnostic: "Runner returned no Host-validated conformance result".into(),
-                    },
-                );
+                let cancelled = self
+                    .attempt_store
+                    .get(&attempt_id)
+                    .map(|current| current.cancel_requested)
+                    .unwrap_or(false);
+                let _ = if cancelled {
+                    self.attempt_store
+                        .transition(&attempt_id, AttemptTransition::FinishCancel)
+                } else {
+                    self.attempt_store.transition(
+                        &attempt_id,
+                        AttemptTransition::Fail {
+                            code: "runner-result-invalid".into(),
+                            diagnostic: "Runner returned no Host-validated conformance result"
+                                .into(),
+                        },
+                    )
+                };
             }
             Err(error) => {
-                let _ = self.attempt_store.transition(
-                    &attempt_id,
-                    AttemptTransition::Fail {
-                        code: "runner-failed".into(),
-                        diagnostic: error.0,
-                    },
-                );
+                let cancelled = self
+                    .attempt_store
+                    .get(&attempt_id)
+                    .map(|current| current.cancel_requested)
+                    .unwrap_or(false);
+                let _ = if cancelled {
+                    self.attempt_store
+                        .transition(&attempt_id, AttemptTransition::FinishCancel)
+                } else {
+                    self.attempt_store.transition(
+                        &attempt_id,
+                        AttemptTransition::Fail {
+                            code: "runner-failed".into(),
+                            diagnostic: error.0,
+                        },
+                    )
+                };
             }
         }
     }
@@ -1576,11 +1600,24 @@ impl PythonResearchState {
             let lock = self
                 .environment_store
                 .load_lock(&attempt.environment_sha256)?;
-            if revision.runtime_artifact_sha256.as_deref()
-                != Some(lock.runtime_artifact_sha256.as_str())
+            if lock.wheelhouse_identity != wheelhouse_catalog(lock.platform)?.manifest.identity {
+                return Err(PythonResearchError(
+                    "runner-wheelhouse-identity-mismatch".into(),
+                ));
+            }
+            let runtime = runtime_catalog_entry(lock.platform)?.manifest;
+            if revision.runtime_artifact_sha256.as_deref() != Some(runtime.artifact_sha256.as_str())
+                || lock.runtime_artifact_sha256 != runtime.artifact_sha256
             {
                 return Err(PythonResearchError(
                     "runner-runtime-identity-mismatch".into(),
+                ));
+            }
+            let expected_execution =
+                build_attempt_execution(&revision, &manifest, &lock, attempt.execution.seed)?;
+            if attempt.execution != expected_execution {
+                return Err(PythonResearchError(
+                    "runner-attempt-execution-identity-mismatch".into(),
                 ));
             }
             let python_executable = self
@@ -1603,7 +1640,7 @@ impl PythonResearchState {
                 one_time_token,
             };
             let environment = PrivateChildEnvironment::from_allowlist(BTreeMap::from([
-                ("PYTHONHASHSEED".into(), "0".into()),
+                ("PYTHONHASHSEED".into(), attempt.execution.seed.to_string()),
                 (
                     "OMP_NUM_THREADS".into(),
                     attempt.resource_policy.max_threads.to_string(),
@@ -1639,8 +1676,18 @@ impl PythonResearchState {
                     sdk_wheel: Some(sdk_wheel),
                     handshake,
                     environment,
+                    staging_root: workspace.join(".adaq-staging"),
+                    staged_result_path: workspace.join(".adaq-staging/conformance-result.json"),
+                    staged_result_relative_path: "conformance-result.json".into(),
+                    execution: attempt.execution.clone(),
+                    seed: attempt.execution.seed,
                     max_wall_ms: attempt.resource_policy.max_wall_ms,
+                    max_memory_bytes: attempt.resource_policy.max_memory_bytes,
+                    max_processes: attempt.resource_policy.max_processes,
                     max_control_bytes: attempt.resource_policy.max_control_bytes as usize,
+                    max_arrow_bytes: attempt.resource_policy.max_arrow_bytes as usize,
+                    max_staged_bytes: attempt.resource_policy.max_staged_bytes as usize,
+                    max_artifact_bytes: attempt.resource_policy.max_artifact_bytes as usize,
                     max_log_bytes: attempt.resource_policy.max_log_bytes as usize,
                 },
                 cancelled,
@@ -1673,6 +1720,16 @@ impl PythonResearchState {
                     .ok_or_else(|| PythonResearchError("runner-model-contract-missing".into()))?;
                 validate_model_project_payload(payload)?;
             }
+            let artifact = execution
+                .staged_artifact
+                .as_ref()
+                .ok_or_else(|| PythonResearchError("runner-staged-result-missing".into()))?;
+            publish_attempt_artifact(
+                &self.root,
+                &attempt.attempt_id,
+                &workspace.join(".adaq-staging"),
+                artifact,
+            )?;
             Ok(execution)
         })();
         let _ = fs::remove_dir_all(&workspace);
@@ -1686,15 +1743,15 @@ impl PythonResearchState {
         revision_sha256: &str,
         environment_sha256: &str,
     ) -> Result<RunnerExecution, PythonResearchError> {
-        let revision = self.store.revision(user_id, project_id, revision_sha256)?;
-        let lock = self.environment_store.load_lock(environment_sha256)?;
-        if revision.runtime_artifact_sha256.as_deref()
-            != Some(lock.runtime_artifact_sha256.as_str())
-        {
-            return Err(PythonResearchError(
-                "research-environment-runtime-mismatch".into(),
-            ));
-        }
+        let context = load_attempt_context(
+            &self.store,
+            &self.environment_store,
+            &self.runtime_store,
+            user_id,
+            project_id,
+            revision_sha256,
+            Some(environment_sha256),
+        )?;
         if self
             .trust_store
             .get(user_id, project_id, revision_sha256)?
@@ -1702,12 +1759,13 @@ impl PythonResearchState {
         {
             return Err(PythonResearchError("research-revision-not-trusted".into()));
         }
-        let attempt = self.attempt_store.enqueue(
+        let attempt = self.attempt_store.enqueue_with_execution(
             user_id,
             project_id,
             revision_sha256,
-            environment_sha256,
-            HostResourcePolicy::m12_default(),
+            context.environment.environment_sha256.clone(),
+            effective_resource_policy(&context.manifest, None)?,
+            build_attempt_execution(&context.revision, &context.manifest, &context.lock, 0)?,
         )?;
         self.notify_queue();
         self.wait_for_attempt(
@@ -1960,6 +2018,39 @@ pub struct AttemptStartRequest {
     pub revision_sha256: String,
     pub environment_sha256: String,
     pub resource_policy: Option<HostResourcePolicy>,
+    #[serde(default)]
+    pub seed: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptPreviewRequest {
+    pub user_id: String,
+    pub project_id: String,
+    pub revision_sha256: String,
+    #[serde(default)]
+    pub resource_policy: Option<HostResourcePolicy>,
+    #[serde(default)]
+    pub seed: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptPreview {
+    pub project_id: String,
+    pub revision_sha256: String,
+    pub entry_point: String,
+    pub source_files: BTreeMap<String, String>,
+    pub lock: EnvironmentLock,
+    pub environment_sha256: String,
+    pub runtime: RuntimeArtifactManifest,
+    pub sdk_artifact_sha256: String,
+    pub input_bindings: BTreeMap<String, String>,
+    pub normalized_parameters: BTreeMap<String, String>,
+    pub seed: u64,
+    pub resource_policy: HostResourcePolicy,
+    pub trust_decision: Option<adaq_python_research::TrustDecision>,
+    pub trusted_code_warning: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1967,15 +2058,6 @@ pub struct AttemptStartRequest {
 pub struct AttemptRequest {
     pub user_id: String,
     pub attempt_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AttemptFailureRequest {
-    pub user_id: String,
-    pub attempt_id: String,
-    pub code: String,
-    pub diagnostic: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2064,6 +2146,216 @@ pub struct ModelFinalEvaluationRequest {
 
 fn map_error(error: PythonResearchError) -> String {
     error.to_string()
+}
+
+struct AttemptContext {
+    revision: ProjectRevision,
+    manifest: ProjectManifest,
+    lock: EnvironmentLock,
+    environment: EnvironmentRecord,
+    runtime: RuntimeArtifactManifest,
+}
+
+fn load_attempt_context(
+    project_store: &ProjectStore,
+    environment_store: &EnvironmentStore,
+    runtime_store: &RuntimeStore,
+    user_id: &str,
+    project_id: &str,
+    revision_sha256: &str,
+    expected_environment_sha256: Option<&str>,
+) -> Result<AttemptContext, PythonResearchError> {
+    let revision = project_store.revision(user_id, project_id, revision_sha256)?;
+    let manifest = project_store.revision_manifest(user_id, project_id, revision_sha256)?;
+    if manifest.project_id != project_id
+        || revision.project_id != project_id
+        || revision.dependency_lock_sha256 != manifest.dependency_lock_sha256
+    {
+        return Err(PythonResearchError(
+            "research-revision-identity-mismatch".into(),
+        ));
+    }
+    let environment = environment_store
+        .find_by_lock_file_sha256(&manifest.dependency_lock_sha256)?
+        .ok_or_else(|| PythonResearchError("python-environment-not-prepared".into()))?;
+    if expected_environment_sha256.is_some_and(|value| value != environment.environment_sha256) {
+        return Err(PythonResearchError(
+            "research-environment-identity-mismatch".into(),
+        ));
+    }
+    let lock = environment_store.load_lock(&environment.environment_sha256)?;
+    let wheelhouse = wheelhouse_catalog(lock.platform)?;
+    if lock.wheelhouse_identity != wheelhouse.manifest.identity {
+        return Err(PythonResearchError(
+            "research-wheelhouse-identity-mismatch".into(),
+        ));
+    }
+    let runtime = runtime_catalog_entry(lock.platform)?.manifest;
+    if revision.runtime_artifact_sha256.as_deref() != Some(runtime.artifact_sha256.as_str())
+        || lock.runtime_artifact_sha256 != runtime.artifact_sha256
+        || revision.runtime_profile != runtime.profile
+    {
+        return Err(PythonResearchError(
+            "research-runtime-identity-mismatch".into(),
+        ));
+    }
+    let sdk = lock
+        .wheels
+        .iter()
+        .find(|wheel| {
+            wheel
+                .package
+                .replace('_', "-")
+                .eq_ignore_ascii_case("adaq-research-sdk")
+        })
+        .ok_or_else(|| PythonResearchError("research-sdk-not-in-environment".into()))?;
+    if sdk.sha256 != revision.sdk_artifact_sha256 {
+        return Err(PythonResearchError("research-sdk-identity-mismatch".into()));
+    }
+    runtime_store.ready_record(&runtime)?;
+    Ok(AttemptContext {
+        revision,
+        manifest,
+        lock,
+        environment,
+        runtime,
+    })
+}
+
+fn build_attempt_execution(
+    revision: &ProjectRevision,
+    manifest: &ProjectManifest,
+    lock: &EnvironmentLock,
+    seed: u64,
+) -> Result<AttemptExecution, PythonResearchError> {
+    let sdk = lock
+        .wheels
+        .iter()
+        .find(|wheel| {
+            wheel
+                .package
+                .replace('_', "-")
+                .eq_ignore_ascii_case("adaq-research-sdk")
+        })
+        .ok_or_else(|| PythonResearchError("research-sdk-not-in-environment".into()))?;
+    if sdk.sha256 != revision.sdk_artifact_sha256 {
+        return Err(PythonResearchError("research-sdk-identity-mismatch".into()));
+    }
+    Ok(AttemptExecution {
+        sdk_artifact_sha256: revision.sdk_artifact_sha256.clone(),
+        runtime_artifact_sha256: revision.runtime_artifact_sha256.clone().unwrap_or_default(),
+        entry_point: manifest.entry_point.clone(),
+        input_bindings: manifest
+            .input_slots
+            .iter()
+            .map(|slot| (slot.id.clone(), format!("host:{}", slot.role)))
+            .collect(),
+        parameters: normalize_parameters(manifest)?,
+        seed,
+        output_names: manifest
+            .outputs
+            .iter()
+            .map(|output| output.id.clone())
+            .collect(),
+    })
+}
+
+fn normalize_parameters(
+    manifest: &ProjectManifest,
+) -> Result<BTreeMap<String, String>, PythonResearchError> {
+    manifest
+        .parameters
+        .iter()
+        .map(|parameter| {
+            let value = match parameter.value_type {
+                ParameterType::Boolean => match parameter.default.trim() {
+                    "true" | "false" => parameter.default.trim().to_owned(),
+                    _ => return Err(PythonResearchError("parameter-boolean-invalid".into())),
+                },
+                ParameterType::Decimal => normalize_decimal(&parameter.default)?,
+                ParameterType::Integer => parameter
+                    .default
+                    .trim()
+                    .parse::<i64>()
+                    .map(|value| value.to_string())
+                    .map_err(|_| PythonResearchError("parameter-integer-invalid".into()))?,
+                ParameterType::Enum | ParameterType::String => parameter.default.clone(),
+            };
+            Ok((parameter.id.clone(), value))
+        })
+        .collect()
+}
+
+fn normalize_decimal(value: &str) -> Result<String, PythonResearchError> {
+    let value = value.trim();
+    let (negative, value) = match value.strip_prefix('-') {
+        Some(value) => (true, value),
+        None => (false, value.strip_prefix('+').unwrap_or(value)),
+    };
+    let mut parts = value.split('.');
+    let integer = parts.next().unwrap_or_default();
+    let fraction = parts.next().unwrap_or_default();
+    if parts.next().is_some()
+        || integer.is_empty()
+        || !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(PythonResearchError("parameter-decimal-invalid".into()));
+    }
+    let integer = integer.trim_start_matches('0');
+    let integer = if integer.is_empty() { "0" } else { integer };
+    let fraction = fraction.trim_end_matches('0');
+    let zero = integer == "0" && fraction.is_empty();
+    let canonical = if fraction.is_empty() {
+        integer.to_owned()
+    } else {
+        format!("{integer}.{fraction}")
+    };
+    Ok(if negative && !zero {
+        format!("-{canonical}")
+    } else {
+        canonical
+    })
+}
+
+fn effective_resource_policy(
+    manifest: &ProjectManifest,
+    requested: Option<HostResourcePolicy>,
+) -> Result<HostResourcePolicy, PythonResearchError> {
+    let host = HostResourcePolicy::m12_default().lowered_by_request(&manifest.resource_request)?;
+    requested
+        .map(|policy| host.lowered_by(&policy))
+        .transpose()
+        .map(|policy| policy.unwrap_or(host))
+}
+
+fn publish_attempt_artifact(
+    root: &Path,
+    attempt_id: &str,
+    staging_root: &Path,
+    artifact: &StagedArtifact,
+) -> Result<(), PythonResearchError> {
+    let max_bytes = usize::try_from(artifact.byte_size)
+        .map_err(|_| PythonResearchError("runner-attempt-result-size-invalid".into()))?;
+    let bytes = read_staged_artifact(staging_root, artifact, attempt_id, max_bytes)?;
+    let destination_root = root.join("attempt-results");
+    fs::create_dir_all(&destination_root)?;
+    let destination = destination_root.join(format!("{attempt_id}.artifact"));
+    if destination.exists() {
+        return Err(PythonResearchError(
+            "runner-attempt-result-already-published".into(),
+        ));
+    }
+    let temporary = destination.with_extension("tmp");
+    let result = (|| {
+        fs::write(&temporary, &bytes)?;
+        fs::rename(&temporary, &destination)?;
+        Ok::<(), PythonResearchError>(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn set_runtime_progress(
@@ -2280,13 +2572,49 @@ pub async fn research_reset(
     let attempt_store = state.attempt_store.clone();
     let trust_store = state.trust_store.clone();
     let model_lab_store = state.model_lab_store.clone();
+    let completed_results = state.completed_results.clone();
+    let result_root = state.root.join("attempt-results");
+    let notifier = state
+        .queue_notifier
+        .lock()
+        .ok()
+        .and_then(|value| value.clone());
     tauri::async_runtime::spawn_blocking(move || {
+        attempt_store.cancel_user(&user_id).map_err(map_error)?;
+        if let Some(notifier) = notifier.as_ref() {
+            notifier();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while attempt_store
+            .has_active_for_user(&user_id)
+            .map_err(map_error)?
+        {
+            if std::time::Instant::now() >= deadline {
+                return Err("research-reset-runner-did-not-stop".into());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let attempt_ids = attempt_store
+            .list(&user_id)
+            .map_err(map_error)?
+            .into_iter()
+            .map(|attempt| attempt.attempt_id)
+            .collect::<BTreeSet<_>>();
+        for attempt_id in &attempt_ids {
+            let artifact = result_root.join(format!("{attempt_id}.artifact"));
+            if artifact.is_file() {
+                fs::remove_file(artifact).map_err(|error| error.to_string())?;
+            }
+        }
         let report = store
             .reset_python_research_evidence(&user_id)
             .map_err(map_error)?;
         attempt_store.reset_user(&user_id).map_err(map_error)?;
         trust_store.reset_user(&user_id).map_err(map_error)?;
         model_lab_store.reset_user(&user_id).map_err(map_error)?;
+        if let Ok(mut results) = completed_results.lock() {
+            results.retain(|attempt_id, _| !attempt_ids.contains(attempt_id));
+        }
         Ok(report)
     })
     .await
@@ -2321,6 +2649,77 @@ pub async fn trust_revision(
 }
 
 #[tauri::command]
+pub async fn attempt_preview(
+    request: AttemptPreviewRequest,
+    state: State<'_, Arc<PythonResearchState>>,
+) -> Result<AttemptPreview, String> {
+    let project_store = state.store.clone();
+    let environment_store = state.environment_store.clone();
+    let runtime_store = state.runtime_store.clone();
+    let trust_store = state.trust_store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let context = load_attempt_context(
+            &project_store,
+            &environment_store,
+            &runtime_store,
+            &request.user_id,
+            &request.project_id,
+            &request.revision_sha256,
+            None,
+        )?;
+        let execution = build_attempt_execution(
+            &context.revision,
+            &context.manifest,
+            &context.lock,
+            request.seed.unwrap_or(0),
+        )?;
+        let resource_policy = effective_resource_policy(
+            &context.manifest,
+            request.resource_policy.clone(),
+        )?;
+        let source_files = context
+            .manifest
+            .source_files
+            .iter()
+            .map(|path| {
+                context
+                    .revision
+                    .files
+                    .get(path)
+                    .cloned()
+                    .map(|hash| (path.clone(), hash))
+                    .ok_or_else(|| PythonResearchError("research-source-identity-missing".into()))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let trust_decision = trust_store
+            .get(
+                &request.user_id,
+                &request.project_id,
+                &request.revision_sha256,
+            )?;
+        Ok(AttemptPreview {
+            project_id: request.project_id,
+            revision_sha256: context.revision.revision_sha256,
+            entry_point: context.manifest.entry_point,
+            source_files,
+            lock: context.lock,
+            environment_sha256: context.environment.environment_sha256,
+            runtime: context.runtime,
+            sdk_artifact_sha256: execution.sdk_artifact_sha256,
+            input_bindings: execution.input_bindings,
+            normalized_parameters: execution.parameters,
+            seed: execution.seed,
+            resource_policy,
+            trust_decision,
+            trusted_code_warning: "This exact revision contains trusted Python code and will execute in a private managed process.".into(),
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(map_error)
+}
+
+#[tauri::command]
 pub async fn attempt_list(
     user_id: String,
     state: State<'_, Arc<PythonResearchState>>,
@@ -2340,22 +2739,18 @@ pub async fn attempt_start(
     let trust_store = state.trust_store.clone();
     let attempt_store = state.attempt_store.clone();
     let environment_store = state.environment_store.clone();
+    let runtime_store = state.runtime_store.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let revision = project_store
-            .revision(
-                &request.user_id,
-                &request.project_id,
-                &request.revision_sha256,
-            )
-            .map_err(map_error)?;
-        let lock = environment_store
-            .load_lock(&request.environment_sha256)
-            .map_err(map_error)?;
-        if revision.runtime_artifact_sha256.as_deref()
-            != Some(lock.runtime_artifact_sha256.as_str())
-        {
-            return Err("research-environment-runtime-mismatch".into());
-        }
+        let context = load_attempt_context(
+            &project_store,
+            &environment_store,
+            &runtime_store,
+            &request.user_id,
+            &request.project_id,
+            &request.revision_sha256,
+            Some(&request.environment_sha256),
+        )
+        .map_err(map_error)?;
         if trust_store
             .get(
                 &request.user_id,
@@ -2367,35 +2762,29 @@ pub async fn attempt_start(
         {
             return Err("research-revision-not-trusted".into());
         }
+        let policy = effective_resource_policy(&context.manifest, request.resource_policy)
+            .map_err(map_error)?;
+        let execution = build_attempt_execution(
+            &context.revision,
+            &context.manifest,
+            &context.lock,
+            request.seed.unwrap_or(0),
+        )
+        .map_err(map_error)?;
         attempt_store
-            .enqueue(
+            .enqueue_with_execution(
                 request.user_id,
                 request.project_id,
                 request.revision_sha256,
-                request.environment_sha256,
-                request
-                    .resource_policy
-                    .unwrap_or_else(HostResourcePolicy::m12_default),
+                context.environment.environment_sha256,
+                policy,
+                execution,
             )
             .map_err(map_error)
     })
     .await
     .map_err(|error| error.to_string())?
     .inspect(|_| state.notify_queue())
-}
-
-#[tauri::command]
-pub async fn attempt_begin(
-    request: AttemptRequest,
-    state: State<'_, Arc<PythonResearchState>>,
-) -> Result<ResearchAttempt, String> {
-    transition_attempt(
-        state,
-        request.user_id,
-        request.attempt_id,
-        AttemptTransition::Begin,
-    )
-    .await
 }
 
 #[tauri::command]
@@ -2408,23 +2797,6 @@ pub async fn attempt_cancel(
         request.user_id,
         request.attempt_id,
         AttemptTransition::Cancel,
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn attempt_fail(
-    request: AttemptFailureRequest,
-    state: State<'_, Arc<PythonResearchState>>,
-) -> Result<ResearchAttempt, String> {
-    transition_attempt(
-        state,
-        request.user_id,
-        request.attempt_id,
-        AttemptTransition::Fail {
-            code: request.code,
-            diagnostic: request.diagnostic,
-        },
     )
     .await
 }
@@ -3512,6 +3884,39 @@ pub async fn cache_evict(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staged_result_publication_is_atomic_and_attempt_scoped() {
+        let root =
+            std::env::temp_dir().join(format!("adaq-python-publication-{}", uuid::Uuid::new_v4()));
+        let staging = root.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        let bytes = br#"{"attemptId":"attempt","projectId":"py-factor-test"}"#;
+        std::fs::write(staging.join("result.json"), bytes).unwrap();
+        let artifact = StagedArtifact {
+            attempt_id: "attempt".into(),
+            relative_path: "result.json".into(),
+            media_type: "application/json".into(),
+            byte_size: bytes.len() as u64,
+            sha256: sha256(bytes),
+            columns: None,
+            row_count: None,
+        };
+        publish_attempt_artifact(&root, "attempt", &staging, &artifact).unwrap();
+        assert_eq!(
+            std::fs::read(root.join("attempt-results/attempt.artifact")).unwrap(),
+            bytes
+        );
+        assert!(publish_attempt_artifact(&root, "attempt", &staging, &artifact).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn decimal_parameters_are_normalized_before_runner_start() {
+        assert_eq!(normalize_decimal(" -001.2300 ").unwrap(), "-1.23");
+        assert_eq!(normalize_decimal("+000").unwrap(), "0");
+        assert!(normalize_decimal("1e-3").is_err());
+    }
 
     #[test]
     fn factor_demo_retains_three_host_trials_and_exact_replay() {
