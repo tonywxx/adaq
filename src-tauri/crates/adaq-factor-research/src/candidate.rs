@@ -710,7 +710,12 @@ mod tests {
         })
         .unwrap();
         let result = worker.join();
-        assert_eq!(result.attempt.status, CandidateBuildStatus::Completed);
+        assert_eq!(
+            result.attempt.status,
+            CandidateBuildStatus::Completed,
+            "candidate build diagnostic: {:?}",
+            result.attempt.diagnostic
+        );
         assert_eq!(
             result.result.as_ref().unwrap().provenance.attempt_id,
             attempt_id
