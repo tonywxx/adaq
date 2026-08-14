@@ -179,6 +179,11 @@ pub fn run_process(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        // Winsock provider loading requires the system root after env_clear.
+        command.env("SystemRoot", system_root);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
