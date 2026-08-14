@@ -56,6 +56,12 @@ jobs:
         run: cargo fetch --locked --manifest-path src-tauri/fixtures/factor/Cargo.toml
       - name: Install cargo-component
         run: cargo install cargo-component --locked
+      - name: Build Factor test fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo component build --manifest-path src-tauri/fixtures/factor/Cargo.toml --target wasm32-unknown-unknown
+          cargo component build --manifest-path src-tauri/fixtures/cross-sectional-factor/Cargo.toml --target wasm32-unknown-unknown
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
         run: |
@@ -119,10 +125,28 @@ jobs:
         run: cargo fetch --locked --manifest-path src-tauri/fixtures/factor/Cargo.toml
       - name: Install cargo-component
         run: cargo install cargo-component --locked
+      - name: Build component fixtures
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          for fixture in strategy factor model external-strategy mixed-strategy multi-output-factor repeated-factor-strategy cross-sectional-factor; do
+            cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
+          done
       - name: Install Linux Tauri dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
+      - name: Build public Component examples
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path src-tauri/crates/adaq-component-tooling/Cargo.toml --bin adaq-component
+          cli="$GITHUB_WORKSPACE/src-tauri/target/debug/adaq-component"
+          for example in factor-close-momentum-5 strategy-momentum-trend; do
+            cd "$GITHUB_WORKSPACE/examples/components/$example"
+            "$cli" build
+          done
       - run: pnpm install --frozen-lockfile
       - working-directory: src-tauri
         run: cargo test --workspace -- --test-threads=1

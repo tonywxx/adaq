@@ -60,7 +60,11 @@ fn fixture_package(name: &str, attempt_id: u128) -> ComponentPackage {
         },
     })
     .unwrap();
-    worker.join().result.unwrap().package
+    let outcome = worker.join();
+    outcome
+        .result
+        .unwrap_or_else(|| panic!("factor fixture build failed: {:?}", outcome.attempt))
+        .package
 }
 
 fn time_series_package() -> &'static ComponentPackage {
