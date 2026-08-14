@@ -1263,19 +1263,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn loopback_runner_executes_repository_conformance_project() {
-        let token = "x".repeat(64);
-        let python_executable = std::env::var_os("ADAQ_TEST_PYTHON")
+    fn test_python_executable(message: &str) -> PathBuf {
+        let names: &[&str] = if cfg!(windows) {
+            &["python.exe", "python3.exe", "python"]
+        } else {
+            &["python3", "python"]
+        };
+        std::env::var_os("ADAQ_TEST_PYTHON")
             .map(PathBuf::from)
             .or_else(|| {
                 std::env::var_os("PATH").and_then(|path| {
                     std::env::split_paths(&path)
-                        .map(|directory| directory.join("python3"))
+                        .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
                         .find(|candidate| candidate.is_file())
                 })
             })
-            .expect("python3 is required for the runner conformance test");
+            .expect(message)
+    }
+
+    #[test]
+    fn loopback_runner_executes_repository_conformance_project() {
+        let token = "x".repeat(64);
+        let python_executable =
+            test_python_executable("Python is required for the runner conformance test");
         let spec = RunnerLaunchSpec {
             python_executable,
             runner_script: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1310,16 +1320,8 @@ mod tests {
     #[test]
     fn loopback_runner_returns_the_factor_definition_payload() {
         let token = "y".repeat(64);
-        let python_executable = std::env::var_os("ADAQ_TEST_PYTHON")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("PATH").and_then(|path| {
-                    std::env::split_paths(&path)
-                        .map(|directory| directory.join("python3"))
-                        .find(|candidate| candidate.is_file())
-                })
-            })
-            .expect("python3 is required for the runner descriptor test");
+        let python_executable =
+            test_python_executable("Python is required for the runner descriptor test");
         let spec = RunnerLaunchSpec {
             python_executable,
             runner_script: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
