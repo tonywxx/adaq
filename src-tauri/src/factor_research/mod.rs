@@ -264,7 +264,17 @@ pub(crate) struct PythonHostEvidence {
     pub project_revision_sha256: String,
     pub environment_sha256: String,
     pub repeatability_report_sha256: String,
-    pub attempt_ids: Vec<String>,
+    pub attempts: Vec<PythonHostAttemptEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PythonHostAttemptEvidence {
+    pub attempt_id: String,
+    pub owner_user_id: String,
+    pub status: String,
+    pub project_revision_sha256: String,
+    pub environment_sha256: String,
+    pub result_sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -438,6 +448,7 @@ pub(crate) struct FactorResearch {
 
 struct FactorResearchInner {
     source: Arc<dyn FactorResearchSource>,
+    schema_blocked: AtomicBool,
     active: Mutex<HashMap<String, Arc<AtomicBool>>>,
     reset_blocks: Mutex<std::collections::HashSet<String>>,
     start_gate: Mutex<()>,
@@ -450,14 +461,21 @@ impl FactorResearch {
         notify: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self, String> {
         let database = source.database()?;
-        ResearchStore::new(&database).initialize()?;
+        let schema_blocked = match ResearchStore::new(&database).initialize() {
+            Ok(()) => false,
+            Err(error) if error.starts_with("reset-required:") => true,
+            Err(error) => return Err(error),
+        };
         drop(database);
         let directory = source.dataset_directory()?;
         fs::create_dir_all(&directory).map_err(string)?;
-        ResearchStore::recover_stale_attempts(&directory, &source)?;
+        if !schema_blocked {
+            ResearchStore::recover_stale_attempts(&directory, &source)?;
+        }
         Ok(Self {
             inner: Arc::new(FactorResearchInner {
                 source,
+                schema_blocked: AtomicBool::new(schema_blocked),
                 active: Mutex::new(HashMap::new()),
                 reset_blocks: Mutex::new(std::collections::HashSet::new()),
                 start_gate: Mutex::new(()),
@@ -466,12 +484,28 @@ impl FactorResearch {
         })
     }
 
+    fn ensure_schema_ready(&self) -> Result<(), String> {
+        if self.inner.schema_blocked.load(Ordering::Acquire) {
+            return Err(
+                "reset-required: incompatible Factor research storage; perform an explicit device-level reset"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    fn database(&self) -> Result<MutexGuard<'_, Connection>, String> {
+        self.ensure_schema_ready()?;
+        self.inner.source.database()
+    }
+
     fn enqueue<T: Serialize>(
         &self,
         user_id: &str,
         kind: &str,
         job: &T,
     ) -> Result<FactorAttemptView, String> {
+        self.ensure_schema_ready()?;
         validate_user(user_id)?;
         let _gate = self.inner.start_gate.lock().map_err(string)?;
         if self
@@ -489,7 +523,7 @@ impl FactorResearch {
         }
         let request_json = String::from_utf8(request_json).map_err(string)?;
         let (attempt, should_start) = {
-            let database = self.inner.source.database()?;
+            let database = self.database()?;
             ResearchStore::new(&database).start_attempt(user_id, kind, &request_json)?
         };
         if should_start {
@@ -518,6 +552,7 @@ impl FactorResearch {
         &self,
         request: FactorCandidatePublishRequest,
     ) -> Result<FactorCandidateView, String> {
+        self.ensure_schema_ready()?;
         validate_user(&request.user_id)?;
         if matches!(&request.draft.source, FactorCandidateSource::Python { .. }) {
             return Err(
@@ -526,7 +561,7 @@ impl FactorResearch {
         }
         request.presentation.validate().map_err(string)?;
         let candidate = FactorCandidate::freeze(request.draft).map_err(string)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).save_candidate(
             &request.user_id,
             &candidate,
@@ -541,6 +576,7 @@ impl FactorResearch {
         request: FactorCandidatePublishRequest,
         host_evidence: PythonHostEvidence,
     ) -> Result<FactorCandidateView, String> {
+        self.ensure_schema_ready()?;
         validate_user(&request.user_id)?;
         request.presentation.validate().map_err(string)?;
         let binding = match &request.draft.source {
@@ -550,22 +586,27 @@ impl FactorResearch {
         if host_evidence.project_revision_sha256 != binding.project_revision_sha256
             || host_evidence.environment_sha256 != binding.environment_sha256
             || host_evidence.repeatability_report_sha256 != binding.repeatability_report_sha256
-            || host_evidence.attempt_ids.is_empty()
-            || host_evidence
-                .attempt_ids
-                .iter()
-                .any(|attempt| Uuid::parse_str(attempt).is_err())
-            || host_evidence.attempt_ids.len()
+            || host_evidence.attempts.is_empty()
+            || host_evidence.attempts.iter().any(|attempt| {
+                Uuid::parse_str(&attempt.attempt_id).is_err()
+                    || attempt.owner_user_id != request.user_id
+                    || attempt.status != "completed"
+                    || attempt.project_revision_sha256 != binding.project_revision_sha256
+                    || attempt.environment_sha256 != binding.environment_sha256
+                    || !is_sha256_text(&attempt.result_sha256)
+            })
+            || host_evidence.attempts.len()
                 != host_evidence
-                    .attempt_ids
+                    .attempts
                     .iter()
+                    .map(|attempt| &attempt.attempt_id)
                     .collect::<std::collections::BTreeSet<_>>()
                     .len()
         {
             return Err("Python Host evidence does not match the candidate binding".into());
         }
         let candidate = FactorCandidate::freeze(request.draft).map_err(string)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).save_candidate_with_python_evidence(
             &request.user_id,
             &candidate,
@@ -580,6 +621,7 @@ impl FactorResearch {
         &self,
         request: FactorMaterializationStartRequest,
     ) -> Result<FactorAttemptView, String> {
+        self.ensure_schema_ready()?;
         validate_user(&request.user_id)?;
         let user = user_uuid(&request.user_id);
         if request.protocol.user_id != user {
@@ -609,7 +651,7 @@ impl FactorResearch {
             dataset: request.dataset,
         };
         {
-            let database = self.inner.source.database()?;
+            let database = self.database()?;
             ResearchStore::new(&database).save_materialization_protocol(&request.protocol)?;
         }
         self.enqueue(&request.user_id, "factor-materialization", &job)
@@ -632,6 +674,7 @@ impl FactorResearch {
         &self,
         request: FactorEvaluationStartRequest,
     ) -> Result<FactorAttemptView, String> {
+        self.ensure_schema_ready()?;
         validate_user(&request.user_id)?;
         if request.protocol.user_id != user_uuid(&request.user_id) {
             return Err("Factor Evaluation Protocol User identity differs from the request".into());
@@ -655,7 +698,7 @@ impl FactorResearch {
             feature_evidence: request.feature_evidence,
         };
         {
-            let database = self.inner.source.database()?;
+            let database = self.database()?;
             ResearchStore::new(&database).save_evaluation_protocol(&request.protocol)?;
         }
         self.enqueue(&request.user_id, "factor-evaluation", &job)
@@ -677,7 +720,7 @@ impl FactorResearch {
         request: FactorPageRequest,
     ) -> Result<FactorPage<FactorAttemptView>, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).list_attempts(&request)
     }
 
@@ -686,13 +729,14 @@ impl FactorResearch {
         request: FactorAttemptRequest,
     ) -> Result<FactorAttemptView, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).attempt_for_user(&request.user_id, &request.attempt_id)
     }
 
     pub(crate) fn cancel(&self, request: FactorAttemptRequest) -> Result<(), String> {
+        self.ensure_schema_ready()?;
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         let status =
             ResearchStore::new(&database).cancel_attempt(&request.user_id, &request.attempt_id)?;
         drop(database);
@@ -706,6 +750,7 @@ impl FactorResearch {
     }
 
     pub(crate) fn retry(&self, request: FactorAttemptRequest) -> Result<FactorAttemptView, String> {
+        self.ensure_schema_ready()?;
         validate_user(&request.user_id)?;
         let _gate = self.inner.start_gate.lock().map_err(string)?;
         if self
@@ -717,7 +762,7 @@ impl FactorResearch {
         {
             return Err("Factor research User reset is in progress".into());
         }
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         let (attempt, should_start) =
             ResearchStore::new(&database).retry_attempt(&request.user_id, &request.attempt_id)?;
         drop(database);
@@ -732,7 +777,7 @@ impl FactorResearch {
         request: FactorPageRequest,
     ) -> Result<FactorPage<FactorCandidateView>, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).list_candidates(&request)
     }
 
@@ -741,7 +786,7 @@ impl FactorResearch {
         request: FactorEvidenceRequest,
     ) -> Result<FactorCandidateView, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).candidate_for_user(&request.user_id, &request.evidence_id)
     }
 
@@ -750,7 +795,7 @@ impl FactorResearch {
         request: FactorPageRequest,
     ) -> Result<FactorPage<FactorDatasetView>, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).list_datasets(&request)
     }
 
@@ -759,7 +804,7 @@ impl FactorResearch {
         request: FactorEvidenceRequest,
     ) -> Result<FactorDatasetView, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).dataset_for_user(&request.user_id, &request.evidence_id)
     }
 
@@ -768,7 +813,7 @@ impl FactorResearch {
         request: FactorDatasetRowsRequest,
     ) -> Result<FactorDatasetRowsPage, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).dataset_rows(
             &request.user_id,
             &request.dataset_id,
@@ -783,7 +828,7 @@ impl FactorResearch {
         request: FactorPageRequest,
     ) -> Result<FactorPage<FactorReportView>, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).list_reports(&request)
     }
 
@@ -792,7 +837,7 @@ impl FactorResearch {
         request: FactorEvidenceRequest,
     ) -> Result<FactorReportView, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).report_for_user(&request.user_id, &request.evidence_id)
     }
 
@@ -819,7 +864,7 @@ impl FactorResearch {
                 return Err("Research Trial Family identity differs from the Family".into());
             }
         }
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).save_family(&registration, &request.trials)
     }
 
@@ -843,7 +888,7 @@ impl FactorResearch {
             return Err("cancelled".into());
         }
         let user = user_uuid(&request.user_id);
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         let store = ResearchStore::new(&database);
         store.candidate_for_user(&request.user_id, &request.candidate_hash)?;
         let mut registry = ResearchRegistry::default();
@@ -919,7 +964,7 @@ impl FactorResearch {
 
     pub(crate) fn update_trial(&self, request: FactorTrialUpdateRequest) -> Result<(), String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).save_trial(user_uuid(&request.user_id), &request.trial)
     }
 
@@ -928,7 +973,7 @@ impl FactorResearch {
         request: FactorPageRequest,
     ) -> Result<FactorPage<FactorFamilyView>, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).list_families(&request)
     }
 
@@ -937,7 +982,7 @@ impl FactorResearch {
         request: FactorEvidenceRequest,
     ) -> Result<FactorFamilyView, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database)
             .family_for_user(user_uuid(&request.user_id), &request.evidence_id)
     }
@@ -947,7 +992,7 @@ impl FactorResearch {
         request: FactorEvidenceRequest,
     ) -> Result<FactorLineageView, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database)
             .lineage_for_user(user_uuid(&request.user_id), &request.evidence_id)
     }
@@ -958,7 +1003,7 @@ impl FactorResearch {
     ) -> Result<FactorPolicyView, String> {
         validate_user(&request.user_id)?;
         request.policy.validate().map_err(string)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).save_policy(user_uuid(&request.user_id), &request.policy)
     }
 
@@ -967,7 +1012,7 @@ impl FactorResearch {
         request: FactorPageRequest,
     ) -> Result<FactorPage<FactorPolicyView>, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).list_policies(&request)
     }
 
@@ -976,7 +1021,7 @@ impl FactorResearch {
         request: FactorTrialSelectionRequest,
     ) -> Result<FactorSelectionView, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).select_trial(&request)
     }
 
@@ -986,7 +1031,7 @@ impl FactorResearch {
         candidate_hash: &str,
     ) -> Result<(FactorSelectionView, PromotionProtocol), String> {
         validate_user(user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).selected_trial(user_id, candidate_hash)
     }
 
@@ -996,7 +1041,7 @@ impl FactorResearch {
         decision_hash: &str,
     ) -> Result<FactorModelInputBinding, String> {
         validate_user(user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).model_input_binding(user_id, decision_hash)
     }
 
@@ -1006,7 +1051,7 @@ impl FactorResearch {
     ) -> Result<FactorDecisionView, String> {
         validate_user(&request.user_id)?;
         let owner_id = request.user_id.clone();
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).save_decision(&owner_id, user_uuid(&request.user_id), request)
     }
 
@@ -1015,7 +1060,7 @@ impl FactorResearch {
         request: FactorPageRequest,
     ) -> Result<FactorPage<FactorDecisionView>, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).list_decisions(&request)
     }
 
@@ -1024,25 +1069,25 @@ impl FactorResearch {
         request: FactorPageRequest,
     ) -> Result<FactorPage<FactorDecisionView>, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).list_decision_library(&request)
     }
 
     pub(crate) fn add_reference(&self, request: FactorReferenceRequest) -> Result<(), String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).add_reference(&request)
     }
 
     pub(crate) fn remove_reference(&self, request: FactorReferenceRequest) -> Result<(), String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).remove_reference(&request)
     }
 
     pub(crate) fn delete_dataset(&self, request: FactorEvidenceRequest) -> Result<(), String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         let store = ResearchStore::new(&database);
         let feature_dataset_id =
             store.feature_dataset_binding_for_user(&request.user_id, &request.evidence_id)?;
@@ -1060,7 +1105,7 @@ impl FactorResearch {
         request: FactorM12Request,
     ) -> Result<adaq_factor_research::M12Eligibility, String> {
         validate_user(&request.user_id)?;
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).m12_eligibility(
             &request.user_id,
             user_uuid(&request.user_id),
@@ -1069,8 +1114,16 @@ impl FactorResearch {
     }
 
     pub(crate) fn reset_for_device(&self) -> Result<(), String> {
-        let users = {
+        if self.inner.schema_blocked.load(Ordering::Acquire) {
             let database = self.inner.source.database()?;
+            let directory = self.inner.source.dataset_directory()?;
+            ResearchStore::new(&database).reset_device(&directory)?;
+            drop(database);
+            self.inner.schema_blocked.store(false, Ordering::Release);
+            return Ok(());
+        }
+        let users = {
+            let database = self.database()?;
             ResearchStore::new(&database).user_ids()?
         };
         for user_id in users {
@@ -1080,6 +1133,7 @@ impl FactorResearch {
     }
 
     pub(crate) fn reset_for_user(&self, user_id: &str) -> Result<(), String> {
+        self.ensure_schema_ready()?;
         validate_user(user_id)?;
         {
             let _gate = self.inner.start_gate.lock().map_err(string)?;
@@ -1090,14 +1144,14 @@ impl FactorResearch {
                 .insert(user_id.to_owned());
         }
         let result = (|| -> Result<(), String> {
-            let database = self.inner.source.database()?;
+            let database = self.database()?;
             ResearchStore::new(&database).cancel_for_reset(user_id)?;
             drop(database);
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
             loop {
                 let active_for_user = {
                     let active = self.inner.active.lock().map_err(string)?;
-                    let database = self.inner.source.database()?;
+                    let database = self.database()?;
                     let store = ResearchStore::new(&database);
                     active
                         .iter()
@@ -1121,7 +1175,7 @@ impl FactorResearch {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            let database = self.inner.source.database()?;
+            let database = self.database()?;
             let directory = self.inner.source.dataset_directory()?;
             let store = ResearchStore::new(&database);
             let feature_bindings = store.feature_dataset_bindings_for_user(user_id)?;
@@ -1290,7 +1344,7 @@ impl FactorResearch {
                 &job.presentation,
             );
         }
-        let database = self.inner.source.database()?;
+        let database = self.database()?;
         ResearchStore::new(&database).save_candidate(user_id, &job.candidate, &job.presentation)
     }
 
@@ -1470,7 +1524,8 @@ fn validate_built_package(
 
 impl FactorQueueWork for FactorResearch {
     fn next_pending(&self) -> Result<Option<FactorQueueItem>, String> {
-        let database = self.inner.source.database()?;
+        self.ensure_schema_ready()?;
+        let database = self.database()?;
         ResearchStore::new(&database).next_pending()
     }
 
@@ -1507,6 +1562,10 @@ fn hash_bytes(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn is_sha256_text(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub(crate) fn user_uuid(user_id: &str) -> Uuid {
@@ -3547,6 +3606,15 @@ impl<'a> ResearchStore<'a> {
                     || host_evidence.environment_sha256 != binding.environment_sha256
                     || host_evidence.repeatability_report_sha256
                         != binding.repeatability_report_sha256
+                    || host_evidence.attempts.is_empty()
+                    || host_evidence.attempts.iter().any(|attempt| {
+                        Uuid::parse_str(&attempt.attempt_id).is_err()
+                            || attempt.owner_user_id != owner_id
+                            || attempt.status != "completed"
+                            || attempt.project_revision_sha256 != binding.project_revision_sha256
+                            || attempt.environment_sha256 != binding.environment_sha256
+                            || !is_sha256_text(&attempt.result_sha256)
+                    })
                 {
                     return Err("Python Candidate Host evidence does not match the binding".into());
                 }
@@ -4059,6 +4127,40 @@ impl<'a> ResearchStore<'a> {
             .ok_or_else(|| "Factor evidence is not visible to this User".into())
     }
 
+    fn reset_device(&self, directory: &Path) -> Result<(), String> {
+        let transaction = self.database.unchecked_transaction().map_err(string)?;
+        for table in [
+            "factor_references",
+            "factor_parameter_selections",
+            "factor_promotion_decisions",
+            "factor_promotion_policies",
+            "factor_evaluation_report_access",
+            "factor_evaluation_reports",
+            "factor_research_trials",
+            "factor_research_registrations",
+            "factor_research_families",
+            "factor_dataset_access",
+            "factor_dataset_content",
+            "factor_research_attempts",
+            "factor_research_protocols",
+            "factor_python_host_evidence",
+            "factor_candidate_presentations",
+            "factor_candidate_access",
+            "factor_candidate_content",
+            "factor_research_meta",
+        ] {
+            transaction
+                .execute(&format!("DROP TABLE IF EXISTS {table}"), [])
+                .map_err(string)?;
+        }
+        transaction.commit().map_err(string)?;
+        if directory.exists() {
+            fs::remove_dir_all(directory).map_err(string)?;
+        }
+        fs::create_dir_all(directory).map_err(string)?;
+        self.initialize()
+    }
+
     fn reset_for_user(&self, user_id: &str, directory: &Path) -> Result<(), String> {
         let user_uuid = user_uuid_string(user_id);
         let attempt_ids = self
@@ -4518,6 +4620,84 @@ mod tests {
         let database = Connection::open_in_memory().unwrap();
         ResearchStore::new(&database).initialize().unwrap();
         database
+    }
+
+    #[test]
+    fn device_reset_recreates_factor_schema_explicitly() {
+        let database = store();
+        database
+            .execute(
+                "UPDATE factor_research_meta SET value = '1.0.0' WHERE key = 'schema_version'",
+                [],
+            )
+            .unwrap();
+        let directory = std::env::temp_dir().join(format!("adaq-factor-reset-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        ResearchStore::new(&database)
+            .reset_device(&directory)
+            .unwrap();
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT value FROM factor_research_meta WHERE key = 'schema_version'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            STORAGE_SCHEMA_VERSION
+        );
+        assert!(
+            database
+                .query_row("SELECT COUNT(*) FROM factor_candidate_content", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .is_ok()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn incompatible_factor_storage_remains_resettable_through_open_research() {
+        let database = Arc::new(Mutex::new(store()));
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE factor_research_meta SET value = '1.0.0' WHERE key = 'schema_version'",
+                [],
+            )
+            .unwrap();
+        let directory = tempfile_dir("factor-open-reset");
+        let research = FactorResearch::open(
+            Arc::new(TestSource {
+                database,
+                directory: directory.clone(),
+            }),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+
+        let error = research
+            .list_candidates(FactorPageRequest {
+                user_id: "alice".into(),
+                page: 1,
+                page_size: None,
+            })
+            .unwrap_err();
+        assert!(error.starts_with("reset-required:"));
+        research.reset_for_device().unwrap();
+        assert_eq!(
+            research
+                .list_candidates(FactorPageRequest {
+                    user_id: "alice".into(),
+                    page: 1,
+                    page_size: None,
+                })
+                .unwrap()
+                .total,
+            0
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     fn row(time: i64, value: f64) -> FactorDatasetRow {

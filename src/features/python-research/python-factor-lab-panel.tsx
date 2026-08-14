@@ -64,8 +64,13 @@ type FactorRun = {
 	repeatabilityReport?: Record<
 		string,
 		{
+			firstAttemptId: string;
+			replayAttemptId: string;
 			firstProcessSha256: string;
 			replayProcessSha256: string;
+			processContractSha256: string;
+			firstInputSha256: string;
+			replayInputSha256: string;
 			firstOutputSha256: string;
 			replayOutputSha256: string;
 			exact: boolean;
@@ -415,13 +420,13 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 										<summary className="cursor-pointer">
 											{t("pythonResearch.factorLab.repeatabilityDetails")}
 										</summary>
-										<div className="mt-1 grid gap-1 break-all font-mono text-xs text-muted-foreground">
-											{Object.entries(run.repeatabilityReport).map(([lookback, report]) => (
-												<p key={lookback}>
-													{lookback}: {report.exact ? t("pythonResearch.factorLab.exact") : t("pythonResearch.factorLab.divergent")}; {report.partitions.join(", ")}; {report.firstProcessSha256} / {report.replayProcessSha256}
-												</p>
-											))}
-										</div>
+						<div className="mt-1 grid gap-1 break-all font-mono text-xs text-muted-foreground">
+							{Object.entries(run.repeatabilityReport).map(([lookback, report]) => (
+								<p key={lookback}>
+									{lookback}: {report.exact ? t("pythonResearch.factorLab.exact") : t("pythonResearch.factorLab.divergent")}; {report.partitions.join(", ")}; {report.firstAttemptId} / {report.replayAttemptId}; {report.processContractSha256}; {report.firstInputSha256} / {report.replayInputSha256}; {report.firstProcessSha256} / {report.replayProcessSha256}
+								</p>
+							))}
+						</div>
 									</details>
 								) : null}
 							</div>

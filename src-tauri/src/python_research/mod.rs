@@ -28,9 +28,12 @@ use adaq_factor_research::{
     ResearchRegistry, ResearchTrial, ResearchTrialStatus,
 };
 use adaq_feature_engine::{
-    DefinitionDraft, FeatureDefinition, FeatureEngineIdentity, FeatureInput,
-    FeatureMaterializationRequest, FeatureNode, FeatureOperator, FeatureOutput, FeaturePlan,
-    FeaturePlanDraft, FeatureScope, MaterializationAttemptStatus, ObservationRange,
+    DefinitionDraft, FeatureDefinition, FeatureEngine, FeatureEngineIdentity,
+    FeatureEvaluationInput, FeatureInput, FeatureInputEvent, FeatureMarketBar,
+    FeatureMarketContext, FeatureMaterializationRequest, FeatureNode, FeatureObservationValue,
+    FeatureOperator, FeatureOutput, FeaturePlan, FeaturePlanDraft, FeatureScope,
+    FeatureUnavailabilityReason, MaterializationAttemptStatus, ObservationRange,
+    PointInTimeInstrumentUniverse, UniverseEvidenceState,
 };
 use adaq_python_research::{
     HostResourcePolicy, PUBLIC_SDK_ARTIFACT_SHA256, ParameterType, ProjectKind, ProjectManifest,
@@ -73,11 +76,15 @@ use tauri::{Manager, State};
 use crate::factor_research::{
     FactorDatasetInput, FactorDecisionSaveRequest, FactorEvaluationStartRequest,
     FactorGridFamilyRegisterRequest, FactorPolicySaveRequest, FactorTrialUpdateRequest,
+    PythonHostAttemptEvidence,
 };
 use crate::features::{
     FeatureAttemptRequest, FeatureMaterializationStartRequest, PythonQueueItem, PythonQueueWork,
 };
-use adaq_data_core::{BarInterval, BarSeries, OhlcvBar};
+use adaq_data_core::{
+    BarInterval, BarSeries, OhlcvBar,
+    market::{PriceBasis, Venue, VenueKind},
+};
 use rust_decimal::Decimal;
 
 pub struct PythonResearchState {
@@ -889,7 +896,7 @@ fn normal_upper_tail(value: f64) -> f64 {
 fn factor_repeatability_reports(
     first_outputs: &BTreeMap<u32, Vec<MomentumOutputRow>>,
     replay_outputs: &BTreeMap<u32, Vec<MomentumOutputRow>>,
-    process_hashes: &BTreeMap<u32, (String, String)>,
+    process_evidence: &BTreeMap<u32, (RunnerProcessEvidence, RunnerProcessEvidence)>,
     process_replay_exact: bool,
     mode: PythonFactorMode,
 ) -> Result<BTreeMap<String, PythonRepeatabilityReport>, PythonResearchError> {
@@ -904,19 +911,25 @@ fn factor_repeatability_reports(
             .cloned()
             .ok_or_else(|| PythonResearchError("python-factor-replay-output-missing".into()))?;
         let output_report = RepeatabilityReport::exact(&first, &replay)?;
-        let (first_process_sha256, replay_process_sha256) = process_hashes
+        let (first_evidence, replay_evidence) = process_evidence
             .get(&lookback)
             .cloned()
             .ok_or_else(|| PythonResearchError("python-factor-process-evidence-missing".into()))?;
         reports.insert(
             lookback.to_string(),
             PythonRepeatabilityReport {
-                first_process_sha256: first_process_sha256.clone(),
-                replay_process_sha256: replay_process_sha256.clone(),
+                first_attempt_id: first_evidence.attempt_id,
+                replay_attempt_id: replay_evidence.attempt_id,
+                first_process_sha256: first_evidence.process_sha256,
+                replay_process_sha256: replay_evidence.process_sha256,
+                process_contract_sha256: first_evidence.contract_sha256.clone(),
+                first_input_sha256: first_evidence.input_sha256.clone(),
+                replay_input_sha256: replay_evidence.input_sha256.clone(),
                 first_output_sha256: output_report.first_output_sha256,
                 replay_output_sha256: output_report.replay_output_sha256,
                 exact: output_report.exact
-                    && first_process_sha256 == replay_process_sha256
+                    && first_evidence.contract_sha256 == replay_evidence.contract_sha256
+                    && first_evidence.input_sha256 == replay_evidence.input_sha256
                     && process_replay_exact,
                 partitions: match mode {
                     PythonFactorMode::ImperativePython => vec![
@@ -932,6 +945,14 @@ fn factor_repeatability_reports(
         );
     }
     Ok(reports)
+}
+
+#[derive(Debug, Clone)]
+struct RunnerProcessEvidence {
+    attempt_id: String,
+    process_sha256: String,
+    contract_sha256: String,
+    input_sha256: String,
 }
 
 fn python_factor_resource_policy(policy: &HostResourcePolicy) -> PythonFactorResourcePolicy {
@@ -2744,27 +2765,177 @@ fn portable_factor_outputs(
     validate_portable_definition_payload(payload)?;
     expand_momentum_grid()
         .into_iter()
-        .map(|lookback| {
-            Ok((
-                lookback,
-                materialize_momentum(&fixture.momentum_rows(), &fixture.instruments, lookback)?,
-            ))
-        })
+        .map(|lookback| Ok((lookback, evaluate_portable_momentum(fixture, lookback)?)))
         .collect()
 }
 
-fn runner_process_identity_sha256(
+fn evaluate_portable_momentum(
+    fixture: &SyntheticTutorialFixture,
+    lookback: u32,
+) -> Result<Vec<MomentumOutputRow>, PythonResearchError> {
+    let definition = FeatureDefinition::freeze(DefinitionDraft {
+        definition_id: uuid::Uuid::from_u128(
+            0x6d120101000000000000000000000020 + u128::from(lookback),
+        ),
+        revision: 1,
+        scope: FeatureScope::CrossSectional,
+        nodes: vec![
+            FeatureNode {
+                id: "return".into(),
+                operator: FeatureOperator::BackwardSimpleReturn,
+                scope: FeatureScope::TimeSeries,
+                inputs: vec![FeatureInput::Market {
+                    field: "close".into(),
+                }],
+                parameters: BTreeMap::from([("period".into(), serde_json::json!(lookback))]),
+                warmup_bars: lookback,
+            },
+            FeatureNode {
+                id: "percentile".into(),
+                operator: FeatureOperator::CrossSectionalPercentile,
+                scope: FeatureScope::CrossSectional,
+                inputs: vec![FeatureInput::Node {
+                    node_id: "return".into(),
+                    definition_hash: None,
+                }],
+                parameters: BTreeMap::new(),
+                warmup_bars: 0,
+            },
+        ],
+        outputs: vec![FeatureOutput {
+            name: "momentum-score".into(),
+            node_id: "percentile".into(),
+        }],
+    })
+    .map_err(|error| {
+        PythonResearchError(format!("portable-feature-definition-invalid:{error:?}"))
+    })?;
+    let plan = FeaturePlan::freeze(FeaturePlanDraft {
+        definitions: vec![definition],
+        engine_identity: FeatureEngineIdentity::native()
+            .map_err(|error| PythonResearchError(error.to_string()))?,
+        ..FeaturePlanDraft::default()
+    })
+    .map_err(|error| PythonResearchError(format!("portable-feature-plan-invalid:{error:?}")))?;
+    let context = FeatureMarketContext::new(
+        Venue::us_equity("iex").map_err(|error| PythonResearchError(error.to_string()))?,
+        VenueKind::UsEquity,
+        BarInterval::OneDay,
+        PriceBasis::Unadjusted,
+        "USD",
+    )
+    .map_err(|error| PythonResearchError(error.to_string()))?;
+    let universe = PointInTimeInstrumentUniverse::new(
+        "python-tutorial-a-share@1:point-in-time-universe",
+        0,
+        fixture.instruments.clone(),
+        context.clone(),
+        UniverseEvidenceState::Observed,
+    )
+    .map_err(|error| PythonResearchError(error.to_string()))?;
+    let events = fixture
+        .sessions
+        .iter()
+        .map(|session| {
+            let inputs = fixture
+                .instruments
+                .iter()
+                .map(|instrument| {
+                    let bar = fixture
+                        .bars
+                        .iter()
+                        .find(|bar| bar.session == *session && bar.instrument == *instrument)
+                        .ok_or_else(|| {
+                            PythonResearchError("portable-feature-bar-missing".into())
+                        })?;
+                    let close = bar.close.to_string();
+                    let market_bar = FeatureMarketBar::complete(
+                        i64::from(*session),
+                        &close,
+                        &close,
+                        &close,
+                        &close,
+                        "1",
+                        &close,
+                    )
+                    .map_err(|error| PythonResearchError(error.to_string()))?;
+                    Ok(FeatureEvaluationInput::new(
+                        instrument,
+                        i64::from(*session),
+                        i64::from(*session),
+                        market_bar,
+                    )
+                    .with_market_context(context.clone()))
+                })
+                .collect::<Result<Vec<_>, PythonResearchError>>()?;
+            Ok(FeatureInputEvent::cross_sectional_batch(
+                i64::from(*session),
+                PointInTimeInstrumentUniverse {
+                    as_of_ms: i64::from(*session),
+                    ..universe.clone()
+                },
+                inputs,
+            ))
+        })
+        .collect::<Result<Vec<_>, PythonResearchError>>()?;
+    let observations = FeatureEngine::new(plan.engine_identity())
+        .evaluate_batch(plan, &events)
+        .map_err(|error| {
+            PythonResearchError(format!("portable-feature-evaluation-failed:{error:?}"))
+        })?;
+    let mut output = observations
+        .into_iter()
+        .map(|observation| {
+            let unavailable_reason = match observation.value {
+                FeatureObservationValue::Available { value, .. } => {
+                    // The existing Factor contract uses the upper-rank percentile (rank / N),
+                    // while Feature Engine exposes the normalized rank ((rank - 1) / (N - 1)).
+                    let count = fixture.instruments.len() as f64;
+                    let value = (value * (count - 1.0) + 1.0) / count;
+                    return Ok(MomentumOutputRow {
+                        instrument_id: observation.instrument_id,
+                        observation_time_ms: observation.observation_time_ms,
+                        value: Some(value),
+                        unavailable_reason: None,
+                    });
+                }
+                FeatureObservationValue::Unavailable { reason } => match reason {
+                    FeatureUnavailabilityReason::Warmup => FactorUnavailableReason::Warmup,
+                    FeatureUnavailabilityReason::BarGap => FactorUnavailableReason::BarGap,
+                    _ => FactorUnavailableReason::MissingInput,
+                },
+            };
+            Ok(MomentumOutputRow {
+                instrument_id: observation.instrument_id,
+                observation_time_ms: observation.observation_time_ms,
+                value: None,
+                unavailable_reason: Some(unavailable_reason),
+            })
+        })
+        .collect::<Result<Vec<_>, PythonResearchError>>()?;
+    output.sort_by(|left, right| {
+        (left.instrument_id.as_str(), left.observation_time_ms)
+            .cmp(&(right.instrument_id.as_str(), right.observation_time_ms))
+    });
+    Ok(output)
+}
+
+fn runner_process_evidence(
     context: &AttemptContext,
     request: &FactorRunRequest,
     execution: &RunnerExecution,
     parameters: &BTreeMap<String, String>,
     seed: u64,
-) -> Result<String, PythonResearchError> {
+    input: &serde_json::Value,
+) -> Result<RunnerProcessEvidence, PythonResearchError> {
     let result = execution
         .conformance
         .as_ref()
         .ok_or_else(|| PythonResearchError("runner-process-identity-missing".into()))?;
-    let identity = serde_json::json!({
+    let attempt_id = uuid::Uuid::parse_str(&result.attempt_id)
+        .map_err(|_| PythonResearchError("runner-attempt-id-invalid".into()))?;
+    let input_sha256 = runner_input_sha256(input)?;
+    let contract = serde_json::json!({
         "contract": "adaq-python-factor-process@1",
         "projectRevisionSha256": request.project_revision_sha256,
         "environmentSha256": request.environment_sha256,
@@ -2777,10 +2948,73 @@ fn runner_process_identity_sha256(
         "seed": seed,
         "inputSlots": context.manifest.input_slots,
         "outputs": context.manifest.outputs,
+        "inputSha256": input_sha256,
     });
-    let bytes =
-        serde_json::to_vec(&identity).map_err(|error| PythonResearchError(error.to_string()))?;
-    Ok(sha256(&bytes))
+    let contract_bytes =
+        serde_json::to_vec(&contract).map_err(|error| PythonResearchError(error.to_string()))?;
+    let contract_sha256 = sha256(&contract_bytes);
+    let result_sha256 = sha256(
+        &serde_json::to_vec(result).map_err(|error| PythonResearchError(error.to_string()))?,
+    );
+    let process = serde_json::json!({
+        "contractSha256": contract_sha256,
+        "attemptId": attempt_id,
+        "status": "completed",
+        "resultSha256": result_sha256,
+    });
+    let process_sha256 = sha256(
+        &serde_json::to_vec(&process).map_err(|error| PythonResearchError(error.to_string()))?,
+    );
+    Ok(RunnerProcessEvidence {
+        attempt_id: attempt_id.to_string(),
+        process_sha256,
+        contract_sha256,
+        input_sha256,
+    })
+}
+
+fn completed_host_attempt_evidence(
+    execution: &RunnerExecution,
+    request: &FactorRunRequest,
+) -> Result<PythonHostAttemptEvidence, PythonResearchError> {
+    let result = execution
+        .conformance
+        .as_ref()
+        .ok_or_else(|| PythonResearchError("runner-host-evidence-result-missing".into()))?;
+    let attempt_id = uuid::Uuid::parse_str(&result.attempt_id)
+        .map_err(|_| PythonResearchError("runner-attempt-id-invalid".into()))?;
+    let result_sha256 = sha256(
+        &serde_json::to_vec(result).map_err(|error| PythonResearchError(error.to_string()))?,
+    );
+    Ok(PythonHostAttemptEvidence {
+        attempt_id: attempt_id.to_string(),
+        owner_user_id: request.user_id.clone(),
+        status: "completed".into(),
+        project_revision_sha256: request.project_revision_sha256.clone(),
+        environment_sha256: request.environment_sha256.clone(),
+        result_sha256,
+    })
+}
+
+fn runner_input_sha256(input: &serde_json::Value) -> Result<String, PythonResearchError> {
+    if let Ok(contract) = serde_json::from_value::<PythonFactorInput>(input.clone()) {
+        let mut rows = contract
+            .segments
+            .into_iter()
+            .flat_map(|segment| segment.batches)
+            .flat_map(|batch| batch.rows)
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            (left.observation_time_ms, left.instrument_id.as_str())
+                .cmp(&(right.observation_time_ms, right.instrument_id.as_str()))
+        });
+        let bytes = serde_json::to_vec(&(contract.universe, rows))
+            .map_err(|error| PythonResearchError(error.to_string()))?;
+        return Ok(sha256(&bytes));
+    }
+    Ok(sha256(
+        &serde_json::to_vec(input).map_err(|error| PythonResearchError(error.to_string()))?,
+    ))
 }
 
 fn normalize_parameters_for_attempt(
@@ -3526,8 +3760,8 @@ pub async fn python_factor_demo(
             .ok_or_else(|| "factor-project-mode-missing".to_string())?;
         let mut process_replay_exact = true;
         let mut logs = Vec::new();
-        let mut process_hashes = BTreeMap::new();
-        let mut host_attempt_ids = Vec::new();
+        let mut process_evidence = BTreeMap::new();
+        let mut host_attempts = Vec::new();
         let default_parameters = normalize_parameters(&context.manifest).map_err(map_error)?;
         let (attempt_id, first_outputs, replay_outputs) = match mode {
             ProjectMode::PortableDefinition => {
@@ -3552,9 +3786,9 @@ pub async fn python_factor_demo(
                 append_runner_log(&mut logs, &first);
                 append_runner_log(&mut logs, &replay);
                 for execution in [&first, &replay] {
-                    if let Some(result) = execution.conformance.as_ref() {
-                        host_attempt_ids.push(result.attempt_id.clone());
-                    }
+                    host_attempts.push(
+                        completed_host_attempt_evidence(execution, &request).map_err(map_error)?,
+                    );
                 }
                 let first_payload = first
                     .conformance
@@ -3567,26 +3801,31 @@ pub async fn python_factor_demo(
                     .and_then(|result| result.payload.as_ref())
                     .ok_or_else(|| "factor-runner-replay-result-missing".to_string())?;
                 process_replay_exact = first_payload == replay_payload;
-                let first_process_sha256 = runner_process_identity_sha256(
+                let first_process_evidence = runner_process_evidence(
                     &context,
                     &request,
                     &first,
                     &default_parameters,
                     7,
+                    first_payload,
                 )
                 .map_err(map_error)?;
-                let replay_process_sha256 = runner_process_identity_sha256(
+                let replay_process_evidence = runner_process_evidence(
                     &context,
                     &request,
                     &replay,
                     &default_parameters,
                     7,
+                    replay_payload,
                 )
                 .map_err(map_error)?;
                 for lookback in expand_momentum_grid() {
-                    process_hashes.insert(
+                    process_evidence.insert(
                         lookback,
-                        (first_process_sha256.clone(), replay_process_sha256.clone()),
+                        (
+                            first_process_evidence.clone(),
+                            replay_process_evidence.clone(),
+                        ),
                     );
                 }
                 let first_outputs =
@@ -3637,9 +3876,10 @@ pub async fn python_factor_demo(
                     append_runner_log(&mut logs, &execution);
                     append_runner_log(&mut logs, &replay_execution);
                     for current in [&execution, &replay_execution] {
-                        if let Some(result) = current.conformance.as_ref() {
-                            host_attempt_ids.push(result.attempt_id.clone());
-                        }
+                        host_attempts.push(
+                            completed_host_attempt_evidence(current, &request)
+                                .map_err(map_error)?,
+                        );
                     }
                     let input_contract = serde_json::from_value::<PythonFactorInput>(input.clone())
                         .map_err(|error| error.to_string())?;
@@ -3662,23 +3902,26 @@ pub async fn python_factor_demo(
                         validate_imperative_factor_payload(replay_output, &replay_input_contract)
                             .map_err(map_error)?;
                     process_replay_exact &= first_rows == replay_rows;
-                    let process_sha256 = runner_process_identity_sha256(
+                    let first_process_evidence = runner_process_evidence(
                         &context,
                         &request,
                         &execution,
                         &parameters,
                         7,
+                        &input,
                     )
                     .map_err(map_error)?;
-                    let replay_process_sha256 = runner_process_identity_sha256(
+                    let replay_process_evidence = runner_process_evidence(
                         &context,
                         &request,
                         &replay_execution,
                         &parameters,
                         7,
+                        &replay_input,
                     )
                     .map_err(map_error)?;
-                    process_hashes.insert(lookback, (process_sha256, replay_process_sha256));
+                    process_evidence
+                        .insert(lookback, (first_process_evidence, replay_process_evidence));
                     first.insert(lookback, first_rows);
                     replay.insert(lookback, replay_rows);
                     if lookback == 20 {
@@ -3706,7 +3949,7 @@ pub async fn python_factor_demo(
         let repeatability_report = factor_repeatability_reports(
             first_outputs,
             replay_outputs,
-            &process_hashes,
+            &process_evidence,
             process_replay_exact,
             factor_mode,
         )
@@ -3782,7 +4025,7 @@ pub async fn python_factor_demo(
                     project_revision_sha256: request.project_revision_sha256.clone(),
                     environment_sha256: request.environment_sha256.clone(),
                     repeatability_report_sha256: repeatability_report_sha256.clone(),
-                    attempt_ids: host_attempt_ids,
+                    attempts: host_attempts,
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -4829,7 +5072,20 @@ mod tests {
             .map(|lookback| {
                 (
                     lookback,
-                    (sha256(b"vertical-process"), sha256(b"vertical-process")),
+                    (
+                        RunnerProcessEvidence {
+                            attempt_id: uuid::Uuid::new_v4().to_string(),
+                            process_sha256: sha256(b"vertical-process-first"),
+                            contract_sha256: sha256(b"vertical-contract"),
+                            input_sha256: sha256(b"vertical-input"),
+                        },
+                        RunnerProcessEvidence {
+                            attempt_id: uuid::Uuid::new_v4().to_string(),
+                            process_sha256: sha256(b"vertical-process-replay"),
+                            contract_sha256: sha256(b"vertical-contract"),
+                            input_sha256: sha256(b"vertical-input"),
+                        },
+                    ),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -4911,7 +5167,14 @@ mod tests {
                     project_revision_sha256: request.project_revision_sha256.clone(),
                     environment_sha256: request.environment_sha256.clone(),
                     repeatability_report_sha256,
-                    attempt_ids: vec![uuid::Uuid::new_v4().to_string()],
+                    attempts: vec![crate::factor_research::PythonHostAttemptEvidence {
+                        attempt_id: uuid::Uuid::new_v4().to_string(),
+                        owner_user_id: request.user_id.clone(),
+                        status: "completed".into(),
+                        project_revision_sha256: request.project_revision_sha256.clone(),
+                        environment_sha256: request.environment_sha256.clone(),
+                        result_sha256: sha256(b"vertical-result"),
+                    }],
                 },
             )
             .unwrap();
@@ -5015,5 +5278,25 @@ mod tests {
         drop(python);
         drop(local);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn portable_definition_uses_feature_engine_for_momentum_values() {
+        let fixture = SyntheticTutorialFixture::m12().unwrap();
+        let expected =
+            materialize_momentum(&fixture.momentum_rows(), &fixture.instruments, 20).unwrap();
+        let actual = evaluate_portable_momentum(&fixture, 20).unwrap();
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            if actual != expected {
+                panic!(
+                    "row {index}: actual=({:?}, {:?}) expected=({:?}, {:?})",
+                    actual.value,
+                    actual.unavailable_reason,
+                    expected.value,
+                    expected.unavailable_reason
+                );
+            }
+        }
     }
 }

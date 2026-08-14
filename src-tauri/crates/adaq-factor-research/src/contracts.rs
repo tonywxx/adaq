@@ -217,8 +217,13 @@ pub enum PythonFactorMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PythonRepeatabilityReport {
+    pub first_attempt_id: String,
+    pub replay_attempt_id: String,
     pub first_process_sha256: String,
     pub replay_process_sha256: String,
+    pub process_contract_sha256: String,
+    pub first_input_sha256: String,
+    pub replay_input_sha256: String,
     pub first_output_sha256: String,
     pub replay_output_sha256: String,
     pub exact: bool,
@@ -230,14 +235,21 @@ impl PythonRepeatabilityReport {
         let mut partitions = self.partitions.clone();
         partitions.sort();
         partitions.dedup();
-        if !is_sha256(&self.first_process_sha256)
+        if Uuid::parse_str(&self.first_attempt_id).is_err()
+            || Uuid::parse_str(&self.replay_attempt_id).is_err()
+            || self.first_attempt_id == self.replay_attempt_id
+            || !is_sha256(&self.first_process_sha256)
             || !is_sha256(&self.replay_process_sha256)
+            || !is_sha256(&self.process_contract_sha256)
+            || !is_sha256(&self.first_input_sha256)
+            || !is_sha256(&self.replay_input_sha256)
             || !is_sha256(&self.first_output_sha256)
             || !is_sha256(&self.replay_output_sha256)
             || self.partitions.is_empty()
             || partitions.len() != self.partitions.len()
             || (self.exact
-                && (self.first_process_sha256 != self.replay_process_sha256
+                && (self.process_contract_sha256.is_empty()
+                    || self.first_input_sha256 != self.replay_input_sha256
                     || self.first_output_sha256 != self.replay_output_sha256))
             || self
                 .partitions
@@ -2320,8 +2332,13 @@ mod tests {
                 (
                     lookback.into(),
                     PythonRepeatabilityReport {
+                        first_attempt_id: "11111111-1111-4111-8111-111111111111".into(),
+                        replay_attempt_id: "22222222-2222-4222-8222-222222222222".into(),
                         first_process_sha256: "a".repeat(64),
                         replay_process_sha256: "b".repeat(64),
+                        process_contract_sha256: "e".repeat(64),
+                        first_input_sha256: "f".repeat(64),
+                        replay_input_sha256: "0".repeat(64),
                         first_output_sha256: "c".repeat(64),
                         replay_output_sha256: "d".repeat(64),
                         exact: false,
