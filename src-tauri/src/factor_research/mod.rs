@@ -27,10 +27,11 @@ use adaq_factor_research::{
     FactorMaterializationProtocolDraft, FactorMaterializer, FactorObservationValue,
     FactorPresentationMetadata, FactorPromotionDecision, FactorTarget, FactorUnavailabilityReason,
     GridSearchFamilyDraft, GridSearchParameter, ObservationRange, PromotionEligibility,
-    PromotionPolicy, PromotionProtocol, PromotionProtocolDraft, ResearchFamily,
-    ResearchFamilyDraft, ResearchFamilyRegistration, ResearchLineage, ResearchRegistry,
-    ResearchTrial, ResearchTrialDraft, ResearchTrialRegistration, canonical_json,
+    PromotionPolicy, PromotionProtocol, PromotionProtocolDraft, PythonFactorBinding,
+    ResearchFamily, ResearchFamilyDraft, ResearchFamilyRegistration, ResearchLineage,
+    ResearchRegistry, ResearchTrial, ResearchTrialDraft, ResearchTrialRegistration, canonical_json,
 };
+use adaq_python_research::runner::{AttemptStatus as PythonAttemptStatus, AttemptStore};
 use arrow_array::{Array, ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
@@ -449,6 +450,7 @@ pub(crate) struct FactorResearch {
 struct FactorResearchInner {
     source: Arc<dyn FactorResearchSource>,
     schema_blocked: AtomicBool,
+    python_attempt_store: Mutex<Option<Arc<AttemptStore>>>,
     active: Mutex<HashMap<String, Arc<AtomicBool>>>,
     reset_blocks: Mutex<std::collections::HashSet<String>>,
     start_gate: Mutex<()>,
@@ -476,6 +478,7 @@ impl FactorResearch {
             inner: Arc::new(FactorResearchInner {
                 source,
                 schema_blocked: AtomicBool::new(schema_blocked),
+                python_attempt_store: Mutex::new(None),
                 active: Mutex::new(HashMap::new()),
                 reset_blocks: Mutex::new(std::collections::HashSet::new()),
                 start_gate: Mutex::new(()),
@@ -497,6 +500,73 @@ impl FactorResearch {
     fn database(&self) -> Result<MutexGuard<'_, Connection>, String> {
         self.ensure_schema_ready()?;
         self.inner.source.database()
+    }
+
+    pub(crate) fn attach_python_attempt_store(
+        &self,
+        store: Arc<AttemptStore>,
+    ) -> Result<(), String> {
+        *self.inner.python_attempt_store.lock().map_err(string)? = Some(store);
+        Ok(())
+    }
+
+    fn validate_python_host_evidence(
+        &self,
+        user_id: &str,
+        binding: &PythonFactorBinding,
+        evidence: &PythonHostEvidence,
+    ) -> Result<(), String> {
+        if evidence.project_revision_sha256 != binding.project_revision_sha256
+            || evidence.environment_sha256 != binding.environment_sha256
+            || evidence.repeatability_report_sha256 != binding.repeatability_report_sha256
+            || evidence.attempts.is_empty()
+        {
+            return Err("Python Host evidence does not match the candidate binding".into());
+        }
+        let attempt_ids = evidence
+            .attempts
+            .iter()
+            .map(|attempt| attempt.attempt_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if attempt_ids.len() != evidence.attempts.len()
+            || binding.repeatability_report.values().any(|report| {
+                !attempt_ids.contains(report.first_attempt_id.as_str())
+                    || !attempt_ids.contains(report.replay_attempt_id.as_str())
+            })
+        {
+            return Err("Python Host evidence does not cover repeatability Attempts".into());
+        }
+        let store = self
+            .inner
+            .python_attempt_store
+            .lock()
+            .map_err(string)?
+            .clone()
+            .ok_or_else(|| "Python Host attempt store is not configured".to_owned())?;
+        for attempt in &evidence.attempts {
+            if !is_sha256_text(&attempt.attempt_id)
+                || attempt.owner_user_id != user_id
+                || attempt.status != "completed"
+                || attempt.project_revision_sha256 != binding.project_revision_sha256
+                || attempt.environment_sha256 != binding.environment_sha256
+                || !is_sha256_text(&attempt.result_sha256)
+            {
+                return Err("Python Host evidence does not match the candidate binding".into());
+            }
+            let stored = store
+                .get(&attempt.attempt_id)
+                .map_err(|error| format!("Python Host Attempt is not persisted: {error}"))?;
+            if stored.user_id != user_id
+                || stored.project_id != binding.project_id
+                || stored.status != PythonAttemptStatus::Completed
+                || stored.revision_sha256 != binding.project_revision_sha256
+                || stored.environment_sha256 != binding.environment_sha256
+                || stored.staged_result_sha256.as_deref() != Some(attempt.result_sha256.as_str())
+            {
+                return Err("Persisted Python Host Attempt does not match its evidence".into());
+            }
+        }
+        Ok(())
     }
 
     fn enqueue<T: Serialize>(
@@ -583,28 +653,7 @@ impl FactorResearch {
             FactorCandidateSource::Python { binding } => binding,
             _ => return Err("Host Python evidence requires a Python candidate".into()),
         };
-        if host_evidence.project_revision_sha256 != binding.project_revision_sha256
-            || host_evidence.environment_sha256 != binding.environment_sha256
-            || host_evidence.repeatability_report_sha256 != binding.repeatability_report_sha256
-            || host_evidence.attempts.is_empty()
-            || host_evidence.attempts.iter().any(|attempt| {
-                Uuid::parse_str(&attempt.attempt_id).is_err()
-                    || attempt.owner_user_id != request.user_id
-                    || attempt.status != "completed"
-                    || attempt.project_revision_sha256 != binding.project_revision_sha256
-                    || attempt.environment_sha256 != binding.environment_sha256
-                    || !is_sha256_text(&attempt.result_sha256)
-            })
-            || host_evidence.attempts.len()
-                != host_evidence
-                    .attempts
-                    .iter()
-                    .map(|attempt| &attempt.attempt_id)
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .len()
-        {
-            return Err("Python Host evidence does not match the candidate binding".into());
-        }
+        self.validate_python_host_evidence(&request.user_id, binding, &host_evidence)?;
         let candidate = FactorCandidate::freeze(request.draft).map_err(string)?;
         let database = self.database()?;
         ResearchStore::new(&database).save_candidate_with_python_evidence(
@@ -1052,7 +1101,20 @@ impl FactorResearch {
         validate_user(&request.user_id)?;
         let owner_id = request.user_id.clone();
         let database = self.database()?;
-        ResearchStore::new(&database).save_decision(&owner_id, user_uuid(&request.user_id), request)
+        let store = ResearchStore::new(&database);
+        if !matches!(
+            &request.decision.state,
+            adaq_factor_research::PromotionDecisionState::Rejected
+        ) {
+            let candidate = store
+                .candidate_for_user(&owner_id, &request.decision.candidate_hash)?
+                .candidate;
+            if let FactorCandidateSource::Python { binding } = &candidate.source {
+                let evidence = store.python_host_evidence(&owner_id, &candidate.candidate_hash)?;
+                self.validate_python_host_evidence(&owner_id, binding, &evidence)?;
+            }
+        }
+        store.save_decision(&owner_id, user_uuid(&request.user_id), request)
     }
 
     pub(crate) fn list_decisions(
@@ -1635,8 +1697,28 @@ impl<'a> ResearchStore<'a> {
                  CREATE TABLE IF NOT EXISTS factor_research_meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
-                 );
-                 CREATE TABLE IF NOT EXISTS factor_candidate_content (
+                 );",
+            )
+            .map_err(string)?;
+        let stored = self
+            .database
+            .query_row(
+                "SELECT value FROM factor_research_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(string)?;
+        if let Some(version) = stored.as_deref()
+            && version != STORAGE_SCHEMA_VERSION
+        {
+            return Err(format!(
+                "reset-required: incompatible Factor research storage schema {version}; perform an explicit device-level reset"
+            ));
+        }
+        self.database
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS factor_candidate_content (
                     candidate_hash TEXT PRIMARY KEY,
                     candidate_json TEXT NOT NULL,
                     created_at_ms INTEGER NOT NULL
@@ -1760,30 +1842,15 @@ impl<'a> ResearchStore<'a> {
                  );",
             )
             .map_err(string)?;
-        let stored = self
-            .database
-            .query_row(
-                "SELECT value FROM factor_research_meta WHERE key = 'schema_version'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(string)?;
-        match stored {
-            Some(version) if version != STORAGE_SCHEMA_VERSION => Err(format!(
-                "reset-required: incompatible Factor research storage schema {version}; perform an explicit device-level reset"
-            )),
-            Some(_) => Ok(()),
-            None => {
-                self.database
-                    .execute(
-                        "INSERT INTO factor_research_meta(key, value) VALUES ('schema_version', ?1)",
-                        [STORAGE_SCHEMA_VERSION],
-                    )
-                    .map_err(string)?;
-                Ok(())
-            }
+        if stored.is_none() {
+            self.database
+                .execute(
+                    "INSERT INTO factor_research_meta(key, value) VALUES ('schema_version', ?1)",
+                    [STORAGE_SCHEMA_VERSION],
+                )
+                .map_err(string)?;
         }
+        Ok(())
     }
 
     fn recover_stale_attempts(
@@ -3608,7 +3675,7 @@ impl<'a> ResearchStore<'a> {
                         != binding.repeatability_report_sha256
                     || host_evidence.attempts.is_empty()
                     || host_evidence.attempts.iter().any(|attempt| {
-                        Uuid::parse_str(&attempt.attempt_id).is_err()
+                        !is_sha256_text(&attempt.attempt_id)
                             || attempt.owner_user_id != owner_id
                             || attempt.status != "completed"
                             || attempt.project_revision_sha256 != binding.project_revision_sha256
@@ -4654,6 +4721,27 @@ mod tests {
                 .is_ok()
         );
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn incompatible_factor_schema_is_rejected_before_other_tables_are_created() {
+        let database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE factor_research_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO factor_research_meta(key, value) VALUES ('schema_version', '1.0.0');",
+            )
+            .unwrap();
+        assert!(ResearchStore::new(&database).initialize().is_err());
+        assert!(
+            database
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'factor_candidate_content'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .is_err()
+        );
     }
 
     #[test]

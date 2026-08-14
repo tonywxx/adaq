@@ -2932,8 +2932,10 @@ fn runner_process_evidence(
         .conformance
         .as_ref()
         .ok_or_else(|| PythonResearchError("runner-process-identity-missing".into()))?;
-    let attempt_id = uuid::Uuid::parse_str(&result.attempt_id)
-        .map_err(|_| PythonResearchError("runner-attempt-id-invalid".into()))?;
+    if !is_sha256_text(&result.attempt_id) {
+        return Err(PythonResearchError("runner-attempt-id-invalid".into()));
+    }
+    let attempt_id = result.attempt_id.clone();
     let input_sha256 = runner_input_sha256(input)?;
     let contract = serde_json::json!({
         "contract": "adaq-python-factor-process@1",
@@ -2966,7 +2968,7 @@ fn runner_process_evidence(
         &serde_json::to_vec(&process).map_err(|error| PythonResearchError(error.to_string()))?,
     );
     Ok(RunnerProcessEvidence {
-        attempt_id: attempt_id.to_string(),
+        attempt_id,
         process_sha256,
         contract_sha256,
         input_sha256,
@@ -2981,13 +2983,16 @@ fn completed_host_attempt_evidence(
         .conformance
         .as_ref()
         .ok_or_else(|| PythonResearchError("runner-host-evidence-result-missing".into()))?;
-    let attempt_id = uuid::Uuid::parse_str(&result.attempt_id)
-        .map_err(|_| PythonResearchError("runner-attempt-id-invalid".into()))?;
-    let result_sha256 = sha256(
-        &serde_json::to_vec(result).map_err(|error| PythonResearchError(error.to_string()))?,
-    );
+    if !is_sha256_text(&result.attempt_id) {
+        return Err(PythonResearchError("runner-attempt-id-invalid".into()));
+    }
+    let result_sha256 = execution
+        .staged_artifact
+        .as_ref()
+        .map(|artifact| artifact.sha256.clone())
+        .ok_or_else(|| PythonResearchError("runner-host-evidence-artifact-missing".into()))?;
     Ok(PythonHostAttemptEvidence {
-        attempt_id: attempt_id.to_string(),
+        attempt_id: result.attempt_id.clone(),
         owner_user_id: request.user_id.clone(),
         status: "completed".into(),
         project_revision_sha256: request.project_revision_sha256.clone(),
@@ -3015,6 +3020,10 @@ fn runner_input_sha256(input: &serde_json::Value) -> Result<String, PythonResear
     Ok(sha256(
         &serde_json::to_vec(input).map_err(|error| PythonResearchError(error.to_string()))?,
     ))
+}
+
+fn is_sha256_text(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn normalize_parameters_for_attempt(
@@ -5047,6 +5056,10 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let local = crate::local_research::LocalResearchState::open(&directory).unwrap();
         let python = Arc::new(PythonResearchState::open(&directory));
+        local
+            .factor
+            .attach_python_attempt_store(python.attempt_store.clone())
+            .unwrap();
         local.features.attach_python(python.clone());
         python.attach_queue(local.features.queue_notifier());
         let request = FactorRunRequest {
@@ -5067,28 +5080,76 @@ mod tests {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let process_hashes = expand_momentum_grid()
-            .into_iter()
-            .map(|lookback| {
+        let mut process_hashes = BTreeMap::new();
+        let mut host_attempts = Vec::new();
+        for lookback in expand_momentum_grid() {
+            let complete_attempt = |label: &str| {
+                let attempt = python
+                    .attempt_store
+                    .enqueue_with_execution(
+                        request.user_id.clone(),
+                        request.project_id.clone(),
+                        request.project_revision_sha256.clone(),
+                        request.environment_sha256.clone(),
+                        HostResourcePolicy::m12_default(),
+                        AttemptExecution::default(),
+                    )
+                    .unwrap();
+                python
+                    .attempt_store
+                    .transition(&attempt.attempt_id, AttemptTransition::Begin)
+                    .unwrap();
+                let result_sha256 = sha256(label.as_bytes());
+                python
+                    .attempt_store
+                    .transition(
+                        &attempt.attempt_id,
+                        AttemptTransition::Complete {
+                            result_sha256: result_sha256.clone(),
+                        },
+                    )
+                    .unwrap();
+                (attempt, result_sha256)
+            };
+            let (first_attempt, first_result_sha256) =
+                complete_attempt(&format!("vertical-{lookback}-first"));
+            let (replay_attempt, replay_result_sha256) =
+                complete_attempt(&format!("vertical-{lookback}-replay"));
+            for (attempt, result_sha256) in [
+                (&first_attempt, &first_result_sha256),
+                (&replay_attempt, &replay_result_sha256),
+            ] {
+                host_attempts.push(PythonHostAttemptEvidence {
+                    attempt_id: attempt.attempt_id.clone(),
+                    owner_user_id: request.user_id.clone(),
+                    status: "completed".into(),
+                    project_revision_sha256: request.project_revision_sha256.clone(),
+                    environment_sha256: request.environment_sha256.clone(),
+                    result_sha256: result_sha256.clone(),
+                });
+            }
+            process_hashes.insert(
+                lookback,
                 (
-                    lookback,
-                    (
-                        RunnerProcessEvidence {
-                            attempt_id: uuid::Uuid::new_v4().to_string(),
-                            process_sha256: sha256(b"vertical-process-first"),
-                            contract_sha256: sha256(b"vertical-contract"),
-                            input_sha256: sha256(b"vertical-input"),
-                        },
-                        RunnerProcessEvidence {
-                            attempt_id: uuid::Uuid::new_v4().to_string(),
-                            process_sha256: sha256(b"vertical-process-replay"),
-                            contract_sha256: sha256(b"vertical-contract"),
-                            input_sha256: sha256(b"vertical-input"),
-                        },
-                    ),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
+                    RunnerProcessEvidence {
+                        attempt_id: first_attempt.attempt_id,
+                        process_sha256: sha256(
+                            format!("vertical-process-first-{lookback}").as_bytes(),
+                        ),
+                        contract_sha256: sha256(b"vertical-contract"),
+                        input_sha256: sha256(b"vertical-input"),
+                    },
+                    RunnerProcessEvidence {
+                        attempt_id: replay_attempt.attempt_id,
+                        process_sha256: sha256(
+                            format!("vertical-process-replay-{lookback}").as_bytes(),
+                        ),
+                        contract_sha256: sha256(b"vertical-contract"),
+                        input_sha256: sha256(b"vertical-input"),
+                    },
+                ),
+            );
+        }
         let repeatability_report = factor_repeatability_reports(
             &python_outputs,
             &python_outputs,
@@ -5167,14 +5228,7 @@ mod tests {
                     project_revision_sha256: request.project_revision_sha256.clone(),
                     environment_sha256: request.environment_sha256.clone(),
                     repeatability_report_sha256,
-                    attempts: vec![crate::factor_research::PythonHostAttemptEvidence {
-                        attempt_id: uuid::Uuid::new_v4().to_string(),
-                        owner_user_id: request.user_id.clone(),
-                        status: "completed".into(),
-                        project_revision_sha256: request.project_revision_sha256.clone(),
-                        environment_sha256: request.environment_sha256.clone(),
-                        result_sha256: sha256(b"vertical-result"),
-                    }],
+                    attempts: host_attempts,
                 },
             )
             .unwrap();

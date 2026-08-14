@@ -101,7 +101,12 @@ const sections = [
 ] as const;
 
 type Section = (typeof sections)[number]["id"];
-type ResetKind = "watchlist" | "components" | "marketData" | "all";
+type ResetKind =
+	| "watchlist"
+	| "components"
+	| "marketData"
+	| "all"
+	| "factorResearch";
 
 type LocalDataSummary = {
 	dataDirectory: string;
@@ -795,6 +800,12 @@ function DataStorageSettings() {
 							summary={summary}
 							userId={user?.id}
 						/>
+						<ResetAction
+							kind="factorResearch"
+							titleKey="settings.dataStorage.resetFactorResearch"
+							descriptionKey="settings.dataStorage.resetFactorResearchDescription"
+							summary={summary}
+						/>
 					</CardContent>
 				</Card>
 			</div>
@@ -828,19 +839,31 @@ function ResetAction({
 	const dialog = useRef<HTMLDialogElement>(null);
 	const [confirmation, setConfirmation] = useState("");
 	const [running, setRunning] = useState(false);
+	const deviceWide = kind === "factorResearch";
+	const requiredConfirmation = deviceWide ? "RESET FACTOR RESEARCH" : "RESET";
 	const blocked =
-		kind === "components"
+		deviceWide
+			? false
+			: kind === "components"
 			? (summary?.componentBlockingRunCount ?? 0) > 0
 			: kind === "marketData"
 				? (summary?.marketDataBlockingRecordCount ?? 0) > 0
 				: false;
 
 	async function reset() {
-		if (!userId || blocked || (kind === "all" && confirmation !== "RESET"))
+		if (
+			(!deviceWide && !userId) ||
+			blocked ||
+			((kind === "all" || deviceWide) && confirmation !== requiredConfirmation)
+		)
 			return;
 		setRunning(true);
 		try {
-			await invoke("local_data_reset", { request: { userId, kind } });
+			if (deviceWide) {
+				await invoke("factor_research_device_reset");
+			} else {
+				await invoke("local_data_reset", { request: { userId, kind } });
+			}
 			toast.success(t("settings.dataStorage.completed", { title }));
 			window.setTimeout(() => window.location.reload(), 500);
 		} catch (reason) {
@@ -861,7 +884,7 @@ function ResetAction({
 				<Button
 					variant="destructive"
 					loading={running}
-					disabled={!summary || !userId}
+					disabled={!summary || (!deviceWide && !userId)}
 					onClick={() => dialog.current?.showModal()}
 				>
 					{t("settings.dataStorage.resetButton")}
@@ -880,7 +903,11 @@ function ResetAction({
 							{t("settings.dataStorage.confirmTitle", { title })}
 						</h3>
 						<p className="mt-1 text-sm text-muted-foreground">
-							{t("settings.dataStorage.confirmDescription")}
+							{t(
+								deviceWide
+									? "settings.dataStorage.factorResearchConfirmDescription"
+									: "settings.dataStorage.confirmDescription",
+							)}
 						</p>
 					</div>
 					<ResetDetails kind={kind} summary={summary} />
@@ -889,10 +916,14 @@ function ResetAction({
 							{t("settings.dataStorage.blocked")}
 						</p>
 					) : null}
-					{kind === "all" ? (
+					{kind === "all" || deviceWide ? (
 						<div className="grid gap-2">
 							<Label htmlFor="reset-confirmation">
-								{t("settings.dataStorage.typeReset")}
+								{t(
+									deviceWide
+										? "settings.dataStorage.typeFactorResearchReset"
+										: "settings.dataStorage.typeReset",
+								)}
 							</Label>
 							<Input
 								id="reset-confirmation"
@@ -913,7 +944,11 @@ function ResetAction({
 						<Button
 							variant="destructive"
 							loading={running}
-							disabled={blocked || (kind === "all" && confirmation !== "RESET")}
+							disabled={
+								blocked ||
+								((kind === "all" || deviceWide) &&
+									confirmation !== requiredConfirmation)
+							}
 							onClick={() => void reset()}
 						>
 							{title}
@@ -990,13 +1025,21 @@ function ResetDetails({
 				})}
 			</li>,
 		);
+	if (kind === "factorResearch")
+		rows.push(<li key="factorResearch">{t("settings.dataStorage.factorResearchData")}</li>);
 	return (
 		<div className="rounded-lg border bg-muted/30 p-4 text-sm">
 			<p className="mb-2 font-medium">{t("settings.dataStorage.dataToReset")}</p>
 			<ul className="list-inside list-disc space-y-1 text-muted-foreground">
 				{rows}
 			</ul>
-			<p className="mt-3">{t("settings.dataStorage.preserved")}</p>
+			<p className="mt-3">
+				{t(
+					kind === "factorResearch"
+						? "settings.dataStorage.factorResearchPreserved"
+						: "settings.dataStorage.preserved",
+				)}
+			</p>
 		</div>
 	);
 }

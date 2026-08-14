@@ -235,8 +235,8 @@ impl PythonRepeatabilityReport {
         let mut partitions = self.partitions.clone();
         partitions.sort();
         partitions.dedup();
-        if Uuid::parse_str(&self.first_attempt_id).is_err()
-            || Uuid::parse_str(&self.replay_attempt_id).is_err()
+        if !is_sha256(&self.first_attempt_id)
+            || !is_sha256(&self.replay_attempt_id)
             || self.first_attempt_id == self.replay_attempt_id
             || !is_sha256(&self.first_process_sha256)
             || !is_sha256(&self.replay_process_sha256)
@@ -2332,8 +2332,8 @@ mod tests {
                 (
                     lookback.into(),
                     PythonRepeatabilityReport {
-                        first_attempt_id: "11111111-1111-4111-8111-111111111111".into(),
-                        replay_attempt_id: "22222222-2222-4222-8222-222222222222".into(),
+                        first_attempt_id: "1".repeat(64),
+                        replay_attempt_id: "2".repeat(64),
                         first_process_sha256: "a".repeat(64),
                         replay_process_sha256: "b".repeat(64),
                         process_contract_sha256: "e".repeat(64),

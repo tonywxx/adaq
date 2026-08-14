@@ -505,14 +505,20 @@ const english = {
 			resetAll: "Reset All Local Research Data",
 			resetAllDescription:
 				"Remove this User's Watchlist, Components, Model Artifacts, Market Data, Generation Attempts, Signal Datasets, Runs, Protocols, and Reports.",
+			resetFactorResearch: "Reset Factor Research",
+			resetFactorResearchDescription:
+				"Remove all Factor Candidates, Datasets, Reports, Trials, Decisions, and provenance on this device. Python Research projects, runtimes, environments, and caches are preserved.",
 			resetButton: "Reset",
 			completed: "{{title}} completed.",
 			confirmTitle: "Confirm {{title}}",
 			confirmDescription:
 				"This action affects only the current User and cannot be undone.",
+			factorResearchConfirmDescription:
+				"This is a device-wide Factor Research reset and cannot be undone. It does not reset Python Research projects, runtimes, environments, or caches.",
 			blocked:
 				"This reset is blocked by immutable research records. Use Reset All to remove the complete dependency chain.",
 			typeReset: "Type RESET to continue",
+			typeFactorResearchReset: "Type RESET FACTOR RESEARCH to continue",
 			cancel: "Cancel",
 			dataToReset: "Data to reset",
 			watchlistItems: "Watchlist items: {{count}}",
@@ -526,6 +532,10 @@ const english = {
 			signalDatasets: "Forecast Signal Datasets: {{count}}",
 			preserved:
 				"Preserved: login, Account, Profile, theme, and update preference.",
+			factorResearchData:
+				"All Factor Candidates, Datasets, Reports, Families, Trials, Policies, Decisions, and provenance",
+			factorResearchPreserved:
+				"Preserved: Python Research projects, runtimes, environments, caches, and other local data.",
 		},
 		connections: {
 			title: "Connections",
@@ -2329,12 +2339,18 @@ const simplifiedChinese = {
 			resetAll: "重置全部本地研究数据",
 			resetAllDescription:
 				"移除此 User 的自选列表、组件、模型产物、市场数据、生成尝试、信号数据集、运行、协议和报告。",
+			resetFactorResearch: "重置因子研究",
+			resetFactorResearchDescription:
+				"移除此设备上的全部因子候选、数据集、报告、试验、决策和来源证据。保留 Python 研究项目、运行时、环境和缓存。",
 			resetButton: "重置",
 			completed: "{{title}}已完成。",
 			confirmTitle: "确认 {{title}}",
 			confirmDescription: "此操作只影响当前 User，且无法撤销。",
+			factorResearchConfirmDescription:
+				"这是设备级因子研究重置，且无法撤销。不会重置 Python 研究项目、运行时、环境或缓存。",
 			blocked: "此重置被不可变研究记录阻止。请使用“重置全部”移除完整依赖链。",
 			typeReset: "输入 RESET 继续",
+			typeFactorResearchReset: "输入 RESET FACTOR RESEARCH 继续",
 			cancel: "取消",
 			dataToReset: "将要重置的数据",
 			watchlistItems: "自选列表项目：{{count}}",
@@ -2347,6 +2363,9 @@ const simplifiedChinese = {
 			modelArtifacts: "模型产物注册：{{count}}",
 			signalDatasets: "预测信号数据集：{{count}}",
 			preserved: "保留：登录、账户、个人资料、主题和更新偏好。",
+			factorResearchData: "全部因子候选、数据集、报告、研究族、试验、策略、决策和来源证据",
+			factorResearchPreserved:
+				"保留：Python 研究项目、运行时、环境、缓存和其他本地数据。",
 		},
 		connections: {
 			title: "连接",
