@@ -545,6 +545,7 @@ pub struct ProjectStore {
     root: PathBuf,
     baselines: Arc<Mutex<BTreeMap<String, String>>>,
     revisions: Arc<Mutex<BTreeMap<String, Vec<ProjectRevision>>>>,
+    environment_gate: Arc<Mutex<()>>,
     schema_error: Arc<Mutex<Option<String>>>,
 }
 
@@ -577,6 +578,7 @@ impl ProjectStore {
             root,
             baselines: Arc::new(Mutex::new(baselines)),
             revisions: Arc::new(Mutex::new(revisions)),
+            environment_gate: Arc::new(Mutex::new(())),
             schema_error: Arc::new(Mutex::new(schema_error)),
         }
     }
@@ -668,12 +670,30 @@ impl ProjectStore {
             .ok_or_else(|| invalid("python-project-lock-not-ready"))
     }
 
+    pub fn dependency_lock_bytes(
+        &self,
+        user_id: &str,
+        project_id: &str,
+    ) -> Result<Vec<u8>, PythonResearchError> {
+        self.ensure_compatible()?;
+        let path = self.project_path(user_id, project_id)?;
+        let report = inspect_project(&path);
+        if !report.valid() {
+            return Err(invalid("python-project-lock-not-ready"));
+        }
+        fs::read(path.join("pylock.toml")).map_err(Into::into)
+    }
+
     pub fn apply_environment_lock(
         &self,
         user_id: &str,
         project_id: &str,
         lock: &runtime::EnvironmentLock,
     ) -> Result<String, PythonResearchError> {
+        let _environment_gate = self
+            .environment_gate
+            .lock()
+            .map_err(|_| invalid("python-project-environment-gate-poisoned"))?;
         self.ensure_compatible()?;
         lock.validate()?;
         let path = self.project_path(user_id, project_id)?;
@@ -693,9 +713,12 @@ impl ProjectStore {
         let result = (|| {
             fs::write(&lock_temporary, lock_bytes)?;
             fs::write(&manifest_temporary, manifest_bytes)?;
-            fs::rename(&lock_temporary, path.join("pylock.toml"))?;
-            fs::rename(&manifest_temporary, path.join("adaq-project.toml"))?;
-            Ok::<(), PythonResearchError>(())
+            publish_environment_files(
+                &lock_temporary,
+                &path.join("pylock.toml"),
+                &manifest_temporary,
+                &path.join("adaq-project.toml"),
+            )
         })();
         if result.is_err() {
             let _ = fs::remove_file(&lock_temporary);
@@ -1063,6 +1086,53 @@ fn persist_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), PythonR
     )?;
     fs::rename(temporary, path)?;
     Ok(())
+}
+
+fn publish_environment_files(
+    lock_temporary: &Path,
+    lock_destination: &Path,
+    manifest_temporary: &Path,
+    manifest_destination: &Path,
+) -> Result<(), PythonResearchError> {
+    let lock_backup = lock_destination.with_extension("bak");
+    let manifest_backup = manifest_destination.with_extension("bak");
+    let _ = fs::remove_file(&lock_backup);
+    let _ = fs::remove_file(&manifest_backup);
+    let lock_had_destination = lock_destination.exists();
+    let manifest_had_destination = manifest_destination.exists();
+    if lock_had_destination {
+        fs::rename(lock_destination, &lock_backup)?;
+    }
+    if let Err(error) = if manifest_had_destination {
+        fs::rename(manifest_destination, &manifest_backup)
+    } else {
+        Ok(())
+    } {
+        if lock_had_destination {
+            let _ = fs::rename(&lock_backup, lock_destination);
+        }
+        return Err(error.into());
+    }
+
+    let result = (|| {
+        fs::rename(lock_temporary, lock_destination)?;
+        fs::rename(manifest_temporary, manifest_destination)?;
+        Ok::<(), PythonResearchError>(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(lock_destination);
+        let _ = fs::remove_file(manifest_destination);
+        if lock_had_destination {
+            let _ = fs::rename(&lock_backup, lock_destination);
+        }
+        if manifest_had_destination {
+            let _ = fs::rename(&manifest_backup, manifest_destination);
+        }
+    } else {
+        let _ = fs::remove_file(lock_backup);
+        let _ = fs::remove_file(manifest_backup);
+    }
+    result
 }
 
 pub fn parse_manifest(bytes: &[u8]) -> Result<ProjectManifest, PythonResearchError> {

@@ -42,6 +42,10 @@ type EnvironmentRecord = {
 	environmentSha256: string;
 };
 
+type EnvironmentSyncResult = {
+	lockSha256: string;
+};
+
 type Props = {
 	userId: string;
 	kind: "factor" | "model";
@@ -274,6 +278,27 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 				...current,
 				[project.projectId]: result.environmentSha256,
 			}));
+			await refresh(true);
+		} catch (reason) {
+			setError(String(reason));
+		} finally {
+			setBusy("");
+		}
+	};
+
+	const syncEnvironment = async (project: WorkingCopy) => {
+		setBusy(`${project.projectId}:sync`);
+		setError("");
+		await afterPaint();
+		try {
+			await invoke<EnvironmentSyncResult>("environment_sync_managed", {
+				request: { userId, projectId: project.projectId },
+			});
+			setEnvironmentSha256((current) => {
+				const next = { ...current };
+				delete next[project.projectId];
+				return next;
+			});
 			setRevisions((current) => {
 				const next = { ...current };
 				delete next[project.projectId];
@@ -450,6 +475,16 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 									{trusted[project.projectId]
 										? t("pythonResearch.projects.trusted")
 										: t("pythonResearch.projects.trust")}
+								</Button>
+								<Button
+									type="button"
+									size="sm"
+									variant="outline"
+									onClick={() => void syncEnvironment(project)}
+									disabled={project.state === "invalid"}
+									loading={busy === `${project.projectId}:sync`}
+								>
+									{t("pythonResearch.projects.syncEnvironment")}
 								</Button>
 								<Button
 									type="button"

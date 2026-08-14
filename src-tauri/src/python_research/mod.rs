@@ -6,6 +6,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Read,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -53,8 +54,9 @@ use adaq_python_research::{
     runtime::{
         DependencyIntent, EnvironmentLock, EnvironmentRecord, EnvironmentStore, PreparationAttempt,
         RuntimeArtifactManifest, RuntimePlatform, RuntimeRecord, RuntimeStore,
-        WheelhouseCatalogEntry, WheelhouseManifest, embedded_wheel_payload, runtime_catalog_entry,
-        sync_environment, wheelhouse_catalog,
+        WheelhouseCatalogEntry, WheelhouseManifest, WheelhouseRecord, WheelhouseStore,
+        embedded_wheel_payload, parse_environment_lock, runtime_catalog_entry, sync_environment,
+        wheelhouse_catalog,
     },
     sha256,
     tuning::{
@@ -82,12 +84,23 @@ pub struct PythonResearchState {
     pub(crate) trust_store: Arc<TrustStore>,
     pub(crate) model_lab_store: Arc<ModelLabStore>,
     pub(crate) runtime_store: Arc<RuntimeStore>,
+    pub(crate) wheelhouse_store: Arc<WheelhouseStore>,
+    // ponytail: one device-wide gate serializes managed downloads; use per-artifact gates if throughput matters.
+    managed_runtime_gate: Arc<Mutex<()>>,
     pub(crate) environment_store: Arc<EnvironmentStore>,
     root: PathBuf,
     examples_root: PathBuf,
     queue_notifier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     completed_results: Mutex<BTreeMap<String, RunnerExecution>>,
+    runtime_cancellations: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
+    runtime_progress: Arc<Mutex<BTreeMap<String, RuntimePreparationProgress>>>,
     shutdown: AtomicBool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuntimePreparationProgress {
+    completed_bytes: u64,
+    total_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1398,11 +1411,15 @@ impl PythonResearchState {
                     .expect("python research model lab store must open"),
             ),
             runtime_store: Arc::new(RuntimeStore::new(&root)),
+            wheelhouse_store: Arc::new(WheelhouseStore::new(&root)),
+            managed_runtime_gate: Arc::new(Mutex::new(())),
             environment_store: Arc::new(EnvironmentStore::new(&root)),
             root,
             examples_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/python"),
             queue_notifier: Mutex::new(None),
             completed_results: Mutex::new(BTreeMap::new()),
+            runtime_cancellations: Mutex::new(BTreeMap::new()),
+            runtime_progress: Arc::new(Mutex::new(BTreeMap::new())),
             shutdown: AtomicBool::new(false),
         }
     }
@@ -1827,6 +1844,11 @@ pub struct RuntimeProfileView {
     pub profile: String,
     pub platform: Option<RuntimePlatform>,
     pub status: String,
+    pub preparation_status: Option<adaq_python_research::runtime::PreparationStatus>,
+    pub preparation_attempt_id: Option<String>,
+    pub preparation_diagnostic: Option<String>,
+    pub preparation_completed_bytes: Option<u64>,
+    pub preparation_total_bytes: Option<u64>,
     pub expected_version: String,
     pub source: String,
     pub artifact_sha256: Option<String>,
@@ -1834,11 +1856,19 @@ pub struct RuntimeProfileView {
     pub installed_bytes: Option<u64>,
     pub license: Option<String>,
     pub wheelhouse_identity: Option<String>,
+    pub wheelhouse_status: String,
     pub wheelhouse_wheel_count: usize,
     pub runtime_cache_bytes: u64,
     pub wheelhouse_disk_bytes: u64,
     pub environment_cache_bytes: u64,
     pub environment_count: usize,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeProfileRequest {
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1853,6 +1883,16 @@ pub struct RuntimePrepareRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ManagedRuntimePrepareRequest {
     pub user_id: String,
+    #[serde(default)]
+    pub source_attempt_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimePrepareCancelRequest {
+    pub task_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1884,6 +1924,8 @@ pub struct ManagedEnvironmentPrepareRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CacheEvictRequest {
     pub active_runtime_artifacts: Vec<String>,
+    #[serde(default)]
+    pub active_wheelhouses: Vec<String>,
     pub active_environments: Vec<String>,
 }
 
@@ -1891,7 +1933,15 @@ pub struct CacheEvictRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CacheEvictResult {
     pub runtimes: Vec<String>,
+    pub wheelhouses: Vec<String>,
     pub environments: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentSyncResult {
+    pub lock_sha256: String,
+    pub wheelhouse: WheelhouseRecord,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2014,6 +2064,25 @@ pub struct ModelFinalEvaluationRequest {
 
 fn map_error(error: PythonResearchError) -> String {
     error.to_string()
+}
+
+fn set_runtime_progress(
+    progress: &Mutex<BTreeMap<String, RuntimePreparationProgress>>,
+    user_id: &str,
+    completed_bytes: u64,
+    total_bytes: u64,
+) -> Result<(), String> {
+    progress
+        .lock()
+        .map_err(|_| "python-runtime-progress-store-lock-poisoned".to_string())?
+        .insert(
+            user_id.into(),
+            RuntimePreparationProgress {
+                completed_bytes,
+                total_bytes,
+            },
+        );
+    Ok(())
 }
 
 fn directory_bytes(path: &std::path::Path) -> u64 {
@@ -2146,12 +2215,18 @@ pub async fn project_freeze(
     }
     let store = state.store.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let runtime_artifact_sha256 = request.runtime_artifact_sha256.or_else(|| {
+            RuntimePlatform::current()
+                .ok()
+                .and_then(|platform| runtime_catalog_entry(platform).ok())
+                .map(|entry| entry.manifest.artifact_sha256)
+        });
         store
             .freeze(
                 &request.user_id,
                 &request.project_id,
                 request.sdk_artifact_sha256,
-                request.runtime_artifact_sha256,
+                runtime_artifact_sha256,
             )
             .map_err(map_error)
     })
@@ -2169,12 +2244,18 @@ pub async fn project_export(
     }
     let store = state.store.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let runtime_artifact_sha256 = request.runtime_artifact_sha256.or_else(|| {
+            RuntimePlatform::current()
+                .ok()
+                .and_then(|platform| runtime_catalog_entry(platform).ok())
+                .map(|entry| entry.manifest.artifact_sha256)
+        });
         let revision = store
             .freeze(
                 &request.user_id,
                 &request.project_id,
                 request.sdk_artifact_sha256,
-                request.runtime_artifact_sha256,
+                runtime_artifact_sha256,
             )
             .map_err(map_error)?;
         let bytes = store
@@ -2929,6 +3010,7 @@ pub async fn model_final_evaluate(
 
 #[tauri::command]
 pub fn runtime_profile(
+    request: RuntimeProfileRequest,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<RuntimeProfileView, String> {
     let platform = RuntimePlatform::current().ok();
@@ -2937,27 +3019,71 @@ pub fn runtime_profile(
     let runtime_directory = state.root.join("runtimes");
     let environment_directory = state.root.join("environments");
     let runtime_store = state.runtime_store.clone();
+    let wheelhouse_store = state.wheelhouse_store.clone();
+    let latest_preparation = match request.user_id.as_deref() {
+        Some(user_id) => runtime_store
+            .list_preparations(user_id)
+            .map_err(map_error)?
+            .into_iter()
+            .max_by(|left, right| left.attempt_id.cmp(&right.attempt_id)),
+        None => None,
+    };
+    let preparation_progress = state
+        .runtime_progress
+        .lock()
+        .map_err(|_| "python-runtime-progress-store-lock-poisoned".to_string())?
+        .get(request.user_id.as_deref().unwrap_or_default())
+        .cloned();
     let ready = catalog.as_ref().and_then(|entry| {
         let identity = entry.manifest.artifact_sha256.clone();
-        std::fs::read_dir(&runtime_directory)
+        runtime_store
+            .ready_record(&entry.manifest)
             .ok()
-            .and_then(|entries| {
-                entries.flatten().find_map(|candidate| {
-                    let name = candidate.file_name().to_string_lossy().into_owned();
-                    (name == identity
-                        && candidate
-                            .file_type()
-                            .ok()
-                            .is_some_and(|file_type| file_type.is_dir())
-                        && runtime_store.executable_path(&identity).is_ok())
-                    .then_some(identity.clone())
-                })
-            })
+            .map(|_| identity)
     });
+    let runtime_disabled = catalog.as_ref().is_some_and(|entry| {
+        runtime_directory
+            .join(&entry.manifest.artifact_sha256)
+            .join("adaq-runtime-disabled")
+            .is_file()
+    });
+    let wheelhouse_status = wheelhouse
+        .as_ref()
+        .map(|entry| {
+            if wheelhouse_store.load(&entry.manifest.identity).is_ok() {
+                "ready"
+            } else {
+                "missing"
+            }
+        })
+        .unwrap_or("unavailable");
+    let status = match latest_preparation.as_ref().map(|attempt| &attempt.status) {
+        Some(adaq_python_research::runtime::PreparationStatus::Preparing) => "preparing",
+        _ if runtime_disabled => "disabled",
+        _ if ready.is_some() => "ready",
+        Some(adaq_python_research::runtime::PreparationStatus::Failed) => "failed",
+        Some(adaq_python_research::runtime::PreparationStatus::Cancelled) => "cancelled",
+        _ => "missing",
+    };
     Ok(RuntimeProfileView {
         profile: "adaq-python@1".into(),
         platform,
-        status: if ready.is_some() { "ready" } else { "missing" }.into(),
+        status: status.into(),
+        preparation_status: latest_preparation
+            .as_ref()
+            .map(|attempt| attempt.status.clone()),
+        preparation_attempt_id: latest_preparation
+            .as_ref()
+            .map(|attempt| attempt.attempt_id.clone()),
+        preparation_diagnostic: latest_preparation
+            .as_ref()
+            .and_then(|attempt| attempt.diagnostic.clone()),
+        preparation_completed_bytes: preparation_progress
+            .as_ref()
+            .map(|progress| progress.completed_bytes),
+        preparation_total_bytes: preparation_progress
+            .as_ref()
+            .map(|progress| progress.total_bytes),
         expected_version: catalog
             .as_ref()
             .map(|entry| entry.manifest.version.clone())
@@ -2975,17 +3101,18 @@ pub fn runtime_profile(
         wheelhouse_identity: wheelhouse
             .as_ref()
             .map(|entry| entry.manifest.identity.clone()),
+        wheelhouse_status: wheelhouse_status.into(),
         wheelhouse_wheel_count: wheelhouse
             .as_ref()
             .map(|entry| entry.manifest.wheels.len())
             .unwrap_or_default(),
-        runtime_cache_bytes: ready
+        runtime_cache_bytes: catalog
             .as_ref()
-            .map(|identity| directory_bytes(&runtime_directory.join(identity)))
+            .map(|entry| directory_bytes(&runtime_directory.join(&entry.manifest.artifact_sha256)))
             .unwrap_or_default(),
         wheelhouse_disk_bytes: wheelhouse
             .as_ref()
-            .map(|entry| entry.manifest.wheels.iter().map(|wheel| wheel.size).sum())
+            .map(|entry| wheelhouse_store.disk_bytes(&entry.manifest.identity))
             .unwrap_or_default(),
         environment_cache_bytes: directory_bytes(&environment_directory),
         environment_count: fs::read_dir(&environment_directory)
@@ -3023,33 +3150,218 @@ pub async fn runtime_prepare_managed(
     request: ManagedRuntimePrepareRequest,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<(PreparationAttempt, Option<RuntimeRecord>), String> {
+    let task_id = request
+        .task_id
+        .filter(|task_id| !task_id.trim().is_empty())
+        .unwrap_or_else(|| format!("runtime-prepare-{}", runner_token()));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    {
+        let mut active = state
+            .runtime_cancellations
+            .lock()
+            .map_err(|_| "python-runtime-cancellation-store-lock-poisoned".to_string())?;
+        if active.contains_key(&task_id) {
+            return Err("python-runtime-preparation-already-running".into());
+        }
+        active.insert(task_id.clone(), cancelled.clone());
+    }
     let store = state.runtime_store.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let managed_runtime_gate = state.managed_runtime_gate.clone();
+    let runtime_progress = state.runtime_progress.clone();
+    let source_attempt_id = request.source_attempt_id;
+    let user_id = request.user_id;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _managed_runtime_gate = managed_runtime_gate
+            .lock()
+            .map_err(|_| "python-runtime-managed-gate-poisoned".to_string())?;
         let platform = RuntimePlatform::current().map_err(map_error)?;
         let entry = runtime_catalog_entry(platform).map_err(map_error)?;
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|error| format!("python-runtime-client-failed:{error}"))?;
-        let response = client
-            .get(&entry.download_url)
-            .send()
-            .map_err(|error| format!("python-runtime-download-failed:{error}"))?;
-        if !response.status().is_success() {
-            return Err(format!(
-                "python-runtime-download-http-{}",
-                response.status().as_u16()
-            ));
+        set_runtime_progress(
+            &runtime_progress,
+            &user_id,
+            0,
+            entry.manifest.download_bytes,
+        )?;
+        if cancelled.load(Ordering::Relaxed) {
+            return store
+                .record_cancelled(
+                    &user_id,
+                    source_attempt_id.clone(),
+                    Some(entry.manifest.artifact_sha256.clone()),
+                )
+                .map(|attempt| (attempt, None))
+                .map_err(map_error);
         }
-        let payload = response
-            .bytes()
-            .map_err(|error| format!("python-runtime-download-read-failed:{error}"))?;
-        if payload.len() as u64 != entry.manifest.download_bytes {
-            return Err("python-runtime-download-size-mismatch".into());
+        if let Some(record) = store.cached_record(&entry.manifest) {
+            set_runtime_progress(
+                &runtime_progress,
+                &user_id,
+                entry.manifest.download_bytes,
+                entry.manifest.download_bytes,
+            )?;
+            return store
+                .record_ready(&user_id, source_attempt_id, entry.manifest.artifact_sha256)
+                .map(|attempt| (attempt, Some(record)))
+                .map_err(map_error);
         }
-        store
-            .prepare(&request.user_id, &entry.manifest, &payload, || false)
-            .map_err(map_error)
+        let download = (|| -> Result<Vec<u8>, String> {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .map_err(|error| format!("python-runtime-client-failed:{error}"))?;
+            let response = client
+                .get(&entry.download_url)
+                .send()
+                .map_err(|error| format!("python-runtime-download-failed:{error}"))?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "python-runtime-download-http-{}",
+                    response.status().as_u16()
+                ));
+            }
+            let mut response = response;
+            let mut payload = Vec::with_capacity(entry.manifest.download_bytes as usize);
+            let mut chunk = [0_u8; 64 * 1024];
+            loop {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err("python-runtime-preparation-cancelled".into());
+                }
+                let read = response
+                    .read(&mut chunk)
+                    .map_err(|error| format!("python-runtime-download-read-failed:{error}"))?;
+                if read == 0 {
+                    break;
+                }
+                payload.extend_from_slice(&chunk[..read]);
+                if payload.len() as u64 > entry.manifest.download_bytes {
+                    return Err("python-runtime-download-size-mismatch".into());
+                }
+                set_runtime_progress(
+                    &runtime_progress,
+                    &user_id,
+                    payload.len() as u64,
+                    entry.manifest.download_bytes,
+                )?;
+            }
+            if payload.len() as u64 != entry.manifest.download_bytes {
+                return Err("python-runtime-download-size-mismatch".into());
+            }
+            Ok(payload)
+        })();
+        let payload = match download {
+            Ok(payload) => payload,
+            Err(_error) if cancelled.load(Ordering::Relaxed) => {
+                return store
+                    .record_cancelled(
+                        &user_id,
+                        source_attempt_id.clone(),
+                        Some(entry.manifest.artifact_sha256.clone()),
+                    )
+                    .map(|attempt| (attempt, None))
+                    .map_err(map_error);
+            }
+            Err(error) => {
+                let _ = store.record_failed(
+                    &user_id,
+                    source_attempt_id.clone(),
+                    Some(entry.manifest.artifact_sha256.clone()),
+                    error.clone(),
+                );
+                return Err(error);
+            }
+        };
+        let prepared = store
+            .prepare_with_source(
+                &user_id,
+                source_attempt_id,
+                &entry.manifest,
+                &payload,
+                || cancelled.load(Ordering::Relaxed),
+            )
+            .map_err(map_error)?;
+        set_runtime_progress(
+            &runtime_progress,
+            &user_id,
+            entry.manifest.download_bytes,
+            entry.manifest.download_bytes,
+        )?;
+        Ok(prepared)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    state
+        .runtime_cancellations
+        .lock()
+        .map_err(|_| "python-runtime-cancellation-store-lock-poisoned".to_string())?
+        .remove(&task_id);
+    result
+}
+
+#[tauri::command]
+pub fn runtime_prepare_cancel(
+    request: RuntimePrepareCancelRequest,
+    state: State<'_, Arc<PythonResearchState>>,
+) -> Result<(), String> {
+    if request.task_id.trim().is_empty() {
+        return Err("python-runtime-task-id-invalid".into());
+    }
+    if let Some(cancelled) = state
+        .runtime_cancellations
+        .lock()
+        .map_err(|_| "python-runtime-cancellation-store-lock-poisoned".to_string())?
+        .get(&request.task_id)
+    {
+        cancelled.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn environment_sync_managed(
+    request: ManagedEnvironmentPrepareRequest,
+    state: State<'_, Arc<PythonResearchState>>,
+) -> Result<EnvironmentSyncResult, String> {
+    let project_store = state.store.clone();
+    let runtime_store = state.runtime_store.clone();
+    let wheelhouse_store = state.wheelhouse_store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let platform = RuntimePlatform::current().map_err(map_error)?;
+        let runtime = runtime_catalog_entry(platform).map_err(map_error)?;
+        runtime_store
+            .ready_record(&runtime.manifest)
+            .map_err(map_error)?;
+        let catalog = wheelhouse_catalog(platform).map_err(map_error)?;
+        let intent = project_store
+            .dependency_intent(&request.user_id, &request.project_id)
+            .map_err(map_error)?;
+        let payloads = match wheelhouse_store.load(&catalog.manifest.identity) {
+            Ok((_, payloads)) => payloads,
+            Err(_) => {
+                let payloads = download_managed_wheelhouse(&catalog)?;
+                wheelhouse_store
+                    .prepare(&catalog.manifest, &payloads)
+                    .map_err(map_error)?;
+                payloads
+            }
+        };
+        let lock = sync_environment(
+            &runtime.manifest.artifact_sha256,
+            platform,
+            &intent,
+            &catalog.manifest,
+            &payloads,
+        )
+        .map_err(map_error)?;
+        let lock_sha256 = project_store
+            .apply_environment_lock(&request.user_id, &request.project_id, &lock)
+            .map_err(map_error)?;
+        let wheelhouse = wheelhouse_store
+            .prepare(&catalog.manifest, &payloads)
+            .map_err(map_error)?;
+        Ok(EnvironmentSyncResult {
+            lock_sha256,
+            wheelhouse,
+        })
     })
     .await
     .map_err(|error| error.to_string())?
@@ -3089,40 +3401,39 @@ pub async fn environment_prepare_managed(
 ) -> Result<EnvironmentRecord, String> {
     let project_store = state.store.clone();
     let runtime_store = state.runtime_store.clone();
+    let wheelhouse_store = state.wheelhouse_store.clone();
     let environment_store = state.environment_store.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let platform = RuntimePlatform::current().map_err(map_error)?;
         let runtime = runtime_catalog_entry(platform).map_err(map_error)?;
         runtime_store
-            .executable_path(&runtime.manifest.artifact_sha256)
+            .ready_record(&runtime.manifest)
             .map_err(map_error)?;
         let catalog = wheelhouse_catalog(platform).map_err(map_error)?;
-        let lock_file_sha256 = project_store
-            .dependency_lock_sha256(&request.user_id, &request.project_id)
+        let lock_bytes = project_store
+            .dependency_lock_bytes(&request.user_id, &request.project_id)
             .map_err(map_error)?;
+        let lock = parse_environment_lock(&lock_bytes)
+            .map_err(map_error)
+            .map_err(|error| format!("python-environment-lock-not-ready:{error}"))?;
+        if lock.runtime_artifact_sha256 != runtime.manifest.artifact_sha256
+            || lock.platform != platform
+            || lock.wheelhouse_identity != catalog.manifest.identity
+        {
+            return Err("python-environment-lock-identity-mismatch".into());
+        }
+        let lock_file_sha256 = sha256(&lock_bytes);
         if let Some(record) = environment_store
             .find_by_lock_file_sha256(&lock_file_sha256)
             .map_err(map_error)?
         {
             return Ok(record);
         }
-        let intent = project_store
-            .dependency_intent(&request.user_id, &request.project_id)
+        let (_, payloads) = wheelhouse_store
+            .load(&catalog.manifest.identity)
             .map_err(map_error)?;
-        let payloads = download_managed_wheelhouse(&catalog)?;
-        let lock = sync_environment(
-            &runtime.manifest.artifact_sha256,
-            platform,
-            &intent,
-            &catalog.manifest,
-            &payloads,
-        )
-        .map_err(map_error)?;
         let record = environment_store
             .prepare(&lock, &payloads, &catalog.manifest)
-            .map_err(map_error)?;
-        project_store
-            .apply_environment_lock(&request.user_id, &request.project_id, &lock)
             .map_err(map_error)?;
         Ok(record)
     })
@@ -3155,6 +3466,7 @@ pub async fn cache_evict(
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<CacheEvictResult, String> {
     let runtime_store = state.runtime_store.clone();
+    let wheelhouse_store = state.wheelhouse_store.clone();
     let environment_store = state.environment_store.clone();
     let attempt_store = state.attempt_store.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -3167,20 +3479,29 @@ pub async fn cache_evict(
             .active_runtime_artifacts
             .into_iter()
             .collect::<BTreeSet<_>>();
+        let mut active_wheelhouses = request
+            .active_wheelhouses
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         for environment in &active_environments {
             let lock = environment_store
                 .load_lock(environment)
                 .map_err(map_error)?;
             active_runtime_artifacts.insert(lock.runtime_artifact_sha256);
+            active_wheelhouses.insert(lock.wheelhouse_identity);
         }
         let runtimes = runtime_store
             .evict_inactive(&active_runtime_artifacts)
+            .map_err(map_error)?;
+        let wheelhouses = wheelhouse_store
+            .evict_inactive(&active_wheelhouses)
             .map_err(map_error)?;
         let environments = environment_store
             .evict_inactive(&active_environments)
             .map_err(map_error)?;
         Ok(CacheEvictResult {
             runtimes,
+            wheelhouses,
             environments,
         })
     })

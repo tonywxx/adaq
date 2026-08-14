@@ -385,13 +385,47 @@ pub struct RuntimeRecord {
 pub struct RuntimeStore {
     root: PathBuf,
     gate: Arc<Mutex<()>>,
+    attempts_path: PathBuf,
+    attempts: Arc<Mutex<PreparationDatabase>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct PreparationDatabase {
+    attempts: BTreeMap<String, PreparationAttempt>,
 }
 
 impl RuntimeStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let attempts_path = root.join("runtime-preparations.json");
+        let mut attempts: PreparationDatabase = fs::read(&attempts_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let mut recovered = false;
+        for attempt in attempts.attempts.values_mut() {
+            if attempt.status == PreparationStatus::Preparing {
+                attempt.status = PreparationStatus::Failed;
+                attempt.diagnostic = Some("python-runtime-preparation-interrupted".into());
+                recovered = true;
+            }
+        }
+        if recovered {
+            let _ = persist_json(&attempts_path, &attempts);
+        }
+        if let Ok(entries) = fs::read_dir(root.join("runtimes")) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') && name.contains(".staging-") {
+                    let _ = fs::remove_dir_all(entry.path());
+                }
+            }
+        }
         Self {
-            root: root.into(),
+            root,
             gate: Arc::new(Mutex::new(())),
+            attempts_path,
+            attempts: Arc::new(Mutex::new(attempts)),
         }
     }
 
@@ -402,49 +436,76 @@ impl RuntimeStore {
         payload: &[u8],
         cancelled: impl Fn() -> bool,
     ) -> Result<(PreparationAttempt, Option<RuntimeRecord>), PythonResearchError> {
+        self.prepare_with_source(user_id, None, manifest, payload, cancelled)
+    }
+
+    pub fn prepare_with_source(
+        &self,
+        user_id: &str,
+        source_attempt_id: Option<String>,
+        manifest: &RuntimeArtifactManifest,
+        payload: &[u8],
+        cancelled: impl Fn() -> bool,
+    ) -> Result<(PreparationAttempt, Option<RuntimeRecord>), PythonResearchError> {
         let _gate = self
             .gate
             .lock()
             .map_err(|_| invalid("python-runtime-store-lock-poisoned"))?;
         crate::validate_user_id(user_id)?;
-        let attempt_id = format!("runtime-{}", sha256(manifest.artifact_sha256.as_bytes()));
+        self.validate_source_attempt(user_id, source_attempt_id.as_deref())?;
+        let attempt_id = format!(
+            "runtime-{}-{}",
+            unique_suffix(),
+            sha256(manifest.artifact_sha256.as_bytes())
+        );
+        self.save_attempt(PreparationAttempt {
+            attempt_id: attempt_id.clone(),
+            user_id: user_id.into(),
+            status: PreparationStatus::Preparing,
+            identity: Some(manifest.artifact_sha256.clone()),
+            source_attempt_id,
+            diagnostic: None,
+        })?;
         if cancelled() {
-            return Ok((
-                PreparationAttempt {
-                    attempt_id,
-                    user_id: user_id.into(),
-                    status: PreparationStatus::Cancelled,
-                    identity: Some(manifest.artifact_sha256.clone()),
-                    source_attempt_id: None,
-                    diagnostic: Some("python-runtime-preparation-cancelled".into()),
-                },
-                None,
-            ));
+            let attempt = self.finish_attempt(
+                &attempt_id,
+                PreparationStatus::Cancelled,
+                Some("python-runtime-preparation-cancelled".into()),
+            )?;
+            return Ok((attempt, None));
         }
-        if manifest.platform != RuntimePlatform::current()? {
-            return Err(invalid("python-runtime-platform-mismatch"));
+        let current_platform = match RuntimePlatform::current() {
+            Ok(platform) => platform,
+            Err(error) => {
+                let _ = self.finish_attempt(
+                    &attempt_id,
+                    PreparationStatus::Failed,
+                    Some(error.0.clone()),
+                );
+                return Err(error);
+            }
+        };
+        if manifest.platform != current_platform {
+            let error = invalid("python-runtime-platform-mismatch");
+            let _ = self.finish_attempt(
+                &attempt_id,
+                PreparationStatus::Failed,
+                Some(error.0.clone()),
+            );
+            return Err(error);
         }
-        manifest.validate(payload)?;
+        if let Err(error) = manifest.validate(payload) {
+            let _ = self.finish_attempt(
+                &attempt_id,
+                PreparationStatus::Failed,
+                Some(error.0.clone()),
+            );
+            return Err(error);
+        }
         let destination = self.root.join("runtimes").join(&manifest.artifact_sha256);
         if runtime_cache_matches(&destination, manifest) {
-            return Ok((
-                PreparationAttempt {
-                    attempt_id,
-                    user_id: user_id.into(),
-                    status: PreparationStatus::Ready,
-                    identity: Some(manifest.artifact_sha256.clone()),
-                    source_attempt_id: None,
-                    diagnostic: None,
-                },
-                Some(runtime_record(manifest, &destination)),
-            ));
-        }
-        if destination.exists() {
-            if destination.is_dir() {
-                fs::remove_dir_all(&destination)?;
-            } else {
-                fs::remove_file(&destination)?;
-            }
+            let attempt = self.finish_attempt(&attempt_id, PreparationStatus::Ready, None)?;
+            return Ok((attempt, Some(runtime_record(manifest, &destination))));
         }
         let staging = staging_path(&destination)?;
         let result = (|| {
@@ -457,40 +518,210 @@ impl RuntimeStore {
             if cancelled() {
                 return Err(invalid("python-runtime-preparation-cancelled"));
             }
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::rename(&staging, &destination)?;
+            replace_directory(&staging, &destination)?;
             Ok::<(), PythonResearchError>(())
         })();
         if result.is_err() {
             fs::remove_dir_all(&staging).ok();
         }
         match result {
-            Ok(()) => Ok((
-                PreparationAttempt {
-                    attempt_id,
-                    user_id: user_id.into(),
-                    status: PreparationStatus::Ready,
-                    identity: Some(manifest.artifact_sha256.clone()),
-                    source_attempt_id: None,
-                    diagnostic: None,
-                },
-                Some(runtime_record(manifest, &destination)),
-            )),
-            Err(error) if error.0 == "python-runtime-preparation-cancelled" => Ok((
-                PreparationAttempt {
-                    attempt_id,
-                    user_id: user_id.into(),
-                    status: PreparationStatus::Cancelled,
-                    identity: Some(manifest.artifact_sha256.clone()),
-                    source_attempt_id: None,
-                    diagnostic: Some(error.0),
-                },
-                None,
-            )),
-            Err(error) => Err(error),
+            Ok(()) => {
+                let attempt = self.finish_attempt(&attempt_id, PreparationStatus::Ready, None)?;
+                Ok((attempt, Some(runtime_record(manifest, &destination))))
+            }
+            Err(error) if error.0 == "python-runtime-preparation-cancelled" => {
+                let attempt =
+                    self.finish_attempt(&attempt_id, PreparationStatus::Cancelled, Some(error.0))?;
+                Ok((attempt, None))
+            }
+            Err(error) => {
+                let diagnostic = error.0.clone();
+                let _ =
+                    self.finish_attempt(&attempt_id, PreparationStatus::Failed, Some(diagnostic));
+                Err(error)
+            }
         }
+    }
+
+    pub fn record_cancelled(
+        &self,
+        user_id: &str,
+        source_attempt_id: Option<String>,
+        identity: Option<String>,
+    ) -> Result<PreparationAttempt, PythonResearchError> {
+        self.record_terminal(
+            user_id,
+            source_attempt_id,
+            identity,
+            PreparationStatus::Cancelled,
+            Some("python-runtime-preparation-cancelled".into()),
+        )
+    }
+
+    pub fn record_failed(
+        &self,
+        user_id: &str,
+        source_attempt_id: Option<String>,
+        identity: Option<String>,
+        diagnostic: String,
+    ) -> Result<PreparationAttempt, PythonResearchError> {
+        self.record_terminal(
+            user_id,
+            source_attempt_id,
+            identity,
+            PreparationStatus::Failed,
+            Some(diagnostic),
+        )
+    }
+
+    pub fn record_ready(
+        &self,
+        user_id: &str,
+        source_attempt_id: Option<String>,
+        identity: String,
+    ) -> Result<PreparationAttempt, PythonResearchError> {
+        self.record_terminal(
+            user_id,
+            source_attempt_id,
+            Some(identity),
+            PreparationStatus::Ready,
+            None,
+        )
+    }
+
+    pub fn cached_record(&self, manifest: &RuntimeArtifactManifest) -> Option<RuntimeRecord> {
+        self.ready_record(manifest).ok()
+    }
+
+    pub fn ready_record(
+        &self,
+        manifest: &RuntimeArtifactManifest,
+    ) -> Result<RuntimeRecord, PythonResearchError> {
+        let destination = self.root.join("runtimes").join(&manifest.artifact_sha256);
+        if !runtime_cache_matches(&destination, manifest) {
+            return Err(invalid("python-runtime-cache-invalid"));
+        }
+        self.executable_path(&manifest.artifact_sha256)?;
+        Ok(runtime_record(manifest, &destination))
+    }
+
+    fn record_terminal(
+        &self,
+        user_id: &str,
+        source_attempt_id: Option<String>,
+        identity: Option<String>,
+        status: PreparationStatus,
+        diagnostic: Option<String>,
+    ) -> Result<PreparationAttempt, PythonResearchError> {
+        let _gate = self
+            .gate
+            .lock()
+            .map_err(|_| invalid("python-runtime-store-lock-poisoned"))?;
+        crate::validate_user_id(user_id)?;
+        self.validate_source_attempt(user_id, source_attempt_id.as_deref())?;
+        if identity
+            .as_ref()
+            .is_some_and(|identity| !is_sha256(identity))
+        {
+            return Err(invalid("python-runtime-identity-invalid"));
+        }
+        let attempt = PreparationAttempt {
+            attempt_id: format!(
+                "runtime-{}-{}",
+                unique_suffix(),
+                identity.as_deref().unwrap_or("unknown")
+            ),
+            user_id: user_id.into(),
+            status,
+            identity,
+            source_attempt_id,
+            diagnostic,
+        };
+        self.save_attempt(attempt.clone())?;
+        Ok(attempt)
+    }
+
+    fn validate_source_attempt(
+        &self,
+        user_id: &str,
+        source_attempt_id: Option<&str>,
+    ) -> Result<(), PythonResearchError> {
+        let Some(source_attempt_id) = source_attempt_id else {
+            return Ok(());
+        };
+        let database = self
+            .attempts
+            .lock()
+            .map_err(|_| invalid("python-runtime-attempt-store-lock-poisoned"))?;
+        let source = database
+            .attempts
+            .get(source_attempt_id)
+            .ok_or_else(|| invalid("python-runtime-source-attempt-not-found"))?;
+        if source.user_id != user_id {
+            return Err(invalid("python-runtime-source-attempt-user-mismatch"));
+        }
+        Ok(())
+    }
+
+    pub fn list_preparations(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<PreparationAttempt>, PythonResearchError> {
+        crate::validate_user_id(user_id)?;
+        let mut attempts = self
+            .attempts
+            .lock()
+            .map_err(|_| invalid("python-runtime-attempt-store-lock-poisoned"))?
+            .attempts
+            .values()
+            .filter(|attempt| attempt.user_id == user_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        attempts.sort_by(|left, right| left.attempt_id.cmp(&right.attempt_id));
+        Ok(attempts)
+    }
+
+    pub fn latest_preparation(&self) -> Result<Option<PreparationAttempt>, PythonResearchError> {
+        Ok(self
+            .attempts
+            .lock()
+            .map_err(|_| invalid("python-runtime-attempt-store-lock-poisoned"))?
+            .attempts
+            .values()
+            .max_by(|left, right| left.attempt_id.cmp(&right.attempt_id))
+            .cloned())
+    }
+
+    fn save_attempt(&self, attempt: PreparationAttempt) -> Result<(), PythonResearchError> {
+        let mut database = self
+            .attempts
+            .lock()
+            .map_err(|_| invalid("python-runtime-attempt-store-lock-poisoned"))?;
+        database
+            .attempts
+            .insert(attempt.attempt_id.clone(), attempt);
+        persist_json(&self.attempts_path, &*database)
+    }
+
+    fn finish_attempt(
+        &self,
+        attempt_id: &str,
+        status: PreparationStatus,
+        diagnostic: Option<String>,
+    ) -> Result<PreparationAttempt, PythonResearchError> {
+        let mut database = self
+            .attempts
+            .lock()
+            .map_err(|_| invalid("python-runtime-attempt-store-lock-poisoned"))?;
+        let attempt = database
+            .attempts
+            .get_mut(attempt_id)
+            .ok_or_else(|| invalid("python-runtime-attempt-not-found"))?;
+        attempt.status = status;
+        attempt.diagnostic = diagnostic;
+        let result = attempt.clone();
+        persist_json(&self.attempts_path, &*database)?;
+        Ok(result)
     }
 
     pub fn evict_inactive(
@@ -522,6 +753,9 @@ impl RuntimeStore {
             return Err(invalid("python-runtime-identity-invalid"));
         }
         let directory = self.root.join("runtimes").join(artifact_sha256);
+        if directory.join("adaq-runtime-disabled").is_file() {
+            return Err(invalid("python-runtime-security-disabled"));
+        }
         [
             directory.join("runtime/python"),
             directory.join("runtime/python.exe"),
@@ -544,6 +778,21 @@ impl RuntimeStore {
             }
         })
         .ok_or_else(|| invalid("python-runtime-executable-not-ready"))
+    }
+
+    pub fn disable_execution(&self, artifact_sha256: &str) -> Result<(), PythonResearchError> {
+        if !is_sha256(artifact_sha256) {
+            return Err(invalid("python-runtime-identity-invalid"));
+        }
+        let directory = self.root.join("runtimes").join(artifact_sha256);
+        if !directory.is_dir() {
+            return Err(invalid("python-runtime-not-found"));
+        }
+        fs::write(
+            directory.join("adaq-runtime-disabled"),
+            b"security-disabled",
+        )?;
+        Ok(())
     }
 }
 
@@ -575,11 +824,23 @@ pub struct WheelIdentity {
 }
 
 impl WheelIdentity {
-    pub fn validate(
-        &self,
-        payload: &[u8],
-        platform: RuntimePlatform,
-    ) -> Result<(), PythonResearchError> {
+    fn validate_metadata(&self) -> Result<(), PythonResearchError> {
+        validate_wheel_filename(&self.file_name)?;
+        let parts = self
+            .file_name
+            .strip_suffix(".whl")
+            .unwrap_or_default()
+            .split('-')
+            .collect::<Vec<_>>();
+        if self.package.trim().is_empty()
+            || self.version.trim().is_empty()
+            || !is_sha256(&self.sha256)
+            || self.platform_tags.is_empty()
+            || self.platform_tags.iter().any(|tag| tag.trim().is_empty())
+            || parts.get(1).copied() != Some(self.version.as_str())
+        {
+            return Err(invalid("python-wheel-identity-invalid"));
+        }
         let file_package = self
             .file_name
             .split('-')
@@ -587,13 +848,21 @@ impl WheelIdentity {
             .unwrap_or_default()
             .replace('_', "-")
             .to_lowercase();
+        if file_package != self.package.replace('_', "-").to_lowercase() {
+            return Err(invalid("python-wheel-identity-invalid"));
+        }
+        Ok(())
+    }
+
+    pub fn validate(
+        &self,
+        payload: &[u8],
+        platform: RuntimePlatform,
+    ) -> Result<(), PythonResearchError> {
+        self.validate_metadata()?;
         if !self.file_name.ends_with(".whl")
             || self.file_name.contains('/')
             || self.file_name.contains('\\')
-            || self.package.trim().is_empty()
-            || self.version.trim().is_empty()
-            || file_package != self.package.replace('_', "-").to_lowercase()
-            || !is_sha256(&self.sha256)
             || self.size != payload.len() as u64
             || sha256(payload) != self.sha256
             || !self
@@ -682,6 +951,7 @@ impl WheelhouseManifest {
             return Err(invalid("python-wheelhouse-required-package-missing"));
         }
         for wheel in &self.wheels {
+            wheel.validate_metadata()?;
             let payload = payloads
                 .get(&wheel.file_name)
                 .ok_or_else(|| invalid("python-wheelhouse-wheel-missing"))?;
@@ -694,6 +964,159 @@ impl WheelhouseManifest {
             return Err(invalid("python-wheelhouse-contains-undeclared-wheel"));
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WheelhouseRecord {
+    pub identity: String,
+    pub path: String,
+    pub wheel_count: usize,
+    pub disk_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct WheelhouseStore {
+    root: PathBuf,
+    gate: Arc<Mutex<()>>,
+}
+
+impl WheelhouseStore {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            gate: Arc::new(Mutex::new(())),
+        }
+    }
+
+    pub fn prepare(
+        &self,
+        manifest: &WheelhouseManifest,
+        payloads: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<WheelhouseRecord, PythonResearchError> {
+        let _gate = self
+            .gate
+            .lock()
+            .map_err(|_| invalid("python-wheelhouse-store-lock-poisoned"))?;
+        manifest.validate(payloads)?;
+        let destination = self.root.join("wheelhouses").join(&manifest.identity);
+        if self.cache_matches(&destination, manifest) {
+            return Ok(wheelhouse_record(manifest, &destination));
+        }
+        let staging = staging_path(&destination)?;
+        let result = (|| {
+            fs::create_dir_all(staging.join("wheels"))?;
+            fs::write(
+                staging.join("adaq-wheelhouse-manifest.json"),
+                serde_json::to_vec(manifest).map_err(|error| invalid(error.to_string()))?,
+            )?;
+            for wheel in &manifest.wheels {
+                let payload = payloads
+                    .get(&wheel.file_name)
+                    .ok_or_else(|| invalid("python-wheelhouse-wheel-missing"))?;
+                fs::write(staging.join("wheels").join(&wheel.file_name), payload)?;
+            }
+            replace_directory(&staging, &destination)?;
+            Ok::<(), PythonResearchError>(())
+        })();
+        if result.is_err() {
+            fs::remove_dir_all(&staging).ok();
+        }
+        result?;
+        Ok(wheelhouse_record(manifest, &destination))
+    }
+
+    pub fn load(
+        &self,
+        identity: &str,
+    ) -> Result<(WheelhouseManifest, BTreeMap<String, Vec<u8>>), PythonResearchError> {
+        let _gate = self
+            .gate
+            .lock()
+            .map_err(|_| invalid("python-wheelhouse-store-lock-poisoned"))?;
+        if !is_sha256(identity) {
+            return Err(invalid("python-wheelhouse-identity-invalid"));
+        }
+        let destination = self.root.join("wheelhouses").join(identity);
+        let manifest: WheelhouseManifest = serde_json::from_slice(&fs::read(
+            destination.join("adaq-wheelhouse-manifest.json"),
+        )?)
+        .map_err(|error| invalid(format!("python-wheelhouse-manifest-unreadable:{error}")))?;
+        if manifest.identity != identity {
+            return Err(invalid("python-wheelhouse-identity-mismatch"));
+        }
+        let mut payloads = BTreeMap::new();
+        for wheel in &manifest.wheels {
+            payloads.insert(
+                wheel.file_name.clone(),
+                fs::read(destination.join("wheels").join(&wheel.file_name))?,
+            );
+        }
+        manifest.validate(&payloads)?;
+        Ok((manifest, payloads))
+    }
+
+    pub fn evict_inactive(
+        &self,
+        active_identities: &BTreeSet<String>,
+    ) -> Result<Vec<String>, PythonResearchError> {
+        let _gate = self
+            .gate
+            .lock()
+            .map_err(|_| invalid("python-wheelhouse-store-lock-poisoned"))?;
+        let directory = self.root.join("wheelhouses");
+        if !directory.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut removed = Vec::new();
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !active_identities.contains(&name) && entry.file_type()?.is_dir() {
+                fs::remove_dir_all(entry.path())?;
+                removed.push(name);
+            }
+        }
+        Ok(removed)
+    }
+
+    pub fn disk_bytes(&self, identity: &str) -> u64 {
+        if !is_sha256(identity) {
+            return 0;
+        }
+        directory_bytes(&self.root.join("wheelhouses").join(identity))
+    }
+
+    fn cache_matches(&self, destination: &Path, manifest: &WheelhouseManifest) -> bool {
+        if !destination.is_dir() {
+            return false;
+        }
+        let stored: WheelhouseManifest =
+            match fs::read(destination.join("adaq-wheelhouse-manifest.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            {
+                Some(stored) => stored,
+                None => return false,
+            };
+        if stored != *manifest {
+            return false;
+        }
+        manifest.wheels.iter().all(|wheel| {
+            fs::read(destination.join("wheels").join(&wheel.file_name)).is_ok_and(|payload| {
+                payload.len() as u64 == wheel.size && sha256(&payload) == wheel.sha256
+            })
+        })
+    }
+}
+
+fn wheelhouse_record(manifest: &WheelhouseManifest, destination: &Path) -> WheelhouseRecord {
+    WheelhouseRecord {
+        identity: manifest.identity.clone(),
+        path: destination.to_string_lossy().into_owned(),
+        wheel_count: manifest.wheels.len(),
+        disk_bytes: directory_bytes(destination),
     }
 }
 
@@ -738,6 +1161,9 @@ impl DependencyIntent {
             .get("name")
             .and_then(toml::Value::as_str)
             .ok_or_else(|| invalid("python-dependency-intent-name-missing"))?;
+        if project_name.trim().is_empty() {
+            return Err(invalid("python-dependency-intent-name-empty"));
+        }
         let dependencies = project
             .get("dependencies")
             .and_then(toml::Value::as_array)
@@ -755,7 +1181,11 @@ impl DependencyIntent {
             .transpose()?
             .unwrap_or_default();
         for dependency in &dependencies {
-            if dependency.split_once("==").is_none()
+            let (name, version) = dependency.split_once("==").unwrap_or(("", ""));
+            if name.trim().is_empty()
+                || version.trim().is_empty()
+                || name.contains('[')
+                || dependency.contains(';')
                 || dependency.contains("://")
                 || dependency.contains("git+")
                 || dependency.contains(" @ ")
@@ -796,8 +1226,26 @@ impl EnvironmentLock {
         if self.lock_sha256 != sha256(&content) {
             return Err(invalid("python-environment-lock-hash-mismatch"));
         }
+        let mut names = BTreeSet::new();
+        let mut files = BTreeSet::new();
+        for wheel in &self.wheels {
+            wheel.validate_metadata()?;
+            if !names.insert(wheel.package.as_str()) || !files.insert(wheel.file_name.as_str()) {
+                return Err(invalid("python-environment-lock-duplicate-wheel"));
+            }
+        }
         Ok(())
     }
+}
+
+pub fn parse_environment_lock(bytes: &[u8]) -> Result<EnvironmentLock, PythonResearchError> {
+    let lock: EnvironmentLock = toml::from_str(
+        std::str::from_utf8(bytes)
+            .map_err(|_| invalid("python-environment-lock-unreadable:utf8"))?,
+    )
+    .map_err(|error| invalid(format!("python-environment-lock-unreadable:{error}")))?;
+    lock.validate()?;
+    Ok(lock)
 }
 
 pub fn sync_environment(
@@ -902,8 +1350,15 @@ impl EnvironmentStore {
             .map_err(|_| invalid("python-environment-store-lock-poisoned"))?;
         lock.validate()?;
         wheelhouse.validate(payloads)?;
-        if lock.wheelhouse_identity != wheelhouse.identity {
-            return Err(invalid("python-environment-wheelhouse-identity-mismatch"));
+        if lock.wheelhouse_identity != wheelhouse.identity
+            || lock.platform != wheelhouse.platform
+            || lock.wheels.len() != wheelhouse.wheels.len()
+            || lock
+                .wheels
+                .iter()
+                .any(|wheel| !wheelhouse.wheels.contains(wheel))
+        {
+            return Err(invalid("python-environment-wheelhouse-mismatch"));
         }
         let environment_sha256 =
             sha256(&serde_json::to_vec(lock).map_err(|error| invalid(error.to_string()))?);
@@ -915,13 +1370,6 @@ impl EnvironmentStore {
                 lock_sha256: lock.lock_sha256.clone(),
                 wheel_count: lock.wheels.len(),
             });
-        }
-        if destination.exists() {
-            if destination.is_dir() {
-                fs::remove_dir_all(&destination)?;
-            } else {
-                fs::remove_file(&destination)?;
-            }
         }
         let staging = staging_path(&destination)?;
         let result = (|| {
@@ -936,10 +1384,7 @@ impl EnvironmentStore {
                     .ok_or_else(|| invalid("python-environment-wheel-missing"))?;
                 fs::write(staging.join("wheels").join(&wheel.file_name), payload)?;
             }
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::rename(&staging, &destination)?;
+            replace_directory(&staging, &destination)?;
             Ok::<(), PythonResearchError>(())
         })();
         if result.is_err() {
@@ -1445,6 +1890,98 @@ fn staging_path(destination: &Path) -> Result<PathBuf, PythonResearchError> {
     Ok(parent.join(format!(".{name}.staging-{}", unique_suffix())))
 }
 
+fn replace_directory(staging: &Path, destination: &Path) -> Result<(), PythonResearchError> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| invalid("python-cache-path-invalid"))?;
+    fs::create_dir_all(parent)?;
+    let name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| invalid("python-cache-name-invalid"))?;
+    let backup = parent.join(format!(".{name}.backup-{}", unique_suffix()));
+    let had_destination = destination.exists();
+    if had_destination {
+        fs::rename(destination, &backup)?;
+    }
+    match fs::rename(staging, destination) {
+        Ok(()) => {
+            if had_destination {
+                let _ = remove_cache_path(&backup);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if had_destination {
+                let _ = fs::rename(&backup, destination);
+            }
+            Err(error.into())
+        }
+    }
+}
+
+fn remove_cache_path(path: &Path) -> io::Result<()> {
+    if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+fn directory_bytes(path: &Path) -> u64 {
+    if path.is_file() {
+        return fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+    }
+    fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| !entry.file_type().is_ok_and(|kind| kind.is_symlink()))
+        .map(|entry| directory_bytes(&entry.path()))
+        .fold(0, u64::saturating_add)
+}
+
+fn persist_json<T: Serialize>(path: &Path, value: &T) -> Result<(), PythonResearchError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    fs::write(
+        &temporary,
+        serde_json::to_vec_pretty(value).map_err(|error| invalid(error.to_string()))?,
+    )?;
+    replace_file(&temporary, path)?;
+    Ok(())
+}
+
+fn replace_file(temporary: &Path, destination: &Path) -> Result<(), PythonResearchError> {
+    let backup = destination.with_extension("bak");
+    if backup.exists() {
+        fs::remove_file(&backup)?;
+    }
+    let had_destination = destination.exists();
+    if had_destination {
+        fs::rename(destination, &backup)?;
+    }
+    match fs::rename(temporary, destination) {
+        Ok(()) => {
+            if had_destination {
+                let _ = fs::remove_file(backup);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if had_destination {
+                let _ = fs::rename(backup, destination);
+            }
+            Err(error.into())
+        }
+    }
+}
+
 fn unique_suffix() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1580,6 +2117,14 @@ mod tests {
         let record = record.unwrap();
         assert!(record.path.ends_with(&manifest.artifact_sha256));
         assert!(store.executable_path(&manifest.artifact_sha256).is_ok());
+        store.disable_execution(&manifest.artifact_sha256).unwrap();
+        assert_eq!(
+            store
+                .executable_path(&manifest.artifact_sha256)
+                .unwrap_err()
+                .0,
+            "python-runtime-security-disabled"
+        );
         let mut invalid = manifest.clone();
         invalid.signature = "bad".into();
         assert!(invalid.validate(&payload).is_err());
@@ -1594,6 +2139,102 @@ mod tests {
                 .unwrap()
                 .contains(&manifest.artifact_sha256)
         );
+    }
+
+    #[test]
+    fn runtime_preparation_retries_are_retained_and_failed_staging_keeps_cache() {
+        let payload = runtime_archive();
+        let manifest = runtime_manifest(&payload);
+        let directory = tempdir().unwrap();
+        let store = RuntimeStore::new(directory.path());
+        let (first, record) = store
+            .prepare("alice", &manifest, &payload, || false)
+            .unwrap();
+        assert_eq!(first.status, PreparationStatus::Ready);
+        assert!(record.is_some());
+
+        let (retry, record) = store
+            .prepare_with_source(
+                "alice",
+                Some(first.attempt_id.clone()),
+                &manifest,
+                &payload,
+                || false,
+            )
+            .unwrap();
+        assert_ne!(retry.attempt_id, first.attempt_id);
+        assert_eq!(
+            retry.source_attempt_id.as_deref(),
+            Some(first.attempt_id.as_str())
+        );
+        assert!(record.is_some());
+        assert!(
+            store
+                .prepare_with_source(
+                    "bob",
+                    Some(first.attempt_id.clone()),
+                    &manifest,
+                    &payload,
+                    || false,
+                )
+                .is_err()
+        );
+
+        let invalid_payload = b"corrupt-runtime";
+        assert!(
+            store
+                .prepare("alice", &manifest, invalid_payload, || false)
+                .is_err()
+        );
+        assert!(store.executable_path(&manifest.artifact_sha256).is_ok());
+        let attempts = store.list_preparations("alice").unwrap();
+        assert_eq!(attempts.len(), 3);
+        assert_eq!(attempts.last().unwrap().status, PreparationStatus::Failed);
+    }
+
+    #[test]
+    fn interrupted_runtime_preparations_recover_as_retryable_failures() {
+        let directory = tempdir().unwrap();
+        let attempt = PreparationAttempt {
+            attempt_id: "runtime-1".into(),
+            user_id: "alice".into(),
+            status: PreparationStatus::Preparing,
+            identity: None,
+            source_attempt_id: None,
+            diagnostic: None,
+        };
+        persist_json(
+            &directory.path().join("runtime-preparations.json"),
+            &PreparationDatabase {
+                attempts: BTreeMap::from([(attempt.attempt_id.clone(), attempt)]),
+            },
+        )
+        .unwrap();
+        let store = RuntimeStore::new(directory.path());
+        let recovered = store.list_preparations("alice").unwrap();
+        assert_eq!(recovered[0].status, PreparationStatus::Failed);
+        assert_eq!(
+            recovered[0].diagnostic.as_deref(),
+            Some("python-runtime-preparation-interrupted")
+        );
+    }
+
+    #[test]
+    fn wheelhouse_cache_is_verified_separate_and_evictable() {
+        let (manifest, payloads) = wheelhouse();
+        let directory = tempdir().unwrap();
+        let store = WheelhouseStore::new(directory.path());
+        let record = store.prepare(&manifest, &payloads).unwrap();
+        assert_eq!(record.identity, manifest.identity);
+        assert!(record.disk_bytes > 0);
+        let (loaded_manifest, loaded_payloads) = store.load(&manifest.identity).unwrap();
+        assert_eq!(loaded_manifest, manifest);
+        assert_eq!(loaded_payloads, payloads);
+        assert_eq!(
+            store.evict_inactive(&BTreeSet::new()).unwrap(),
+            vec![manifest.identity.clone()]
+        );
+        assert!(store.load(&manifest.identity).is_err());
     }
 
     #[test]
@@ -1641,6 +2282,15 @@ mod tests {
                 catalog.manifest.identity,
                 wheelhouse_identity(&catalog.manifest.wheels).unwrap()
             );
+            for package in REQUIRED_WHEEL_PACKAGES {
+                assert!(
+                    catalog
+                        .manifest
+                        .wheels
+                        .iter()
+                        .any(|wheel| wheel.package == package)
+                );
+            }
             assert_eq!(catalog.download_urls.len(), 2);
             for wheel in &catalog.manifest.wheels {
                 let payload = embedded_wheel_payload(&wheel.file_name);

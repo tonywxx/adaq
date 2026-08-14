@@ -925,6 +925,7 @@ const english = {
 			export: "Export Archive",
 			trust: "Trust Revision",
 			trusted: "Trusted",
+			syncEnvironment: "Sync Environment",
 			environment: "Ready Environment SHA-256",
 			environmentHint:
 				"Prepare each project Environment from the managed Runtime and trusted wheelhouse before running.",
@@ -969,8 +970,11 @@ const english = {
 		},
 		runtime: {
 			title: "Managed Python Runtime",
+			cancel: "Cancel Preparation",
+			retry: "Retry Preparation",
 			description:
 				"Inspect the ADAQ-owned 3.12 profile and remove only inactive Runtime and Environment cache bytes.",
+			progress: "Preparation progress",
 			loading: "Loading Runtime Profile…",
 			platformUnknown: "Platform unavailable",
 			version: "Expected CPython {{version}}",
@@ -1704,6 +1708,7 @@ const simplifiedChinese = {
 			export: "导出 Archive",
 			trust: "信任 Revision",
 			trusted: "已信任",
+			syncEnvironment: "同步 Environment",
 			environment: "Ready Environment SHA-256",
 			environmentHint:
 				"运行前请使用托管 Runtime 和受信任 Wheelhouse 为每个项目准备 Environment。",
@@ -1748,8 +1753,11 @@ const simplifiedChinese = {
 		},
 		runtime: {
 			title: "托管 Python Runtime",
+			cancel: "取消准备",
+			retry: "重试准备",
 			description:
 				"查看 ADAQ 所有的 3.12 配置，只移除不活跃的 Runtime 和 Environment 缓存字节。",
+			progress: "准备进度",
 			loading: "正在加载 Runtime 配置…",
 			platformUnknown: "平台不可用",
 			version: "预期 CPython {{version}}",
