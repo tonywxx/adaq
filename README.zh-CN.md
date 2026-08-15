@@ -90,7 +90,7 @@ pnpm run build      # 严格 TypeScript 检查，然后构建前端
 pnpm tauri build    # 为当前平台打包带签名的桌面安装包
 ```
 
-发布打包（macOS ARM64、Windows x86_64、Linux x86_64）由 GitHub Actions `Release` 工作流自动完成，前提是先在 `package.json`、`src-tauri/Cargo.toml` 与 `src-tauri/tauri.conf.json` 中同步版本号。
+发布打包（macOS ARM64、Windows x86_64）由 GitHub Actions `Release` 工作流自动完成，前提是先在 `package.json`、`src-tauri/Cargo.toml` 与 `src-tauri/tauri.conf.json` 中同步版本号。Linux 验证与打包暂缓。
 
 ### 校验（可选检查）
 

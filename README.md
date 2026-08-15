@@ -90,7 +90,7 @@ pnpm run build      # strict TypeScript check, then build the frontend
 pnpm tauri build    # bundle the signed desktop installer for the current platform
 ```
 
-Release packaging (macOS ARM64, Windows x86_64, and Linux x86_64) is automated by the GitHub Actions `Release` workflow after you synchronize the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+Release packaging (macOS ARM64 and Windows x86_64) is automated by the GitHub Actions `Release` workflow after you synchronize the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Linux validation and packaging are deferred.
 
 ### Verify (optional checks)
 
