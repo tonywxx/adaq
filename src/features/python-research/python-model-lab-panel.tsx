@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/card";
 import { isTauriRuntime } from "@/lib/http";
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 type Project = {
@@ -42,6 +42,7 @@ type ModelRun = {
 	projectRevisionSha256: string;
 	environmentSha256: string;
 	inputEvidenceSha256: string;
+	bindingSha256: string;
 	seed: number;
 	fixtureSha256: string;
 	artifactSha256: string;
@@ -54,6 +55,9 @@ type ModelRun = {
 	testLabelsWithheld: boolean;
 	repeatabilityVerified: boolean;
 	repeatabilityTolerance: number;
+	repeatabilityState: "unverified" | "verified" | "divergent";
+	evidenceState: "out-of-sample" | "overlapping" | "unknown";
+	diagnostics: string[];
 	resourcePolicy: Record<string, number | string>;
 	inputSlots: string[];
 	targetId: string;
@@ -85,11 +89,20 @@ type Trial = {
 	status: string;
 	attemptIds: string[];
 	selectionMetric?: number;
-	evidenceState: string;
+	evidenceState: "out-of-sample" | "overlapping" | "unknown";
+	repeatabilityState: "unverified" | "verified" | "divergent";
+	diagnostics: string[];
 };
 
 type Experiment = {
 	experimentId: string;
+	projectRevisionSha256: string;
+	environmentSha256: string;
+	inputEvidenceSha256: string;
+	bindingSha256: string;
+	seed: number;
+	parentDecisionId?: string;
+	lineageEvidenceState: "out-of-sample" | "overlapping" | "unknown";
 	trials: Trial[];
 };
 
@@ -97,23 +110,39 @@ type Decision = {
 	decisionId: string;
 	selectedTrialId: string;
 	selectedAlpha: number;
+	bindingSha256: string;
+	projectRevisionSha256: string;
+	environmentSha256: string;
+	inputEvidenceSha256: string;
+	seed: number;
+	evidenceState: "out-of-sample" | "overlapping" | "unknown";
 };
 
 type Report = {
 	reportId: string;
+	decisionId: string;
+	forecastSha256: string;
 	meanSquaredError: number;
 	meanAbsoluteError: number;
+	evidenceState: "out-of-sample" | "overlapping" | "unknown";
+	artifactSha256: string;
+	forecastDatasetSha256: string;
 };
 
 type ResearchAttempt = {
 	attemptId: string;
 	projectId: string;
+	revisionSha256: string;
+	environmentSha256: string;
 	status: "pending" | "running" | "completed" | "failed" | "cancelled";
 	queueSequence: number;
 	failureCode?: string;
 	diagnostic?: string;
 	progressCompleted?: number;
 	progressTotal?: number;
+	execution?: {
+		parameters?: Record<string, string>;
+	};
 };
 
 const PROJECTS_CHANGED_EVENT = "adaq:python-projects-changed";
@@ -138,6 +167,28 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 	const [attempts, setAttempts] = useState<ResearchAttempt[]>([]);
 	const [busy, setBusy] = useState("");
 	const [error, setError] = useState("");
+	const requestVersion = useRef(0);
+	const activeUserId = useRef(userId);
+	activeUserId.current = userId;
+	const beginRequest = () => {
+		setBusy("");
+		return ++requestVersion.current;
+	};
+	const isCurrentRequest = (version: number) =>
+		version === requestVersion.current;
+
+	useEffect(() => {
+		activeUserId.current = userId;
+		requestVersion.current += 1;
+		setBusy("");
+		setRun(undefined);
+		setExperiment(undefined);
+		setDecision(undefined);
+		setReport(undefined);
+		return () => {
+			requestVersion.current += 1;
+		};
+	}, [userId]);
 
 	const refreshProjects = useCallback(async () => {
 		if (!isTauriRuntime()) return;
@@ -148,6 +199,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 					request: { userId, page: 1, pageSize: 50 },
 				}),
 			]);
+			if (activeUserId.current !== userId) return;
 			setProjects(current);
 			setFactorDecisions(
 				decisionPage.items.filter((item) => item.decision.state !== "rejected"),
@@ -166,16 +218,19 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 				setEnvironment(undefined);
 			}
 		} catch (reason) {
-			setError(String(reason));
+			if (activeUserId.current === userId) setError(String(reason));
 		}
 	}, [userId]);
 
 	const refreshAttempts = useCallback(async () => {
 		if (!isTauriRuntime()) return;
 		try {
-			setAttempts(await invoke<ResearchAttempt[]>("attempt_list", { userId }));
+			const nextAttempts = await invoke<ResearchAttempt[]>("attempt_list", {
+				userId,
+			});
+			if (activeUserId.current === userId) setAttempts(nextAttempts);
 		} catch (reason) {
-			setError(String(reason));
+			if (activeUserId.current === userId) setError(String(reason));
 		}
 	}, [userId]);
 
@@ -197,6 +252,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 	}, [refreshProjects]);
 
 	const runDefault = async () => {
+		const version = beginRequest();
 		const project = projects.find((item) => item.projectId === projectId);
 		if (!project?.revisionSha256 || !environment) {
 			setError(t("pythonResearch.modelLab.freezeAndPrepareRequired"));
@@ -208,71 +264,88 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 		}
 		setBusy("run");
 		setError("");
+		setExperiment(undefined);
+		setDecision(undefined);
+		setReport(undefined);
+		setRun(undefined);
 		await afterPaint();
+		if (!isCurrentRequest(version)) return;
 		try {
-			setRun(
-				await invoke<ModelRun>("model_demo_run", {
-					request: {
-						userId,
-						projectId,
-						projectRevisionSha256: project.revisionSha256,
-						environmentSha256: environment.environmentSha256,
-						factorDecisionHash,
-						alpha: 1,
-					},
-				}),
-			);
+			const nextRun = await invoke<ModelRun>("model_demo_run", {
+				request: {
+					userId,
+					projectId,
+					projectRevisionSha256: project.revisionSha256,
+					environmentSha256: environment.environmentSha256,
+					factorDecisionHash,
+					alpha: 1,
+				},
+			});
+			if (isCurrentRequest(version)) setRun(nextRun);
 		} catch (reason) {
-			setError(String(reason));
+			if (isCurrentRequest(version)) setError(String(reason));
 		} finally {
-			setBusy("");
+			if (isCurrentRequest(version)) setBusy("");
 		}
 	};
 
 	const registerGrid = async () => {
+		const version = beginRequest();
 		if (!run) return;
-		const currentProjects = isTauriRuntime()
-			? await invoke<Project[]>("project_list", { userId })
-			: projects;
-		setProjects(currentProjects);
-		const revision = currentProjects.find(
-			(project) =>
-				project.projectId === projectId &&
-				project.state === "clean" &&
-				project.revisionSha256,
-		)?.revisionSha256;
-		if (!revision || !environment) {
-			setError(t("pythonResearch.modelLab.freezeRequired"));
-			return;
-		}
 		setBusy("register");
 		setError("");
 		await afterPaint();
+		if (!isCurrentRequest(version)) return;
 		try {
-			setExperiment(
-				await invoke<Experiment>("model_experiment_register", {
+			const currentProjects = isTauriRuntime()
+				? await invoke<Project[]>("project_list", { userId })
+				: projects;
+			setProjects(currentProjects);
+			const revision = currentProjects.find(
+				(project) =>
+					project.projectId === projectId &&
+					project.state === "clean" &&
+					project.revisionSha256,
+			)?.revisionSha256;
+			if (!revision || !environment) {
+				throw new Error(t("pythonResearch.modelLab.freezeRequired"));
+			}
+			if (
+				run.projectRevisionSha256 !== revision ||
+				run.environmentSha256 !== environment.environmentSha256 ||
+				run.factorDecisionHash !== factorDecisionHash
+			) {
+				throw new Error(t("pythonResearch.modelLab.bindingChanged"));
+			}
+			const nextExperiment = await invoke<Experiment>(
+				"model_experiment_register",
+				{
 					request: {
 						userId,
+						attemptId: run.attemptId,
 						projectRevisionSha256: revision,
 						environmentSha256: environment.environmentSha256,
 						inputEvidenceSha256: run.inputEvidenceSha256,
 						factorDecisionHash,
 						seed: run.seed,
 					},
-				}),
+				},
 			);
+			if (isCurrentRequest(version)) setExperiment(nextExperiment);
 		} catch (reason) {
-			setError(String(reason));
+			if (isCurrentRequest(version)) setError(String(reason));
 		} finally {
-			setBusy("");
+			if (isCurrentRequest(version)) setBusy("");
 		}
 	};
 
 	const completeTrial = async (trial: Trial) => {
+		const version = beginRequest();
 		if (!experiment) return;
 		setBusy(trial.trialId);
 		setError("");
 		await afterPaint();
+		if (!isCurrentRequest(version)) return;
 		try {
 			const project = projects.find(
 				(item) =>
@@ -297,60 +370,76 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 			if (selectionMetric === undefined) {
 				throw new Error(t("pythonResearch.modelLab.metricUnavailable"));
 			}
-			setRun(trialRun);
-			setExperiment(
-				await invoke<Experiment>("model_trial_complete", {
-					request: {
-						userId,
-						experimentId: experiment.experimentId,
-						trialId: trial.trialId,
-						attemptId: trialRun.attemptId,
-						selectionMetric,
-					},
-				}),
-			);
+			if (!isCurrentRequest(version)) return;
+			const nextExperiment = await invoke<Experiment>("model_trial_complete", {
+				request: {
+					userId,
+					experimentId: experiment.experimentId,
+					trialId: trial.trialId,
+					attemptId: trialRun.attemptId,
+					selectionMetric,
+				},
+			});
+			if (isCurrentRequest(version)) {
+				setRun(trialRun);
+				setExperiment(nextExperiment);
+			}
 		} catch (reason) {
-			setError(String(reason));
+			if (isCurrentRequest(version)) setError(String(reason));
 		} finally {
-			setBusy("");
+			if (isCurrentRequest(version)) setBusy("");
 		}
 	};
 
+	const selectionReady =
+		experiment?.trials.length === 3 &&
+		experiment.trials.every(
+			(trial) =>
+				trial.status === "completed" &&
+				trial.repeatabilityState === "verified" &&
+				(trial.evidenceState === "unknown" ||
+					trial.evidenceState === "overlapping"),
+		);
+
 	const selectTrial = async (trial: Trial) => {
-		if (!experiment || trial.status !== "completed") return;
+		const version = beginRequest();
+		if (!experiment || !selectionReady || trial.status !== "completed") return;
 		setBusy(`select:${trial.trialId}`);
 		setError("");
+		await afterPaint();
+		if (!isCurrentRequest(version)) return;
 		try {
-			setDecision(
-				await invoke<Decision>("model_selection_record", {
-					request: {
-						userId,
-						experimentId: experiment.experimentId,
-						trialId: trial.trialId,
-					},
-				}),
-			);
+			const nextDecision = await invoke<Decision>("model_selection_record", {
+				request: {
+					userId,
+					experimentId: experiment.experimentId,
+					trialId: trial.trialId,
+				},
+			});
+			if (isCurrentRequest(version)) setDecision(nextDecision);
 		} catch (reason) {
-			setError(String(reason));
+			if (isCurrentRequest(version)) setError(String(reason));
 		} finally {
-			setBusy("");
+			if (isCurrentRequest(version)) setBusy("");
 		}
 	};
 
 	const evaluateFinal = async () => {
+		const version = beginRequest();
 		if (!decision) return;
 		setBusy("final");
 		setError("");
+		await afterPaint();
+		if (!isCurrentRequest(version)) return;
 		try {
-			setReport(
-				await invoke<Report>("model_final_evaluate", {
-					request: { userId, decisionId: decision.decisionId },
-				}),
-			);
+			const nextReport = await invoke<Report>("model_final_evaluate", {
+				request: { userId, decisionId: decision.decisionId },
+			});
+			if (isCurrentRequest(version)) setReport(nextReport);
 		} catch (reason) {
-			setError(String(reason));
+			if (isCurrentRequest(version)) setError(String(reason));
 		} finally {
-			setBusy("");
+			if (isCurrentRequest(version)) setBusy("");
 		}
 	};
 
@@ -358,9 +447,11 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 		attemptId: string,
 		action: "cancel" | "retry",
 	) => {
+		const version = beginRequest();
 		setBusy(`${attemptId}:${action}`);
 		setError("");
 		await afterPaint();
+		if (!isCurrentRequest(version)) return;
 		try {
 			if (action === "retry") {
 				const project = projects.find(
@@ -372,26 +463,30 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 				if (!project?.revisionSha256 || !environment || !factorDecisionHash) {
 					throw new Error(t("pythonResearch.modelLab.freezeAndPrepareRequired"));
 				}
-				setRun(
-					await invoke<ModelRun>("model_demo_run", {
-						request: {
-							userId,
-							projectId,
-							projectRevisionSha256: project.revisionSha256,
-							environmentSha256: environment.environmentSha256,
-							factorDecisionHash,
-							alpha: run?.alpha ?? 1,
-						},
-					}),
-				);
+				const nextRun = await invoke<ModelRun>("model_demo_run", {
+					request: {
+						userId,
+						projectId,
+						projectRevisionSha256: project.revisionSha256,
+						environmentSha256: environment.environmentSha256,
+						factorDecisionHash,
+						alpha: run?.alpha ?? 1,
+					},
+				});
+				if (isCurrentRequest(version)) {
+					setRun(nextRun);
+					setExperiment(undefined);
+					setDecision(undefined);
+					setReport(undefined);
+				}
 			} else {
 				await invoke("attempt_cancel", { request: { userId, attemptId } });
 			}
 			await refreshAttempts();
 		} catch (reason) {
-			setError(String(reason));
+			if (isCurrentRequest(version)) setError(String(reason));
 		} finally {
-			setBusy("");
+			if (isCurrentRequest(version)) setBusy("");
 		}
 	};
 
@@ -399,8 +494,42 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 		(attempt) => attempt.projectId === "py-model-qlib-ridge-return",
 	);
 
+	const retainFailure = async (trial: Trial, attemptId: string) => {
+		const version = beginRequest();
+		if (!experiment) return;
+		setBusy(`fail:${attemptId}`);
+		setError("");
+		await afterPaint();
+		if (!isCurrentRequest(version)) return;
+		try {
+			const nextExperiment = await invoke<Experiment>("model_trial_fail", {
+				request: {
+					userId,
+					experimentId: experiment.experimentId,
+					trialId: trial.trialId,
+					attemptId,
+				},
+			});
+			if (isCurrentRequest(version)) setExperiment(nextExperiment);
+		} catch (reason) {
+			if (isCurrentRequest(version)) setError(String(reason));
+		} finally {
+			if (isCurrentRequest(version)) setBusy("");
+		}
+	};
+
+	const failureAttemptsForTrial = (trial: Trial) =>
+		modelAttempts.filter(
+			(attempt) =>
+				(attempt.status === "failed" || attempt.status === "cancelled") &&
+				attempt.revisionSha256 === experiment?.projectRevisionSha256 &&
+				attempt.environmentSha256 === experiment?.environmentSha256 &&
+				Number(attempt.execution?.parameters?.alpha) === trial.alpha &&
+				!trial.attemptIds.includes(attempt.attemptId),
+		);
+
 	return (
-		<Card className="mt-4">
+		<Card className="mt-4" aria-busy={Boolean(busy)}>
 			<CardHeader>
 				<div className="flex flex-wrap items-start justify-between gap-3">
 					<div>
@@ -452,7 +581,14 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 						id="python-model-factor-decision"
 						className="h-9 rounded-md border bg-background px-2 text-sm"
 						value={factorDecisionHash}
-						onChange={(event) => setFactorDecisionHash(event.target.value)}
+						onChange={(event) => {
+							beginRequest();
+							setFactorDecisionHash(event.target.value);
+							setRun(undefined);
+							setExperiment(undefined);
+							setDecision(undefined);
+							setReport(undefined);
+						}}
 					>
 						<option value="">
 							{t("pythonResearch.modelLab.chooseFactorDecision")}
@@ -492,6 +628,13 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 									<span className="text-muted-foreground">
 										{attempt.progressCompleted ?? 0}/{attempt.progressTotal}
 									</span>
+								) : null}
+								{attempt.diagnostic || attempt.failureCode ? (
+									<p className="basis-full text-destructive" role="alert">
+										{t("pythonResearch.modelLab.diagnostics", {
+											value: attempt.diagnostic ?? attempt.failureCode,
+										})}
+									</p>
 								) : null}
 								<div className="ml-auto flex gap-2">
 									{attempt.status === "pending" || attempt.status === "running" ? (
@@ -549,6 +692,11 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							Artifact {run.artifactSha256} · Forecast {run.forecastSha256}
 						</p>
 						<p className="break-all font-mono text-xs text-muted-foreground">
+							{t("pythonResearch.modelLab.binding", {
+								binding: run.bindingSha256,
+							})}
+						</p>
+						<p className="break-all font-mono text-xs text-muted-foreground">
 							{t("pythonResearch.modelLab.contract", {
 								target: `${run.targetId} / ${run.targetHorizonBars} bars`,
 								slots: run.inputSlots.join(", "),
@@ -564,6 +712,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								environment: run.environmentSha256,
 								snapshot: run.snapshotId,
 								universe: run.universeId,
+								seed: run.seed,
 								resourcePolicy: JSON.stringify(run.resourcePolicy),
 							})}
 						</p>
@@ -577,6 +726,20 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								? `${t("pythonResearch.modelLab.repeatable")} (${run.repeatabilityTolerance})`
 								: t("pythonResearch.modelLab.repeatabilityFailed")}
 						</p>
+						<p role="status">
+							{t("pythonResearch.modelLab.evidence", {
+								state: run.evidenceState,
+							})}{" "}
+							·{" "}
+							{t("pythonResearch.modelLab.repeatabilityState", {
+								state: run.repeatabilityState,
+							})}
+						</p>
+						{run.diagnostics.map((diagnostic) => (
+							<p key={diagnostic} className="text-destructive" role="alert">
+								{t("pythonResearch.modelLab.diagnostics", { value: diagnostic })}
+							</p>
+						))}
 						<p className="break-all font-mono text-xs text-muted-foreground">
 							Factor {run.factorDecisionHash} · Dataset {run.factorDatasetId} · Feature{" "}
 							{run.featureDatasetId} · lookback {run.factorLookback}
@@ -588,6 +751,22 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 						<p className="break-all font-mono text-xs">
 							Experiment {experiment.experimentId}
 						</p>
+						<p className="break-all font-mono text-xs text-muted-foreground">
+							{t("pythonResearch.modelLab.lineage", {
+								state: experiment.lineageEvidenceState,
+								parent: experiment.parentDecisionId ?? "none",
+							})}
+						</p>
+						<p className="break-all font-mono text-xs text-muted-foreground">
+							{t("pythonResearch.modelLab.binding", {
+								binding: experiment.bindingSha256,
+							})}
+						</p>
+						{!selectionReady ? (
+							<p className="text-muted-foreground" role="status">
+								{t("pythonResearch.modelLab.selectionBlocked")}
+							</p>
+						) : null}
 						{experiment.trials.map((trial) => (
 							<div
 								key={trial.trialId}
@@ -605,6 +784,41 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 										})}
 									</span>
 								) : null}
+								<p className="basis-full break-all font-mono text-xs text-muted-foreground">
+									{t("pythonResearch.modelLab.trial", { trial: trial.trialId })} ·{" "}
+									{t("pythonResearch.modelLab.evidence", { state: trial.evidenceState })}{" "}
+									·{" "}
+									{t("pythonResearch.modelLab.repeatabilityState", {
+										state: trial.repeatabilityState,
+									})}
+								</p>
+								{trial.attemptIds.map((attemptId) => (
+									<code key={attemptId} className="basis-full break-all text-xs">
+										Attempt {attemptId}
+									</code>
+								))}
+								{trial.diagnostics.map((diagnostic) => (
+									<p
+										key={diagnostic}
+										className="basis-full text-destructive"
+										role="alert"
+									>
+										{t("pythonResearch.modelLab.diagnostics", { value: diagnostic })}
+									</p>
+								))}
+								{failureAttemptsForTrial(trial).map((attempt) => (
+									<Button
+										key={`retain:${attempt.attemptId}`}
+										type="button"
+										size="sm"
+										variant="outline"
+										disabled={trial.status !== "registered"}
+										loading={busy === `fail:${attempt.attemptId}`}
+										onClick={() => void retainFailure(trial, attempt.attemptId)}
+									>
+										{t("pythonResearch.modelLab.retainFailure")}
+									</Button>
+								))}
 								<Button
 									type="button"
 									size="sm"
@@ -619,7 +833,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 									type="button"
 									size="sm"
 									variant="outline"
-									disabled={trial.status !== "completed"}
+									disabled={!selectionReady || trial.status !== "completed"}
 									loading={busy === `select:${trial.trialId}`}
 									onClick={() => void selectTrial(trial)}
 								>
@@ -637,6 +851,20 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							})}
 						</span>
 						<code className="break-all text-xs">{decision.decisionId}</code>
+						<p className="basis-full break-all font-mono text-xs text-muted-foreground">
+							{t("pythonResearch.modelLab.decisionIdentity", {
+								binding: decision.bindingSha256,
+								revision: decision.projectRevisionSha256,
+								environment: decision.environmentSha256,
+								input: decision.inputEvidenceSha256,
+								seed: decision.seed,
+							})}
+						</p>
+						<p className="basis-full text-muted-foreground">
+							{t("pythonResearch.modelLab.evidence", {
+								state: decision.evidenceState,
+							})}
+						</p>
 						<Button
 							type="button"
 							size="sm"
@@ -653,7 +881,13 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							mse: report.meanSquaredError,
 							mae: report.meanAbsoluteError,
 						})}{" "}
-						· {report.reportId}
+						· {report.reportId} ·{" "}
+						{t("pythonResearch.modelLab.reportEvidence", {
+							state: report.evidenceState,
+							artifact: report.artifactSha256,
+							forecast: report.forecastSha256,
+							dataset: report.forecastDatasetSha256,
+						})}
 					</p>
 				) : null}
 			</CardContent>

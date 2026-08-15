@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 
 pub const RIDGE_ALPHAS: [f64; 3] = [0.1, 1.0, 10.0];
 pub const RIDGE_REPEATABILITY_TOLERANCE: f64 = 1e-9;
+const MAX_TRIAL_DIAGNOSTICS: usize = 32;
+const MAX_TRIAL_DIAGNOSTIC_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -15,7 +17,22 @@ pub enum TrialStatus {
     Failed,
     Cancelled,
     Invalid,
+    Unsupported,
     Superseded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RepeatabilityState {
+    Unverified,
+    Verified,
+    Divergent,
+}
+
+impl Default for RepeatabilityState {
+    fn default() -> Self {
+        Self::Unverified
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +41,12 @@ pub enum EvidenceState {
     OutOfSample,
     Overlapping,
     Unknown,
+}
+
+impl Default for EvidenceState {
+    fn default() -> Self {
+        Self::Unknown
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,12 +63,18 @@ pub struct ModelTrial {
     pub attempt_ids: Vec<String>,
     pub selection_metric: Option<f64>,
     pub evidence_state: EvidenceState,
+    #[serde(default)]
+    pub binding_sha256: String,
+    #[serde(default)]
+    pub repeatability_state: RepeatabilityState,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
 }
 
 impl ModelTrial {
     pub fn validate(&self) -> Result<(), PythonResearchError> {
         if !is_sha256(&self.trial_id)
-            || self.experiment_id.is_empty()
+            || !is_sha256(&self.experiment_id)
             || !self.alpha.is_finite()
             || self.alpha <= 0.0
             || !is_sha256(&self.project_revision_sha256)
@@ -58,6 +87,12 @@ impl ModelTrial {
             || self
                 .selection_metric
                 .is_some_and(|metric| !metric.is_finite())
+            || (!self.binding_sha256.is_empty() && !is_sha256(&self.binding_sha256))
+            || self.diagnostics.len() > MAX_TRIAL_DIAGNOSTICS
+            || self
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.len() > MAX_TRIAL_DIAGNOSTIC_BYTES)
         {
             return Err(invalid("model-trial-invalid"));
         }
@@ -74,6 +109,12 @@ pub struct ModelExperiment {
     pub input_evidence_sha256: String,
     pub seed: u64,
     pub trials: Vec<ModelTrial>,
+    #[serde(default)]
+    pub binding_sha256: String,
+    #[serde(default)]
+    pub parent_decision_id: Option<String>,
+    #[serde(default)]
+    pub lineage_evidence_state: EvidenceState,
 }
 
 impl ModelExperiment {
@@ -86,15 +127,69 @@ impl ModelExperiment {
         let project_revision_sha256 = project_revision_sha256.into();
         let environment_sha256 = environment_sha256.into();
         let input_evidence_sha256 = input_evidence_sha256.into();
+        let binding_sha256 = sha256(
+            format!(
+                "{project_revision_sha256}:{environment_sha256}:{input_evidence_sha256}:{seed}"
+            )
+            .as_bytes(),
+        );
+        Self::ridge_with_binding(
+            project_revision_sha256,
+            environment_sha256,
+            input_evidence_sha256,
+            seed,
+            binding_sha256,
+        )
+    }
+
+    pub fn ridge_with_binding(
+        project_revision_sha256: impl Into<String>,
+        environment_sha256: impl Into<String>,
+        input_evidence_sha256: impl Into<String>,
+        seed: u64,
+        binding_sha256: impl Into<String>,
+    ) -> Result<Self, PythonResearchError> {
+        Self::ridge_with_binding_and_lineage(
+            project_revision_sha256,
+            environment_sha256,
+            input_evidence_sha256,
+            seed,
+            binding_sha256,
+            None,
+        )
+    }
+
+    pub fn ridge_with_binding_and_lineage(
+        project_revision_sha256: impl Into<String>,
+        environment_sha256: impl Into<String>,
+        input_evidence_sha256: impl Into<String>,
+        seed: u64,
+        binding_sha256: impl Into<String>,
+        parent_decision_id: Option<String>,
+    ) -> Result<Self, PythonResearchError> {
+        let project_revision_sha256 = project_revision_sha256.into();
+        let environment_sha256 = environment_sha256.into();
+        let input_evidence_sha256 = input_evidence_sha256.into();
+        let binding_sha256 = binding_sha256.into();
+        let lineage_evidence_state = if parent_decision_id.is_some() {
+            EvidenceState::Overlapping
+        } else {
+            EvidenceState::Unknown
+        };
         if !is_sha256(&project_revision_sha256)
             || !is_sha256(&environment_sha256)
             || !is_sha256(&input_evidence_sha256)
+            || !is_sha256(&binding_sha256)
+            || parent_decision_id
+                .as_deref()
+                .is_some_and(|decision_id| !is_sha256(decision_id))
         {
             return Err(invalid("model-experiment-identity-invalid"));
         }
         let experiment_id = sha256(
             format!(
-                "{project_revision_sha256}:{environment_sha256}:{input_evidence_sha256}:{seed}"
+                "{project_revision_sha256}:{environment_sha256}:{input_evidence_sha256}:{seed}:{binding_sha256}:{}",
+                parent_decision_id.as_deref().unwrap_or_default()
             )
             .as_bytes(),
         );
@@ -111,7 +206,10 @@ impl ModelExperiment {
                 status: TrialStatus::Registered,
                 attempt_ids: Vec::new(),
                 selection_metric: None,
-                evidence_state: EvidenceState::Unknown,
+                evidence_state: lineage_evidence_state,
+                binding_sha256: binding_sha256.clone(),
+                repeatability_state: RepeatabilityState::Unverified,
+                diagnostics: Vec::new(),
             })
             .collect::<Vec<_>>();
         Ok(Self {
@@ -121,23 +219,61 @@ impl ModelExperiment {
             input_evidence_sha256,
             seed,
             trials,
+            binding_sha256,
+            parent_decision_id,
+            lineage_evidence_state,
         })
     }
 
     pub fn validate(&self) -> Result<(), PythonResearchError> {
         let mut trial_ids = BTreeMap::new();
         let mut alphas = BTreeMap::new();
+        let mut attempt_ids = BTreeMap::new();
+        let expected_experiment_id = sha256(
+            format!(
+                "{}:{}:{}:{}:{}:{}",
+                self.project_revision_sha256,
+                self.environment_sha256,
+                self.input_evidence_sha256,
+                self.seed,
+                self.binding_sha256,
+                self.parent_decision_id.as_deref().unwrap_or_default()
+            )
+            .as_bytes(),
+        );
         if !is_sha256(&self.experiment_id)
+            || self.experiment_id != expected_experiment_id
             || !is_sha256(&self.project_revision_sha256)
             || !is_sha256(&self.environment_sha256)
             || !is_sha256(&self.input_evidence_sha256)
+            || !is_sha256(&self.binding_sha256)
+            || self
+                .parent_decision_id
+                .as_deref()
+                .is_some_and(|decision_id| !is_sha256(decision_id))
+            || !matches!(
+                self.lineage_evidence_state,
+                EvidenceState::Unknown | EvidenceState::Overlapping
+            )
+            || self.parent_decision_id.is_some()
+                != (self.lineage_evidence_state == EvidenceState::Overlapping)
             || self.trials.len() != RIDGE_ALPHAS.len()
-            || self.trials.iter().any(|trial| {
+            || self.trials.iter().enumerate().any(|(index, trial)| {
                 trial.validate().is_err()
                     || trial.experiment_id != self.experiment_id
                     || trial.project_revision_sha256 != self.project_revision_sha256
                     || trial.environment_sha256 != self.environment_sha256
                     || trial.input_evidence_sha256 != self.input_evidence_sha256
+                    || trial.seed != self.seed
+                    || trial.binding_sha256 != self.binding_sha256
+                    || trial.evidence_state != self.lineage_evidence_state
+                    || trial.alpha.to_bits() != RIDGE_ALPHAS[index].to_bits()
+                    || trial.trial_id
+                        != sha256(format!("{}:{}", self.experiment_id, trial.alpha).as_bytes())
+                    || trial
+                        .attempt_ids
+                        .iter()
+                        .any(|attempt_id| attempt_ids.insert(attempt_id.clone(), ()).is_some())
                     || !RIDGE_ALPHAS.contains(&trial.alpha)
                     || trial_ids.insert(trial.trial_id.clone(), ()).is_some()
                     || alphas.insert(trial.alpha.to_bits(), ()).is_some()
@@ -154,7 +290,23 @@ impl ModelExperiment {
         attempt_id: impl Into<String>,
         selection_metric: f64,
     ) -> Result<(), PythonResearchError> {
+        self.complete_trial_with_repeatability(
+            trial_id,
+            attempt_id,
+            selection_metric,
+            RepeatabilityState::Verified,
+        )
+    }
+
+    pub fn complete_trial_with_repeatability(
+        &mut self,
+        trial_id: &str,
+        attempt_id: impl Into<String>,
+        selection_metric: f64,
+        repeatability_state: RepeatabilityState,
+    ) -> Result<(), PythonResearchError> {
         let attempt_id = attempt_id.into();
+        let lineage_evidence_state = self.lineage_evidence_state;
         let trial = self
             .trials
             .iter_mut()
@@ -170,7 +322,8 @@ impl ModelExperiment {
         trial.attempt_ids.push(attempt_id);
         trial.selection_metric = Some(selection_metric);
         trial.status = TrialStatus::Completed;
-        trial.evidence_state = EvidenceState::Unknown;
+        trial.evidence_state = lineage_evidence_state;
+        trial.repeatability_state = repeatability_state;
         Ok(())
     }
 
@@ -180,7 +333,19 @@ impl ModelExperiment {
         attempt_id: impl Into<String>,
         status: TrialStatus,
     ) -> Result<(), PythonResearchError> {
+        self.fail_trial_with_diagnostic(trial_id, attempt_id, status, "")
+    }
+
+    pub fn fail_trial_with_diagnostic(
+        &mut self,
+        trial_id: &str,
+        attempt_id: impl Into<String>,
+        status: TrialStatus,
+        diagnostic: impl Into<String>,
+    ) -> Result<(), PythonResearchError> {
         let attempt_id = attempt_id.into();
+        let diagnostic = diagnostic.into();
+        let lineage_evidence_state = self.lineage_evidence_state;
         let trial = self
             .trials
             .iter_mut()
@@ -188,16 +353,25 @@ impl ModelExperiment {
             .ok_or_else(|| invalid("model-trial-not-found"))?;
         if !matches!(
             status,
-            TrialStatus::Failed | TrialStatus::Cancelled | TrialStatus::Invalid
+            TrialStatus::Failed
+                | TrialStatus::Cancelled
+                | TrialStatus::Invalid
+                | TrialStatus::Unsupported
+                | TrialStatus::Superseded
         ) || trial.status != TrialStatus::Registered
             || attempt_id.trim().is_empty()
             || trial.attempt_ids.iter().any(|id| id == &attempt_id)
+            || diagnostic.len() > MAX_TRIAL_DIAGNOSTIC_BYTES
         {
             return Err(invalid("model-trial-failure-invalid"));
         }
         trial.attempt_ids.push(attempt_id);
         trial.status = status;
-        trial.evidence_state = EvidenceState::Unknown;
+        trial.evidence_state = lineage_evidence_state;
+        trial.repeatability_state = RepeatabilityState::Unverified;
+        if !diagnostic.is_empty() {
+            trial.diagnostics.push(diagnostic);
+        }
         Ok(())
     }
 }
@@ -211,6 +385,16 @@ pub struct ParameterSelectionDecision {
     pub selected_alpha: f64,
     pub selection_metrics_sha256: String,
     pub evidence_state: EvidenceState,
+    #[serde(default)]
+    pub binding_sha256: String,
+    #[serde(default)]
+    pub project_revision_sha256: String,
+    #[serde(default)]
+    pub environment_sha256: String,
+    #[serde(default)]
+    pub input_evidence_sha256: String,
+    #[serde(default)]
+    pub seed: u64,
 }
 
 impl ParameterSelectionDecision {
@@ -224,7 +408,9 @@ impl ParameterSelectionDecision {
             .iter()
             .find(|trial| trial.trial_id == selected_trial_id)
             .ok_or_else(|| invalid("model-selection-trial-not-found"))?;
-        if trial.status != TrialStatus::Completed || trial.evidence_state != EvidenceState::Unknown
+        if trial.status != TrialStatus::Completed
+            || trial.evidence_state != experiment.lineage_evidence_state
+            || trial.repeatability_state != RepeatabilityState::Verified
         {
             return Err(invalid(
                 "model-selection-requires-completed-selection-trial",
@@ -233,7 +419,8 @@ impl ParameterSelectionDecision {
         if experiment.trials.iter().any(|trial| {
             trial.status != TrialStatus::Completed
                 || trial.selection_metric.is_none()
-                || trial.evidence_state != EvidenceState::Unknown
+                || trial.evidence_state != experiment.lineage_evidence_state
+                || trial.repeatability_state != RepeatabilityState::Verified
         }) {
             return Err(invalid("model-selection-requires-complete-selection-grid"));
         }
@@ -257,18 +444,38 @@ impl ParameterSelectionDecision {
             selected_trial_id: selected_trial_id.into(),
             selected_alpha: trial.alpha,
             selection_metrics_sha256,
-            evidence_state: EvidenceState::Unknown,
+            evidence_state: experiment.lineage_evidence_state,
+            binding_sha256: experiment.binding_sha256.clone(),
+            project_revision_sha256: experiment.project_revision_sha256.clone(),
+            environment_sha256: experiment.environment_sha256.clone(),
+            input_evidence_sha256: experiment.input_evidence_sha256.clone(),
+            seed: experiment.seed,
         })
     }
 
     pub fn validate(&self) -> Result<(), PythonResearchError> {
+        let expected_decision_id = sha256(
+            format!(
+                "{}:{}:{}",
+                self.experiment_id, self.selected_trial_id, self.selection_metrics_sha256
+            )
+            .as_bytes(),
+        );
         if !is_sha256(&self.decision_id)
+            || self.decision_id != expected_decision_id
             || !is_sha256(&self.experiment_id)
             || !is_sha256(&self.selected_trial_id)
             || !self.selected_alpha.is_finite()
             || self.selected_alpha <= 0.0
             || !is_sha256(&self.selection_metrics_sha256)
-            || self.evidence_state != EvidenceState::Unknown
+            || !matches!(
+                self.evidence_state,
+                EvidenceState::Unknown | EvidenceState::Overlapping
+            )
+            || !is_sha256(&self.binding_sha256)
+            || !is_sha256(&self.project_revision_sha256)
+            || !is_sha256(&self.environment_sha256)
+            || !is_sha256(&self.input_evidence_sha256)
         {
             return Err(invalid("model-selection-decision-invalid"));
         }
@@ -286,17 +493,38 @@ pub struct FinalEvaluationReport {
     pub mean_squared_error: f64,
     pub mean_absolute_error: f64,
     pub evidence_state: EvidenceState,
+    #[serde(default)]
+    pub artifact_sha256: String,
+    #[serde(default)]
+    pub forecast_dataset_sha256: String,
 }
 
 impl FinalEvaluationReport {
     pub fn validate(&self) -> Result<(), PythonResearchError> {
+        let expected_report_id = sha256(
+            format!(
+                "{}:{}:{}:{}:{}",
+                self.decision_id,
+                self.forecast_sha256,
+                self.target_sha256,
+                self.artifact_sha256,
+                self.forecast_dataset_sha256
+            )
+            .as_bytes(),
+        );
         if !is_sha256(&self.report_id)
+            || self.report_id != expected_report_id
             || !is_sha256(&self.decision_id)
             || !is_sha256(&self.forecast_sha256)
             || !is_sha256(&self.target_sha256)
             || !self.mean_squared_error.is_finite()
             || !self.mean_absolute_error.is_finite()
-            || self.evidence_state != EvidenceState::OutOfSample
+            || !matches!(
+                self.evidence_state,
+                EvidenceState::OutOfSample | EvidenceState::Overlapping
+            )
+            || !is_sha256(&self.artifact_sha256)
+            || !is_sha256(&self.forecast_dataset_sha256)
         {
             return Err(invalid("model-final-evaluation-invalid"));
         }
@@ -310,13 +538,37 @@ pub struct FinalEvaluationLedger {
 }
 
 impl FinalEvaluationLedger {
+    #[deprecated(note = "pass artifact and forecast dataset identities to run_with_evidence")]
     pub fn run(
         &mut self,
         decision: &ParameterSelectionDecision,
         forecasts: &[ForecastRow],
         labels: &[(i64, String, f64)],
     ) -> Result<FinalEvaluationReport, PythonResearchError> {
+        let _ = (decision, forecasts, labels);
+        Err(invalid("model-final-evidence-required"))
+    }
+
+    pub fn run_with_evidence(
+        &mut self,
+        decision: &ParameterSelectionDecision,
+        forecasts: &[ForecastRow],
+        labels: &[(i64, String, f64)],
+        artifact_sha256: impl Into<String>,
+        forecast_dataset_sha256: impl Into<String>,
+        evidence_state: EvidenceState,
+    ) -> Result<FinalEvaluationReport, PythonResearchError> {
         decision.validate()?;
+        if !matches!(
+            evidence_state,
+            EvidenceState::OutOfSample | EvidenceState::Overlapping
+        ) || (decision.evidence_state == EvidenceState::Overlapping
+            && evidence_state != EvidenceState::Overlapping)
+            || (decision.evidence_state == EvidenceState::Unknown
+                && evidence_state != EvidenceState::OutOfSample)
+        {
+            return Err(invalid("model-final-evidence-state-invalid"));
+        }
         if self.reports.contains_key(&decision.decision_id) {
             return Err(invalid("model-final-evaluation-already-recorded"));
         }
@@ -350,8 +602,14 @@ impl FinalEvaluationLedger {
             sha256(&serde_json::to_vec(forecasts).map_err(|error| invalid(error.to_string()))?);
         let target_sha256 =
             sha256(&serde_json::to_vec(labels).map_err(|error| invalid(error.to_string()))?);
+        let artifact_sha256 = artifact_sha256.into();
+        let forecast_dataset_sha256 = forecast_dataset_sha256.into();
         let report_id = sha256(
-            format!("{}:{forecast_sha256}:{target_sha256}", decision.decision_id).as_bytes(),
+            format!(
+                "{}:{forecast_sha256}:{target_sha256}:{}:{}",
+                decision.decision_id, artifact_sha256, forecast_dataset_sha256
+            )
+            .as_bytes(),
         );
         let report = FinalEvaluationReport {
             report_id,
@@ -360,7 +618,9 @@ impl FinalEvaluationLedger {
             target_sha256,
             mean_squared_error: squared / count,
             mean_absolute_error: absolute / count,
-            evidence_state: EvidenceState::OutOfSample,
+            evidence_state,
+            artifact_sha256,
+            forecast_dataset_sha256,
         };
         report.validate()?;
         self.reports
@@ -398,6 +658,8 @@ pub fn compare_repeatability(
                 || left.instrument != right.instrument
                 || left.value.is_some() != right.value.is_some()
                 || left.unavailable_reason != right.unavailable_reason
+                || left.value.is_some_and(|value| !value.is_finite())
+                || right.value.is_some_and(|value| !value.is_finite())
                 || left
                     .value
                     .zip(right.value)
@@ -470,9 +732,33 @@ mod tests {
         }];
         let labels = vec![(1, "AAA".into(), 3.0)];
         let mut ledger = FinalEvaluationLedger::default();
-        let report = ledger.run(&decision, &forecasts, &labels).unwrap();
+        let artifact = hash("artifact");
+        let forecast_dataset = hash("forecast-dataset");
+        let report = ledger
+            .run_with_evidence(
+                &decision,
+                &forecasts,
+                &labels,
+                artifact.clone(),
+                forecast_dataset.clone(),
+                EvidenceState::OutOfSample,
+            )
+            .unwrap();
         assert_eq!(report.mean_absolute_error, 1.0);
-        assert!(ledger.run(&decision, &forecasts, &labels).is_err());
+        assert_eq!(report.artifact_sha256, artifact);
+        assert_eq!(report.forecast_dataset_sha256, forecast_dataset);
+        assert!(
+            ledger
+                .run_with_evidence(
+                    &decision,
+                    &forecasts,
+                    &labels,
+                    artifact,
+                    forecast_dataset,
+                    EvidenceState::OutOfSample,
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -491,5 +777,168 @@ mod tests {
             compare_repeatability(&[1.0], &[1.0 + 1e-10], &[forecast.clone()], &[forecast]).is_ok()
         );
         assert!(compare_repeatability(&[1.0], &[1.1], &[], &[]).is_err());
+    }
+
+    #[test]
+    fn exact_binding_is_shared_by_every_trial_and_decision() {
+        let binding = hash("binding");
+        let mut experiment = ModelExperiment::ridge_with_binding(
+            hash("revision"),
+            hash("environment"),
+            hash("input"),
+            7,
+            binding.clone(),
+        )
+        .unwrap();
+        assert!(experiment.trials.iter().all(|trial| {
+            trial.binding_sha256 == binding
+                && trial.project_revision_sha256 == experiment.project_revision_sha256
+        }));
+        for trial in experiment.trials.clone() {
+            experiment
+                .complete_trial(&trial.trial_id, hash(&trial.trial_id), 1.0)
+                .unwrap();
+        }
+        let decision =
+            ParameterSelectionDecision::record(&experiment, &experiment.trials[1].trial_id)
+                .unwrap();
+        assert_eq!(decision.binding_sha256, binding);
+        assert_eq!(
+            decision.project_revision_sha256,
+            experiment.project_revision_sha256
+        );
+        assert_eq!(decision.seed, experiment.seed);
+    }
+
+    #[test]
+    fn terminal_trial_states_are_retained_with_diagnostics() {
+        for (index, status) in [
+            TrialStatus::Failed,
+            TrialStatus::Cancelled,
+            TrialStatus::Invalid,
+            TrialStatus::Unsupported,
+            TrialStatus::Superseded,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut experiment =
+                ModelExperiment::ridge(hash("revision"), hash("environment"), hash("input"), 7)
+                    .unwrap();
+            let trial_id = experiment.trials[0].trial_id.clone();
+            experiment
+                .fail_trial_with_diagnostic(
+                    &trial_id,
+                    hash(&format!("attempt-{index}")),
+                    status,
+                    "retained diagnostic",
+                )
+                .unwrap();
+            assert_eq!(experiment.trials[0].status, status);
+            assert_eq!(
+                experiment.trials[0].diagnostics,
+                vec!["retained diagnostic".to_string()]
+            );
+        }
+    }
+
+    #[test]
+    fn divergent_trial_is_retained_but_cannot_be_selected() {
+        let mut experiment =
+            ModelExperiment::ridge(hash("revision"), hash("environment"), hash("input"), 7)
+                .unwrap();
+        for (index, trial) in experiment.trials.clone().into_iter().enumerate() {
+            experiment
+                .complete_trial_with_repeatability(
+                    &trial.trial_id,
+                    hash(&trial.trial_id),
+                    index as f64,
+                    if index == 0 {
+                        RepeatabilityState::Divergent
+                    } else {
+                        RepeatabilityState::Verified
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            experiment.trials[0].repeatability_state,
+            RepeatabilityState::Divergent
+        );
+        assert!(
+            ParameterSelectionDecision::record(&experiment, &experiment.trials[1].trial_id)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn repeatability_rejects_non_finite_forecasts() {
+        let forecast = ForecastRow {
+            datetime: 1,
+            instrument: "AAA".into(),
+            value: Some(f64::NAN),
+            unavailable_reason: None,
+        };
+        assert!(compare_repeatability(&[], &[], &[forecast.clone()], &[forecast]).is_err());
+    }
+
+    #[test]
+    fn derived_experiment_preserves_overlapping_lineage_and_linked_final_evidence() {
+        let revision = hash("revision");
+        let environment = hash("environment");
+        let input = hash("input");
+        let binding = hash("binding");
+        let parent_decision = hash("parent-decision");
+        let experiment = ModelExperiment::ridge_with_binding_and_lineage(
+            revision,
+            environment,
+            input,
+            7,
+            binding,
+            Some(parent_decision),
+        )
+        .unwrap();
+        assert_eq!(
+            experiment.lineage_evidence_state,
+            EvidenceState::Overlapping
+        );
+        assert!(
+            experiment
+                .trials
+                .iter()
+                .all(|trial| trial.evidence_state == EvidenceState::Overlapping)
+        );
+        let mut experiment = experiment;
+        for trial in experiment.trials.clone() {
+            experiment
+                .complete_trial(&trial.trial_id, hash(&trial.trial_id), 1.0)
+                .unwrap();
+        }
+        let decision =
+            ParameterSelectionDecision::record(&experiment, &experiment.trials[1].trial_id)
+                .unwrap();
+        assert_eq!(decision.evidence_state, EvidenceState::Overlapping);
+        decision.validate().unwrap();
+
+        let forecasts = vec![ForecastRow {
+            datetime: 1,
+            instrument: "AAA".into(),
+            value: Some(2.0),
+            unavailable_reason: None,
+        }];
+        let labels = vec![(1, "AAA".into(), 3.0)];
+        let mut ledger = FinalEvaluationLedger::default();
+        let report = ledger
+            .run_with_evidence(
+                &decision,
+                &forecasts,
+                &labels,
+                hash("artifact"),
+                hash("forecast-dataset"),
+                EvidenceState::Overlapping,
+            )
+            .unwrap();
+        assert_eq!(report.evidence_state, EvidenceState::Overlapping);
+        report.validate().unwrap();
     }
 }

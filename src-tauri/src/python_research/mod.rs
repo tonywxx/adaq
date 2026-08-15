@@ -67,8 +67,9 @@ use adaq_python_research::{
     },
     sha256,
     tuning::{
-        FinalEvaluationLedger, FinalEvaluationReport, ModelExperiment, ParameterSelectionDecision,
-        RIDGE_REPEATABILITY_TOLERANCE, TrialStatus, compare_repeatability,
+        EvidenceState, FinalEvaluationLedger, FinalEvaluationReport, ModelExperiment,
+        ParameterSelectionDecision, RIDGE_REPEATABILITY_TOLERANCE, RepeatabilityState, TrialStatus,
+        compare_repeatability,
     },
 };
 use rand::RngCore;
@@ -169,6 +170,73 @@ impl ModelLabStore {
         } else {
             ModelLabDatabase::default()
         };
+        for experiment in database.experiments.values() {
+            experiment
+                .validate()
+                .map_err(|error| PythonResearchError(format!("model-lab-store-invalid:{error}")))?;
+        }
+        for (key, decision) in &database.decisions {
+            decision
+                .validate()
+                .map_err(|error| PythonResearchError(format!("model-lab-store-invalid:{error}")))?;
+            let user_id = key
+                .split_once(':')
+                .map(|(user_id, _)| user_id)
+                .ok_or_else(|| {
+                    PythonResearchError("model-lab-store-invalid:model-decision-key".into())
+                })?;
+            let experiment = database
+                .experiments
+                .get(&model_key(user_id, &decision.experiment_id))
+                .ok_or_else(|| {
+                    PythonResearchError("model-lab-store-invalid:model-decision-experiment".into())
+                })?;
+            let selected_trial = experiment
+                .trials
+                .iter()
+                .find(|trial| trial.trial_id == decision.selected_trial_id)
+                .ok_or_else(|| {
+                    PythonResearchError("model-lab-store-invalid:model-decision-trial".into())
+                })?;
+            if decision.binding_sha256 != experiment.binding_sha256
+                || decision.project_revision_sha256 != experiment.project_revision_sha256
+                || decision.environment_sha256 != experiment.environment_sha256
+                || decision.input_evidence_sha256 != experiment.input_evidence_sha256
+                || decision.seed != experiment.seed
+                || decision.evidence_state != experiment.lineage_evidence_state
+                || decision.selected_alpha.to_bits() != selected_trial.alpha.to_bits()
+            {
+                return Err(PythonResearchError(
+                    "model-lab-store-invalid:model-decision-binding".into(),
+                ));
+            }
+        }
+        for (key, report) in &database.final_reports {
+            report
+                .validate()
+                .map_err(|error| PythonResearchError(format!("model-lab-store-invalid:{error}")))?;
+            let user_id = key
+                .split_once(':')
+                .map(|(user_id, _)| user_id)
+                .ok_or_else(|| {
+                    PythonResearchError("model-lab-store-invalid:model-report-key".into())
+                })?;
+            if !database
+                .decisions
+                .contains_key(&model_key(user_id, &report.decision_id))
+            {
+                return Err(PythonResearchError(
+                    "model-lab-store-invalid:model-report-decision".into(),
+                ));
+            }
+        }
+        for run in database.runs.values() {
+            if run.binding_sha256.is_empty() || model_binding_sha256(run)? != run.binding_sha256 {
+                return Err(PythonResearchError(
+                    "model-lab-store-invalid:model-evidence-identity-binding-invalid".into(),
+                ));
+            }
+        }
         Ok(Self {
             path,
             database: Arc::new(Mutex::new(database)),
@@ -198,6 +266,11 @@ impl ModelLabStore {
             .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
         let key = model_key(user_id, &experiment.experiment_id);
         if let Some(existing) = database.experiments.get(&key) {
+            if existing != &experiment {
+                return Err(PythonResearchError(
+                    "model-experiment-identity-collision".into(),
+                ));
+            }
             return Ok(existing.clone());
         }
         database.experiments.insert(key, experiment.clone());
@@ -205,13 +278,14 @@ impl ModelLabStore {
         Ok(experiment)
     }
 
-    fn complete_trial(
+    fn complete_trial_with_repeatability(
         &self,
         user_id: &str,
         experiment_id: &str,
         trial_id: &str,
         attempt_id: String,
         selection_metric: f64,
+        repeatability_state: RepeatabilityState,
     ) -> Result<ModelExperiment, PythonResearchError> {
         let mut database = self
             .database
@@ -221,7 +295,12 @@ impl ModelLabStore {
             .experiments
             .get_mut(&model_key(user_id, experiment_id))
             .ok_or_else(|| PythonResearchError("model-experiment-not-found".into()))?;
-        experiment.complete_trial(trial_id, attempt_id, selection_metric)?;
+        experiment.complete_trial_with_repeatability(
+            trial_id,
+            attempt_id,
+            selection_metric,
+            repeatability_state,
+        )?;
         let result = experiment.clone();
         self.persist(&database)?;
         Ok(result)
@@ -277,7 +356,13 @@ impl ModelLabStore {
             ("snapshot".into(), demo.view.snapshot_id.clone()),
             ("universe".into(), demo.view.universe_id.clone()),
         ]);
-        if demo.artifact.artifact_sha256 != demo.view.artifact_sha256
+        if demo.view.binding_sha256.is_empty()
+            || model_binding_sha256(&demo.view)? != demo.view.binding_sha256
+            || (demo.view.repeatability_verified
+                && demo.view.repeatability_state != RepeatabilityState::Verified)
+            || (!demo.view.repeatability_verified
+                && demo.view.repeatability_state == RepeatabilityState::Verified)
+            || demo.artifact.artifact_sha256 != demo.view.artifact_sha256
             || demo.artifact.adapter_id != demo.view.adapter_id
             || demo.artifact.schema != demo.view.artifact_schema
             || demo.artifact.alpha.to_bits() != demo.view.alpha.to_bits()
@@ -405,9 +490,28 @@ impl ModelLabStore {
             .get(&model_key(user_id, experiment_id))
             .ok_or_else(|| PythonResearchError("model-experiment-not-found".into()))?;
         let decision = ParameterSelectionDecision::record(experiment, trial_id)?;
-        database
-            .decisions
-            .insert(model_key(user_id, &decision.decision_id), decision.clone());
+        let key = model_key(user_id, &decision.decision_id);
+        if let Some(existing) = database.decisions.get(&key) {
+            if existing != &decision {
+                return Err(PythonResearchError(
+                    "model-selection-decision-identity-collision".into(),
+                ));
+            }
+            return Ok(existing.clone());
+        }
+        let user_prefix = format!("{user_id}:");
+        if database.final_reports.iter().any(|(report_key, report)| {
+            report_key.starts_with(&user_prefix)
+                && database
+                    .decisions
+                    .get(&model_key(user_id, &report.decision_id))
+                    .is_some_and(|existing| existing.experiment_id == experiment_id)
+        }) {
+            return Err(PythonResearchError(
+                "model-selection-after-final-evaluation".into(),
+            ));
+        }
+        database.decisions.insert(key, decision.clone());
         self.persist(&database)?;
         Ok(decision)
     }
@@ -465,6 +569,18 @@ impl ModelLabStore {
         Ok(report)
     }
 
+    fn has_final(&self, user_id: &str, decision_id: &str) -> Result<bool, PythonResearchError> {
+        Ok(self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?
+            .final_reports
+            .iter()
+            .any(|(key, report)| {
+                key.starts_with(&format!("{user_id}:")) && report.decision_id == decision_id
+            }))
+    }
+
     fn reset_user(&self, user_id: &str) -> Result<(), PythonResearchError> {
         let mut database = self
             .database
@@ -512,6 +628,8 @@ pub struct ModelRunView {
     pub project_revision_sha256: String,
     pub environment_sha256: String,
     pub input_evidence_sha256: String,
+    #[serde(default)]
+    pub binding_sha256: String,
     pub factor_decision_hash: String,
     pub factor_promotion_protocol_hash: String,
     pub factor_dataset_id: String,
@@ -533,6 +651,12 @@ pub struct ModelRunView {
     pub test_labels_withheld: bool,
     pub repeatability_verified: bool,
     pub repeatability_tolerance: f64,
+    #[serde(default)]
+    pub repeatability_state: RepeatabilityState,
+    #[serde(default)]
+    pub evidence_state: EvidenceState,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
     pub windows: TutorialWindows,
     #[serde(default = "default_model_resource_policy")]
     pub resource_policy: HostResourcePolicy,
@@ -701,6 +825,36 @@ fn resource_policy_identity(
         &serde_json::to_vec(resource_policy)
             .map_err(|error| PythonResearchError(error.to_string()))?,
     ))
+}
+
+fn model_binding_sha256(view: &ModelRunView) -> Result<String, PythonResearchError> {
+    let value = serde_json::json!([
+        &view.adapter_id,
+        &view.project_revision_sha256,
+        &view.environment_sha256,
+        &view.input_evidence_sha256,
+        &view.factor_decision_hash,
+        &view.factor_promotion_protocol_hash,
+        &view.factor_dataset_id,
+        &view.feature_dataset_id,
+        &view.feature_plan_hash,
+        &view.snapshot_id,
+        &view.universe_id,
+        &view.factor_lookback,
+        &view.seed,
+        &view.input_slots,
+        &view.target_id,
+        &view.target_horizon_bars,
+        &view.forecast_contract,
+        &view.artifact_schema,
+        &view.numeric_representation,
+        &view.transformation_sha256,
+        &view.windows,
+        &view.resource_policy,
+    ]);
+    let bytes =
+        serde_json::to_vec(&value).map_err(|error| PythonResearchError(error.to_string()))?;
+    Ok(sha256(&bytes))
 }
 
 fn read_model_candidate(
@@ -1274,43 +1428,49 @@ fn demo_model_run_with_evidence(
         &input.universe_id,
         &forecasts,
     )?;
+    let mut view = ModelRunView {
+        attempt_id: String::new(),
+        adapter_id: adaq_python_research::model::RIDGE_ADAPTER_ID.into(),
+        alpha,
+        project_revision_sha256,
+        environment_sha256,
+        input_evidence_sha256,
+        binding_sha256: String::new(),
+        factor_decision_hash: input.decision_hash,
+        factor_promotion_protocol_hash: input.promotion_protocol_hash,
+        factor_dataset_id: input.factor_dataset_id,
+        feature_dataset_id: input.feature_dataset_id,
+        feature_plan_hash: input.feature_plan_hash,
+        snapshot_id: input.snapshot_id,
+        universe_id: input.universe_id,
+        factor_lookback: input.lookback,
+        seed: 7,
+        fixture_sha256: fixture.manifest.content_sha256,
+        artifact_sha256: artifact.artifact_sha256.clone(),
+        transformation_sha256: transformation.transformation_sha256.clone(),
+        forecast_sha256,
+        train_rows: train.rows.len(),
+        selection_rows: selection.rows.len(),
+        selection_metric: Some(selection_metric),
+        final_rows: test.rows.len(),
+        test_labels_withheld: test.labels.is_none(),
+        repeatability_verified: false,
+        repeatability_tolerance: RIDGE_REPEATABILITY_TOLERANCE,
+        repeatability_state: RepeatabilityState::Unverified,
+        evidence_state: EvidenceState::Unknown,
+        diagnostics: Vec::new(),
+        windows,
+        resource_policy,
+        input_slots: transformation.feature_names.clone(),
+        target_id: adaq_python_research::model::TARGET_ID.into(),
+        target_horizon_bars: TARGET_HORIZON_BARS as u32,
+        forecast_contract: adaq_python_research::model::FORECAST_CONTRACT.into(),
+        artifact_schema: adaq_python_research::model::LINEAR_MODEL_ARTIFACT_SCHEMA.into(),
+        numeric_representation: adaq_python_research::model::NUMERIC_REPRESENTATION.into(),
+    };
+    view.binding_sha256 = model_binding_sha256(&view)?;
     Ok(DemoModelRun {
-        view: ModelRunView {
-            attempt_id: String::new(),
-            adapter_id: adaq_python_research::model::RIDGE_ADAPTER_ID.into(),
-            alpha,
-            project_revision_sha256,
-            environment_sha256,
-            input_evidence_sha256,
-            factor_decision_hash: input.decision_hash,
-            factor_promotion_protocol_hash: input.promotion_protocol_hash,
-            factor_dataset_id: input.factor_dataset_id,
-            feature_dataset_id: input.feature_dataset_id,
-            feature_plan_hash: input.feature_plan_hash,
-            snapshot_id: input.snapshot_id,
-            universe_id: input.universe_id,
-            factor_lookback: input.lookback,
-            seed: 7,
-            fixture_sha256: fixture.manifest.content_sha256,
-            artifact_sha256: artifact.artifact_sha256.clone(),
-            transformation_sha256: transformation.transformation_sha256.clone(),
-            forecast_sha256,
-            train_rows: train.rows.len(),
-            selection_rows: selection.rows.len(),
-            selection_metric: Some(selection_metric),
-            final_rows: test.rows.len(),
-            test_labels_withheld: test.labels.is_none(),
-            repeatability_verified: false,
-            repeatability_tolerance: RIDGE_REPEATABILITY_TOLERANCE,
-            windows,
-            resource_policy,
-            input_slots: transformation.feature_names.clone(),
-            target_id: adaq_python_research::model::TARGET_ID.into(),
-            target_horizon_bars: TARGET_HORIZON_BARS as u32,
-            forecast_contract: adaq_python_research::model::FORECAST_CONTRACT.into(),
-            artifact_schema: adaq_python_research::model::LINEAR_MODEL_ARTIFACT_SCHEMA.into(),
-            numeric_representation: adaq_python_research::model::NUMERIC_REPRESENTATION.into(),
-        },
+        view,
         artifact,
         transformation,
         forecasts,
@@ -3183,11 +3343,14 @@ pub struct AttemptRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ModelExperimentRequest {
     pub user_id: String,
+    pub attempt_id: String,
     pub project_revision_sha256: String,
     pub environment_sha256: String,
     pub input_evidence_sha256: String,
     pub factor_decision_hash: String,
     pub seed: u64,
+    #[serde(default)]
+    pub derived_from_decision_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4468,11 +4631,8 @@ pub async fn model_demo_run(
             &input,
         )
         .map_err(map_error)?;
-        if first_artifact.to_bytes().map_err(map_error)?
-            != replay_artifact.to_bytes().map_err(map_error)?
-        {
-            return Err("model-artifact-replay-divergent".into());
-        }
+        let artifact_replay_divergent = first_artifact.to_bytes().map_err(map_error)?
+            != replay_artifact.to_bytes().map_err(map_error)?;
         discard_verification_artifact(&research_state.root, &replay_execution)
             .map_err(map_error)?;
         let mut run = demo_model_run_with_evidence(
@@ -4522,36 +4682,52 @@ pub async fn model_demo_run(
             Some(&factor_dataset),
         )
         .map_err(map_error)?;
-        compare_repeatability(
+        let repeatability_error = compare_repeatability(
             &run.artifact.coefficients,
             &replay.artifact.coefficients,
             &run.forecasts,
             &replay.forecasts,
         )
-        .map_err(map_error)?;
-        run.view.repeatability_verified = true;
+        .err();
+        if artifact_replay_divergent {
+            run.view
+                .diagnostics
+                .push("model-artifact-replay-divergent".into());
+        }
+        if let Some(error) = repeatability_error {
+            run.view.diagnostics.push(error.to_string());
+        }
+        run.view.repeatability_verified =
+            !artifact_replay_divergent && run.view.diagnostics.is_empty();
+        run.view.repeatability_state = if run.view.repeatability_verified {
+            RepeatabilityState::Verified
+        } else {
+            RepeatabilityState::Divergent
+        };
         run.view.attempt_id = attempt_id;
         let view = research_state
             .model_lab_store
             .save_demo_run(&request.user_id, &run)
             .map_err(map_error)?;
-        crate::forecast_signal_dataset::publish_python_model_signal_dataset(
-            &local_state,
-            &request.user_id,
-            &run.view.forecast_sha256,
-            &run.view.snapshot_id,
-            &run.view.feature_plan_hash,
-            &run.view.factor_dataset_id,
-            &run.view.feature_dataset_id,
-            &run.view.artifact_sha256,
-            &run.artifact.provenance_hashes,
-            &run.view.adapter_id,
-            run.view.alpha,
-            run.view.seed,
-            &run.view.forecast_contract,
-            &run.forecasts,
-        )
-        .map_err(|error| PythonResearchError(error).to_string())?;
+        if run.view.repeatability_verified {
+            crate::forecast_signal_dataset::publish_python_model_signal_dataset(
+                &local_state,
+                &request.user_id,
+                &run.view.forecast_sha256,
+                &run.view.snapshot_id,
+                &run.view.feature_plan_hash,
+                &run.view.factor_dataset_id,
+                &run.view.feature_dataset_id,
+                &run.view.artifact_sha256,
+                &run.artifact.provenance_hashes,
+                &run.view.adapter_id,
+                run.view.alpha,
+                run.view.seed,
+                &run.view.forecast_contract,
+                &run.forecasts,
+            )
+            .map_err(|error| PythonResearchError(error).to_string())?;
+        }
         Ok(view)
     })
     .await
@@ -5028,11 +5204,35 @@ pub async fn model_experiment_register(
         {
             return Err("model-input-evidence-hash-mismatch".into());
         }
-        let experiment = ModelExperiment::ridge(
+        let registered_run = store
+            .run(&request.user_id, &request.attempt_id)
+            .map_err(map_error)?;
+        if registered_run.project_revision_sha256 != request.project_revision_sha256
+            || registered_run.environment_sha256 != request.environment_sha256
+            || registered_run.input_evidence_sha256 != request.input_evidence_sha256
+            || registered_run.factor_decision_hash != request.factor_decision_hash
+            || registered_run.seed != request.seed
+        {
+            return Err("model-experiment-attempt-binding-invalid".into());
+        }
+        if let Some(parent_decision_id) = request.derived_from_decision_id.as_deref() {
+            store
+                .decision(&request.user_id, parent_decision_id)
+                .map_err(map_error)?;
+            if !store
+                .has_final(&request.user_id, parent_decision_id)
+                .map_err(map_error)?
+            {
+                return Err("model-lineage-parent-final-evaluation-required".into());
+            }
+        }
+        let experiment = ModelExperiment::ridge_with_binding_and_lineage(
             request.project_revision_sha256,
             request.environment_sha256,
             request.input_evidence_sha256,
             request.seed,
+            registered_run.binding_sha256,
+            request.derived_from_decision_id,
         )
         .map_err(map_error)?;
         store
@@ -5074,6 +5274,8 @@ pub async fn model_trial_complete(
         if run.input_evidence_sha256 != trial.input_evidence_sha256
             || run.project_revision_sha256 != trial.project_revision_sha256
             || run.environment_sha256 != trial.environment_sha256
+            || run.seed != experiment.seed
+            || (!trial.binding_sha256.is_empty() && run.binding_sha256 != trial.binding_sha256)
         {
             return Err("model-trial-result-binding-invalid".into());
         }
@@ -5085,13 +5287,19 @@ pub async fn model_trial_complete(
         {
             return Err("model-selection-metric-mismatch".into());
         }
+        let repeatability_state = if run.repeatability_verified {
+            RepeatabilityState::Verified
+        } else {
+            RepeatabilityState::Divergent
+        };
         store
-            .complete_trial(
+            .complete_trial_with_repeatability(
                 &request.user_id,
                 &request.experiment_id,
                 &request.trial_id,
                 request.attempt_id,
                 request.selection_metric,
+                repeatability_state,
             )
             .map_err(map_error)
     })
@@ -5128,9 +5336,14 @@ pub async fn model_trial_fail(
             adaq_python_research::runner::AttemptStatus::Failed => TrialStatus::Failed,
             _ => return Err("model-trial-failure-requires-terminal-attempt".into()),
         };
+        let diagnostic = attempt
+            .diagnostic
+            .clone()
+            .or(attempt.failure_code.clone())
+            .unwrap_or_default();
         let mut experiment = experiment;
         experiment
-            .fail_trial(&request.trial_id, request.attempt_id, status)
+            .fail_trial_with_diagnostic(&request.trial_id, request.attempt_id, status, diagnostic)
             .map_err(map_error)?;
         store
             .replace_experiment(&request.user_id, experiment)
@@ -5168,12 +5381,26 @@ pub async fn model_final_evaluate(
         .inner()
         .clone();
     tauri::async_runtime::spawn_blocking(move || {
+        if store
+            .has_final(&request.user_id, &request.decision_id)
+            .map_err(map_error)?
+        {
+            return Err("model-final-evaluation-already-recorded".into());
+        }
         let decision = store
             .decision(&request.user_id, &request.decision_id)
             .map_err(map_error)?;
         let experiment = store
             .experiment(&request.user_id, &decision.experiment_id)
             .map_err(map_error)?;
+        if decision.binding_sha256 != experiment.binding_sha256
+            || decision.project_revision_sha256 != experiment.project_revision_sha256
+            || decision.environment_sha256 != experiment.environment_sha256
+            || decision.input_evidence_sha256 != experiment.input_evidence_sha256
+            || decision.seed != experiment.seed
+        {
+            return Err("model-selection-decision-binding-invalid".into());
+        }
         let trial = experiment
             .trials
             .iter()
@@ -5189,6 +5416,12 @@ pub async fn model_final_evaluate(
         let prior_run = store
             .run(&request.user_id, source_attempt_id)
             .map_err(map_error)?;
+        if prior_run.seed != experiment.seed
+            || (!trial.binding_sha256.is_empty()
+                && prior_run.binding_sha256 != trial.binding_sha256)
+        {
+            return Err("model-selection-binding-mismatch".into());
+        }
         let factor_binding = local_state
             .factor
             .model_input_binding(&request.user_id, &prior_run.factor_decision_hash)?;
@@ -5225,7 +5458,7 @@ pub async fn model_final_evaluate(
                 MODEL_PROJECT_ID,
                 &trial.project_revision_sha256,
                 &trial.environment_sha256,
-                7,
+                experiment.seed,
                 Some(runner_input.clone()),
                 Some(&parameters),
             )
@@ -5236,7 +5469,7 @@ pub async fn model_final_evaluate(
                 MODEL_PROJECT_ID,
                 &trial.project_revision_sha256,
                 &trial.environment_sha256,
-                7,
+                experiment.seed,
                 Some(runner_input.clone()),
                 Some(&parameters),
             )
@@ -5302,7 +5535,7 @@ pub async fn model_final_evaluate(
                 MODEL_PROJECT_ID,
                 &trial.project_revision_sha256,
                 &trial.environment_sha256,
-                7,
+                experiment.seed,
                 Some(prediction_input),
                 Some(&parameters),
             )
@@ -5338,7 +5571,11 @@ pub async fn model_final_evaluate(
         )
         .map_err(map_error)?;
         run.view.repeatability_verified = true;
+        run.view.repeatability_state = RepeatabilityState::Verified;
         run.view.attempt_id = attempt_id;
+        if run.view.binding_sha256 != trial.binding_sha256 {
+            return Err("model-final-binding-mismatch".into());
+        }
         store
             .save_demo_run(&request.user_id, &run)
             .map_err(map_error)?;
@@ -5359,22 +5596,28 @@ pub async fn model_final_evaluate(
             &run.forecasts,
         )
         .map_err(|error| PythonResearchError(error).to_string())?;
-        let final_end = evidence
-            .fixture
-            .sessions
-            .last()
-            .copied()
-            .unwrap_or_default()
-            - TARGET_HORIZON_BARS as u32;
+        let final_start = run.view.windows.final_start as i64;
+        let final_end = run.view.windows.final_end - TARGET_HORIZON_BARS as u32;
         let forecasts = run
             .forecasts
             .iter()
-            .filter(|row| row.datetime as u32 <= final_end)
+            .filter(|row| {
+                row.datetime >= final_start
+                    && row.datetime as u32 <= final_end
+                    && row.value.is_some()
+            })
             .cloned()
             .collect::<Vec<_>>();
         let mut ledger = FinalEvaluationLedger::default();
         let report = ledger
-            .run(&decision, &forecasts, &run.final_labels)
+            .run_with_evidence(
+                &decision,
+                &forecasts,
+                &run.final_labels,
+                &run.artifact.artifact_sha256,
+                &run.view.forecast_sha256,
+                EvidenceState::OutOfSample,
+            )
             .map_err(map_error)?;
         store
             .save_final(&request.user_id, report)
@@ -6074,6 +6317,60 @@ mod tests {
             adaq_python_research::model::FORECAST_CONTRACT
         );
         drop(database);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn model_selection_is_closed_after_final_evaluation() {
+        let path = std::env::temp_dir().join(format!(
+            "adaq-model-selection-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let store = ModelLabStore::open(&path).unwrap();
+        let mut experiment = ModelExperiment::ridge(
+            sha256(b"revision"),
+            sha256(b"environment"),
+            sha256(b"input"),
+            7,
+        )
+        .unwrap();
+        for trial in experiment.trials.clone() {
+            experiment
+                .complete_trial(&trial.trial_id, sha256(trial.trial_id.as_bytes()), 1.0)
+                .unwrap();
+        }
+        let experiment_id = experiment.experiment_id.clone();
+        let first_trial_id = experiment.trials[0].trial_id.clone();
+        let second_trial_id = experiment.trials[1].trial_id.clone();
+        store.register("user-a", experiment).unwrap();
+        let decision = store
+            .select("user-a", &experiment_id, &first_trial_id)
+            .unwrap();
+        let forecasts = vec![adaq_python_research::model::ForecastRow {
+            datetime: 1,
+            instrument: "AAA".into(),
+            value: Some(2.0),
+            unavailable_reason: None,
+        }];
+        let labels = vec![(1, "AAA".into(), 3.0)];
+        let report = FinalEvaluationLedger::default()
+            .run_with_evidence(
+                &decision,
+                &forecasts,
+                &labels,
+                sha256(b"artifact"),
+                sha256(b"forecast-dataset"),
+                EvidenceState::OutOfSample,
+            )
+            .unwrap();
+        store.save_final("user-a", report).unwrap();
+        assert_eq!(
+            store
+                .select("user-a", &experiment_id, &second_trial_id)
+                .unwrap_err()
+                .to_string(),
+            "model-selection-after-final-evaluation"
+        );
         std::fs::remove_file(path).unwrap();
     }
 

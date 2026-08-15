@@ -1023,6 +1023,7 @@ const english = {
 			runDefault: "Run α=1 demo",
 			registerGrid: "Register α grid",
 			completeTrial: "Complete trial",
+			retainFailure: "Retain failure",
 			select: "Record selection",
 			finalEvaluate: "Run final evaluation",
 			synthetic: "Synthetic Demonstration",
@@ -1034,6 +1035,20 @@ const english = {
 			chooseFactorDecision: "Choose an exact positive Factor Decision",
 			factorDecisionRequired:
 				"Select an exact Research Validated or Component Eligible Factor Decision first.",
+			bindingChanged:
+				"The frozen Model binding changed; rerun the demo before registering this grid.",
+			binding: "Exact binding {{binding}}",
+			lineage: "Evidence {{state}} · Parent decision {{parent}}",
+			evidence: "Evidence {{state}}",
+			repeatabilityState: "Repeatability {{state}}",
+			trial: "Trial {{trial}}",
+			selectionBlocked:
+				"Selection requires all three alpha trials to be completed, repeatable, and non-final evidence.",
+			diagnostics: "Diagnostic: {{value}}",
+			decisionIdentity:
+				"Binding {{binding}} · Revision {{revision}} · Environment {{environment}} · Input {{input}} · Seed {{seed}}",
+			reportEvidence:
+				"Evidence {{state}} · Artifact {{artifact}} · Evaluated forecast {{forecast}} · Forecast dataset {{dataset}}",
 			repeatable: "Exact coefficient and Forecast replay within tolerance",
 			repeatabilityFailed: "Repeatability failed; qualification is blocked.",
 			freezeAndPrepareRequired:
@@ -1042,7 +1057,7 @@ const english = {
 			contract:
 				"Target {{target}} · Slots {{slots}} · Transform {{transformation}} · Artifact {{schema}} · Numeric {{numeric}} · Forecast {{contract}}",
 			provenance:
-				"Revision {{revision}} · Environment {{environment}} · Snapshot {{snapshot}} · Universe {{universe}} · Policy {{resourcePolicy}}",
+				"Revision {{revision}} · Environment {{environment}} · Snapshot {{snapshot}} · Universe {{universe}} · Seed {{seed}} · Policy {{resourcePolicy}}",
 			attempts: "Model Attempts",
 			noAttempts: "No Model Attempts yet.",
 			decision: "User selected α={{alpha}}",
@@ -1875,6 +1890,7 @@ const simplifiedChinese = {
 			runDefault: "运行 α=1 演示",
 			registerGrid: "注册 α 网格",
 			completeTrial: "完成 Trial",
+			retainFailure: "保留失败",
 			select: "记录选择",
 			finalEvaluate: "运行最终评估",
 			synthetic: "合成演示",
@@ -1886,6 +1902,19 @@ const simplifiedChinese = {
 			chooseFactorDecision: "选择精确的正向因子决定",
 			factorDecisionRequired:
 				"请先选择精确的 Research Validated 或 Component Eligible 因子决定。",
+			bindingChanged: "冻结的 Model 绑定已变化；请重新运行演示后再注册此网格。",
+			binding: "精确绑定 {{binding}}",
+			lineage: "Evidence {{state}} · Parent Decision {{parent}}",
+			evidence: "Evidence {{state}}",
+			repeatabilityState: "Repeatability {{state}}",
+			trial: "Trial {{trial}}",
+			selectionBlocked:
+				"只有三个 alpha Trial 都已完成、可重放且不是最终 Evidence 后才能选择。",
+			diagnostics: "诊断：{{value}}",
+			decisionIdentity:
+				"绑定 {{binding}} · Revision {{revision}} · Environment {{environment}} · Input {{input}} · Seed {{seed}}",
+			reportEvidence:
+				"Evidence {{state}} · Artifact {{artifact}} · 已评估 Forecast {{forecast}} · Forecast Dataset {{dataset}}",
 			repeatable: "系数和 Forecast 在容差内精确重放",
 			repeatabilityFailed: "重放不一致；资格认定已阻止。",
 			freezeAndPrepareRequired:
@@ -1894,7 +1923,7 @@ const simplifiedChinese = {
 			contract:
 				"Target {{target}} · Slots {{slots}} · Transform {{transformation}} · Artifact {{schema}} · Numeric {{numeric}} · Forecast {{contract}}",
 			provenance:
-				"Revision {{revision}} · Environment {{environment}} · Snapshot {{snapshot}} · Universe {{universe}} · Policy {{resourcePolicy}}",
+				"Revision {{revision}} · Environment {{environment}} · Snapshot {{snapshot}} · Universe {{universe}} · Seed {{seed}} · Policy {{resourcePolicy}}",
 			attempts: "模型 Attempt",
 			noAttempts: "尚无模型 Attempt。",
 			decision: "用户选择 α={{alpha}}",
