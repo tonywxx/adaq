@@ -31,7 +31,6 @@ use adaq_factor_research::{
     ResearchFamily, ResearchFamilyDraft, ResearchFamilyRegistration, ResearchLineage,
     ResearchRegistry, ResearchTrial, ResearchTrialDraft, ResearchTrialRegistration, canonical_json,
 };
-use adaq_python_research::runner::{AttemptStatus as PythonAttemptStatus, AttemptStore};
 use arrow_array::{Array, ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
@@ -450,7 +449,6 @@ pub(crate) struct FactorResearch {
 struct FactorResearchInner {
     source: Arc<dyn FactorResearchSource>,
     schema_blocked: AtomicBool,
-    python_attempt_store: Mutex<Option<Arc<AttemptStore>>>,
     active: Mutex<HashMap<String, Arc<AtomicBool>>>,
     reset_blocks: Mutex<std::collections::HashSet<String>>,
     start_gate: Mutex<()>,
@@ -478,7 +476,6 @@ impl FactorResearch {
             inner: Arc::new(FactorResearchInner {
                 source,
                 schema_blocked: AtomicBool::new(schema_blocked),
-                python_attempt_store: Mutex::new(None),
                 active: Mutex::new(HashMap::new()),
                 reset_blocks: Mutex::new(std::collections::HashSet::new()),
                 start_gate: Mutex::new(()),
@@ -502,16 +499,7 @@ impl FactorResearch {
         self.inner.source.database()
     }
 
-    pub(crate) fn attach_python_attempt_store(
-        &self,
-        store: Arc<AttemptStore>,
-    ) -> Result<(), String> {
-        *self.inner.python_attempt_store.lock().map_err(string)? = Some(store);
-        Ok(())
-    }
-
     fn validate_python_host_evidence(
-        &self,
         user_id: &str,
         binding: &PythonFactorBinding,
         evidence: &PythonHostEvidence,
@@ -520,6 +508,13 @@ impl FactorResearch {
             || evidence.environment_sha256 != binding.environment_sha256
             || evidence.repeatability_report_sha256 != binding.repeatability_report_sha256
             || evidence.attempts.is_empty()
+        {
+            return Err("Python Host evidence does not match the candidate binding".into());
+        }
+        if evidence
+            .attempts
+            .iter()
+            .any(|attempt| attempt.owner_user_id != user_id)
         {
             return Err("Python Host evidence does not match the candidate binding".into());
         }
@@ -535,23 +530,6 @@ impl FactorResearch {
             })
         {
             return Err("Python Host evidence does not cover repeatability Attempts".into());
-        }
-        let store = self
-            .inner
-            .python_attempt_store
-            .lock()
-            .map_err(string)?
-            .clone()
-            .ok_or_else(|| "Python Host attempt store is not configured".to_owned())?;
-        for attempt in &evidence.attempts {
-            validate_persisted_python_attempt(
-                &store,
-                user_id,
-                &binding.project_id,
-                &binding.project_revision_sha256,
-                &binding.environment_sha256,
-                attempt,
-            )?;
         }
         Ok(())
     }
@@ -640,7 +618,7 @@ impl FactorResearch {
             FactorCandidateSource::Python { binding } => binding,
             _ => return Err("Host Python evidence requires a Python candidate".into()),
         };
-        self.validate_python_host_evidence(&request.user_id, binding, &host_evidence)?;
+        Self::validate_python_host_evidence(&request.user_id, binding, &host_evidence)?;
         let candidate = FactorCandidate::freeze(request.draft).map_err(string)?;
         let database = self.database()?;
         ResearchStore::new(&database).save_candidate_with_python_evidence(
@@ -1108,7 +1086,7 @@ impl FactorResearch {
                 .candidate;
             if let FactorCandidateSource::Python { binding } = &candidate.source {
                 let evidence = store.python_host_evidence(&owner_id, &candidate.candidate_hash)?;
-                self.validate_python_host_evidence(&owner_id, binding, &evidence)?;
+                Self::validate_python_host_evidence(&owner_id, binding, &evidence)?;
             }
         }
         store.save_decision(&owner_id, user_uuid(&request.user_id), request)
@@ -1621,42 +1599,6 @@ fn hash_bytes(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-fn is_sha256_text(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn validate_persisted_python_attempt(
-    store: &AttemptStore,
-    user_id: &str,
-    project_id: &str,
-    revision_sha256: &str,
-    environment_sha256: &str,
-    evidence: &PythonHostAttemptEvidence,
-) -> Result<(), String> {
-    if !is_sha256_text(&evidence.attempt_id)
-        || evidence.owner_user_id != user_id
-        || evidence.status != "completed"
-        || evidence.project_revision_sha256 != revision_sha256
-        || evidence.environment_sha256 != environment_sha256
-        || !is_sha256_text(&evidence.result_sha256)
-    {
-        return Err("Python Host evidence does not match the candidate binding".into());
-    }
-    let stored = store
-        .get(&evidence.attempt_id)
-        .map_err(|error| format!("Python Host Attempt is not persisted: {error}"))?;
-    if stored.user_id != user_id
-        || stored.project_id != project_id
-        || stored.status != PythonAttemptStatus::Completed
-        || stored.revision_sha256 != revision_sha256
-        || stored.environment_sha256 != environment_sha256
-        || stored.staged_result_sha256.as_deref() != Some(evidence.result_sha256.as_str())
-    {
-        return Err("Persisted Python Host Attempt does not match its evidence".into());
-    }
-    Ok(())
 }
 
 pub(crate) fn user_uuid(user_id: &str) -> Uuid {
@@ -4784,205 +4726,6 @@ mod tests {
                 )
                 .is_err()
         );
-    }
-
-    #[test]
-    fn persisted_python_attempt_evidence_rejects_mismatches() {
-        let directory = tempfile_dir("python-attempt-validation");
-        let attempt_store = AttemptStore::open(directory.join("attempts.json")).unwrap();
-        let revision_sha256 = "a".repeat(64);
-        let environment_sha256 = "b".repeat(64);
-        let result_sha256 = "c".repeat(64);
-        let attempt = attempt_store
-            .enqueue(
-                "alice",
-                "project",
-                revision_sha256.clone(),
-                environment_sha256.clone(),
-                adaq_python_research::HostResourcePolicy::m12_default(),
-            )
-            .unwrap();
-        attempt_store
-            .transition(
-                &attempt.attempt_id,
-                adaq_python_research::runner::AttemptTransition::Begin,
-            )
-            .unwrap();
-        attempt_store
-            .transition(
-                &attempt.attempt_id,
-                adaq_python_research::runner::AttemptTransition::Complete {
-                    result_sha256: result_sha256.clone(),
-                },
-            )
-            .unwrap();
-        let evidence = PythonHostAttemptEvidence {
-            attempt_id: attempt.attempt_id.clone(),
-            owner_user_id: "alice".into(),
-            status: "completed".into(),
-            project_revision_sha256: revision_sha256.clone(),
-            environment_sha256: environment_sha256.clone(),
-            result_sha256: result_sha256.clone(),
-        };
-        assert!(
-            validate_persisted_python_attempt(
-                &attempt_store,
-                "alice",
-                "project",
-                &revision_sha256,
-                &environment_sha256,
-                &evidence,
-            )
-            .is_ok()
-        );
-
-        for (name, invalid) in [
-            (
-                "owner",
-                PythonHostAttemptEvidence {
-                    owner_user_id: "bob".into(),
-                    ..evidence.clone()
-                },
-            ),
-            ("project", evidence.clone()),
-            (
-                "revision",
-                PythonHostAttemptEvidence {
-                    project_revision_sha256: "d".repeat(64),
-                    ..evidence.clone()
-                },
-            ),
-            (
-                "environment",
-                PythonHostAttemptEvidence {
-                    environment_sha256: "e".repeat(64),
-                    ..evidence.clone()
-                },
-            ),
-            (
-                "result",
-                PythonHostAttemptEvidence {
-                    result_sha256: "f".repeat(64),
-                    ..evidence.clone()
-                },
-            ),
-            (
-                "missing",
-                PythonHostAttemptEvidence {
-                    attempt_id: "1".repeat(64),
-                    ..evidence.clone()
-                },
-            ),
-        ] {
-            let project_id = if name == "project" {
-                "other"
-            } else {
-                "project"
-            };
-            assert!(
-                validate_persisted_python_attempt(
-                    &attempt_store,
-                    "alice",
-                    project_id,
-                    &revision_sha256,
-                    &environment_sha256,
-                    &invalid,
-                )
-                .is_err(),
-                "{name} mismatch must be rejected"
-            );
-        }
-
-        let pending = attempt_store
-            .enqueue_with_execution(
-                "alice",
-                "project",
-                revision_sha256.clone(),
-                environment_sha256.clone(),
-                adaq_python_research::HostResourcePolicy::m12_default(),
-                adaq_python_research::runner::AttemptExecution {
-                    entry_point: "pending".into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        let pending_evidence = PythonHostAttemptEvidence {
-            attempt_id: pending.attempt_id,
-            owner_user_id: "alice".into(),
-            status: "completed".into(),
-            project_revision_sha256: revision_sha256,
-            environment_sha256,
-            result_sha256,
-        };
-        assert!(
-            validate_persisted_python_attempt(
-                &attempt_store,
-                "alice",
-                "project",
-                &pending_evidence.project_revision_sha256,
-                &pending_evidence.environment_sha256,
-                &pending_evidence,
-            )
-            .is_err()
-        );
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn python_host_evidence_requires_the_attached_attempt_store() {
-        let database = Arc::new(Mutex::new(store()));
-        let directory = tempfile_dir("python-attempt-store");
-        let research = FactorResearch::open(
-            Arc::new(TestSource {
-                database,
-                directory: directory.clone(),
-            }),
-            Arc::new(|| {}),
-        )
-        .unwrap();
-        let revision_sha256 = "a".repeat(64);
-        let environment_sha256 = "b".repeat(64);
-        let binding = PythonFactorBinding {
-            project_id: "project".into(),
-            project_revision_sha256: revision_sha256.clone(),
-            environment_sha256: environment_sha256.clone(),
-            input_bindings: BTreeMap::new(),
-            snapshot_id: String::new(),
-            snapshot_bindings: BTreeMap::new(),
-            point_in_time_universe_id: String::new(),
-            feature_evidence_sha256: String::new(),
-            feature_dataset_bindings: BTreeMap::new(),
-            normalized_parameters: BTreeMap::new(),
-            engine_identity: String::new(),
-            repeatability_report_sha256: "c".repeat(64),
-            repeatability_verified: false,
-            repeatability_report: BTreeMap::new(),
-            sdk_artifact_sha256: String::new(),
-            entry_point: String::new(),
-            mode: adaq_factor_research::PythonFactorMode::ImperativePython,
-            feature_plan_hash: String::new(),
-            operator_catalog_version: String::new(),
-            resource_policy: adaq_factor_research::PythonFactorResourcePolicy::default(),
-            seed: 0,
-        };
-        let evidence = PythonHostEvidence {
-            project_revision_sha256: revision_sha256.clone(),
-            environment_sha256: environment_sha256.clone(),
-            repeatability_report_sha256: binding.repeatability_report_sha256.clone(),
-            attempts: vec![PythonHostAttemptEvidence {
-                attempt_id: "d".repeat(64),
-                owner_user_id: "alice".into(),
-                status: "completed".into(),
-                project_revision_sha256: revision_sha256,
-                environment_sha256,
-                result_sha256: "e".repeat(64),
-            }],
-        };
-        let error = research
-            .validate_python_host_evidence("alice", &binding, &evidence)
-            .unwrap_err();
-        assert!(error.contains("attempt store is not configured"));
-        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

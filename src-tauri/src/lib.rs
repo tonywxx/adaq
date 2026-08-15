@@ -2492,10 +2492,6 @@ pub fn run() {
             let python_research =
                 Arc::new(python_research::PythonResearchState::open(&app_data_dir));
             local_research
-                .factor
-                .attach_python_attempt_store(python_research.attempt_store.clone())
-                .map_err(std::io::Error::other)?;
-            local_research
                 .features
                 .attach_python(python_research.clone());
             python_research.attach_queue(local_research.features.queue_notifier());

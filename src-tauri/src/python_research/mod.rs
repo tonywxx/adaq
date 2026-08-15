@@ -54,9 +54,9 @@ use adaq_python_research::{
         validate_model_runner_payload,
     },
     runner::{
-        AttemptExecution, AttemptStore, AttemptTransition, Handshake, PrivateChildEnvironment,
-        ResearchAttempt, RunnerExecution, RunnerLaunchSpec, StagedArtifact, TrustStore,
-        read_staged_artifact, run_process,
+        AttemptExecution, AttemptStatus as PythonAttemptStatus, AttemptStore, AttemptTransition,
+        Handshake, PrivateChildEnvironment, ResearchAttempt, RunnerExecution, RunnerLaunchSpec,
+        StagedArtifact, TrustStore, read_staged_artifact, run_process,
     },
     runtime::{
         DependencyIntent, EnvironmentLock, EnvironmentRecord, EnvironmentStore, PreparationAttempt,
@@ -79,7 +79,7 @@ use tauri::{Manager, State};
 use crate::factor_research::{
     FactorDatasetInput, FactorDecisionSaveRequest, FactorEvaluationStartRequest,
     FactorGridFamilyRegisterRequest, FactorPolicySaveRequest, FactorTrialUpdateRequest,
-    PythonHostAttemptEvidence,
+    PythonHostAttemptEvidence, PythonHostEvidence,
 };
 use crate::features::{
     FeatureAttemptRequest, FeatureMaterializationStartRequest, PythonQueueItem, PythonQueueWork,
@@ -3878,6 +3878,85 @@ fn completed_host_attempt_evidence(
     })
 }
 
+fn validate_persisted_python_attempt(
+    store: &AttemptStore,
+    user_id: &str,
+    project_id: &str,
+    revision_sha256: &str,
+    environment_sha256: &str,
+    evidence: &PythonHostAttemptEvidence,
+) -> Result<(), PythonResearchError> {
+    if !is_sha256_text(&evidence.attempt_id)
+        || evidence.owner_user_id != user_id
+        || evidence.status != "completed"
+        || evidence.project_revision_sha256 != revision_sha256
+        || evidence.environment_sha256 != environment_sha256
+        || !is_sha256_text(&evidence.result_sha256)
+    {
+        return Err(PythonResearchError(
+            "Python Host evidence does not match the candidate binding".into(),
+        ));
+    }
+    let stored = store.get(&evidence.attempt_id).map_err(|error| {
+        PythonResearchError(format!("Python Host Attempt is not persisted: {error}"))
+    })?;
+    if stored.user_id != user_id
+        || stored.project_id != project_id
+        || stored.status != PythonAttemptStatus::Completed
+        || stored.revision_sha256 != revision_sha256
+        || stored.environment_sha256 != environment_sha256
+        || stored.staged_result_sha256.as_deref() != Some(evidence.result_sha256.as_str())
+    {
+        return Err(PythonResearchError(
+            "Persisted Python Host Attempt does not match its evidence".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_python_host_evidence(
+    store: &AttemptStore,
+    user_id: &str,
+    binding: &PythonFactorBinding,
+    evidence: &PythonHostEvidence,
+) -> Result<(), PythonResearchError> {
+    if evidence.project_revision_sha256 != binding.project_revision_sha256
+        || evidence.environment_sha256 != binding.environment_sha256
+        || evidence.repeatability_report_sha256 != binding.repeatability_report_sha256
+        || evidence.attempts.is_empty()
+    {
+        return Err(PythonResearchError(
+            "Python Host evidence does not match the candidate binding".into(),
+        ));
+    }
+    let attempt_ids = evidence
+        .attempts
+        .iter()
+        .map(|attempt| attempt.attempt_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if attempt_ids.len() != evidence.attempts.len()
+        || binding.repeatability_report.values().any(|report| {
+            !attempt_ids.contains(report.first_attempt_id.as_str())
+                || !attempt_ids.contains(report.replay_attempt_id.as_str())
+        })
+    {
+        return Err(PythonResearchError(
+            "Python Host evidence does not cover repeatability Attempts".into(),
+        ));
+    }
+    for attempt in &evidence.attempts {
+        validate_persisted_python_attempt(
+            store,
+            user_id,
+            &binding.project_id,
+            &binding.project_revision_sha256,
+            &binding.environment_sha256,
+            attempt,
+        )?;
+    }
+    Ok(())
+}
+
 fn runner_input_sha256(input: &serde_json::Value) -> Result<String, PythonResearchError> {
     if let Ok(contract) = serde_json::from_value::<PythonFactorInput>(input.clone()) {
         let mut rows = contract
@@ -5016,6 +5095,23 @@ pub async fn python_factor_demo(
                 },
             },
         };
+        let host_evidence = PythonHostEvidence {
+            project_revision_sha256: request.project_revision_sha256.clone(),
+            environment_sha256: request.environment_sha256.clone(),
+            repeatability_report_sha256: repeatability_report_sha256.clone(),
+            attempts: host_attempts,
+        };
+        let binding = match &candidate_draft.source {
+            FactorCandidateSource::Python { binding } => binding,
+            _ => unreachable!("python factor demo candidate must use a Python binding"),
+        };
+        validate_python_host_evidence(
+            research_state.attempt_store.as_ref(),
+            &request.user_id,
+            binding,
+            &host_evidence,
+        )
+        .map_err(map_error)?;
         let candidate_view = local_state
             .factor
             .publish_python_candidate(
@@ -5028,12 +5124,7 @@ pub async fn python_factor_demo(
                         tags: vec!["python".into(), "momentum".into(), "synthetic".into()],
                     },
                 },
-                crate::factor_research::PythonHostEvidence {
-                    project_revision_sha256: request.project_revision_sha256.clone(),
-                    environment_sha256: request.environment_sha256.clone(),
-                    repeatability_report_sha256: repeatability_report_sha256.clone(),
-                    attempts: host_attempts,
-                },
+                host_evidence,
             )
             .map_err(|error| error.to_string())?;
         let evidence = run_factor_evidence(
@@ -6160,6 +6251,201 @@ mod tests {
     }
 
     #[test]
+    fn persisted_python_attempt_evidence_rejects_mismatches_in_control_plane() {
+        let directory = std::env::temp_dir().join(format!(
+            "adaq-python-attempt-validation-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let attempt_store = AttemptStore::open(directory.join("attempts.json")).unwrap();
+        let revision_sha256 = "a".repeat(64);
+        let environment_sha256 = "b".repeat(64);
+        let result_sha256 = "c".repeat(64);
+        let attempt = attempt_store
+            .enqueue(
+                "alice",
+                "project",
+                revision_sha256.clone(),
+                environment_sha256.clone(),
+                HostResourcePolicy::m12_default(),
+            )
+            .unwrap();
+        attempt_store
+            .transition(&attempt.attempt_id, AttemptTransition::Begin)
+            .unwrap();
+        attempt_store
+            .transition(
+                &attempt.attempt_id,
+                AttemptTransition::Complete {
+                    result_sha256: result_sha256.clone(),
+                },
+            )
+            .unwrap();
+        let evidence = PythonHostAttemptEvidence {
+            attempt_id: attempt.attempt_id.clone(),
+            owner_user_id: "alice".into(),
+            status: "completed".into(),
+            project_revision_sha256: revision_sha256.clone(),
+            environment_sha256: environment_sha256.clone(),
+            result_sha256: result_sha256.clone(),
+        };
+        assert!(
+            validate_persisted_python_attempt(
+                &attempt_store,
+                "alice",
+                "project",
+                &revision_sha256,
+                &environment_sha256,
+                &evidence,
+            )
+            .is_ok()
+        );
+
+        for (name, invalid) in [
+            (
+                "owner",
+                PythonHostAttemptEvidence {
+                    owner_user_id: "bob".into(),
+                    ..evidence.clone()
+                },
+            ),
+            ("project", evidence.clone()),
+            (
+                "revision",
+                PythonHostAttemptEvidence {
+                    project_revision_sha256: "d".repeat(64),
+                    ..evidence.clone()
+                },
+            ),
+            (
+                "environment",
+                PythonHostAttemptEvidence {
+                    environment_sha256: "e".repeat(64),
+                    ..evidence.clone()
+                },
+            ),
+            (
+                "result",
+                PythonHostAttemptEvidence {
+                    result_sha256: "f".repeat(64),
+                    ..evidence.clone()
+                },
+            ),
+            (
+                "missing",
+                PythonHostAttemptEvidence {
+                    attempt_id: "1".repeat(64),
+                    ..evidence.clone()
+                },
+            ),
+        ] {
+            let project_id = if name == "project" {
+                "other"
+            } else {
+                "project"
+            };
+            assert!(
+                validate_persisted_python_attempt(
+                    &attempt_store,
+                    "alice",
+                    project_id,
+                    &revision_sha256,
+                    &environment_sha256,
+                    &invalid,
+                )
+                .is_err(),
+                "{name} mismatch must be rejected"
+            );
+        }
+
+        let pending = attempt_store
+            .enqueue_with_execution(
+                "alice",
+                "project",
+                revision_sha256.clone(),
+                environment_sha256.clone(),
+                HostResourcePolicy::m12_default(),
+                AttemptExecution {
+                    entry_point: "pending".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pending_evidence = PythonHostAttemptEvidence {
+            attempt_id: pending.attempt_id,
+            owner_user_id: "alice".into(),
+            status: "completed".into(),
+            project_revision_sha256: revision_sha256,
+            environment_sha256,
+            result_sha256,
+        };
+        assert!(
+            validate_persisted_python_attempt(
+                &attempt_store,
+                "alice",
+                "project",
+                &pending_evidence.project_revision_sha256,
+                &pending_evidence.environment_sha256,
+                &pending_evidence,
+            )
+            .is_err()
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn python_host_evidence_validation_requires_persisted_attempts() {
+        let directory = std::env::temp_dir().join(format!(
+            "adaq-python-host-evidence-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let attempt_store = AttemptStore::open(directory.join("attempts.json")).unwrap();
+        let revision_sha256 = "a".repeat(64);
+        let environment_sha256 = "b".repeat(64);
+        let binding = PythonFactorBinding {
+            project_id: "project".into(),
+            project_revision_sha256: revision_sha256.clone(),
+            environment_sha256: environment_sha256.clone(),
+            input_bindings: BTreeMap::new(),
+            snapshot_id: String::new(),
+            snapshot_bindings: BTreeMap::new(),
+            point_in_time_universe_id: String::new(),
+            feature_evidence_sha256: String::new(),
+            feature_dataset_bindings: BTreeMap::new(),
+            normalized_parameters: BTreeMap::new(),
+            engine_identity: String::new(),
+            repeatability_report_sha256: "c".repeat(64),
+            repeatability_verified: false,
+            repeatability_report: BTreeMap::new(),
+            sdk_artifact_sha256: String::new(),
+            entry_point: String::new(),
+            mode: PythonFactorMode::ImperativePython,
+            feature_plan_hash: String::new(),
+            operator_catalog_version: String::new(),
+            resource_policy: PythonFactorResourcePolicy::default(),
+            seed: 0,
+        };
+        let evidence = PythonHostEvidence {
+            project_revision_sha256: revision_sha256.clone(),
+            environment_sha256: environment_sha256.clone(),
+            repeatability_report_sha256: binding.repeatability_report_sha256.clone(),
+            attempts: vec![PythonHostAttemptEvidence {
+                attempt_id: "d".repeat(64),
+                owner_user_id: "alice".into(),
+                status: "completed".into(),
+                project_revision_sha256: revision_sha256,
+                environment_sha256,
+                result_sha256: "e".repeat(64),
+            }],
+        };
+        let error = validate_python_host_evidence(&attempt_store, "alice", &binding, &evidence)
+            .unwrap_err();
+        assert!(error.0.contains("not persisted"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn decimal_parameters_are_normalized_before_runner_start() {
         assert_eq!(normalize_decimal(" -001.2300 ").unwrap(), "-1.23");
         assert_eq!(normalize_decimal("+000").unwrap(), "0");
@@ -6484,10 +6770,6 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let local = crate::local_research::LocalResearchState::open(&directory).unwrap();
         let python = Arc::new(PythonResearchState::open(&directory));
-        local
-            .factor
-            .attach_python_attempt_store(python.attempt_store.clone())
-            .unwrap();
         local.features.attach_python(python.clone());
         python.attach_queue(local.features.queue_notifier());
         let request = FactorRunRequest {
@@ -6577,6 +6859,17 @@ mod tests {
                     },
                 ),
             );
+        }
+        for attempt in &host_attempts {
+            validate_persisted_python_attempt(
+                python.attempt_store.as_ref(),
+                &request.user_id,
+                &request.project_id,
+                &request.project_revision_sha256,
+                &request.environment_sha256,
+                attempt,
+            )
+            .unwrap();
         }
         let repeatability_report = factor_repeatability_reports(
             &python_outputs,
