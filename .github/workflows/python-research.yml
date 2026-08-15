@@ -54,6 +54,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Setup MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
         run: |
@@ -144,6 +147,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Setup MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
         run: |
