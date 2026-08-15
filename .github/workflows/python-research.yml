@@ -77,12 +77,21 @@ jobs:
         run: cargo fetch --locked --manifest-path src-tauri/fixtures/factor/Cargo.toml
       - name: Install cargo-component
         run: cargo install cargo-component --locked
-      - name: Build Factor test fixtures
+      - name: Build Factor test fixtures (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           cargo component build --manifest-path src-tauri/fixtures/factor/Cargo.toml --target wasm32-unknown-unknown
           cargo component build --manifest-path src-tauri/fixtures/cross-sectional-factor/Cargo.toml --target wasm32-unknown-unknown
+      - name: Build Factor test fixtures (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo component build --manifest-path src-tauri/fixtures/factor/Cargo.toml --target wasm32-unknown-unknown
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo component build --manifest-path src-tauri/fixtures/cross-sectional-factor/Cargo.toml --target wasm32-unknown-unknown
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Run managed SDK and Runner contracts
@@ -169,7 +178,8 @@ jobs:
         run: cargo fetch --locked --manifest-path src-tauri/fixtures/factor/Cargo.toml
       - name: Install cargo-component
         run: cargo install cargo-component --locked
-      - name: Build component fixtures
+      - name: Build component fixtures (Unix)
+        if: runner.os != 'Windows'
         working-directory: src-tauri
         shell: bash
         run: |
@@ -177,7 +187,18 @@ jobs:
           for fixture in strategy factor model external-strategy mixed-strategy multi-output-factor repeated-factor-strategy cross-sectional-factor; do
             cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
           done
-      - name: Build public Component examples
+      - name: Build component fixtures (Windows)
+        if: runner.os == 'Windows'
+        working-directory: src-tauri
+        shell: pwsh
+        run: |
+          $fixtures = @('strategy', 'factor', 'model', 'external-strategy', 'mixed-strategy', 'multi-output-factor', 'repeated-factor-strategy', 'cross-sectional-factor')
+          foreach ($fixture in $fixtures) {
+            cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Build public Component examples (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -187,6 +208,18 @@ jobs:
             cd "$GITHUB_WORKSPACE/examples/components/$example"
             "$cli" build
           done
+      - name: Build public Component examples (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --manifest-path src-tauri/crates/adaq-component-tooling/Cargo.toml --bin adaq-component
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cli = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target/debug/adaq-component.exe'
+          foreach ($example in @('factor-close-momentum-5', 'strategy-momentum-trend')) {
+            Set-Location (Join-Path $env:GITHUB_WORKSPACE "examples/components/$example")
+            & $cli build
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - run: pnpm install --frozen-lockfile
       - name: Run full Rust workspace and tutorial contracts
         working-directory: src-tauri
