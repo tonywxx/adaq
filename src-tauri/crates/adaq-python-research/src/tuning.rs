@@ -397,6 +397,7 @@ pub fn compare_repeatability(
             left.datetime != right.datetime
                 || left.instrument != right.instrument
                 || left.value.is_some() != right.value.is_some()
+                || left.unavailable_reason != right.unavailable_reason
                 || left
                     .value
                     .zip(right.value)

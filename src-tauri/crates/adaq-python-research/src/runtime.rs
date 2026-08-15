@@ -137,24 +137,24 @@ pub fn wheelhouse_catalog(
         file_name: "adaq_research_sdk-1.0.0-py3-none-any.whl".into(),
         package: "adaq-research-sdk".into(),
         version: "1.0.0".into(),
-        sha256: "f7d25a1e4dd57e8a2d845d117bc95973e177042bc514af02290fc7563bd6abfd".into(),
-        size: 5_791,
+        sha256: "54cb0dd8f1b2f911a30099f1c7ffdc3798cd3d18e7a331b6708b437f6fa28ed7".into(),
+        size: 7_627,
         platform_tags: vec!["any".into()],
     };
     let runner = WheelIdentity {
         file_name: "adaq_python_research_runner-1.0.0-py3-none-any.whl".into(),
         package: "adaq-python-research-runner".into(),
         version: "1.0.0".into(),
-        sha256: "ef131c0b7ebd45bc0b2cd8064784846437d29a62ad25b3b925d79d762c78b75a".into(),
-        size: 5_900,
+        sha256: "e84481af16dcbf20c6ee80b75d507c41c31b57166cb4aeabdbc0f9d9195c7f18".into(),
+        size: 6_813,
         platform_tags: vec!["any".into()],
     };
     let qlib_adapter = WheelIdentity {
         file_name: "adaq_qlib_ridge_adapter-1.0.0-py3-none-any.whl".into(),
         package: "adaq-qlib-ridge-adapter".into(),
         version: "1.0.0".into(),
-        sha256: "83d2793ff1f2814c84aee9b06cb0cc9ab2207990801f4a8a9ea9edbd73567dda".into(),
-        size: 1_288,
+        sha256: "fc94acb8da4eab60b5a677354d9d2bcd1a0fcbc6fde249a2f080869e50ed50e4".into(),
+        size: 3_322,
         platform_tags: vec!["any".into()],
     };
     let (numpy, arrow) = match platform {

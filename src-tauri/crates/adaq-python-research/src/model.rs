@@ -6,13 +6,66 @@
 use crate::{PythonResearchError, invalid, is_sha256, sha256};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const QLIB_BRIDGE_VERSION: &str = "adaq.qlib@1";
 pub const RIDGE_ADAPTER_ID: &str = "qlib-linear-ridge@1";
 pub const LINEAR_MODEL_ARTIFACT_SCHEMA: &str = "adaq:linear-model@1";
+pub const MODEL_PROJECT_ID: &str = "py-model-qlib-ridge-return";
 pub const TARGET_ID: &str = "future-close-return";
 pub const TARGET_HORIZON_BARS: usize = 5;
+pub const NUMERIC_REPRESENTATION: &str = "ieee754-binary64";
+pub const FORECAST_CONTRACT: &str = "forecast:continuous-future-close-return:native@1";
+pub const MAX_MODEL_INPUT_SLOTS: usize = 64;
+pub const MAX_MODEL_PROVENANCE_ENTRIES: usize = 32;
+pub const MAX_MODEL_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
+
+pub fn validate_model_manifest(
+    manifest: &crate::ProjectManifest,
+) -> Result<(), PythonResearchError> {
+    if manifest.kind != crate::ProjectKind::Model
+        || manifest.project_id != MODEL_PROJECT_ID
+        || manifest.scope != crate::ProjectScope::CrossSectional
+        || manifest.license != "Apache-2.0"
+        || manifest.adapter_id.as_deref() != Some(RIDGE_ADAPTER_ID)
+        || manifest.parameters
+            != vec![crate::ParameterSpec {
+                id: "alpha".into(),
+                value_type: crate::ParameterType::Decimal,
+                default: "1".into(),
+                allowed_values: vec!["0.1".into(), "1".into(), "10".into()],
+            }]
+        || manifest.input_slots
+            != vec![crate::InputSlotSpec {
+                id: "promoted-factor".into(),
+                role: "promoted-factor".into(),
+                scope: crate::ProjectScope::CrossSectional,
+                required: true,
+            }]
+        || manifest.outputs
+            != vec![crate::OutputSpec {
+                id: "forecast".into(),
+                value_type: "finite-f64".into(),
+                required: true,
+            }]
+        || manifest.target
+            != Some(crate::TargetSpec {
+                id: TARGET_ID.into(),
+                kind: "continuous-future-close-return".into(),
+                horizon_bars: TARGET_HORIZON_BARS as u32,
+                value_scale: "return".into(),
+            })
+        || manifest.signal
+            != Some(crate::SignalSpec {
+                id: "forecast".into(),
+                kind: "forecast".into(),
+                value_scale: "native".into(),
+            })
+    {
+        return Err(invalid("python-model-manifest-contract-invalid"));
+    }
+    Ok(())
+}
 
 pub fn validate_model_project_payload(payload: &Value) -> Result<(), PythonResearchError> {
     #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -37,10 +90,16 @@ pub fn validate_model_project_payload(payload: &Value) -> Result<(), PythonResea
     struct ModelPayload {
         target: Option<TargetContract>,
         signal: Option<SignalContract>,
+        #[serde(default)]
+        fit: Option<Value>,
+        #[serde(default)]
+        forecast: Option<Value>,
     }
 
     let value = serde_json::from_value::<ModelPayload>(payload.clone())
         .map_err(|error| invalid(format!("python-model-contract-invalid:{error}")))?;
+    let _ = value.fit;
+    let _ = value.forecast;
     if value.target
         != Some(TargetContract {
             id: TARGET_ID.into(),
@@ -60,6 +119,94 @@ pub fn validate_model_project_payload(payload: &Value) -> Result<(), PythonResea
     Ok(())
 }
 
+pub fn validate_model_runner_payload(
+    payload: &Value,
+    feature_names: &[String],
+) -> Result<(), PythonResearchError> {
+    let fit = payload.get("fit");
+    let forecast = payload.get("forecast");
+    if fit.is_none() == forecast.is_none() {
+        return Err(invalid("python-model-runner-phase-invalid"));
+    }
+    if let Some(fit) = fit {
+        #[derive(Debug, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct CandidatePayload {
+            alpha: f64,
+            adapter_id: String,
+            artifact_schema: String,
+            numeric_representation: String,
+            forecast_contract: String,
+            input_slots: Vec<String>,
+            coefficients: Vec<f64>,
+            intercept: f64,
+            transformation_sha256: String,
+        }
+        #[derive(Debug, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Candidate {
+            schema: String,
+            payload: CandidatePayload,
+        }
+        let candidate = serde_json::from_value::<Candidate>(fit.clone())
+            .map_err(|error| invalid(format!("python-model-fit-invalid:{error}")))?;
+        if candidate.schema != "adaq:linear-model:candidate@1"
+            || candidate.payload.adapter_id != RIDGE_ADAPTER_ID
+            || candidate.payload.artifact_schema != LINEAR_MODEL_ARTIFACT_SCHEMA
+            || candidate.payload.numeric_representation != NUMERIC_REPRESENTATION
+            || candidate.payload.forecast_contract != FORECAST_CONTRACT
+            || candidate.payload.input_slots != feature_names
+            || candidate.payload.coefficients.len() != feature_names.len()
+            || !candidate.payload.alpha.is_finite()
+            || candidate.payload.alpha <= 0.0
+            || candidate
+                .payload
+                .coefficients
+                .iter()
+                .any(|value| !value.is_finite())
+            || !candidate.payload.intercept.is_finite()
+            || !is_sha256(&candidate.payload.transformation_sha256)
+        {
+            return Err(invalid("python-model-fit-contract-invalid"));
+        }
+    }
+    if let Some(forecast) = forecast {
+        let rows = forecast
+            .as_array()
+            .ok_or_else(|| invalid("python-model-forecast-invalid"))?;
+        let mut identities = BTreeSet::new();
+        for row in rows {
+            let object = row
+                .as_object()
+                .ok_or_else(|| invalid("python-model-forecast-invalid"))?;
+            let datetime = object
+                .get("prediction_time_ms")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| invalid("python-model-forecast-identity-invalid"))?;
+            let instrument = object
+                .get("instrument_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| invalid("python-model-forecast-identity-invalid"))?;
+            if !identities.insert((datetime, instrument.to_owned())) {
+                return Err(invalid("python-model-forecast-identity-invalid"));
+            }
+            let value = object
+                .get("value")
+                .ok_or_else(|| invalid("python-model-forecast-value-invalid"))?;
+            if value.as_f64().is_some_and(|value| !value.is_finite())
+                || value
+                    .as_object()
+                    .is_some_and(|object| object.get("reason").and_then(Value::as_str).is_none())
+                || (!value.is_number() && !value.is_object())
+            {
+                return Err(invalid("python-model-forecast-value-invalid"));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PartitionName {
@@ -74,6 +221,7 @@ pub struct HostPartitionRow {
     pub datetime: i64,
     pub instrument: String,
     pub features: Vec<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<f64>,
 }
 
@@ -95,7 +243,7 @@ impl HostPartition {
                 row.instrument.trim().is_empty()
                     || row.features.len() != self.feature_names.len()
                     || row.features.iter().any(|value| !value.is_finite())
-                    || (self.labels_visible && row.label.is_none_or(|value| !value.is_finite()))
+                    || (self.labels_visible && row.label.is_some_and(|value| !value.is_finite()))
                     || (!self.labels_visible && row.label.is_some())
             })
         {
@@ -119,9 +267,79 @@ pub struct QlibView {
     pub labels: Option<Vec<f64>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TargetLabel {
+    Value(f64),
+    Unavailable { reason: String },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DatasetH {
     partitions: BTreeMap<String, HostPartition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelRunnerInput {
+    pub train: Vec<HostPartitionRow>,
+    pub valid: Vec<HostPartitionRow>,
+    pub test: Vec<HostPartitionRow>,
+    pub train_labels: Vec<TargetLabel>,
+    pub valid_labels: Vec<TargetLabel>,
+    pub transformation: FittedTransformation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fitted_model: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_window_end: Option<u32>,
+}
+
+impl ModelRunnerInput {
+    pub fn validate(&self) -> Result<(), PythonResearchError> {
+        let dataset = DatasetH::new(vec![
+            HostPartition {
+                name: PartitionName::Train,
+                feature_names: self.transformation.feature_names.clone(),
+                rows: self.train.clone(),
+                labels_visible: true,
+            },
+            HostPartition {
+                name: PartitionName::SelectionValidation,
+                feature_names: self.transformation.feature_names.clone(),
+                rows: self.valid.clone(),
+                labels_visible: true,
+            },
+            HostPartition {
+                name: PartitionName::Test,
+                feature_names: self.transformation.feature_names.clone(),
+                rows: self.test.clone(),
+                labels_visible: false,
+            },
+        ])?;
+        self.transformation.validate()?;
+        let train_rows = dataset.raw_rows("train")?;
+        let valid_rows = dataset.raw_rows("valid")?;
+        let valid_label = |label: &TargetLabel| match label {
+            TargetLabel::Value(value) => value.is_finite(),
+            TargetLabel::Unavailable { reason } => !reason.trim().is_empty(),
+        };
+        if self.train_labels.len() != train_rows.len()
+            || self.valid_labels.len() != valid_rows.len()
+            || self.train_labels.iter().any(|label| !valid_label(label))
+            || self.valid_labels.iter().any(|label| !valid_label(label))
+            || self
+                .train_labels
+                .iter()
+                .all(|label| matches!(label, TargetLabel::Unavailable { .. }))
+            || self
+                .valid_labels
+                .iter()
+                .all(|label| matches!(label, TargetLabel::Unavailable { .. }))
+        {
+            return Err(invalid("model-runner-label-contract-invalid"));
+        }
+        Ok(())
+    }
 }
 
 impl DatasetH {
@@ -136,6 +354,18 @@ impl DatasetH {
             if values.insert(key.to_owned(), partition).is_some() {
                 return Err(invalid("qlib-dataset-partitions-duplicate"));
             }
+        }
+        let feature_names = values
+            .values()
+            .next()
+            .map(|partition| partition.feature_names.clone())
+            .ok_or_else(|| invalid("qlib-dataset-partitions-empty"))?;
+        if feature_names.iter().collect::<BTreeSet<_>>().len() != feature_names.len()
+            || values
+                .values()
+                .any(|partition| partition.feature_names != feature_names)
+        {
+            return Err(invalid("qlib-dataset-feature-schema-mismatch"));
         }
         let mut identities = BTreeMap::new();
         for (partition_name, partition) in &values {
@@ -153,24 +383,59 @@ impl DatasetH {
 
     /// Supported Qlib surface: only `prepare(train|valid|test)`.
     pub fn prepare(&self, name: &str) -> Result<QlibView, PythonResearchError> {
+        let partition = self.partition(name)?;
+        let rows = if partition.labels_visible {
+            partition
+                .rows
+                .iter()
+                .filter(|row| row.label.is_some())
+                .cloned()
+                .collect()
+        } else {
+            partition.rows.clone()
+        };
+        Ok(QlibView {
+            name: partition.name,
+            feature_names: partition.feature_names.clone(),
+            rows: rows.clone(),
+            labels: partition
+                .labels_visible
+                .then(|| rows.iter().filter_map(|row| row.label).collect()),
+        })
+    }
+
+    pub fn raw_rows(&self, name: &str) -> Result<Vec<HostPartitionRow>, PythonResearchError> {
+        Ok(self.partition(name)?.rows.clone())
+    }
+
+    pub fn target_labels(&self, name: &str) -> Result<Vec<TargetLabel>, PythonResearchError> {
+        let partition = self.partition(name)?;
+        if !partition.labels_visible {
+            return Err(invalid("qlib-test-labels-host-only"));
+        }
+        Ok(partition
+            .rows
+            .iter()
+            .map(|row| {
+                row.label
+                    .map(TargetLabel::Value)
+                    .unwrap_or_else(|| TargetLabel::Unavailable {
+                        reason: "target-window-boundary".into(),
+                    })
+            })
+            .collect())
+    }
+
+    fn partition(&self, name: &str) -> Result<&HostPartition, PythonResearchError> {
         let key = match name {
             "train" => "train",
             "valid" => "selection-validation",
             "test" => "test",
             _ => return Err(invalid("qlib-dataset-prepare-split-unsupported")),
         };
-        let partition = self
-            .partitions
+        self.partitions
             .get(key)
-            .ok_or_else(|| invalid("qlib-dataset-partition-missing"))?;
-        Ok(QlibView {
-            name: partition.name,
-            feature_names: partition.feature_names.clone(),
-            rows: partition.rows.clone(),
-            labels: partition
-                .labels_visible
-                .then(|| partition.rows.iter().filter_map(|row| row.label).collect()),
-        })
+            .ok_or_else(|| invalid("qlib-dataset-partition-missing"))
     }
 }
 
@@ -232,6 +497,48 @@ pub fn future_close_return(closes: &[f64], session_index: u32, window_end: u32) 
     value.is_finite().then_some(value)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetUnavailableReason {
+    WindowBoundary,
+    MissingClose,
+    InvalidClose,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TargetValue {
+    Available(f64),
+    Unavailable(TargetUnavailableReason),
+}
+
+pub fn future_close_return_state(
+    closes: &[f64],
+    session_index: u32,
+    window_end: u32,
+) -> TargetValue {
+    if session_index == 0 || session_index.saturating_add(TARGET_HORIZON_BARS as u32) > window_end {
+        return TargetValue::Unavailable(TargetUnavailableReason::WindowBoundary);
+    }
+    let Some(start) = usize::try_from(session_index - 1).ok() else {
+        return TargetValue::Unavailable(TargetUnavailableReason::WindowBoundary);
+    };
+    let Some(end) = start.checked_add(TARGET_HORIZON_BARS) else {
+        return TargetValue::Unavailable(TargetUnavailableReason::WindowBoundary);
+    };
+    let (Some(current), Some(future)) = (closes.get(start), closes.get(end)) else {
+        return TargetValue::Unavailable(TargetUnavailableReason::MissingClose);
+    };
+    if !current.is_finite() || !future.is_finite() || *current == 0.0 {
+        return TargetValue::Unavailable(TargetUnavailableReason::InvalidClose);
+    }
+    let value = future / current - 1.0;
+    value
+        .is_finite()
+        .then_some(TargetValue::Available(value))
+        .unwrap_or(TargetValue::Unavailable(
+            TargetUnavailableReason::InvalidClose,
+        ))
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FittedTransformation {
@@ -247,7 +554,15 @@ impl FittedTransformation {
         rows: &[HostPartitionRow],
         feature_names: &[String],
     ) -> Result<Self, PythonResearchError> {
-        if rows.is_empty() || feature_names.is_empty() {
+        if rows.is_empty()
+            || feature_names.is_empty()
+            || feature_names.iter().any(|name| name.trim().is_empty())
+            || feature_names.iter().collect::<BTreeSet<_>>().len() != feature_names.len()
+            || rows.iter().any(|row| {
+                row.features.len() != feature_names.len()
+                    || row.features.iter().any(|value| !value.is_finite())
+            })
+        {
             return Err(invalid("ridge-transformation-input-empty"));
         }
         let mut means = vec![0.0; feature_names.len()];
@@ -304,6 +619,8 @@ impl FittedTransformation {
         if self.feature_names.is_empty()
             || self.feature_names.len() != self.means.len()
             || self.means.len() != self.scales.len()
+            || self.feature_names.iter().any(|name| name.trim().is_empty())
+            || self.feature_names.iter().collect::<BTreeSet<_>>().len() != self.feature_names.len()
             || self.means.iter().any(|value| !value.is_finite())
             || self
                 .scales
@@ -318,7 +635,27 @@ impl FittedTransformation {
         if self.transformation_sha256 != sha256(&content) {
             return Err(invalid("ridge-transformation-hash-mismatch"));
         }
+        if self.transformation_id
+            != format!(
+                "adaq:train-standardization@1:{}",
+                self.transformation_sha256
+            )
+        {
+            return Err(invalid("ridge-transformation-id-mismatch"));
+        }
         Ok(())
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, PythonResearchError> {
+        self.validate()?;
+        serde_json::to_vec(self).map_err(|error| invalid(error.to_string()))
+    }
+
+    pub fn reload(bytes: &[u8]) -> Result<Self, PythonResearchError> {
+        let transformation: Self = serde_json::from_slice(bytes)
+            .map_err(|error| invalid(format!("ridge-transformation-json-invalid:{error}")))?;
+        transformation.validate()?;
+        Ok(transformation)
     }
 }
 
@@ -330,6 +667,10 @@ pub struct LinearModelArtifact {
     pub target_id: String,
     pub horizon_bars: u32,
     pub alpha: f64,
+    #[serde(default = "default_numeric_representation")]
+    pub numeric_representation: String,
+    #[serde(default = "default_forecast_contract")]
+    pub forecast_contract: String,
     pub input_slots: Vec<String>,
     pub coefficients: Vec<f64>,
     pub intercept: f64,
@@ -346,13 +687,20 @@ impl LinearModelArtifact {
             || self.horizon_bars != TARGET_HORIZON_BARS as u32
             || !self.alpha.is_finite()
             || self.alpha <= 0.0
+            || self.numeric_representation != NUMERIC_REPRESENTATION
+            || self.forecast_contract != FORECAST_CONTRACT
             || self.input_slots.is_empty()
+            || self.input_slots.len() > MAX_MODEL_INPUT_SLOTS
+            || self.input_slots.iter().any(|slot| slot.trim().is_empty())
+            || self.input_slots.iter().collect::<BTreeSet<_>>().len() != self.input_slots.len()
             || self.input_slots.len() != self.coefficients.len()
             || self.coefficients.iter().any(|value| !value.is_finite())
             || !self.intercept.is_finite()
             || !is_sha256(&self.transformation_sha256)
             || self.provenance_hashes.values().any(|hash| !is_sha256(hash))
             || !is_sha256(&self.artifact_sha256)
+            || self.provenance_hashes.is_empty()
+            || self.provenance_hashes.len() > MAX_MODEL_PROVENANCE_ENTRIES
         {
             return Err(invalid("linear-model-artifact-invalid"));
         }
@@ -360,14 +708,20 @@ impl LinearModelArtifact {
         content.artifact_sha256.clear();
         let bytes = serde_json::to_vec(&content).map_err(|error| invalid(error.to_string()))?;
         if self.artifact_sha256 != sha256(&bytes) {
-            return Err(invalid("linear-model-artifact-hash-mismatch"));
+            if !self.legacy_hash_matches()? {
+                return Err(invalid("linear-model-artifact-hash-mismatch"));
+            }
         }
         Ok(())
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, PythonResearchError> {
         self.validate()?;
-        serde_json::to_vec(self).map_err(|error| invalid(error.to_string()))
+        let bytes = serde_json::to_vec(self).map_err(|error| invalid(error.to_string()))?;
+        if bytes.len() > MAX_MODEL_ARTIFACT_BYTES {
+            return Err(invalid("linear-model-artifact-size-limit"));
+        }
+        Ok(bytes)
     }
 
     pub fn reload(bytes: &[u8]) -> Result<Self, PythonResearchError> {
@@ -398,6 +752,84 @@ impl LinearModelArtifact {
             .then_some(value)
             .ok_or_else(|| invalid("linear-model-prediction-non-finite"))
     }
+
+    pub fn numeric_representation() -> &'static str {
+        NUMERIC_REPRESENTATION
+    }
+
+    pub fn forecast_contract() -> &'static str {
+        FORECAST_CONTRACT
+    }
+
+    pub fn from_coefficients(
+        alpha: f64,
+        input_slots: Vec<String>,
+        coefficients: Vec<f64>,
+        intercept: f64,
+        transformation_sha256: String,
+        provenance_hashes: BTreeMap<String, String>,
+    ) -> Result<Self, PythonResearchError> {
+        let mut artifact = Self {
+            schema: LINEAR_MODEL_ARTIFACT_SCHEMA.into(),
+            adapter_id: RIDGE_ADAPTER_ID.into(),
+            target_id: TARGET_ID.into(),
+            horizon_bars: TARGET_HORIZON_BARS as u32,
+            alpha,
+            numeric_representation: NUMERIC_REPRESENTATION.into(),
+            forecast_contract: FORECAST_CONTRACT.into(),
+            input_slots,
+            coefficients,
+            intercept,
+            transformation_sha256,
+            provenance_hashes,
+            artifact_sha256: String::new(),
+        };
+        let bytes = serde_json::to_vec(&artifact).map_err(|error| invalid(error.to_string()))?;
+        artifact.artifact_sha256 = sha256(&bytes);
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
+    fn legacy_hash_matches(&self) -> Result<bool, PythonResearchError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Legacy<'a> {
+            schema: &'a str,
+            adapter_id: &'a str,
+            target_id: &'a str,
+            horizon_bars: u32,
+            alpha: f64,
+            input_slots: &'a [String],
+            coefficients: &'a [f64],
+            intercept: f64,
+            transformation_sha256: &'a str,
+            provenance_hashes: &'a BTreeMap<String, String>,
+            artifact_sha256: &'a str,
+        }
+        let legacy = Legacy {
+            schema: &self.schema,
+            adapter_id: &self.adapter_id,
+            target_id: &self.target_id,
+            horizon_bars: self.horizon_bars,
+            alpha: self.alpha,
+            input_slots: &self.input_slots,
+            coefficients: &self.coefficients,
+            intercept: self.intercept,
+            transformation_sha256: &self.transformation_sha256,
+            provenance_hashes: &self.provenance_hashes,
+            artifact_sha256: "",
+        };
+        let bytes = serde_json::to_vec(&legacy).map_err(|error| invalid(error.to_string()))?;
+        Ok(self.artifact_sha256 == sha256(&bytes))
+    }
+}
+
+fn default_numeric_representation() -> String {
+    NUMERIC_REPRESENTATION.into()
+}
+
+fn default_forecast_contract() -> String {
+    FORECAST_CONTRACT.into()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -407,7 +839,10 @@ pub struct RidgeAdapter {
 
 impl RidgeAdapter {
     pub fn registered(alpha: f64) -> Result<Self, PythonResearchError> {
-        if !alpha.is_finite() || alpha <= 0.0 {
+        if !crate::tuning::RIDGE_ALPHAS
+            .iter()
+            .any(|allowed| alpha.to_bits() == allowed.to_bits())
+        {
             return Err(invalid("ridge-alpha-invalid"));
         }
         Ok(Self { alpha })
@@ -425,6 +860,11 @@ impl RidgeAdapter {
         }
         let train = dataset.prepare("train")?;
         let selection = dataset.prepare("valid")?;
+        if train.feature_names != transformation.feature_names
+            || selection.feature_names != transformation.feature_names
+        {
+            return Err(invalid("ridge-transformation-input-schema-mismatch"));
+        }
         let labels = train
             .labels
             .as_ref()
@@ -457,6 +897,8 @@ impl RidgeAdapter {
             target_id: TARGET_ID.into(),
             horizon_bars: TARGET_HORIZON_BARS as u32,
             alpha: self.alpha,
+            numeric_representation: NUMERIC_REPRESENTATION.into(),
+            forecast_contract: FORECAST_CONTRACT.into(),
             input_slots: transformation.feature_names.clone(),
             coefficients: artifact_coefficients,
             intercept,
@@ -486,8 +928,17 @@ pub fn forecast(
     partition: &QlibView,
 ) -> Result<Vec<ForecastRow>, PythonResearchError> {
     artifact.validate()?;
+    transformation.validate()?;
     if partition.feature_names != artifact.input_slots
         || partition.labels.is_some() && partition.name == PartitionName::Test
+        || partition.rows.windows(2).any(|rows| {
+            (rows[0].datetime, rows[0].instrument.as_str())
+                >= (rows[1].datetime, rows[1].instrument.as_str())
+        })
+        || partition
+            .rows
+            .iter()
+            .any(|row| row.features.len() != artifact.input_slots.len())
     {
         return Err(invalid("forecast-partition-contract-invalid"));
     }
@@ -619,6 +1070,57 @@ mod tests {
     }
 
     #[test]
+    fn qlib_bridge_preserves_boundary_labels_without_fitting_them() {
+        let data = DatasetH::new(vec![
+            HostPartition {
+                name: PartitionName::Train,
+                feature_names: vec!["momentum-score".into()],
+                rows: vec![row(1, "AAA", 1.0, Some(1.0)), row(2, "AAA", 2.0, None)],
+                labels_visible: true,
+            },
+            HostPartition {
+                name: PartitionName::SelectionValidation,
+                feature_names: vec!["momentum-score".into()],
+                rows: vec![row(3, "AAA", 3.0, Some(3.0)), row(4, "AAA", 4.0, None)],
+                labels_visible: true,
+            },
+            HostPartition {
+                name: PartitionName::Test,
+                feature_names: vec!["momentum-score".into()],
+                rows: vec![row(5, "AAA", 5.0, None)],
+                labels_visible: false,
+            },
+        ])
+        .unwrap();
+        assert_eq!(data.prepare("train").unwrap().rows.len(), 1);
+        assert_eq!(data.prepare("valid").unwrap().rows.len(), 1);
+        assert_eq!(
+            data.target_labels("train").unwrap()[1],
+            TargetLabel::Unavailable {
+                reason: "target-window-boundary".into()
+            }
+        );
+        assert_eq!(
+            data.target_labels("valid").unwrap()[1],
+            TargetLabel::Unavailable {
+                reason: "target-window-boundary".into()
+            }
+        );
+    }
+
+    #[test]
+    fn qlib_bridge_rejects_partition_schema_drift() {
+        let data = dataset();
+        let mut partitions = data.partitions.into_values().collect::<Vec<_>>();
+        partitions
+            .iter_mut()
+            .find(|partition| partition.name == PartitionName::Test)
+            .unwrap()
+            .feature_names = vec!["different-feature".into()];
+        assert!(DatasetH::new(partitions).is_err());
+    }
+
+    #[test]
     fn model_project_payload_requires_one_supported_target_and_signal() {
         let payload = serde_json::json!({
             "target": {
@@ -653,6 +1155,26 @@ mod tests {
             None
         );
         assert!(future_close_return(&[1.0; 180], 95, windows.train_end).is_some());
+        assert_eq!(
+            future_close_return_state(&[1.0; 180], 100, windows.train_end),
+            TargetValue::Unavailable(TargetUnavailableReason::WindowBoundary)
+        );
+        assert_eq!(
+            future_close_return_state(&[1.0; 180], 95, windows.train_end),
+            TargetValue::Available(0.0)
+        );
+    }
+
+    #[test]
+    fn standardization_uses_train_rows_only() {
+        let data = dataset();
+        let transform = FittedTransformation::fit(
+            &data.prepare("train").unwrap().rows,
+            &["momentum-score".into()],
+        )
+        .unwrap();
+        assert_eq!(transform.means, vec![1.0]);
+        assert!(transform.validate().is_ok());
     }
 
     #[test]
@@ -672,11 +1194,15 @@ mod tests {
         let forecasts = forecast(&reloaded, &transform, &data.prepare("test").unwrap()).unwrap();
         assert_eq!(forecasts.len(), 1);
         assert!(forecasts[0].value.unwrap().is_finite());
+        assert_eq!(reloaded.numeric_representation, "ieee754-binary64");
+        assert_eq!(reloaded.forecast_contract, FORECAST_CONTRACT);
+        assert!(!String::from_utf8_lossy(&artifact.to_bytes().unwrap()).contains("pickle"));
     }
 
     #[test]
     fn unsupported_alpha_and_non_finite_rows_fail() {
         assert!(RidgeAdapter::registered(0.0).is_err());
+        assert!(RidgeAdapter::registered(2.0).is_err());
         let mut data = dataset();
         data.partitions.get_mut("train").unwrap().rows[0].features[0] = f64::NAN;
         assert!(data.partitions["train"].validate().is_err());

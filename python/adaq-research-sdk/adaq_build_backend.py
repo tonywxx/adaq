@@ -14,7 +14,11 @@ DIST_INFO = f"{NAME}-{VERSION}.dist-info"
 
 
 def _files(root: pathlib.Path) -> list[pathlib.Path]:
-    return sorted(path for path in (root / "src").rglob("*") if path.is_file())
+    return sorted(
+        path
+        for path in (root / "src").rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix not in {".pyc", ".pyo"}
+    )
 
 
 def _metadata() -> dict[str, bytes]:

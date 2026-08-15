@@ -1003,7 +1003,8 @@ const english = {
 				parameters: "Normalized Parameters",
 				seed: "Seed",
 				resourcePolicy: "Effective Resource Policy",
-				alreadyTrusted: "This exact revision is already trusted; confirmation will enqueue one new Attempt.",
+				alreadyTrusted:
+					"This exact revision is already trusted; confirmation will enqueue one new Attempt.",
 				trustedCodeWarning:
 					"This exact revision contains trusted Python code and will execute in a private managed process.",
 				decline: "Decline",
@@ -1038,6 +1039,12 @@ const english = {
 			freezeAndPrepareRequired:
 				"Freeze and trust the Model Revision, then prepare its managed Environment first.",
 			windows: "Train {{train}} · Selection {{selection}} · Final {{final}}",
+			contract:
+				"Target {{target}} · Slots {{slots}} · Transform {{transformation}} · Artifact {{schema}} · Numeric {{numeric}} · Forecast {{contract}}",
+			provenance:
+				"Revision {{revision}} · Environment {{environment}} · Snapshot {{snapshot}} · Universe {{universe}} · Policy {{resourcePolicy}}",
+			attempts: "Model Attempts",
+			noAttempts: "No Model Attempts yet.",
 			decision: "User selected α={{alpha}}",
 			report: "Final MSE {{mse}} · MAE {{mae}}",
 		},
@@ -1884,6 +1891,12 @@ const simplifiedChinese = {
 			freezeAndPrepareRequired:
 				"请先冻结并信任 Model Revision，然后准备它的托管 Environment。",
 			windows: "训练 {{train}} · 选择 {{selection}} · 最终 {{final}}",
+			contract:
+				"Target {{target}} · Slots {{slots}} · Transform {{transformation}} · Artifact {{schema}} · Numeric {{numeric}} · Forecast {{contract}}",
+			provenance:
+				"Revision {{revision}} · Environment {{environment}} · Snapshot {{snapshot}} · Universe {{universe}} · Policy {{resourcePolicy}}",
+			attempts: "模型 Attempt",
+			noAttempts: "尚无模型 Attempt。",
 			decision: "用户选择 α={{alpha}}",
 			report: "最终 MSE {{mse}} · MAE {{mae}}",
 		},
@@ -2363,7 +2376,8 @@ const simplifiedChinese = {
 			modelArtifacts: "模型产物注册：{{count}}",
 			signalDatasets: "预测信号数据集：{{count}}",
 			preserved: "保留：登录、账户、个人资料、主题和更新偏好。",
-			factorResearchData: "全部因子候选、数据集、报告、研究族、试验、策略、决策和来源证据",
+			factorResearchData:
+				"全部因子候选、数据集、报告、研究族、试验、策略、决策和来源证据",
 			factorResearchPreserved:
 				"保留：Python 研究项目、运行时、环境、缓存和其他本地数据。",
 		},

@@ -25,6 +25,14 @@ PROTOCOL = "adaq-python-runner@1"
 MAX_FRAME = 16 * 1024 * 1024
 
 
+class _HostArrowTable:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def to_pylist(self) -> list[dict[str, object]]:
+        return [dict(row) for row in self._rows]
+
+
 def _read_frame(stream: BinaryIO) -> dict[str, object] | None:
     header = stream.read(4)
     if not header:
@@ -190,6 +198,7 @@ def _execute_project(
     project_root: pathlib.Path,
     entry_point: str,
     sdk_wheel: str | None,
+    adapter_wheel: str | None,
     execution: dict[str, object],
 ) -> dict[str, object]:
     manifest = _read_manifest(project_root)
@@ -202,6 +211,8 @@ def _execute_project(
     sys.path.insert(0, str(project_root / "src"))
     if sdk_wheel:
         sys.path.insert(0, sdk_wheel)
+    if adapter_wheel:
+        sys.path.insert(0, adapter_wheel)
     module_name, separator, function_name = entry_point.partition(":")
     if not separator or not module_name or not function_name:
         raise ValueError("runner-entry-point-invalid")
@@ -212,6 +223,102 @@ def _execute_project(
         if project_kind == "factor":
             payload = _factor_payload(project_factory, project_kind, project_root, execution)
             result = None
+        elif project_kind == "model":
+            result = project_factory()
+            input_value = execution.get("input")
+            if not isinstance(input_value, dict):
+                raise ValueError("runner-model-input-missing")
+            from adaq import ModelArtifact, ModelContext, Parameter
+            from adaq.qlib import DatasetH
+
+            transformation = input_value.get("transformation")
+            if not isinstance(transformation, dict):
+                raise ValueError("runner-model-transformation-missing")
+            feature_names = transformation.get("featureNames")
+            if not isinstance(feature_names, list) or not all(
+                isinstance(name, str) for name in feature_names
+            ):
+                raise ValueError("runner-model-feature-schema-invalid")
+
+            def public_rows(
+                name: str, labels: tuple[object, ...] | None = None
+            ) -> list[dict[str, object]]:
+                result = []
+                source_rows = input_value.get(name, [])
+                if not isinstance(source_rows, list):
+                    raise ValueError("runner-model-rows-invalid")
+                if labels is not None and len(labels) != len(source_rows):
+                    raise ValueError("runner-model-label-count-invalid")
+                for index, row in enumerate(source_rows):
+                    if not isinstance(row, dict) or not isinstance(row.get("features"), list):
+                        raise ValueError("runner-model-row-invalid")
+                    if len(row["features"]) != len(feature_names):
+                        raise ValueError("runner-model-row-dimension-invalid")
+                    result.append(
+                        {
+                            "datetime": row.get("datetime"),
+                            "instrument": row.get("instrument"),
+                            **dict(zip(feature_names, row["features"])),
+                        }
+                    )
+                    if labels is not None:
+                        result[-1]["label"] = labels[index]
+                return result
+
+            labels = {}
+            for name in ("trainLabels", "validLabels"):
+                source_labels = input_value.get(name, [])
+                if not isinstance(source_labels, list):
+                    raise ValueError("runner-model-labels-invalid")
+                labels[name] = tuple(source_labels)
+            dataset = DatasetH.from_arrow(
+                {
+                    "train": _HostArrowTable(
+                        public_rows("train", labels["trainLabels"])
+                    ),
+                    "valid": _HostArrowTable(
+                        public_rows("valid", labels["validLabels"])
+                    ),
+                    "test": _HostArrowTable(public_rows("test")),
+                }
+            )
+            context_inputs = {
+                "dataset": dataset,
+                "transformation": transformation,
+            }
+            if isinstance(input_value.get("targetWindowEnd"), int):
+                context_inputs["targetWindowEnd"] = input_value["targetWindowEnd"]
+            context = ModelContext(
+                parameters=tuple(
+                    Parameter(id=key, value=value)
+                    for key, value in sorted(execution.get("parameters", {}).items())
+                ),
+                seed=execution.get("seed", 0),
+                inputs=context_inputs,
+            )
+            fitted_model = input_value.get("fittedModel")
+            if fitted_model is None:
+                fitted = result.fit(context)
+                payload = {
+                    "target": _jsonable(getattr(result, "target", None)),
+                    "signal": _jsonable(getattr(result, "signal", None)),
+                    "fit": _jsonable(fitted),
+                }
+            else:
+                if not isinstance(fitted_model, dict):
+                    raise ValueError("runner-model-fitted-artifact-invalid")
+                fitted = ModelArtifact(
+                    schema=fitted_model.get("schema"),
+                    payload=fitted_model.get("payload"),
+                )
+                if not isinstance(fitted.schema, str) or not isinstance(fitted.payload, dict):
+                    raise ValueError("runner-model-fitted-artifact-invalid")
+                forecasts = result.predict(context, fitted)
+                payload = {
+                    "target": _jsonable(getattr(result, "target", None)),
+                    "signal": _jsonable(getattr(result, "signal", None)),
+                    "forecast": _jsonable(list(forecasts)),
+                }
         else:
             result = project_factory()
             payload = None
@@ -375,6 +482,7 @@ def run_socket(
     project_root: pathlib.Path,
     entry_point: str,
     sdk_wheel: str | None,
+    adapter_wheel: str | None,
     result_path: pathlib.Path,
     result_name: str,
 ) -> int:
@@ -399,7 +507,11 @@ def run_socket(
                 if kind == "execute":
                     try:
                         result = _execute_project(
-                            project_root, entry_point, sdk_wheel, command.get("execution", {})
+                            project_root,
+                            entry_point,
+                            sdk_wheel,
+                            adapter_wheel,
+                            command.get("execution", {}),
                         )
                     except Exception as error:  # noqa: BLE001
                         _write_frame(
@@ -459,6 +571,7 @@ if __name__ == "__main__":
                     pathlib.Path(argument("--project-root") or ""),
                     argument("--entry-point") or "",
                     argument("--sdk-wheel", required=False),
+                    argument("--adapter-wheel", required=False),
                     pathlib.Path(argument("--result-path") or ""),
                     argument("--result-name", required=False) or "conformance-result.json",
                 )

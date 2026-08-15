@@ -8,6 +8,7 @@ runtime-profile = "adaq-python@1"
 source-files = ["src/project.py"]
 dependency-lock-sha256 = "b027f63f692a8cbb9e0fe806da51f0bc4bf15c1fdff7fdd3608d934b15ad660f"
 license = "Apache-2.0"
+adapter-id = "qlib-linear-ridge@1"
 
 [[parameters]]
 id = "alpha"

@@ -844,6 +844,16 @@ impl FactorResearch {
         ResearchStore::new(&database).dataset_for_user(&request.user_id, &request.evidence_id)
     }
 
+    pub(crate) fn get_factor_dataset(
+        &self,
+        user_id: &str,
+        dataset_id: &str,
+    ) -> Result<FactorDataset, String> {
+        validate_user(user_id)?;
+        let database = self.database()?;
+        ResearchStore::new(&database).factor_dataset_for_user(user_id, dataset_id)
+    }
+
     pub(crate) fn dataset_rows(
         &self,
         request: FactorDatasetRowsRequest,

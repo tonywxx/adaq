@@ -107,6 +107,7 @@ pub struct RunnerLaunchSpec {
     pub project_root: PathBuf,
     pub entry_point: String,
     pub sdk_wheel: Option<PathBuf>,
+    pub adapter_wheel: Option<PathBuf>,
     pub handshake: Handshake,
     pub environment: PrivateChildEnvironment,
     pub staging_root: PathBuf,
@@ -223,6 +224,9 @@ pub fn run_process(
     }
     if let Some(sdk_wheel) = &spec.sdk_wheel {
         command.arg("--sdk-wheel").arg(sdk_wheel);
+    }
+    if let Some(adapter_wheel) = &spec.adapter_wheel {
+        command.arg("--adapter-wheel").arg(adapter_wheel);
     }
     for (key, value) in spec.environment.variables() {
         command.env(key, value);
@@ -1799,6 +1803,7 @@ mod tests {
                 .join("../../../python/runner_tests/conformance_project"),
             entry_point: "project:create_project".into(),
             sdk_wheel: None,
+            adapter_wheel: None,
             handshake: Handshake {
                 protocol: RUNNER_PROTOCOL_VERSION.into(),
                 sdk_artifact_sha256: hash("sdk"),
@@ -1857,6 +1862,7 @@ mod tests {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../../python/adaq-research-sdk/src"),
             ),
+            adapter_wheel: None,
             handshake: Handshake {
                 protocol: RUNNER_PROTOCOL_VERSION.into(),
                 sdk_artifact_sha256: hash("sdk"),
@@ -1891,6 +1897,109 @@ mod tests {
         let payload = result.payload.unwrap();
         assert_eq!(payload["definition"]["scope"], "cross-sectional");
         assert_eq!(payload["definition"]["outputs"][0], "momentum-score");
+    }
+
+    #[test]
+    fn loopback_runner_fits_only_the_host_fed_model_partitions() {
+        let token = "m".repeat(64);
+        let python_executable =
+            test_python_executable("Python is required for the model adapter test");
+        let staging = tempdir().unwrap();
+        let rows = |start: i64, end: i64, labels: bool| {
+            (start..=end)
+                .map(|datetime| crate::model::HostPartitionRow {
+                    datetime,
+                    instrument: "AAA".into(),
+                    features: vec![datetime as f64],
+                    label: labels.then_some(datetime as f64),
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut train = rows(1, 3, true);
+        train[1].label = None;
+        let mut valid = rows(4, 5, true);
+        valid[1].label = None;
+        let transformation =
+            crate::model::FittedTransformation::fit(&train, &["momentum-score".into()]).unwrap();
+        let input = crate::model::ModelRunnerInput {
+            train,
+            valid,
+            test: rows(6, 6, false),
+            train_labels: vec![
+                crate::model::TargetLabel::Value(1.0),
+                crate::model::TargetLabel::Unavailable {
+                    reason: "target-window-boundary".into(),
+                },
+                crate::model::TargetLabel::Value(3.0),
+            ],
+            valid_labels: vec![
+                crate::model::TargetLabel::Value(4.0),
+                crate::model::TargetLabel::Unavailable {
+                    reason: "target-window-boundary".into(),
+                },
+            ],
+            transformation,
+            fitted_model: None,
+            target_window_end: None,
+        };
+        input.validate().unwrap();
+        let spec = RunnerLaunchSpec {
+            python_executable,
+            runner_script: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../python/adaq-python-research-runner/src/adaq_runner/__main__.py"),
+            runner_wheel: None,
+            project_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../examples/python/py-model-qlib-ridge-return"),
+            entry_point: "project:create_project".into(),
+            sdk_wheel: Some(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../python/adaq-research-sdk/src"),
+            ),
+            adapter_wheel: Some(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../python/adaq-qlib-ridge-adapter/src"),
+            ),
+            handshake: Handshake {
+                protocol: RUNNER_PROTOCOL_VERSION.into(),
+                sdk_artifact_sha256: hash("sdk"),
+                revision_sha256: hash("revision"),
+                environment_sha256: hash("environment"),
+                attempt_id: "model-adapter-attempt".into(),
+                loopback: true,
+                one_time_token: token,
+            },
+            environment: PrivateChildEnvironment::from_allowlist(BTreeMap::new()).unwrap(),
+            staging_root: staging.path().to_path_buf(),
+            staged_result_path: staging.path().join("conformance-result.json"),
+            staged_result_relative_path: "conformance-result.json".into(),
+            execution: AttemptExecution {
+                sdk_artifact_sha256: hash("sdk"),
+                runtime_artifact_sha256: hash("runtime"),
+                entry_point: "project:create_project".into(),
+                parameters: BTreeMap::from([("alpha".into(), "1".into())]),
+                seed: 7,
+                output_names: vec!["forecast".into()],
+                input: Some(serde_json::to_value(input).unwrap()),
+                ..AttemptExecution::default()
+            },
+            seed: 7,
+            max_wall_ms: 10_000,
+            max_memory_bytes: policy().max_memory_bytes,
+            max_processes: policy().max_processes,
+            max_control_bytes: MAX_CONTROL_MESSAGE_BYTES,
+            max_arrow_bytes: policy().max_arrow_bytes as usize,
+            max_staged_bytes: policy().max_staged_bytes as usize,
+            max_artifact_bytes: policy().max_artifact_bytes as usize,
+            max_log_bytes: 4096,
+        };
+        let result = run_process(&spec, || false).unwrap().conformance.unwrap();
+        let payload = result.payload.unwrap();
+        assert_eq!(payload["fit"]["schema"], "adaq:linear-model:candidate@1");
+        assert_eq!(
+            payload["fit"]["payload"]["adapter_id"],
+            "qlib-linear-ridge@1"
+        );
+        assert!(payload["fit"]["payload"].get("coefficients").is_some());
     }
 
     #[test]
@@ -1976,6 +2085,7 @@ mod tests {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../../python/adaq-research-sdk/src"),
             ),
+            adapter_wheel: None,
             handshake: Handshake {
                 protocol: RUNNER_PROTOCOL_VERSION.into(),
                 sdk_artifact_sha256: hash("sdk"),

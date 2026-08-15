@@ -90,7 +90,7 @@ type Props = {
 };
 
 const SDK_ARTIFACT_SHA256 =
-	"f7d25a1e4dd57e8a2d845d117bc95973e177042bc514af02290fc7563bd6abfd";
+	"54cb0dd8f1b2f911a30099f1c7ffdc3798cd3d18e7a331b6708b437f6fa28ed7";
 const PROJECTS_CHANGED_EVENT = "adaq:python-projects-changed";
 
 function afterPaint() {

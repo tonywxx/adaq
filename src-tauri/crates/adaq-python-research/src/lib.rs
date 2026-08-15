@@ -29,7 +29,7 @@ pub mod tuning;
 pub const PYTHON_RESEARCH_SCHEMA_VERSION: &str = "1.0.0";
 const PYTHON_RESEARCH_METADATA_FILE: &str = "python-research-meta.json";
 pub const PUBLIC_SDK_ARTIFACT_SHA256: &str =
-    "f7d25a1e4dd57e8a2d845d117bc95973e177042bc514af02290fc7563bd6abfd";
+    "54cb0dd8f1b2f911a30099f1c7ffdc3798cd3d18e7a331b6708b437f6fa28ed7";
 pub const MAX_ARCHIVE_ENTRIES: usize = 512;
 pub const MAX_ARCHIVE_EXPANDED_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_PROJECT_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -362,6 +362,8 @@ pub struct ProjectManifest {
     pub target: Option<TargetSpec>,
     #[serde(default)]
     pub signal: Option<SignalSpec>,
+    #[serde(default)]
+    pub adapter_id: Option<String>,
     pub dependency_lock_sha256: String,
     pub resource_request: ResourceRequest,
     pub license: String,
@@ -461,6 +463,9 @@ impl ProjectManifest {
         }
         if self.license.trim().is_empty() {
             return Err(invalid("project-license-is-required"));
+        }
+        if self.kind == ProjectKind::Model {
+            model::validate_model_manifest(self)?;
         }
         self.resource_request.validate()
     }
@@ -1823,6 +1828,7 @@ mod tests {
                 kind: "factor".into(),
                 value_scale: "raw".into(),
             }),
+            adapter_id: None,
             dependency_lock_sha256: sha256(lock),
             resource_request: ResourceRequest {
                 max_wall_ms: 60_000,
@@ -1937,7 +1943,26 @@ mod tests {
             let manifest = report.manifest.unwrap();
             assert_eq!(manifest.kind, kind);
             assert_eq!(manifest.project_id, project_id);
+            if kind == ProjectKind::Model {
+                model::validate_model_manifest(&manifest).unwrap();
+            }
         }
+    }
+
+    #[test]
+    fn model_manifest_rejects_extra_outputs() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../examples/python/py-model-qlib-ridge-return");
+        let mut manifest = inspect_project(&root).manifest.unwrap();
+        manifest.outputs.push(OutputSpec {
+            id: "second-forecast".into(),
+            value_type: "finite-f64".into(),
+            required: true,
+        });
+        assert!(model::validate_model_manifest(&manifest).is_err());
+        let mut manifest = inspect_project(&root).manifest.unwrap();
+        manifest.adapter_id = Some("unsupported-model@1".into());
+        assert!(model::validate_model_manifest(&manifest).is_err());
     }
 
     #[test]

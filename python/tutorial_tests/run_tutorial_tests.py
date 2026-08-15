@@ -65,6 +65,11 @@ def main() -> None:
         assert_true(project["project-id"] == project_id, f"{project_id}: id mismatch")
         assert_true(project["kind"] == expected["kind"], f"{project_id}: kind mismatch")
         assert_true(project["license"] == "Apache-2.0", f"{project_id}: license mismatch")
+        if project_id == "py-model-qlib-ridge-return":
+            assert_true(
+                project["adapter-id"] == "qlib-linear-ridge@1",
+                f"{project_id}: adapter identity drift",
+            )
         assert_true(project["runtime-profile"] == "adaq-python@1", f"{project_id}: runtime drift")
         assert_true(project["sdk-profile"] == "adaq-research-sdk@1", f"{project_id}: SDK drift")
         parameter_id, default, allowed = expected["parameter"]

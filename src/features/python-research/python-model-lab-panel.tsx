@@ -54,6 +54,13 @@ type ModelRun = {
 	testLabelsWithheld: boolean;
 	repeatabilityVerified: boolean;
 	repeatabilityTolerance: number;
+	resourcePolicy: Record<string, number | string>;
+	inputSlots: string[];
+	targetId: string;
+	targetHorizonBars: number;
+	forecastContract: string;
+	artifactSchema: string;
+	numericRepresentation: string;
 	factorDecisionHash: string;
 	factorPromotionProtocolHash: string;
 	factorDatasetId: string;
@@ -98,6 +105,17 @@ type Report = {
 	meanAbsoluteError: number;
 };
 
+type ResearchAttempt = {
+	attemptId: string;
+	projectId: string;
+	status: "pending" | "running" | "completed" | "failed" | "cancelled";
+	queueSequence: number;
+	failureCode?: string;
+	diagnostic?: string;
+	progressCompleted?: number;
+	progressTotal?: number;
+};
+
 const PROJECTS_CHANGED_EVENT = "adaq:python-projects-changed";
 
 const afterPaint = () =>
@@ -117,6 +135,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 	const [experiment, setExperiment] = useState<Experiment>();
 	const [decision, setDecision] = useState<Decision>();
 	const [report, setReport] = useState<Report>();
+	const [attempts, setAttempts] = useState<ResearchAttempt[]>([]);
 	const [busy, setBusy] = useState("");
 	const [error, setError] = useState("");
 
@@ -151,9 +170,25 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 		}
 	}, [userId]);
 
+	const refreshAttempts = useCallback(async () => {
+		if (!isTauriRuntime()) return;
+		try {
+			setAttempts(await invoke<ResearchAttempt[]>("attempt_list", { userId }));
+		} catch (reason) {
+			setError(String(reason));
+		}
+	}, [userId]);
+
 	useEffect(() => {
 		void refreshProjects();
 	}, [refreshProjects]);
+
+	useEffect(() => {
+		void refreshAttempts();
+		if (!isTauriRuntime()) return;
+		const timer = window.setInterval(() => void refreshAttempts(), 2000);
+		return () => window.clearInterval(timer);
+	}, [refreshAttempts]);
 
 	useEffect(() => {
 		const refresh = () => void refreshProjects();
@@ -319,6 +354,51 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 		}
 	};
 
+	const updateAttempt = async (
+		attemptId: string,
+		action: "cancel" | "retry",
+	) => {
+		setBusy(`${attemptId}:${action}`);
+		setError("");
+		await afterPaint();
+		try {
+			if (action === "retry") {
+				const project = projects.find(
+					(item) =>
+						item.projectId === projectId &&
+						item.state === "clean" &&
+						item.revisionSha256,
+				);
+				if (!project?.revisionSha256 || !environment || !factorDecisionHash) {
+					throw new Error(t("pythonResearch.modelLab.freezeAndPrepareRequired"));
+				}
+				setRun(
+					await invoke<ModelRun>("model_demo_run", {
+						request: {
+							userId,
+							projectId,
+							projectRevisionSha256: project.revisionSha256,
+							environmentSha256: environment.environmentSha256,
+							factorDecisionHash,
+							alpha: run?.alpha ?? 1,
+						},
+					}),
+				);
+			} else {
+				await invoke("attempt_cancel", { request: { userId, attemptId } });
+			}
+			await refreshAttempts();
+		} catch (reason) {
+			setError(String(reason));
+		} finally {
+			setBusy("");
+		}
+	};
+
+	const modelAttempts = attempts.filter(
+		(attempt) => attempt.projectId === "py-model-qlib-ridge-return",
+	);
+
 	return (
 		<Card className="mt-4">
 			<CardHeader>
@@ -397,6 +477,54 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 						{error}
 					</p>
 				) : null}
+				<div className="grid gap-2 rounded-md border p-3">
+					<p className="font-medium">{t("pythonResearch.modelLab.attempts")}</p>
+					{modelAttempts.length ? (
+						modelAttempts.map((attempt) => (
+							<div
+								key={attempt.attemptId}
+								className="flex flex-wrap items-center gap-2 border-t pt-2 first:border-0 first:pt-0"
+							>
+								<code className="break-all text-xs">{attempt.attemptId}</code>
+								<Badge variant="outline">{attempt.status}</Badge>
+								<span className="text-muted-foreground">#{attempt.queueSequence}</span>
+								{attempt.progressTotal ? (
+									<span className="text-muted-foreground">
+										{attempt.progressCompleted ?? 0}/{attempt.progressTotal}
+									</span>
+								) : null}
+								<div className="ml-auto flex gap-2">
+									{attempt.status === "pending" || attempt.status === "running" ? (
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={() => void updateAttempt(attempt.attemptId, "cancel")}
+											loading={busy === `${attempt.attemptId}:cancel`}
+										>
+											{t("pythonResearch.projects.cancel")}
+										</Button>
+									) : null}
+									{attempt.status === "failed" || attempt.status === "cancelled" ? (
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={() => void updateAttempt(attempt.attemptId, "retry")}
+											loading={busy === `${attempt.attemptId}:retry`}
+										>
+											{t("pythonResearch.projects.retry")}
+										</Button>
+									) : null}
+								</div>
+							</div>
+						))
+					) : (
+						<p className="text-xs text-muted-foreground">
+							{t("pythonResearch.modelLab.noAttempts")}
+						</p>
+					)}
+				</div>
 				{run ? (
 					<div className="grid gap-1 rounded-md border p-3">
 						<div className="flex flex-wrap items-center gap-2">
@@ -419,6 +547,25 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 						</p>
 						<p className="break-all font-mono text-xs text-muted-foreground">
 							Artifact {run.artifactSha256} · Forecast {run.forecastSha256}
+						</p>
+						<p className="break-all font-mono text-xs text-muted-foreground">
+							{t("pythonResearch.modelLab.contract", {
+								target: `${run.targetId} / ${run.targetHorizonBars} bars`,
+								slots: run.inputSlots.join(", "),
+								transformation: run.transformationSha256,
+								contract: run.forecastContract,
+								schema: run.artifactSchema,
+								numeric: run.numericRepresentation,
+							})}
+						</p>
+						<p className="break-all font-mono text-xs text-muted-foreground">
+							{t("pythonResearch.modelLab.provenance", {
+								revision: run.projectRevisionSha256,
+								environment: run.environmentSha256,
+								snapshot: run.snapshotId,
+								universe: run.universeId,
+								resourcePolicy: JSON.stringify(run.resourcePolicy),
+							})}
 						</p>
 						<p role="status">
 							{run.testLabelsWithheld

@@ -13,7 +13,10 @@ use std::{
 };
 
 use adaq_backtest_core::MarketDataSnapshot;
-use adaq_component_tooling::native_engine_identity;
+use adaq_component_tooling::{
+    BuiltinForecastTarget, ComponentParameterValue, ForecastTarget, ForecastValueScale,
+    ModelArtifact, ModelOutput, PredictionKind, native_engine_identity,
+};
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::ArrowWriter;
@@ -723,6 +726,201 @@ pub(crate) fn write_rows(
     Ok(())
 }
 
+pub(crate) fn publish_python_model_signal_dataset(
+    state: &LocalResearchState,
+    user_id: &str,
+    dataset_id: &str,
+    snapshot_id: &str,
+    feature_plan_hash: &str,
+    factor_dataset_id: &str,
+    feature_dataset_id: &str,
+    artifact_sha256: &str,
+    artifact_provenance: &BTreeMap<String, String>,
+    adapter_id: &str,
+    alpha: f64,
+    seed: u64,
+    forecast_contract: &str,
+    rows: &[adaq_python_research::model::ForecastRow],
+) -> Result<serde_json::Value, String> {
+    validate_user(user_id)?;
+    if dataset_id.is_empty()
+        || snapshot_id.is_empty()
+        || feature_plan_hash.is_empty()
+        || factor_dataset_id.is_empty()
+        || feature_dataset_id.is_empty()
+        || artifact_sha256.is_empty()
+        || adapter_id.is_empty()
+        || !alpha.is_finite()
+        || forecast_contract.is_empty()
+        || rows.windows(2).any(|window| {
+            (window[0].datetime, window[0].instrument.as_str())
+                >= (window[1].datetime, window[1].instrument.as_str())
+        })
+        || rows.iter().any(|row| {
+            row.instrument.trim().is_empty()
+                || row.value.is_some_and(|value| !value.is_finite())
+                || row.value.is_some() == row.unavailable_reason.is_some()
+        })
+    {
+        return Err("python-model-signal-dataset-contract-invalid".into());
+    }
+    let (snapshot, bars) = state.snapshot_for_user(user_id, snapshot_id)?;
+    let snapshot_instrument = format!("{}:{}", snapshot.src, snapshot.code);
+    let forecasts_by_identity = rows
+        .iter()
+        .map(|row| ((row.datetime, row.instrument.clone()), row))
+        .collect::<BTreeMap<_, _>>();
+    let published_rows = bars
+        .iter()
+        .map(|bar| {
+            let prediction_time = close_time(snapshot.interval, bar.open_time_ms)?;
+            let source = forecasts_by_identity
+                .get(&(bar.open_time_ms, snapshot.code.clone()))
+                .or_else(|| {
+                    forecasts_by_identity.get(&(bar.open_time_ms, snapshot_instrument.clone()))
+                });
+            let (values, unavailable_reason) = match source {
+                Some(row) => (
+                    row.value.map(|value| vec![value]),
+                    row.unavailable_reason.clone(),
+                ),
+                None => (None, Some("model-window-outside-final".into())),
+            };
+            Ok::<_, String>((
+                snapshot_instrument.clone(),
+                prediction_time,
+                prediction_time,
+                values,
+                unavailable_reason,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let identity = native_engine_identity().map_err(string)?;
+    let model_output = ModelOutput {
+        name: "forecast".into(),
+        prediction_kind: PredictionKind::ExpectedValue,
+        forecast_target: ForecastTarget::Builtin {
+            target: BuiltinForecastTarget::FutureCloseReturn,
+        },
+        value_scale: ForecastValueScale::Native,
+        horizon_bars: 5,
+    };
+    let model_parameters = BTreeMap::from([(
+        "alpha".into(),
+        ComponentParameterValue::Decimal(alpha.to_string()),
+    )]);
+    let model_artifact = ModelArtifact {
+        sha256: artifact_sha256.into(),
+        provenance: artifact_provenance.clone(),
+    };
+    let producer_segments = vec![ModelProducerSegment {
+        start_prediction_time_ms: published_rows.first().map(|row| row.1),
+        end_prediction_time_ms: published_rows.last().map(|row| row.1),
+        model_archive_sha256: artifact_sha256.into(),
+        model_artifact: Some(model_artifact.clone()),
+        model_parameters: model_parameters.clone(),
+        seed,
+        trust: "managed-python-model@1".into(),
+        engine_identity: identity.clone(),
+        feature_plan_hash: feature_plan_hash.into(),
+    }];
+    let feature_plan_json = serde_json::json!({
+        "featurePlanHash": feature_plan_hash,
+        "factorDatasetId": factor_dataset_id,
+        "featureDatasetId": feature_dataset_id,
+        "adapterId": adapter_id,
+        "forecastContract": forecast_contract,
+    })
+    .to_string();
+    let temporary_path = state
+        .root
+        .join("signal-datasets")
+        .join(format!(".{dataset_id}.model.tmp"));
+    let directory = state.root.join("signal-datasets");
+    fs::create_dir_all(&directory).map_err(string)?;
+    write_rows(&temporary_path, &published_rows)?;
+    let parquet = fs::read(&temporary_path).map_err(string)?;
+    let parquet_sha256 = hash(&parquet);
+    let final_path = directory.join(format!("{dataset_id}.parquet"));
+    let unavailable_count = published_rows.iter().filter(|row| row.3.is_none()).count();
+    let status_counts = published_rows
+        .iter()
+        .fold(BTreeMap::new(), |mut counts, row| {
+            let status = row
+                .3
+                .is_some()
+                .then_some("present")
+                .unwrap_or_else(|| row.4.as_deref().unwrap_or("unavailable"));
+            *counts.entry(status.to_owned()).or_insert(0) += 1;
+            counts
+        });
+    let metadata = SignalDataset {
+        dataset_id: dataset_id.into(),
+        snapshot_id: snapshot.snapshot_id,
+        src: snapshot.src,
+        code: snapshot.code,
+        interval: snapshot.interval.as_str().into(),
+        prediction_source: "adaq-python-model@1".into(),
+        model_artifact: Some(model_artifact),
+        model_outputs: vec![model_output],
+        model_parameters,
+        source_warmup_bars: 0,
+        model_warmup_bars: 5,
+        model_archive_sha256: artifact_sha256.into(),
+        trust: "managed-python-model@1".into(),
+        component_lock: vec![],
+        feature_plan_json,
+        feature_plan_hash: feature_plan_hash.into(),
+        seed,
+        engine_identity: identity,
+        producer_segments,
+        continuous_bar_segments: 1,
+        bar_gap_rule: "model-forecast@1".into(),
+        row_count: published_rows.len(),
+        unavailable_count,
+        status_counts,
+        parquet_sha256: parquet_sha256.clone(),
+        archive_manifest_json: None,
+        external_producer_segments: None,
+    };
+    let metadata_json = serde_json::to_string(&metadata).map_err(string)?;
+    let mut database = state.database.lock().map_err(string)?;
+    let transaction = database.transaction().map_err(string)?;
+    let mut created_final = false;
+    let result = (|| -> Result<(), String> {
+        if final_path.exists() {
+            if hash(&fs::read(&final_path).map_err(string)?) != parquet_sha256 {
+                return Err("existing-dataset-content-hash-mismatch".into());
+            }
+            fs::remove_file(&temporary_path).map_err(string)?;
+        } else {
+            fs::rename(&temporary_path, &final_path).map_err(string)?;
+            created_final = true;
+        }
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO signal_dataset_content(dataset_id, metadata_json, parquet_path) VALUES (?1, ?2, ?3)",
+                params![dataset_id, metadata_json, final_path.to_string_lossy()],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO signal_dataset_access(user_id, dataset_id) VALUES (?1, ?2)",
+                params![user_id, dataset_id],
+            )
+            .map_err(string)?;
+        transaction.commit().map_err(string)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+        if created_final {
+            let _ = fs::remove_file(&final_path);
+        }
+    }
+    result?;
+    serde_json::to_value(metadata).map_err(string)
+}
+
 pub(crate) fn dataset_outputs(
     dataset: &SignalDataset,
 ) -> Result<Vec<adaq_component_tooling::ModelOutput>, String> {
@@ -886,4 +1084,104 @@ pub(crate) fn hash(bytes: &[u8]) -> String {
 
 pub(crate) fn string(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod python_model_tests {
+    use super::*;
+    use adaq_data_core::{BarInterval, BarSeries, OhlcvBar};
+    use rust_decimal::Decimal;
+
+    #[test]
+    fn python_model_forecasts_publish_through_the_m8_signal_contract() {
+        let root = std::env::temp_dir().join(format!(
+            "adaq-python-model-signal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = LocalResearchState::open(&root).unwrap();
+        let snapshot = state
+            .persist_snapshot_for_user(
+                "alice",
+                &BarSeries {
+                    src: "okx".into(),
+                    code: "BTC-USDT".into(),
+                    interval: BarInterval::OneHour,
+                    bars: vec![
+                        OhlcvBar {
+                            open_time_ms: 0,
+                            open: Decimal::ONE,
+                            high: Decimal::ONE,
+                            low: Decimal::ONE,
+                            close: Decimal::ONE,
+                            base_volume: Decimal::ONE,
+                            quote_volume: Decimal::ONE,
+                        },
+                        OhlcvBar {
+                            open_time_ms: 3_600_000,
+                            open: Decimal::ONE,
+                            high: Decimal::ONE,
+                            low: Decimal::ONE,
+                            close: Decimal::ONE,
+                            base_volume: Decimal::ONE,
+                            quote_volume: Decimal::ONE,
+                        },
+                    ],
+                    gaps: vec![],
+                },
+            )
+            .unwrap();
+        let rows = vec![
+            adaq_python_research::model::ForecastRow {
+                datetime: 0,
+                instrument: "BTC-USDT".into(),
+                value: Some(0.25),
+                unavailable_reason: None,
+            },
+            adaq_python_research::model::ForecastRow {
+                datetime: 3_600_000,
+                instrument: "BTC-USDT".into(),
+                value: None,
+                unavailable_reason: Some("target-window-boundary".into()),
+            },
+        ];
+        let metadata = publish_python_model_signal_dataset(
+            &state,
+            "alice",
+            "python-model-forecast",
+            &snapshot.snapshot_id,
+            "feature-plan",
+            "factor-dataset",
+            "feature-dataset",
+            &"b".repeat(64),
+            &BTreeMap::from([(String::from("resourcePolicy"), String::from("policy"))]),
+            "qlib-linear-ridge@1",
+            1.0,
+            7,
+            "forecast:continuous-future-close-return:native@1",
+            &rows,
+        )
+        .unwrap();
+        assert_eq!(metadata["predictionSource"], "adaq-python-model@1");
+        assert_eq!(metadata["rowCount"], 2);
+        assert_eq!(metadata["unavailableCount"], 1);
+        let page = signal_rows_page(&state, "alice", "python-model-forecast", 1).unwrap();
+        assert_eq!(page["total"], 2);
+        assert_eq!(page["items"][0]["availableAtMs"], 3_600_000);
+        assert_eq!(page["items"][1]["status"], "unavailable");
+        assert_eq!(
+            page["items"][1]["unavailableReason"],
+            "target-window-boundary"
+        );
+        assert!(
+            signal_rows_page(&state, "bob", "python-model-forecast", 1)
+                .unwrap_err()
+                .contains("not available")
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
 }
