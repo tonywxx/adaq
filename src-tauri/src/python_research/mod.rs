@@ -6212,6 +6212,79 @@ mod tests {
     }
 
     #[test]
+    fn tutorial_golden_contracts_cover_fixture_windows_and_model_boundaries() {
+        let fixture = SyntheticTutorialFixture::m12().unwrap();
+        fixture.validate().unwrap();
+        assert_eq!(
+            fixture.manifest.instrument_sha256,
+            "a6963ebf7e0481749a1db2db22ef2f23bc5fee6d39d5afe258ca27c3c17fdaca"
+        );
+        assert_eq!(
+            fixture.manifest.calendar_sha256,
+            "2e423b9b46a4af56729da0fee4298ed47cdaee70b6e0bc4e4e8f5fb03cd978a9"
+        );
+        assert_eq!(
+            fixture.manifest.bars_sha256,
+            "fd4dc3bcccb554ad29ca08e89c35c220dafcb546db4df436009612f795a2bb4e"
+        );
+        assert_eq!(
+            fixture.manifest.content_sha256,
+            "6d44423e009d2251d442f388f1621242fc4dac1e0eb5d9b774fc62ecd135d848"
+        );
+
+        let windows = TutorialWindows::m12();
+        windows.validate().unwrap();
+        assert_eq!(
+            future_close_return_state(&[1.0; 180], windows.train_end, windows.train_end),
+            adaq_python_research::model::TargetValue::Unavailable(
+                adaq_python_research::model::TargetUnavailableReason::WindowBoundary
+            )
+        );
+        assert_eq!(
+            future_close_return_state(&[1.0; 180], 95, windows.train_end),
+            adaq_python_research::model::TargetValue::Available(0.0)
+        );
+
+        let factor = demo_factor_run_with_outputs(None, None, true).unwrap();
+        assert_eq!(factor.lookbacks, vec![5, 20, 60]);
+        assert_eq!(factor.available_rows.len(), 3);
+        assert!(factor.repeatability.values().all(|report| report.exact));
+        assert!(factor.selection_required && factor.promotion_required);
+
+        let model = demo_model_run_with_evidence(
+            1.0,
+            sha256(b"py-model-qlib-ridge-return@1"),
+            sha256(b"adaq-python-environment@1"),
+            sha256(b"python-tutorial-a-share@1:momentum-score:20"),
+            ModelInputEvidence {
+                decision_hash: sha256(b"factor-decision"),
+                promotion_protocol_hash: sha256(b"promotion-protocol"),
+                factor_dataset_id: sha256(b"factor-dataset"),
+                feature_dataset_id: sha256(b"feature-dataset"),
+                feature_plan_hash: sha256(b"feature-plan"),
+                snapshot_id: sha256(b"snapshot"),
+                universe_id: sha256(b"universe"),
+                lookback: 20,
+            },
+            HostResourcePolicy::m12_default(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(model.view.windows, windows);
+        assert_eq!(model.view.train_rows, 900);
+        assert_eq!(model.view.selection_rows, 360);
+        assert_eq!(model.view.final_rows, 420);
+        assert!(model.view.test_labels_withheld);
+        assert_eq!(
+            model.view.repeatability_tolerance,
+            RIDGE_REPEATABILITY_TOLERANCE
+        );
+        assert!(model.artifact.validate().is_ok());
+        assert_eq!(model.final_labels.len(), 360);
+    }
+
+    #[test]
     fn model_demo_reloads_a_data_only_artifact_contract() {
         let result = demo_model_run_with_evidence(
             1.0,

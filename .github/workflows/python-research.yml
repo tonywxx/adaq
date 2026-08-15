@@ -35,8 +35,13 @@ jobs:
         include:
           - name: macOS ARM64
             runner: macos-14
+            full_tutorial: false
           - name: Windows x86_64
             runner: windows-latest
+            full_tutorial: false
+          - name: Linux x86_64
+            runner: ubuntu-latest
+            full_tutorial: true
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -79,9 +84,11 @@ jobs:
         working-directory: src-tauri
         run: cargo test -p adaq-factor-research --lib --test benchmarks --test metric_golden -- --test-threads=1
       - name: Run offline Factor-to-Model tutorial
-        if: github.event_name != 'pull_request'
+        if: matrix.full_tutorial || github.event_name != 'pull_request'
         working-directory: src-tauri
-        run: cargo test -p adaq --lib factor_vertical_publishes_dataset_reports_and_promotion_evidence -- --test-threads=1
+        run: |
+          cargo test -p adaq --lib tutorial_golden_contracts_cover_fixture_windows_and_model_boundaries -- --test-threads=1
+          cargo test -p adaq --lib factor_vertical_publishes_dataset_reports_and_promotion_evidence -- --test-threads=1
       - name: Build frontend
         run: pnpm run build
       - name: Lint frontend
@@ -99,8 +106,18 @@ jobs:
 
   workspace:
     if: github.event_name != 'pull_request'
-    name: Supported workspace and tutorial
-    runs-on: macos-14
+    name: Supported workspace and tutorial (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            runner: macos-14
+          - name: Windows x86_64
+            runner: windows-latest
+          - name: Linux x86_64
+            runner: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -139,7 +156,8 @@ jobs:
             "$cli" build
           done
       - run: pnpm install --frozen-lockfile
-      - working-directory: src-tauri
+      - name: Run full Rust workspace and tutorial contracts
+        working-directory: src-tauri
         run: cargo test --workspace -- --test-threads=1
       - run: python python/contract_tests/run_contract_tests.py
       - run: python python/runner_tests/run_runner_tests.py

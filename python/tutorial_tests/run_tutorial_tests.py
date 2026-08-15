@@ -17,9 +17,10 @@ EXPECTED_FIXTURE = {
     "synthetic": True,
     "instrumentCount": 12,
     "sessionCount": 180,
+    "instrumentSha256": "a6963ebf7e0481749a1db2db22ef2f23bc5fee6d39d5afe258ca27c3c17fdaca",
     "calendarSha256": "2e423b9b46a4af56729da0fee4298ed47cdaee70b6e0bc4e4e8f5fb03cd978a9",
     "barsSha256": "fd4dc3bcccb554ad29ca08e89c35c220dafcb546db4df436009612f795a2bb4e",
-    "contentSha256": "471f2683bb2b3f794285ab278eee212bb5ddf52e71ad890a65520a78bc12296d",
+    "contentSha256": "6d44423e009d2251d442f388f1621242fc4dac1e0eb5d9b774fc62ecd135d848",
 }
 
 PROJECTS = {
@@ -99,6 +100,12 @@ def main() -> None:
         for project_id in PROJECTS:
             assert_true(project_id in document, f"tutorial project missing: {project_id}")
     assert_true("M13" in guide and "M14" in guide, "deferred milestone boundary missing")
+    assert_true("Run Python Tutorial" in guide, "English tutorial surface missing")
+    assert_true("Run Python Tutorial" in guide_zh, "Chinese tutorial surface missing")
+    workflow = (ROOT / ".github/workflows/python-research.yml").read_text(encoding="utf-8")
+    for platform in ("macos-14", "windows-latest", "ubuntu-latest"):
+        assert_true(platform in workflow, f"supported platform missing: {platform}")
+    assert_true("tutorial_golden_contracts_cover_fixture_windows_and_model_boundaries" in workflow, "tutorial Golden gate missing")
 
     archives = [
         path

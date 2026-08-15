@@ -288,7 +288,7 @@ Qualified WASI or future Model products may be free or paid under separate prove
 
 ## Tutorial fixture and examples
 
-The Host-owned `python-tutorial-a-share@1` fixture lives under `src-tauri/fixtures/python-tutorial/`, outside Project Archives. Its Manifest binds clearly fictional Instrument identities, Instrument Master, Calendar, and daily Bar JSON for exactly 12 A-share-like Instruments across 180 Trading Sessions. It is offline and makes no claim about a real issuer, live market, or profitable pattern.
+The Host-owned `python-tutorial-a-share@1` fixture lives under `src-tauri/fixtures/python-tutorial/`, outside Project Archives. Its Manifest binds clearly fictional Instrument identities, Instrument Master, Calendar, and daily Bar JSON for exactly 12 A-share-like Instruments across 180 Trading Sessions. The committed Instrument, Calendar, Bar, and combined Content SHA-256 values are `a6963ebf7e0481749a1db2db22ef2f23bc5fee6d39d5afe258ca27c3c17fdaca`, `2e423b9b46a4af56729da0fee4298ed47cdaee70b6e0bc4e4e8f5fb03cd978a9`, `fd4dc3bcccb554ad29ca08e89c35c220dafcb546db4df436009612f795a2bb4e`, and `6d44423e009d2251d442f388f1621242fc4dac1e0eb5d9b774fc62ecd135d848`. It is offline and makes no claim about a real issuer, live market, or profitable pattern.
 
 Fixed windows are:
 
@@ -306,7 +306,7 @@ All three bundled Projects are Apache-2.0. Factor and Strategy depend only on th
 
 Golden evidence is exact for Factor rows, identities, Unavailable states, Strategy ordering, and Portfolio Targets. Ridge coefficients and Forecasts use the Adapter's strict finite tolerance. The Fixture preserves enough ranking separation that tolerated Forecast variation cannot change Top-N, so final Targets remain exact.
 
-Run Python Tutorial is guided rather than unattended:
+Run Python Tutorial is guided rather than unattended. The bilingual panel is mounted at the Model Lab route and prepares the two executable examples without trusting or executing code; its exact-contract links then take the User to the Factor and Model Labs:
 
 1. Show exact Revisions, entry points, Locks, download and disk needs, and trusted-code warning.
 2. Record independent exact-Revision Trust Decisions after User confirmation.

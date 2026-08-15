@@ -24,7 +24,7 @@
 | Toolchain | Rust、Node、pnpm、Managed CPython、SDK、Runner、Qlib Adapter Version |
 | Runtime Artifact | Platform、Version、Source、Signature/Hash 与 Installed Bytes |
 | Wheelhouse | Manifest/Signature Hash 与每个选定 Wheel Hash |
-| Fixture | `python-tutorial-a-share@1` Manifest 与 Content Hash |
+| Fixture | `python-tutorial-a-share@1`；Instrument `a6963ebf...fdaca`、Calendar `2e423b9b...978a9`、Bars `fd4dc3bc...bb4e`、Content `6d44423e...5d848` |
 | Example Revision | 所有适用 `py-*` Project 的精确 Hash |
 | Test User | 已脱敏 User Identity 与干净或保留的 Local-data State |
 | CI | 每个平台的 Workflow URL、Revision、Job URL 与 Conclusion |

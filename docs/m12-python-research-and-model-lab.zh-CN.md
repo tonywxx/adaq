@@ -284,7 +284,7 @@ Marketplace Hosting 属于 V1 后工作。计划中的 Community Python Project 
 
 ## Tutorial Fixture 与 Example
 
-Host-owned `python-tutorial-a-share@1` 位于 `src-tauri/fixtures/python-tutorial/`，不进入 Project Archive。Manifest 绑定明显虚构的 Instrument Identity、Instrument Master、Calendar，以及 12 个 A-share-like Instrument × 180 个 Trading Session 的 Daily Bar JSON。它离线运行，不声称对应真实 Issuer、Live Market 或 Profit Pattern。
+Host-owned `python-tutorial-a-share@1` 位于 `src-tauri/fixtures/python-tutorial/`，不进入 Project Archive。Manifest 绑定明显虚构的 Instrument Identity、Instrument Master、Calendar，以及 12 个 A-share-like Instrument × 180 个 Trading Session 的 Daily Bar JSON。已提交的 Instrument、Calendar、Bar 与合并 Content SHA-256 分别为 `a6963ebf7e0481749a1db2db22ef2f23bc5fee6d39d5afe258ca27c3c17fdaca`、`2e423b9b46a4af56729da0fee4298ed47cdaee70b6e0bc4e4e8f5fb03cd978a9`、`fd4dc3bcccb554ad29ca08e89c35c220dafcb546db4df436009612f795a2bb4e` 与 `6d44423e009d2251d442f388f1621242fc4dac1e0eb5d9b774fc62ecd135d848`。它离线运行，不声称对应真实 Issuer、Live Market 或 Profit Pattern。
 
 固定 Window：
 
@@ -302,7 +302,7 @@ Host-owned `python-tutorial-a-share@1` 位于 `src-tauri/fixtures/python-tutoria
 
 Factor Row、Identity、Unavailable State、Strategy Order 与 Portfolio Target 的 Golden Evidence 必须精确。Ridge Coefficient/Forecast 使用 Adapter 的严格有限 Tolerance。Fixture 保留足够 Rank Separation，使容差内 Forecast 差异不能改变 Top-N，因此 Final Target 仍精确。
 
-Run Python Tutorial 是引导流程：
+Run Python Tutorial 是引导流程。双语面板挂载在 Model Lab 路由中，只准备两个可执行 Example，不会自动 Trust 或执行代码；随后通过精确契约链接进入 Factor 与 Model Lab：
 
 1. 展示精确 Revision、Entry Point、Lock、Download/Disk Requirement 与 Trusted-code Warning。
 2. 用户确认后记录独立 Exact-revision Trust Decision。

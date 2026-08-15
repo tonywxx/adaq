@@ -24,7 +24,7 @@ Record before testing:
 | Toolchains | Rust, Node, pnpm, managed CPython, SDK, Runner, Qlib Adapter versions |
 | Runtime artifacts | Platform, version, source, signature/hash, installed bytes |
 | Wheelhouse | Manifest/signature hash and every selected wheel hash |
-| Fixture | `python-tutorial-a-share@1` manifest and content hashes |
+| Fixture | `python-tutorial-a-share@1`; Instrument `a6963ebf...fdaca`, Calendar `2e423b9b...978a9`, Bars `fd4dc3bc...bb4e`, Content `6d44423e...5d848` |
 | Example revisions | Exact hashes for all applicable `py-*` Projects |
 | Test User | Redacted User identity and clean/retained local-data state |
 | CI | Workflow URL, revision, job URL, conclusion per platform |

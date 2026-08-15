@@ -956,6 +956,62 @@ const english = {
 			freezeAndPrepareRequired:
 				"Freeze and trust the Factor Revision, then prepare its managed Environment first.",
 		},
+		tutorial: {
+			title: "Run Python Tutorial",
+			description:
+				"Prepare the offline Factor-to-Model path and inspect every exact identity before any trusted code or scientific decision is recorded.",
+			run: "Prepare tutorial",
+			refresh: "Refresh",
+			synthetic: "Synthetic Demonstration",
+			fixtureShape:
+				"{{instruments}} fictional Instruments · {{sessions}} Sessions · no provider credentials or network dependency.",
+			fixtureHashes:
+				"Instrument {{instrumentSha256}} · Calendar {{calendarSha256}} · Bars {{barsSha256}} · Content {{contentSha256}}",
+			boundary:
+				"Five-session Targets crossing a window boundary remain Unavailable; they are never shifted.",
+			runtime: "Managed Runtime",
+			loading: "Loading tutorial evidence…",
+			deferred: "M13 deferred",
+			notCreated: "not created",
+			strategyDeferred:
+				"This source-visible Strategy Project is a bilingual M13 continuation and is not executable in M12.",
+			create: "Create from Example",
+			prepare: "Validate, sync, and prepare",
+			trusted: "Trusted",
+			untrusted: "Untrusted",
+			inspect: "Inspect exact contract",
+			revision: "Revision",
+			entryPoint: "Entry point",
+			sdk: "SDK Artifact",
+			environment: "Environment",
+			lock: "Dependency Lock",
+			runtimeIdentity: "Runtime Artifact",
+			wheelhouse: "Wheelhouse",
+			parameters: "Normalized parameters",
+			inputs: "Input bindings",
+			seed: "Seed",
+			resourcePolicy: "Resource policy",
+			sourceFiles: "Source files and hashes",
+			reviewTrust: "Review exact Trust Decisions",
+			trustHint:
+				"One confirmation records one Trust Decision per exact Revision; it never starts a run.",
+			nextSteps: "Decision-gated next steps",
+			factorStep:
+				"Open Factor Lab: run the three lookbacks and inspect Golden evidence.",
+			modelStep: "Open Model Lab after the positive Factor Promotion Decision.",
+			decisionStep:
+				"Parameter Selection, Promotion, and Final Evaluation remain explicit User decisions.",
+			trustTitle: "Trust exact tutorial Revisions",
+			trustDescription:
+				"This confirmation records separate Trust Decisions for the listed Factor and Model Revisions. It does not grant blanket or future trust and does not execute either Project.",
+			cancel: "Cancel",
+			trustExact: "Trust these exact Revisions",
+			projectRequired: "Create the tutorial Project before preparing it.",
+			projectInvalid:
+				"The tutorial Project must be valid and clean before preparation.",
+			prepareRequired:
+				"Prepare and inspect both executable tutorial Projects first.",
+		},
 		projects: {
 			title: "Python Research Projects",
 			description:
@@ -1823,6 +1879,57 @@ const simplifiedChinese = {
 			unverified: "未验证",
 			freezeAndPrepareRequired:
 				"请先冻结并信任 Factor Revision，然后准备它的托管 Environment。",
+		},
+		tutorial: {
+			title: "运行 Python 教程",
+			description:
+				"准备离线 Factor-to-Model 路径，并在任何受信任代码或科学决定记录前检查每个精确身份。",
+			run: "准备教程",
+			refresh: "刷新",
+			synthetic: "合成演示",
+			fixtureShape:
+				"{{instruments}} 个虚构 Instruments · {{sessions}} 个 Sessions · 不依赖 Provider 凭据或网络。",
+			fixtureHashes:
+				"Instrument {{instrumentSha256}} · Calendar {{calendarSha256}} · Bars {{barsSha256}} · Content {{contentSha256}}",
+			boundary: "跨越窗口边界的五 Session Target 保持 Unavailable，不会被移动。",
+			runtime: "托管 Runtime",
+			loading: "正在加载教程 Evidence…",
+			deferred: "M13 延期",
+			notCreated: "尚未创建",
+			strategyDeferred:
+				"此可查看源代码的 Strategy Project 是双语 M13 延续，在 M12 不可执行。",
+			create: "从示例创建",
+			prepare: "校验、同步并准备",
+			trusted: "已信任",
+			untrusted: "未信任",
+			inspect: "检查精确契约",
+			revision: "Revision",
+			entryPoint: "入口点",
+			sdk: "SDK Artifact",
+			environment: "Environment",
+			lock: "Dependency Lock",
+			runtimeIdentity: "Runtime Artifact",
+			wheelhouse: "Wheelhouse",
+			parameters: "规范化参数",
+			inputs: "输入绑定",
+			seed: "Seed",
+			resourcePolicy: "资源策略",
+			sourceFiles: "源文件与哈希",
+			reviewTrust: "检查精确 Trust Decisions",
+			trustHint:
+				"一次确认会为每个精确 Revision 记录一个独立 Trust Decision，不会启动运行。",
+			nextSteps: "由决定控制的下一步",
+			factorStep: "打开 Factor Lab：运行三个 lookback 并检查 Golden Evidence。",
+			modelStep: "在正向 Factor Promotion Decision 后打开 Model Lab。",
+			decisionStep: "参数选择、Promotion 和最终评估仍由用户明确决定。",
+			trustTitle: "信任精确的教程 Revision",
+			trustDescription:
+				"此确认会为列出的 Factor 和 Model Revision 分别记录 Trust Decision，不授予全局或未来信任，也不会执行任何 Project。",
+			cancel: "取消",
+			trustExact: "信任这些精确 Revision",
+			projectRequired: "请先创建教程 Project，再准备它。",
+			projectInvalid: "教程 Project 在准备前必须有效且为 Clean。",
+			prepareRequired: "请先准备并检查两个可执行教程 Project。",
 		},
 		projects: {
 			title: "Python 研究项目",

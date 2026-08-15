@@ -22,6 +22,7 @@ pub struct FixtureManifest {
     pub synthetic: bool,
     pub instrument_count: usize,
     pub session_count: usize,
+    pub instrument_sha256: String,
     pub calendar_sha256: String,
     pub bars_sha256: String,
     pub content_sha256: String,
@@ -59,6 +60,8 @@ impl SyntheticTutorialFixture {
                     })
             })
             .collect::<Vec<_>>();
+        let instrument_sha256 =
+            sha256(&serde_json::to_vec(&instruments).map_err(|error| invalid(error.to_string()))?);
         let calendar_sha256 =
             sha256(&serde_json::to_vec(&sessions).map_err(|error| invalid(error.to_string()))?);
         let bars_sha256 =
@@ -68,6 +71,7 @@ impl SyntheticTutorialFixture {
             synthetic: true,
             instrument_count: instruments.len(),
             session_count: sessions.len(),
+            instrument_sha256,
             calendar_sha256,
             bars_sha256,
             content_sha256: String::new(),
@@ -75,6 +79,7 @@ impl SyntheticTutorialFixture {
         manifest.content_sha256 = sha256(
             &serde_json::to_vec(&(
                 &manifest.fixture_id,
+                &manifest.instrument_sha256,
                 &manifest.calendar_sha256,
                 &manifest.bars_sha256,
             ))
