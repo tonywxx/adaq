@@ -62,12 +62,12 @@ flowchart LR
 所有权保持窄而明确：
 
 - `src-tauri/crates/adaq-python-research` 与 Tauri 无关，负责 Manifest、Archive、Revision、Trust、Runner Protocol、Resource Policy 与 Staged Result Validation Contract。
-- `src-tauri/src/python_research/` 负责 Python Research SQLite Lifecycle、Working Copy、Runtime/Environment File、私有进程监督，以及接入 `Features` 已拥有的持久 FIFO。
+- `src-tauri/src/python_research/` 通过一个进程内 Control Plane Facade 负责完整 Python Research Lifecycle：Project、Trust、Runtime、Environment、Attempt、Recovery、Reset、私有进程监督，以及接入 `Features` 已拥有的持久 FIFO。Store 细节保持私有；同步 Lifecycle 方法与 Tauri 无关，Command 只负责 IPC 与 `spawn_blocking` 适配。
 - `src-tauri/crates/adaq-factor-research` 与 `src-tauri/src/factor_research/` 继续负责 Factor Dataset、Evaluation、Family、Promotion 与 Storage。
 - 现有 Model/Forecast Signal 模块继续负责 Model Artifact、Dataset、Evaluation 与 Storage。
 - `python/adaq-research-sdk/` 构建公开 `adaq-research-sdk` Wheel 和 `adaq` Namespace，包括 `adaq.qlib`。
 - `python/adaq-python-research-runner/` 构建 App 私有 Runner Wheel，由托管 CPython 以 `-I -m adaq_runner` 启动。
-- Tauri Command 仅负责验证、入队、取消、重试和查询，不在 Command 或 UI Thread 内运行 Python、重 SQLite/File 或 Training Work。
+- Tauri Command 仅负责对 Typed Lifecycle、入队、取消、重试和查询方法做 IPC 适配，不组合 Store，也不在 Command 或 UI Thread 内运行 Python、重 SQLite/File 或 Training Work；Factor/Model 只拉取 Host 已验证结果。
 
 ## Project Kind 与 Mode
 

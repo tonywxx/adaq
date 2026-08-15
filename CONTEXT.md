@@ -641,7 +641,7 @@ The Tauri-independent Rust crate at `src-tauri/crates/adaq-python-research` that
 _Avoid_: Python Research SDK, Tauri command module, Factor Research Store
 
 **Python Research Control Plane**:
-The native application module at `src-tauri/src/python_research/` that owns Python Research SQLite lifecycle, Working Copy and Archive files, Runtime and Environment management, Runner supervision, and attachment to the existing shared Research Queue. Factor and Model modules retain their existing evidence Stores and receive only validated Host results.
+The sole application orchestration boundary for Python Research: it owns Project, Trust, Runtime, Environment, Runner, Attempt, recovery, and reset lifecycles, coordinates their ordering, and attaches work to the shared Research Queue. Its persistence and runner details remain private; Factor and Model modules retain their evidence lifecycles and receive only validated Host results.
 _Avoid_: Python Research Runner, Python Research Core, Tauri UI thread work
 
 **Python Research Project**:
@@ -709,15 +709,15 @@ A prepared, content-addressed binding of one exact ADAQ Python Runtime and Pytho
 _Avoid_: Active virtualenv, system site-packages, Python Project Revision
 
 **Python Environment Preparation Attempt**:
-A lifecycle record created by explicit Sync or Prepare Environment that downloads, verifies, and stages one exact Python Project Environment before atomically publishing it as usable. Matching active requests coalesce, Failed or Cancelled staging is never executable, and Retry creates a new Attempt. Preparation does not grant Project execution trust.
+A lifecycle record created by explicit Sync or Prepare Environment that downloads, verifies, and stages one exact Python Project Environment before atomically publishing it as usable. It is distinct from a Python Research Attempt and never enters the heavy Research Queue; matching active requests coalesce, Failed or Cancelled staging is never executable, and Retry creates a new Attempt. Preparation does not grant Project execution trust.
 _Avoid_: Python Research Attempt, pip install during Run, terminal setup
 
 **Python Research Schema**:
-The exact device-local `PYTHON_RESEARCH_SCHEMA_VERSION`, initially `1.0.0`, governing Project Revision, Attempt, Trust, local binding, and result metadata owned by the Python Research Control Plane. An incompatible value blocks Python Research until an explicit device-level Reset Python Research Evidence; no migration, dual reader, or automatic deletion is implied.
+The exact device-local `PYTHON_RESEARCH_SCHEMA_VERSION`, initially `1.0.0`, governing Project Revision, Attempt, Trust, local binding, and result metadata owned by the Python Research Control Plane. An incompatible value puts Python Research into a read-only ResetRequired state: source inspection, listing, and Archive export remain available, while lifecycle mutations and execution wait for an explicit device-level Reset Python Research Evidence; no migration, dual reader, or automatic deletion is implied.
 _Avoid_: Factor Research Schema, Python SDK version, SQLite application version
 
 **Reset Python Research Evidence**:
-The explicit device-level operation that stops Python research and removes Python Revision, Attempt, Trust, binding, and result metadata while preserving User-authored Working Copies and exported Project Archives. Runtime, Wheelhouse, and Environment bytes remain independently evictable Cache, and Factor evidence uses its separate Factor Research Reset.
+The explicit device-level operation that stops a User's Python research and preparation work, removes that User's Python Revision, Attempt, Trust, binding, and result metadata, and preserves User-authored Working Copies and exported Project Archives. Runtime, Wheelhouse, and Environment bytes remain shared independently evictable Cache and are not removed merely because one User resets; Factor evidence uses its separate Factor Research Reset.
 _Avoid_: delete Python projects, remove all local data, cache cleanup
 
 **Python Research Runner**:
@@ -741,7 +741,7 @@ The persistent device-wide FIFO that serializes heavy Feature, Factor, Python, M
 _Avoid_: Tauri command body, Python worker pool, UI loading queue
 
 **Python Research Attempt**:
-An append-only execution record binding one Python Project Revision and prepared environment to exact frozen Input Slot bindings, one normalized parameter set, Seed, deterministic runtime settings, resource policy, status, outputs, diagnostics, and logs. Before importing Project code, the Runner applies the Attempt Seed to `PYTHONHASHSEED` and the registered Adapter's Python, NumPy, and framework random sources and applies Host thread limits. Cancel requests are cooperative for a bounded grace period and then terminate the process tree; Cancelled is recorded only after Runner exit and staging isolation, while a stale Running Attempt recovered after restart becomes Failed with an Interrupted reason. Source edits, parameter changes, and Retry create new Attempts, and late Runner results never mutate prior evidence.
+An append-only execution record binding one Python Project Revision and prepared environment to exact frozen Input Slot bindings, one normalized parameter set, Seed, deterministic runtime settings, resource policy, status, outputs, diagnostics, and logs. Pending work survives restart in FIFO order, while stale Running work becomes Failed with an Interrupted reason rather than resuming. Cancel requests are cooperative for a bounded grace period and then terminate the process tree; Cancelled is recorded only after Runner exit and staging isolation. Source edits, parameter changes, and Retry create new Attempts, active duplicate Starts coalesce only on complete execution identity, and late Runner results never mutate prior evidence.
 _Avoid_: Python process, terminal session, hidden parameter sweep
 
 **Python Research Context**:

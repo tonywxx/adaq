@@ -62,12 +62,12 @@ flowchart LR
 Ownership is deliberately narrow:
 
 - `src-tauri/crates/adaq-python-research` is Tauri-independent and owns Manifest, Archive, Revision, Trust, Runner Protocol, Resource Policy, and staged Result validation contracts.
-- `src-tauri/src/python_research/` owns Python Research SQLite lifecycle, Working Copies, Runtime and Environment files, private process supervision, and attachment to the persistent FIFO already owned by `Features`.
+- `src-tauri/src/python_research/` owns the complete Python Research lifecycle through one in-process Control Plane facade: Project, Trust, Runtime, Environment, Attempt, recovery, Reset, private process supervision, and attachment to the persistent FIFO already owned by `Features`. Store details stay private; synchronous lifecycle methods remain Tauri-independent, while commands only adapt IPC and `spawn_blocking`.
 - `src-tauri/crates/adaq-factor-research` and `src-tauri/src/factor_research/` retain Factor Dataset, Evaluation, Family, Promotion, and storage ownership.
 - Existing Model and Forecast Signal modules retain Model Artifact, Dataset, Evaluation, and storage ownership.
 - `python/adaq-research-sdk/` builds the public `adaq-research-sdk` wheel and `adaq` namespace, including `adaq.qlib`.
 - `python/adaq-python-research-runner/` builds the private bundled Runner wheel launched as managed CPython `-I -m adaq_runner`.
-- Tauri commands remain thin validation, enqueue, cancel, retry, and query boundaries. They do not run Python, SQLite-heavy, filesystem-heavy, or training work inline.
+- Tauri commands remain thin IPC adapters over typed lifecycle, enqueue, cancel, retry, and query methods. They do not compose Stores or run Python, SQLite-heavy, filesystem-heavy, or training work inline; Factor and Model modules pull only Host-validated results.
 
 ## Project kinds and modes
 
