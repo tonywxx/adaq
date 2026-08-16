@@ -28,9 +28,9 @@ AdaQ V1 是一个**本地优先的研究、回测与模拟**桌面应用，不�
 
 当前 M11 交付不包含（路线图 M12–M18）：Qlib Model 训练、Portfolio Strategy、Paper Trading 账户与执行、受监督 Trading Bot、Marketplace 发布，以及任何真实资金交易。
 
-## AdaQ 工作流
+## AdaQ App
 
-![AdaQ 工作流](screenshots/adaq-workflow.png)
+![AdaQ App](screenshots/adaq-app-ui-zh-CN.png)
 
 ## 已实现里程碑
 

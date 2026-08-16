@@ -28,9 +28,9 @@ AdaQ V1 is a **local-first research, backtesting, and simulation** desktop app. 
 
 Not included in the current M11 delivery (roadmap M12–M18): Qlib Model training, portfolio Strategies, Paper Trading accounts and execution, supervised Trading Bots, Marketplace publishing, and any real-money trading.
 
-## AdaQ workflow
+## AdaQ App
 
-![AdaQ workflow](screenshots/adaq-workflow.png)
+![AdaQ App](screenshots/adaq-app-ui.png)
 
 ## Implemented Milestones
 
