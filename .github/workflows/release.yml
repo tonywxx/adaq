@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -29,11 +32,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
-            echo "Releases must run from main, got ${GITHUB_REF}." >&2
-            exit 1
-          fi
-
           VERSION=$(node --input-type=module -e '
             import fs from "node:fs"
             const version = JSON.parse(fs.readFileSync("package.json","utf8")).version
@@ -51,9 +49,25 @@ jobs:
             process.stdout.write(version)
           ')
 
-          if git rev-parse --verify --quiet "refs/tags/v${VERSION}"; then
-            echo "Tag v${VERSION} already exists." >&2
-            exit 1
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            if [[ "${GITHUB_REF_TYPE}" != "tag" || ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Release pushes must use a tag like v0.9.1, got ${GITHUB_REF_NAME}." >&2
+              exit 1
+            fi
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [[ "${TAG_VERSION}" != "${VERSION}" ]]; then
+              echo "Tag ${GITHUB_REF_NAME} does not match repository version ${VERSION}." >&2
+              exit 1
+            fi
+          else
+            if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+              echo "Manual releases must run from main, got ${GITHUB_REF}." >&2
+              exit 1
+            fi
+            if git rev-parse --verify --quiet "refs/tags/v${VERSION}"; then
+              echo "Tag v${VERSION} already exists." >&2
+              exit 1
+            fi
           fi
 
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
