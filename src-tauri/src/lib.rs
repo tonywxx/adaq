@@ -10,6 +10,7 @@ mod local_research;
 mod market_data_pipeline;
 mod market_data_snapshot;
 mod python_research;
+mod research_queue;
 mod run_engine;
 mod user;
 mod validation;
@@ -2491,10 +2492,11 @@ pub fn run() {
                 LocalResearchState::open(&app_data_dir).map_err(std::io::Error::other)?;
             let python_research =
                 Arc::new(python_research::PythonResearchState::open(&app_data_dir));
+            python_research.attach_queue(local_research.features.queue());
             local_research
                 .features
-                .attach_python(python_research.clone());
-            python_research.attach_queue(local_research.features.queue_notifier());
+                .attach_python(python_research.clone())
+                .map_err(std::io::Error::other)?;
             app.manage(local_research);
             app.manage(python_research);
             app.manage(WatchlistDb::open(&database_path).map_err(std::io::Error::other)?);

@@ -1,14 +1,14 @@
-//! The one persistent device FIFO runner for heavy Feature Attempts.
+//! Feature execution bodies and the adapter for the shared Research Queue.
 //!
-//! The device executes one heavy Feature Attempt at a time in creation
-//! order. Pending Attempts live in SQLite and survive restarts; stale
+//! The queue executes one heavy Attempt at a time in admission order. Pending
+//! Attempts live in SQLite and survive restarts; stale
 //! Running Attempts recover at open time. Cancellation reaches the
 //! evaluation loops between observations, and a Running Attempt is only
 //! terminalized after its worker has stopped and released its evidence.
 
 use std::{
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -23,13 +23,121 @@ use adaq_feature_engine::{
 };
 
 use super::{
-    ActiveAttempt, FactorQueueItem, FeaturesInner, FittingAttemptRecord, PythonQueueItem,
-    UserFeatureResetBlock, bounded_diagnostic, instrument_id_for, store, string,
+    ActiveAttempt, FeaturesInner, FittingAttemptRecord, UserFeatureResetBlock, bounded_diagnostic,
+    instrument_id_for, store, string,
 };
-use crate::{forecast_signal_dataset::hash, user::validate_user};
+use crate::{
+    forecast_signal_dataset::hash,
+    research_queue::{
+        QueueAdmission, QueueRunResult, QueueTicket, ResearchQueue, ResearchQueueAdapter, WorkKind,
+    },
+    user::validate_user,
+};
 
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 const PROGRESS_FLUSH_EVENTS: usize = 256;
+
+pub(super) struct FeatureQueueAdapter {
+    inner: Weak<FeaturesInner>,
+    kind: WorkKind,
+}
+
+impl FeatureQueueAdapter {
+    pub(super) fn new(inner: Arc<FeaturesInner>, kind: WorkKind) -> Self {
+        Self {
+            inner: Arc::downgrade(&inner),
+            kind,
+        }
+    }
+}
+
+impl ResearchQueueAdapter for FeatureQueueAdapter {
+    fn pending_attempts(&self) -> Result<Vec<QueueAdmission>, String> {
+        let Some(inner) = self.inner.upgrade() else {
+            return Ok(Vec::new());
+        };
+        match self.kind {
+            WorkKind::FeatureFitting => {
+                let database = inner.source.database()?;
+                Ok(store::FeatureStore::new(&database)
+                    .pending_fitting_attempts()?
+                    .into_iter()
+                    .map(|attempt| QueueAdmission {
+                        user_id: attempt.user_id,
+                        attempt_id: attempt.attempt_id,
+                    })
+                    .collect())
+            }
+            WorkKind::FeatureMaterialization => inner
+                .materialization
+                .pending_attempts()
+                .map_err(string)
+                .map(|attempts| {
+                    attempts
+                        .into_iter()
+                        .map(|attempt| QueueAdmission {
+                            user_id: attempt.user_id,
+                            attempt_id: attempt.attempt_id,
+                        })
+                        .collect()
+                }),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn execute(&self, ticket: QueueTicket) -> QueueRunResult {
+        let Some(inner) = self.inner.upgrade() else {
+            return QueueRunResult::Stale;
+        };
+        match self.kind {
+            WorkKind::FeatureFitting => {
+                let attempt = match inner.source.database() {
+                    Ok(database) => match store::FeatureStore::new(&database)
+                        .pending_fitting_attempt(&ticket.user_id, &ticket.attempt_id)
+                    {
+                        Ok(attempt) => attempt,
+                        Err(error) => return QueueRunResult::Retryable(error),
+                    },
+                    Err(error) => return QueueRunResult::Retryable(error),
+                };
+                let Some((record, protocol_json)) = attempt else {
+                    return QueueRunResult::Stale;
+                };
+                run_fitting(&inner, &record, &protocol_json);
+                QueueRunResult::Consumed
+            }
+            WorkKind::FeatureMaterialization => {
+                let attempt = match inner
+                    .materialization
+                    .attempt(&ticket.user_id, &ticket.attempt_id)
+                {
+                    Ok(attempt) => attempt,
+                    Err(adaq_feature_engine::MaterializationStoreError::AttemptNotFound) => {
+                        return QueueRunResult::Stale;
+                    }
+                    Err(error) => return QueueRunResult::Retryable(error.to_string()),
+                };
+                if attempt.status != adaq_feature_engine::MaterializationAttemptStatus::Pending {
+                    return QueueRunResult::Stale;
+                }
+                run_materialization(&inner, &attempt);
+                QueueRunResult::Consumed
+            }
+            _ => QueueRunResult::Stale,
+        }
+    }
+
+    fn request_shutdown(&self) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        if let Ok(attempts) = inner.attempts.lock() {
+            for attempt in attempts.values() {
+                attempt.cancelled.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+}
 
 pub(super) fn new_attempt_id(seed: &str) -> String {
     let nonce = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
@@ -38,143 +146,6 @@ pub(super) fn new_attempt_id(seed: &str) -> String {
         .unwrap_or_default()
         .as_nanos();
     hash(format!("{seed}:{now}:{nonce}").as_bytes())
-}
-
-enum Work {
-    Fitting(FittingAttemptRecord, String),
-    Materialization(MaterializationAttempt),
-    Factor(FactorQueueItem),
-    Python(PythonQueueItem),
-}
-
-/// The persistent FIFO worker: drains the oldest Pending heavy Attempt one at
-/// a time until the queue is empty, then
-/// waits for the next signal or shutdown.
-pub(super) fn run_worker(inner: Arc<FeaturesInner>) {
-    loop {
-        {
-            let mut queue = match inner.queue.lock() {
-                Ok(queue) => queue,
-                Err(_) => return,
-            };
-            while !queue.signaled && !queue.shutdown {
-                match inner
-                    .queue_changed
-                    .wait_timeout(queue, Duration::from_millis(250))
-                {
-                    Ok((next, _)) => queue = next,
-                    Err(poisoned) => {
-                        let (guard, _) = poisoned.into_inner();
-                        queue = guard;
-                        queue.shutdown = true;
-                    }
-                }
-                if queue.shutdown {
-                    return;
-                }
-            }
-            if queue.shutdown {
-                return;
-            }
-            queue.signaled = false;
-        }
-        loop {
-            if shutdown_requested(&inner) {
-                return;
-            }
-            match next_work(&inner) {
-                Ok(Some(work)) => execute(&inner, work),
-                Ok(None) => break,
-                Err(error) => {
-                    eprintln!("Feature runner scheduling failed: {error}");
-                    std::thread::sleep(Duration::from_millis(50));
-                    break;
-                }
-            }
-        }
-    }
-}
-
-fn shutdown_requested(inner: &FeaturesInner) -> bool {
-    inner
-        .queue
-        .lock()
-        .map(|queue| queue.shutdown)
-        .unwrap_or(true)
-}
-
-/// Selects the oldest Pending Attempt across all heavy kinds in persistent
-/// FIFO order; ties prefer the earlier creation instant, then Feature work.
-fn next_work(inner: &FeaturesInner) -> Result<Option<Work>, String> {
-    let fitting = {
-        let database = inner.source.database()?;
-        store::FeatureStore::new(&database).next_pending_fitting()?
-    };
-    let materialization = inner.materialization.next_pending().map_err(string)?;
-    let factor = inner
-        .factor
-        .lock()
-        .map_err(string)?
-        .as_ref()
-        .map(|factor| factor.next_pending())
-        .transpose()?
-        .flatten();
-    let python = inner
-        .python
-        .lock()
-        .map_err(string)?
-        .as_ref()
-        .map(|python| python.next_runnable())
-        .transpose()?
-        .flatten();
-    let mut candidates = Vec::new();
-    if let Some((record, protocol_json)) = fitting {
-        candidates.push((
-            record.created_at_ms,
-            0,
-            Work::Fitting(record, protocol_json),
-        ));
-    }
-    if let Some(attempt) = materialization {
-        candidates.push((attempt.created_at_ms, 1, Work::Materialization(attempt)));
-    }
-    if let Some(factor) = factor {
-        candidates.push((factor.created_at_ms, 2, Work::Factor(factor)));
-    }
-    if let Some(python) = python {
-        candidates.push((python.created_at_ms, 3, Work::Python(python)));
-    }
-    Ok(candidates
-        .into_iter()
-        .min_by_key(|(created_at, priority, _)| (*created_at, *priority))
-        .map(|(_, _, work)| work))
-}
-
-fn execute(inner: &FeaturesInner, work: Work) {
-    match work {
-        Work::Fitting(record, protocol_json) => run_fitting(inner, &record, &protocol_json),
-        Work::Materialization(attempt) => run_materialization(inner, &attempt),
-        Work::Factor(item) => {
-            let factor = inner
-                .factor
-                .lock()
-                .ok()
-                .and_then(|factor| factor.as_ref().cloned());
-            if let Some(factor) = factor {
-                factor.execute(item);
-            }
-        }
-        Work::Python(item) => {
-            let python = inner
-                .python
-                .lock()
-                .ok()
-                .and_then(|python| python.as_ref().cloned());
-            if let Some(python) = python {
-                python.execute(item);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -633,6 +604,7 @@ fn failure(code: impl Into<String>, diagnostic: impl Into<String>) -> Outcome {
 /// its block check earlier can insert an Attempt after the barrier.
 pub(super) fn stop_all_for_user<'a>(
     inner: &'a FeaturesInner,
+    queue: &ResearchQueue,
     user_id: &str,
 ) -> Result<UserFeatureResetBlock<'a>, String> {
     validate_user(user_id)?;
@@ -672,10 +644,7 @@ pub(super) fn stop_all_for_user<'a>(
         }
     }
     // Wake the worker so Pending Attempts it holds are finalized promptly.
-    if let Ok(mut queue) = inner.queue.lock() {
-        queue.signaled = true;
-        inner.queue_changed.notify_one();
-    }
+    queue.wake();
     drop(start_gate);
     let timeout = *inner.reset_wait_timeout.lock().map_err(string)?;
     let deadline = Instant::now() + timeout;

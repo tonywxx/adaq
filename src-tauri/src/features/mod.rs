@@ -3,8 +3,8 @@
 //! One deep, Tauri-independent module owning User-scoped Feature Definition
 //! publication, Draft validation and Preview, Transformation Fitting,
 //! Feature Dataset Materialization, evidence inspection, deletion locks,
-//! and the one persistent device FIFO runner that executes heavy Feature
-//! Attempts. The external interface is limited to typed User-scoped
+//! and the Feature adapter for the shared device FIFO that executes heavy
+//! Feature Attempts. The external interface is limited to typed User-scoped
 //! operations; schema handling, the attempt stores, cancellation flags,
 //! startup recovery, and the background worker stay private to this
 //! module. Materialization Attempts and Feature Dataset storage live in
@@ -19,7 +19,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -31,12 +31,17 @@ use adaq_feature_engine::{
     DefinitionDraft, FeatureDatasetFilter, FeatureDatasetPage, FeatureDefinition,
     FeatureMaterializationRequest, FeatureMaterializationStore, FeatureObservation,
     FeatureOutputSummary, FeaturePlan, FeaturePlanDraft, FeatureScope, MaterializationAttempt,
-    TransformationFittingProtocol, TransformationFittingProtocolDraft,
+    MaterializationAttemptStatus, TransformationFittingProtocol,
+    TransformationFittingProtocolDraft,
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::{backtest::SnapshotReadSource, user::validate_user};
+use crate::{
+    backtest::SnapshotReadSource,
+    research_queue::{ResearchQueue, WorkKind},
+    user::validate_user,
+};
 
 const INCOMPATIBLE_SCHEMA: &str = "Incompatible pre-v1 Feature schema. Close AdaQ, remove its device-local app data directory, and reopen AdaQ. This deletes all Local Research Data for every User on this device.";
 const MAX_DIAGNOSTIC_EVIDENCE_CHARS: usize = 8_192;
@@ -308,34 +313,6 @@ pub(super) struct ActiveAttempt {
     pub(super) cancelled: Arc<AtomicBool>,
 }
 
-pub(super) struct QueueState {
-    signaled: bool,
-    shutdown: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FactorQueueItem {
-    pub(super) attempt_id: String,
-    pub(super) created_at_ms: i64,
-}
-
-pub(super) trait FactorQueueWork: Send + Sync {
-    fn next_pending(&self) -> Result<Option<FactorQueueItem>, String>;
-    fn execute(&self, item: FactorQueueItem);
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PythonQueueItem {
-    pub(crate) attempt_id: String,
-    pub(crate) created_at_ms: i64,
-}
-
-pub(crate) trait PythonQueueWork: Send + Sync {
-    fn next_runnable(&self) -> Result<Option<PythonQueueItem>, String>;
-    fn execute(&self, item: PythonQueueItem);
-    fn shutdown(&self);
-}
-
 pub(super) struct FeaturesInner {
     pub(super) source: Arc<dyn FeatureSource>,
     pub(super) materialization: FeatureMaterializationStore,
@@ -345,10 +322,6 @@ pub(super) struct FeaturesInner {
     /// Reset All barrier so no Attempt can slip past a User-scoped reset.
     pub(super) start_gate: Mutex<()>,
     pub(super) reset_wait_timeout: Mutex<Duration>,
-    pub(super) queue: Mutex<QueueState>,
-    pub(super) queue_changed: Condvar,
-    pub(super) factor: Mutex<Option<Arc<dyn FactorQueueWork>>>,
-    pub(super) python: Mutex<Option<Arc<dyn PythonQueueWork>>>,
     /// Private controllable runner seam: deterministic scheduling,
     /// cancellation, and race tests observe Attempts right after they
     /// become Running. Not part of the module interface.
@@ -357,29 +330,19 @@ pub(super) struct FeaturesInner {
 }
 
 /// The Feature lifecycle interface: typed User-scoped Definition, Fitting,
-/// Materialization, and evidence operations plus one persistent FIFO runner
-/// for heavy work.
+/// Materialization, and evidence operations plus the shared Research Queue
+/// adapter for heavy work.
 #[derive(Clone)]
 pub(crate) struct Features {
     inner: Arc<FeaturesInner>,
-    worker: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    queue: ResearchQueue,
+    owner: Arc<()>,
 }
 
 impl Drop for Features {
     fn drop(&mut self) {
-        if let Ok(python) = self.inner.python.lock()
-            && let Some(python) = python.as_ref()
-        {
-            python.shutdown();
-        }
-        if let Ok(mut queue) = self.inner.queue.lock() {
-            queue.shutdown = true;
-            self.inner.queue_changed.notify_one();
-        }
-        if let Ok(mut worker) = self.worker.lock()
-            && let Some(handle) = worker.take()
-        {
-            let _ = handle.join();
+        if Arc::strong_count(&self.owner) == 1 {
+            self.queue.shutdown();
         }
     }
 }
@@ -387,10 +350,13 @@ impl Drop for Features {
 impl Features {
     /// Creates the module and performs its internal startup work: schema
     /// initialization, exact schema compatibility validation, recovery of
-    /// Attempts interrupted by an application restart, and the persistent
-    /// FIFO worker start. Pending Attempts survive the restart and run
-    /// again.
-    pub(crate) fn open(source: Arc<dyn FeatureSource>) -> Result<Self, String> {
+    /// Attempts interrupted by an application restart, and registration of
+    /// the Feature adapters with the shared Research Queue. Pending Attempts
+    /// survive the restart and are reconciled into that queue.
+    pub(crate) fn open(
+        source: Arc<dyn FeatureSource>,
+        queue: ResearchQueue,
+    ) -> Result<Self, String> {
         let database = source.database()?;
         store::FeatureStore::new(&database).initialize()?;
         drop(database);
@@ -405,26 +371,28 @@ impl Features {
             reset_blocks: Mutex::new(HashSet::new()),
             start_gate: Mutex::new(()),
             reset_wait_timeout: Mutex::new(Duration::from_secs(60)),
-            queue: Mutex::new(QueueState {
-                signaled: false,
-                shutdown: false,
-            }),
-            queue_changed: Condvar::new(),
-            factor: Mutex::new(None),
-            python: Mutex::new(None),
             #[cfg(test)]
             attempt_started_hook: Mutex::new(None),
         });
         let features = Self {
             inner: inner.clone(),
-            worker: Arc::new(Mutex::new(Some(
-                std::thread::Builder::new()
-                    .name("adaq-feature-runner".into())
-                    .spawn(move || runner::run_worker(inner))
-                    .map_err(string)?,
-            ))),
+            queue,
+            owner: Arc::new(()),
         };
-        features.notify_runner();
+        features.queue.attach(
+            WorkKind::FeatureFitting,
+            Arc::new(runner::FeatureQueueAdapter::new(
+                inner.clone(),
+                WorkKind::FeatureFitting,
+            )),
+        )?;
+        features.queue.attach(
+            WorkKind::FeatureMaterialization,
+            Arc::new(runner::FeatureQueueAdapter::new(
+                inner,
+                WorkKind::FeatureMaterialization,
+            )),
+        )?;
         Ok(features)
     }
 
@@ -563,7 +531,15 @@ impl Features {
             || runner::new_attempt_id(protocol.protocol_hash()),
         )?;
         drop(database);
-        self.notify_runner();
+        if attempt.status == FeatureAttemptStatus::Pending {
+            self.queue.admit(
+                WorkKind::FeatureFitting,
+                &attempt.user_id,
+                &attempt.attempt_id,
+            )?;
+        } else {
+            self.queue.wake();
+        }
         Ok(fitting_view(&attempt))
     }
 
@@ -645,7 +621,13 @@ impl Features {
             runner::new_attempt_id(&request.attempt_id)
         })?;
         drop(database);
-        self.notify_runner();
+        if attempt.status == FeatureAttemptStatus::Pending {
+            self.queue.admit(
+                WorkKind::FeatureFitting,
+                &attempt.user_id,
+                &attempt.attempt_id,
+            )?;
+        }
         Ok(fitting_view(&attempt))
     }
 
@@ -723,7 +705,13 @@ impl Features {
             .materialization
             .start_for_plan(materialization_request, &plan)
             .map_err(|error| error.to_string())?;
-        self.notify_runner();
+        if attempt.status == MaterializationAttemptStatus::Pending {
+            self.queue.admit(
+                WorkKind::FeatureMaterialization,
+                &attempt.user_id,
+                &attempt.attempt_id,
+            )?;
+        }
         Ok(attempt)
     }
 
@@ -789,7 +777,13 @@ impl Features {
             .materialization
             .retry(&request.user_id, &request.attempt_id)
             .map_err(|error| error.to_string())?;
-        self.notify_runner();
+        if attempt.status == MaterializationAttemptStatus::Pending {
+            self.queue.admit(
+                WorkKind::FeatureMaterialization,
+                &attempt.user_id,
+                &attempt.attempt_id,
+            )?;
+        }
         Ok(attempt)
     }
 
@@ -925,7 +919,7 @@ impl Features {
         &'a self,
         user_id: &str,
     ) -> Result<UserFeatureResetBlock<'a>, String> {
-        runner::stop_all_for_user(&self.inner, user_id)
+        runner::stop_all_for_user(&self.inner, &self.queue, user_id)
     }
 
     /// Removes one User's Materialization Attempts and Dataset evidence
@@ -957,37 +951,22 @@ impl Features {
         Ok(())
     }
 
-    pub(super) fn notify_runner(&self) {
-        if let Ok(mut queue) = self.inner.queue.lock() {
-            queue.signaled = true;
-            self.inner.queue_changed.notify_one();
-        }
+    pub(crate) fn queue(&self) -> ResearchQueue {
+        self.queue.clone()
     }
 
-    pub(crate) fn attach_factor(&self, factor: Arc<dyn FactorQueueWork>) {
-        if let Ok(mut attached) = self.inner.factor.lock() {
-            *attached = Some(factor);
-        }
-        self.notify_runner();
+    pub(crate) fn attach_factor(
+        &self,
+        factor: Arc<dyn crate::research_queue::ResearchQueueAdapter>,
+    ) -> Result<(), String> {
+        self.queue.attach(WorkKind::Factor, factor)
     }
 
-    pub(crate) fn attach_python(&self, python: Arc<dyn PythonQueueWork>) {
-        if let Ok(mut attached) = self.inner.python.lock() {
-            *attached = Some(python);
-        }
-        self.notify_runner();
-    }
-
-    pub(crate) fn queue_notifier(&self) -> Arc<dyn Fn() + Send + Sync> {
-        let weak = Arc::downgrade(&self.inner);
-        Arc::new(move || {
-            if let Some(inner) = weak.upgrade()
-                && let Ok(mut queue) = inner.queue.lock()
-            {
-                queue.signaled = true;
-                inner.queue_changed.notify_one();
-            }
-        })
+    pub(crate) fn attach_python(
+        &self,
+        python: Arc<dyn crate::research_queue::ResearchQueueAdapter>,
+    ) -> Result<(), String> {
+        self.queue.attach(WorkKind::Python, python)
     }
 }
 

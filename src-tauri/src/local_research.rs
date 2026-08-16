@@ -42,6 +42,7 @@ use crate::{
     features::{FeatureSource, Features},
     forecast_signal_dataset::{BacktestSignalDataset, backtest_signal_datasets},
     market_data_snapshot::{LocalSnapshotSource, MarketDataSnapshots},
+    research_queue::ResearchQueue,
     user::validate_user,
     validation::{ValidationRunOutcome, ValidationSource, ValidationStudies},
     watchlist::insert_default_watchlist,
@@ -535,7 +536,8 @@ impl LocalResearchState {
             snapshots: snapshots.clone(),
             root: root.clone(),
         });
-        let features = Features::open(feature_source)?;
+        let queue = ResearchQueue::open(database.clone())?;
+        let features = Features::open(feature_source, queue.clone())?;
         let factor_source = Arc::new(LocalFactorSource {
             database: database.clone(),
             root: root.clone(),
@@ -543,8 +545,8 @@ impl LocalResearchState {
             snapshots: snapshots.clone(),
             components: components.clone(),
         });
-        let factor = FactorResearch::open(factor_source, features.queue_notifier())?;
-        features.attach_factor(Arc::new(factor.clone()));
+        let factor = FactorResearch::open(factor_source, queue.admitter())?;
+        features.attach_factor(Arc::new(factor.clone()))?;
         let validation_source = Arc::new(LocalValidationSource {
             database: database.clone(),
             state: Mutex::new(Weak::new()),

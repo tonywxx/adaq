@@ -477,6 +477,26 @@ impl FeatureMaterializationStore {
             .map_err(sqlite_error)
     }
 
+    pub fn pending_attempts(
+        &self,
+    ) -> Result<Vec<MaterializationAttempt>, MaterializationStoreError> {
+        let database = self.lock_database()?;
+        let mut statement = database
+            .prepare(
+                "SELECT attempt_id, user_id, request_hash, status, source_attempt_id,
+                        dataset_id, failure_code, diagnostic, progress_completed,
+                        progress_total, created_at_ms, updated_at_ms
+                 FROM feature_materialization_attempts
+                 WHERE status = ?1
+                 ORDER BY queue_sequence",
+            )
+            .map_err(sqlite_error)?;
+        let rows = statement
+            .query_map([STATUS_PENDING], row_to_attempt)
+            .map_err(sqlite_error)?;
+        rows.map(|row| row.map_err(sqlite_error)).collect()
+    }
+
     pub fn stage(
         &self,
         user_id: &str,

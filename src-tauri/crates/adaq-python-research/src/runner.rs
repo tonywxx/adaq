@@ -1020,6 +1020,18 @@ impl AttemptStore {
             .cloned())
     }
 
+    pub fn pending_attempts(&self) -> Result<Vec<ResearchAttempt>, PythonResearchError> {
+        let database = self.lock()?;
+        let mut attempts = database
+            .attempts
+            .values()
+            .filter(|attempt| attempt.status == AttemptStatus::Pending)
+            .cloned()
+            .collect::<Vec<_>>();
+        attempts.sort_by_key(|attempt| attempt.queue_sequence);
+        Ok(attempts)
+    }
+
     pub fn active_environment_ids(&self) -> Result<BTreeSet<String>, PythonResearchError> {
         Ok(self
             .lock()?

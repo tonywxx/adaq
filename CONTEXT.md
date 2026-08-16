@@ -737,8 +737,12 @@ The versioned Host-owned limits for Python wall time, memory, threads, input row
 _Avoid_: User-unbounded resources, Project-owned timeout, framework default
 
 **Research Queue**:
-The persistent device-wide FIFO that serializes heavy Feature, Factor, Python, Model, and Strategy research work while retaining User-scoped Attempts and evidence. Environment preparation is separately serialized and does not create a competing heavy-research worker pool.
+The device-wide FIFO admission boundary for heavy Feature, Factor, Python, Model, and Strategy research work. A Pending Attempt enters the strict cross-kind order only at durable Queue admission; one heavy work item is scheduled at a time, while User-scoped Attempt ownership, cancellation, reset, recovery, and evidence remain with the relevant research domain. Environment preparation is separately serialized and does not create a competing heavy-research worker pool.
 _Avoid_: Tauri command body, Python worker pool, UI loading queue
+
+**Research Queue Admission**:
+The durable, idempotent point at which a Pending Attempt receives its device-wide ordering position. FIFO is defined by Admission order rather than request time, Store-local timestamps, or UI submission time; a Retry always receives a new position.
+_Avoid_: enqueue click, created-at ordering, automatic retry
 
 **Python Research Attempt**:
 An append-only execution record binding one Python Project Revision and prepared environment to exact frozen Input Slot bindings, one normalized parameter set, Seed, deterministic runtime settings, resource policy, status, outputs, diagnostics, and logs. Pending work survives restart in FIFO order, while stale Running work becomes Failed with an Interrupted reason rather than resuming. Cancel requests are cooperative for a bounded grace period and then terminate the process tree; Cancelled is recorded only after Runner exit and staging isolation. Source edits, parameter changes, and Retry create new Attempts, active duplicate Starts coalesce only on complete execution identity, and late Runner results never mutate prior evidence.

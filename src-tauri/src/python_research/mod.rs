@@ -81,8 +81,12 @@ use crate::factor_research::{
     FactorGridFamilyRegisterRequest, FactorPolicySaveRequest, FactorTrialUpdateRequest,
     PythonHostAttemptEvidence, PythonHostEvidence,
 };
-use crate::features::{
-    FeatureAttemptRequest, FeatureMaterializationStartRequest, PythonQueueItem, PythonQueueWork,
+use crate::{
+    features::{FeatureAttemptRequest, FeatureMaterializationStartRequest},
+    research_queue::{
+        QueueAdmission, QueueAdmitter, QueueRunResult, QueueTicket, QueueWaker, ResearchQueue,
+        ResearchQueueAdapter, WorkKind,
+    },
 };
 use adaq_data_core::{
     BarInterval, BarSeries, OhlcvBar,
@@ -104,7 +108,8 @@ pub struct PythonResearchState {
     pub(crate) environment_store: Arc<EnvironmentStore>,
     root: PathBuf,
     examples_root: PathBuf,
-    queue_notifier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    queue_admitter: Mutex<Option<QueueAdmitter>>,
+    queue_waker: Mutex<Option<QueueWaker>>,
     completed_results: Arc<Mutex<BTreeMap<String, RunnerExecution>>>,
     runtime_cancellations: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
     runtime_progress: Arc<Mutex<BTreeMap<String, RuntimePreparationProgress>>>,
@@ -2548,7 +2553,8 @@ impl PythonResearchState {
             environment_store: Arc::new(EnvironmentStore::new(&root)),
             root,
             examples_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/python"),
-            queue_notifier: Mutex::new(None),
+            queue_admitter: Mutex::new(None),
+            queue_waker: Mutex::new(None),
             completed_results: Arc::new(Mutex::new(BTreeMap::new())),
             runtime_cancellations: Mutex::new(BTreeMap::new()),
             runtime_progress: Arc::new(Mutex::new(BTreeMap::new())),
@@ -2556,35 +2562,53 @@ impl PythonResearchState {
         }
     }
 
-    pub(crate) fn attach_queue(&self, notifier: Arc<dyn Fn() + Send + Sync>) {
-        if let Ok(mut queue_notifier) = self.queue_notifier.lock() {
-            *queue_notifier = Some(notifier);
+    pub(crate) fn attach_queue(&self, queue: ResearchQueue) {
+        if let Ok(mut attached) = self.queue_admitter.lock() {
+            *attached = Some(queue.admitter());
+        }
+        if let Ok(mut attached) = self.queue_waker.lock() {
+            *attached = Some(queue.waker());
         }
     }
 
     fn notify_queue(&self) {
-        if let Ok(notifier) = self.queue_notifier.lock()
-            && let Some(notifier) = notifier.as_ref()
+        if let Ok(waker) = self.queue_waker.lock()
+            && let Some(waker) = waker.as_ref()
         {
-            notifier();
+            waker();
         }
     }
 
-    fn execute_attempt(&self, item: PythonQueueItem) {
-        let Ok(mut attempt) = self.attempt_store.get(&item.attempt_id) else {
-            return;
+    fn admit_attempt(&self, attempt: &ResearchAttempt) -> Result<(), String> {
+        let admitter = self
+            .queue_admitter
+            .lock()
+            .map_err(|_| "Python Research Queue lock poisoned")?
+            .clone()
+            .ok_or_else(|| "Python Research Queue is not attached".to_owned())?;
+        admitter(WorkKind::Python, &attempt.user_id, &attempt.attempt_id)
+    }
+
+    fn execute_attempt(&self, attempt_id: &str) -> QueueRunResult {
+        let mut attempt = match self.attempt_store.get(attempt_id) {
+            Ok(attempt) => attempt,
+            Err(error) if error.0 == "research-attempt-not-found" => {
+                return QueueRunResult::Stale;
+            }
+            Err(error) => return QueueRunResult::Retryable(error.0),
         };
         if attempt.status == adaq_python_research::runner::AttemptStatus::Pending {
-            let Ok(updated) = self
+            let updated = match self
                 .attempt_store
-                .transition(&item.attempt_id, AttemptTransition::Begin)
-            else {
-                return;
+                .transition(attempt_id, AttemptTransition::Begin)
+            {
+                Ok(updated) => updated,
+                Err(error) => return QueueRunResult::Retryable(error.0),
             };
             attempt = updated;
         }
         if attempt.status != adaq_python_research::runner::AttemptStatus::Running {
-            return;
+            return QueueRunResult::Stale;
         }
         let attempt_id = attempt.attempt_id.clone();
         let execution = self.run_attempt(&attempt);
@@ -2678,6 +2702,7 @@ impl PythonResearchState {
                 };
             }
         }
+        QueueRunResult::Consumed
     }
 
     fn run_attempt(
@@ -2998,7 +3023,7 @@ impl PythonResearchState {
                 parameter_overrides,
             )?,
         )?;
-        self.notify_queue();
+        self.admit_attempt(&attempt).map_err(PythonResearchError)?;
         self.wait_for_attempt(
             &attempt.attempt_id,
             HostResourcePolicy::m12_default().max_wall_ms,
@@ -3109,24 +3134,27 @@ impl PythonResearchState {
     }
 }
 
-impl PythonQueueWork for PythonResearchState {
-    fn next_runnable(&self) -> Result<Option<PythonQueueItem>, String> {
+impl ResearchQueueAdapter for PythonResearchState {
+    fn pending_attempts(&self) -> Result<Vec<QueueAdmission>, String> {
         self.attempt_store
-            .next_runnable()
+            .pending_attempts()
             .map_err(|error| error.to_string())
-            .map(|attempt| {
-                attempt.map(|attempt| PythonQueueItem {
-                    attempt_id: attempt.attempt_id,
-                    created_at_ms: attempt.created_at_ms,
-                })
+            .map(|attempts| {
+                attempts
+                    .into_iter()
+                    .map(|attempt| QueueAdmission {
+                        user_id: attempt.user_id,
+                        attempt_id: attempt.attempt_id,
+                    })
+                    .collect()
             })
     }
 
-    fn execute(&self, item: PythonQueueItem) {
-        self.execute_attempt(item);
+    fn execute(&self, ticket: QueueTicket) -> QueueRunResult {
+        self.execute_attempt(&ticket.attempt_id)
     }
 
-    fn shutdown(&self) {
+    fn request_shutdown(&self) {
         self.shutdown.store(true, Ordering::Relaxed);
     }
 }
@@ -4340,15 +4368,15 @@ pub async fn research_reset(
     let model_lab_store = state.model_lab_store.clone();
     let completed_results = state.completed_results.clone();
     let result_root = state.root.join("attempt-results");
-    let notifier = state
-        .queue_notifier
+    let waker = state
+        .queue_waker
         .lock()
         .ok()
         .and_then(|value| value.clone());
     tauri::async_runtime::spawn_blocking(move || {
         attempt_store.cancel_user(&user_id).map_err(map_error)?;
-        if let Some(notifier) = notifier.as_ref() {
-            notifier();
+        if let Some(waker) = waker.as_ref() {
+            waker();
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while attempt_store
@@ -4554,7 +4582,10 @@ pub async fn attempt_start(
     })
     .await
     .map_err(|error| error.to_string())?
-    .inspect(|_| state.notify_queue())
+    .and_then(|attempt| {
+        state.admit_attempt(&attempt)?;
+        Ok(attempt)
+    })
 }
 
 #[tauri::command]
@@ -4588,7 +4619,10 @@ pub async fn attempt_retry(
     })
     .await
     .map_err(|error| error.to_string())?
-    .inspect(|_| state.notify_queue())
+    .and_then(|attempt| {
+        state.admit_attempt(&attempt)?;
+        Ok(attempt)
+    })
 }
 
 async fn transition_attempt(
@@ -6770,8 +6804,8 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let local = crate::local_research::LocalResearchState::open(&directory).unwrap();
         let python = Arc::new(PythonResearchState::open(&directory));
-        local.features.attach_python(python.clone());
-        python.attach_queue(local.features.queue_notifier());
+        python.attach_queue(local.features.queue());
+        local.features.attach_python(python.clone()).unwrap();
         let request = FactorRunRequest {
             user_id: "alice".into(),
             project_id: "py-factor-cross-sectional-momentum".into(),

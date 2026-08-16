@@ -40,7 +40,9 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
-    features::{FactorQueueItem, FactorQueueWork},
+    research_queue::{
+        QueueAdmission, QueueAdmitter, QueueRunResult, QueueTicket, ResearchQueueAdapter, WorkKind,
+    },
     user::validate_user,
 };
 
@@ -49,6 +51,11 @@ const MAX_PAGE_SIZE: u32 = 100;
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_JOB_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES: usize = 16 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FactorQueueItem {
+    attempt_id: String,
+}
 
 pub(crate) trait FactorResearchSource: Send + Sync {
     fn database(&self) -> Result<MutexGuard<'_, Connection>, String>;
@@ -452,13 +459,13 @@ struct FactorResearchInner {
     active: Mutex<HashMap<String, Arc<AtomicBool>>>,
     reset_blocks: Mutex<std::collections::HashSet<String>>,
     start_gate: Mutex<()>,
-    notify: Arc<dyn Fn() + Send + Sync>,
+    admit: QueueAdmitter,
 }
 
 impl FactorResearch {
     pub(crate) fn open(
         source: Arc<dyn FactorResearchSource>,
-        notify: Arc<dyn Fn() + Send + Sync>,
+        admit: QueueAdmitter,
     ) -> Result<Self, String> {
         let database = source.database()?;
         let schema_blocked = match ResearchStore::new(&database).initialize() {
@@ -479,7 +486,7 @@ impl FactorResearch {
                 active: Mutex::new(HashMap::new()),
                 reset_blocks: Mutex::new(std::collections::HashSet::new()),
                 start_gate: Mutex::new(()),
-                notify,
+                admit,
             }),
         })
     }
@@ -561,8 +568,8 @@ impl FactorResearch {
             let database = self.database()?;
             ResearchStore::new(&database).start_attempt(user_id, kind, &request_json)?
         };
-        if should_start {
-            (self.inner.notify)();
+        if should_start && attempt.status == AttemptStatus::Pending {
+            (self.inner.admit)(WorkKind::Factor, &attempt.user_id, &attempt.attempt_id)?;
         }
         Ok(attempt)
     }
@@ -780,8 +787,8 @@ impl FactorResearch {
         let (attempt, should_start) =
             ResearchStore::new(&database).retry_attempt(&request.user_id, &request.attempt_id)?;
         drop(database);
-        if should_start {
-            (self.inner.notify)();
+        if should_start && attempt.status == AttemptStatus::Pending {
+            (self.inner.admit)(WorkKind::Factor, &attempt.user_id, &attempt.attempt_id)?;
         }
         Ok(attempt)
     }
@@ -1233,13 +1240,17 @@ impl FactorResearch {
         result
     }
 
-    fn run_attempt(&self, item: FactorQueueItem) {
+    fn run_attempt(&self, item: FactorQueueItem) -> QueueRunResult {
         let (user_id, kind, request_json) = {
             let Ok(database) = self.inner.source.database() else {
-                return;
+                return QueueRunResult::Retryable("Factor research database unavailable".into());
             };
-            let Ok(value) = ResearchStore::new(&database).begin_attempt(&item.attempt_id) else {
-                return;
+            let value = match ResearchStore::new(&database).begin_attempt(&item.attempt_id) {
+                Ok(value) => value,
+                Err(error) if error.contains("no longer Pending") => {
+                    return QueueRunResult::Stale;
+                }
+                Err(error) => return QueueRunResult::Retryable(error),
             };
             value
         };
@@ -1282,7 +1293,7 @@ impl FactorResearch {
             active.remove(&item.attempt_id);
         }
         let Ok(database) = self.inner.source.database() else {
-            return;
+            return QueueRunResult::Retryable("Factor research database unavailable".into());
         };
         let store = ResearchStore::new(&database);
         match result {
@@ -1300,6 +1311,7 @@ impl FactorResearch {
                 let _ = store.fail_attempt(&item.attempt_id, &safe_diagnostic(&error));
             }
         }
+        QueueRunResult::Consumed
     }
 
     fn execute_candidate(
@@ -1559,15 +1571,35 @@ fn validate_built_package(
     Ok(())
 }
 
-impl FactorQueueWork for FactorResearch {
-    fn next_pending(&self) -> Result<Option<FactorQueueItem>, String> {
+impl ResearchQueueAdapter for FactorResearch {
+    fn pending_attempts(&self) -> Result<Vec<QueueAdmission>, String> {
         self.ensure_schema_ready()?;
         let database = self.database()?;
-        ResearchStore::new(&database).next_pending()
+        ResearchStore::new(&database)
+            .pending_attempts()?
+            .into_iter()
+            .map(|(user_id, attempt_id)| {
+                Ok(QueueAdmission {
+                    user_id,
+                    attempt_id,
+                })
+            })
+            .collect()
     }
 
-    fn execute(&self, item: FactorQueueItem) {
-        self.run_attempt(item);
+    fn execute(&self, ticket: QueueTicket) -> QueueRunResult {
+        let item = FactorQueueItem {
+            attempt_id: ticket.attempt_id,
+        };
+        self.run_attempt(item)
+    }
+
+    fn request_shutdown(&self) {
+        if let Ok(active) = self.inner.active.lock() {
+            for cancelled in active.values() {
+                cancelled.store(true, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -1942,23 +1974,20 @@ impl<'a> ResearchStore<'a> {
         ))
     }
 
-    fn next_pending(&self) -> Result<Option<FactorQueueItem>, String> {
-        self.database
-            .query_row(
-                "SELECT attempt_id, created_at_ms
+    fn pending_attempts(&self) -> Result<Vec<(String, String)>, String> {
+        let mut statement = self
+            .database
+            .prepare(
+                "SELECT user_id, attempt_id
                    FROM factor_research_attempts
                   WHERE status = 'pending'
-                  ORDER BY queue_order, attempt_id LIMIT 1",
-                [],
-                |row| {
-                    Ok(FactorQueueItem {
-                        attempt_id: row.get(0)?,
-                        created_at_ms: row.get(1)?,
-                    })
-                },
+                  ORDER BY queue_order, attempt_id",
             )
-            .optional()
-            .map_err(string)
+            .map_err(string)?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(string)?;
+        rows.map(|row| row.map_err(string)).collect()
     }
 
     fn begin_attempt(&self, attempt_id: &str) -> Result<(String, String, String), String> {
@@ -4644,8 +4673,7 @@ fn write_report_parquet(path: &Path, report: &FactorEvaluationReport) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
-
+    use crate::research_queue::ResearchQueue;
     fn store() -> Connection {
         let database = Connection::open_in_memory().unwrap();
         ResearchStore::new(&database).initialize().unwrap();
@@ -4740,12 +4768,13 @@ mod tests {
             )
             .unwrap();
         let directory = tempfile_dir("factor-open-reset");
+        let queue = ResearchQueue::open(database.clone()).unwrap();
         let research = FactorResearch::open(
             Arc::new(TestSource {
                 database,
                 directory: directory.clone(),
             }),
-            Arc::new(|| {}),
+            queue.admitter(),
         )
         .unwrap();
 
@@ -4796,10 +4825,7 @@ mod tests {
         let (second, _) = store
             .start_attempt("bob", "factor-evaluation", "{\"n\":2}")
             .unwrap();
-        assert_eq!(
-            store.next_pending().unwrap().unwrap().attempt_id,
-            first.attempt_id
-        );
+        assert_eq!(store.pending_attempts().unwrap()[0].1, first.attempt_id);
         assert!(store.attempt_for_user("bob", &first.attempt_id).is_err());
         assert_eq!(
             store.begin_attempt(&first.attempt_id).unwrap().1,
@@ -4812,10 +4838,7 @@ mod tests {
             retry.source_attempt_id.as_deref(),
             Some(first.attempt_id.as_str())
         );
-        assert_eq!(
-            store.next_pending().unwrap().unwrap().attempt_id,
-            second.attempt_id
-        );
+        assert_eq!(store.pending_attempts().unwrap()[0].1, second.attempt_id);
         let page = store
             .list_attempts(&FactorPageRequest {
                 user_id: "alice".into(),
@@ -5016,16 +5039,15 @@ mod tests {
     }
 
     #[test]
-    fn queue_notifier_is_called_only_for_new_work() {
+    fn factor_admission_is_idempotent_for_coalesced_work() {
         let database = Arc::new(Mutex::new(store()));
         let directory = tempfile_dir("factor-source");
-        let (sender, receiver) = mpsc::channel();
+        let queue = ResearchQueue::open(database.clone()).unwrap();
         let source = Arc::new(TestSource {
-            database,
+            database: database.clone(),
             directory,
         });
-        let research =
-            FactorResearch::open(source, Arc::new(move || sender.send(()).unwrap())).unwrap();
+        let research = FactorResearch::open(source, queue.admitter()).unwrap();
         let request = FactorCandidateBuildRequest {
             user_id: "alice".into(),
             candidate: test_candidate(),
@@ -5038,8 +5060,19 @@ mod tests {
         };
         research.build_candidate(request.clone()).unwrap();
         research.build_candidate(request).unwrap();
-        assert!(receiver.recv().is_ok());
-        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            database
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM research_queue_entries WHERE work_kind = 'factor' AND status = 'admitted'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        queue.shutdown();
     }
 
     #[derive(Clone)]

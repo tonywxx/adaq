@@ -546,6 +546,45 @@ impl<'a> FeatureStore<'a> {
             .ok_or_else(|| "Feature Fitting Attempt not found".into())
     }
 
+    pub(crate) fn pending_fitting_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<Option<(FittingAttemptRecord, String)>, String> {
+        self.database
+            .query_row(
+                "SELECT a.attempt_id, a.user_id, a.protocol_hash, a.plan_hash, a.plan_json,
+                        a.status, a.source_attempt_id, a.artifact_id, a.failure_code,
+                        a.diagnostic, a.progress_completed, a.progress_total,
+                        a.created_at_ms, a.updated_at_ms, p.protocol_json
+                 FROM feature_fitting_attempts a
+                 JOIN feature_fitting_protocols p USING(protocol_hash)
+                 WHERE a.attempt_id = ?1 AND a.user_id = ?2 AND a.status = 'pending'",
+                params![attempt_id, user_id],
+                |row| Ok((row_to_fitting_attempt(row)?, row.get::<_, String>(14)?)),
+            )
+            .optional()
+            .map_err(string)
+    }
+
+    pub(crate) fn pending_fitting_attempts(&self) -> Result<Vec<FittingAttemptRecord>, String> {
+        let mut statement = self
+            .database
+            .prepare(
+                "SELECT attempt_id, user_id, protocol_hash, plan_hash, plan_json, status,
+                        source_attempt_id, artifact_id, failure_code, diagnostic,
+                        progress_completed, progress_total, created_at_ms, updated_at_ms
+                 FROM feature_fitting_attempts
+                 WHERE status = 'pending'
+                 ORDER BY queue_sequence",
+            )
+            .map_err(string)?;
+        let rows = statement
+            .query_map([], row_to_fitting_attempt)
+            .map_err(string)?;
+        rows.map(|row| row.map_err(string)).collect()
+    }
+
     pub(crate) fn fitting_attempts(
         &self,
         user_id: &str,
@@ -565,28 +604,6 @@ impl<'a> FeatureStore<'a> {
             .query_map([user_id], row_to_fitting_attempt)
             .map_err(string)?;
         rows.map(|row| row.map_err(string)).collect()
-    }
-
-    /// The oldest Pending Fitting Attempt with its Protocol evidence, in
-    /// persistent FIFO order.
-    pub(crate) fn next_pending_fitting(
-        &self,
-    ) -> Result<Option<(FittingAttemptRecord, String)>, String> {
-        self.database
-            .query_row(
-                "SELECT a.attempt_id, a.user_id, a.protocol_hash, a.plan_hash, a.plan_json,
-                        a.status, a.source_attempt_id, a.artifact_id, a.failure_code,
-                        a.diagnostic, a.progress_completed, a.progress_total,
-                        a.created_at_ms, a.updated_at_ms, p.protocol_json
-                 FROM feature_fitting_attempts a
-                 JOIN feature_fitting_protocols p USING(protocol_hash)
-                 WHERE a.status = 'pending'
-                 ORDER BY a.queue_sequence LIMIT 1",
-                [],
-                |row| Ok((row_to_fitting_attempt(row)?, row.get::<_, String>(14)?)),
-            )
-            .optional()
-            .map_err(string)
     }
 
     pub(crate) fn mark_fitting_running(
