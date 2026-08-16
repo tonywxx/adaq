@@ -15,6 +15,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
+    time::Duration,
 };
 
 use adaq_backtest_core::{
@@ -473,6 +474,9 @@ impl LocalResearchState {
         fs::create_dir_all(root.join("components")).map_err(string)?;
         let snapshot_store = SnapshotStore::new(root.join("market-data")).map_err(string)?;
         let database = Connection::open(app_data.join("adaq.db")).map_err(string)?;
+        database
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(string)?;
         database
             .execute_batch(
                 "PRAGMA foreign_keys = ON;

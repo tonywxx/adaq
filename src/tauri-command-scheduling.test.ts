@@ -97,6 +97,10 @@ test("Feature Attempt start commands enqueue instead of evaluating inline", () =
 		new URL("../src-tauri/src/features/mod.rs", import.meta.url),
 		"utf8",
 	);
-	expect(features).toContain('.name("adaq-feature-runner".into())');
-	expect(features).toContain("runner::run_worker(inner)");
+	const queue = readFileSync(
+		new URL("../src-tauri/src/research_queue.rs", import.meta.url),
+		"utf8",
+	);
+	expect(features).toContain("runner::FeatureQueueAdapter");
+	expect(queue).toContain('.name("adaq-research-queue".into())');
 });
