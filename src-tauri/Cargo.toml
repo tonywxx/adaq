@@ -55,7 +55,7 @@ uuid = { version = "1.24.1", features = ["serde", "v4"] }
 sha2 = "0.11"
 hmac = "0.13"
 base64 = "0.23.1"
-rand = "0.10.2"
+rand = "0.8"
 chrono = { version = "0.4", default-features = false, features = [
     "std",
     "clock",

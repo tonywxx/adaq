@@ -23,7 +23,7 @@ dependencies = [
  "hmac 0.13.0",
  "keyring",
  "parquet",
- "rand 0.10.2",
+ "rand 0.8.7",
  "reqwest 0.13.1",
  "rusqlite",
  "rust_decimal",
