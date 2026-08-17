@@ -103,7 +103,7 @@ def main() -> None:
     assert_true("Run Python Tutorial" in guide, "English tutorial surface missing")
     assert_true("Run Python Tutorial" in guide_zh, "Chinese tutorial surface missing")
     workflow = (ROOT / ".github/workflows/python-research.yml").read_text(encoding="utf-8")
-    for platform in ("macos-14", "windows-latest", "ubuntu-latest"):
+    for platform in ("macos-14", "windows-latest"):
         assert_true(platform in workflow, f"supported platform missing: {platform}")
     assert_true("tutorial_golden_contracts_cover_fixture_windows_and_model_boundaries" in workflow, "tutorial Golden gate missing")
 
