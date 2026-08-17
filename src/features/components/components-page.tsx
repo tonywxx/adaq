@@ -145,7 +145,7 @@ export function ComponentsPage() {
 		return () => {
 			active = false;
 		};
-	}, [refresh, userId]);
+	}, [packagesPage, refresh, userId]);
 
 	const importPackage = async (file?: File) => {
 		if (!file || !userId) return;

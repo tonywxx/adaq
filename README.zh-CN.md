@@ -26,7 +26,7 @@ AdaQ V1 是本地优先的研究、回测与模拟桌面应用。它不执行真
 
 AdaQ V1 是一个**本地优先的研究、回测与模拟**桌面应用，不执行任何真实账户订单。当前可用的闭环为：检查 OKX Spot、中国 A 股和美国股票的市场证据；开发或导入 Component；准备精确 Market Data Snapshot 与 Feature Plan；研究并评估不可变 Factor Evidence、记录明确 Promotion Decision；生成或导入不可变 Forecast Signal 证据；评估预测；运行 Dataset-first 沙箱化 Strategy Backtest；检查持久化 provenance 与结果；并生成研究验证证据。
 
-当前 M11 交付不包含（路线图 M12–M18）：Qlib Model 训练、Portfolio Strategy、Paper Trading 账户与执行、受监督 Trading Bot、Marketplace 发布，以及任何真实资金交易。
+当前 M12 交付不包含（路线图 M13–M18）：Portfolio Strategy、Paper Trading 账户与执行、受监督 Trading Bot、Marketplace 发布，以及任何真实资金交易。
 
 ## AdaQ App
 
@@ -47,8 +47,9 @@ AdaQ V1 是一个**本地优先的研究、回测与模拟**桌面应用，不�
 | M9 | 多市场数据与平台基础。OKX Spot、通过 `akshare-rs` 的中国 A 股、通过 Alpaca Basic 的美国股票提供可检查的 Source/Canonical/Quality/Snapshot 证据、安全且不下单的 Paper/Demo Connections、双语 Markets Routes 与一个 User-scoped Watchlist。[M9 双语人工验收指南](docs/m9-manual-acceptance.zh-CN.md)覆盖最终跨平台复核路径。 |
 | M10 | 状态：已接受。Feature Engineering。因果 Feature Definitions 与 Feature Plan 2.0 构成不可变 revision chain；Fitting Protocols 发布 fitted Transformation Artifacts；materialization 发布不可变 Parquet Feature Datasets，带原子完成与恢复；batch 与 observation 评估在同一 evaluator 下等价；User-scoped Feature APIs 运行于一个持久 FIFO background runner；本地化 `/features` workspace 覆盖 Definitions、Fitting、Materialization、Datasets 与 Preview。[M10 双语人工验收指南](docs/m10-manual-acceptance.zh-CN.md)（[English](docs/m10-manual-acceptance.md)）覆盖最终跨平台复核路径。 |
 | M11 | 状态：已接受。Factor Research 与 Promotion。Factor ABI v2、Declarative 与 Private Custom Candidate、不可变 Factor Dataset、因果 Time-Series/Cross-Sectional Evaluation Report、保留 Research Family、User-owned Promotion Decision、共享 Native Research Scheduling 与本地化 `/factors` Workspace 已完成。[M11 双语人工验收指南](docs/m11-manual-acceptance.zh-CN.md)（[English](docs/m11-manual-acceptance.md)）记录最终跨平台 Evidence Matrix。 |
+| M12 | 状态：已接受。Python Research SDK 与 Qlib-first Model Lab。Managed Runtime、受信任 Runner 执行、Python Factor Candidate、Host-owned Parameter Grid、Qlib Ridge Experiment、不可变 Linear Model Artifact、Forecast Signal Dataset 以及双语 Tutorial/Acceptance Gate 已完成。参见 [M12 架构](docs/m12-python-research-and-model-lab.zh-CN.md)（[English](docs/m12-python-research-and-model-lab.md)）与[人工验收指南](docs/m12-python-research-manual-acceptance.zh-CN.md)（[English](docs/m12-python-research-manual-acceptance.md)）。 |
 
-M1-M11 合起来形成当前研究闭环：检查可信的多市场证据，开发或导入 Component，冻结精确市场数据与 Feature Plan，计算 Feature 并生成 finalized immutable Feature Dataset，研究并评估 Factor、保留 Evidence、记录明确 Promotion Decision，生成或导入不可变 Forecast Signal 证据，评估预测，运行 Dataset-first 沙箱化 Strategy Backtest，检查持久化 provenance 与结果，并生成研究验证证据。
+M1-M12 合起来形成当前研究闭环：检查可信的多市场证据，开发或导入 Component，冻结精确市场数据与 Feature Plan，计算 Feature 并生成 finalized immutable Feature Dataset，研究并评估 Factor、保留 Evidence、记录明确 Promotion Decision，训练或导入受支持的 Model Evidence，生成或导入不可变 Forecast Signal 证据，评估预测，运行 Dataset-first 沙箱化 Strategy Backtest，检查持久化 provenance 与结果，并生成研究验证证据。
 
 ## 快速开始
 
@@ -185,9 +186,9 @@ adaq-component verify dist/my-factor-0.1.0.adaq --previous ../my-factor-0.1.0/ma
 | [M10 Manual Acceptance](docs/m10-manual-acceptance.md) | [M10 人工验收中文](docs/m10-manual-acceptance.zh-CN.md) | Feature Definitions、fitting、materialization、Feature Datasets 与 `/features` workspace 的双语跨平台验收路径 |
 | [M11 Factor Research Architecture](docs/m11-factor-research.md) | [M11 Factor Research 架构中文](docs/m11-factor-research.zh-CN.md) | 已接受的 Factor Lab、ABI v2、Evaluation、Promotion 与 Delivery Baseline；参见 [M11 双语人工验收指南](docs/m11-manual-acceptance.zh-CN.md)（[English](docs/m11-manual-acceptance.md)） |
 | [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | 外部 `Kronos-small` 推理、规范 Forecast Signals、评估与 Dataset-first Backtest |
-| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | M10 Feature Engineering 基础之后的 M11–M18 交付计划（Factor 研究、Paper Trading、Bot 与后续 V1 能力） |
+| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | 已接受的 Python Research 与 Model Lab 之后的 M12–M18 交付计划（Strategy、Component Generation、Paper Trading、Bot 与后续 V1 能力） |
 
-Microsoft Qlib 训练集成属于未来工作（M12），并将使用同一 External Model Adapter 边界。M8 不包含训练、内嵌或受控 Python Runner、Verified external inference 或 Marketplace 发布。
+M12 已通过同一 External Model Adapter 边界提供受控 Microsoft Qlib Ridge 训练。M8 不包含训练、内嵌或受控 Python Runner、Verified external inference 或 Marketplace 发布。
 
 ## 免责声明
 

@@ -8,8 +8,6 @@ import {
 } from "@tanstack/react-router";
 import { AuthGate } from "@/components/auth-gate";
 import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
-import { FactorsPage } from "@/features/factors/factors-page";
-import { ModelsPage } from "@/features/models/models-page";
 import {
 	CryptoMarketPage,
 	MarketWorkspacePage,
@@ -42,6 +40,16 @@ const ValidationPage = lazy(() =>
 const FeaturesPage = lazy(() =>
 	import("@/features/features/features-page").then((module) => ({
 		default: module.FeaturesPage,
+	})),
+);
+const ModelsPage = lazy(() =>
+	import("@/features/models/models-page").then((module) => ({
+		default: module.ModelsPage,
+	})),
+);
+const FactorsPage = lazy(() =>
+	import("@/features/factors/factors-page").then((module) => ({
+		default: module.FactorsPage,
 	})),
 );
 const SettingsPage = lazy(() =>
@@ -141,7 +149,11 @@ const featuresRoute = createRoute({
 const modelsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/models",
-	component: ModelsPage,
+	component: () => (
+		<Suspense fallback={<PageLoadingSkeleton />}>
+			<ModelsPage />
+		</Suspense>
+	),
 });
 const factorsRoute = createRoute({
 	getParentRoute: () => rootRoute,
@@ -150,7 +162,11 @@ const factorsRoute = createRoute({
 		titleKey: "factors.title",
 		breadcrumbKey: "factors.breadcrumb",
 	},
-	component: FactorsPage,
+	component: () => (
+		<Suspense fallback={<PageLoadingSkeleton />}>
+			<FactorsPage />
+		</Suspense>
+	),
 });
 const settingsIndexRoute = createRoute({
 	getParentRoute: () => rootRoute,

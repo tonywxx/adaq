@@ -8,6 +8,7 @@ interface ImportMetaEnv {
 	readonly VITE_SUPABASE_ANON_KEY?: string;
 }
 
+// biome-ignore lint/correctness/noUnusedVariables: Ambient Vite ImportMeta augmentation is consumed by TypeScript.
 interface ImportMeta {
 	readonly env: ImportMetaEnv;
 }

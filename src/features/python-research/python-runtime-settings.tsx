@@ -250,7 +250,8 @@ export function PythonRuntimeSettings({ userId }: { userId?: string }) {
 									value={profile.preparationCompletedBytes ?? 0}
 								/>
 								<span className="text-muted-foreground">
-									{profile.preparationCompletedBytes ?? 0} / {profile.preparationTotalBytes} bytes
+									{profile.preparationCompletedBytes ?? 0} /{" "}
+									{profile.preparationTotalBytes} bytes
 								</span>
 							</div>
 						) : null}

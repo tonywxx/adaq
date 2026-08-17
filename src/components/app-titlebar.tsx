@@ -58,6 +58,7 @@ export function AppTitlebar({
 	};
 
 	return (
+		// biome-ignore lint/a11y/noStaticElementInteractions: Tauri drag regions intentionally handle pointer gestures on a non-semantic surface.
 		<div
 			data-tauri-drag-region
 			className="fixed inset-x-0 top-0 z-50 flex h-12 select-none bg-sidebar"

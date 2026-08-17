@@ -557,15 +557,15 @@ class HttpClient {
 		if (files instanceof Blob) {
 			formData.append("file", files);
 		} else {
-			Object.entries(files).forEach(([field, file]) =>
-				formData.append(field, file),
-			);
+			Object.entries(files).forEach(([field, file]) => {
+				formData.append(field, file);
+			});
 		}
 
 		if (extraFields) {
-			Object.entries(extraFields).forEach(([key, value]) =>
-				formData.append(key, String(value)),
-			);
+			Object.entries(extraFields).forEach(([key, value]) => {
+				formData.append(key, String(value));
+			});
 		}
 
 		return this.request<T>("post", url, {

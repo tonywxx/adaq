@@ -36,8 +36,9 @@ test("routes adaptive home, Help, Operations, and localized market workspaces", 
 	);
 	expect(routerSource).toContain('path: "/help/workflow"');
 	expect(routerSource).toContain('path: "/help/workflow/$step"');
+	expect(routerSource).toMatch(/const FactorsPage = lazy\(/);
 	expect(routerSource).toMatch(
-		/path: "\/factors"[\s\S]*?component: FactorsPage/,
+		/path: "\/factors"[\s\S]*?component: \(\) => \([\s\S]*?<FactorsPage \/>/,
 	);
 	expect(routerSource).toContain('titleKey: "factors.title"');
 	for (const path of [
@@ -101,11 +102,13 @@ test("Models switches immediately and keeps loading inside its controls", () => 
 		"utf8",
 	);
 
-	expect(routerSource).toMatch(
+	expect(routerSource).toMatch(/const ModelsPage = lazy\(/);
+	expect(routerSource).not.toMatch(
 		/import \{ ModelsPage \} from "@\/features\/models\/models-page"/,
 	);
-	expect(routerSource).toMatch(/path: "\/models",\s*component: ModelsPage/);
-	expect(routerSource).not.toMatch(/const ModelsPage = lazy/);
+	expect(routerSource).toMatch(
+		/path: "\/models"[\s\S]*?component: \(\) => \([\s\S]*?<ModelsPage \/>/,
+	);
 	expect(pageSource).toMatch(
 		/if \(tab !== "datasets" && tab !== "evaluations"\) return;[\s\S]*?refreshDatasets/,
 	);

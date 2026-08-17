@@ -321,7 +321,8 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 						</p>
 						<p className="break-all font-mono text-xs text-muted-foreground">
 							{t("pythonResearch.factorLab.attempt")} {run.attemptId} ·{" "}
-							{t("pythonResearch.factorLab.family")} {run.familyId ?? t("pythonResearch.factorLab.pending")}
+							{t("pythonResearch.factorLab.family")}{" "}
+							{run.familyId ?? t("pythonResearch.factorLab.pending")}
 						</p>
 						{run.projectRevisionSha256 || run.snapshotId || run.engineIdentity ? (
 							<div className="grid gap-1 break-all font-mono text-xs text-muted-foreground">
@@ -370,7 +371,8 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 								) : null}
 								{run.snapshotBindings ? (
 									<p>
-										{t("pythonResearch.factorLab.snapshotBindings")} {JSON.stringify(run.snapshotBindings)}
+										{t("pythonResearch.factorLab.snapshotBindings")}{" "}
+										{JSON.stringify(run.snapshotBindings)}
 									</p>
 								) : null}
 								{run.pointInTimeUniverseId ? (
@@ -386,7 +388,8 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 								) : null}
 								{run.featureDatasetBindings ? (
 									<p>
-										{t("pythonResearch.factorLab.featureDatasetBindings")} {JSON.stringify(run.featureDatasetBindings)}
+										{t("pythonResearch.factorLab.featureDatasetBindings")}{" "}
+										{JSON.stringify(run.featureDatasetBindings)}
 									</p>
 								) : null}
 								{run.featureEvidenceSha256 ? (
@@ -420,13 +423,22 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 										<summary className="cursor-pointer">
 											{t("pythonResearch.factorLab.repeatabilityDetails")}
 										</summary>
-						<div className="mt-1 grid gap-1 break-all font-mono text-xs text-muted-foreground">
-							{Object.entries(run.repeatabilityReport).map(([lookback, report]) => (
-								<p key={lookback}>
-									{lookback}: {report.exact ? t("pythonResearch.factorLab.exact") : t("pythonResearch.factorLab.divergent")}; {report.partitions.join(", ")}; {report.firstAttemptId} / {report.replayAttemptId}; {report.processContractSha256}; {report.firstInputSha256} / {report.replayInputSha256}; {report.firstProcessSha256} / {report.replayProcessSha256}
-								</p>
-							))}
-						</div>
+										<div className="mt-1 grid gap-1 break-all font-mono text-xs text-muted-foreground">
+											{Object.entries(run.repeatabilityReport).map(
+												([lookback, report]) => (
+													<p key={lookback}>
+														{lookback}:{" "}
+														{report.exact
+															? t("pythonResearch.factorLab.exact")
+															: t("pythonResearch.factorLab.divergent")}
+														; {report.partitions.join(", ")}; {report.firstAttemptId} /{" "}
+														{report.replayAttemptId}; {report.processContractSha256};{" "}
+														{report.firstInputSha256} / {report.replayInputSha256};{" "}
+														{report.firstProcessSha256} / {report.replayProcessSha256}
+													</p>
+												),
+											)}
+										</div>
 									</details>
 								) : null}
 							</div>
@@ -489,13 +501,13 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 								? t("pythonResearch.factorLab.promotionRequired")
 								: null}
 						</p>
-		{run.candidateHash && run.trialIds.length > 0 ? (
-			<div className="flex flex-wrap items-center gap-2">
-				<label className="sr-only" htmlFor="python-factor-trial-selection">
-					{t("pythonResearch.factorLab.trialSelection")}
-				</label>
-				<select
-					id="python-factor-trial-selection"
+						{run.candidateHash && run.trialIds.length > 0 ? (
+							<div className="flex flex-wrap items-center gap-2">
+								<label className="sr-only" htmlFor="python-factor-trial-selection">
+									{t("pythonResearch.factorLab.trialSelection")}
+								</label>
+								<select
+									id="python-factor-trial-selection"
 									className="h-9 rounded-md border bg-background px-2 text-sm"
 									value={selectedTrialId}
 									onChange={(event) => setSelectedTrialId(event.target.value)}
@@ -525,13 +537,13 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 								</Button>
 							</div>
 						) : null}
-		{run.selectedTrialId && !run.promotionDecisionHash ? (
-			<div className="flex flex-wrap items-center gap-2">
-				<label className="sr-only" htmlFor="python-factor-promotion-state">
-					{t("pythonResearch.factorLab.promotionDecision")}
-				</label>
-				<select
-					id="python-factor-promotion-state"
+						{run.selectedTrialId && !run.promotionDecisionHash ? (
+							<div className="flex flex-wrap items-center gap-2">
+								<label className="sr-only" htmlFor="python-factor-promotion-state">
+									{t("pythonResearch.factorLab.promotionDecision")}
+								</label>
+								<select
+									id="python-factor-promotion-state"
 									className="h-9 rounded-md border bg-background px-2 text-sm"
 									value={promotionState}
 									onChange={(event) =>

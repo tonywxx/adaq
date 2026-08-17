@@ -51,6 +51,7 @@ export function NavTitlebarTransparent({
 	};
 
 	return (
+		// biome-ignore lint/a11y/noStaticElementInteractions: Tauri drag regions intentionally handle pointer gestures on a non-semantic surface.
 		<div
 			data-tauri-drag-region
 			className={cn("fixed top-0 left-0 right-0 z-50 flex h-12 w-full", className)}

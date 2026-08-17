@@ -35,7 +35,7 @@ test("M10 manual acceptance guides expose the same executable contract", () => {
 		"pnpm run build",
 		"pnpm run lint",
 		"git diff --check",
-		"gh workflow run \"Indicator engine acceptance\" --ref",
+		'gh workflow run "Indicator engine acceptance" --ref',
 		"cargo test -p adaq-feature-engine --release --test benchmarks -- --ignored --test-threads=1",
 		"feature-benchmark-baseline.json",
 		"Get-FileHash -Algorithm SHA256",
@@ -99,7 +99,7 @@ test("M10 architecture guides retain matching ordered sections", () => {
 	expect(sectionShape(guides[1])).toEqual(sectionShape(guides[0]));
 	for (const concept of [
 		"adaq-feature-engine",
-		"planSchemaVersion: \"2.0.0\"",
+		'planSchemaVersion: "2.0.0"',
 		"Available At",
 		"Point-in-Time",
 		"Unavailable",

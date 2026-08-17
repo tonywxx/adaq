@@ -41,6 +41,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "uuid",
+ "windows-sys 0.61.2",
  "zip 8.6.0",
 ]
 
@@ -190,6 +191,7 @@ dependencies = [
  "tar",
  "tempfile",
  "toml 0.8.2",
+ "windows-sys 0.61.2",
  "zip 8.6.0",
 ]
 

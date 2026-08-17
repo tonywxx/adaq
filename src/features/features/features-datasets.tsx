@@ -533,9 +533,9 @@ function DatasetInspector({
 										</tr>
 									</thead>
 									<tbody>
-										{rows.map((row, index) => (
+										{rows.map((row) => (
 											<tr
-												key={`${row.instrumentId}-${row.observationTimeMs}-${index}`}
+												key={`${row.instrumentId}-${row.observationTimeMs}`}
 												className="border-b"
 											>
 												<td className="py-1.5 pr-3">{row.instrumentId}</td>

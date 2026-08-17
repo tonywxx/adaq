@@ -75,15 +75,15 @@ Completion gate: promoted Factors bind exact Feature, Snapshot, Universe, evalua
 
 The accepted bilingual [M11 Factor Research architecture](./m11-factor-research.md) and [manual acceptance guide](./m11-manual-acceptance.md) define the completed Native-only Research Engine boundary, Factor ABI v2, immutable Dataset-first evaluation, Research Family lineage, User-owned promotion, `/factors` workspace, and eight delivered slices published under [parent issue #88](https://github.com/tonywxx/adaq/issues/88).
 
-### M12 — Python Research SDK and Qlib-first Model Lab
+### M12 — Python Research SDK and Qlib-first Model Lab (Accepted)
 
-First deliver the shared Python Research SDK with one explicit `create_project()` entry point and typed Factor, Model, and Strategy lifecycles, the fixed source-visible Project Layout and inert import/export validation, portable Input Slots, ADAQ-managed Python Runtime and locked environments, explicit Sync Environment, Project/Revision/Attempt lifecycle, trusted child-process Research Runner, versioned loopback protocol, Host-validated atomic result publication, cancellation and restart recovery, bounded resources, Host-owned finite parameter Grids, Repeatability Reports, and Python Factor Candidate integration through the existing M11 Dataset, evaluation, Research Family, and Promotion evidence. Then deliver controlled Model training with the Qlib Ridge Adapter over Host-fed Train, Validation, and feature-only Test partitions, one Forecast per Project, and a canonical data-only Linear Model Artifact; ADAQ Native remains an optional future Research Engine. Support Single-Instrument and Cross-Sectional Model scopes, immutable Experiments, separated Selection and Final Evaluation windows, Point-in-Time Training Universes, Feature and Factor selection, seeds, environments, artifacts, metrics, diagnostics, and Forecast Signal Datasets.
+M12 delivered the shared Python Research SDK with one explicit `create_project()` entry point and typed Factor, Model, and Strategy lifecycles, the fixed source-visible Project Layout and inert import/export validation, portable Input Slots, ADAQ-managed Python Runtime and locked environments, explicit Sync Environment, Project/Revision/Attempt lifecycle, trusted child-process Research Runner, versioned loopback protocol, Host-validated atomic result publication, cancellation and restart recovery, bounded resources, Host-owned finite parameter Grids, Repeatability Reports, and Python Factor Candidate integration through the existing M11 Dataset, evaluation, Research Family, and Promotion evidence. It also delivered controlled Model training with the Qlib Ridge Adapter over Host-fed Train, Validation, and feature-only Test partitions, one Forecast per Project, and a canonical data-only Linear Model Artifact; ADAQ Native remains an optional future Research Engine. Support Single-Instrument and Cross-Sectional Model scopes, immutable Experiments, separated Selection and Final Evaluation windows, Point-in-Time Training Universes, Feature and Factor selection, seeds, environments, artifacts, metrics, diagnostics, and Forecast Signal Datasets.
 
 Keep WASI Model Component, controlled ONNX, and Local Qlib Paper as distinct truthful Deployment Profiles. M12 freezes only the canonical Linear Model Artifact and its explicit eligibility contract; M14 implements the first Artifact-to-WASI Exporter. ONNX and Local Qlib require later registered Adapters and demonstrated need; an Artifact without an eligible Exporter and equivalence remains Research Only rather than receiving a false portable profile.
 
 Completion gate: the Apache-2.0 `py-factor-cross-sectional-momentum` and `py-model-qlib-ridge-return` Projects run without network data or extra wheels against the immutable 12-Instrument × 180-session `python-tutorial-a-share@1` fixture, fixed Train/Purge/Selection/Embargo/Final windows, managed environments, Host-owned Grids, explicit User Decisions, and existing evidence contracts on every supported platform. Golden Factor evidence is exact; the Ridge experiment publishes and reloads a pickle-free Linear Model Artifact under its strict finite tolerance and remains eligible only for the explicit WASI export path without weakening M8 Forecast Signal contracts.
 
-The consolidated bilingual planning contract is the [M12 Python Research and Model Lab architecture](./m12-python-research-and-model-lab.md) plus its [manual acceptance guide](./m12-python-research-manual-acceptance.md). Planning approval is not implementation or acceptance evidence.
+The consolidated bilingual M12 implementation and verification record is the [M12 Python Research and Model Lab architecture](./m12-python-research-and-model-lab.md) plus its [manual acceptance guide](./m12-python-research-manual-acceptance.md). Criterion-level evidence is recorded under parent issue [#97](https://github.com/tonywxx/adaq/issues/97) and child issues #98–#104.
 
 ### M13 — Strategy and Portfolio Backtest
 
@@ -284,9 +284,9 @@ flowchart TD
 
 #92 was the only initial executable frontier. M11 is accepted after the eight slice comments, the bilingual acceptance matrix, final local gates, and supported-platform evidence are all recorded.
 
-## M12 planned delivery map
+## M12 delivery map
 
-M12 is published as [parent specification #97](https://github.com/tonywxx/adaq/issues/97) with seven independently closable but dependency-ordered child issues:
+M12 was published as [parent specification #97](https://github.com/tonywxx/adaq/issues/97) with seven independently closable but dependency-ordered child issues. All seven are now closed with criterion-level evidence:
 
 1. **[#98 — M12.1 Project, Archive, SDK, and static validation](https://github.com/tonywxx/adaq/issues/98).**
 2. **[#99 — M12.2 Managed Runtime, Wheelhouse, Lock, Sync, and Environment lifecycle](https://github.com/tonywxx/adaq/issues/99).**
@@ -313,7 +313,7 @@ flowchart TD
     F --> G
 ```
 
-#98 is the only initial executable frontier. Every later child carries a native GitHub `blocked_by` edge matching this graph. M13 owns Python Strategy execution and `py-strategy-top-n-forecast`; M14 owns generation, Build, Conformance, Equivalence, `.adaq` packaging, and import.
+#98 was the initial executable frontier. M12 is accepted after all seven child issues and their supported-platform evidence were completed. M13 owns Python Strategy execution and `py-strategy-top-n-forecast`; M14 owns generation, Build, Conformance, Equivalence, `.adaq` packaging, and import.
 
 ## Roadmap-wide completion rules
 
@@ -325,7 +325,7 @@ Every milestone and child issue must:
 - Retain failed, cancelled, late, degraded, and recovery evidence instead of presenting only successes.
 - Add English (US) and Simplified Chinese user documentation and accessible GUI copy for user-facing behavior.
 - Pass focused tests first, then the applicable Rust workspace, frontend Jest, production build, formatting, secret-scan, and supported-platform CI gates.
-- Keep every bundled Python example executable and bilingual: pull requests run the complete offline tutorial on Linux plus fast contracts on all platforms, while main, Release, manual acceptance, and the accepting M12–M14 slice record the full three-platform Golden and failure-path matrix.
+- Keep every bundled Python example executable and bilingual: pull requests run the complete offline tutorial on the supported CI matrix plus fast contracts on all platforms, while main, Release, manual acceptance, and the accepting M12–M14 slice record the supported-platform Golden and failure-path matrix.
 - Preserve unrelated user changes and never close a parent issue from a child unless explicitly authorized.
 
 The final V1 manual acceptance must exercise three reference journeys—OKX Crypto Paper, A-share local Paper, and Alpaca U.S. Equity Paper—and failure journeys for missing data, provider disconnect, clock skew, Worker crash, uncertain order state, credential rotation, and restart reconciliation.

@@ -6,9 +6,7 @@ const ZOOM_STEP = 0.1;
 const ZOOM_STORAGE_KEY = "adaq-zoom";
 
 function getZoom() {
-	const stored = Number.parseFloat(
-		localStorage.getItem(ZOOM_STORAGE_KEY) ?? "",
-	);
+	const stored = Number.parseFloat(localStorage.getItem(ZOOM_STORAGE_KEY) ?? "");
 	if (!Number.isFinite(stored)) {
 		return 1;
 	}

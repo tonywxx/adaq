@@ -75,15 +75,15 @@ flowchart LR
 
 已接受的双语 [M11 Factor Research 架构](./m11-factor-research.zh-CN.md)与[人工验收指南](./m11-manual-acceptance.zh-CN.md)定义已完成的 Native-only Research Engine Boundary、Factor ABI v2、Immutable Dataset-first Evaluation、Research Family Lineage、User-owned Promotion、`/factors` Workspace，以及 [Parent Issue #88](https://github.com/tonywxx/adaq/issues/88) 下已交付的八个 Delivery Slice。
 
-### M12 — Python Research SDK 与 Qlib-first Model Lab
+### M12 — Python Research SDK 与 Qlib-first Model Lab（已接受）
 
-首先交付共享 Python Research SDK，包括一个显式 `create_project()` 入口、类型化 Factor/Model/Strategy Lifecycle、固定且源码可见的 Project Layout 与惰性 Import/Export Validation、可移植 Input Slot；再交付 ADAQ 管理的 Python Runtime 与锁定 Environment、显式 Sync Environment、Project/Revision/Attempt Lifecycle、受信任的 Child-process Research Runner、版本化 Loopback Protocol、Host 验证后的原子 Result Publication、Cancel 与 Restart Recovery、Resource Bound、Host-owned 有限 Parameter Grid、Repeatability Report，以及通过现有 M11 Dataset、Evaluation、Research Family 与 Promotion Evidence 接入的 Python Factor Candidate。随后通过 Qlib Ridge Adapter 在 Host-fed Train、Validation 与仅含 Feature 的 Test Partition 上交付受控 Model Training，每个 Project 一个 Forecast，并生成规范的纯数据 Linear Model Artifact；ADAQ Native 保持未来可选 Research Engine。支持 Single-Instrument 与 Cross-Sectional Model Scope、不可变 Experiment、分离的 Selection/Final Evaluation Window、Point-in-Time Training Universe、Feature/Factor Selection、Seed、Environment、Artifact、Metric、Diagnostic 与 Forecast Signal Dataset。
+M12 已交付共享 Python Research SDK，包括一个显式 `create_project()` 入口、类型化 Factor/Model/Strategy Lifecycle、固定且源码可见的 Project Layout 与惰性 Import/Export Validation、可移植 Input Slot；同时交付 ADAQ 管理的 Python Runtime 与锁定 Environment、显式 Sync Environment、Project/Revision/Attempt Lifecycle、受信任的 Child-process Research Runner、版本化 Loopback Protocol、Host 验证后的原子 Result Publication、Cancel 与 Restart Recovery、Resource Bound、Host-owned 有限 Parameter Grid、Repeatability Report，以及通过现有 M11 Dataset、Evaluation、Research Family 与 Promotion Evidence 接入的 Python Factor Candidate。随后通过 Qlib Ridge Adapter 在 Host-fed Train、Validation 与仅含 Feature 的 Test Partition 上交付受控 Model Training，每个 Project 一个 Forecast，并生成规范的纯数据 Linear Model Artifact；ADAQ Native 保持未来可选 Research Engine。支持 Single-Instrument 与 Cross-Sectional Model Scope、不可变 Experiment、分离的 Selection/Final Evaluation Window、Point-in-Time Training Universe、Feature/Factor Selection、Seed、Environment、Artifact、Metric、Diagnostic 与 Forecast Signal Dataset。
 
 把 WASI Model Component、受控 ONNX 与 Local Qlib Paper 保持为彼此独立且真实的 Deployment Profile。M12 只冻结规范 Linear Model Artifact 与其显式 Eligibility Contract；M14 实现首个 Artifact-to-WASI Exporter。ONNX 与 Local Qlib 需要未来注册 Adapter 和真实需求；没有合格 Exporter 与 Equivalence 的 Artifact 保持 Research Only，不能获得虚假的 Portable Profile。
 
 完成 Gate：Apache-2.0 的 `py-factor-cross-sectional-momentum` 与 `py-model-qlib-ridge-return` Project 不使用 Network Data 或额外 Wheel，在不可变的 12-Instrument × 180-Session `python-tutorial-a-share@1` Fixture、固定 Train/Purge/Selection/Embargo/Final Window、托管 Environment、Host-owned Grid、显式 User Decision 与既有 Evidence Contract 上通过所有支持平台。Factor Golden Evidence 必须精确；Ridge Experiment 在严格有限 Tolerance 下发布并重新加载不含 pickle 的 Linear Model Artifact，并且只保持显式 WASI Export Path 资格，同时不削弱 M8 Forecast Signal Contract。
 
-集中整理的双语规划合同由 [M12 Python Research 与 Model Lab 架构](./m12-python-research-and-model-lab.zh-CN.md)及其[人工验收指南](./m12-python-research-manual-acceptance.zh-CN.md)组成。批准规划不构成实现或验收证据。
+集中整理的 M12 实现与验证记录由 [M12 Python Research 与 Model Lab 架构](./m12-python-research-and-model-lab.zh-CN.md)及其[人工验收指南](./m12-python-research-manual-acceptance.zh-CN.md)组成。逐项验收证据记录在 Parent Issue [#97](https://github.com/tonywxx/adaq/issues/97) 与 Child Issue #98–#104 中。
 
 ### M13 — Strategy and Portfolio Backtest
 
@@ -284,9 +284,9 @@ flowchart TD
 
 #92 曾是唯一初始 Executable Frontier。八个 Slice Comment、双语 Acceptance Matrix、Final Local Gate 与 Supported-platform Evidence 全部记录后，M11 已接受。
 
-## M12 计划交付图
+## M12 交付图
 
-M12 已发布为 [Parent Specification #97](https://github.com/tonywxx/adaq/issues/97)，包含七个可独立关闭、但具有依赖顺序的 Child Issue：
+M12 已发布为 [Parent Specification #97](https://github.com/tonywxx/adaq/issues/97)，包含七个可独立关闭、但具有依赖顺序的 Child Issue；目前七个 Child Issue 均已关闭并记录逐项验收证据：
 
 1. **[#98 — M12.1 Project、Archive、SDK 与 Static Validation](https://github.com/tonywxx/adaq/issues/98)。**
 2. **[#99 — M12.2 Managed Runtime、Wheelhouse、Lock、Sync 与 Environment Lifecycle](https://github.com/tonywxx/adaq/issues/99)。**
@@ -313,7 +313,7 @@ flowchart TD
     F --> G
 ```
 
-#98 是唯一初始 Executable Frontier。其余 Child 均带有匹配本图的 GitHub 原生 `blocked_by` Edge。M13 负责 Python Strategy Execution 与 `py-strategy-top-n-forecast`；M14 负责 Generation、Build、Conformance、Equivalence、`.adaq` Packaging 与 Import。
+#98 曾是初始 Executable Frontier。M12 在七个 Child Issue 及其 Supported-platform Evidence 全部完成后已接受。M13 负责 Python Strategy Execution 与 `py-strategy-top-n-forecast`；M14 负责 Generation、Build、Conformance、Equivalence、`.adaq` Packaging 与 Import。
 
 ## Roadmap 全局完成规则
 
@@ -325,7 +325,7 @@ flowchart TD
 - 保留 Failed、Cancelled、Late、Degraded 与 Recovery Evidence，而不是只展示成功。
 - 为 User-facing Behavior 加入 English (US) 与简体中文用户文档和 Accessible GUI Copy。
 - 先运行 Focused Test，再运行适用的 Rust Workspace、Frontend Jest、Production Build、Formatting、Secret Scan 与 Supported-platform CI Gate。
-- 保证每个内置 Python Example 可执行且双语：Pull Request 在 Linux 运行完整 Offline Tutorial，并在所有平台运行快速 Contract；main、Release、Manual Acceptance 与接受 M12–M14 的 Slice 记录完整三平台 Golden 和 Failure-path Matrix。
+- 保证每个内置 Python Example 可执行且双语：Pull Request 在 Supported CI Matrix 上运行完整 Offline Tutorial，并在所有平台运行快速 Contract；main、Release、Manual Acceptance 与接受 M12–M14 的 Slice 记录 Supported-platform Golden 和 Failure-path Matrix。
 - 保留无关 User Change；Child 未获得显式授权时绝不关闭 Parent Issue。
 
 最终 V1 Manual Acceptance 必须覆盖三个 Reference Journey：OKX Crypto Paper、A-share Local Paper、Alpaca U.S. Equity Paper；并覆盖 Missing Data、Provider Disconnect、Clock Skew、Worker Crash、Uncertain Order State、Credential Rotation 与 Restart Reconciliation 的 Failure Journey。

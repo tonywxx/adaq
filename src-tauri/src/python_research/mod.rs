@@ -6,7 +6,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -122,9 +122,17 @@ struct RuntimePreparationProgress {
     total_bytes: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+const MODEL_LAB_SCHEMA_VERSION: u32 = 1;
+
+fn model_lab_schema_version() -> u32 {
+    MODEL_LAB_SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelLabDatabase {
+    #[serde(default = "model_lab_schema_version")]
+    schema_version: u32,
     experiments: BTreeMap<String, ModelExperiment>,
     decisions: BTreeMap<String, ParameterSelectionDecision>,
     final_reports: BTreeMap<String, FinalEvaluationReport>,
@@ -136,6 +144,21 @@ struct ModelLabDatabase {
     transformations: BTreeMap<String, Vec<u8>>,
     #[serde(default)]
     forecast_datasets: BTreeMap<String, StoredForecastDataset>,
+}
+
+impl Default for ModelLabDatabase {
+    fn default() -> Self {
+        Self {
+            schema_version: MODEL_LAB_SCHEMA_VERSION,
+            experiments: BTreeMap::new(),
+            decisions: BTreeMap::new(),
+            final_reports: BTreeMap::new(),
+            runs: BTreeMap::new(),
+            artifacts: BTreeMap::new(),
+            transformations: BTreeMap::new(),
+            forecast_datasets: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -175,6 +198,11 @@ impl ModelLabStore {
         } else {
             ModelLabDatabase::default()
         };
+        if database.schema_version != MODEL_LAB_SCHEMA_VERSION {
+            return Err(PythonResearchError(
+                "model-lab-store-schema-incompatible:reset-required".into(),
+            ));
+        }
         for experiment in database.experiments.values() {
             experiment
                 .validate()
@@ -249,13 +277,19 @@ impl ModelLabStore {
     }
 
     fn persist(&self, database: &ModelLabDatabase) -> Result<(), PythonResearchError> {
+        if database.schema_version != MODEL_LAB_SCHEMA_VERSION {
+            return Err(PythonResearchError(
+                "model-lab-store-schema-incompatible:reset-required".into(),
+            ));
+        }
         let temporary = self.path.with_extension("json.tmp");
-        fs::write(
-            &temporary,
-            serde_json::to_vec_pretty(database)
-                .map_err(|error| PythonResearchError(error.to_string()))?,
-        )?;
-        fs::rename(temporary, &self.path)?;
+        let bytes = serde_json::to_vec_pretty(database)
+            .map_err(|error| PythonResearchError(error.to_string()))?;
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        replace_model_lab_file(&temporary, &self.path)?;
         Ok(())
     }
 
@@ -614,6 +648,48 @@ impl ModelLabStore {
             .retain(|key, _| !key.starts_with(&format!("{user_id}:")));
         self.persist(&database)
     }
+}
+
+fn replace_model_lab_file(temporary: &Path, destination: &Path) -> Result<(), PythonResearchError> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        };
+
+        let temporary = temporary
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let destination = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let replaced = unsafe {
+            MoveFileExW(
+                temporary.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if replaced == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        fs::rename(temporary, destination)?;
+        #[cfg(unix)]
+        if let Some(parent) = destination.parent() {
+            fs::File::open(parent)?.sync_all()?;
+        }
+    }
+
+    Ok(())
 }
 
 fn model_key(user_id: &str, identity: &str) -> String {
@@ -6648,6 +6724,29 @@ mod tests {
                 .filter_map(|forecast| forecast.unavailable_reason.as_deref())
                 .all(|reason| reason == "target-window-boundary")
         );
+    }
+
+    #[test]
+    fn model_lab_store_persists_schema_and_rejects_incompatible_versions() {
+        let path =
+            std::env::temp_dir().join(format!("adaq-model-schema-{}.json", uuid::Uuid::new_v4()));
+        let store = ModelLabStore::open(&path).unwrap();
+        let database = store.database.lock().unwrap().clone();
+        store.persist(&database).unwrap();
+        store.persist(&database).unwrap();
+
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(document["schemaVersion"], MODEL_LAB_SCHEMA_VERSION);
+        document["schemaVersion"] = serde_json::json!(MODEL_LAB_SCHEMA_VERSION + 1);
+        std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+        let error = ModelLabStore::open(&path).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "model-lab-store-schema-incompatible:reset-required"
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

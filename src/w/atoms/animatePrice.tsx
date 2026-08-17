@@ -30,7 +30,7 @@ export const AnimatedPrice: React.FC<AnimatedPriceProps> = ({
 	const [highlightAll, setHighlightAll] = useState(false);
 
 	useEffect(() => {
-		if (isUp || isDown) {
+		if (currentPrice !== prevPrice && (isUp || isDown)) {
 			setHighlightAll(true);
 			const timer = setTimeout(() => {
 				setHighlightAll(false);

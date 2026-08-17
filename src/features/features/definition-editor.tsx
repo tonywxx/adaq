@@ -186,7 +186,7 @@ export function DefinitionEditor({
 								<ul className="space-y-2">
 									{node.inputs.map((input, inputIndex) => (
 										<li
-											key={`${node.id}-input-${inputIndex}`}
+											key={`${node.id}-input-${JSON.stringify(input)}`}
 											className="flex flex-wrap items-end gap-2"
 										>
 											<InputReference
@@ -322,7 +322,7 @@ export function DefinitionEditor({
 				<ul className="space-y-2">
 					{draft.outputs.map((output, outputIndex) => (
 						<li
-							key={`${output.name}-${outputIndex}`}
+							key={`${output.name}-${output.nodeId}`}
 							className="flex flex-wrap items-end gap-2"
 						>
 							<div className="w-48">

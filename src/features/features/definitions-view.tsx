@@ -387,8 +387,8 @@ export function DefinitionsView({
 											{t("features.definitions.validationFailed")}
 										</p>
 										<ul className="mt-1 list-inside list-disc font-mono text-xs">
-											{validation.issues.map((issue, index) => (
-												<li key={`${issue.code}-${index}`}>
+											{validation.issues.map((issue) => (
+												<li key={`${issue.code}-${issue.path ?? "root"}`}>
 													{issue.code}
 													{issue.path ? ` → ${issue.path}` : ""}
 												</li>
@@ -587,9 +587,9 @@ export function DefinitionsView({
 												</tr>
 											</thead>
 											<tbody>
-												{preview.observations.map((observation, index) => (
+												{preview.observations.map((observation) => (
 													<tr
-														key={`${observation.outputName}-${observation.instrumentId}-${observation.observationTimeMs}-${index}`}
+														key={`${observation.outputName}-${observation.instrumentId}-${observation.observationTimeMs}`}
 														className="border-b"
 													>
 														<td className="py-1.5 pr-3 font-mono">

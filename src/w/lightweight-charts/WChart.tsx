@@ -550,7 +550,8 @@ const WChart: React.FC<WChartProps> = ({
 			prevData.length === 0 ||
 			safeData.length !== prevData.length ||
 			safeData[0]?.time !== prevData[0]?.time ||
-			safeData[safeData.length - 1]?.time !== prevData[prevData.length - 1]?.time ||
+			safeData[safeData.length - 1]?.time !==
+				prevData[prevData.length - 1]?.time ||
 			currentVolumeScale !== volumeScaleRef.current;
 
 		try {

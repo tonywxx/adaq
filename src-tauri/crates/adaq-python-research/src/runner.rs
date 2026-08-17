@@ -234,6 +234,15 @@ pub fn run_process(
     let mut child = command
         .spawn()
         .map_err(|error| invalid(format!("runner-process-spawn-failed:{error}")))?;
+    #[cfg(windows)]
+    let _windows_job =
+        match configure_windows_job(&child, spec.max_memory_bytes, spec.max_processes) {
+            Ok(job) => job,
+            Err(error) => {
+                terminate_child(&mut child);
+                return Err(error);
+            }
+        };
     let log = Arc::new(Mutex::new(BoundedLog::new(spec.max_log_bytes)?));
     let mut log_readers = Vec::new();
     if let Some(stdout) = child.stdout.take() {
@@ -566,6 +575,74 @@ fn write_control_poll(
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+struct WindowsJobObject {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJobObject {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn configure_windows_job(
+    child: &std::process::Child,
+    max_memory_bytes: u64,
+    max_processes: u32,
+) -> Result<WindowsJobObject, PythonResearchError> {
+    use std::{mem::size_of, os::windows::io::AsRawHandle, ptr::null};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+
+    let process_memory_limit = usize::try_from(max_memory_bytes)
+        .map_err(|_| invalid("runner-windows-memory-limit-too-large"))?;
+    let handle = unsafe { CreateJobObjectW(null(), null()) };
+    if handle.is_null() {
+        return Err(invalid(format!(
+            "runner-windows-job-create-failed:{}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    let job = WindowsJobObject { handle };
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+        | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    limits.BasicLimitInformation.ActiveProcessLimit = max_processes;
+    limits.ProcessMemoryLimit = process_memory_limit;
+    let set = unsafe {
+        SetInformationJobObject(
+            job.handle,
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if set == 0 {
+        return Err(invalid(format!(
+            "runner-windows-job-configure-failed:{}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    let assigned = unsafe { AssignProcessToJobObject(job.handle, child.as_raw_handle()) };
+    if assigned == 0 {
+        return Err(invalid(format!(
+            "runner-windows-job-assign-failed:{}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(job)
 }
 
 fn terminate_child(child: &mut std::process::Child) {

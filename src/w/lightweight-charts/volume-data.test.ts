@@ -1,8 +1,4 @@
-import {
-	MAX_CHART_VALUE,
-	scaleVolume,
-	volumeScale,
-} from "./volume-data";
+import { MAX_CHART_VALUE, scaleVolume, volumeScale } from "./volume-data";
 
 test("scales a PEPE weekly volume below Lightweight Charts' value limit", () => {
 	const value = 727_886_377_162_213;
