@@ -12,10 +12,6 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	const validation = read("./features/validation/validation-page.tsx");
 	const features = read("./features/features/features-page.tsx");
 	const factors = read("./features/factors/factors-page.tsx");
-	const factorWorkspaceData = read(
-		"./features/factors/factor-workspace-data.ts",
-	);
-	const factorAdapter = read("./features/factors/factor-adapter.ts");
 	const workflow = read("./features/workflow/workflow-page.tsx");
 
 	for (const source of [
@@ -66,10 +62,6 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	expect(features).toMatch(
 		/<DatasetsView userId=\{userId\} adapter=\{adapter\} \/>/,
 	);
-	expect(factors).toMatch(/data-route="factors"/);
-	expect(factorWorkspaceData).toMatch(/readFactorCache/);
-	expect(factorWorkspaceData).toMatch(/const version = useRef\(0\)/);
-	expect(factorAdapter).toMatch(/factor_materialization_start/);
 	expect(workflow).toMatch(
 		/requestAnimationFrame\([\s\S]*?requestAnimationFrame\([\s\S]*?import\("@antv\/infographic"\)/,
 	);

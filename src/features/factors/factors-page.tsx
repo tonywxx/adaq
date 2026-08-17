@@ -86,14 +86,21 @@ type FactorTab =
 	| "evaluations"
 	| "decisions";
 
-function useFactorAdapter() {
-	return useMemo(() => createFactorAdapter(invoke), []);
+function useFactorAdapter(providedAdapter?: FactorAdapter) {
+	return useMemo(
+		() => providedAdapter ?? createFactorAdapter(invoke),
+		[providedAdapter],
+	);
 }
 
-export function FactorsPage() {
+export function FactorsPage({
+	adapter: providedAdapter,
+}: {
+	adapter?: FactorAdapter;
+} = {}) {
 	const { t } = useTranslation();
 	const userId = useMarketSessionStore((state) => state.userId);
-	const adapter = useFactorAdapter();
+	const adapter = useFactorAdapter(providedAdapter);
 	const [tab, setTab] = useState<FactorTab>("families");
 
 	useEffect(() => {
