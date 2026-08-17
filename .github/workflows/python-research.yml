@@ -39,9 +39,6 @@ jobs:
           - name: Windows x86_64
             runner: windows-latest
             full_tutorial: false
-          - name: Linux x86_64
-            runner: ubuntu-latest
-            full_tutorial: true
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -57,19 +54,6 @@ jobs:
       - name: Setup MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Install Linux Tauri dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            build-essential \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            patchelf
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Factor build target
         run: rustup target add wasm32-unknown-unknown
@@ -155,19 +139,6 @@ jobs:
       - name: Setup MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Install Linux Tauri dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            build-essential \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            patchelf
       - name: Install Factor build target
         run: rustup target add wasm32-unknown-unknown
       - name: Fetch offline Factor fixture dependencies

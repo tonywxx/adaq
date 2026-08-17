@@ -18,6 +18,7 @@ tony/
 .npm-cache/
 supabase/
 bak/
+.omx
 
 # Editor directories and files
 .vscode/*

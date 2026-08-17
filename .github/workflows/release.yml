@@ -73,8 +73,6 @@ jobs:
             runner: macos-14
           - name: Windows x86_64
             runner: windows-latest
-          - name: Linux x86_64
-            runner: ubuntu-latest
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -103,19 +101,6 @@ jobs:
           $linker = Get-ChildItem "$installation\VC\Tools\MSVC\*\bin\Hostx64\x64\link.exe" | Sort-Object FullName | Select-Object -Last 1
           if (-not $linker) { throw 'MSVC linker was not found.' }
           "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$($linker.FullName)" >> $env:GITHUB_ENV
-      - name: Install Linux Tauri dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            build-essential \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            patchelf
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
       - name: Run M12 Python contracts and tutorial Golden
