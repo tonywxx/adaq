@@ -13,11 +13,9 @@ import type {
 	FactorReportView,
 	M12Eligibility,
 } from "./factor-types";
+import type { TauriInvoke } from "@/lib/tauri-invoke";
 
-export type FactorInvoke = (
-	command: string,
-	args: Record<string, unknown>,
-) => Promise<unknown>;
+export type FactorInvoke = TauriInvoke;
 
 export function createFactorAdapter(invoke: FactorInvoke) {
 	const page = <T>(command: string, userId: string, pageNumber: number) =>

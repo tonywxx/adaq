@@ -2,7 +2,7 @@ import { createFactorAdapter } from "./factor-adapter";
 
 test("Factor adapter keeps User scope and immutable command payloads explicit", async () => {
 	const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
-	const adapter = createFactorAdapter(async (command, args) => {
+	const adapter = createFactorAdapter(async (command, args = {}) => {
 		calls.push({ command, args });
 		return {};
 	});

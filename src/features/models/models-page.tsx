@@ -13,7 +13,17 @@ import { useTranslation } from "react-i18next";
 import { PythonProjectsPanel } from "@/features/python-research/python-projects-panel";
 import { PythonModelLabPanel } from "@/features/python-research/python-model-lab-panel";
 import { PythonTutorialPanel } from "@/features/python-research/python-tutorial-panel";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { createModelsAdapter, type ModelsAdapter } from "./models-adapter";
+import type {
+	Attempt,
+	Dataset,
+	EvaluationExportFormat,
+	EvaluationReport,
+	EvaluationSignalContract,
+	RowPage,
+	Snapshot,
+} from "./models-types";
 import {
 	datasetGenerationRequest,
 	datasetStatusSummary,
@@ -24,109 +34,8 @@ import {
 	isCompatibleEvaluationSignal,
 	signalRowPageRequest,
 	signalRowSummary,
-	type EvaluationSignalContract,
 } from "./models-workspace";
-
-type Snapshot = {
-	snapshotId: string;
-	code: string;
-	interval: string;
-	barCount: number;
-};
-type Dataset = {
-	datasetId: string;
-	snapshotId: string;
-	code: string;
-	interval: string;
-	predictionSource: string;
-	rowCount: number;
-	unavailableCount: number;
-	statusCounts: Record<string, number>;
-	modelArtifact?: { sha256: string; provenance: Record<string, string> };
-	modelOutputs: Array<Record<string, unknown>>;
-	modelParameters: Record<string, Record<string, unknown>>;
-	sourceWarmupBars: number;
-	modelWarmupBars: number;
-	modelArchiveSha256: string;
-	trust: string;
-	componentLock: Array<{ alias: string; archiveSha256: string }>;
-	featurePlanHash: string;
-	featurePlanJson: string;
-	seed: number;
-	engineIdentity: Record<string, string>;
-	producerSegments: Array<Record<string, unknown>>;
-	continuousBarSegments: number;
-	barGapRule: string;
-	parquetSha256: string;
-	archiveManifestJson?: string;
-	externalProducerSegments?: Array<Record<string, unknown>>;
-};
-type Attempt = {
-	attemptId: string;
-	datasetId?: string;
-	status: "pending" | "running" | "completed" | "failed" | "cancelled";
-	diagnosticEvidence?: string;
-	progressCompleted: number;
-	progressTotal: number;
-};
-type RowPage = {
-	items: Array<{
-		predictionTimeMs: number;
-		availableAtMs: number;
-		status: string;
-		values?: number[];
-		unavailableReason?: string;
-	}>;
-	total: number;
-	page: number;
-	pageSize: number;
-};
 type ModelOutput = EvaluationSignalContract;
-type EvaluationReport = {
-	reportId: string;
-	datasetId: string;
-	snapshotId: string;
-	signalName: string;
-	signalContract: ModelOutput;
-	evaluationStartTimeMs: number;
-	evaluationEndTimeMs: number;
-	stabilityWindowBars: number;
-	metrics: {
-		evaluationRowCount: number;
-		alignedCount: number;
-		unavailablePredictionCount: number;
-		unavailableLabelCount: number;
-		coverage: number;
-		missingness: number;
-		predictionDistribution?: Record<string, number>;
-		realizedDistribution?: Record<string, number>;
-		mae?: number;
-		rmse?: number;
-		meanBias?: number;
-		pearsonCorrelation?: number;
-		brierScore?: number;
-		logLoss?: number;
-		rocAuc?: number;
-		calibration?: Array<Record<string, unknown>>;
-		pearsonIc?: number;
-		spearmanRankIc?: number;
-		windowIcir?: number;
-		quantiles?: Array<Record<string, unknown>>;
-		undefinedMetrics?: Record<string, string>;
-	};
-	stabilityWindows: Array<Record<string, unknown>>;
-	evidenceState: { summary: string; segmentStates: string[] };
-	unavailableRows: Array<Record<string, unknown>>;
-	producerSegments: Array<Record<string, unknown>>;
-	scaleProvenance?: Array<Record<string, unknown>>;
-	trustState: string;
-	metricVersions: Record<string, string>;
-	engineIdentity: Record<string, string>;
-	schemaIdentity: string;
-	datasetParquetSha256: string;
-	componentLock: Array<{ alias: string; archiveSha256: string }>;
-	featurePlanHash: string;
-};
 
 const metricValue = (value?: number) =>
 	value == null ? "Unavailable" : String(value);
@@ -153,8 +62,16 @@ const afterPaint = () =>
 		requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
 	);
 
-export function ModelsPage() {
+export function ModelsPage({
+	adapter: providedAdapter,
+}: {
+	adapter?: ModelsAdapter;
+} = {}) {
 	const { t } = useTranslation();
+	const adapter = useMemo(
+		() => providedAdapter ?? createModelsAdapter(invoke),
+		[providedAdapter],
+	);
 	const userId = useMarketSessionStore((state) => state.userId);
 	const [models, setModels] = useState<LibraryComponent[]>([]);
 	const [components, setComponents] = useState<LibraryComponent[]>([]);
@@ -195,9 +112,7 @@ export function ModelsPage() {
 			await afterPaint();
 			if (!isActive()) return;
 			try {
-				const items = await invoke<LibraryComponent[]>("component_list", {
-					request: { userId },
-				});
+				const items = await adapter.listComponents(userId);
 				if (!isActive()) return;
 				setModels(items.filter((item) => item.kind === "model"));
 				setComponents(items);
@@ -211,7 +126,7 @@ export function ModelsPage() {
 				if (isActive()) setComponentsLoading(false);
 			}
 		},
-		[userId],
+		[adapter, userId],
 	);
 	const refreshSnapshots = useCallback(
 		async (isActive: () => boolean = () => true) => {
@@ -220,9 +135,7 @@ export function ModelsPage() {
 			await afterPaint();
 			if (!isActive()) return;
 			try {
-				const items = await invoke<Snapshot[]>("snapshot_list_readable", {
-					request: { userId },
-				});
+				const items = await adapter.listSnapshots(userId);
 				if (!isActive()) return;
 				setSnapshots(items);
 				setSnapshot((current) => current || items[0]?.snapshotId || "");
@@ -230,7 +143,7 @@ export function ModelsPage() {
 				if (isActive()) setSnapshotsLoading(false);
 			}
 		},
-		[userId],
+		[adapter, userId],
 	);
 	const refreshAttempts = useCallback(
 		async (isActive: () => boolean = () => true) => {
@@ -239,15 +152,13 @@ export function ModelsPage() {
 			await afterPaint();
 			if (!isActive()) return;
 			try {
-				const items = await invoke<Attempt[]>("dataset_generation_list", {
-					userId,
-				});
+				const items = await adapter.listAttempts(userId);
 				if (isActive()) setAttempts(items);
 			} finally {
 				if (isActive()) setAttemptsLoading(false);
 			}
 		},
-		[userId],
+		[adapter, userId],
 	);
 	const refreshDatasets = useCallback(
 		async (isActive: () => boolean = () => true) => {
@@ -256,13 +167,13 @@ export function ModelsPage() {
 			await afterPaint();
 			if (!isActive()) return;
 			try {
-				const items = await invoke<Dataset[]>("signal_dataset_list", { userId });
+				const items = await adapter.listDatasets(userId);
 				if (isActive()) setDatasets(items);
 			} finally {
 				if (isActive()) setDatasetsLoading(false);
 			}
 		},
-		[userId],
+		[adapter, userId],
 	);
 	const refreshEvaluations = useCallback(
 		async (isActive: () => boolean = () => true) => {
@@ -271,15 +182,13 @@ export function ModelsPage() {
 			await afterPaint();
 			if (!isActive()) return;
 			try {
-				const items = await invoke<EvaluationReport[]>("forecast_evaluation_list", {
-					userId,
-				});
+				const items = await adapter.listEvaluations(userId);
 				if (isActive()) setEvaluationReports(items);
 			} finally {
 				if (isActive()) setEvaluationsLoading(false);
 			}
 		},
-		[userId],
+		[adapter, userId],
 	);
 	const refresh = useCallback(
 		(isActive: () => boolean = () => true) =>
@@ -344,21 +253,18 @@ export function ModelsPage() {
 	useEffect(() => {
 		setCompatibleFactors({});
 		if (!userId || !model) return;
-		void invoke<Record<string, string[]>>("backtest_compatible_factors", {
-			request: { userId, strategyArchiveSha256: model },
-		})
+		void adapter
+			.listCompatibleFactors(userId, model)
 			.then(setCompatibleFactors)
 			.catch((error) => setEvidence(formatModelError(error)));
-	}, [model, userId]);
+	}, [adapter, model, userId]);
 	const trackAttempt = async (result: Attempt) => {
 		if (!userId) return;
 		setActiveAttempt(result.attemptId);
 		let attempt = result;
 		while (attempt.status === "pending" || attempt.status === "running") {
 			await new Promise((resolve) => window.setTimeout(resolve, 250));
-			const attempts = await invoke<Attempt[]>("dataset_generation_list", {
-				userId,
-			});
+			const attempts = await adapter.listAttempts(userId);
 			attempt =
 				attempts.find((item) => item.attemptId === result.attemptId) ?? attempt;
 			setEvidence(
@@ -396,9 +302,7 @@ export function ModelsPage() {
 					...modelParameters,
 				},
 			);
-			const result = await invoke<Attempt>("dataset_generation_start", {
-				request,
-			});
+			const result = await adapter.startDatasetGeneration(request);
 			await trackAttempt(result);
 		} catch (error) {
 			setEvidence(formatModelError(error));
@@ -410,10 +314,7 @@ export function ModelsPage() {
 	const cancel = async () => {
 		if (!userId || !activeAttempt) return;
 		try {
-			await invoke("dataset_generation_cancel", {
-				attemptId: activeAttempt,
-				userId,
-			});
+			await adapter.cancelDatasetGeneration(userId, activeAttempt);
 		} catch (error) {
 			setEvidence(formatModelError(error));
 		}
@@ -429,10 +330,7 @@ export function ModelsPage() {
 		setEvidence("");
 		await afterPaint();
 		try {
-			await invoke("signal_dataset_import", {
-				userId,
-				archive: Array.from(await readFile(path)),
-			});
+			await adapter.importSignalDataset(userId, Array.from(await readFile(path)));
 			setEvidence("External Signal Dataset imported.");
 			await refreshDatasets();
 		} catch (error) {
@@ -446,10 +344,7 @@ export function ModelsPage() {
 		setBusy(true);
 		await afterPaint();
 		try {
-			const archive = await invoke<number[]>("signal_dataset_export", {
-				datasetId,
-				userId,
-			});
+			const archive = await adapter.exportSignalDataset(datasetId, userId);
 			const path = await save({
 				defaultPath: `${datasetId}.adaq-signals`,
 				filters: [{ name: "AdaQ Signals", extensions: ["adaq-signals"] }],
@@ -476,8 +371,7 @@ export function ModelsPage() {
 		setRowsLoading(datasetId);
 		await afterPaint();
 		try {
-			const result = await invoke<RowPage>(
-				"signal_dataset_rows",
+			const result = await adapter.signalDatasetRows(
 				signalRowPageRequest(datasetId, userId, page),
 			);
 			setDatasetRows((current) => ({ ...current, [datasetId]: result }));
@@ -493,10 +387,7 @@ export function ModelsPage() {
 		setEvidence("");
 		await new Promise(requestAnimationFrame);
 		try {
-			const result = await invoke<Attempt>("dataset_generation_retry", {
-				attemptId,
-				userId,
-			});
+			const result = await adapter.retryDatasetGeneration(attemptId, userId);
 			await trackAttempt(result);
 		} catch (error) {
 			setEvidence(formatModelError(error));
@@ -518,17 +409,15 @@ export function ModelsPage() {
 			);
 			if (!dataset || !signal)
 				throw new Error("Select compatible evaluation evidence.");
-			const report = await invoke<EvaluationReport>("forecast_evaluation_create", {
-				request: {
-					userId,
-					datasetId: evaluationDataset,
-					snapshotId: dataset.snapshotId,
-					signalName: evaluationSignal,
-					horizonBars: signal.horizonBars,
-					evaluationStartTimeMs: evaluationStart,
-					evaluationEndTimeMs: evaluationEnd,
-					stabilityWindowBars,
-				},
+			const report = await adapter.createEvaluation({
+				userId,
+				datasetId: evaluationDataset,
+				snapshotId: dataset.snapshotId,
+				signalName: evaluationSignal,
+				horizonBars: signal.horizonBars,
+				evaluationStartTimeMs: evaluationStart,
+				evaluationEndTimeMs: evaluationEnd,
+				stabilityWindowBars,
 			});
 			setEvidence(`Forecast Evaluation Report ${report.reportId} created.`);
 			await refreshEvaluations();
@@ -540,18 +429,14 @@ export function ModelsPage() {
 	};
 	const exportEvaluation = async (
 		reportId: string,
-		format: "json" | "markdown",
+		format: EvaluationExportFormat,
 	) => {
 		if (!userId || busy) return;
 		setBusy(true);
 		setEvidence(`Preparing authoritative ${format} export…`);
 		await afterPaint();
 		try {
-			const content = await invoke<string>("forecast_evaluation_export", {
-				reportId,
-				userId,
-				format,
-			});
+			const content = await adapter.exportEvaluation({ reportId, userId, format });
 			const path = await save({
 				defaultPath: evaluationExportFilename(reportId, format),
 				filters: [

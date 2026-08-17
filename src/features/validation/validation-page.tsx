@@ -10,7 +10,7 @@ import {
 	PaginationNext,
 	PaginationPrevious,
 } from "@/components/ui/pagination";
-import type { BacktestRun } from "@/features/backtest/backtest-page";
+import type { BacktestRun } from "@/features/backtest/backtest-types";
 import { formatDecimal } from "@/features/backtest/format-decimal";
 import type { LibraryComponent } from "@/features/components/component-library";
 import { Workspace } from "@/features/components/components-page";

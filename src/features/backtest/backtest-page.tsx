@@ -14,14 +14,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Workspace } from "@/features/components/components-page";
 import type { LibraryComponent } from "@/features/components/component-library";
 import { MetricInfo, ResearchMetric } from "@/features/research/metric-info";
-import {
-	BAR_INTERVALS,
-	type BarInterval,
-	type OhlcvBar,
-} from "@/lib/market-chart-adapter";
+import { BAR_INTERVALS, type BarInterval } from "@/lib/market-chart-adapter";
 import { instrumentKey, useMarketSessionStore } from "@/lib/market-session";
 import { useHistoryTab } from "@/lib/navigation-history";
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BacktestChart } from "./backtest-chart";
@@ -34,137 +30,25 @@ import {
 } from "./backtest-data";
 import { decisionSignalEvidence } from "./backtest-evidence";
 import {
+	createBacktestAdapter,
+	type BacktestAdapter,
+} from "./backtest-adapter";
+import {
 	createBacktestDraft,
 	defaultExecutionProfile,
 	transitionBacktestDraft,
 	type BacktestDraftSession,
-	type BacktestPreflight,
 	type DraftCommand,
 	type DraftError,
-	type NormalizedRunConfiguration,
 	type SignalCandidate,
 } from "./backtest-run-draft";
+import type {
+	BacktestRun,
+	ExecutionPage,
+	RunSummary,
+	Snapshot,
+} from "./backtest-types";
 import { formatDecimal } from "./format-decimal";
-
-type Snapshot = {
-	snapshotId: string;
-	src: string;
-	code: string;
-	interval: BarInterval;
-	barCount: number;
-	startTimeMs: number;
-	endTimeMs: number;
-	gaps: { startTimeMs: number; endTimeMs: number }[];
-};
-type SnapshotPage = {
-	items: Snapshot[];
-	total: number;
-	page: number;
-	pageSize: number;
-};
-type Fill = {
-	orderId: number;
-	openTimeMs: number;
-	side: "buy" | "sell";
-	price: string;
-	quantity: string;
-	requestedQuantity: string;
-	fee: string;
-	realizedPnl: string;
-	role: "maker" | "taker";
-};
-type Order = {
-	orderId: number;
-	createdTimeMs: number;
-	side: "buy" | "sell";
-	quantity: string;
-	limitPrice: string;
-	policy: "maker" | "taker";
-	status: { status: string; reason?: string } | string;
-};
-type EquityPoint = { openTimeMs: number; equity: string; drawdown: string };
-type Metrics = Record<
-	| "initialEquity"
-	| "finalEquity"
-	| "totalReturn"
-	| "cagr"
-	| "annualizedVolatility"
-	| "sharpe"
-	| "sortino"
-	| "maxDrawdown"
-	| "calmar"
-	| "realizedPnl"
-	| "unrealizedPnl"
-	| "totalFees"
-	| "turnover"
-	| "winRate"
-	| "profitFactor"
-	| "averageWin"
-	| "averageLoss"
-	| "exposureTime"
-	| "benchmarkReturn"
-	| "excessReturn",
-	string
-> & { fillCount: number; realizedTradeCount: number };
-type Provenance = {
-	normalizedRequest: NormalizedRunConfiguration;
-	featurePlanJson: string;
-	featurePlanHash: string;
-	componentLock: Array<{
-		componentId: string;
-		version: string;
-		archiveSha256: string;
-		wasmSha256: string;
-	}>;
-	datasetLock: Array<{
-		slot: string;
-		datasetId: string;
-		signalName: string;
-		evidenceState: string;
-	}>;
-	architecture: "signal-driven" | "composed" | "hybrid";
-	indicatorEngineBuildIdentity: Record<string, string>;
-	backtestEngineVersion: string;
-	seed: number;
-};
-export type BacktestRun = {
-	runId: string;
-	snapshot: Snapshot;
-	provenance?: Provenance;
-	bars: OhlcvBar[];
-	decisions: Array<{ openTimeMs: number; targetExposure: string }>;
-	pauses: Array<{ openTimeMs: number; reason: string }>;
-	result: {
-		orders: Order[];
-		fills: Fill[];
-		equity: EquityPoint[];
-		benchmarkEquity: EquityPoint[];
-		metrics: Metrics;
-		totalFees: string;
-		finalCash: string;
-		finalBaseQuantity: string;
-	};
-};
-type RunSummary = {
-	runId: string;
-	createdAt: string;
-	code: string;
-	interval: string;
-	barCount: number;
-	totalReturn: string;
-};
-type RunHistoryPage = {
-	items: RunSummary[];
-	total: number;
-	page: number;
-	pageSize: number;
-};
-type ExecutionPage = {
-	orders: Order[];
-	fills: Fill[];
-	totalOrders: number;
-	totalFills: number;
-};
 const EXECUTION_PAGE_SIZE = 100;
 const RUN_HISTORY_PAGE_SIZE = 10;
 const SNAPSHOT_PAGE_SIZE = 10;
@@ -181,8 +65,16 @@ function formatDraftError(error: DraftError) {
 	return "Validate the current Draft before running the Backtest.";
 }
 
-export function BacktestPage() {
+export function BacktestPage({
+	adapter: providedAdapter,
+}: {
+	adapter?: BacktestAdapter;
+} = {}) {
 	const { t } = useTranslation();
+	const adapter = useMemo(
+		() => providedAdapter ?? createBacktestAdapter(invoke),
+		[providedAdapter],
+	);
 	const userId = useMarketSessionStore((state) => state.userId);
 	const instrument = useMarketSessionStore((state) => state.activeInstrument);
 	const watchlist = useMarketSessionStore((state) => state.watchlist);
@@ -293,13 +185,11 @@ export function BacktestPage() {
 			if (!userId) return;
 			setHistoryLoading(true);
 			try {
-				const result = await invoke<RunHistoryPage>("backtest_list", {
-					request: {
-						userId,
-						src: selectedInstrument.src,
-						code: selectedInstrument.code,
-						page,
-					},
+				const result = await adapter.listRuns({
+					userId,
+					src: selectedInstrument.src,
+					code: selectedInstrument.code,
+					page,
 				});
 				if (!isActive()) return;
 				setHistory(result.items);
@@ -310,20 +200,18 @@ export function BacktestPage() {
 				if (isActive()) setHistoryLoading(false);
 			}
 		},
-		[selectedInstrument.code, selectedInstrument.src, userId],
+		[adapter, selectedInstrument.code, selectedInstrument.src, userId],
 	);
 	const refreshSnapshots = useCallback(
 		async (page: number, isActive: () => boolean = () => true) => {
 			if (!userId) return;
 			setSnapshotsLoading(true);
 			try {
-				const result = await invoke<SnapshotPage>("snapshot_list", {
-					request: {
-						userId,
-						...selectedInstrument,
-						interval,
-						page,
-					},
+				const result = await adapter.listSnapshots({
+					userId,
+					...selectedInstrument,
+					interval,
+					page,
 				});
 				if (!isActive()) return;
 				setSnapshots(result.items);
@@ -334,13 +222,14 @@ export function BacktestPage() {
 				if (isActive()) setSnapshotsLoading(false);
 			}
 		},
-		[interval, selectedInstrument, userId],
+		[adapter, interval, selectedInstrument, userId],
 	);
 	useEffect(() => {
 		if (!userId) return;
 		let active = true;
 		setComponentsLoading(true);
-		void invoke<LibraryComponent[]>("component_list", { request: { userId } })
+		void adapter
+			.listComponents(userId)
 			.then((items) => {
 				if (!active) return;
 				setComponents(items);
@@ -354,7 +243,7 @@ export function BacktestPage() {
 		return () => {
 			active = false;
 		};
-	}, [userId]);
+	}, [adapter, userId]);
 	useEffect(() => {
 		if (!userId) return;
 		let active = true;
@@ -395,9 +284,8 @@ export function BacktestPage() {
 		setCompatibleFactors({});
 		if (!userId || !strategy) return;
 		let active = true;
-		void invoke<Record<string, string[]>>("backtest_compatible_factors", {
-			request: { userId, strategyArchiveSha256: strategy },
-		})
+		void adapter
+			.listCompatibleFactors(userId, strategy)
 			.then((compatibleHashes) => {
 				if (!active) return;
 				const result = transitionBacktestDraft(draftSessionRef.current, {
@@ -413,19 +301,14 @@ export function BacktestPage() {
 		return () => {
 			active = false;
 		};
-	}, [strategy, userId]);
+	}, [adapter, strategy, userId]);
 	useEffect(() => {
 		setCompatibleSignals([]);
 		const snapshotId = draft.snapshot?.snapshotId;
 		if (!userId || !strategy || !snapshotId) return;
 		let active = true;
-		void invoke<SignalCandidate[]>("backtest_compatible_signals", {
-			request: {
-				userId,
-				strategyArchiveSha256: strategy,
-				snapshotId,
-			},
-		})
+		void adapter
+			.listCompatibleSignals(userId, strategy, snapshotId)
 			.then((candidates) => {
 				if (!active) return;
 				const result = transitionBacktestDraft(draftSessionRef.current, {
@@ -442,7 +325,7 @@ export function BacktestPage() {
 		return () => {
 			active = false;
 		};
-	}, [draft.snapshot?.snapshotId, strategy, userId]);
+	}, [adapter, draft.snapshot?.snapshotId, strategy, userId]);
 	const selectStage = async (
 		next: "data" | "strategy" | "execution" | "results",
 	) => {
@@ -468,9 +351,7 @@ export function BacktestPage() {
 		setRunTechnicalError("");
 		const preflightRevision = preflightEffect.revision;
 		try {
-			const value = await invoke<BacktestPreflight>("backtest_preflight", {
-				request: preflightEffect.request,
-			});
+			const value = await adapter.preflight(preflightEffect.request);
 			if (
 				draftSessionRef.current.draft.revision !== preflightRevision ||
 				draftSessionRef.current.preflight.status !== "pending"
@@ -511,11 +392,10 @@ export function BacktestPage() {
 			return;
 		}
 		const taskId = crypto.randomUUID();
-		const onEvent = new Channel<{
+		const onEvent = (event: {
 			event: "progress" | "completed" | "cancelled";
 			data?: { downloadedBars?: number };
-		}>();
-		onEvent.onmessage = (event) => {
+		}) => {
 			if (event.event === "progress")
 				setMessage(snapshotStatus(event.event, event.data?.downloadedBars));
 			if (event.event === "cancelled") setMessage(snapshotStatus(event.event));
@@ -524,8 +404,8 @@ export function BacktestPage() {
 		setSnapshotTechnicalError("");
 		setMessage(t("loading.downloadingClosedBars"));
 		try {
-			const value = await invoke<Snapshot>("snapshot_download", {
-				request: {
+			const value = await adapter.downloadSnapshot(
+				{
 					taskId,
 					userId,
 					...selectedInstrument,
@@ -534,7 +414,7 @@ export function BacktestPage() {
 					endTimeMs: Date.parse(end),
 				},
 				onEvent,
-			});
+			);
 			const currentDraft = draftSessionRef.current.draft;
 			if (
 				currentDraft.selectedInstrumentKey !== selectedInstrumentKey ||
@@ -587,9 +467,7 @@ export function BacktestPage() {
 		setRunTechnicalError("");
 		setMessage("Running deterministic Backtest…");
 		try {
-			const value = await invoke<BacktestRun>("backtest_run", {
-				request: runEffect.request,
-			});
+			const value = await adapter.run(runEffect.request);
 			setRun(value);
 			setExecutionOffset(0);
 			setShowResults(true);
@@ -609,14 +487,13 @@ export function BacktestPage() {
 		if (!userId || !runId) return;
 		let current = true;
 		setExecutionPage(undefined);
-		void invoke<ExecutionPage>("backtest_execution_data", {
-			request: {
+		void adapter
+			.executionData({
 				userId,
 				runId,
 				offset: executionOffset,
 				limit: EXECUTION_PAGE_SIZE,
-			},
-		})
+			})
 			.then((page) => {
 				if (!current) return;
 				setExecutionPage(page);
@@ -631,7 +508,7 @@ export function BacktestPage() {
 		return () => {
 			current = false;
 		};
-	}, [executionOffset, runId, userId]);
+	}, [adapter, executionOffset, runId, userId]);
 	const loadChartRange = useCallback(
 		async (startTimeMs: number, endTimeMs: number) => {
 			if (!userId || !runId) return;
@@ -640,8 +517,12 @@ export function BacktestPage() {
 			chartRange.current = key;
 			const requestId = ++chartRequest.current;
 			try {
-				const view = await invoke<BacktestRun>("backtest_chart_data", {
-					request: { userId, runId, startTimeMs, endTimeMs, maxPoints: 5000 },
+				const view = await adapter.chartData({
+					userId,
+					runId,
+					startTimeMs,
+					endTimeMs,
+					maxPoints: 5000,
 				});
 				if (requestId === chartRequest.current)
 					setRun((current) =>
@@ -651,7 +532,7 @@ export function BacktestPage() {
 				setMessage(String(error));
 			}
 		},
-		[runId, userId],
+		[adapter, runId, userId],
 	);
 	const setParameter = (alias: string, name: string, value: string) =>
 		dispatchDraft({ type: "set-factor-parameter", alias, name, value });
@@ -950,11 +831,7 @@ export function BacktestPage() {
 								{downloadTaskId && (
 									<Button
 										variant="outline"
-										onClick={() =>
-											void invoke("snapshot_cancel", {
-												request: { taskId: downloadTaskId },
-											})
-										}
+										onClick={() => void adapter.cancelSnapshot(downloadTaskId)}
 									>
 										Cancel
 									</Button>
@@ -1327,9 +1204,8 @@ export function BacktestPage() {
 									className="text-left"
 									onClick={() =>
 										userId &&
-										void invoke<BacktestRun>("backtest_get", {
-											request: { userId, runId: item.runId },
-										})
+										void adapter
+											.getRun(userId, item.runId)
 											.then((value) => {
 												setRun(value);
 												setExecutionOffset(0);

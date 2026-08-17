@@ -1,12 +1,10 @@
 import type { LibraryComponent } from "@/features/components/component-library";
+import type {
+	DatasetGenerationRequest,
+	EvaluationSignalContract,
+} from "./models-types";
 
-export type EvaluationSignalContract = {
-	name: string;
-	predictionKind: { kind: string };
-	forecastTarget: { kind: string; target?: string; valueType?: string };
-	valueScale: { kind: string; minimum?: number; maximum?: number };
-	horizonBars: number;
-};
+export type { EvaluationSignalContract } from "./models-types";
 
 export function datasetGenerationRequest(
 	userId: string,
@@ -17,7 +15,7 @@ export function datasetGenerationRequest(
 	modelParameters: Record<string, string> = Object.fromEntries(
 		model.parameters.map((parameter) => [parameter.name, parameter.defaultValue]),
 	),
-) {
+): DatasetGenerationRequest {
 	return {
 		userId,
 		snapshotId,

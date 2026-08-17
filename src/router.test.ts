@@ -96,6 +96,10 @@ test("Models switches immediately and keeps loading inside its controls", () => 
 		new URL("./features/models/models-page.tsx", import.meta.url),
 		"utf8",
 	);
+	const adapterSource = readFileSync(
+		new URL("./features/models/models-adapter.ts", import.meta.url),
+		"utf8",
+	);
 
 	expect(routerSource).toMatch(
 		/import \{ ModelsPage \} from "@\/features\/models\/models-page"/,
@@ -109,8 +113,9 @@ test("Models switches immediately and keeps loading inside its controls", () => 
 	expect(pageSource).toMatch(/loading\.marketDataSnapshots/);
 	expect(pageSource).toMatch(/loading\.generationAttempts/);
 	expect(pageSource).toMatch(
-		/setSnapshotsLoading\(true\);[\s\S]*?await afterPaint\(\);[\s\S]*?snapshot_list_readable/,
+		/setSnapshotsLoading\(true\);[\s\S]*?await afterPaint\(\);[\s\S]*?adapter\.listSnapshots/,
 	);
+	expect(adapterSource).toContain('"snapshot_list_readable"');
 	expect(pageSource).not.toMatch(/Loading Models workspace/);
 });
 

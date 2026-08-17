@@ -17,11 +17,9 @@ import type {
 	TransformationFittingProtocolDraft,
 	UniverseSnapshotSummary,
 } from "./features-types";
+import type { TauriInvoke } from "@/lib/tauri-invoke";
 
-export type FeatureInvoke = (
-	command: string,
-	args: Record<string, unknown>,
-) => Promise<unknown>;
+export type FeatureInvoke = TauriInvoke;
 
 export type FeaturePreviewSelection = {
 	snapshotId?: string;

@@ -8,7 +8,7 @@ import {
 	createSeriesMarkers,
 } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
-import type { BacktestRun } from "./backtest-page";
+import type { BacktestRun } from "./backtest-types";
 import { formatDecimal } from "./format-decimal";
 
 export function BacktestChart({
