@@ -167,6 +167,7 @@ dependencies = [
 name = "adaq-indicator-engine"
 version = "0.1.0"
 dependencies = [
+ "adaq-talib",
  "cmake",
  "flate2",
  "serde",
@@ -194,6 +195,10 @@ dependencies = [
  "windows-sys 0.61.2",
  "zip 8.6.0",
 ]
+
+[[package]]
+name = "adaq-talib"
+version = "0.1.9"
 
 [[package]]
 name = "addr2line"

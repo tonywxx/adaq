@@ -14,7 +14,7 @@ use super::{
     ALPACA_PAPER_TRADING_ENDPOINT, ConnectionError, ConnectionManager, OKX_DEMO_ENDPOINT,
     ProfileStatus, Provider, ProviderCredentials, RuntimeGuard, redact,
     secret_store::InMemorySecretStore,
-    tester::{self, ALPACA_MARKET_DATA_ENDPOINT, HttpExecutor, HttpRequest, HttpResponse},
+    tester::{ALPACA_MARKET_DATA_ENDPOINT, HttpExecutor, HttpRequest, HttpResponse},
 };
 
 const NOW_MS: i64 = 1_752_000_000_000;
@@ -33,7 +33,6 @@ fn iso(ms: i64) -> String {
 #[derive(Clone, Debug)]
 enum MockResponse {
     Ok { status: u16, body: String },
-    Network(String),
 }
 
 struct MockHttp {
@@ -72,7 +71,6 @@ impl HttpExecutor for MockHttp {
                         status: *status,
                         body: body.clone(),
                     }),
-                    MockResponse::Network(message) => Err(message.clone()),
                 };
             }
         }

@@ -6,12 +6,27 @@ license = "Apache-2.0"
 description = "Pinned native TA-Lib indicator engine for ADAQ"
 build = "build.rs"
 
+# Backend selection.
+# - `backend-rust` (default): pure-Rust `adaq-talib`, zero-FFI. This is the primary engine.
+# - `backend-c`: the original pinned C TA-Lib build, retained as a drop-in backup.
+# Both can be enabled at once to run cross-backend verification tests.
+[features]
+default = ["backend-rust"]
+backend-rust = ["dep:adaq-talib"]
+backend-c = ["cmake", "flate2", "tar"]
+
 [build-dependencies]
-cmake = "0.1"
-flate2 = "1"
 sha2 = "0.11"
-tar = "0.4"
+# C backend build toolchain. Only compiled when `backend-c` is active, but the build
+# script still runs (and emits the env vars lib.rs requires) under either backend.
+cmake = { version = "0.1", optional = true }
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Pure-Rust TA-Lib reimplementation used by `backend-rust`.
+# Local path for fast iteration; switch to a crates.io version (e.g. `adaq-talib = "0.1"`)
+# before the C backend is finally removed and the crate is published.
+adaq-talib = { path = "../../../../adaq-talib", optional = true }
