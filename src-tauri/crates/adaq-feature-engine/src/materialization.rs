@@ -301,6 +301,11 @@ impl FeatureMaterializationStore {
         database
             .busy_timeout(Duration::from_secs(5))
             .map_err(sqlite_error)?;
+        // WAL lets this connection write while the shared adaq.db connection reads;
+        // rollback journal causes "database is locked" on Windows under concurrency.
+        database
+            .execute_batch("PRAGMA journal_mode = WAL;")
+            .map_err(sqlite_error)?;
         let store = Self {
             database: Arc::new(Mutex::new(database)),
             dataset_directory: dataset_directory.as_ref().to_path_buf(),

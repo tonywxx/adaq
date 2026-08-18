@@ -477,6 +477,11 @@ impl LocalResearchState {
         database
             .busy_timeout(Duration::from_secs(5))
             .map_err(string)?;
+        // WAL lets the materialization store's separate connection write while the
+        // main connection reads. Rollback journal blocks this on Windows ("database is locked").
+        database
+            .execute_batch("PRAGMA journal_mode = WAL;")
+            .map_err(string)?;
         database
             .execute_batch(
                 "PRAGMA foreign_keys = ON;
