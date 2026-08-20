@@ -1,21 +1,26 @@
 [package]
-name = "adaq"
-version = "0.9.2"
+authors = ["TONy Wu"]
 description = "AI Quant Trading"
-authors = ["TONy.W"]
+documentation = "https://docs.rs/adaq-trading-crypto"
 edition = "2024"
+homepage = "https://github.com/tonywxx/adaq"
+keywords = ["quant-trading", "crypto", "exchange", "prediction-market", "stock-market"]
+license = "Apache-2.0"
+name = "adaq"
+repository = "https://github.com/tonywxx/adaq"
+version = "0.9.3"
 
 [workspace]
 members = [
-    "crates/adaq-data-core",
-    "crates/adaq-data-pipeline",
-    "crates/adaq-backtest-core",
-    "crates/adaq-component-sdk",
-    "crates/adaq-component-tooling",
-    "crates/adaq-factor-research",
-    "crates/adaq-feature-engine",
-    "crates/adaq-indicator-engine",
-    "crates/adaq-python-research",
+  "crates/adaq-data-core",
+  "crates/adaq-data-pipeline",
+  "crates/adaq-backtest-core",
+  "crates/adaq-component-sdk",
+  "crates/adaq-component-tooling",
+  "crates/adaq-factor-research",
+  "crates/adaq-feature-engine",
+  "crates/adaq-indicator-engine",
+  "crates/adaq-python-research",
 ]
 resolver = "2"
 
@@ -25,67 +30,66 @@ resolver = "2"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "adaq_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+name = "adaq_lib"
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = {version = "2", features = []}
 
 [dependencies]
-adaq-data-core = { path = "crates/adaq-data-core" }
-adaq-data-pipeline = { path = "crates/adaq-data-pipeline" }
-adaq-backtest-core = { path = "crates/adaq-backtest-core" }
-adaq-component-sdk = { path = "crates/adaq-component-sdk", features = ["host"] }
-adaq-component-tooling = { path = "crates/adaq-component-tooling" }
-adaq-factor-research = { path = "crates/adaq-factor-research" }
-adaq-feature-engine = { path = "crates/adaq-feature-engine" }
-adaq-indicator-engine = { path = "crates/adaq-indicator-engine" }
-adaq-python-research = { path = "crates/adaq-python-research" }
-tauri = { version = "2", features = ["tray-icon"] }
+adaq-backtest-core = {path = "crates/adaq-backtest-core"}
+adaq-component-sdk = {path = "crates/adaq-component-sdk", features = ["host"]}
+adaq-component-tooling = {path = "crates/adaq-component-tooling"}
+adaq-data-core = {path = "crates/adaq-data-core"}
+adaq-data-pipeline = {path = "crates/adaq-data-pipeline"}
+adaq-factor-research = {path = "crates/adaq-factor-research"}
+adaq-feature-engine = {path = "crates/adaq-feature-engine"}
+adaq-indicator-engine = {path = "crates/adaq-indicator-engine"}
+adaq-python-research = {path = "crates/adaq-python-research"}
+arrow-array = "59.2"
+arrow-schema = "59.2"
+base64 = "0.23.1"
+bytes = "1"
+chrono = {version = "0.4", default-features = false, features = [
+  "std",
+  "clock",
+  "serde",
+]}
+hmac = "0.13"
+keyring = {version = "3", features = [
+  "apple-native",
+  "windows-native",
+  "sync-secret-service",
+  "crypto-rust",
+]}
+parquet = {version = "59.2", default-features = false, features = [
+  "arrow",
+  "snap",
+]}
+rand = "0.8"
+reqwest = {version = "0.13", default-features = false, features = [
+  "json",
+  "blocking",
+  "rustls",
+]}
+rusqlite = {version = "0.40", features = ["bundled"]}
+rust_decimal = "1"
+serde = {version = "1", features = ["derive"]}
+serde_json = "1"
+sha2 = "0.11"
+tauri = {version = "2", features = ["tray-icon"]}
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-http = "2"
+tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tauri-plugin-log = "2"
-tauri-plugin-http = "2"
-rusqlite = { version = "0.40", features = ["bundled"] }
-rust_decimal = "1"
-uuid = { version = "1.24.1", features = ["serde", "v4"] }
-sha2 = "0.11"
-hmac = "0.13"
-base64 = "0.23.1"
-rand = "0.8"
-chrono = { version = "0.4", default-features = false, features = [
-    "std",
-    "clock",
-    "serde",
-] }
-keyring = { version = "3", features = [
-    "apple-native",
-    "windows-native",
-    "sync-secret-service",
-    "crypto-rust",
-] }
-reqwest = { version = "0.13", default-features = false, features = [
-    "json",
-    "blocking",
-    "rustls",
-    "webpki-roots",
-] }
-tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
-arrow-array = "59.2"
-arrow-schema = "59.2"
-bytes = "1"
-parquet = { version = "59.2", default-features = false, features = [
-    "arrow",
-    "snap",
-] }
-zip = { version = "8", default-features = false, features = ["deflate"] }
+uuid = {version = "1.24.1", features = ["serde", "v4"]}
+zip = {version = "8", default-features = false, features = ["deflate"]}
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+windows-sys = {version = "0.61.2", features = ["Win32_Storage_FileSystem"]}
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = {version = "1", features = ["rt", "macros"]}

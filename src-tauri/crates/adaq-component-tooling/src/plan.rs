@@ -22,7 +22,8 @@ pub use adaq_feature_engine::FrozenBuiltInParameter;
 const COMPONENT_MANIFEST_SCHEMA_VERSION: &str = "1.0.0";
 const CATALOG_VERSION: &str = "adaq-indicator-catalog@1.0.0";
 const ENGINE_VERSION: &str = "adaq-indicator-engine@1.0.0";
-const TA_LIB_VERSION: &str = "0.7.1";
+const C_TA_LIB_VERSION: &str = "0.7.1";
+const ADAQ_TA_LIB_VERSION: &str = "0.1.9";
 const MAX_FACTOR_INSTANCES: usize = 64;
 const MAX_FACTOR_OUTPUTS: usize = 64;
 const MAX_FEATURE_SLOTS: usize = 64;
@@ -723,7 +724,10 @@ fn deserialize_factor_parameters(
 
 fn valid_engine_identity(identity: &EngineIdentity) -> bool {
     identity.engine_version == ENGINE_VERSION
-        && identity.ta_lib_version == TA_LIB_VERSION
+        && matches!(
+            identity.ta_lib_version.as_str(),
+            C_TA_LIB_VERSION | ADAQ_TA_LIB_VERSION
+        )
         && identity.catalog_version == CATALOG_VERSION
         && is_sha256(&identity.ta_source_sha256)
         && is_sha256(&identity.wrapper_sha256)

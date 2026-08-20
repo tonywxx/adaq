@@ -27,6 +27,6 @@ tar = { version = "0.4", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Pure-Rust TA-Lib reimplementation used by `backend-rust`.
-# Local path for fast iteration; switch to a crates.io version (e.g. `adaq-talib = "0.1"`)
-# before the C backend is finally removed and the crate is published.
-adaq-talib = { path = "../../../../adaq-talib", optional = true }
+# Published pure-Rust TA-Lib reimplementation. The local checkout at
+# `/Users/tony/github/adaq-talib` is used for development/reference only.
+adaq-talib = { version = "0.1.9", optional = true }

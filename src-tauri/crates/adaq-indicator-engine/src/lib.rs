@@ -810,7 +810,7 @@ fn backend_evaluate(
     request: &CompiledIndicator,
     segment: &OhlcvSegment,
 ) -> Result<Vec<(String, IndicatorColumn)>, EngineError> {
-    c_evaluate(request, segment)
+    IndicatorEngine::c_evaluate(request, segment)
 }
 
 #[cfg(feature = "backend-rust")]
@@ -820,7 +820,7 @@ fn backend_compile_rsi(request: &RsiRequest) -> Result<CompiledRsi, EngineError>
 
 #[cfg(all(feature = "backend-c", not(feature = "backend-rust")))]
 fn backend_compile_rsi(request: &RsiRequest) -> Result<CompiledRsi, EngineError> {
-    c_compile_rsi(request)
+    IndicatorEngine::c_compile_rsi(request)
 }
 
 #[cfg(feature = "backend-rust")]
@@ -836,7 +836,7 @@ fn backend_evaluate_rsi(
     request: &CompiledRsi,
     segment: &ContinuousBarSegment,
 ) -> Result<Vec<Option<f64>>, EngineError> {
-    c_evaluate_rsi(request, segment)
+    IndicatorEngine::c_evaluate_rsi(request, segment)
 }
 
 #[cfg(test)]

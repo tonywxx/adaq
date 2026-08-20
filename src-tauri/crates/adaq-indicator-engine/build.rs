@@ -16,7 +16,7 @@ const FUNCTION_HEADER_SHA256: &str =
 
 // Version of the pure-Rust `adaq-talib` backend. Kept in sync with the dependency in
 // Cargo.toml; used to derive a stable build id for the rust backend.
-const ADAQ_TALIB_VERSION: &str = "0.1.8";
+const ADAQ_TALIB_VERSION: &str = "0.1.9";
 
 struct Env {
     ta_source_sha256: String,
@@ -162,10 +162,14 @@ fn compute_env(manifest_dir: &PathBuf, _target: &str) -> Env {
 
 #[cfg(not(feature = "backend-c"))]
 fn compute_env(_manifest_dir: &PathBuf, _target: &str) -> Env {
+    // Keep the provenance contract hash-shaped for both backends. These stable
+    // labels identify the published Rust implementation and avoid treating a
+    // non-FFI backend as an unverified build.
+    let hash = |label: &str| hex(&Sha256::digest(label.as_bytes()));
     Env {
-        ta_source_sha256: "rust".to_string(),
-        wrapper_sha256: "adaq-talib".to_string(),
-        compiler_and_flags_sha256: "rust".to_string(),
+        ta_source_sha256: hash(&format!("adaq-talib@{ADAQ_TALIB_VERSION}")),
+        wrapper_sha256: hash("adaq-indicator-engine-rust-backend"),
+        compiler_and_flags_sha256: hash("rust-backend"),
         talib_version: ADAQ_TALIB_VERSION.to_string(),
     }
 }
