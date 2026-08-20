@@ -6,10 +6,10 @@ use std::{
 use adaq_trading_crypto::realtime::OkxWs;
 use adaq_trading_crypto::{Config, Exchange, Realtime};
 use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::tungstenite::Message;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
+use tokio_tungstenite::tungstenite::Message;
 
 pub mod a_share;
 pub mod alpaca;
@@ -23,7 +23,8 @@ pub const OKX_CONNECTOR_VERSION: &str = "adaq-data-core-okx-v1";
 /// shared handle is safe and cheap.
 #[allow(dead_code)]
 fn engine() -> &'static adaq_trading_crypto::adapters::Okx {
-    static ENGINE: std::sync::OnceLock<adaq_trading_crypto::adapters::Okx> = std::sync::OnceLock::new();
+    static ENGINE: std::sync::OnceLock<adaq_trading_crypto::adapters::Okx> =
+        std::sync::OnceLock::new();
     ENGINE.get_or_init(|| {
         adaq_trading_crypto::adapters::Okx::new(adaq_trading_crypto::Config::new())
             .expect("adaq-trading-crypto Okx adapter builds with default config")
@@ -740,9 +741,8 @@ impl OkxClient {
         F: FnMut(E) -> bool,
     {
         let ws = Arc::new(OkxWs::new(Config::new()).map_err(map_crate_error)?);
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<Vec<E>, DataError>>(
-            entries.len().max(1) * 8,
-        );
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<Result<Vec<E>, DataError>>(entries.len().max(1) * 8);
         let mut handles = Vec::with_capacity(entries.len());
         for entry in entries {
             let ws = ws.clone();
@@ -810,11 +810,7 @@ impl OkxClient {
         Ok(())
     }
 
-    async fn stream_tickers_once<F>(
-        &self,
-        codes: &[String],
-        on_event: F,
-    ) -> Result<(), DataError>
+    async fn stream_tickers_once<F>(&self, codes: &[String], on_event: F) -> Result<(), DataError>
     where
         F: FnMut(TickerStreamEvent) -> bool,
     {
@@ -824,9 +820,9 @@ impl OkxClient {
                     .watch_ticker(&code, Default::default())
                     .await
                     .map_err(map_crate_error)?;
-                Ok(vec![TickerStreamEvent::Snapshot(
-                    map_crate_ticker(&ticker, &code)?,
-                )])
+                Ok(vec![TickerStreamEvent::Snapshot(map_crate_ticker(
+                    &ticker, &code,
+                )?)])
             })
         })
         .await
@@ -895,9 +891,9 @@ impl OkxClient {
                 trades
                     .iter()
                     .map(|trade| {
-                        Ok::<_, DataError>(TradeStreamEvent::Snapshot(
-                            map_crate_trade(trade, &code)?,
-                        ))
+                        Ok::<_, DataError>(TradeStreamEvent::Snapshot(map_crate_trade(
+                            trade, &code,
+                        )?))
                     })
                     .collect::<Result<Vec<_>, DataError>>()
             })
@@ -973,9 +969,9 @@ impl OkxClient {
                     .watch_order_book(&code, None, Default::default())
                     .await
                     .map_err(map_crate_error)?;
-                Ok(vec![Level2StreamEvent::Snapshot(
-                    map_crate_order_book(&book, &code)?,
-                )])
+                Ok(vec![Level2StreamEvent::Snapshot(map_crate_order_book(
+                    &book, &code,
+                )?)])
             })
         })
         .await
@@ -1131,11 +1127,8 @@ impl OkxClient {
                 Message::Text(text) if text.as_str() == "pong" => awaiting_pong = false,
                 Message::Text(text) => {
                     awaiting_pong = false;
-                    let snapshots = parse_realtime_bar_message(
-                        &self.engine,
-                        text.as_str(),
-                        subscriptions,
-                    )?;
+                    let snapshots =
+                        parse_realtime_bar_message(&self.engine, text.as_str(), subscriptions)?;
                     if !snapshots.is_empty() && !announced_connected {
                         if !on_event(BarStreamEvent::Connected) {
                             return Ok(());
@@ -1408,11 +1401,7 @@ impl OkxClient {
         }
         // `Okx::fetch_markets` is the single source for the request and OKX
         // response parsing. The adapter itself sends `instType=SPOT`.
-        let markets = self
-            .engine
-            .fetch_markets()
-            .await
-            .map_err(map_crate_error)?;
+        let markets = self.engine.fetch_markets().await.map_err(map_crate_error)?;
         let response_sha256 = serde_json::to_vec(&markets)
             .map(|bytes| sha256_hex(&bytes))
             .map_err(|error| DataError::okx("serialization", error.to_string()))?;
@@ -1735,7 +1724,10 @@ fn slash_to_dash(code: &str) -> String {
     code.replace('/', "-")
 }
 
-fn map_crate_ticker(ticker: &adaq_trading_crypto::types::Ticker, code: &str) -> Result<TickerSnapshot, DataError> {
+fn map_crate_ticker(
+    ticker: &adaq_trading_crypto::types::Ticker,
+    code: &str,
+) -> Result<TickerSnapshot, DataError> {
     let decimal = |value: Option<Decimal>, field: &str| -> Result<Decimal, DataError> {
         value.ok_or_else(|| {
             DataError::okx(
@@ -1764,7 +1756,10 @@ fn map_crate_ticker(ticker: &adaq_trading_crypto::types::Ticker, code: &str) -> 
     })
 }
 
-fn map_crate_trade(trade: &adaq_trading_crypto::types::Trade, code: &str) -> Result<MarketTrade, DataError> {
+fn map_crate_trade(
+    trade: &adaq_trading_crypto::types::Trade,
+    code: &str,
+) -> Result<MarketTrade, DataError> {
     let side = match trade.side.as_deref() {
         Some("buy") => MarketTradeSide::Buy,
         Some("sell") => MarketTradeSide::Sell,
@@ -1781,19 +1776,23 @@ fn map_crate_trade(trade: &adaq_trading_crypto::types::Trade, code: &str) -> Res
     })
 }
 
-fn map_crate_order_book(book: &adaq_trading_crypto::types::OrderBook, code: &str) -> Result<Level2Snapshot, DataError> {
-    let map_levels = |levels: &[adaq_trading_crypto::types::Level]| -> Result<Vec<OrderBookLevel>, DataError> {
-        levels
-            .iter()
-            .map(|level| {
-                Ok(OrderBookLevel {
-                    price: level.price.unwrap_or(Decimal::ZERO),
-                    quantity: level.amount.unwrap_or(Decimal::ZERO),
-                    order_count: None,
+fn map_crate_order_book(
+    book: &adaq_trading_crypto::types::OrderBook,
+    code: &str,
+) -> Result<Level2Snapshot, DataError> {
+    let map_levels =
+        |levels: &[adaq_trading_crypto::types::Level]| -> Result<Vec<OrderBookLevel>, DataError> {
+            levels
+                .iter()
+                .map(|level| {
+                    Ok(OrderBookLevel {
+                        price: level.price.unwrap_or(Decimal::ZERO),
+                        quantity: level.amount.unwrap_or(Decimal::ZERO),
+                        order_count: None,
+                    })
                 })
-            })
-            .collect()
-    };
+                .collect()
+        };
     Ok(Level2Snapshot {
         src: OKX_SRC.to_owned(),
         code: code.to_owned(),
@@ -1804,7 +1803,9 @@ fn map_crate_order_book(book: &adaq_trading_crypto::types::OrderBook, code: &str
     })
 }
 
-fn map_crate_market(market: &adaq_trading_crypto::types::Market) -> Result<SpotInstrument, DataError> {
+fn map_crate_market(
+    market: &adaq_trading_crypto::types::Market,
+) -> Result<SpotInstrument, DataError> {
     let status = match market.active {
         Some(true) => InstrumentStatus::Live,
         Some(false) => InstrumentStatus::Suspended,
@@ -1814,7 +1815,10 @@ fn map_crate_market(market: &adaq_trading_crypto::types::Market) -> Result<SpotI
         value.ok_or_else(|| {
             DataError::okx(
                 "invalid_response",
-                format!("adaq-trading-crypto market missing {field} for {}", market.id),
+                format!(
+                    "adaq-trading-crypto market missing {field} for {}",
+                    market.id
+                ),
             )
         })
     };
@@ -1879,8 +1883,7 @@ fn parse_realtime_bar_message(
     let channel = message["arg"]["channel"].as_str().unwrap_or_default();
     let code = message["arg"]["instId"].as_str().unwrap_or_default();
     let Some(subscription) = subscriptions.iter().find(|subscription| {
-        subscription.code == code
-            && channel == format!("candle{}", subscription.interval.okx_bar())
+        subscription.code == code && channel == format!("candle{}", subscription.interval.okx_bar())
     }) else {
         return Ok(Vec::new());
     };
@@ -1896,7 +1899,9 @@ fn parse_realtime_bar_message(
                 .and_then(|values| values.get(8))
                 .and_then(serde_json::Value::as_str)
                 .map(|value| value == "1")
-                .ok_or_else(|| DataError::okx("invalid_response", "OKX bar missing confirm flag"))?;
+                .ok_or_else(|| {
+                    DataError::okx("invalid_response", "OKX bar missing confirm flag")
+                })?;
             Ok(snapshot)
         })
         .collect()
@@ -2102,18 +2107,18 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mut tx = Some(tx);
         let handle = tokio::spawn(async move {
-            let _ = client.stream_tickers(
-                &["BTC-USDT".to_owned(), "ETH-USDT".to_owned()],
-                |event| match event {
-                    TickerStreamEvent::Snapshot(snapshot) => {
-                        if let Some(tx) = tx.take() {
-                            let _ = tx.send(snapshot);
+            let _ =
+                client.stream_tickers(&["BTC-USDT".to_owned(), "ETH-USDT".to_owned()], |event| {
+                    match event {
+                        TickerStreamEvent::Snapshot(snapshot) => {
+                            if let Some(tx) = tx.take() {
+                                let _ = tx.send(snapshot);
+                            }
+                            false
                         }
-                        false
+                        _ => true,
                     }
-                    _ => true,
-                },
-            );
+                });
         });
         let snapshot = tokio::time::timeout(std::time::Duration::from_secs(20), rx)
             .await
@@ -2658,16 +2663,34 @@ mod tests {
         assert_eq!(snapshot.code, "BTC-USDT");
         assert_eq!(snapshot.src, "okx");
         assert_eq!(snapshot.last, Decimal::from_str_exact("67000.5").unwrap());
-        assert_eq!(snapshot.bid_price, Some(Decimal::from_str_exact("66999.0").unwrap()));
-        assert_eq!(snapshot.ask_price, Some(Decimal::from_str_exact("67001.0").unwrap()));
+        assert_eq!(
+            snapshot.bid_price,
+            Some(Decimal::from_str_exact("66999.0").unwrap())
+        );
+        assert_eq!(
+            snapshot.ask_price,
+            Some(Decimal::from_str_exact("67001.0").unwrap())
+        );
         // The crate's `parse_ticker` does not populate per-side sizes, so these
         // map to None (recommendation: add `bidSz`/`askSz` -> bid/ask volume).
         assert_eq!(snapshot.bid_quantity, None);
         assert_eq!(snapshot.ask_quantity, None);
-        assert_eq!(snapshot.high_24h, Decimal::from_str_exact("68000.0").unwrap());
-        assert_eq!(snapshot.low_24h, Decimal::from_str_exact("65500.0").unwrap());
-        assert_eq!(snapshot.base_volume_24h, Decimal::from_str_exact("1234.5").unwrap());
-        assert_eq!(snapshot.quote_volume_24h, Decimal::from_str_exact("83000000.0").unwrap());
+        assert_eq!(
+            snapshot.high_24h,
+            Decimal::from_str_exact("68000.0").unwrap()
+        );
+        assert_eq!(
+            snapshot.low_24h,
+            Decimal::from_str_exact("65500.0").unwrap()
+        );
+        assert_eq!(
+            snapshot.base_volume_24h,
+            Decimal::from_str_exact("1234.5").unwrap()
+        );
+        assert_eq!(
+            snapshot.quote_volume_24h,
+            Decimal::from_str_exact("83000000.0").unwrap()
+        );
         assert_eq!(snapshot.timestamp_ms, 1_719_999_900_000);
     }
 
@@ -2705,9 +2728,18 @@ mod tests {
         assert_eq!(mapped.code, "BTC-USDT");
         assert_eq!(mapped.asks.len(), 2);
         assert_eq!(mapped.bids.len(), 1);
-        assert_eq!(mapped.asks[0].price, Decimal::from_str_exact("67001.0").unwrap());
-        assert_eq!(mapped.asks[0].quantity, Decimal::from_str_exact("1.2").unwrap());
-        assert_eq!(mapped.bids[0].price, Decimal::from_str_exact("66999.0").unwrap());
+        assert_eq!(
+            mapped.asks[0].price,
+            Decimal::from_str_exact("67001.0").unwrap()
+        );
+        assert_eq!(
+            mapped.asks[0].quantity,
+            Decimal::from_str_exact("1.2").unwrap()
+        );
+        assert_eq!(
+            mapped.bids[0].price,
+            Decimal::from_str_exact("66999.0").unwrap()
+        );
         assert_eq!(mapped.timestamp_ms, 1_719_999_900_000);
     }
 
@@ -2716,24 +2748,32 @@ mod tests {
         // The crate's unified `OHLCV` carries no `closed` flag and only exposes
         // base volume, so `map_crate_ohlcv` derives both from the open time and
         // approximates quote volume as `close * base_volume`.
-        let ohlcv = serde_json::from_value::<adaq_trading_crypto::types::OHLCV>(serde_json::json!({
-            "timestamp": 1_719_999_900_000i64,
-            "open": "67000.10",
-            "high": "67500.20",
-            "low": "66900.30",
-            "close": "67433.25",
-            "volume": "1.25"
-        }))
-        .unwrap();
-        let bar = super::map_crate_ohlcv(&ohlcv, "BTC-USDT", super::BarInterval::FifteenMinutes).unwrap();
+        let ohlcv =
+            serde_json::from_value::<adaq_trading_crypto::types::OHLCV>(serde_json::json!({
+                "timestamp": 1_719_999_900_000i64,
+                "open": "67000.10",
+                "high": "67500.20",
+                "low": "66900.30",
+                "close": "67433.25",
+                "volume": "1.25"
+            }))
+            .unwrap();
+        let bar =
+            super::map_crate_ohlcv(&ohlcv, "BTC-USDT", super::BarInterval::FifteenMinutes).unwrap();
 
         assert_eq!(bar.code, "BTC-USDT");
         assert_eq!(bar.interval, super::BarInterval::FifteenMinutes);
         assert_eq!(bar.bar.open_time_ms, 1_719_999_900_000);
         assert_eq!(bar.bar.close, Decimal::from_str_exact("67433.25").unwrap());
-        assert_eq!(bar.bar.base_volume, Decimal::from_str_exact("1.25").unwrap());
+        assert_eq!(
+            bar.bar.base_volume,
+            Decimal::from_str_exact("1.25").unwrap()
+        );
         // quote_volume = close * base_volume = 67433.25 * 1.25 = 84291.5625
-        assert_eq!(bar.bar.quote_volume, Decimal::from_str_exact("84291.5625").unwrap());
+        assert_eq!(
+            bar.bar.quote_volume,
+            Decimal::from_str_exact("84291.5625").unwrap()
+        );
         // A 15m bar whose open time is in the past is considered closed.
         assert!(bar.closed);
     }
@@ -2750,38 +2790,46 @@ mod tests {
                 "1719999900000", "67000.10", "67500.20", "66900.30",
                 "67433.25", "1.25", "84291.5625", "84291.5625", "1"
             ]]
-        }).to_string();
-        let snapshots = super::parse_realtime_bar_message(
-            super::engine(),
-            &text,
-            &subscriptions,
-        ).unwrap();
+        })
+        .to_string();
+        let snapshots =
+            super::parse_realtime_bar_message(super::engine(), &text, &subscriptions).unwrap();
 
         assert_eq!(snapshots.len(), 1);
         assert!(snapshots[0].closed);
         assert_eq!(snapshots[0].code, "BTC-USDT");
-        assert_eq!(snapshots[0].bar.close, Decimal::from_str_exact("67433.25").unwrap());
+        assert_eq!(
+            snapshots[0].bar.close,
+            Decimal::from_str_exact("67433.25").unwrap()
+        );
     }
 
     #[test]
     fn market_mapping_produces_spot_instrument() {
-        let market = serde_json::from_value::<adaq_trading_crypto::types::Market>(serde_json::json!({
-            "id": "BTC-USDT",
-            "base": "BTC",
-            "quote": "USDT",
-            "active": true,
-            "spot": true,
-            "precision": { "amount": "0.0001", "price": "0.1" }
-        }))
-        .unwrap();
+        let market =
+            serde_json::from_value::<adaq_trading_crypto::types::Market>(serde_json::json!({
+                "id": "BTC-USDT",
+                "base": "BTC",
+                "quote": "USDT",
+                "active": true,
+                "spot": true,
+                "precision": { "amount": "0.0001", "price": "0.1" }
+            }))
+            .unwrap();
         let instrument = super::map_crate_market(&market).unwrap();
 
         assert_eq!(instrument.code, "BTC-USDT");
         assert_eq!(instrument.base_asset, "BTC");
         assert_eq!(instrument.quote_asset, "USDT");
         assert_eq!(instrument.status, super::InstrumentStatus::Live);
-        assert_eq!(instrument.price_increment, Decimal::from_str_exact("0.1").unwrap());
-        assert_eq!(instrument.quantity_increment, Decimal::from_str_exact("0.0001").unwrap());
+        assert_eq!(
+            instrument.price_increment,
+            Decimal::from_str_exact("0.1").unwrap()
+        );
+        assert_eq!(
+            instrument.quantity_increment,
+            Decimal::from_str_exact("0.0001").unwrap()
+        );
     }
 
     #[test]

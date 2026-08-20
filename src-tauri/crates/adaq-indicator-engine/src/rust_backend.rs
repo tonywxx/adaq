@@ -14,43 +14,46 @@ use super::{
 };
 use adaq_talib::{
     cycle::{
-        ht_dcperiod_with_output, ht_dcphase_with_output, ht_phasor_with_output, ht_sine_with_output,
-        ht_trendline_with_output, ht_trendmode_with_output, mama, HtPhasor, HtSine,
+        HtPhasor, HtSine, ht_dcperiod_with_output, ht_dcphase_with_output, ht_phasor_with_output,
+        ht_sine_with_output, ht_trendline_with_output, ht_trendmode_with_output, mama,
     },
     error::TaError,
     math_ops::{
-        add_with_output, div_with_output, max_index_with_output, max_with_output, min_index_with_output,
-        min_with_output, minmax_index_with_output, minmax_with_output, mult_with_output, sub_with_output,
-        sum_with_output, MinMax, MinMaxIndex,
+        MinMax, MinMaxIndex, add_with_output, div_with_output, max_index_with_output,
+        max_with_output, min_index_with_output, min_with_output, minmax_index_with_output,
+        minmax_with_output, mult_with_output, sub_with_output, sum_with_output,
     },
     math_trans::{
-        acos_with_output, asin_with_output, atan_with_output, ceil_with_output, cos_with_output, cosh_with_output,
-        exp_with_output, floor_with_output, ln_with_output, log10_with_output, sin_with_output, sinh_with_output,
-        sqrt_with_output, tan_with_output, tanh_with_output,
+        acos_with_output, asin_with_output, atan_with_output, ceil_with_output, cos_with_output,
+        cosh_with_output, exp_with_output, floor_with_output, ln_with_output, log10_with_output,
+        sin_with_output, sinh_with_output, sqrt_with_output, tan_with_output, tanh_with_output,
     },
     momentum::{
-        adx_with_output, adxr_with_output, aroon_with_output,
+        Aroon, Macd, Stoch, StochF, adx_with_output, adxr_with_output, aroon_with_output,
         bop_with_output, cci_with_output, cmo_with_output, dx_with_output, imi_with_output,
-        macd_with_output, macd_fix_with_output, mfi_with_output, minus_di_with_output, minus_dm_with_output,
-        mom_with_output, plus_di_with_output, plus_dm_with_output, roc_with_output,
-        rocp_with_output, rocr100_with_output, rocr_with_output, rsi_with_output, stoch_f_with_output,
-        stoch_rsi_with_output, stoch_with_output, trix, ultosc_with_output, willr_with_output, Aroon, Macd, Stoch, StochF,
+        macd_fix_with_output, macd_with_output, mfi_with_output, minus_di_with_output,
+        minus_dm_with_output, mom_with_output, plus_di_with_output, plus_dm_with_output,
+        roc_with_output, rocp_with_output, rocr_with_output, rocr100_with_output, rsi_with_output,
+        stoch_f_with_output, stoch_rsi_with_output, stoch_with_output, trix, ultosc_with_output,
+        willr_with_output,
     },
     overlap::{
-        accbands_with_output, bbands_with_output, dema_with_output, ema_with_output, kama_with_output,
-        ma_with_output, midpoint_with_output, midprice_with_output, sar_with_output, sarext_with_output,
-        sma_with_output, t3_with_output, tema_with_output, trima_with_output, wma_with_output, AccBands, Bbands,
-        MaType,
+        AccBands, Bbands, MaType, accbands_with_output, bbands_with_output, dema_with_output,
+        ema_with_output, kama_with_output, ma_with_output, midpoint_with_output,
+        midprice_with_output, sar_with_output, sarext_with_output, sma_with_output, t3_with_output,
+        tema_with_output, trima_with_output, wma_with_output,
     },
     price_transform::{
-        avgdev_with_output, avgprice_with_output, medprice_with_output, typprice_with_output, wclprice_with_output,
+        avgdev_with_output, avgprice_with_output, medprice_with_output, typprice_with_output,
+        wclprice_with_output,
     },
     stat::{
-        beta_with_output, correl_with_output, linear_reg_angle_with_output, linear_reg_intercept_with_output,
-        linear_reg_slope_with_output, linear_reg_with_output, stddev_with_output, tsf_with_output, var_with_output,
+        beta_with_output, correl_with_output, linear_reg_angle_with_output,
+        linear_reg_intercept_with_output, linear_reg_slope_with_output, linear_reg_with_output,
+        stddev_with_output, tsf_with_output, var_with_output,
     },
-    volume::{ad_with_output, adosc_with_output, obv_with_output},
     volatility::{atr_with_output, natr_with_output, trange_with_output},
+    volume::{ad_with_output, adosc_with_output, obv_with_output},
 };
 
 // Candlestick patterns live in the `pattern` module (one `cdl_*_with_output` per pattern).
@@ -76,7 +79,12 @@ pub fn evaluate(
             })
             .collect());
     }
-    let raw = compute(&request.definition, &request.parameters, &request.real_inputs, segment)?;
+    let raw = compute(
+        &request.definition,
+        &request.parameters,
+        &request.real_inputs,
+        segment,
+    )?;
     let mut result = Vec::with_capacity(request.outputs.len());
     for index in &request.outputs {
         let output = &request.definition.outputs[*index];
@@ -140,7 +148,10 @@ pub fn compile_rsi(request: &RsiRequest) -> Result<CompiledRsi, EngineError> {
             code: "invalid-rsi-time-period",
         })?;
     let lookback = rsi_lookback(time_period)?;
-    Ok(CompiledRsi { time_period, lookback })
+    Ok(CompiledRsi {
+        time_period,
+        lookback,
+    })
 }
 
 pub fn evaluate_rsi(
@@ -241,33 +252,49 @@ fn compute(
         "TEMA" => single(n, |out| tema_with_output(r0, u(0), out).map_err(talib_err)),
         "TRIMA" => single(n, |out| trima_with_output(r0, u(0), out).map_err(talib_err)),
         "KAMA" => single(n, |out| kama_with_output(r0, u(0), out).map_err(talib_err)),
-        "MIDPOINT" => single(n, |out| midpoint_with_output(r0, u(0), out).map_err(talib_err)),
+        "MIDPOINT" => single(n, |out| {
+            midpoint_with_output(r0, u(0), out).map_err(talib_err)
+        }),
         "CMO" => single(n, |out| cmo_with_output(r0, u(0), out).map_err(talib_err)),
         "MOM" => single(n, |out| mom_with_output(r0, u(0), out).map_err(talib_err)),
         "ROC" => single(n, |out| roc_with_output(r0, u(0), out).map_err(talib_err)),
         "ROCP" => single(n, |out| rocp_with_output(r0, u(0), out).map_err(talib_err)),
         "ROCR" => single(n, |out| rocr_with_output(r0, u(0), out).map_err(talib_err)),
-        "ROCR100" => single(n, |out| rocr100_with_output(r0, u(0), out).map_err(talib_err)),
+        "ROCR100" => single(n, |out| {
+            rocr100_with_output(r0, u(0), out).map_err(talib_err)
+        }),
         "RSI" => single(n, |out| rsi_with_output(r0, u(0), out).map_err(talib_err)),
-        "AVGDEV" => single(n, |out| avgdev_with_output(r0, u(0), out).map_err(talib_err)),
+        "AVGDEV" => single(n, |out| {
+            avgdev_with_output(r0, u(0), out).map_err(talib_err)
+        }),
         "MAX" => single(n, |out| max_with_output(r0, u(0), out).map_err(talib_err)),
         "MIN" => single(n, |out| min_with_output(r0, u(0), out).map_err(talib_err)),
         "SUM" => single(n, |out| sum_with_output(r0, u(0), out).map_err(talib_err)),
-        "MAXINDEX" => single(n, |out| max_index_with_output(r0, u(0), out).map_err(talib_err)),
-        "MININDEX" => single(n, |out| min_index_with_output(r0, u(0), out).map_err(talib_err)),
-        "LINEARREG" => single(n, |out| linear_reg_with_output(r0, u(0), out).map_err(talib_err)),
-        "LINEARREG_ANGLE" => {
-            single(n, |out| linear_reg_angle_with_output(r0, u(0), out).map_err(talib_err))
-        }
-        "LINEARREG_INTERCEPT" => {
-            single(n, |out| linear_reg_intercept_with_output(r0, u(0), out).map_err(talib_err))
-        }
-        "LINEARREG_SLOPE" => {
-            single(n, |out| linear_reg_slope_with_output(r0, u(0), out).map_err(talib_err))
-        }
+        "MAXINDEX" => single(n, |out| {
+            max_index_with_output(r0, u(0), out).map_err(talib_err)
+        }),
+        "MININDEX" => single(n, |out| {
+            min_index_with_output(r0, u(0), out).map_err(talib_err)
+        }),
+        "LINEARREG" => single(n, |out| {
+            linear_reg_with_output(r0, u(0), out).map_err(talib_err)
+        }),
+        "LINEARREG_ANGLE" => single(n, |out| {
+            linear_reg_angle_with_output(r0, u(0), out).map_err(talib_err)
+        }),
+        "LINEARREG_INTERCEPT" => single(n, |out| {
+            linear_reg_intercept_with_output(r0, u(0), out).map_err(talib_err)
+        }),
+        "LINEARREG_SLOPE" => single(n, |out| {
+            linear_reg_slope_with_output(r0, u(0), out).map_err(talib_err)
+        }),
         "TSF" => single(n, |out| tsf_with_output(r0, u(0), out).map_err(talib_err)),
-        "STDDEV" => single(n, |out| stddev_with_output(r0, u(0), p_real(1), out).map_err(talib_err)),
-        "VAR" => single(n, |out| var_with_output(r0, u(0), p_real(1), out).map_err(talib_err)),
+        "STDDEV" => single(n, |out| {
+            stddev_with_output(r0, u(0), p_real(1), out).map_err(talib_err)
+        }),
+        "VAR" => single(n, |out| {
+            var_with_output(r0, u(0), p_real(1), out).map_err(talib_err)
+        }),
         "TRIX" => {
             let v = trix(r0, u(0)).map_err(talib_err)?;
             Ok(vec![v])
@@ -275,14 +302,30 @@ fn compute(
 
         // ---- Price / volume inputs ----
         "TRANGE" => single(n, |out| trange_with_output(h, l, c, out).map_err(talib_err)),
-        "ATR" => single(n, |out| atr_with_output(h, l, c, u(0), out).map_err(talib_err)),
-        "NATR" => single(n, |out| natr_with_output(h, l, c, u(0), out).map_err(talib_err)),
-        "CCI" => single(n, |out| cci_with_output(h, l, c, u(0), out).map_err(talib_err)),
-        "WILLR" => single(n, |out| willr_with_output(h, l, c, u(0), out).map_err(talib_err)),
-        "MFI" => single(n, |out| mfi_with_output(h, l, c, vol, u(0), out).map_err(talib_err)),
-        "ADX" => single(n, |out| adx_with_output(h, l, c, u(0), out).map_err(talib_err)),
-        "ADXR" => single(n, |out| adxr_with_output(h, l, c, u(0), out).map_err(talib_err)),
-        "DX" => single(n, |out| dx_with_output(h, l, c, u(0), out).map_err(talib_err)),
+        "ATR" => single(n, |out| {
+            atr_with_output(h, l, c, u(0), out).map_err(talib_err)
+        }),
+        "NATR" => single(n, |out| {
+            natr_with_output(h, l, c, u(0), out).map_err(talib_err)
+        }),
+        "CCI" => single(n, |out| {
+            cci_with_output(h, l, c, u(0), out).map_err(talib_err)
+        }),
+        "WILLR" => single(n, |out| {
+            willr_with_output(h, l, c, u(0), out).map_err(talib_err)
+        }),
+        "MFI" => single(n, |out| {
+            mfi_with_output(h, l, c, vol, u(0), out).map_err(talib_err)
+        }),
+        "ADX" => single(n, |out| {
+            adx_with_output(h, l, c, u(0), out).map_err(talib_err)
+        }),
+        "ADXR" => single(n, |out| {
+            adxr_with_output(h, l, c, u(0), out).map_err(talib_err)
+        }),
+        "DX" => single(n, |out| {
+            dx_with_output(h, l, c, u(0), out).map_err(talib_err)
+        }),
         "AROONOSC" => {
             // `adaq-talib`'s `aroon_osc_with_output` inherits the same up/down swap as
             // `aroon_with_output` and therefore returns `true_down - true_up`. TA-Lib defines
@@ -301,36 +344,60 @@ fn compute(
                 .collect::<Vec<_>>();
             Ok(vec![out])
         }
-        "PLUS_DM" => single(n, |out| plus_dm_with_output(h, l, c, u(0), out).map_err(talib_err)),
-        "MINUS_DM" => single(n, |out| minus_dm_with_output(h, l, c, u(0), out).map_err(talib_err)),
-        "PLUS_DI" => single(n, |out| plus_di_with_output(h, l, c, u(0), out).map_err(talib_err)),
-        "MINUS_DI" => single(n, |out| minus_di_with_output(h, l, c, u(0), out).map_err(talib_err)),
+        "PLUS_DM" => single(n, |out| {
+            plus_dm_with_output(h, l, c, u(0), out).map_err(talib_err)
+        }),
+        "MINUS_DM" => single(n, |out| {
+            minus_dm_with_output(h, l, c, u(0), out).map_err(talib_err)
+        }),
+        "PLUS_DI" => single(n, |out| {
+            plus_di_with_output(h, l, c, u(0), out).map_err(talib_err)
+        }),
+        "MINUS_DI" => single(n, |out| {
+            minus_di_with_output(h, l, c, u(0), out).map_err(talib_err)
+        }),
         "IMI" => single(n, |out| imi_with_output(o, c, u(0), out).map_err(talib_err)),
-        "MIDPRICE" => single(n, |out| midprice_with_output(h, l, u(0), out).map_err(talib_err)),
-        "AD" => single(n, |out| ad_with_output(h, l, c, vol, out).map_err(talib_err)),
-        "ADOSC" => {
-            single(n, |out| adosc_with_output(h, l, c, vol, u(0), u(1), out).map_err(talib_err))
-        }
+        "MIDPRICE" => single(n, |out| {
+            midprice_with_output(h, l, u(0), out).map_err(talib_err)
+        }),
+        "AD" => single(n, |out| {
+            ad_with_output(h, l, c, vol, out).map_err(talib_err)
+        }),
+        "ADOSC" => single(n, |out| {
+            adosc_with_output(h, l, c, vol, u(0), u(1), out).map_err(talib_err)
+        }),
         "OBV" => single(n, |out| obv_with_output(r0, vol, out).map_err(talib_err)),
         "BOP" => single(n, |out| bop_with_output(o, h, l, c, out).map_err(talib_err)),
         "ULTOSC" => single(n, |out| {
             ultosc_with_output(h, l, c, u(0), u(1), u(2), out).map_err(talib_err)
         }),
-        "AVGPRICE" => single(n, |out| avgprice_with_output(h, l, c, o, out).map_err(talib_err)),
+        "AVGPRICE" => single(n, |out| {
+            avgprice_with_output(h, l, c, o, out).map_err(talib_err)
+        }),
         "MEDPRICE" => single(n, |out| medprice_with_output(h, l, out).map_err(talib_err)),
-        "TYPPRICE" => single(n, |out| typprice_with_output(h, l, c, out).map_err(talib_err)),
-        "WCLPRICE" => single(n, |out| wclprice_with_output(h, l, c, out).map_err(talib_err)),
+        "TYPPRICE" => single(n, |out| {
+            typprice_with_output(h, l, c, out).map_err(talib_err)
+        }),
+        "WCLPRICE" => single(n, |out| {
+            wclprice_with_output(h, l, c, out).map_err(talib_err)
+        }),
 
         // ---- Two Double-Array inputs ----
         "ADD" => single(n, |out| add_with_output(r0, _r1, out).map_err(talib_err)),
         "SUB" => single(n, |out| sub_with_output(r0, _r1, out).map_err(talib_err)),
         "MULT" => single(n, |out| mult_with_output(r0, _r1, out).map_err(talib_err)),
         "DIV" => single(n, |out| div_with_output(r0, _r1, out).map_err(talib_err)),
-        "CORREL" => single(n, |out| correl_with_output(r0, _r1, u(0), out).map_err(talib_err)),
-        "BETA" => single(n, |out| beta_with_output(r0, _r1, u(0), out).map_err(talib_err)),
+        "CORREL" => single(n, |out| {
+            correl_with_output(r0, _r1, u(0), out).map_err(talib_err)
+        }),
+        "BETA" => single(n, |out| {
+            beta_with_output(r0, _r1, u(0), out).map_err(talib_err)
+        }),
 
         // ---- MA-type aware overlaps / oscillators (compose to honour MA type) ----
-        "MA" => single(n, |out| ma_with_output(r0, u(0), ma_t(1), out).map_err(talib_err)),
+        "MA" => single(n, |out| {
+            ma_with_output(r0, u(0), ma_t(1), out).map_err(talib_err)
+        }),
         "APO" => Ok(vec![compose_apo_ppo(r0, u(0), u(1), ma_t(2), n, false)?]),
         "PPO" => Ok(vec![compose_apo_ppo(r0, u(0), u(1), ma_t(2), n, true)?]),
         "BBANDS" => {
@@ -339,7 +406,8 @@ fn compute(
                 middle: vec![f64::NAN; n],
                 lower: vec![f64::NAN; n],
             };
-            bbands_with_output(r0, u(0), p_real(1), p_real(2), ma_t(3), &mut b).map_err(talib_err)?;
+            bbands_with_output(r0, u(0), p_real(1), p_real(2), ma_t(3), &mut b)
+                .map_err(talib_err)?;
             Ok(vec![b.upper, b.middle, b.lower])
         }
         "ACCBANDS" => {
@@ -351,14 +419,28 @@ fn compute(
             accbands_with_output(h, l, c, u(0), &mut b).map_err(talib_err)?;
             Ok(vec![b.upper, b.middle, b.lower])
         }
-        "SAR" => single(n, |out| sar_with_output(h, l, p_real(0), p_real(1), out).map_err(talib_err)),
+        "SAR" => single(n, |out| {
+            sar_with_output(h, l, p_real(0), p_real(1), out).map_err(talib_err)
+        }),
         "SAREXT" => single(n, |out| {
             sarext_with_output(
-                h, l, p_real(0), p_real(1), p_real(2), p_real(3), p_real(4), p_real(5), p_real(6), p_real(7), out,
+                h,
+                l,
+                p_real(0),
+                p_real(1),
+                p_real(2),
+                p_real(3),
+                p_real(4),
+                p_real(5),
+                p_real(6),
+                p_real(7),
+                out,
             )
             .map_err(talib_err)
         }),
-        "T3" => single(n, |out| t3_with_output(r0, u(0), p_real(1), out).map_err(talib_err)),
+        "T3" => single(n, |out| {
+            t3_with_output(r0, u(0), p_real(1), out).map_err(talib_err)
+        }),
 
         // ---- MACD family ----
         "MACD" => {
@@ -472,119 +554,197 @@ fn compute(
         // ---- Hilbert transform single outputs ----
         "HT_DCPERIOD" => single(n, |out| ht_dcperiod_with_output(r0, out).map_err(talib_err)),
         "HT_DCPHASE" => single(n, |out| ht_dcphase_with_output(r0, out).map_err(talib_err)),
-        "HT_TRENDLINE" => single(n, |out| ht_trendline_with_output(r0, out).map_err(talib_err)),
-        "HT_TRENDMODE" => single(n, |out| ht_trendmode_with_output(r0, out).map_err(talib_err)),
+        "HT_TRENDLINE" => single(n, |out| {
+            ht_trendline_with_output(r0, out).map_err(talib_err)
+        }),
+        "HT_TRENDMODE" => single(n, |out| {
+            ht_trendmode_with_output(r0, out).map_err(talib_err)
+        }),
 
         // ---- Candlestick patterns (single integer output) ----
-        "CDL2CROWS" => single(n, |out| cdl_2crows_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDL3BLACKCROWS" => single(n, |out| cdl_3blackcrows_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDL3INSIDE" => single(n, |out| cdl_3inside_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDL3LINESTRIKE" => single(n, |out| cdl_3linestrike_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDL3OUTSIDE" => single(n, |out| cdl_3outside_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDL3STARSINSOUTH" => {
-            single(n, |out| cdl_3starsinsouth_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDL3WHITESOLDIERS" => {
-            single(n, |out| cdl_3whitesoldiers_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLABANDONEDBABY" => {
-            single(n, |out| cdl_abandonedbaby_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLADVANCEBLOCK" => single(n, |out| cdl_advanceblock_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLBELTHOLD" => single(n, |out| cdl_belthold_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLBREAKAWAY" => single(n, |out| cdl_breakaway_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLCLOSINGMARUBOZU" => {
-            single(n, |out| cdl_closingmarubozu_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLCONCEALBABYSWALL" => {
-            single(n, |out| cdl_concealbabyswall_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLCOUNTERATTACK" => {
-            single(n, |out| cdl_counterattack_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLDARKCLOUDCOVER" => {
-            single(n, |out| cdl_darkcloudcover_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLDOJI" => single(n, |out| cdl_doji_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLDOJISTAR" => single(n, |out| cdl_dojistar_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLDRAGONFLYDOJI" => {
-            single(n, |out| cdl_dragonflydoji_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLENGULFING" => single(n, |out| cdl_engulfing_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLEVENINGDOJISTAR" => {
-            single(n, |out| cdl_eveningdojistar_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLEVENINGSTAR" => single(n, |out| cdl_eveningstar_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLGAPSIDESIDEWHITE" => {
-            single(n, |out| cdl_gapsidesidewhite_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLGRAVESTONEDOJI" => {
-            single(n, |out| cdl_gravestonedoji_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLHAMMER" => single(n, |out| cdl_hammer_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLHANGINGMAN" => single(n, |out| cdl_hangingman_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLHARAMI" => single(n, |out| cdl_harami_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLHARAMICROSS" => single(n, |out| cdl_haramicross_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLHIGHWAVE" => single(n, |out| cdl_highwave_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLHIKKAKE" => single(n, |out| cdl_hikkake_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLHIKKAKEMOD" => single(n, |out| cdl_hikkakemod_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLHOMINGPIGEON" => {
-            single(n, |out| cdl_homingpigeon_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLIDENTICAL3CROWS" => {
-            single(n, |out| cdl_identical3crows_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLINNECK" => single(n, |out| cdl_inneck_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLINVERTEDHAMMER" => {
-            single(n, |out| cdl_invertedhammer_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLKICKING" => single(n, |out| cdl_kicking_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLKICKINGBYLENGTH" => {
-            single(n, |out| cdl_kickingbylength_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLLADDERBOTTOM" => single(n, |out| cdl_ladderbottom_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLLONGLEGGEDDOJI" => {
-            single(n, |out| cdl_longleggeddoji_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLLONGLINE" => single(n, |out| cdl_longline_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLMARUBOZU" => single(n, |out| cdl_marubozu_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLMATCHINGLOW" => single(n, |out| cdl_matchinglow_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLMATHOLD" => single(n, |out| cdl_mathold_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLMORNINGDOJISTAR" => {
-            single(n, |out| cdl_morningdojistar_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLMORNINGSTAR" => single(n, |out| cdl_morningstar_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLONNECK" => single(n, |out| cdl_onneck_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLPIERCING" => single(n, |out| cdl_piercing_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLRICKSHAWMAN" => single(n, |out| cdl_rickshawman_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLRISEFALL3METHODS" => {
-            single(n, |out| cdl_risefall3methods_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLSEPARATINGLINES" => {
-            single(n, |out| cdl_separatinglines_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLSHOOTINGSTAR" => single(n, |out| cdl_shootingstar_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLSHORTLINE" => single(n, |out| cdl_shortline_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLSPINNINGTOP" => single(n, |out| cdl_spinningtop_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLSTALLEDPATTERN" => {
-            single(n, |out| cdl_stalledpattern_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLSTICKSANDWICH" => {
-            single(n, |out| cdl_sticksandwich_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLTAKURI" => single(n, |out| cdl_takuri_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLTASUKIGAP" => single(n, |out| cdl_tasukigap_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLTHRUSTING" => single(n, |out| cdl_thrusting_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLTRISTAR" => single(n, |out| cdl_tristar_with_output(o, h, l, c, out).map_err(talib_err)),
-        "CDLUNIQUE3RIVER" => {
-            single(n, |out| cdl_unique3river_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLUPSIDEGAP2CROWS" => {
-            single(n, |out| cdl_upsidegap2crows_with_output(o, h, l, c, out).map_err(talib_err))
-        }
-        "CDLXSIDEGAP3METHODS" => {
-            single(n, |out| cdl_xsidegap3methods_with_output(o, h, l, c, out).map_err(talib_err))
-        }
+        "CDL2CROWS" => single(n, |out| {
+            cdl_2crows_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDL3BLACKCROWS" => single(n, |out| {
+            cdl_3blackcrows_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDL3INSIDE" => single(n, |out| {
+            cdl_3inside_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDL3LINESTRIKE" => single(n, |out| {
+            cdl_3linestrike_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDL3OUTSIDE" => single(n, |out| {
+            cdl_3outside_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDL3STARSINSOUTH" => single(n, |out| {
+            cdl_3starsinsouth_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDL3WHITESOLDIERS" => single(n, |out| {
+            cdl_3whitesoldiers_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLABANDONEDBABY" => single(n, |out| {
+            cdl_abandonedbaby_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLADVANCEBLOCK" => single(n, |out| {
+            cdl_advanceblock_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLBELTHOLD" => single(n, |out| {
+            cdl_belthold_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLBREAKAWAY" => single(n, |out| {
+            cdl_breakaway_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLCLOSINGMARUBOZU" => single(n, |out| {
+            cdl_closingmarubozu_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLCONCEALBABYSWALL" => single(n, |out| {
+            cdl_concealbabyswall_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLCOUNTERATTACK" => single(n, |out| {
+            cdl_counterattack_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLDARKCLOUDCOVER" => single(n, |out| {
+            cdl_darkcloudcover_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLDOJI" => single(n, |out| {
+            cdl_doji_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLDOJISTAR" => single(n, |out| {
+            cdl_dojistar_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLDRAGONFLYDOJI" => single(n, |out| {
+            cdl_dragonflydoji_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLENGULFING" => single(n, |out| {
+            cdl_engulfing_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLEVENINGDOJISTAR" => single(n, |out| {
+            cdl_eveningdojistar_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLEVENINGSTAR" => single(n, |out| {
+            cdl_eveningstar_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLGAPSIDESIDEWHITE" => single(n, |out| {
+            cdl_gapsidesidewhite_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLGRAVESTONEDOJI" => single(n, |out| {
+            cdl_gravestonedoji_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLHAMMER" => single(n, |out| {
+            cdl_hammer_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLHANGINGMAN" => single(n, |out| {
+            cdl_hangingman_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLHARAMI" => single(n, |out| {
+            cdl_harami_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLHARAMICROSS" => single(n, |out| {
+            cdl_haramicross_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLHIGHWAVE" => single(n, |out| {
+            cdl_highwave_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLHIKKAKE" => single(n, |out| {
+            cdl_hikkake_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLHIKKAKEMOD" => single(n, |out| {
+            cdl_hikkakemod_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLHOMINGPIGEON" => single(n, |out| {
+            cdl_homingpigeon_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLIDENTICAL3CROWS" => single(n, |out| {
+            cdl_identical3crows_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLINNECK" => single(n, |out| {
+            cdl_inneck_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLINVERTEDHAMMER" => single(n, |out| {
+            cdl_invertedhammer_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLKICKING" => single(n, |out| {
+            cdl_kicking_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLKICKINGBYLENGTH" => single(n, |out| {
+            cdl_kickingbylength_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLLADDERBOTTOM" => single(n, |out| {
+            cdl_ladderbottom_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLLONGLEGGEDDOJI" => single(n, |out| {
+            cdl_longleggeddoji_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLLONGLINE" => single(n, |out| {
+            cdl_longline_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLMARUBOZU" => single(n, |out| {
+            cdl_marubozu_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLMATCHINGLOW" => single(n, |out| {
+            cdl_matchinglow_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLMATHOLD" => single(n, |out| {
+            cdl_mathold_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLMORNINGDOJISTAR" => single(n, |out| {
+            cdl_morningdojistar_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLMORNINGSTAR" => single(n, |out| {
+            cdl_morningstar_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLONNECK" => single(n, |out| {
+            cdl_onneck_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLPIERCING" => single(n, |out| {
+            cdl_piercing_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLRICKSHAWMAN" => single(n, |out| {
+            cdl_rickshawman_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLRISEFALL3METHODS" => single(n, |out| {
+            cdl_risefall3methods_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLSEPARATINGLINES" => single(n, |out| {
+            cdl_separatinglines_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLSHOOTINGSTAR" => single(n, |out| {
+            cdl_shootingstar_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLSHORTLINE" => single(n, |out| {
+            cdl_shortline_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLSPINNINGTOP" => single(n, |out| {
+            cdl_spinningtop_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLSTALLEDPATTERN" => single(n, |out| {
+            cdl_stalledpattern_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLSTICKSANDWICH" => single(n, |out| {
+            cdl_sticksandwich_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLTAKURI" => single(n, |out| {
+            cdl_takuri_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLTASUKIGAP" => single(n, |out| {
+            cdl_tasukigap_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLTHRUSTING" => single(n, |out| {
+            cdl_thrusting_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLTRISTAR" => single(n, |out| {
+            cdl_tristar_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLUNIQUE3RIVER" => single(n, |out| {
+            cdl_unique3river_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLUPSIDEGAP2CROWS" => single(n, |out| {
+            cdl_upsidegap2crows_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
+        "CDLXSIDEGAP3METHODS" => single(n, |out| {
+            cdl_xsidegap3methods_with_output(o, h, l, c, out).map_err(talib_err)
+        }),
 
         _ => Err(EngineError::InvalidRequest {
             code: "rust-backend-unknown-indicator",

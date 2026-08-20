@@ -63,7 +63,10 @@ fn main() {
         env.compiler_and_flags_sha256
     );
     println!("cargo:rustc-env=ADAQ_INDICATOR_ENGINE_BUILD_ID={build_id}");
-    println!("cargo:rustc-env=ADAQ_INDICATOR_ENGINE_TALIB_VERSION={}", env.talib_version);
+    println!(
+        "cargo:rustc-env=ADAQ_INDICATOR_ENGINE_TALIB_VERSION={}",
+        env.talib_version
+    );
 
     println!("cargo:rerun-if-changed=src/catalog.rs");
     println!("cargo:rerun-if-env-changed=CC");

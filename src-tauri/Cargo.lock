@@ -206,6 +206,8 @@ checksum = "9c92f2772c53551fa71a4f4c4f0c068c0739319165ce55454018adb4c12937a3"
 [[package]]
 name = "adaq-trading-crypto"
 version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db80b997ff4e202557cb9c7fdb7282cfd5de06ec44d80da00301c76d6ba40d25"
 dependencies = [
  "async-trait",
  "base64 0.23.1",

@@ -6,11 +6,11 @@
 //! When both are enabled the Rust backend is the active engine; the C backend stays
 //! reachable from the gated cross-backend verification test.
 
-#[cfg(feature = "backend-rust")]
-mod rust_backend;
 #[cfg(feature = "backend-c")]
 mod bindings;
 mod catalog;
+#[cfg(feature = "backend-rust")]
+mod rust_backend;
 
 pub use catalog::{
     ARCHIVE_SHA256, Catalog, Definition as IndicatorDefinition, EnumValue as IndicatorEnumValue,
@@ -1142,7 +1142,8 @@ mod tests {
                 match column {
                     IndicatorColumn::Integer(actual) => {
                         if actual.len() != segment.close.len() {
-                            divergences.push(format!("{} {}: len", definition.id, expected.raw_name));
+                            divergences
+                                .push(format!("{} {}: len", definition.id, expected.raw_name));
                         }
                         if !actual[..expected.begin].iter().all(Option::is_none) {
                             divergences.push(format!(
@@ -1167,7 +1168,10 @@ mod tests {
                                     if *actual as i32 != *expected_value as i32 {
                                         divergences.push(format!(
                                             "{} {}: {} != {}",
-                                            definition.id, expected.raw_name, actual, expected_value
+                                            definition.id,
+                                            expected.raw_name,
+                                            actual,
+                                            expected_value
                                         ));
                                     }
                                 }
@@ -1181,7 +1185,8 @@ mod tests {
                     }
                     IndicatorColumn::Real(actual) => {
                         if actual.len() != segment.close.len() {
-                            divergences.push(format!("{} {}: len", definition.id, expected.raw_name));
+                            divergences
+                                .push(format!("{} {}: len", definition.id, expected.raw_name));
                         }
                         if !actual[..expected.begin].iter().all(Option::is_none) {
                             divergences.push(format!(
@@ -1231,7 +1236,11 @@ mod tests {
                     }
                 }
             }
-            assert!(divergences.is_empty(), "divergences:\n{}", divergences.join("\n"));
+            assert!(
+                divergences.is_empty(),
+                "divergences:\n{}",
+                divergences.join("\n")
+            );
         }
     }
 
@@ -1308,11 +1317,18 @@ mod tests {
                             }
                         }
                     }
-                    _ => divergences.push(format!("{} {}: column kind mismatch", definition.id, rust_name)),
+                    _ => divergences.push(format!(
+                        "{} {}: column kind mismatch",
+                        definition.id, rust_name
+                    )),
                 }
             }
         }
-        assert!(divergences.is_empty(), "divergences:\n{}", divergences.join("\n"));
+        assert!(
+            divergences.is_empty(),
+            "divergences:\n{}",
+            divergences.join("\n")
+        );
     }
 
     #[test]
