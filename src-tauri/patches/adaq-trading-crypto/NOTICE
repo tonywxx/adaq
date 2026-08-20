@@ -1,0 +1,16 @@
+adaq-trading-crypto
+Unified trading interface for crypto and prediction markets, for the AdaQ quant platform.
+Copyright 2026 Tony Wu
+
+Licensed under the Apache License, Version 2.0 (the "License").
+You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+See LICENSE for the full license text.
+
+Third-party notices
+-------------------
+This project's unified API surface, structure field names, and error taxonomy
+are compatible with ccxt (https://github.com/ccxt/ccxt), Copyright (c) 2017-2026
+Igor Kroitor and contributors, licensed under the MIT License.
+
+Where exchange adapter parsing logic is derived from ccxt source code, the
+corresponding files retain the MIT license notice and attribution.

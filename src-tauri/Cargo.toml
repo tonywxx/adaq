@@ -24,6 +24,9 @@ members = [
 ]
 resolver = "2"
 
+[patch.crates-io]
+adaq-trading-crypto = {path = "patches/adaq-trading-crypto"}
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]

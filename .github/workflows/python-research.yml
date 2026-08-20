@@ -53,7 +53,8 @@ jobs:
           python-version: "3.12"
       - name: Setup MSVC environment
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        shell: pwsh
+        run: ./.github/scripts/setup-msvc.ps1
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Factor build target
         run: rustup target add wasm32-unknown-unknown
@@ -138,7 +139,8 @@ jobs:
           python-version: "3.12"
       - name: Setup MSVC environment
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        shell: pwsh
+        run: ./.github/scripts/setup-msvc.ps1
       - name: Install Factor build target
         run: rustup target add wasm32-unknown-unknown
       - name: Fetch offline Factor fixture dependencies

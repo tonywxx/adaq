@@ -89,9 +89,8 @@ jobs:
           python-version: "3.12"
       - name: Setup MSVC environment
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64
+        shell: pwsh
+        run: ./.github/scripts/setup-msvc.ps1
       - name: Select MSVC linker
         if: runner.os == 'Windows'
         shell: pwsh
@@ -155,9 +154,8 @@ jobs:
 
       - name: Setup MSVC environment
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64
+        shell: pwsh
+        run: ./.github/scripts/setup-msvc.ps1
       - name: Select MSVC linker
         if: runner.os == 'Windows'
         shell: pwsh

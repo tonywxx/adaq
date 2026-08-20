@@ -1,0 +1,198 @@
+//! CoinSpot (`coinspot`) 转译适配器 — 由 `scripts/gen_adapters.py`
+//! 从 ccxt 4.5.73 `describe()` 自动生成(best-effort 批量补齐)。
+//! 保留 MIT 声明见仓库 `NOTICE`;精确性由精选手写集保证。
+//! 类别: Cex。
+
+#![allow(clippy::too_many_arguments)]
+
+use crate::generic::{ApiSpec, Endpoint, MarketKind};
+
+/// ccxt `describe()` 静态快照(描述驱动引擎的输入)。
+pub static SPEC: ApiSpec = ApiSpec {
+    id: "coinspot",
+    name: "CoinSpot",
+    version: "",
+    rate_limit_ms: 1000,
+    has: &[
+        "cancelOrder",
+        "createLimitOrder",
+        "createMarketOrderWs",
+        "createOrder",
+        "editOrder",
+        "fetchBalance",
+        "fetchCurrencies",
+        "fetchCurrenciesWs",
+        "fetchL2OrderBook",
+        "fetchMarkets",
+        "fetchMyTrades",
+        "fetchOrderBook",
+        "fetchTicker",
+        "fetchTickers",
+        "fetchTrades",
+        "privateAPI",
+        "publicAPI",
+        "spot",
+    ],
+    endpoints: &[
+        Endpoint {
+            base: "https://www.coinspot.com.au/api",
+            verb: "POST",
+            key: "orders",
+            path: "orders",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/api",
+            verb: "POST",
+            key: "orders/history",
+            path: "orders/history",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/api",
+            verb: "POST",
+            key: "my/balances",
+            path: "my/balances",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/api",
+            verb: "POST",
+            key: "my/orders",
+            path: "my/orders",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/api",
+            verb: "POST",
+            key: "ro/my/balances",
+            path: "ro/my/balances",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/api",
+            verb: "POST",
+            key: "ro/my/balances/{cointype}",
+            path: "ro/my/balances/{cointype}",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "GET",
+            key: "orders/open/{cointype}",
+            path: "orders/open/{cointype}",
+            auth: false,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "GET",
+            key: "orders/open/{cointype}/{markettype}",
+            path: "orders/open/{cointype}/{markettype}",
+            auth: false,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "GET",
+            key: "orders/completed/{cointype}",
+            path: "orders/completed/{cointype}",
+            auth: false,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "GET",
+            key: "orders/completed/{cointype}/{markettype}",
+            path: "orders/completed/{cointype}/{markettype}",
+            auth: false,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "GET",
+            key: "orders/summary/completed/{cointype}",
+            path: "orders/summary/completed/{cointype}",
+            auth: false,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "GET",
+            key: "orders/summary/completed/{cointype}/{markettype}",
+            path: "orders/summary/completed/{cointype}/{markettype}",
+            auth: false,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "POST",
+            key: "status",
+            path: "status",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "POST",
+            key: "ro/status",
+            path: "ro/status",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "POST",
+            key: "ro/orders/market/open",
+            path: "ro/orders/market/open",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "POST",
+            key: "ro/orders/market/completed",
+            path: "ro/orders/market/completed",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "POST",
+            key: "ro/my/balances",
+            path: "ro/my/balances",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "POST",
+            key: "ro/my/balance/{cointype}",
+            path: "ro/my/balance/{cointype}",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "POST",
+            key: "ro/my/orders/market/open",
+            path: "ro/my/orders/market/open",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "POST",
+            key: "ro/my/orders/limit/open",
+            path: "ro/my/orders/limit/open",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "POST",
+            key: "ro/my/orders/completed",
+            path: "ro/my/orders/completed",
+            auth: true,
+        },
+        Endpoint {
+            base: "https://www.coinspot.com.au/pubapi",
+            verb: "POST",
+            key: "ro/my/orders/market/completed",
+            path: "ro/my/orders/market/completed",
+            auth: true,
+        },
+    ],
+    taker: 0.0,
+    maker: 0.0,
+    timeframes: &[],
+    kind: MarketKind::Cex,
+};
+
+crate::impl_generated_adapter!(Coinspot, &SPEC);
