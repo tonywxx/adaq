@@ -36,6 +36,10 @@ jobs:
             architecture: x86_64
     steps:
       - uses: actions/checkout@v7
+      - name: Setup MSVC environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/scripts/setup-msvc.ps1
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -53,18 +57,32 @@ jobs:
           for fixture in strategy factor model external-strategy mixed-strategy multi-output-factor repeated-factor-strategy cross-sectional-factor; do
             cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
           done
-      - name: Build and verify public Component examples
+      - name: Build and verify public Component examples (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           cargo build --manifest-path src-tauri/crates/adaq-component-tooling/Cargo.toml --bin adaq-component
           cli="$GITHUB_WORKSPACE/src-tauri/target/debug/adaq-component"
-          if [ "$RUNNER_OS" = Windows ]; then cli="${cli}.exe"; fi
           for example in factor-close-momentum-5 strategy-momentum-trend; do
             cd "$GITHUB_WORKSPACE/examples/components/$example"
             "$cli" build
             "$cli" verify "dist/$example-0.1.0.adaq"
           done
+      - name: Build and verify public Component examples (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --manifest-path src-tauri/crates/adaq-component-tooling/Cargo.toml --bin adaq-component
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cli = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target/debug/adaq-component.exe'
+          foreach ($example in @('factor-close-momentum-5', 'strategy-momentum-trend')) {
+            Set-Location (Join-Path $env:GITHUB_WORKSPACE "examples/components/$example")
+            & $cli build
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $cli verify "dist/$example-0.1.0.adaq"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Verify generated Catalog and independent vectors
         working-directory: src-tauri
         shell: bash
