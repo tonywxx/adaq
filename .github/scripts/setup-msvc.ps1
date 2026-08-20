@@ -43,3 +43,13 @@ if (-not (Test-Path $strawberryPerl)) {
   throw 'Strawberry Perl was not found.'
 }
 "OPENSSL_SRC_PERL=$strawberryPerl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+# Git Bash also shadows the MSVC linker with its unrelated Unix link.exe.
+$linker = Get-ChildItem "$installation\VC\Tools\MSVC\*\bin\Hostx64\x64\link.exe" |
+  Sort-Object FullName |
+  Select-Object -Last 1
+if (-not $linker) {
+  throw 'MSVC linker was not found.'
+}
+"CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$($linker.FullName)" |
+  Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

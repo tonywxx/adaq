@@ -49,7 +49,8 @@ jobs:
         run: test "$(uname -m)" = arm64
       - name: Install cargo-component
         run: cargo install cargo-component --locked
-      - name: Build component fixtures
+      - name: Build component fixtures (Unix)
+        if: runner.os != 'Windows'
         working-directory: src-tauri
         shell: bash
         run: |
@@ -57,6 +58,16 @@ jobs:
           for fixture in strategy factor model external-strategy mixed-strategy multi-output-factor repeated-factor-strategy cross-sectional-factor; do
             cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
           done
+      - name: Build component fixtures (Windows)
+        if: runner.os == 'Windows'
+        working-directory: src-tauri
+        shell: pwsh
+        run: |
+          $fixtures = @('strategy', 'factor', 'model', 'external-strategy', 'mixed-strategy', 'multi-output-factor', 'repeated-factor-strategy', 'cross-sectional-factor')
+          foreach ($fixture in $fixtures) {
+            cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Build and verify public Component examples (Unix)
         if: runner.os != 'Windows'
         shell: bash
