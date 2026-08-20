@@ -1,0 +1,3 @@
+# Keep V1 Market Data as an evidence foundation
+
+ADAQ V1 defines its Market Data Foundation as the evidence-grade input for Research and Paper Trading across OKX Spot, China A-shares, and U.S. equities: shared identity, calendar, capability, Source/Canonical/Quality/Snapshot, selected historical Closed Bars, current observations, and market-applicable evidence. Coverage remains Provider-Graded rather than artificially identical; complete Fundamentals, News, Sentiment, Alternative Data, arbitrary raw Market Data imports, Historical Level 2, full Tick archives, advanced terminals, and derivatives remain post-V1, while secondary observations stay separate Auxiliary Market Evidence so they cannot silently repair or replace Canonical authority.

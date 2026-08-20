@@ -4,6 +4,40 @@ Domain language for market data, component-based quantitative research, reproduc
 
 ## Language
 
+### System Boundaries
+
+**ADAQ Host**:
+The sole trusted authority for one ADAQ deployment, deriving Authenticated User Context at its boundary and owning authorization, authoritative evidence publication, secrets, Provider and Paper access, hard Risk and OMS, and supervision of sandboxed runtimes.
+_Avoid_: Client Surface, GUI, Worker, Tauri command
+
+**Client Surface**:
+A human or automation-facing ADAQ entry point, such as the Desktop GUI or a future Mobile, Web, public API, AI Agent, or MCP surface, that requests bounded Host capabilities and consumes typed projections or events without owning domain authority.
+_Avoid_: ADAQ Host, authoritative client, direct database client
+
+**Embedded Interactive Surface**:
+A human-facing Client Surface running on the same device as its ADAQ Host and using a local transport. Co-location never grants authority beyond its Surface Capability Profile and Authenticated User Context.
+_Avoid_: ADAQ Host, trusted GUI, full-capability client
+
+**Remote Interactive Surface**:
+A human-facing Client Surface connected to an ADAQ Host on another runtime or device, with no direct access to that Host's local stores, secrets, Providers, or supervised processes.
+_Avoid_: Browser database client, remote ADAQ Host, synchronized device
+
+**Automation Surface**:
+A machine-callable Client Surface such as a public API, AI Agent, or MCP adapter whose bounded, auditable Host capabilities are declared by its Surface Capability Profile.
+_Avoid_: Quant Core, Bot Worker, autonomous authority
+
+**Surface Capability Profile**:
+The versioned allowlist of ADAQ Host capabilities available to one exact Client Surface deployment, separate from the Authenticated User Context's permissions. A capability absent from the Profile is unavailable even when the same User may access it through another Surface.
+_Avoid_: User role, UI visibility, Desktop parity
+
+**Host Capability Contract**:
+The versioned, transport-independent set of bounded commands, queries, projections, and events an ADAQ Host exposes to Client Surfaces after applying Authenticated User Context and a Surface Capability Profile.
+_Avoid_: Tauri command list, UI API, database API, Provider SDK
+
+**Authenticated User Context**:
+The Host-derived binding of one verified identity and session to an ADAQ User and its permitted capabilities. A request payload may not select or override this identity.
+_Avoid_: Client-supplied user ID, User Profile, Venue account
+
 ### Identity and Access
 
 **User**:
@@ -26,7 +60,69 @@ _Avoid_: Account data, device-wide data
 A User-scoped right to view and execute an exact Component product under its licence and registered-device rules. Component Package bytes may be deduplicated on a device without sharing the entitlement.
 _Avoid_: Component file, device ownership, global licence
 
+### Storage and Control Plane
+
+**Authoritative Evidence Store**:
+The content-addressed Parquet evidence that is the source of truth for immutable, auditable, reproducible Market, Feature, Factor, Model, and Signal datasets. Its payloads are published atomically and are never replaced by a rebuildable query layer.
+_Avoid_: Raw cache, analytical database, export file
+
+**Local Metadata Store**:
+The User-scoped SQLite source of truth for configuration, lifecycle and Attempt records, operational events, references, and local journals that govern access to device-resident evidence. It does not contain large immutable evidence rows or credential values.
+_Avoid_: Research warehouse, secret database, browser storage
+
+**Rebuildable Analytical Store**:
+An optional DuckDB query and analysis layer derived from local evidence and safe to delete and recreate without losing facts, identities, or provenance.
+_Avoid_: Authoritative database, write model, evidence store
+
+**Rebuildable Projection**:
+An index, summary, page, aggregate, or temporary join derived from authoritative SQLite metadata and Parquet evidence. It may be discarded and regenerated, and a mismatch is an integrity error rather than permission to rewrite the evidence.
+_Avoid_: Evidence record, research conclusion, authoritative snapshot
+
+**Atomic Evidence Publication**:
+The ordered local commit boundary that validates and atomically publishes complete Parquet evidence before making its SQLite metadata visible; DuckDB projections remain outside the commit and may be stale or rebuilt.
+_Avoid_: Cross-database transaction, best-effort write, partial dataset
+
+**V1 Analytical Dependency Policy**:
+V1 workflows must not depend on DuckDB or another rebuildable analytical engine for correctness, identity, or provenance. Such an engine may be added later only to address measured query or resource limits.
+_Avoid_: Required warehouse, analytical source of truth, pre-provisioned scale layer
+
+**Operating-System Secret Store**:
+The device-protected authority for User-scoped credential values. ADAQ metadata stores only an opaque Secret Reference and redacted connection facts.
+_Avoid_: Encrypted SQLite column, credential cache, masked secret
+
+**Supabase Control Plane**:
+The hosted identity, session, and future entitlement/licence/device-control boundary for ADAQ. It does not own authoritative research evidence or trading credential values.
+_Avoid_: Cloud research warehouse, execution service, remote evidence store
+
+**V1 Pre-Release Schema Policy**:
+Before V1 acceptance, local schemas and persisted contracts may change incompatibly without migration, dual-read, or forward-compatibility guarantees. A changed schema may require discarding and recreating affected local data through an explicit reset or replacement workflow.
+_Avoid_: Backward-compatible release contract, automatic migration, legacy dual-read
+
+**Diagnostic Log**:
+A bounded, User- and Attempt-scoped unstructured record retained for troubleshooting after Host redaction. It is not a protocol channel, authoritative domain evidence, or permission to persist secrets or private paths.
+_Avoid_: Operational Event, stdout authority, permanent trace archive
+
+**Operational Metric**:
+A bounded numeric observation or deterministic rollup of host operation, retained under an explicit policy for trend and threshold evaluation. It is not a Market Data record, a universal score, or an unbounded time-series database.
+_Avoid_: Research Metric, raw Tick archive, Health State
+
+**Health Projection**:
+A rebuildable current view derived from validated Operational Events and required domain evidence. It summarizes one dependency's Healthy, Degraded, Critical, or Unknown condition and never grants authority independently of Lifecycle, Risk, OMS, or Reconciliation gates.
+_Avoid_: Operational Event, Alert acknowledgement, online boolean
+
+**Provider-native Diagnostic**:
+A redacted, bounded provider code, request/response meaning, sequence detail, or rejection reason retained with its original provider identity for diagnosis. It cannot silently become Canonical Market Data or replace an ADAQ-owned decision.
+_Avoid_: Provider credential, normalized truth, translated error string
+
 ### Market Data
+
+**Market Data Foundation**:
+The evidence-grade V1 Data product that acquires, preserves, canonicalizes, grades, snapshots, and exposes three-market evidence required by Research and Paper Trading. It is not a comprehensive financial-information terminal or a promise of identical Provider coverage.
+_Avoid_: Unified Data API, market-data terminal, all financial data
+
+**Mandatory Market Data Baseline**:
+The smallest per-Market set of identity, calendar, selected historical Closed-Bar, current-observation, evidence-lifecycle, and inspection capabilities required before that Market can be used as V1 Data Foundation input. It does not require every Provider-Graded capability or complete full-universe pre-download.
+_Avoid_: full-market download, global readiness flag, provider feature parity
 
 **Instrument**:
 A tradable product listed by a specific venue and identified by its venue-native code. The term is asset-class-neutral.
@@ -47,6 +143,18 @@ _Avoid_: Market Data Provider, unified data API, raw response
 **Provider Capability Snapshot**:
 An immutable, credential-free observation of the data an account or public provider access could legally and technically retrieve at one capture time, including covered Venues, feeds, record types, history, delay, rate limits, and streaming-symbol limits. Every Source Market Dataset binds the applicable Snapshot rather than assuming a plan name has stable capabilities.
 _Avoid_: API key, static pricing-plan description, Data Quality Report
+
+**Data Capability Class**:
+The V1 scope class assigned to one Market Data capability: Required, Provider-Graded, Auxiliary Evidence, or Post-V1. It describes ADAQ's product promise, not whether a particular Provider currently supplies the capability.
+_Avoid_: Provider feature flag, UI visibility, market completeness score
+
+**Auxiliary Market Evidence**:
+Separately identified market observations from a non-authoritative or secondary source used for cross-checking or enrichment. It never repairs, replaces, or silently merges into Canonical Market Data.
+_Avoid_: fallback authority, backup provider, merged data
+
+**Provider Capability State**:
+The observed state of one Data Capability Class for a Provider Capability Snapshot: Available, Limited, Unavailable, or Unknown, with evidence and reasons retained for the capture.
+_Avoid_: Boolean support, network-connected, guaranteed coverage
 
 **Venue Time Zone**:
 The Venue's IANA time-zone identity used to interpret its local trading rules, such as `Asia/Shanghai` or `America/New_York`; it is never replaced by a fixed UTC offset.
