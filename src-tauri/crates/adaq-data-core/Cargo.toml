@@ -20,5 +20,8 @@ time = { version = "0.3", default-features = false }
 tokio = { version = "1", features = ["macros", "time"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 
+[target.'cfg(windows)'.dependencies]
+openssl = { version = "0.10.81", features = ["vendored"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }

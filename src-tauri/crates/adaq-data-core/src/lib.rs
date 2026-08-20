@@ -714,15 +714,6 @@ impl OkxClient {
         Ok(())
     }
 
-    #[cfg(test)]
-    async fn stream_ticker_once<F>(&self, code: &str, mut on_event: F) -> Result<(), DataError>
-    where
-        F: FnMut(TickerStreamEvent) -> bool,
-    {
-        self.stream_tickers_once(&[code.to_owned()], |event| on_event(event))
-            .await
-    }
-
     /// Drives a unified realtime stream through `adaq-trading-crypto`'s `OkxWs`
     /// adapter. One task is spawned per `entries` key; each task loops on the
     /// crate's `watch_*` method (which blocks until the next update arrives)
@@ -866,14 +857,6 @@ impl OkxClient {
         Ok(())
     }
 
-    #[cfg(test)]
-    async fn stream_trades_once<F>(&self, codes: &[String], on_event: F) -> Result<(), DataError>
-    where
-        F: FnMut(TradeStreamEvent) -> bool,
-    {
-        self.stream_trades_once_inner(codes, on_event).await
-    }
-
     async fn stream_trades_once_inner<F>(
         &self,
         codes: &[String],
@@ -941,18 +924,6 @@ impl OkxClient {
         }
 
         Ok(())
-    }
-
-    #[cfg(test)]
-    async fn stream_order_books_once<F>(
-        &self,
-        codes: &[String],
-        on_event: F,
-    ) -> Result<(), DataError>
-    where
-        F: FnMut(Level2StreamEvent) -> bool,
-    {
-        self.stream_order_books_once_inner(codes, on_event).await
     }
 
     async fn stream_order_books_once_inner<F>(
@@ -1037,26 +1008,6 @@ impl OkxClient {
         }
 
         Ok(())
-    }
-
-    #[cfg(test)]
-    async fn stream_bar_once<F>(
-        &self,
-        code: &str,
-        interval: BarInterval,
-        mut on_event: F,
-    ) -> Result<(), DataError>
-    where
-        F: FnMut(BarStreamEvent) -> bool,
-    {
-        self.stream_bars_once(
-            &[BarSubscription {
-                code: code.to_owned(),
-                interval,
-            }],
-            |event| on_event(event),
-        )
-        .await
     }
 
     async fn stream_bars_once<F>(
