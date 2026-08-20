@@ -40,6 +40,9 @@ bak/
 .scratch/
 .qoder/
 .sisyphus/
+findings.md
+progress.md
+task_plan.md
 
 # Generated Component Model fixture outputs.
 src-tauri/fixtures/*/src/bindings.rs

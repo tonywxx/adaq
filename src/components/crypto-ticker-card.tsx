@@ -26,7 +26,7 @@ export function CryptoTickerCard() {
 		(state) => state.tickers[instrumentKey(activeInstrument)],
 	);
 	const status = useMarketSessionStore((state) => state.tickerStatus);
-	const error = useMarketSessionStore((state) => state.streamError);
+	const error = useMarketSessionStore((state) => state.tickerError);
 	const [baseAsset = activeInstrument.code, quoteAsset = ""] =
 		activeInstrument.code.split("-");
 

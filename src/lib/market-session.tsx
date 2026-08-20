@@ -105,7 +105,8 @@ type MarketSessionStore = {
 	liveBars: Record<string, OhlcvBar>;
 	tickerStatus: ConnectionStatus;
 	barStatus: ConnectionStatus;
-	streamError?: string;
+	tickerError?: string;
+	barError?: string;
 	hydrate: (userId: string, state: WatchlistState) => void;
 	failLoad: (userId: string, error: string) => void;
 	clear: () => void;
@@ -134,7 +135,8 @@ const initialState = {
 	liveBars: {},
 	tickerStatus: "connecting" as ConnectionStatus,
 	barStatus: "connecting" as ConnectionStatus,
-	streamError: undefined,
+	tickerError: undefined,
+	barError: undefined,
 };
 
 export const useMarketSessionStore = create<MarketSessionStore>((set) => ({
@@ -159,15 +161,18 @@ export const useMarketSessionStore = create<MarketSessionStore>((set) => ({
 				instruments.map((instrument) => [instrumentKey(instrument), instrument]),
 			),
 		}),
-	setTickerStatus: (tickerStatus, streamError) =>
+	setTickerStatus: (tickerStatus, tickerError) =>
 		set((state) => ({
 			tickerStatus,
-			streamError: streamError ?? state.streamError,
+			tickerError:
+				tickerError ??
+				(tickerStatus === "live" ? undefined : state.tickerError),
 		})),
-	setBarStatus: (barStatus, streamError) =>
+	setBarStatus: (barStatus, barError) =>
 		set((state) => ({
 			barStatus,
-			streamError: streamError ?? state.streamError,
+			barError:
+				barError ?? (barStatus === "live" ? undefined : state.barError),
 		})),
 	updateTicker: (ticker) =>
 		set((state) => {
@@ -177,7 +182,7 @@ export const useMarketSessionStore = create<MarketSessionStore>((set) => ({
 			return {
 				tickers: { ...state.tickers, [key]: ticker },
 				tickerStatus: "live",
-				streamError: undefined,
+				tickerError: undefined,
 			};
 		}),
 	updateBar: ({ src, code, interval, bar }) =>
@@ -187,7 +192,7 @@ export const useMarketSessionStore = create<MarketSessionStore>((set) => ({
 				[barKey({ src, code }, interval)]: bar,
 			},
 			barStatus: "live",
-			streamError: undefined,
+			barError: undefined,
 		})),
 }));
 

@@ -60,7 +60,7 @@ export function CryptoKlineCard() {
 		(state) => state.activeInstrument,
 	);
 	const connectionStatus = useMarketSessionStore((state) => state.barStatus);
-	const streamError = useMarketSessionStore((state) => state.streamError);
+	const streamError = useMarketSessionStore((state) => state.barError);
 	const setMainChartInterval = useMarketSessionStore(
 		(state) => state.setMainChartInterval,
 	);

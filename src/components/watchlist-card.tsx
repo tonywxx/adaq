@@ -73,14 +73,15 @@ export function WatchlistCard() {
 	);
 	const interval = useMarketSessionStore((state) => state.miniChartInterval);
 	const tickerStatus = useMarketSessionStore((state) => state.tickerStatus);
-	const barStatus = useMarketSessionStore((state) => state.barStatus);
-	const streamError = useMarketSessionStore((state) => state.streamError);
+	const tickerError = useMarketSessionStore((state) => state.tickerError);
 	const catalog = useMarketSessionStore((state) => state.catalog);
 	const [adding, setAdding] = useState(false);
 	const [query, setQuery] = useState("");
 	const [mutationError, setMutationError] = useState<string>();
 	const [watchlistPage, setWatchlistPage] = useState(1);
-	const live = tickerStatus === "live" && barStatus === "live";
+	// The watchlist's primary live value is the ticker. Mini-bars are an
+	// independent stream and must not make fresh ticker prices look offline.
+	const live = tickerStatus === "live";
 	const pageCount = Math.max(
 		1,
 		Math.ceil(watchlist.length / WATCHLIST_PAGE_SIZE),
@@ -113,7 +114,7 @@ export function WatchlistCard() {
 				<CardAction>
 					<Badge
 						variant="outline"
-						title={streamError}
+						title={tickerError}
 						className={
 							live
 								? "text-emerald-600 dark:text-emerald-400"

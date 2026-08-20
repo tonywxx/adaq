@@ -5,6 +5,8 @@ use std::{
 
 use adaq_trading_crypto::realtime::OkxWs;
 use adaq_trading_crypto::{Config, Exchange, Realtime};
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -31,6 +33,10 @@ const OKX_BASE_URL: &str = "https://www.okx.com";
 const OKX_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
 const OKX_BUSINESS_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/business";
 const OKX_WS_MAX_RETRY_SECONDS: u64 = 15;
+// Rebuild the crate websocket when a subscription stops producing updates.
+// `adaq-trading-crypto` reconnects its socket internally, but a reconnect can
+// retain the old sent-subscription set and leave a channel quiet forever.
+const OKX_STREAM_UPDATE_TIMEOUT_SECONDS: u64 = 30;
 pub const OKX_MAX_STREAM_SYMBOLS: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -514,12 +520,22 @@ impl OkxClient {
         business_ws_url: impl Into<String>,
         policy: OkxRequestPolicy,
     ) -> Self {
-        let engine = adaq_trading_crypto::adapters::Okx::new(adaq_trading_crypto::Config::new())
-            .expect("adaq-trading-crypto Okx adapter builds with default config");
+        let base_url = base_url.into().trim_end_matches('/').to_owned();
+        let mut config = adaq_trading_crypto::Config::new();
+        config.max_retries = u32::from(policy.max_attempts.saturating_sub(1));
+        config.enable_rate_limit = false;
+        let engine_base_url = format!("{base_url}/api/v5");
+        let engine = adaq_trading_crypto::adapters::Okx::with_endpoints(
+            config,
+            OKX_SRC,
+            &engine_base_url,
+            0,
+        )
+        .expect("adaq-trading-crypto Okx adapter builds with configured endpoint");
         Self {
             engine: Arc::new(engine),
             http: reqwest::Client::new(),
-            base_url: base_url.into().trim_end_matches('/').to_owned(),
+            base_url,
             ws_url: ws_url.into(),
             business_ws_url: business_ws_url.into(),
             policy,
@@ -735,8 +751,23 @@ impl OkxClient {
             let entry = entry.clone();
             handles.push(tokio::spawn(async move {
                 loop {
-                    let item = fetch(ws.clone(), entry.clone()).await;
-                    if tx.send(item).await.is_err() {
+                    let item = match tokio::time::timeout(
+                        Duration::from_secs(OKX_STREAM_UPDATE_TIMEOUT_SECONDS),
+                        fetch(ws.clone(), entry.clone()),
+                    )
+                    .await
+                    {
+                        Ok(item) => item,
+                        Err(_) => Err(DataError::okx(
+                            "stale_connection",
+                            format!(
+                                "OKX realtime subscription produced no update for {} seconds",
+                                OKX_STREAM_UPDATE_TIMEOUT_SECONDS
+                            ),
+                        )),
+                    };
+                    let failed = item.is_err();
+                    if tx.send(item).await.is_err() || failed {
                         return;
                     }
                 }
@@ -1035,31 +1066,104 @@ impl OkxClient {
     async fn stream_bars_once<F>(
         &self,
         subscriptions: &[BarSubscription],
-        on_event: F,
+        mut on_event: F,
     ) -> Result<(), DataError>
     where
         F: FnMut(BarStreamEvent) -> bool,
     {
-        self.drive_symbol_stream(subscriptions, on_event, |ws, subscription| {
-            let code = subscription.code.clone();
-            let interval = subscription.interval;
-            let timeframe = interval.okx_bar().to_owned();
-            Box::pin(async move {
-                let candles = ws
-                    .watch_ohlcv(&code, &timeframe, None, None, Default::default())
-                    .await
-                    .map_err(map_crate_error)?;
-                candles
-                    .iter()
-                    .map(|ohlcv| {
-                        Ok::<_, DataError>(BarStreamEvent::Snapshot(map_crate_ohlcv(
-                            ohlcv, &code, interval,
-                        )?))
-                    })
-                    .collect::<Result<Vec<_>, DataError>>()
-            })
-        })
+        validate_bar_subscriptions(subscriptions)?;
+        let mut socket = adaq_trading_crypto::realtime::ws::connect(
+            &self.business_ws_url,
+            &reqwest::header::HeaderMap::new(),
+        )
         .await
+        .map_err(map_crate_error)?;
+        let args = subscriptions
+            .iter()
+            .map(|subscription| {
+                serde_json::json!({
+                    "channel": format!("candle{}", subscription.interval.okx_bar()),
+                    "instId": subscription.code,
+                })
+            })
+            .collect::<Vec<_>>();
+        socket
+            .send(Message::Text(
+                serde_json::json!({ "op": "subscribe", "args": args })
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .map_err(|error| DataError::okx("transport", error.to_string()))?;
+
+        let heartbeat = Duration::from_secs(25);
+        let mut awaiting_pong = false;
+        let mut announced_connected = false;
+        loop {
+            let message = match tokio::time::timeout(heartbeat, socket.next()).await {
+                Ok(Some(Ok(message))) => message,
+                Ok(Some(Err(error))) => {
+                    return Err(DataError::okx("transport", error.to_string()));
+                }
+                Ok(None) => {
+                    return Err(DataError::okx(
+                        "connection_closed",
+                        "OKX bar WebSocket closed",
+                    ));
+                }
+                Err(_) if awaiting_pong => {
+                    return Err(DataError::okx(
+                        "heartbeat_timeout",
+                        "OKX bar WebSocket did not answer ping",
+                    ));
+                }
+                Err(_) => {
+                    socket
+                        .send(Message::Text("ping".into()))
+                        .await
+                        .map_err(|error| DataError::okx("transport", error.to_string()))?;
+                    awaiting_pong = true;
+                    continue;
+                }
+            };
+
+            match message {
+                Message::Text(text) if text.as_str() == "pong" => awaiting_pong = false,
+                Message::Text(text) => {
+                    awaiting_pong = false;
+                    let snapshots = parse_realtime_bar_message(
+                        &self.engine,
+                        text.as_str(),
+                        subscriptions,
+                    )?;
+                    if !snapshots.is_empty() && !announced_connected {
+                        if !on_event(BarStreamEvent::Connected) {
+                            return Ok(());
+                        }
+                        announced_connected = true;
+                    }
+                    for snapshot in snapshots {
+                        if !on_event(BarStreamEvent::Snapshot(snapshot)) {
+                            return Ok(());
+                        }
+                    }
+                }
+                Message::Ping(payload) => {
+                    socket
+                        .send(Message::Pong(payload))
+                        .await
+                        .map_err(|error| DataError::okx("transport", error.to_string()))?;
+                }
+                Message::Pong(_) => awaiting_pong = false,
+                Message::Close(_) => {
+                    return Err(DataError::okx(
+                        "connection_closed",
+                        "OKX bar WebSocket closed",
+                    ));
+                }
+                _ => {}
+            }
+        }
     }
 
     pub async fn get_bar_series(
@@ -1302,36 +1406,31 @@ impl OkxClient {
                 "instrument master retrieval time must be non-negative",
             ));
         }
-        // NOTE: we intentionally keep the SPOT-scoped REST request instead of
-        // delegating to `adaq_trading_crypto`'s `fetch_markets`, because the
-        // crate's OKX `fetch_markets` returns *every* instrument type and
-        // labels them all `MarketType::Spot` (it does not honor `instType`).
-        // This endpoint guarantees a spot-only instrument master, which is the
-        // contract `list_spot_instruments` promises. The raw rows are still
-        // parsed by the crate's `parse_market`, so the crate remains the
-        // parsing authority. See the crate-improvement notes for a suggested
-        // `fetch_markets(params)` that honors `instType`.
-        let (payload, response) = self
-            .get_envelope::<Vec<serde_json::Value>>(
-                "/api/v5/public/instruments",
-                &[("instType".into(), "SPOT".into())],
-            )
-            .await?;
-        let data = payload.data;
-
-        let mut instruments = data
+        // `Okx::fetch_markets` is the single source for the request and OKX
+        // response parsing. The adapter itself sends `instType=SPOT`.
+        let markets = self
+            .engine
+            .fetch_markets()
+            .await
+            .map_err(map_crate_error)?;
+        let response_sha256 = serde_json::to_vec(&markets)
+            .map(|bytes| sha256_hex(&bytes))
+            .map_err(|error| DataError::okx("serialization", error.to_string()))?;
+        let mut instruments = markets
             .iter()
-            .map(|raw| {
-                let market = self.engine.parse_market(raw);
-                map_crate_market(&market)
-            })
+            .filter(|market| market.spot == Some(true))
+            .map(map_crate_market)
             .collect::<Result<Vec<_>, _>>()?;
         instruments.sort_unstable_by(|left, right| left.code.cmp(&right.code));
         Ok(InstrumentMasterAcquisition {
             retrieved_at_ms,
-            response_sha256: sha256_hex(&response.bytes),
+            response_sha256,
             connector_version: OKX_CONNECTOR_VERSION.into(),
-            diagnostics: response.diagnostics,
+            diagnostics: OkxRequestDiagnostics {
+                request_count: 1,
+                response_statuses: vec![200],
+                ..Default::default()
+            },
             instruments,
         })
     }
@@ -1733,12 +1832,11 @@ fn map_crate_market(market: &adaq_trading_crypto::types::Market) -> Result<SpotI
     })
 }
 
-// ===================== realtime bridge (adaq-trading-crypto OkxWs) =====================
+// ===================== realtime bridge (adaq-trading-crypto) =====================
 //
-// The streaming layer is served by `adaq_trading-crypto`'s `OkxWs` adapter, which
-// implements the `Realtime` trait. Each public `stream_*` keeps ADAQ's
-// callback + reconnect contract; the per-symbol loops below delegate to
-// `watch_*` and translate the crate's unified types into ADAQ's stream events.
+// Ticker/trade/order-book streams use the crate's `OkxWs` watch API. K-lines
+// preserve ADAQ's original single-session, heartbeat, and reconnect lifecycle,
+// using the crate's public websocket connector and OKX parser for the wire path.
 
 fn map_crate_error(err: adaq_trading_crypto::Error) -> DataError {
     DataError::new(OKX_SRC, err.kind().as_str().to_owned(), err.to_string())
@@ -1769,6 +1867,39 @@ impl StreamConnected for BarStreamEvent {
     fn connected() -> Self {
         BarStreamEvent::Connected
     }
+}
+
+fn parse_realtime_bar_message(
+    engine: &adaq_trading_crypto::adapters::Okx,
+    text: &str,
+    subscriptions: &[BarSubscription],
+) -> Result<Vec<BarSnapshot>, DataError> {
+    let message = serde_json::from_str::<serde_json::Value>(text)
+        .map_err(|error| DataError::okx("invalid_response", error.to_string()))?;
+    let channel = message["arg"]["channel"].as_str().unwrap_or_default();
+    let code = message["arg"]["instId"].as_str().unwrap_or_default();
+    let Some(subscription) = subscriptions.iter().find(|subscription| {
+        subscription.code == code
+            && channel == format!("candle{}", subscription.interval.okx_bar())
+    }) else {
+        return Ok(Vec::new());
+    };
+    let Some(rows) = message["data"].as_array() else {
+        return Ok(Vec::new());
+    };
+    rows.iter()
+        .map(|row| {
+            let ohlcv = engine.parse_ohlcv(row);
+            let mut snapshot = map_crate_ohlcv(&ohlcv, code, subscription.interval)?;
+            snapshot.closed = row
+                .as_array()
+                .and_then(|values| values.get(8))
+                .and_then(serde_json::Value::as_str)
+                .map(|value| value == "1")
+                .ok_or_else(|| DataError::okx("invalid_response", "OKX bar missing confirm flag"))?;
+            Ok(snapshot)
+        })
+        .collect()
 }
 
 /// Maps a crate `OHLCV` into ADAQ's `BarSnapshot`. The crate's unified `OHLCV`
@@ -1825,7 +1956,6 @@ mod tests {
     };
 
     use rust_decimal::Decimal;
-    use tokio::sync::oneshot;
 
     use super::{
         BarInterval, BarStreamEvent, BarSubscription, HistoricalBarRange, Level2StreamEvent,
@@ -1942,11 +2072,14 @@ mod tests {
     async fn okx_client_subscribes_and_streams_normalized_spot_ticker() {
         let client = OkxClient::new("https://www.okx.com");
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut tx = Some(tx);
         let handle = tokio::spawn(async move {
             let _ = client.stream_ticker("BTC-USDT", |event| match event {
                 TickerStreamEvent::Connected => true,
                 TickerStreamEvent::Snapshot(snapshot) => {
-                    let _ = tx.send(snapshot);
+                    if let Some(tx) = tx.take() {
+                        let _ = tx.send(snapshot);
+                    }
                     false
                 }
                 _ => true,
@@ -1967,12 +2100,15 @@ mod tests {
     async fn okx_client_multiplexes_tickers_over_one_subscription() {
         let client = OkxClient::new("https://www.okx.com");
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut tx = Some(tx);
         let handle = tokio::spawn(async move {
             let _ = client.stream_tickers(
                 &["BTC-USDT".to_owned(), "ETH-USDT".to_owned()],
                 |event| match event {
                     TickerStreamEvent::Snapshot(snapshot) => {
-                        let _ = tx.send(snapshot);
+                        if let Some(tx) = tx.take() {
+                            let _ = tx.send(snapshot);
+                        }
                         false
                     }
                     _ => true,
@@ -1994,10 +2130,13 @@ mod tests {
     async fn okx_client_streams_normalized_market_trades_over_one_connection() {
         let client = OkxClient::new("https://www.okx.com");
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut tx = Some(tx);
         let handle = tokio::spawn(async move {
             let _ = client.stream_trades(&["BTC-USDT".to_owned()], |event| match event {
                 TradeStreamEvent::Snapshot(trade) => {
-                    let _ = tx.send(trade);
+                    if let Some(tx) = tx.take() {
+                        let _ = tx.send(trade);
+                    }
                     false
                 }
                 _ => true,
@@ -2018,10 +2157,13 @@ mod tests {
     async fn okx_client_streams_level_two_snapshots_without_float_values() {
         let client = OkxClient::new("https://www.okx.com");
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut tx = Some(tx);
         let handle = tokio::spawn(async move {
             let _ = client.stream_order_books(&["BTC-USDT".to_owned()], |event| match event {
                 Level2StreamEvent::Snapshot(book) => {
-                    let _ = tx.send(book);
+                    if let Some(tx) = tx.take() {
+                        let _ = tx.send(book);
+                    }
                     false
                 }
                 _ => true,
@@ -2044,13 +2186,16 @@ mod tests {
     async fn okx_client_subscribes_and_streams_open_bars() {
         let client = OkxClient::new("https://www.okx.com");
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut tx = Some(tx);
         let handle = tokio::spawn(async move {
             let _ = client.stream_bar(
                 "BTC-USDT",
                 BarInterval::FifteenMinutes,
                 |event| match event {
                     BarStreamEvent::Snapshot(snapshot) => {
-                        let _ = tx.send(snapshot);
+                        if let Some(tx) = tx.take() {
+                            let _ = tx.send(snapshot);
+                        }
                         false
                     }
                     _ => true,
@@ -2073,6 +2218,7 @@ mod tests {
     async fn okx_client_multiplexes_bars_over_one_subscription() {
         let client = OkxClient::new("https://www.okx.com");
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut tx = Some(tx);
         let handle = tokio::spawn(async move {
             let _ = client.stream_bars(
                 &[
@@ -2087,7 +2233,9 @@ mod tests {
                 ],
                 |event| match event {
                     BarStreamEvent::Snapshot(snapshot) => {
-                        let _ = tx.send(snapshot);
+                        if let Some(tx) = tx.take() {
+                            let _ = tx.send(snapshot);
+                        }
                         false
                     }
                     _ => true,
@@ -2242,6 +2390,7 @@ mod tests {
         assert_eq!(instruments[0].src, "okx");
         assert_eq!(instruments[0].code, "BTC-USDT");
         assert_eq!(instruments[0].price_increment.to_string(), "0.1");
+        assert!(!instruments[0].code.is_empty());
         assert_eq!(
             serde_json::to_value(&instruments[0]).unwrap()["quantityIncrement"],
             "0.00000001"
@@ -2587,6 +2736,31 @@ mod tests {
         assert_eq!(bar.bar.quote_volume, Decimal::from_str_exact("84291.5625").unwrap());
         // A 15m bar whose open time is in the past is considered closed.
         assert!(bar.closed);
+    }
+
+    #[test]
+    fn realtime_bar_parser_preserves_confirmed_flag_and_crate_values() {
+        let subscriptions = [super::BarSubscription {
+            code: "BTC-USDT".into(),
+            interval: super::BarInterval::FifteenMinutes,
+        }];
+        let text = serde_json::json!({
+            "arg": {"channel": "candle15m", "instId": "BTC-USDT"},
+            "data": [[
+                "1719999900000", "67000.10", "67500.20", "66900.30",
+                "67433.25", "1.25", "84291.5625", "84291.5625", "1"
+            ]]
+        }).to_string();
+        let snapshots = super::parse_realtime_bar_message(
+            super::engine(),
+            &text,
+            &subscriptions,
+        ).unwrap();
+
+        assert_eq!(snapshots.len(), 1);
+        assert!(snapshots[0].closed);
+        assert_eq!(snapshots[0].code, "BTC-USDT");
+        assert_eq!(snapshots[0].bar.close, Decimal::from_str_exact("67433.25").unwrap());
     }
 
     #[test]
