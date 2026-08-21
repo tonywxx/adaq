@@ -17,6 +17,8 @@ The existing `/` route becomes ADAQ's Operations Dashboard. It answers four ques
 
 It is not a market-quotes page, event database, Worker console, provider client, or replacement for each domain workspace.
 
+The Operations Dashboard does not declare release readiness. `Readiness Assertion` evidence belongs to the reviewed V1 acceptance record and is scoped to an exact capability, journey, market/data context, platform, and locale. This Dashboard projects current Health, Alerts, Bot, Account, reconciliation, and research-operation state; it cannot turn a cached or green summary into a permission, a completed workflow, or a global V1 green light.
+
 The current Crypto Watchlist, Ticker, and Kline experience is retained but moved from `/` to a dedicated Crypto Market route under the sidebar's market navigation.
 
 ## Information architecture

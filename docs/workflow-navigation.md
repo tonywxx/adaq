@@ -76,6 +76,12 @@ Workflow state describes user evidence only when authoritative data exists:
 
 Step 10 instead uses Healthy, Degraded, Critical, or Unknown. A Partial capability may show existing evidence, but must not imply that a future step is complete. No global workflow project or progress record is introduced for this navigation change.
 
+## Product readiness visibility
+
+Product readiness is recorded as an immutable `Readiness Assertion` for a declared Capability, Journey, Market/Data Context, Supported Platform, and Interface Locale scope. It is not a global green flag and does not create a runtime record or grant permission. The Guide exposes the assertion's declared scope, known limitations, blockers, evidence entry points, and next honest action beside the existing Capability State and user-scoped Step State. A Ready assertion means only `Ready for declared scope`; any in-scope change requires a new reviewed assertion.
+
+The complete acceptance journey must not contain a hidden manual edit of SQLite, Parquet, configuration, Python output, or an external script. Cancellation, failure, restart, recovery, evidence inspection, localization, keyboard/assistive access, and supported-platform behavior are part of the same gate rather than optional polish. The final V1 acceptance set additionally covers OKX Crypto Paper, China A-share local Paper, Alpaca U.S. Equity Paper, and the declared missing-data, provider-disconnect, clock-skew, Worker-crash, uncertain-order, credential-rotation, and restart-reconciliation failures.
+
 ## Workflow Guide
 
 The page paints its semantic content immediately. Its order is:

@@ -728,6 +728,22 @@ _Avoid_: JSON feature map, dynamic lookup
 The exact analytical backend selected by a frozen research protocol to produce Features, Factors, Models, or research simulation evidence. It never owns Canonical Market Data or grants deployment authority.
 _Avoid_: Market Data Provider, Model Component, deployment runtime
 
+**Manual Research Workflow**:
+The User-directed, Host-owned sequence from frozen inputs and a research Attempt through immutable Dataset, Evaluation, Selection, Promotion, Qualification, and Deployment decisions. Each gate preserves its own evidence and requires the exact prerequisite rather than inferring completion from a score or a previous screen.
+_Avoid_: Best-score pipeline, notebook flow, automatic winner selection
+
+**AI Research Controller**:
+A future Automation Surface that may propose research actions and request bounded Host Attempts using the Manual Research Workflow. It owns neither final-evaluation authority nor User Promotion, Qualification, Deployment, or Bot-Start decisions and cannot create a parallel evidence path.
+_Avoid_: Autonomous researcher, promotion agent, deployment agent
+
+**Advisory Artifact**:
+A non-authoritative AI-generated suggestion or comparison that cites its input evidence and provenance but cannot become research evidence, a User Decision, or deployment authority by itself.
+_Avoid_: Evaluation Report, automatic decision, model artifact
+
+**Research Automation Grant**:
+A User-scoped, expiring permission that lets an AI Research Controller perform bounded mechanical research actions for declared Projects, Revisions, Attempt kinds, and resource limits. It never grants authority over credentials, policies, evidence deletion, User Decisions, Risk, Execution, or Deployment.
+_Avoid_: AI role, blanket trust, autonomous deployment permission
+
 **Qlib Research Engine**:
 The default Research Engine for ADAQ V1, using Microsoft Qlib semantics over immutable ADAQ inputs and preserving Qlib-labelled outputs and reports. It is not an independent source of authoritative market data or a direct trading runtime.
 _Avoid_: Qlib data downloader, ADAQ deployment engine, Python Bot
@@ -1217,6 +1233,22 @@ _Avoid_: Workflow Step State, feature availability, optimistic completion
 **Workflow Step State**:
 A user-scoped read projection derived from authoritative domain records as Not Started, In Progress, Needs Review, Blocked, or Complete under that step's exact evidence gate. It is not a persisted generic workflow record; continuous Monitoring uses Bot Health States instead of pretending to become Complete.
 _Avoid_: Workflow Capability State, mutable checklist, global completion percentage
+
+**Product Readiness Gate**:
+The release-level rule that every required acceptance criterion inside one declared capability scope must pass before the scope can be called product-ready. It is not a global V1 flag, a score, a permission, a Workflow Step State, or a runtime Health summary.
+_Avoid_: global readiness flag, completion percentage, optimistic availability
+
+**Readiness Assertion**:
+An immutable, reviewable acceptance record for one exact Capability, Journey, Market/Data Context, Supported Platform, and Interface Locale scope. It binds each criterion to evidence, reviewed commit, platform, locale, limitations, reviewer, and timestamp and yields Ready for declared scope or Not Ready. Any in-scope change requires a new assertion; old assertions remain historical.
+_Avoid_: mutable latest pointer, runtime database entity, User Decision, Health State
+
+**Acceptance Reviewer**:
+The designated V1 human Reviewer or Release Owner who may declare a Readiness Assertion Ready after checking every required gate. Tests, CI, domain Owners, Dashboard state, and AI surfaces provide evidence but cannot announce readiness or grant authority.
+_Avoid_: automated promotion, domain self-approval, AI authority
+
+**Declared Scope**:
+The explicit Capability, Journey, Market/Data Context, Supported Platform, and Interface Locale boundary to which one Readiness Assertion applies. Limitations outside this boundary are disclosed rather than silently generalized to other markets, platforms, locales, or workflows.
+_Avoid_: universal V1 support, provider parity, global completion
 
 **Operations Dashboard**:
 The localized Tauri and React GUI operational view that projects global Paper Trading, Bot, account, Alert, infrastructure, data, Factor, Model, Component-build, Backtest, and Validation status and exposes host-controlled emergency actions. It is the default GUI home whenever any Operational Responsibility exists and is an overview and drill-down entry point, not the Workflow Guide, Crypto market page, a TUI, an authoritative event store, or a direct provider client.

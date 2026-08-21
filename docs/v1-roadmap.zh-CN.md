@@ -330,6 +330,8 @@ flowchart TD
 
 最终 V1 Manual Acceptance 必须覆盖三个 Reference Journey：OKX Crypto Paper、A-share Local Paper、Alpaca U.S. Equity Paper；并覆盖 Missing Data、Provider Disconnect、Clock Skew、Worker Crash、Uncertain Order State、Credential Rotation 与 Restart Reconciliation 的 Failure Journey。
 
+V1 发布就绪通过不可变的 `Readiness Assertion` 集合记录，而不是应用内的全局 Flag。每条 Assertion 只覆盖明确声明的 Capability、Journey、Market/Data Context、Supported Platform 与 Interface Locale；所有必需 Criterion 通过后，才能称为 `Ready for declared scope`。验收记录必须绑定 Reviewed Commit、自动化与人工证据、精确平台/语言观察、限制项以及指定的 Acceptance Reviewer 或 Release Owner。平台或语言缺口、隐藏人工步骤、缺失恢复证据、Host/fail-closed 边界失败都会阻断对应 Assertion。发布集合必须包含上面的三条 Reference Journey 与完整 Failure Matrix；Assertion 不授予运行时权限，也不能静默泛化到其他 Scope。
+
 ## 明确的 V1 后工作
 
 - Real Trading Endpoint、Credential 与 Order Authority。

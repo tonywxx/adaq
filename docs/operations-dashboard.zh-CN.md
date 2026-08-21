@@ -17,6 +17,8 @@
 
 它不是行情页面、Event Database、Worker Console、Provider Client，也不替代各 Domain Workspace。
 
+Operations Dashboard 不负责宣布 Release Readiness。`Readiness Assertion` 属于经过审阅的 V1 Acceptance Record，并且只对精确的 Capability、Journey、Market/Data Context、Platform 与 Locale Scope 生效。本 Dashboard 只投影当前 Health、Alert、Bot、Account、Reconciliation 与 Research Operation 状态；缓存或绿色摘要不能变成 Permission、Workflow Complete 或全局 V1 绿灯。
+
 现有 Crypto Watchlist、Ticker 与 Kline 功能会保留，但从 `/` 移到 Side Menu 行情导航下的独立 Crypto Market Route。
 
 ## Information Architecture

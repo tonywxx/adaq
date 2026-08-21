@@ -330,6 +330,8 @@ Every milestone and child issue must:
 
 The final V1 manual acceptance must exercise three reference journeys—OKX Crypto Paper, A-share local Paper, and Alpaca U.S. Equity Paper—and failure journeys for missing data, provider disconnect, clock skew, Worker crash, uncertain order state, credential rotation, and restart reconciliation.
 
+V1 release readiness is recorded as an immutable `Readiness Assertion` set, not a global application flag. Each assertion covers one declared Capability, Journey, Market/Data Context, Supported Platform, and Interface Locale and is `Ready for declared scope` only when every required criterion passes. The acceptance record binds criteria to the reviewed commit, automated and manual evidence, exact platform/locale observations, limitations, and the designated Acceptance Reviewer or Release Owner. A platform or locale gap, hidden manual step, missing recovery evidence, or failed Host/fail-closed boundary blocks the applicable assertion. The release set must contain the three reference journeys and the complete failure matrix above; an assertion never grants runtime permission or silently generalizes to another scope.
+
 ## Explicit post-V1 work
 
 - Real Trading endpoints, credentials, and order authority.
