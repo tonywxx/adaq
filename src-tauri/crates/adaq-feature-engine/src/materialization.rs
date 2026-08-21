@@ -358,7 +358,7 @@ impl FeatureMaterializationStore {
     ) -> Result<MaterializationAttempt, MaterializationStoreError> {
         validate_user(user_id)?;
         let database = self.lock_database()?;
-        let transaction = database.unchecked_transaction().map_err(sqlite_error)?;
+        let transaction = write_transaction(&database)?;
         let current = load_attempt(&transaction, user_id, attempt_id)?;
         match current.status {
             MaterializationAttemptStatus::Pending => {
@@ -396,7 +396,7 @@ impl FeatureMaterializationStore {
     ) -> Result<MaterializationAttempt, MaterializationStoreError> {
         validate_user(user_id)?;
         let database = self.lock_database()?;
-        let transaction = database.unchecked_transaction().map_err(sqlite_error)?;
+        let transaction = write_transaction(&database)?;
         let previous = load_attempt(&transaction, user_id, attempt_id)?;
         if !matches!(
             previous.status,
@@ -806,7 +806,7 @@ impl FeatureMaterializationStore {
             return Err(MaterializationStoreError::Unauthorized);
         }
         let database = self.lock_database()?;
-        let transaction = database.unchecked_transaction().map_err(sqlite_error)?;
+        let transaction = write_transaction(&database)?;
         ensure_dataset_access(&transaction, owner_user_id, dataset_id)?;
         transaction
             .execute(
@@ -859,7 +859,7 @@ impl FeatureMaterializationStore {
     ) -> Result<(), MaterializationStoreError> {
         validate_user(user_id)?;
         let database = self.lock_database()?;
-        let transaction = database.unchecked_transaction().map_err(sqlite_error)?;
+        let transaction = write_transaction(&database)?;
         ensure_dataset_access(&transaction, user_id, dataset_id)?;
         let referenced: i64 = transaction
             .query_row(
@@ -1019,7 +1019,7 @@ impl FeatureMaterializationStore {
     pub fn reset_for_user(&self, user_id: &str) -> Result<(), MaterializationStoreError> {
         validate_user(user_id)?;
         let database = self.lock_database()?;
-        let transaction = database.unchecked_transaction().map_err(sqlite_error)?;
+        let transaction = write_transaction(&database)?;
         transaction
             .execute(
                 "DELETE FROM feature_dataset_references WHERE referencing_user_id = ?1",
@@ -1137,7 +1137,7 @@ impl FeatureMaterializationStore {
         let engine_identity_json = json_string(&engine_identity)?;
         let output_names_json = json_string(&output_names)?;
         let database = self.lock_database()?;
-        let transaction = database.unchecked_transaction().map_err(sqlite_error)?;
+        let transaction = write_transaction(&database)?;
         if let Some(existing) = transaction
             .query_row(
                 "SELECT request_json, plan_json, artifact_ids_json,
@@ -1360,7 +1360,7 @@ impl FeatureMaterializationStore {
         }
         sync_published_file(&final_path)?;
         let database = self.lock_database()?;
-        let transaction = database.unchecked_transaction().map_err(sqlite_error)?;
+        let transaction = write_transaction(&database)?;
         let status: String = transaction
             .query_row(
                 "SELECT status FROM feature_materialization_attempts
@@ -1437,7 +1437,7 @@ impl FeatureMaterializationStore {
     ) -> Result<MaterializationAttempt, MaterializationStoreError> {
         validate_user(user_id)?;
         let database = self.lock_database()?;
-        let transaction = database.unchecked_transaction().map_err(sqlite_error)?;
+        let transaction = write_transaction(&database)?;
         let current = load_attempt(&transaction, user_id, attempt_id)?;
         let next_status = if failure_code == "cancelled" {
             STATUS_CANCELLED
@@ -1530,7 +1530,7 @@ impl FeatureMaterializationStore {
 
     fn recover_pending_deletions(&self) -> Result<(), MaterializationStoreError> {
         let database = self.lock_database()?;
-        let transaction = database.unchecked_transaction().map_err(sqlite_error)?;
+        let transaction = write_transaction(&database)?;
         let mut statement = transaction
             .prepare(
                 "SELECT content_sha256, parquet_path
@@ -2774,6 +2774,19 @@ fn now_ms() -> i64 {
 
 fn io_error(error: std::io::Error) -> MaterializationStoreError {
     MaterializationStoreError::Io(error.to_string())
+}
+
+/// Opens an IMMEDIATE write transaction. The WAL database is shared with the
+/// main adaq.db connection, whose queue worker commits writes concurrently. A
+/// DEFERRED transaction reads a snapshot at its first SELECT and then fails
+/// with SQLITE_BUSY_SNAPSHOT ("database is locked", not retried by the busy
+/// handler) if another connection commits in between; IMMEDIATE takes the
+/// write lock up front so the transaction never runs against a stale snapshot.
+fn write_transaction<'a>(
+    database: &'a Connection,
+) -> Result<rusqlite::Transaction<'a>, MaterializationStoreError> {
+    rusqlite::Transaction::new_unchecked(database, rusqlite::TransactionBehavior::Immediate)
+        .map_err(sqlite_error)
 }
 
 fn sqlite_error(error: rusqlite::Error) -> MaterializationStoreError {

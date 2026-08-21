@@ -128,6 +128,14 @@ _Avoid_: Provider credential, normalized truth, translated error string
 The evidence-grade V1 Data product that acquires, preserves, canonicalizes, grades, snapshots, and exposes three-market evidence required by Research and Paper Trading. It is not a comprehensive financial-information terminal or a promise of identical Provider coverage.
 _Avoid_: Unified Data API, market-data terminal, all financial data
 
+**Data Foundation Workspace**:
+The User-owned workspace for explicitly acquiring, inspecting, and publishing Market Data Foundation evidence. It makes Source/Canonical/Quality lifecycle, Snapshot and Point-in-Time Universe readiness, cancellation/retry, evidence, and downstream prerequisite blockers visible without moving authority out of the Host.
+_Avoid_: Markets Workspace, silent prerequisite acquisition, global readiness flag
+
+**Acquisition Operation**:
+A User-started, User-scoped lifecycle for a requested market evidence range, retaining checkpoint, cancellation/retry state, diagnostics, and the immutable revisions it produces. Retry creates a new operation/revision and never overwrites prior evidence.
+_Avoid_: mutable download, silent background fetch
+
 **Mandatory Market Data Baseline**:
 The smallest per-Market set of identity, calendar, selected historical Closed-Bar, current-observation, evidence-lifecycle, and inspection capabilities required before that Market can be used as V1 Data Foundation input. It does not require every Provider-Graded capability or complete full-universe pre-download.
 _Avoid_: full-market download, global readiness flag, provider feature parity
@@ -877,7 +885,7 @@ The durable, idempotent point at which a Pending Attempt receives its device-wid
 _Avoid_: enqueue click, created-at ordering, automatic retry
 
 **Research Evidence Context**:
-The User-selected, compatibility-checked binding of Market, Venue, time range, Market Data Snapshot, Point-in-Time Instrument Universe, and referenced Feature/Factor/Model evidence lineage that a research workspace carries to its next operation. It is distinct from Authenticated User Context and cannot be recreated by copying opaque IDs into unrelated forms.
+The Host-owned, User-scoped, compatibility-checked binding of Market, Venue, time range, Market Data Snapshot, Point-in-Time Instrument Universe, and referenced Feature/Factor/Model evidence lineage that a research workspace carries to its next operation. The Host freezes the exact binding when an operation starts, revalidates it at each operation boundary, and rejects inaccessible, mixed, stale, incomplete, or incompatible evidence; it is distinct from Authenticated User Context and cannot be recreated by copying opaque IDs into unrelated forms.
 _Avoid_: Authenticated User Context, UI form state, copied hash list
 
 **Python Research Attempt**:

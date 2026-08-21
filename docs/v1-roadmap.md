@@ -85,6 +85,21 @@ Completion gate: the Apache-2.0 `py-factor-cross-sectional-momentum` and `py-mod
 
 The consolidated bilingual M12 implementation and verification record is the [M12 Python Research and Model Lab architecture](./m12-python-research-and-model-lab.md) plus its [manual acceptance guide](./m12-python-research-manual-acceptance.md). Criterion-level evidence is recorded under parent issue [#97](https://github.com/tonywxx/adaq/issues/97) and child issues #98–#104.
 
+## M13–M18 rebaseline gates and implementation graph
+
+Before M13 implementation begins, the [Data Foundation Workspace](https://github.com/tonywxx/adaq/issues/122) and [Research Evidence Context handoff](https://github.com/tonywxx/adaq/issues/124) slices must both be complete. The [Operations Evidence and Safety Foundation](https://github.com/tonywxx/adaq/issues/126) may proceed in parallel, but it is a shared implementation prerequisite for Paper Accounts, Trading Bots, and the Operations Dashboard.
+
+The implementation order is:
+
+1. [M13 Strategy and Portfolio Backtest](https://github.com/tonywxx/adaq/issues/127), after both remediation slices.
+2. [M14 Component Generation and Qualification](https://github.com/tonywxx/adaq/issues/128), after M13.
+3. [M15 Secure Paper Accounts and Execution](https://github.com/tonywxx/adaq/issues/120), after M14 and the Operations foundation.
+4. [M16 Trading Bot Runtime](https://github.com/tonywxx/adaq/issues/125), after M15 and the Operations foundation.
+5. [M17 Monitoring, Alerts, and Operations Dashboard](https://github.com/tonywxx/adaq/issues/121), after M16 and the Operations foundation.
+6. [M18 Paper Feedback, Hardening, and V1 Acceptance](https://github.com/tonywxx/adaq/issues/123), after M17.
+
+These issues are children of the [M13–M18 rebaseline](https://github.com/tonywxx/adaq/issues/108) and use native GitHub `blocked_by` edges. Each child is an independently usable vertical slice with explicit acceptance, failure/recovery evidence, and Out of Scope boundaries. Real Trading remains post-V1.
+
 ### M13 — Strategy and Portfolio Backtest
 
 Deliver Single-Instrument and Portfolio Strategy construction over promoted Factors and qualified Model Signals. Freeze the Strategy Target → Host Risk → Approved Target → Execution Plan boundary, capital allocation, position limits, rebalancing, stop rules, costs, liquidity, settlement, calendars, and provider-specific market constraints. Extend immutable Backtest and Validation evidence with portfolio performance, risk, attribution, turnover, capacity, and like-for-like optimization comparisons.
