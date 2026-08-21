@@ -3,6 +3,7 @@
 mod abi;
 mod candidate;
 mod catalog;
+mod context;
 mod contracts;
 mod evaluation;
 mod materialization;
@@ -15,6 +16,7 @@ use serde_json::Value;
 pub use abi::*;
 pub use candidate::*;
 pub use catalog::*;
+pub use context::*;
 pub use contracts::*;
 pub use evaluation::*;
 pub use materialization::*;
