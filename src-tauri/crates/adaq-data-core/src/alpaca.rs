@@ -32,6 +32,7 @@ use crate::{
 
 pub const ALPACA_SRC: &str = "alpaca";
 pub const ALPACA_CONNECTOR_VERSION: &str = "adaq-data-core-alpaca-v1";
+pub const ALPACA_ASSET_ENDPOINT: &str = "https://paper-api.alpaca.markets";
 pub const ALPACA_MARKET_DATA_ENDPOINT: &str = "https://data.alpaca.markets";
 pub const ALPACA_STREAM_ENDPOINT: &str = "wss://stream.data.alpaca.markets/v2/iex";
 pub const ALPACA_BASIC_HISTORY_START_YEAR: i32 = 2016;
@@ -283,6 +284,7 @@ pub enum AlpacaStreamEvent {
 pub struct AlpacaClient {
     http: reqwest::Client,
     credentials: AlpacaCredentials,
+    asset_base_url: String,
     base_url: String,
     stream_url: String,
     policy: AlpacaRequestPolicy,
@@ -291,12 +293,14 @@ pub struct AlpacaClient {
 
 impl AlpacaClient {
     pub fn new(credentials: AlpacaCredentials) -> Self {
-        Self::with_urls_and_policy(
+        let mut client = Self::with_urls_and_policy(
             credentials,
             ALPACA_MARKET_DATA_ENDPOINT,
             ALPACA_STREAM_ENDPOINT,
             AlpacaRequestPolicy::default(),
-        )
+        );
+        client.asset_base_url = ALPACA_ASSET_ENDPOINT.into();
+        client
     }
 
     pub fn with_key_pair(key_id: impl Into<String>, secret_key: impl Into<String>) -> Self {
@@ -312,6 +316,7 @@ impl AlpacaClient {
         Self {
             http: reqwest::Client::new(),
             credentials,
+            asset_base_url: ALPACA_ASSET_ENDPOINT.into(),
             base_url: ALPACA_MARKET_DATA_ENDPOINT.into(),
             stream_url: ALPACA_STREAM_ENDPOINT.into(),
             policy: AlpacaRequestPolicy::default(),
@@ -325,10 +330,12 @@ impl AlpacaClient {
         stream_url: impl Into<String>,
         policy: AlpacaRequestPolicy,
     ) -> Self {
+        let base_url = base_url.into().trim_end_matches('/').to_owned();
         Self {
             http: reqwest::Client::new(),
             credentials,
-            base_url: base_url.into().trim_end_matches('/').to_owned(),
+            asset_base_url: base_url.clone(),
+            base_url,
             stream_url: stream_url.into(),
             policy,
             next_request_at: Arc::new(Mutex::new(Instant::now())),
@@ -354,7 +361,8 @@ impl AlpacaClient {
             ));
         }
         let response = self
-            .get_bytes(
+            .get_bytes_from(
+                &self.asset_base_url,
                 "/v2/assets",
                 &[
                     ("status".into(), "active".into()),
@@ -382,7 +390,7 @@ impl AlpacaClient {
         let parsed_bytes = canonical_json_bytes(&instruments)?;
         Ok(AlpacaInstrumentMasterAcquisition {
             provider: ALPACA_SRC.into(),
-            actual_upstream: "Alpaca Market Data API".into(),
+            actual_upstream: "Alpaca Trading API".into(),
             method: "GET /v2/assets".into(),
             connector_version: ALPACA_CONNECTOR_VERSION.into(),
             request_parameters: json!({"status":"active","assetClass":"us_equity"}),
@@ -840,6 +848,15 @@ impl AlpacaClient {
         path: &str,
         query: &[(String, String)],
     ) -> Result<AlpacaHttpResponse, DataError> {
+        self.get_bytes_from(&self.base_url, path, query).await
+    }
+
+    async fn get_bytes_from(
+        &self,
+        base_url: &str,
+        path: &str,
+        query: &[(String, String)],
+    ) -> Result<AlpacaHttpResponse, DataError> {
         if self.credentials.key_id.trim().is_empty()
             || self.credentials.secret_key.trim().is_empty()
         {
@@ -853,7 +870,7 @@ impl AlpacaClient {
             self.wait_for_rate_limit().await?;
             let response = match self
                 .http
-                .get(format!("{}{}", self.base_url, path))
+                .get(format!("{}{}", base_url, path))
                 .query(query)
                 .header("APCA-API-KEY-ID", &self.credentials.key_id)
                 .header("APCA-API-SECRET-KEY", &self.credentials.secret_key)
@@ -1653,6 +1670,13 @@ mod tests {
         let symbols = (0..31).map(|value| format!("S{value}")).collect();
         let result = validate_subscription(&AlpacaStreamSubscription::trades(symbols));
         assert_eq!(result.unwrap_err().code, "stream_limit");
+    }
+
+    #[test]
+    fn production_asset_requests_use_the_paper_trading_endpoint() {
+        let client = AlpacaClient::with_key_pair("key", "secret");
+        assert_eq!(client.asset_base_url, ALPACA_ASSET_ENDPOINT);
+        assert_eq!(ALPACA_ASSET_ENDPOINT, "https://paper-api.alpaca.markets");
     }
 
     #[test]
