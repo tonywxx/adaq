@@ -33,6 +33,13 @@ export type FeaturePreviewSelection = {
 // Thin typed adapter over the frozen Feature Tauri commands. The invoke
 // transport is injected so helpers stay testable outside the Tauri runtime.
 export function createFeaturesAdapter(invoke: FeatureInvoke) {
+	const freezeContext = (userId: string, operationId: string) =>
+		invoke("research_context_freeze", {
+			userId,
+			operationId,
+			stage: "features",
+		});
+
 	return {
 		async listDefinitions(userId: string) {
 			return invoke("feature_definition_list", {
@@ -90,8 +97,10 @@ export function createFeaturesAdapter(invoke: FeatureInvoke) {
 			protocol: TransformationFittingProtocolDraft,
 			plan: FeaturePlanDraft,
 		) {
+			const operationId = `feature-fitting:${crypto.randomUUID()}`;
+			await freezeContext(userId, operationId);
 			return invoke("feature_fitting_start", {
-				request: { userId, protocol, plan },
+				request: { userId, operationId, protocol, plan },
 			}) as Promise<FittingAttemptView>;
 		},
 		async listFittingAttempts(userId: string) {
@@ -124,8 +133,10 @@ export function createFeaturesAdapter(invoke: FeatureInvoke) {
 			request: FeatureMaterializationRequest,
 			plan: FeaturePlanDraft,
 		) {
+			const operationId = `feature-materialization:${crypto.randomUUID()}`;
+			await freezeContext(userId, operationId);
 			return invoke("feature_materialization_start", {
-				request: { userId, request, plan },
+				request: { userId, operationId, request, plan },
 			}) as Promise<MaterializationAttempt>;
 		},
 		async listMaterializationAttempts(userId: string) {

@@ -13,6 +13,13 @@ import type {
 } from "./models-types";
 
 export function createModelsAdapter(invoke: TauriInvoke) {
+	const freezeContext = (userId: string, operationId: string) =>
+		invoke("research_context_freeze", {
+			userId,
+			operationId,
+			stage: "models",
+		});
+
 	return {
 		listComponents(userId: string) {
 			return invoke("component_list", { request: { userId } }) as Promise<
@@ -40,8 +47,15 @@ export function createModelsAdapter(invoke: TauriInvoke) {
 				request: { userId, strategyArchiveSha256 },
 			}) as Promise<Record<string, string[]>>;
 		},
-		startDatasetGeneration(request: DatasetGenerationRequest) {
-			return invoke("dataset_generation_start", { request }) as Promise<Attempt>;
+		async startDatasetGeneration(request: DatasetGenerationRequest) {
+			const operationId =
+				request.operationId ??
+				`model-dataset:${request.snapshotId}:${request.modelArchiveSha256}`;
+			const boundRequest = { ...request, operationId };
+			await freezeContext(request.userId, operationId);
+			return invoke("dataset_generation_start", {
+				request: boundRequest,
+			}) as Promise<Attempt>;
 		},
 		cancelDatasetGeneration(userId: string, attemptId: string) {
 			return invoke("dataset_generation_cancel", { attemptId, userId });
@@ -63,9 +77,14 @@ export function createModelsAdapter(invoke: TauriInvoke) {
 				userId,
 			}) as Promise<Attempt>;
 		},
-		createEvaluation(request: ForecastEvaluationRequest) {
+		async createEvaluation(request: ForecastEvaluationRequest) {
+			const operationId =
+				request.operationId ??
+				`model-evaluation:${request.datasetId}:${request.evaluationStartTimeMs}:${request.evaluationEndTimeMs}`;
+			const boundRequest = { ...request, operationId };
+			await freezeContext(request.userId, operationId);
 			return invoke("forecast_evaluation_create", {
-				request,
+				request: boundRequest,
 			}) as Promise<EvaluationReport>;
 		},
 		exportEvaluation(request: EvaluationExportRequest) {

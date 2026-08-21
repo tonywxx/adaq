@@ -341,7 +341,7 @@ struct CandidateBuildJob {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct FactorMaterializationStartRequest {
     pub user_id: String,
     pub protocol: FactorMaterializationProtocol,
@@ -357,7 +357,7 @@ pub(crate) struct FactorMaterializationProtocolFreezeRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct FactorEvaluationStartRequest {
     pub user_id: String,
     pub protocol: FactorEvaluationProtocol,

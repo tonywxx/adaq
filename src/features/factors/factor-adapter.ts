@@ -18,6 +18,12 @@ import type { TauriInvoke } from "@/lib/tauri-invoke";
 export type FactorInvoke = TauriInvoke;
 
 export function createFactorAdapter(invoke: FactorInvoke) {
+	const freezeContext = (userId: string, operationId: string) =>
+		invoke("research_context_freeze", {
+			userId,
+			operationId,
+			stage: "factors",
+		});
 	const page = <T>(command: string, userId: string, pageNumber: number) =>
 		invoke(command, {
 			request: { userId, page: pageNumber, pageSize: 50 },
@@ -113,10 +119,20 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			userId: string,
 			protocol: FactorJson,
 			dataset?: FactorJson,
-		) =>
-			invoke("factor_materialization_start", {
-				request: { userId, protocol, dataset: dataset ?? null },
-			}) as Promise<FactorAttemptView>,
+		) => {
+			const operationId = `factor-materialization:${crypto.randomUUID()}`;
+			return freezeContext(userId, operationId).then(
+				() =>
+					invoke("factor_materialization_start", {
+						request: {
+							userId,
+							operationId,
+							protocol,
+							dataset: dataset ?? null,
+						},
+					}) as Promise<FactorAttemptView>,
+			);
+		},
 		freezeMaterializationProtocol: (userId: string, draft: FactorJson) =>
 			invoke("factor_materialization_protocol_freeze", {
 				request: { userId, draft },
@@ -133,16 +149,22 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			marketSeries: FactorJson[],
 			featureEvidence?: FactorJson,
 			dataset?: FactorJson,
-		) =>
-			invoke("factor_evaluation_start", {
-				request: {
-					userId,
-					protocol,
-					dataset: dataset ?? null,
-					marketSeries,
-					featureEvidence: featureEvidence ?? null,
-				},
-			}) as Promise<FactorAttemptView>,
+		) => {
+			const operationId = `factor-evaluation:${crypto.randomUUID()}`;
+			return freezeContext(userId, operationId).then(
+				() =>
+					invoke("factor_evaluation_start", {
+						request: {
+							userId,
+							operationId,
+							protocol,
+							dataset: dataset ?? null,
+							marketSeries,
+							featureEvidence: featureEvidence ?? null,
+						},
+					}) as Promise<FactorAttemptView>,
+			);
+		},
 		freezeEvaluationProtocol: (userId: string, draft: FactorJson) =>
 			invoke("factor_evaluation_protocol_freeze", {
 				request: { userId, draft },

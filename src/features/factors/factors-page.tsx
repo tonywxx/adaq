@@ -31,6 +31,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ResearchContextPreflight } from "@/features/research/research-context-preflight";
 import { formatDateTime, formatNumber } from "@/lib/i18n";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { createFactorAdapter, type FactorAdapter } from "./factor-adapter";
@@ -148,6 +149,9 @@ export function FactorsPage({
 				</div>
 			</header>
 
+			{userId ? (
+				<ResearchContextPreflight userId={userId} stage="factors" />
+			) : null}
 			{userId ? <PythonProjectsPanel userId={userId} kind="factor" /> : null}
 			{userId ? <PythonFactorLabPanel userId={userId} /> : null}
 

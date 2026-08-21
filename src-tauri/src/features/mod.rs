@@ -232,7 +232,7 @@ pub(crate) struct FeaturePreviewRequest {
 }
 
 #[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct FeatureFittingStartRequest {
     pub user_id: String,
     pub protocol: TransformationFittingProtocolDraft,
@@ -240,7 +240,7 @@ pub(crate) struct FeatureFittingStartRequest {
 }
 
 #[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct FeatureMaterializationStartRequest {
     pub user_id: String,
     pub request: FeatureMaterializationRequest,

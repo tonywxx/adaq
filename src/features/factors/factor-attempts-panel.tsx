@@ -9,6 +9,7 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import { ResearchContextEvidence } from "@/features/research/research-context-evidence";
 import { formatDateTime, formatNumber } from "@/lib/i18n";
 import {
 	formatFactorError,
@@ -90,6 +91,7 @@ export function AttemptsPanel({
 				) : (
 					visible.map((attempt) => (
 						<div key={attempt.attemptId} className="rounded-md border p-3 text-sm">
+							<ResearchContextEvidence userId={userId} attemptId={attempt.attemptId} />
 							<div className="flex flex-wrap items-center gap-2">
 								<span className="font-mono text-xs">
 									{shortFactorHash(attempt.attemptId, 12)}

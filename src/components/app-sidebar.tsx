@@ -20,6 +20,7 @@ import { Link, useLocation } from "@tanstack/react-router";
 import {
 	CandlestickChart,
 	ChartBarIcon,
+	DatabaseIcon,
 	ChevronDownIcon,
 	CircleHelpIcon,
 	CommandIcon,
@@ -133,6 +134,12 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 					<SidebarGroupLabel>{t("nav.foundations")}</SidebarGroupLabel>
 					<SidebarGroupContent>
 						<SidebarMenu>
+							<SidebarLink
+								to="/data-foundation"
+								label={t("nav.dataFoundation")}
+								icon={<DatabaseIcon aria-hidden="true" />}
+								active={location.pathname === "/data-foundation"}
+							/>
 							<SidebarLink
 								to="/markets"
 								label={t("nav.marketsData")}
@@ -263,6 +270,7 @@ function SidebarLink({
 	to:
 		| "/"
 		| "/markets"
+		| "/data-foundation"
 		| "/features"
 		| "/factors"
 		| "/operations"

@@ -4,6 +4,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LoadingState } from "@/components/loading-state";
 import type { LibraryComponent } from "@/features/components/component-library";
 import { ResearchMetric } from "@/features/research/metric-info";
+import { ResearchContextEvidence } from "@/features/research/research-context-evidence";
+import { ResearchContextPreflight } from "@/features/research/research-context-preflight";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { useHistoryTab } from "@/lib/navigation-history";
 import { invoke } from "@tauri-apps/api/core";
@@ -471,6 +473,7 @@ export function ModelsPage({
 					Generate immutable forecast evidence from a verified Model Package.
 				</p>
 			</header>
+			{userId ? <ResearchContextPreflight userId={userId} stage="models" /> : null}
 			{userId ? <PythonTutorialPanel userId={userId} /> : null}
 			{userId ? <PythonProjectsPanel userId={userId} kind="model" /> : null}
 			{userId ? <PythonModelLabPanel userId={userId} /> : null}
@@ -593,6 +596,10 @@ export function ModelsPage({
 													</Button>
 												)}
 											</div>
+											<ResearchContextEvidence
+												userId={userId ?? ""}
+												attemptId={attempt.attemptId}
+											/>
 											{attempt.diagnosticEvidence && (
 												<pre className="max-h-32 overflow-auto whitespace-pre-wrap select-text">
 													{attempt.diagnosticEvidence}

@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { AuthGate } from "@/components/auth-gate";
 import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
+import { DataFoundationPage } from "@/features/data-foundation/data-foundation-page";
 import {
 	CryptoMarketPage,
 	MarketWorkspacePage,
@@ -84,6 +85,12 @@ const workflowStepRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/help/workflow/$step",
 	component: WorkflowStepGuidePage,
+});
+
+const dataFoundationRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/data-foundation",
+	component: DataFoundationPage,
 });
 
 const marketsRoute = createRoute({
@@ -212,6 +219,7 @@ const routeTree = rootRoute.addChildren([
 	operationsRoute,
 	workflowGuideRoute,
 	workflowStepRoute,
+	dataFoundationRoute,
 	marketsRoute,
 	cryptoMarketRoute,
 	ashareMarketRoute,

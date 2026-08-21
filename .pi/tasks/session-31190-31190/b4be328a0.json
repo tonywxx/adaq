@@ -1,0 +1,20 @@
+{
+  "id": "b4be328a0",
+  "name": "Rust workspace tests",
+  "command": "cd src-tauri && cargo test --workspace --all-targets",
+  "status": "killed",
+  "outputPath": ".pi/tasks/session-31190-31190/b4be328a0.output",
+  "cwd": "/Users/tony/github/adaq",
+  "startTime": 1787293369923,
+  "endTime": 1787293544507,
+  "exitCode": null,
+  "signal": "SIGTERM",
+  "pid": 8561,
+  "bytesWritten": 14596,
+  "isAgent": false,
+  "error": "Killed during Pi session shutdown/reload",
+  "notified": false,
+  "notifyOnCompletion": true,
+  "triggerOnCompletion": true,
+  "timeoutSeconds": 1200
+}

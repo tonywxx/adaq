@@ -3,6 +3,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { ResearchContextPreflight } from "@/features/research/research-context-preflight";
 import { createFeaturesAdapter } from "./features-adapter";
 import { DefinitionsView } from "./definitions-view";
 import { FittingView, MaterializationView } from "./features-attempts";
@@ -26,6 +27,9 @@ export function FeaturesPage() {
 				</p>
 			</header>
 
+			{userId ? (
+				<ResearchContextPreflight userId={userId} stage="features" />
+			) : null}
 			{!userId ? (
 				<p
 					aria-busy="true"

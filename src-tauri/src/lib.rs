@@ -157,6 +157,71 @@ fn factor_metric_catalog() -> adaq_factor_research::FactorMetricCatalog {
     adaq_factor_research::FactorMetricCatalog::initial()
 }
 
+#[tauri::command]
+fn research_context_establish(
+    draft: adaq_factor_research::ResearchEvidenceContextDraft,
+    stage: adaq_factor_research::ResearchStage,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<adaq_factor_research::ResearchEvidenceProjection, String> {
+    validate_user(&draft.user_id)?;
+    let context = adaq_factor_research::ResearchEvidenceContext::establish_for_stage(
+        draft,
+        stage,
+        Default::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    state.store_research_context(context)
+}
+
+#[tauri::command]
+fn research_context_get(
+    user_id: String,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<Option<adaq_factor_research::ResearchEvidenceProjection>, String> {
+    validate_user(&user_id)?;
+    state.research_context_for_user(&user_id)
+}
+
+#[tauri::command]
+fn research_context_freeze(
+	user_id: String,
+	operation_id: String,
+	stage: adaq_factor_research::ResearchStage,
+	state: State<'_, Arc<LocalResearchState>>,
+) -> Result<adaq_factor_research::FrozenResearchEvidence, String> {
+	validate_user(&user_id)?;
+	if operation_id.trim().is_empty() {
+		return Err("research context operation ID must be non-empty".into());
+	}
+	state.freeze_research_context(&user_id, operation_id, stage)
+}
+
+#[tauri::command]
+fn research_context_frozen_get(
+    user_id: String,
+    operation_id: String,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<Option<adaq_factor_research::FrozenResearchEvidence>, String> {
+    validate_user(&user_id)?;
+    if operation_id.trim().is_empty() {
+        return Err("research context operation ID must be non-empty".into());
+    }
+    state.frozen_research_evidence(&user_id, &operation_id)
+}
+
+#[tauri::command]
+fn research_context_for_attempt(
+    user_id: String,
+    attempt_id: String,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<Option<adaq_factor_research::FrozenResearchEvidence>, String> {
+    validate_user(&user_id)?;
+    if attempt_id.trim().is_empty() {
+        return Err("research attempt ID must be non-empty".into());
+    }
+    state.research_context_for_attempt(&user_id, &attempt_id)
+}
+
 /// Tauri Component Library commands are thin adapters: they deserialize
 /// the existing contract, delegate to the Tauri-independent Component
 /// Library module, and serialize the result. Command names and camelCase
@@ -241,7 +306,24 @@ fn dataset_generation_start(
     request: dataset_generation::DatasetGenerationRequest,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<dataset_generation::Attempt, String> {
-    state.generation.start(request)
+    let user_id = request.user_id.clone();
+    let operation_id = format!(
+        "model-dataset:{}:{}",
+        request.snapshot_id, request.model_archive_sha256
+    );
+    state.require_frozen_research_evidence(
+        &request.user_id,
+        &operation_id,
+        adaq_factor_research::ResearchStage::Models,
+    )?;
+    let attempt = state.generation.start(request)?;
+    state.record_research_attempt_binding(
+        &user_id,
+        &operation_id,
+        adaq_factor_research::ResearchStage::Models,
+        &attempt.attempt_id,
+    )?;
+    Ok(attempt)
 }
 
 #[tauri::command]
@@ -250,7 +332,17 @@ fn dataset_generation_retry(
     user_id: String,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<dataset_generation::Attempt, String> {
-    state.generation.retry(&attempt_id, &user_id)
+    let (operation_id, stage) = state
+        .research_attempt_binding(&user_id, &attempt_id)?
+        .ok_or("research Context binding is missing for this Attempt")?;
+    let attempt = state.generation.retry(&attempt_id, &user_id)?;
+    state.record_research_attempt_binding(
+        &user_id,
+        &operation_id,
+        stage,
+        &attempt.attempt_id,
+    )?;
+    Ok(attempt)
 }
 
 #[tauri::command]
@@ -314,24 +406,76 @@ factor_blocking_command!(
     get_candidate,
     factor_research::FactorCandidateView
 );
-factor_blocking_command!(
-    factor_materialization_start,
-    factor_research::FactorMaterializationStartRequest,
-    start_materialization,
-    factor_research::FactorAttemptView
-);
+#[tauri::command]
+async fn factor_materialization_start(
+    payload: serde_json::Value,
+    app: tauri::AppHandle,
+) -> Result<factor_research::FactorAttemptView, String> {
+    let operation_id = payload
+        .get("operationId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("factor materialization operation ID is required")?
+        .to_owned();
+    let request: factor_research::FactorMaterializationStartRequest =
+        serde_json::from_value(payload).map_err(|error| error.to_string())?;
+    let user_id = request.user_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        state.require_frozen_research_evidence(
+            &user_id,
+            &operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+        )?;
+        let attempt = state.factor.start_materialization(request)?;
+        state.record_research_attempt_binding(
+            &user_id,
+            &operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+            &attempt.attempt_id,
+        )?;
+        Ok(attempt)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
 factor_blocking_command!(
     factor_materialization_protocol_freeze,
     factor_research::FactorMaterializationProtocolFreezeRequest,
     freeze_materialization_protocol,
     adaq_factor_research::FactorMaterializationProtocol
 );
-factor_blocking_command!(
-    factor_evaluation_start,
-    factor_research::FactorEvaluationStartRequest,
-    start_evaluation,
-    factor_research::FactorAttemptView
-);
+#[tauri::command]
+async fn factor_evaluation_start(
+    payload: serde_json::Value,
+    app: tauri::AppHandle,
+) -> Result<factor_research::FactorAttemptView, String> {
+    let operation_id = payload
+        .get("operationId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("factor evaluation operation ID is required")?
+        .to_owned();
+    let request: factor_research::FactorEvaluationStartRequest =
+        serde_json::from_value(payload).map_err(|error| error.to_string())?;
+    let user_id = request.user_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        state.require_frozen_research_evidence(
+            &user_id,
+            &operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+        )?;
+        let attempt = state.factor.start_evaluation(request)?;
+        state.record_research_attempt_binding(
+            &user_id,
+            &operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+            &attempt.attempt_id,
+        )?;
+        Ok(attempt)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
 factor_blocking_command!(
     factor_evaluation_protocol_freeze,
     factor_research::FactorEvaluationProtocolFreezeRequest,
@@ -356,12 +500,30 @@ factor_blocking_command!(
     cancel,
     ()
 );
-factor_blocking_command!(
-    factor_attempt_retry,
-    factor_research::FactorAttemptRequest,
-    retry,
-    factor_research::FactorAttemptView
-);
+#[tauri::command]
+async fn factor_attempt_retry(
+    request: factor_research::FactorAttemptRequest,
+    app: tauri::AppHandle,
+) -> Result<factor_research::FactorAttemptView, String> {
+    let user_id = request.user_id.clone();
+    let attempt_id = request.attempt_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        let (operation_id, stage) = state
+            .research_attempt_binding(&user_id, &attempt_id)?
+            .ok_or("research Context binding is missing for this Attempt")?;
+        let attempt = state.factor.retry(request)?;
+        state.record_research_attempt_binding(
+            &user_id,
+            &operation_id,
+            stage,
+            &attempt.attempt_id,
+        )?;
+        Ok(attempt)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
 factor_blocking_command!(
     factor_dataset_list,
     factor_research::FactorPageRequest,
@@ -556,10 +718,29 @@ fn feature_plan_freeze(
 
 #[tauri::command]
 fn feature_fitting_start(
-    request: features::FeatureFittingStartRequest,
+    payload: serde_json::Value,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<features::FittingAttemptView, String> {
-    state.features.start_fitting(request)
+    let operation_id = payload
+        .get("operationId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("feature fitting operation ID is required")?
+        .to_owned();
+    let request: features::FeatureFittingStartRequest =
+        serde_json::from_value(payload).map_err(|error| error.to_string())?;
+    state.require_frozen_research_evidence(
+        &request.user_id,
+        &operation_id,
+        adaq_factor_research::ResearchStage::Features,
+    )?;
+    let attempt = state.features.start_fitting(request)?;
+    state.record_research_attempt_binding(
+        &attempt.user_id,
+        &operation_id,
+        adaq_factor_research::ResearchStage::Features,
+        &attempt.attempt_id,
+    )?;
+    Ok(attempt)
 }
 
 #[tauri::command]
@@ -603,7 +784,17 @@ fn feature_fitting_retry(
     request: features::FeatureAttemptRequest,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<features::FittingAttemptView, String> {
-    state.features.retry_fitting_attempt(request)
+    let (operation_id, stage) = state
+        .research_attempt_binding(&request.user_id, &request.attempt_id)?
+        .ok_or("research Context binding is missing for this Attempt")?;
+    let attempt = state.features.retry_fitting_attempt(request)?;
+    state.record_research_attempt_binding(
+        &attempt.user_id,
+        &operation_id,
+        stage,
+        &attempt.attempt_id,
+    )?;
+    Ok(attempt)
 }
 
 #[tauri::command]
@@ -644,10 +835,29 @@ fn feature_artifact_delete(
 
 #[tauri::command]
 fn feature_materialization_start(
-    request: features::FeatureMaterializationStartRequest,
+    payload: serde_json::Value,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<adaq_feature_engine::MaterializationAttempt, String> {
-    state.features.start_materialization(request)
+    let operation_id = payload
+        .get("operationId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("feature materialization operation ID is required")?
+        .to_owned();
+    let request: features::FeatureMaterializationStartRequest =
+        serde_json::from_value(payload).map_err(|error| error.to_string())?;
+    state.require_frozen_research_evidence(
+        &request.user_id,
+        &operation_id,
+        adaq_factor_research::ResearchStage::Features,
+    )?;
+    let attempt = state.features.start_materialization(request)?;
+    state.record_research_attempt_binding(
+        &attempt.user_id,
+        &operation_id,
+        adaq_factor_research::ResearchStage::Features,
+        &attempt.attempt_id,
+    )?;
+    Ok(attempt)
 }
 
 #[tauri::command]
@@ -691,7 +901,17 @@ fn feature_materialization_retry(
     request: features::FeatureAttemptRequest,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<adaq_feature_engine::MaterializationAttempt, String> {
-    state.features.retry_materialization_attempt(request)
+    let (operation_id, stage) = state
+        .research_attempt_binding(&request.user_id, &request.attempt_id)?
+        .ok_or("research Context binding is missing for this Attempt")?;
+    let attempt = state.features.retry_materialization_attempt(request)?;
+    state.record_research_attempt_binding(
+        &attempt.user_id,
+        &operation_id,
+        stage,
+        &attempt.attempt_id,
+    )?;
+    Ok(attempt)
 }
 
 #[tauri::command]
@@ -2675,6 +2895,11 @@ pub fn run() {
             load_factor_component,
             get_factor_schema,
             factor_metric_catalog,
+            research_context_establish,
+            research_context_get,
+            research_context_freeze,
+            research_context_frozen_get,
+            research_context_for_attempt,
             market_list_spot_instruments,
             market_get_bar_series,
             market_workspace_get_bars,

@@ -1088,7 +1088,23 @@ pub async fn forecast_evaluation_create(
     request: ForecastEvaluationRequest,
     state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<ForecastEvaluationReport, String> {
-    save_forecast_evaluation(&state, &request)
+    let operation_id = format!(
+        "model-evaluation:{}:{}:{}",
+        request.dataset_id, request.evaluation_start_time_ms, request.evaluation_end_time_ms
+    );
+    state.require_frozen_research_evidence(
+        &request.user_id,
+        &operation_id,
+        adaq_factor_research::ResearchStage::Models,
+    )?;
+    let report = save_forecast_evaluation(&state, &request)?;
+    state.record_research_attempt_binding(
+        &request.user_id,
+        &operation_id,
+        adaq_factor_research::ResearchStage::Models,
+        &report.report_id,
+    )?;
+    Ok(report)
 }
 
 #[tauri::command]

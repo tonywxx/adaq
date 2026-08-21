@@ -112,6 +112,7 @@ export type EvaluationReport = {
 
 export type DatasetGenerationRequest = {
 	userId: string;
+	operationId?: string;
 	snapshotId: string;
 	modelArchiveSha256: string;
 	modelParameters: Record<string, string>;
@@ -127,6 +128,7 @@ export type SignalDatasetRowsRequest = {
 
 export type ForecastEvaluationRequest = {
 	userId: string;
+	operationId?: string;
 	datasetId: string;
 	snapshotId: string;
 	signalName: string;

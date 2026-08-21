@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatNumber } from "@/lib/i18n";
 import { readSessionCache, writeSessionCache } from "@/lib/session-cache";
+import { ResearchContextEvidence } from "@/features/research/research-context-evidence";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { FeaturesAdapter } from "./features-adapter";
@@ -230,6 +231,12 @@ export function FittingView({
 			<Card>
 				<CardHeader>
 					<CardTitle>{t("features.fitting.heading")}</CardTitle>
+					{attempts?.[0] ? (
+						<ResearchContextEvidence
+							userId={userId}
+							attemptId={attempts[0].attemptId}
+						/>
+					) : null}
 				</CardHeader>
 				<CardContent>
 					{loadError && attempts === undefined ? (
@@ -651,6 +658,12 @@ export function MaterializationView({
 			<Card>
 				<CardHeader>
 					<CardTitle>{t("features.materialization.heading")}</CardTitle>
+					{attempts?.[0] ? (
+						<ResearchContextEvidence
+							userId={userId}
+							attemptId={attempts[0].attemptId}
+						/>
+					) : null}
 				</CardHeader>
 				<CardContent>
 					{loadError && attempts === undefined ? (

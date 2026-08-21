@@ -62,10 +62,19 @@ test("Models adapter preserves semantic command payloads", async () => {
 			},
 		},
 		{
+			command: "research_context_freeze",
+			args: {
+				userId: "user-1",
+				operationId: "model-dataset:snapshot-1:model-hash",
+				stage: "models",
+			},
+		},
+		{
 			command: "dataset_generation_start",
 			args: {
 				request: {
 					userId: "user-1",
+					operationId: "model-dataset:snapshot-1:model-hash",
 					snapshotId: "snapshot-1",
 					modelArchiveSha256: "model-hash",
 					modelParameters: { window: "20" },
@@ -95,10 +104,19 @@ test("Models adapter preserves semantic command payloads", async () => {
 			args: { attemptId: "attempt-1", userId: "user-1" },
 		},
 		{
+			command: "research_context_freeze",
+			args: {
+				userId: "user-1",
+				operationId: "model-evaluation:dataset-1:10:20",
+				stage: "models",
+			},
+		},
+		{
 			command: "forecast_evaluation_create",
 			args: {
 				request: {
 					userId: "user-1",
+					operationId: "model-evaluation:dataset-1:10:20",
 					datasetId: "dataset-1",
 					snapshotId: "snapshot-1",
 					signalName: "signal",

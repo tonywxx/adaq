@@ -12,9 +12,10 @@
 //! domains still live here).
 
 use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, Weak},
+	collections::HashMap,
+	fs,
+	path::{Path, PathBuf},
+	sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -25,11 +26,12 @@ use adaq_component_tooling::{
     ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotSource,
 };
 use adaq_data_core::{OhlcvBar, OkxClient, a_share::AshareClient};
+use adaq_factor_research::ResearchEvidenceContext;
 use adaq_data_pipeline::{
     CancellationToken, DataPipeline, DataQualityReport, DataQualityState, a_share::AshareDataPath,
     okx::OkxSpotDataPath, us_equity::UsEquityDataPath,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
@@ -69,6 +71,7 @@ pub struct LocalResearchState {
     pub(crate) connections: crate::connections::ConnectionManager,
     pub(crate) operations: OperationsStore,
     pub(crate) paper_feedback: PaperFeedbackStore,
+	pub(crate) research_contexts: Mutex<HashMap<String, ResearchEvidenceContext>>,
 }
 
 #[derive(Serialize)]
@@ -509,6 +512,27 @@ impl LocalResearchState {
                 report_id TEXT NOT NULL,
                 PRIMARY KEY(user_id, report_id),
                 FOREIGN KEY(report_id) REFERENCES forecast_evaluation_content(report_id)
+             );
+             CREATE TABLE IF NOT EXISTS research_evidence_contexts (
+                user_id TEXT NOT NULL,
+                market TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                context_hash TEXT NOT NULL,
+                context_json TEXT NOT NULL,
+                PRIMARY KEY(user_id, market)
+             );
+             CREATE TABLE IF NOT EXISTS research_frozen_evidence (
+                user_id TEXT NOT NULL,
+                operation_id TEXT NOT NULL,
+                frozen_json TEXT NOT NULL,
+                PRIMARY KEY(user_id, operation_id)
+             );
+             CREATE TABLE IF NOT EXISTS research_attempt_context_bindings (
+                user_id TEXT NOT NULL,
+                operation_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                PRIMARY KEY(user_id, operation_id)
              );",
             )
             .map_err(string)?;
@@ -594,8 +618,204 @@ impl LocalResearchState {
                 connections,
                 operations,
                 paper_feedback,
-            }
-        }))
+				research_contexts: Mutex::new(HashMap::new()),
+			}
+		}))
+    }
+
+    pub fn store_research_context(
+        &self,
+        context: ResearchEvidenceContext,
+    ) -> Result<adaq_factor_research::ResearchEvidenceProjection, String> {
+        let user_id = context.draft.user_id.clone();
+        let projection = context.projection();
+        let context_json = serde_json::to_string(&context).map_err(string)?;
+        self.database
+            .lock()
+            .map_err(|_| "database lock failed".to_string())?
+            .execute(
+                "INSERT INTO research_evidence_contexts (user_id, market, revision, context_hash, context_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(user_id, market) DO UPDATE SET
+                   revision = excluded.revision,
+                   context_hash = excluded.context_hash,
+                   context_json = excluded.context_json",
+                params![
+                    user_id,
+                    projection.market,
+                    projection.context_revision as i64,
+                    projection.context_hash,
+                    context_json,
+                ],
+            )
+            .map_err(string)?;
+        self.research_contexts
+            .lock()
+            .map_err(|_| "research context store lock failed".to_string())?
+            .insert(format!("{}:{}", user_id, projection.market), context);
+        Ok(projection)
+    }
+
+    fn context_for_user(&self, user_id: &str) -> Result<Option<ResearchEvidenceContext>, String> {
+        validate_user(user_id)?;
+        if let Some(context) = self
+            .research_contexts
+            .lock()
+            .map_err(|_| "research context store lock failed".to_string())?
+            .values()
+            .find(|context| context.draft.user_id == user_id)
+            .cloned()
+        {
+            return Ok(Some(context));
+        }
+        let database = self.database.lock().map_err(|_| "database lock failed".to_string())?;
+        let mut statement = database
+            .prepare("SELECT context_json FROM research_evidence_contexts WHERE user_id = ?1 ORDER BY market LIMIT 1")
+            .map_err(string)?;
+        let context = statement
+            .query_row([user_id], |row| row.get::<_, String>(0))
+            .optional()
+            .map_err(string)?
+            .map(|json| serde_json::from_str::<ResearchEvidenceContext>(&json).map_err(string))
+            .transpose()?;
+        drop(statement);
+        drop(database);
+        if let Some(context) = context {
+            let market = context.draft.market.clone();
+            self.research_contexts
+                .lock()
+                .map_err(|_| "research context store lock failed".to_string())?
+                .insert(format!("{}:{}", user_id, market), context.clone());
+            return Ok(Some(context));
+        }
+        Ok(None)
+    }
+
+    pub fn research_context_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<adaq_factor_research::ResearchEvidenceProjection>, String> {
+        Ok(self.context_for_user(user_id)?.map(|context| context.projection()))
+    }
+
+    pub fn freeze_research_context(
+        &self,
+        user_id: &str,
+        operation_id: String,
+        stage: adaq_factor_research::ResearchStage,
+    ) -> Result<adaq_factor_research::FrozenResearchEvidence, String> {
+        let context = self
+            .context_for_user(user_id)?
+            .ok_or_else(|| "Research Evidence Context is not established".to_string())?;
+        let frozen = context.freeze(operation_id, stage).map_err(|error| error.to_string())?;
+        self.database
+            .lock()
+            .map_err(|_| "database lock failed".to_string())?
+            .execute(
+                "INSERT OR REPLACE INTO research_frozen_evidence (user_id, operation_id, frozen_json) VALUES (?1, ?2, ?3)",
+                params![
+                    user_id,
+                    frozen.operation_id,
+                    serde_json::to_string(&frozen).map_err(string)?,
+                ],
+            )
+            .map_err(string)?;
+        Ok(frozen)
+    }
+
+    pub fn frozen_research_evidence(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+    ) -> Result<Option<adaq_factor_research::FrozenResearchEvidence>, String> {
+        validate_user(user_id)?;
+        let database = self.database.lock().map_err(|_| "database lock failed".to_string())?;
+        database
+            .query_row(
+                "SELECT frozen_json FROM research_frozen_evidence WHERE user_id = ?1 AND operation_id = ?2",
+                params![user_id, operation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(string)?
+            .map(|json| serde_json::from_str(&json).map_err(string))
+            .transpose()
+    }
+
+    pub fn require_frozen_research_evidence(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+        stage: adaq_factor_research::ResearchStage,
+    ) -> Result<adaq_factor_research::FrozenResearchEvidence, String> {
+        let frozen = self
+            .frozen_research_evidence(user_id, operation_id)?
+            .ok_or_else(|| "Research Evidence Context is not frozen for this operation".to_string())?;
+        if frozen.stage != stage {
+            return Err("Research Evidence Context stage is incompatible with this operation".into());
+        }
+        Ok(frozen)
+    }
+
+    pub fn record_research_attempt_binding(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+        stage: adaq_factor_research::ResearchStage,
+        attempt_id: &str,
+    ) -> Result<(), String> {
+        self.require_frozen_research_evidence(user_id, operation_id, stage)?;
+        self.database
+            .lock()
+            .map_err(|_| "database lock failed".to_string())?
+            .execute(
+                "INSERT OR REPLACE INTO research_attempt_context_bindings (user_id, operation_id, stage, attempt_id) VALUES (?1, ?2, ?3, ?4)",
+                params![user_id, operation_id, format!("{stage:?}"), attempt_id],
+            )
+            .map_err(string)?;
+        Ok(())
+    }
+
+    pub fn research_attempt_binding(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<Option<(String, adaq_factor_research::ResearchStage)>, String> {
+        validate_user(user_id)?;
+        let database = self.database.lock().map_err(|_| "database lock failed".to_string())?;
+        database
+            .query_row(
+                "SELECT operation_id, stage FROM research_attempt_context_bindings WHERE user_id = ?1 AND attempt_id = ?2",
+                params![user_id, attempt_id],
+                |row| {
+                    let operation_id: String = row.get(0)?;
+                    let stage: String = row.get(1)?;
+                    Ok((operation_id, stage))
+                },
+            )
+            .optional()
+            .map_err(string)?
+            .map(|(operation_id, stage)| {
+                let stage = match stage.as_str() {
+                    "Features" => adaq_factor_research::ResearchStage::Features,
+                    "Factors" => adaq_factor_research::ResearchStage::Factors,
+                    "Models" => adaq_factor_research::ResearchStage::Models,
+                    _ => return Err("stored research attempt stage is invalid".to_string()),
+                };
+                Ok((operation_id, stage))
+            })
+            .transpose()
+    }
+
+    pub fn research_context_for_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<Option<adaq_factor_research::FrozenResearchEvidence>, String> {
+        let Some((operation_id, _stage)) = self.research_attempt_binding(user_id, attempt_id)? else {
+            return Ok(None);
+        };
+        self.frozen_research_evidence(user_id, &operation_id)
     }
 
     pub fn local_data_summary(&self, user_id: &str) -> Result<LocalDataSummary, String> {
@@ -1730,6 +1950,78 @@ mod tests {
         assert!(markdown.contains("research-metrics.md"));
 
         drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn frozen_context_binding_survives_state_reload_and_attempt_lookup() {
+        let (root, state, _watchlist) = local_data_state("research-context-binding");
+        let draft = adaq_factor_research::ResearchEvidenceContextDraft {
+            user_id: "alice".into(),
+            market: "crypto".into(),
+            venue: "okx".into(),
+            range_start_ms: 1,
+            range_end_ms: 2,
+            snapshot_id: "snapshot-1".into(),
+            universe_id: Some("universe-1".into()),
+            evidence: vec![adaq_factor_research::EvidenceBinding {
+                id: "evidence-1".into(),
+                lineage_hash: "lineage-1".into(),
+                user_id: "alice".into(),
+                market: "crypto".into(),
+                venue: "okx".into(),
+                snapshot_id: "snapshot-1".into(),
+                universe_id: Some("universe-1".into()),
+                feature_id: None,
+                factor_id: None,
+                model_id: None,
+                grade: adaq_factor_research::EvidenceGrade::ProviderGraded,
+                accessible: true,
+                complete: true,
+                fresh: true,
+            }],
+        };
+        let context = adaq_factor_research::ResearchEvidenceContext::establish_for_stage(
+            draft,
+            adaq_factor_research::ResearchStage::Models,
+            Default::default(),
+        )
+        .unwrap();
+        state.store_research_context(context).unwrap();
+        state
+            .freeze_research_context(
+                "alice",
+                "model-dataset:one:model",
+                adaq_factor_research::ResearchStage::Models,
+            )
+            .unwrap();
+        state
+            .record_research_attempt_binding(
+                "alice",
+                "model-dataset:one:model",
+                adaq_factor_research::ResearchStage::Models,
+                "attempt-1",
+            )
+            .unwrap();
+        assert_eq!(
+            state
+                .research_context_for_attempt("alice", "attempt-1")
+                .unwrap()
+                .unwrap()
+                .operation_id,
+            "model-dataset:one:model"
+        );
+        drop(state);
+        let reloaded = LocalResearchState::open(&root).unwrap();
+        assert_eq!(
+            reloaded
+                .research_context_for_attempt("alice", "attempt-1")
+                .unwrap()
+                .unwrap()
+                .operation_id,
+            "model-dataset:one:model"
+        );
+        drop(reloaded);
         fs::remove_dir_all(root).unwrap();
     }
 }
