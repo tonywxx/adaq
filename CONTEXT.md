@@ -38,6 +38,14 @@ _Avoid_: Tauri command list, UI API, database API, Provider SDK
 The Host-derived binding of one verified identity and session to an ADAQ User and its permitted capabilities. A request payload may not select or override this identity.
 _Avoid_: Client-supplied user ID, User Profile, Venue account
 
+**Host Session Binding**:
+The process-memory association of one verified Supabase session with one Client Surface/window and its Authenticated User Context. It is established or refreshed through the Host authentication seam and cleared on sign-out, User change, verification failure, expiry, or window teardown; raw tokens are not persisted as domain data.
+_Avoid_: Client session state, persisted token vault, User ID argument
+
+**Strict Operation**:
+A Host capability whose authority must reflect fresh online session state or immediate revocation, including User changes, credential and Secret Reference access, destructive reset, Bot/order work, and reconciliation. A Strict Operation fails closed when fresh validation is unavailable.
+_Avoid_: every local read, UI-disabled action, provider request
+
 ### Identity and Access
 
 **User**:
