@@ -876,6 +876,10 @@ _Avoid_: Tauri command body, Python worker pool, UI loading queue
 The durable, idempotent point at which a Pending Attempt receives its device-wide ordering position. FIFO is defined by Admission order rather than request time, Store-local timestamps, or UI submission time; a Retry always receives a new position.
 _Avoid_: enqueue click, created-at ordering, automatic retry
 
+**Research Evidence Context**:
+The User-selected, compatibility-checked binding of Market, Venue, time range, Market Data Snapshot, Point-in-Time Instrument Universe, and referenced Feature/Factor/Model evidence lineage that a research workspace carries to its next operation. It is distinct from Authenticated User Context and cannot be recreated by copying opaque IDs into unrelated forms.
+_Avoid_: Authenticated User Context, UI form state, copied hash list
+
 **Python Research Attempt**:
 An append-only execution record binding one Python Project Revision and prepared environment to exact frozen Input Slot bindings, one normalized parameter set, Seed, deterministic runtime settings, resource policy, status, outputs, diagnostics, and logs. Pending work survives restart in FIFO order, while stale Running work becomes Failed with an Interrupted reason rather than resuming. Cancel requests are cooperative for a bounded grace period and then terminate the process tree; Cancelled is recorded only after Runner exit and staging isolation. Source edits, parameter changes, and Retry create new Attempts, active duplicate Starts coalesce only on complete execution identity, and late Runner results never mutate prior evidence.
 _Avoid_: Python process, terminal session, hidden parameter sweep
