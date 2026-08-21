@@ -21,6 +21,7 @@ members = [
   "crates/adaq-feature-engine",
   "crates/adaq-indicator-engine",
   "crates/adaq-python-research",
+  "crates/adaq-paper-trading-core",
 ]
 resolver = "2"
 
