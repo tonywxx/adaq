@@ -6,11 +6,21 @@ use rust_decimal::Decimal;
 use crate::{
     ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue, FactorScope,
     FeatureSlotSource, MarketField, ParameterType, WasmLoader, native_engine_identity,
-    validate_and_freeze_feature_plan,
+    qualification::parameter_combinations, validate_and_freeze_feature_plan,
 };
 
 pub fn verify_package(package: &ComponentPackage) -> Result<(), String> {
-    let parameters = component_parameters(&package.manifest, None)?;
+    for values in parameter_combinations(&package.manifest.parameters)? {
+        verify_package_with_parameters(package, Some(&values))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn verify_package_with_parameters(
+    package: &ComponentPackage,
+    overrides: Option<&HashMap<String, String>>,
+) -> Result<(), String> {
+    let parameters = component_parameters(&package.manifest, overrides)?;
     match package.manifest.kind {
         ComponentKind::Factor => verify_factor(package, &parameters),
         ComponentKind::Strategy => verify_strategy(package, &parameters),

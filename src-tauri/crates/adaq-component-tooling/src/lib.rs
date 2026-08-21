@@ -2,6 +2,7 @@ mod cli;
 mod conformance;
 mod package;
 mod plan;
+mod qualification;
 mod runtime;
 mod templates;
 
@@ -24,6 +25,9 @@ pub use plan::{
     validate_and_freeze_feature_plan_with_bindings_and_parameters,
     validate_and_freeze_feature_plan_with_factors,
     validate_and_freeze_feature_plan_with_factors_and_parameters,
+};
+pub use qualification::{
+    QualificationAttempt, QualificationEvidence, QualificationGate, qualify_package,
 };
 pub use runtime::{
     ComponentParameterValue, FactorParameterSchema, FactorSchema, RunLimits, WasmLoader,
