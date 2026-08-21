@@ -6,14 +6,18 @@ use rust_decimal::Decimal;
 use crate::{
     ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue, FactorScope,
     FeatureSlotSource, MarketField, ParameterType, WasmLoader, native_engine_identity,
-    qualification::parameter_combinations, validate_and_freeze_feature_plan,
+    validate_and_freeze_feature_plan,
 };
 
 pub fn verify_package(package: &ComponentPackage) -> Result<(), String> {
-    for values in parameter_combinations(&package.manifest.parameters)? {
-        verify_package_with_parameters(package, Some(&values))?;
+    // Import verifies the package's declared default runtime. Exhaustive
+    // parameter-combination qualification is performed by `qualify_package`.
+    let parameters = component_parameters(&package.manifest, None)?;
+    match package.manifest.kind {
+        ComponentKind::Factor => verify_factor(package, &parameters),
+        ComponentKind::Strategy => verify_strategy(package, &parameters),
+        ComponentKind::Model => verify_model(package, &parameters),
     }
-    Ok(())
 }
 
 pub(crate) fn verify_package_with_parameters(

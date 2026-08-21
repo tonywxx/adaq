@@ -2,12 +2,9 @@ use adaq_component_sdk::model::{
     FeatureSlot, ForecastRow, Guest, GuestInstance, Instance as ModelInstance, ParameterValue,
     PredictionRow,
 };
-use core::cell::Cell;
-
 struct Model;
 
 struct Instance {
-    seen: Cell<u64>,
     mode: String,
 }
 
@@ -23,10 +20,7 @@ impl Guest for Model {
             Some(ParameterValue::Text(value)) => value.clone(),
             _ => "valid".into(),
         };
-        Ok(ModelInstance::new(Instance {
-            seen: Cell::new(0),
-            mode,
-        }))
+        Ok(ModelInstance::new(Instance { mode }))
     }
 }
 
@@ -34,8 +28,6 @@ impl GuestInstance for Instance {
     fn process(&self, rows: Vec<PredictionRow>) -> Result<Vec<Option<ForecastRow>>, String> {
         rows.into_iter()
             .map(|row| {
-                let seen = self.seen.get();
-                self.seen.set(seen + 1);
                 Ok(Some(ForecastRow {
                     instrument_id: row.instrument_id,
                     prediction_time_ms: if self.mode == "wrong-time" {
@@ -46,7 +38,7 @@ impl GuestInstance for Instance {
                     values: vec![if self.mode == "non-finite" {
                         f64::NAN
                     } else {
-                        row.values.first().copied().unwrap_or_default() + seen as f64
+                        row.values.first().copied().unwrap_or_default() + 2.0
                     }],
                 }))
             })
