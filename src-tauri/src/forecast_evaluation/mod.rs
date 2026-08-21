@@ -1085,9 +1085,12 @@ fn save_forecast_evaluation(
 
 #[tauri::command]
 pub async fn forecast_evaluation_create(
-    request: ForecastEvaluationRequest,
+    mut request: ForecastEvaluationRequest,
+    window: tauri::WebviewWindow,
+    auth: tauri::State<'_, crate::auth::AuthState>,
     state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<ForecastEvaluationReport, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let operation_id = format!(
         "model-evaluation:{}:{}:{}",
         request.dataset_id, request.evaluation_start_time_ms, request.evaluation_end_time_ms
@@ -1110,8 +1113,12 @@ pub async fn forecast_evaluation_create(
 #[tauri::command]
 pub async fn forecast_evaluation_list(
     user_id: String,
+    window: tauri::WebviewWindow,
+    auth: tauri::State<'_, crate::auth::AuthState>,
     state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<ForecastEvaluationReport>, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     list_forecast_evaluations(&state, &user_id)
 }
 

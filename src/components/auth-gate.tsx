@@ -8,10 +8,11 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MarketSessionProvider } from "@/lib/market-session";
+import { getErrorMessage, MarketSessionProvider } from "@/lib/market-session";
 import { checkStrongPassword } from "@/lib/password";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { Session } from "@supabase/supabase-js";
+import { invoke } from "@tauri-apps/api/core";
 import { KeyRound, LoaderCircleIcon, Mail, ShieldCheck } from "lucide-react";
 import {
 	type FormEvent,
@@ -30,6 +31,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
 	const { t } = useTranslation();
 	const [session, setSession] = useState<Session | null>(null);
 	const [loadingSession, setLoadingSession] = useState(true);
+	const [hostAuthStatus, setHostAuthStatus] = useState<
+		"idle" | "binding" | "bound" | "error"
+	>("idle");
+	const [hostAuthUserId, setHostAuthUserId] = useState<string>();
+	const [hostAuthError, setHostAuthError] = useState<string>();
 
 	useEffect(() => {
 		if (!supabase) {
@@ -49,6 +55,49 @@ export function AuthGate({ children }: { children: ReactNode }) {
 		});
 
 		return () => subscription.unsubscribe();
+	}, []);
+
+	useEffect(() => {
+		let disposed = false;
+		if (!session) {
+			setHostAuthStatus("idle");
+			setHostAuthUserId(undefined);
+			setHostAuthError(undefined);
+			void invoke("auth_clear_session").catch(() => {});
+			return () => {
+				disposed = true;
+			};
+		}
+
+		setHostAuthStatus("binding");
+		setHostAuthUserId(undefined);
+		setHostAuthError(undefined);
+		void invoke<{ userId: string }>("auth_bind_session", {
+			accessToken: session.access_token,
+		})
+			.then((context) => {
+				if (disposed) return;
+				if (context.userId !== session.user.id) {
+					throw new Error("Host authentication user mismatch");
+				}
+				setHostAuthUserId(context.userId);
+				setHostAuthStatus("bound");
+			})
+			.catch((error) => {
+				if (disposed) return;
+				setHostAuthError(getErrorMessage(error));
+				setHostAuthStatus("error");
+			});
+
+		return () => {
+			disposed = true;
+		};
+	}, [session]);
+
+	useEffect(() => {
+		return () => {
+			void invoke("auth_clear_session").catch(() => {});
+		};
 	}, []);
 
 	if (!isSupabaseConfigured || !supabase) {
@@ -88,6 +137,44 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
 	if (!session) {
 		return <EmailOtpForm onSession={setSession} />;
+	}
+
+	if (hostAuthStatus !== "bound" || hostAuthUserId !== session.user.id) {
+		return (
+			<>
+				<NavTitlebarTransparent />
+				<main
+					className="grid min-h-svh place-content-center justify-items-center gap-3 bg-background"
+					role={hostAuthStatus === "error" ? "alert" : "status"}
+					aria-live="polite"
+				>
+					{hostAuthStatus === "error" ? (
+						<>
+							<p className="font-semibold">{t("auth.hostAuthenticationFailed")}</p>
+							<p className="text-sm text-muted-foreground">
+								{t("auth.hostAuthenticationFailedDescription")}
+							</p>
+							{hostAuthError && (
+								<p className="max-w-sm text-center text-xs text-destructive">
+									{hostAuthError}
+								</p>
+							)}
+						</>
+					) : (
+						<>
+							<LoaderCircleIcon
+								className="size-7 animate-spin text-primary"
+								aria-hidden="true"
+							/>
+							<p className="font-semibold">AdaQ</p>
+							<p className="text-sm text-muted-foreground">
+								{t("auth.initializingWorkspace")}
+							</p>
+						</>
+					)}
+				</main>
+			</>
+		);
 	}
 
 	if (!session.user.user_metadata.password_set_at) {

@@ -800,6 +800,9 @@ const english = {
 		supabaseNotConfigured: "Supabase is not configured",
 		supabaseNotConfiguredDescription:
 			"Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY, then restart the app.",
+		hostAuthenticationFailed: "Unable to verify this session",
+		hostAuthenticationFailedDescription:
+			"The desktop host could not verify your session. Sign in again or restart the app.",
 		initializingAria: "AdaQ is initializing",
 		initializingWorkspace: "Initializing workspace…",
 		signIn: "Sign in",
@@ -2901,6 +2904,9 @@ const simplifiedChinese = {
 		supabaseNotConfigured: "Supabase 尚未配置",
 		supabaseNotConfiguredDescription:
 			"设置 VITE_SUPABASE_URL 和 VITE_SUPABASE_PUBLISHABLE_KEY，然后重启应用。",
+		hostAuthenticationFailed: "无法验证当前会话",
+		hostAuthenticationFailedDescription:
+			"桌面 Host 无法验证您的会话。请重新登录或重启应用。",
 		initializingAria: "AdaQ 正在初始化",
 		initializingWorkspace: "正在初始化工作区…",
 		signIn: "登录",

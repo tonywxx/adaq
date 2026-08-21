@@ -1,3 +1,4 @@
+mod auth;
 mod backtest;
 mod component_library;
 mod connections;
@@ -34,7 +35,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tauri::{
-    Emitter, Manager, State,
+    Emitter, Manager, State, WebviewWindow, WindowEvent,
     ipc::Channel,
     menu::{AboutMetadata, MenuBuilder, SubmenuBuilder},
 };
@@ -65,8 +66,30 @@ fn greet(name: &str) -> String {
 }
 
 #[tauri::command]
+async fn auth_bind_session(
+    access_token: String,
+    window: WebviewWindow,
+    state: State<'_, auth::AuthState>,
+) -> Result<auth::AuthContextView, String> {
+    let auth_state = state.inner().clone();
+    let window_label = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        auth_state.bind(&window_label, &access_token, auth::now_ms())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn auth_clear_session(window: WebviewWindow, state: State<'_, auth::AuthState>) {
+    state.clear(window.label());
+}
+
+#[tauri::command]
 fn operations_observe(
-    observation: operations::HealthObservation,
+    mut observation: operations::HealthObservation,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<
     (
@@ -76,24 +99,31 @@ fn operations_observe(
     ),
     String,
 > {
+    observation.user_id = auth.user_id_for_window(window.label())?;
     state.operations.observe(observation)
 }
 
 #[tauri::command]
 fn operations_health(
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<operations::HealthView>, String> {
-    validate_user(&user_id)?;
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     state.operations.health_for_user(&user_id)
 }
 
 #[tauri::command]
 fn operations_alerts(
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<operations::AlertView>, String> {
-    validate_user(&user_id)?;
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     state.operations.alerts_for_user(&user_id)
 }
 
@@ -130,9 +160,12 @@ fn operations_alert_transition(
     state: operations::AlertState,
     event_id: String,
     occurred_at_ms: i64,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     store: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
-    validate_user(&user_id)?;
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     store
         .operations
         .transition_alert(&user_id, &alert_id, state, &event_id, occurred_at_ms)
@@ -161,9 +194,16 @@ fn factor_metric_catalog() -> adaq_factor_research::FactorMetricCatalog {
 fn research_context_establish(
     draft: adaq_factor_research::ResearchEvidenceContextDraft,
     stage: adaq_factor_research::ResearchStage,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<adaq_factor_research::ResearchEvidenceProjection, String> {
-    validate_user(&draft.user_id)?;
+    let user_id = auth.user_id_for_window(window.label())?;
+    let mut draft = draft;
+    draft.user_id = user_id.clone();
+    for evidence in &mut draft.evidence {
+        evidence.user_id = user_id.clone();
+    }
     let context = adaq_factor_research::ResearchEvidenceContext::establish_for_stage(
         draft,
         stage,
@@ -175,21 +215,23 @@ fn research_context_establish(
 
 #[tauri::command]
 fn research_context_get(
-    user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Option<adaq_factor_research::ResearchEvidenceProjection>, String> {
-    validate_user(&user_id)?;
+    let user_id = auth.user_id_for_window(window.label())?;
     state.research_context_for_user(&user_id)
 }
 
 #[tauri::command]
 fn research_context_freeze(
-    user_id: String,
     operation_id: String,
     stage: adaq_factor_research::ResearchStage,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<adaq_factor_research::FrozenResearchEvidence, String> {
-    validate_user(&user_id)?;
+    let user_id = auth.user_id_for_window(window.label())?;
     if operation_id.trim().is_empty() {
         return Err("research context operation ID must be non-empty".into());
     }
@@ -198,11 +240,12 @@ fn research_context_freeze(
 
 #[tauri::command]
 fn research_context_frozen_get(
-    user_id: String,
     operation_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Option<adaq_factor_research::FrozenResearchEvidence>, String> {
-    validate_user(&user_id)?;
+    let user_id = auth.user_id_for_window(window.label())?;
     if operation_id.trim().is_empty() {
         return Err("research context operation ID must be non-empty".into());
     }
@@ -211,11 +254,12 @@ fn research_context_frozen_get(
 
 #[tauri::command]
 fn research_context_for_attempt(
-    user_id: String,
     attempt_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Option<adaq_factor_research::FrozenResearchEvidence>, String> {
-    validate_user(&user_id)?;
+    let user_id = auth.user_id_for_window(window.label())?;
     if attempt_id.trim().is_empty() {
         return Err("research attempt ID must be non-empty".into());
     }
@@ -228,17 +272,23 @@ fn research_context_for_attempt(
 /// shapes are frozen.
 #[tauri::command]
 fn component_import(
-    request: component_library::ComponentImportRequest,
+    mut request: component_library::ComponentImportRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<component_library::LibraryComponent, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.components.import(&request.user_id, &request.bytes)
 }
 
 #[tauri::command]
 async fn component_list(
-    request: component_library::ComponentUserRequest,
+    mut request: component_library::ComponentUserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<component_library::LibraryComponent>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .components
@@ -250,9 +300,12 @@ async fn component_list(
 
 #[tauri::command]
 async fn component_page(
-    request: component_library::ComponentPageRequest,
+    mut request: component_library::ComponentPageRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<component_library::ComponentPage, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .components
@@ -264,9 +317,12 @@ async fn component_page(
 
 #[tauri::command]
 fn component_is_imported(
-    request: component_library::ComponentArchiveRequest,
+    mut request: component_library::ComponentArchiveRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<bool, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state
         .components
         .is_imported(&request.user_id, &request.archive_sha256)
@@ -274,9 +330,12 @@ fn component_is_imported(
 
 #[tauri::command]
 fn backtest_compatible_factors(
-    request: component_library::BacktestDependencyRequest,
+    mut request: component_library::BacktestDependencyRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state
         .components
         .compatible_factors(&request.user_id, &request.strategy_archive_sha256)
@@ -284,9 +343,12 @@ fn backtest_compatible_factors(
 
 #[tauri::command]
 fn component_delete(
-    request: component_library::ComponentDeleteRequest,
+    mut request: component_library::ComponentDeleteRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state
         .components
         .delete(&request.user_id, &request.archive_sha256)
@@ -303,9 +365,12 @@ struct MarketSourceRequest {
 /// lifecycle module, and serialize the result.
 #[tauri::command]
 fn dataset_generation_start(
-    request: dataset_generation::DatasetGenerationRequest,
+    mut request: dataset_generation::DatasetGenerationRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<dataset_generation::Attempt, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let user_id = request.user_id.clone();
     let operation_id = format!(
         "model-dataset:{}:{}",
@@ -330,8 +395,12 @@ fn dataset_generation_start(
 fn dataset_generation_retry(
     attempt_id: String,
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<dataset_generation::Attempt, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     let (operation_id, stage) = state
         .research_attempt_binding(&user_id, &attempt_id)?
         .ok_or("research Context binding is missing for this Attempt")?;
@@ -343,8 +412,12 @@ fn dataset_generation_retry(
 #[tauri::command]
 async fn dataset_generation_list(
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<dataset_generation::Attempt>, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
         state.generation.list(&user_id)
@@ -357,15 +430,25 @@ async fn dataset_generation_list(
 fn dataset_generation_cancel(
     attempt_id: String,
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     state.generation.cancel(&attempt_id, &user_id)
 }
 
 macro_rules! factor_blocking_command {
     ($name:ident, $request:ty, $method:ident, $result:ty) => {
         #[tauri::command]
-        async fn $name(request: $request, app: tauri::AppHandle) -> Result<$result, String> {
+        async fn $name(
+            mut request: $request,
+            window: WebviewWindow,
+            auth: State<'_, auth::AuthState>,
+            app: tauri::AppHandle,
+        ) -> Result<$result, String> {
+            request.user_id = auth.user_id_for_window(window.label())?;
             tauri::async_runtime::spawn_blocking(move || {
                 app.state::<Arc<LocalResearchState>>()
                     .factor
@@ -404,6 +487,8 @@ factor_blocking_command!(
 #[tauri::command]
 async fn factor_materialization_start(
     payload: serde_json::Value,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<factor_research::FactorAttemptView, String> {
     let operation_id = payload
@@ -411,8 +496,9 @@ async fn factor_materialization_start(
         .and_then(serde_json::Value::as_str)
         .ok_or("factor materialization operation ID is required")?
         .to_owned();
-    let request: factor_research::FactorMaterializationStartRequest =
+    let mut request: factor_research::FactorMaterializationStartRequest =
         serde_json::from_value(payload).map_err(|error| error.to_string())?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let user_id = request.user_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
@@ -442,6 +528,8 @@ factor_blocking_command!(
 #[tauri::command]
 async fn factor_evaluation_start(
     payload: serde_json::Value,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<factor_research::FactorAttemptView, String> {
     let operation_id = payload
@@ -449,8 +537,9 @@ async fn factor_evaluation_start(
         .and_then(serde_json::Value::as_str)
         .ok_or("factor evaluation operation ID is required")?
         .to_owned();
-    let request: factor_research::FactorEvaluationStartRequest =
+    let mut request: factor_research::FactorEvaluationStartRequest =
         serde_json::from_value(payload).map_err(|error| error.to_string())?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let user_id = request.user_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
@@ -497,9 +586,12 @@ factor_blocking_command!(
 );
 #[tauri::command]
 async fn factor_attempt_retry(
-    request: factor_research::FactorAttemptRequest,
+    mut request: factor_research::FactorAttemptRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<factor_research::FactorAttemptView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let user_id = request.user_id.clone();
     let attempt_id = request.attempt_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -647,25 +739,34 @@ factor_blocking_command!(
 /// module's one persistent FIFO background runner.
 #[tauri::command]
 fn feature_definition_validate(
-    request: features::DefinitionDraftRequest,
+    mut request: features::DefinitionDraftRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<features::DraftValidationView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.features.validate_definition_draft(request)
 }
 
 #[tauri::command]
 fn feature_definition_publish(
-    request: features::DefinitionPublishRequest,
+    mut request: features::DefinitionPublishRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<features::DefinitionView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.features.publish_definition(request)
 }
 
 #[tauri::command]
 async fn feature_definition_list(
-    request: features::FeatureUserRequest,
+    mut request: features::FeatureUserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<features::DefinitionView>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -677,9 +778,12 @@ async fn feature_definition_list(
 
 #[tauri::command]
 async fn feature_definition_get(
-    request: features::DefinitionIdRequest,
+    mut request: features::DefinitionIdRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<features::DefinitionView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -691,9 +795,12 @@ async fn feature_definition_get(
 
 #[tauri::command]
 async fn feature_definition_preview(
-    request: features::FeaturePreviewRequest,
+    mut request: features::FeaturePreviewRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<features::FeaturePreviewView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -705,15 +812,20 @@ async fn feature_definition_preview(
 
 #[tauri::command]
 fn feature_plan_freeze(
-    request: features::FeaturePlanDraftRequest,
+    mut request: features::FeaturePlanDraftRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<features::PlanFreezeView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.features.freeze_plan_for_user(request)
 }
 
 #[tauri::command]
 fn feature_fitting_start(
     payload: serde_json::Value,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<features::FittingAttemptView, String> {
     let operation_id = payload
@@ -721,8 +833,9 @@ fn feature_fitting_start(
         .and_then(serde_json::Value::as_str)
         .ok_or("feature fitting operation ID is required")?
         .to_owned();
-    let request: features::FeatureFittingStartRequest =
+    let mut request: features::FeatureFittingStartRequest =
         serde_json::from_value(payload).map_err(|error| error.to_string())?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.require_frozen_research_evidence(
         &request.user_id,
         &operation_id,
@@ -740,9 +853,12 @@ fn feature_fitting_start(
 
 #[tauri::command]
 async fn feature_fitting_list(
-    request: features::FeatureUserRequest,
+    mut request: features::FeatureUserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<features::FittingAttemptView>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -754,9 +870,12 @@ async fn feature_fitting_list(
 
 #[tauri::command]
 async fn feature_fitting_get(
-    request: features::FeatureAttemptRequest,
+    mut request: features::FeatureAttemptRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<features::FittingAttemptView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -768,17 +887,23 @@ async fn feature_fitting_get(
 
 #[tauri::command]
 fn feature_fitting_cancel(
-    request: features::FeatureAttemptRequest,
+    mut request: features::FeatureAttemptRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.features.cancel_fitting_attempt(request)
 }
 
 #[tauri::command]
 fn feature_fitting_retry(
-    request: features::FeatureAttemptRequest,
+    mut request: features::FeatureAttemptRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<features::FittingAttemptView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let (operation_id, stage) = state
         .research_attempt_binding(&request.user_id, &request.attempt_id)?
         .ok_or("research Context binding is missing for this Attempt")?;
@@ -794,9 +919,12 @@ fn feature_fitting_retry(
 
 #[tauri::command]
 async fn feature_artifact_list(
-    request: features::FeatureUserRequest,
+    mut request: features::FeatureUserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<features::ArtifactView>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -808,9 +936,12 @@ async fn feature_artifact_list(
 
 #[tauri::command]
 async fn feature_artifact_get(
-    request: features::FeatureArtifactRequest,
+    mut request: features::FeatureArtifactRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<features::ArtifactView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -822,15 +953,20 @@ async fn feature_artifact_get(
 
 #[tauri::command]
 fn feature_artifact_delete(
-    request: features::FeatureArtifactRequest,
+    mut request: features::FeatureArtifactRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.features.delete_artifact(request)
 }
 
 #[tauri::command]
 fn feature_materialization_start(
     payload: serde_json::Value,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<adaq_feature_engine::MaterializationAttempt, String> {
     let operation_id = payload
@@ -838,8 +974,9 @@ fn feature_materialization_start(
         .and_then(serde_json::Value::as_str)
         .ok_or("feature materialization operation ID is required")?
         .to_owned();
-    let request: features::FeatureMaterializationStartRequest =
+    let mut request: features::FeatureMaterializationStartRequest =
         serde_json::from_value(payload).map_err(|error| error.to_string())?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.require_frozen_research_evidence(
         &request.user_id,
         &operation_id,
@@ -857,9 +994,12 @@ fn feature_materialization_start(
 
 #[tauri::command]
 async fn feature_materialization_list(
-    request: features::FeatureUserRequest,
+    mut request: features::FeatureUserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<adaq_feature_engine::MaterializationAttempt>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -871,9 +1011,12 @@ async fn feature_materialization_list(
 
 #[tauri::command]
 async fn feature_materialization_get(
-    request: features::FeatureAttemptRequest,
+    mut request: features::FeatureAttemptRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_feature_engine::MaterializationAttempt, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -885,17 +1028,23 @@ async fn feature_materialization_get(
 
 #[tauri::command]
 fn feature_materialization_cancel(
-    request: features::FeatureAttemptRequest,
+    mut request: features::FeatureAttemptRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.features.cancel_materialization_attempt(request)
 }
 
 #[tauri::command]
 fn feature_materialization_retry(
-    request: features::FeatureAttemptRequest,
+    mut request: features::FeatureAttemptRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<adaq_feature_engine::MaterializationAttempt, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let (operation_id, stage) = state
         .research_attempt_binding(&request.user_id, &request.attempt_id)?
         .ok_or("research Context binding is missing for this Attempt")?;
@@ -911,9 +1060,12 @@ fn feature_materialization_retry(
 
 #[tauri::command]
 async fn feature_dataset_list(
-    request: features::FeatureUserRequest,
+    mut request: features::FeatureUserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<features::FeatureDatasetView>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -925,9 +1077,12 @@ async fn feature_dataset_list(
 
 #[tauri::command]
 async fn feature_dataset_get(
-    request: features::FeatureDatasetRequest,
+    mut request: features::FeatureDatasetRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<features::FeatureDatasetView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -939,9 +1094,12 @@ async fn feature_dataset_get(
 
 #[tauri::command]
 async fn feature_dataset_summary(
-    request: features::FeatureDatasetRequest,
+    mut request: features::FeatureDatasetRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<adaq_feature_engine::FeatureOutputSummary>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -953,9 +1111,12 @@ async fn feature_dataset_summary(
 
 #[tauri::command]
 async fn feature_dataset_rows(
-    request: features::FeatureDatasetRowsRequest,
+    mut request: features::FeatureDatasetRowsRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_feature_engine::FeatureDatasetPage, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .features
@@ -967,9 +1128,12 @@ async fn feature_dataset_rows(
 
 #[tauri::command]
 fn feature_dataset_delete(
-    request: features::FeatureDatasetRequest,
+    mut request: features::FeatureDatasetRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.features.delete_dataset(request)
 }
 
@@ -979,25 +1143,43 @@ fn feature_dataset_delete(
 /// frozen.
 #[tauri::command]
 fn validation_protocol_create(
-    request: validation::ValidationProtocolCreateRequest,
+    mut request: validation::ValidationProtocolCreateRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<validation::ValidationProtocol, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    request.user_id = user_id.clone();
+    request.run.user_id = user_id.clone();
+    if let Some(cross_market) = &mut request.cross_market {
+        for context in &mut cross_market.contexts {
+            if let Some(run_override) = &mut context.run_override {
+                run_override.user_id = user_id.clone();
+            }
+        }
+    }
     state.validation.create_protocol(request)
 }
 
 #[tauri::command]
 async fn validation_protocol_list(
-    request: component_library::ComponentUserRequest,
+    mut request: component_library::ComponentUserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<validation::ValidationProtocol>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.validation.list_protocols(&request.user_id)
 }
 
 #[tauri::command]
 fn validation_report_run(
-    request: validation::ValidationProtocolIdRequest,
+    mut request: validation::ValidationProtocolIdRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<validation::ValidationReport, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state
         .validation
         .run_report(&request.user_id, &request.protocol_id)
@@ -1005,18 +1187,24 @@ fn validation_report_run(
 
 #[tauri::command]
 async fn validation_report_list(
-    request: component_library::ComponentUserRequest,
+    mut request: component_library::ComponentUserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<validation::ValidationReport>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.validation.list_reports(&request.user_id)
 }
 
 #[tauri::command]
 fn validation_report_export(
-    request: validation::ValidationProtocolIdRequest,
+    mut request: validation::ValidationProtocolIdRequest,
     format: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<String, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state
         .validation
         .export_report(&request.user_id, &request.protocol_id, &format)
@@ -1060,9 +1248,12 @@ async fn snapshot_list(
 
 #[tauri::command]
 async fn snapshot_list_readable(
-    request: market_data_snapshot::ReadableSnapshotListRequest,
+    mut request: market_data_snapshot::ReadableSnapshotListRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<MarketDataSnapshot>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .snapshots
@@ -1088,9 +1279,12 @@ async fn snapshot_publish_universe(
 
 #[tauri::command]
 async fn snapshot_list_universe(
-    request: market_data_snapshot::UniverseSnapshotListRequest,
+    mut request: market_data_snapshot::UniverseSnapshotListRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<market_data_snapshot::UniverseSnapshotPage, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .snapshots
@@ -1127,10 +1321,13 @@ fn snapshot_cancel(
 /// immutable Source evidence and never cross into GUI state.
 #[tauri::command]
 async fn market_data_pipeline_publish(
-    request: market_data_pipeline::PublishRequest,
+    mut request: market_data_pipeline::PublishRequest,
     on_event: Channel<adaq_data_pipeline::PipelineProgress>,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<market_data_pipeline::PublicationView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let (task_id, user_id, acquisition, canonicalization) = request.into_parts()?;
     app.state::<Arc<LocalResearchState>>()
         .pipeline
@@ -1161,9 +1358,12 @@ fn market_data_pipeline_cancel(
 #[tauri::command]
 async fn foundation_acquisition_history(
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<market_data_pipeline::FoundationAcquisitionView>, String> {
-    validate_user(&user_id)?;
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .foundation_acquisition_history(&user_id)
@@ -1175,8 +1375,12 @@ async fn foundation_acquisition_history(
 #[tauri::command]
 async fn market_data_pipeline_list(
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<adaq_data_pipeline::PipelineDatasetSummary>, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .pipeline
@@ -1235,9 +1439,12 @@ async fn market_data_pipeline_derived(
 
 #[tauri::command]
 async fn market_data_pipeline_quality(
-    request: market_data_pipeline::UserEvidenceRequest,
+    mut request: market_data_pipeline::UserEvidenceRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<market_data_pipeline::QualityView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .pipeline
@@ -1266,9 +1473,12 @@ async fn market_data_pipeline_failures(
 
 #[tauri::command]
 async fn market_data_pipeline_publish_snapshot(
-    request: market_data_pipeline::SnapshotRequest,
+    mut request: market_data_pipeline::SnapshotRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<market_data_pipeline::SnapshotPublicationView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .publish_pipeline_snapshot_for_user_with_policy(
@@ -1340,10 +1550,12 @@ async fn market_data_pipeline_delete(
 
 #[tauri::command]
 async fn okx_instrument_master_acquire(
-    request: market_data_pipeline::OkxInstrumentMasterRequest,
+    mut request: market_data_pipeline::OkxInstrumentMasterRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::okx::InstrumentMasterSnapshot, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let operation_id = request.operation_id();
     let user_id = request.user_id;
     let state = app.state::<Arc<LocalResearchState>>().inner().clone();
@@ -1379,10 +1591,12 @@ async fn okx_instrument_master_acquire(
 
 #[tauri::command]
 fn okx_instrument_master_cancel(
-    request: market_data_pipeline::AshareAcquisitionCancelRequest,
+    mut request: market_data_pipeline::AshareAcquisitionCancelRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     state
         .okx
         .cancel_acquisition(&request.operation_id, &request.user_id)
@@ -1391,10 +1605,12 @@ fn okx_instrument_master_cancel(
 
 #[tauri::command]
 async fn okx_instrument_master_list(
-    request: market_data_pipeline::UserRequest,
+    mut request: market_data_pipeline::UserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<adaq_data_pipeline::okx::InstrumentMasterSnapshot>, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .okx
@@ -1466,10 +1682,12 @@ fn okx_backfill_cancel(
 
 #[tauri::command]
 async fn okx_acquisition_status(
-    request: market_data_pipeline::UserRequest,
+    mut request: market_data_pipeline::UserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<adaq_data_pipeline::okx::OkxAcquisitionStatus>, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .okx
@@ -1498,10 +1716,12 @@ async fn okx_stream_health(
 
 #[tauri::command]
 async fn ashare_instrument_master_acquire(
-    request: market_data_pipeline::AshareInstrumentMasterRequest,
+    mut request: market_data_pipeline::AshareInstrumentMasterRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::a_share::AshareInstrumentMasterSnapshotDto, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let operation_id = request.operation_id();
     let user_id = request.user_id.clone();
     let state = app.state::<Arc<LocalResearchState>>().inner().clone();
@@ -1540,10 +1760,12 @@ async fn ashare_instrument_master_acquire(
 
 #[tauri::command]
 async fn ashare_instrument_master_list(
-    request: market_data_pipeline::UserRequest,
+    mut request: market_data_pipeline::UserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<adaq_data_pipeline::a_share::AshareInstrumentMasterSnapshotDto>, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .ashare
@@ -1688,10 +1910,12 @@ fn ashare_backfill_cancel(
 
 #[tauri::command]
 fn ashare_acquisition_cancel(
-    request: market_data_pipeline::AshareAcquisitionCancelRequest,
+    mut request: market_data_pipeline::AshareAcquisitionCancelRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     state
         .ashare
         .cancel_acquisition(&request.user_id, &request.operation_id)
@@ -1716,10 +1940,12 @@ async fn ashare_workspace(
 
 #[tauri::command]
 async fn alpaca_instrument_master_acquire(
-    request: market_data_pipeline::UsEquityInstrumentMasterRequest,
+    mut request: market_data_pipeline::UsEquityInstrumentMasterRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::us_equity::UsEquityInstrumentMasterSnapshotDto, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let operation_id = request.operation_id();
     let user_id = request.user_id;
     let state = app.state::<Arc<LocalResearchState>>().inner().clone();
@@ -1763,10 +1989,12 @@ async fn alpaca_instrument_master_acquire(
 
 #[tauri::command]
 async fn alpaca_instrument_master_list(
-    request: market_data_pipeline::UserRequest,
+    mut request: market_data_pipeline::UserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<adaq_data_pipeline::us_equity::UsEquityInstrumentMasterSnapshotDto>, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .us_equity
@@ -1900,10 +2128,12 @@ fn alpaca_backfill_cancel(
 
 #[tauri::command]
 fn alpaca_acquisition_cancel(
-    request: market_data_pipeline::AshareAcquisitionCancelRequest,
+    mut request: market_data_pipeline::AshareAcquisitionCancelRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     state
         .us_equity
         .cancel_acquisition(&request.user_id, &request.operation_id)
@@ -2011,57 +2241,78 @@ async fn alpaca_workspace(
 /// are frozen.
 #[tauri::command]
 fn backtest_preflight(
-    request: backtest::BacktestRunRequest,
+    mut request: backtest::BacktestRunRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<backtest::BacktestPreflight, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.backtests.preflight(&request)
 }
 
 #[tauri::command]
 fn backtest_run(
-    request: backtest::BacktestRunRequest,
+    mut request: backtest::BacktestRunRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<backtest::BacktestRunView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.backtests.run(request)
 }
 
 #[tauri::command]
 async fn backtest_list(
-    request: backtest::BacktestListRequest,
+    mut request: backtest::BacktestListRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<backtest::BacktestRunPage, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.backtests.list(&request)
 }
 
 #[tauri::command]
 fn backtest_get(
-    request: backtest::BacktestRunIdRequest,
+    mut request: backtest::BacktestRunIdRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<backtest::BacktestRunView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.backtests.get(&request.user_id, &request.run_id)
 }
 
 #[tauri::command]
 fn backtest_chart_data(
-    request: backtest::BacktestChartRequest,
+    mut request: backtest::BacktestChartRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<backtest::BacktestRunView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.backtests.chart_data(&request)
 }
 
 #[tauri::command]
 fn backtest_execution_data(
-    request: backtest::BacktestExecutionRequest,
+    mut request: backtest::BacktestExecutionRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<backtest::BacktestExecutionPage, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.backtests.execution_data(&request)
 }
 
 #[tauri::command]
 fn backtest_delete(
-    request: backtest::BacktestRunIdRequest,
+    mut request: backtest::BacktestRunIdRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.backtests.delete(&request.user_id, &request.run_id)
 }
 
@@ -2764,17 +3015,23 @@ struct ConnectionSaveRequest {
 /// ConnectionError contract so the GUI can localize them.
 #[tauri::command]
 fn connection_profile_list(
-    request: ConnectionUserRequest,
+    mut request: ConnectionUserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<connections::ProfileView>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     state.connections.list(&request.user_id)
 }
 
 #[tauri::command]
 async fn connection_profile_save(
-    request: ConnectionSaveRequest,
+    mut request: ConnectionSaveRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<connections::ProfileView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
         state
@@ -2788,9 +3045,12 @@ async fn connection_profile_save(
 
 #[tauri::command]
 async fn connection_profile_test(
-    request: ConnectionProfileRequest,
+    mut request: ConnectionProfileRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<connections::ProfileView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
         state
@@ -2804,9 +3064,12 @@ async fn connection_profile_test(
 
 #[tauri::command]
 async fn connection_profile_delete(
-    request: ConnectionProfileRequest,
+    mut request: ConnectionProfileRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
         state
@@ -2835,6 +3098,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_http::init())
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::Destroyed) {
+                window
+                    .app_handle()
+                    .state::<auth::AuthState>()
+                    .clear(window.label());
+            }
+        })
         .setup(|app| {
             app.manage(WasmLoader::default());
             app.manage(OkxClient::default());
@@ -2856,6 +3127,7 @@ pub fn run() {
                 .map_err(std::io::Error::other)?;
             app.manage(local_research);
             app.manage(python_research);
+            app.manage(auth::AuthState::from_environment());
             app.manage(WatchlistDb::open(&database_path).map_err(std::io::Error::other)?);
             let handle = app.handle();
             let app_menu = SubmenuBuilder::new(handle, "adaq")
@@ -2914,6 +3186,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            auth_bind_session,
+            auth_clear_session,
             operations_observe,
             operations_health,
             operations_alerts,

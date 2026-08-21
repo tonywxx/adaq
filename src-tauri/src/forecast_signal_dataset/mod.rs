@@ -533,8 +533,12 @@ fn signal_rows_page(
 pub fn signal_dataset_import(
     user_id: String,
     archive: Vec<u8>,
+    window: tauri::WebviewWindow,
+    auth: tauri::State<'_, crate::auth::AuthState>,
     state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<serde_json::Value, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     import_signal_archive(&state, &user_id, &archive)
 }
 
@@ -542,8 +546,12 @@ pub fn signal_dataset_import(
 pub fn signal_dataset_export(
     dataset_id: String,
     user_id: String,
+    window: tauri::WebviewWindow,
+    auth: tauri::State<'_, crate::auth::AuthState>,
     state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<u8>, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     export_signal_archive(&state, &user_id, &dataset_id)
 }
 

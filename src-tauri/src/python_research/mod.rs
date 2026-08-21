@@ -74,8 +74,9 @@ use adaq_python_research::{
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, State};
+use tauri::{Manager, State, WebviewWindow};
 
+use crate::auth::AuthState;
 use crate::factor_research::{
     FactorDatasetInput, FactorDecisionSaveRequest, FactorEvaluationStartRequest,
     FactorGridFamilyRegisterRequest, FactorPolicySaveRequest, FactorTrialUpdateRequest,
@@ -4313,8 +4314,12 @@ fn download_managed_wheelhouse(
 #[tauri::command]
 pub async fn project_list(
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<Vec<WorkingCopySummary>, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     let store = state.store.clone();
     tauri::async_runtime::spawn_blocking(move || store.list(&user_id).map_err(map_error))
         .await
@@ -4323,9 +4328,12 @@ pub async fn project_list(
 
 #[tauri::command]
 pub async fn project_create(
-    request: ProjectCreateRequest,
+    mut request: ProjectCreateRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<WorkingCopySummary, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let (project_id, example_root) = state.example(&request.example)?;
     let store = state.store.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -4339,9 +4347,12 @@ pub async fn project_create(
 
 #[tauri::command]
 pub async fn project_import(
-    request: ProjectImportRequest,
+    mut request: ProjectImportRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<WorkingCopySummary, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let store = state.store.clone();
     tauri::async_runtime::spawn_blocking(move || {
         store
@@ -4354,9 +4365,12 @@ pub async fn project_import(
 
 #[tauri::command]
 pub async fn project_validate(
-    request: ProjectRequest,
+    mut request: ProjectRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ValidationReport, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let store = state.store.clone();
     tauri::async_runtime::spawn_blocking(move || {
         store
@@ -4369,9 +4383,12 @@ pub async fn project_validate(
 
 #[tauri::command]
 pub async fn project_freeze(
-    request: ProjectFreezeRequest,
+    mut request: ProjectFreezeRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ProjectRevision, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     if request.sdk_artifact_sha256 != PUBLIC_SDK_ARTIFACT_SHA256 {
         return Err("unsupported-sdk-artifact".into());
     }
@@ -4398,9 +4415,12 @@ pub async fn project_freeze(
 
 #[tauri::command]
 pub async fn project_export(
-    request: ProjectFreezeRequest,
+    mut request: ProjectFreezeRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ProjectExport, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     if request.sdk_artifact_sha256 != PUBLIC_SDK_ARTIFACT_SHA256 {
         return Err("unsupported-sdk-artifact".into());
     }
@@ -4436,8 +4456,12 @@ pub async fn project_export(
 #[tauri::command]
 pub async fn research_reset(
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<PythonResearchResetReport, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     let store = state.store.clone();
     let attempt_store = state.attempt_store.clone();
     let trust_store = state.trust_store.clone();
@@ -4493,9 +4517,12 @@ pub async fn research_reset(
 
 #[tauri::command]
 pub async fn trust_revision(
-    request: TrustRequest,
+    mut request: TrustRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<adaq_python_research::TrustDecision, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let project_store = state.store.clone();
     let trust_store = state.trust_store.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -4520,9 +4547,12 @@ pub async fn trust_revision(
 
 #[tauri::command]
 pub async fn attempt_preview(
-    request: AttemptPreviewRequest,
+    mut request: AttemptPreviewRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<AttemptPreview, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let project_store = state.store.clone();
     let environment_store = state.environment_store.clone();
     let runtime_store = state.runtime_store.clone();
@@ -4594,8 +4624,12 @@ pub async fn attempt_preview(
 #[tauri::command]
 pub async fn attempt_list(
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<Vec<ResearchAttempt>, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     let attempt_store = state.attempt_store.clone();
     tauri::async_runtime::spawn_blocking(move || attempt_store.list(&user_id).map_err(map_error))
         .await
@@ -4604,9 +4638,12 @@ pub async fn attempt_list(
 
 #[tauri::command]
 pub async fn attempt_start(
-    request: AttemptStartRequest,
+    mut request: AttemptStartRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ResearchAttempt, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let project_store = state.store.clone();
     let trust_store = state.trust_store.clone();
     let attempt_store = state.attempt_store.clone();
@@ -4666,9 +4703,12 @@ pub async fn attempt_start(
 
 #[tauri::command]
 pub async fn attempt_cancel(
-    request: AttemptRequest,
+    mut request: AttemptRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ResearchAttempt, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     transition_attempt(
         state,
         request.user_id,
@@ -4680,9 +4720,12 @@ pub async fn attempt_cancel(
 
 #[tauri::command]
 pub async fn attempt_retry(
-    request: AttemptRequest,
+    mut request: AttemptRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ResearchAttempt, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let attempt_store = state.attempt_store.clone();
     let user_id = request.user_id;
     let attempt_id = request.attempt_id;
@@ -4724,10 +4767,13 @@ async fn transition_attempt(
 
 #[tauri::command]
 pub async fn model_demo_run(
-    request: ModelRunRequest,
+    mut request: ModelRunRequest,
     state: State<'_, Arc<PythonResearchState>>,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<ModelRunView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let research_state = state.inner().clone();
     let local_state = app
         .state::<Arc<crate::local_research::LocalResearchState>>()
@@ -4925,10 +4971,13 @@ pub async fn model_demo_run(
 
 #[tauri::command]
 pub async fn python_factor_demo(
-    request: FactorRunRequest,
+    mut request: FactorRunRequest,
     state: State<'_, Arc<PythonResearchState>>,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<FactorRunView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let research_state = state.inner().clone();
     let local_state = app
         .state::<Arc<crate::local_research::LocalResearchState>>()
@@ -5294,10 +5343,13 @@ pub async fn python_factor_demo(
 
 #[tauri::command]
 pub async fn python_factor_trial_select(
-    request: FactorTrialSelectionRequest,
+    mut request: FactorTrialSelectionRequest,
     state: State<'_, Arc<PythonResearchState>>,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<PythonFactorSelectionView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let _ = state;
     let local_state = app
         .state::<Arc<crate::local_research::LocalResearchState>>()
@@ -5332,10 +5384,13 @@ pub async fn python_factor_trial_select(
 
 #[tauri::command]
 pub async fn python_factor_promote(
-    request: FactorPromotionRequest,
+    mut request: FactorPromotionRequest,
     state: State<'_, Arc<PythonResearchState>>,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<PythonFactorPromotionView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let _ = state;
     let local_state = app
         .state::<Arc<crate::local_research::LocalResearchState>>()
@@ -5388,10 +5443,13 @@ pub async fn python_factor_promote(
 
 #[tauri::command]
 pub async fn model_experiment_register(
-    request: ModelExperimentRequest,
+    mut request: ModelExperimentRequest,
     state: State<'_, Arc<PythonResearchState>>,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<ModelExperiment, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let store = state.model_lab_store.clone();
     let local_state = app
         .state::<Arc<crate::local_research::LocalResearchState>>()
@@ -5446,9 +5504,12 @@ pub async fn model_experiment_register(
 
 #[tauri::command]
 pub async fn model_trial_complete(
-    request: ModelTrialCompleteRequest,
+    mut request: ModelTrialCompleteRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ModelExperiment, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let store = state.model_lab_store.clone();
     let attempt_store = state.attempt_store.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -5510,9 +5571,12 @@ pub async fn model_trial_complete(
 
 #[tauri::command]
 pub async fn model_trial_fail(
-    request: ModelTrialFailRequest,
+    mut request: ModelTrialFailRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ModelExperiment, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let store = state.model_lab_store.clone();
     let attempt_store = state.attempt_store.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -5556,9 +5620,12 @@ pub async fn model_trial_fail(
 
 #[tauri::command]
 pub async fn model_selection_record(
-    request: ModelSelectionRequest,
+    mut request: ModelSelectionRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ParameterSelectionDecision, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let store = state.model_lab_store.clone();
     tauri::async_runtime::spawn_blocking(move || {
         store
@@ -5571,10 +5638,13 @@ pub async fn model_selection_record(
 
 #[tauri::command]
 pub async fn model_final_evaluate(
-    request: ModelFinalEvaluationRequest,
+    mut request: ModelFinalEvaluationRequest,
     state: State<'_, Arc<PythonResearchState>>,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<FinalEvaluationReport, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let store = state.model_lab_store.clone();
     let research_state = state.inner().clone();
     let local_state = app
@@ -5830,9 +5900,12 @@ pub async fn model_final_evaluate(
 
 #[tauri::command]
 pub fn runtime_profile(
-    request: RuntimeProfileRequest,
+    mut request: RuntimeProfileRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<RuntimeProfileView, String> {
+    request.user_id = Some(auth.user_id_for_window(window.label())?);
     let platform = RuntimePlatform::current().ok();
     let catalog = platform.and_then(|platform| runtime_catalog_entry(platform).ok());
     let wheelhouse = platform.and_then(|platform| wheelhouse_catalog(platform).ok());
@@ -5947,9 +6020,12 @@ pub fn runtime_profile(
 
 #[tauri::command]
 pub async fn runtime_prepare(
-    request: RuntimePrepareRequest,
+    mut request: RuntimePrepareRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<(PreparationAttempt, Option<RuntimeRecord>), String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let store = state.runtime_store.clone();
     tauri::async_runtime::spawn_blocking(move || {
         store
@@ -5967,9 +6043,12 @@ pub async fn runtime_prepare(
 
 #[tauri::command]
 pub async fn runtime_prepare_managed(
-    request: ManagedRuntimePrepareRequest,
+    mut request: ManagedRuntimePrepareRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<(PreparationAttempt, Option<RuntimeRecord>), String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let task_id = request
         .task_id
         .filter(|task_id| !task_id.trim().is_empty())
@@ -6138,9 +6217,12 @@ pub fn runtime_prepare_cancel(
 
 #[tauri::command]
 pub async fn environment_sync_managed(
-    request: ManagedEnvironmentPrepareRequest,
+    mut request: ManagedEnvironmentPrepareRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<EnvironmentSyncResult, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let project_store = state.store.clone();
     let runtime_store = state.runtime_store.clone();
     let wheelhouse_store = state.wheelhouse_store.clone();
@@ -6216,9 +6298,12 @@ pub async fn environment_prepare(
 
 #[tauri::command]
 pub async fn environment_prepare_managed(
-    request: ManagedEnvironmentPrepareRequest,
+    mut request: ManagedEnvironmentPrepareRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<EnvironmentRecord, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let project_store = state.store.clone();
     let runtime_store = state.runtime_store.clone();
     let wheelhouse_store = state.wheelhouse_store.clone();
@@ -6263,9 +6348,12 @@ pub async fn environment_prepare_managed(
 
 #[tauri::command]
 pub async fn environment_for_project(
-    request: ProjectRequest,
+    mut request: ProjectRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<Option<EnvironmentRecord>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let project_store = state.store.clone();
     let environment_store = state.environment_store.clone();
     tauri::async_runtime::spawn_blocking(move || {

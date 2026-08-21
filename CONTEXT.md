@@ -34,6 +34,10 @@ _Avoid_: User role, UI visibility, Desktop parity
 The versioned, transport-independent set of bounded commands, queries, projections, and events an ADAQ Host exposes to Client Surfaces after applying Authenticated User Context and a Surface Capability Profile.
 _Avoid_: Tauri command list, UI API, database API, Provider SDK
 
+**Host Authentication Seam**:
+The narrow Host capability through which an Embedded Interactive Surface binds or clears its current Supabase session; the Host verifies the session and derives the User before any User-scoped Host Capability Contract is used.
+_Avoid_: Client auth state, User ID payload, token vault, per-command token validation
+
 **Authenticated User Context**:
 The Host-derived binding of one verified identity and session to an ADAQ User and its permitted capabilities. A request payload may not select or override this identity.
 _Avoid_: Client-supplied user ID, User Profile, Venue account

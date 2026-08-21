@@ -105,12 +105,20 @@ pub enum LocalDataResetKind {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[expect(
+    dead_code,
+    reason = "User identity is retained for IPC compatibility and ignored at the Host boundary"
+)]
 pub struct LocalDataRequest {
     pub user_id: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[expect(
+    dead_code,
+    reason = "User identity is retained for IPC compatibility and ignored at the Host boundary"
+)]
 pub struct LocalDataResetRequest {
     pub user_id: String,
     pub kind: LocalDataResetKind,
@@ -1459,19 +1467,27 @@ fn compatible_signal_candidates(
 #[tauri::command]
 pub fn local_data_summary(
     request: LocalDataRequest,
+    window: tauri::WebviewWindow,
+    auth: tauri::State<'_, crate::auth::AuthState>,
     state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<LocalDataSummary, String> {
-    state.local_data_summary(&request.user_id)
+    let _ = request;
+    let user_id = auth.user_id_for_window(window.label())?;
+    state.local_data_summary(&user_id)
 }
 
 #[tauri::command]
 pub async fn local_data_reset(
     request: LocalDataResetRequest,
+    window: tauri::WebviewWindow,
+    auth: tauri::State<'_, crate::auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    let kind = request.kind;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
-        state.reset_local_data(&request.user_id, request.kind)
+        state.reset_local_data(&user_id, kind)
     })
     .await
     .map_err(string)?
