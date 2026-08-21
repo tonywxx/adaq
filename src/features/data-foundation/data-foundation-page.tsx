@@ -57,6 +57,38 @@ type UniverseOption = {
 	contentSha256: string;
 };
 
+type QualityView = {
+	reportId: string;
+	state: "passed" | "degraded" | "rejected";
+	canonicalId?: string;
+	duplicateCount: number;
+	conflictCount: number;
+	quarantineCount: number;
+	gapCount: number;
+	warningCount: number;
+	reasons: Array<{ code: string; message: string }>;
+};
+
+type InstrumentMasterSnapshot = {
+	snapshotId: string;
+	effectiveAtMs: number;
+	provider: string;
+	evidenceState: string;
+	instruments: unknown[];
+	limitations: string[];
+};
+
+type FoundationAcquisitionView = {
+	operationId: string;
+	market: string;
+	venue: string;
+	state: "running" | "completed" | "cancelled" | "failed";
+	revision?: number;
+	error?: string;
+	startedAtMs: number;
+	finishedAtMs?: number;
+};
+
 type OkxAcquisitionStatus = {
 	instrument: { venue: { id: string }; code: string };
 	interval: string;
@@ -96,6 +128,7 @@ const markets: FoundationMarket[] = [
 		descriptionKey: "markets.crypto.description",
 		workspace: "/markets/crypto",
 		acquireCommand: "okx_instrument_master_acquire",
+		cancelCommand: "okx_instrument_master_cancel",
 	},
 	{
 		id: "a-shares",
@@ -125,6 +158,8 @@ export function DataFoundationPage() {
 	const [contextVenue, setContextVenue] = useState("okx");
 	const [snapshotId, setSnapshotId] = useState("");
 	const [universeId, setUniverseId] = useState("");
+	const [selectedSourceId, setSelectedSourceId] = useState<string>();
+	const [publishingId, setPublishingId] = useState<string>();
 	const [rangeStart, setRangeStart] = useState(() =>
 		new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10),
 	);
@@ -170,6 +205,33 @@ export function DataFoundationPage() {
 		enabled: Boolean(userId),
 		staleTime: 30_000,
 	});
+	const aShareHistoryQuery = useQuery({
+		queryKey: ["data-foundation-a-share-history", userId],
+		queryFn: () =>
+			invoke<InstrumentMasterSnapshot[]>("ashare_instrument_master_list", {
+				request: { userId },
+			}),
+		enabled: Boolean(userId),
+		staleTime: 30_000,
+	});
+	const usEquityHistoryQuery = useQuery({
+		queryKey: ["data-foundation-us-equity-history", userId],
+		queryFn: () =>
+			invoke<InstrumentMasterSnapshot[]>("alpaca_instrument_master_list", {
+				request: { userId },
+			}),
+		enabled: Boolean(userId),
+		staleTime: 30_000,
+	});
+	const foundationHistoryQuery = useQuery({
+		queryKey: ["data-foundation-operation-history", userId],
+		queryFn: () =>
+			invoke<FoundationAcquisitionView[]>("foundation_acquisition_history", {
+				userId,
+			}),
+		enabled: Boolean(userId),
+		staleTime: 10_000,
+	});
 	const acquisitionQuery = useQuery({
 		queryKey: ["data-foundation-acquisitions", userId],
 		queryFn: () =>
@@ -179,6 +241,37 @@ export function DataFoundationPage() {
 		enabled: Boolean(userId),
 		staleTime: 30_000,
 	});
+	const qualityQuery = useQuery({
+		queryKey: ["data-foundation-quality", userId, selectedSourceId],
+		queryFn: () => {
+			if (!selectedSourceId) throw new Error("Source evidence is not selected");
+			return invoke<QualityView>("market_data_pipeline_quality", {
+				request: { userId, evidenceId: selectedSourceId },
+			});
+		},
+		enabled: Boolean(userId && selectedSourceId),
+		staleTime: 30_000,
+	});
+
+	const publish = async (dataset: PipelineDatasetSummary) => {
+		if (!userId || !dataset.canonicalId) return;
+		setError(undefined);
+		setPublishingId(dataset.canonicalId);
+		try {
+			await invoke("market_data_pipeline_publish_snapshot", {
+				request: {
+					userId,
+					canonicalId: dataset.canonicalId,
+					allowDegraded: false,
+				},
+			});
+			await snapshotsQuery.refetch();
+		} catch (cause) {
+			setError(getErrorMessage(cause));
+		} finally {
+			setPublishingId(undefined);
+		}
+	};
 
 	const establishContext = async () => {
 		if (!userId || !snapshotId) return;
@@ -229,7 +322,11 @@ export function DataFoundationPage() {
 			await invoke(market.acquireCommand, {
 				request: { userId, operationId },
 			});
-			await Promise.all([pipelineQuery.refetch(), acquisitionQuery.refetch()]);
+			await Promise.all([
+				pipelineQuery.refetch(),
+				acquisitionQuery.refetch(),
+				foundationHistoryQuery.refetch(),
+			]);
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 		} finally {
@@ -243,9 +340,18 @@ export function DataFoundationPage() {
 			await invoke(market.cancelCommand, {
 				request: { userId, operationId: activeOperation },
 			});
+			await Promise.all([
+				acquisitionQuery.refetch(),
+				foundationHistoryQuery.refetch(),
+			]);
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 		}
+	};
+
+	const retry = async (operation: OkxAcquisitionStatus) => {
+		if (operation.instrument.venue.id !== "okx") return;
+		await acquire(markets[0]);
 	};
 
 	return (
@@ -292,6 +398,80 @@ export function DataFoundationPage() {
 						}
 						loading={pipelineQuery.isPending}
 					/>
+				</CardContent>
+			</Card>
+			<Card>
+				<CardHeader>
+					<CardTitle>{t("dataFoundation.publicationTitle")}</CardTitle>
+					<CardDescription>
+						{t("dataFoundation.publicationDescription")}
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="grid gap-3">
+					{pipelineQuery.data?.length ? (
+						pipelineQuery.data.map((dataset) => (
+							<div key={dataset.sourceId} className="grid gap-2 rounded-md border p-3">
+								<button
+									type="button"
+									className={`grid gap-1 text-left text-sm ${selectedSourceId === dataset.sourceId ? "text-primary" : ""}`}
+									onClick={() => setSelectedSourceId(dataset.sourceId)}
+								>
+									<span className="font-medium">{dataset.sourceId}</span>
+									<span className="text-muted-foreground">
+										{t("dataFoundation.publicationCounts", {
+											source: dataset.sourceRecordCount,
+											canonical: dataset.canonicalRecordCount,
+											quarantined: dataset.quarantinedRecordCount,
+											gaps: dataset.gapCount,
+										})}
+									</span>
+								</button>
+								<button
+									type="button"
+									className="justify-self-start rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+									disabled={!dataset.canonicalId || Boolean(publishingId)}
+									onClick={() => void publish(dataset)}
+								>
+									{publishingId === dataset.canonicalId
+										? t("dataFoundation.publishing")
+										: t("dataFoundation.publishSnapshot")}
+								</button>
+							</div>
+						))
+					) : (
+						<p className="text-sm text-muted-foreground">
+							{t("dataFoundation.emptyPublication")}
+						</p>
+					)}
+					{qualityQuery.data ? (
+						<div className="rounded-md border p-3 text-sm">
+							<div className="flex flex-wrap items-center justify-between gap-2">
+								<strong>{t("dataFoundation.qualityDetail")}</strong>
+								<Badge
+									variant={qualityQuery.data.state === "passed" ? "default" : "outline"}
+								>
+									{t(`dataFoundation.states.${qualityQuery.data.state}`)}
+								</Badge>
+							</div>
+							<p className="mt-2 text-muted-foreground">
+								{t("dataFoundation.qualityCounts", qualityQuery.data)}
+							</p>
+							{qualityQuery.data.state !== "passed" ? (
+								<div className="mt-2 text-amber-700 dark:text-amber-300" role="status">
+									<p>{t("dataFoundation.downstreamBlocked")}</p>
+									{qualityQuery.data.reasons.length ? (
+										<ul className="mt-1 list-disc pl-5">
+											{qualityQuery.data.reasons.map((reason) => (
+												<li key={reason.code}>
+													{reason.code}: {reason.message}
+												</li>
+											))}
+										</ul>
+									) : null}
+								</div>
+							) : null}
+						</div>
+					) : null}
 				</CardContent>
 			</Card>
 			<Card>
@@ -427,6 +607,14 @@ export function DataFoundationPage() {
 					</CardDescription>
 				</CardHeader>
 				<CardContent>
+					<AcquisitionOperationHistory
+						loading={foundationHistoryQuery.isPending}
+						operations={foundationHistoryQuery.data ?? []}
+						onRetry={(operation) => {
+							const market = markets.find((item) => item.id === operation.market);
+							if (market) void acquire(market);
+						}}
+					/>
 					{acquisitionQuery.isPending ? (
 						<p className="text-sm text-muted-foreground" role="status">
 							{t("dataFoundation.loadingHistory")}
@@ -442,14 +630,33 @@ export function DataFoundationPage() {
 										<strong>{operation.instrument.code}</strong>
 										<span className="ml-2 text-muted-foreground">
 											{operation.interval} ·{" "}
-											{t("dataFoundation.pages", { count: operation.pages })}
+											{t("dataFoundation.pages", { count: operation.pages })} ·{" "}
+											{t("dataFoundation.revision", {
+												revision: operation.revision ?? "—",
+											})}{" "}
+											· {t("dataFoundation.retries", { count: operation.retryCount })}
 										</span>
+										{operation.lastError ? (
+											<p className="mt-1 text-destructive">{operation.lastError}</p>
+										) : null}
 									</div>
-									<Badge
-										variant={operation.state === "completed" ? "default" : "outline"}
-									>
-										{t(`dataFoundation.states.${operation.state}`)}
-									</Badge>
+									<div className="flex items-center gap-2">
+										<Badge
+											variant={operation.state === "completed" ? "default" : "outline"}
+										>
+											{t(`dataFoundation.states.${operation.state}`)}
+										</Badge>
+										{operation.state === "failed" || operation.state === "cancelled" ? (
+											<button
+												type="button"
+												className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+												onClick={() => void retry(operation)}
+												disabled={Boolean(activeOperation)}
+											>
+												{t("dataFoundation.retryAcquisition")}
+											</button>
+										) : null}
+									</div>
 								</div>
 							))}
 						</div>
@@ -458,6 +665,16 @@ export function DataFoundationPage() {
 							{t("dataFoundation.emptyHistory")}
 						</p>
 					)}
+					<SnapshotHistory
+						title={t("dataFoundation.aShareHistory")}
+						loading={aShareHistoryQuery.isPending}
+						snapshots={aShareHistoryQuery.data ?? []}
+					/>
+					<SnapshotHistory
+						title={t("dataFoundation.usEquityHistory")}
+						loading={usEquityHistoryQuery.isPending}
+						snapshots={usEquityHistoryQuery.data ?? []}
+					/>
 				</CardContent>
 			</Card>
 			<div className="grid gap-4 lg:grid-cols-3">
@@ -514,6 +731,104 @@ export function DataFoundationPage() {
 					{t("dataFoundation.qualityWarning")}
 				</p>
 			) : null}
+		</div>
+	);
+}
+
+function AcquisitionOperationHistory({
+	loading,
+	operations,
+	onRetry,
+}: {
+	loading: boolean;
+	operations: FoundationAcquisitionView[];
+	onRetry: (operation: FoundationAcquisitionView) => void;
+}) {
+	const { t } = useTranslation();
+	return (
+		<div className="mb-4 grid gap-2 border-b pb-4">
+			<strong className="text-sm">{t("dataFoundation.operationLedger")}</strong>
+			{loading ? (
+				<p className="text-sm text-muted-foreground" role="status">
+					{t("dataFoundation.loadingHistory")}
+				</p>
+			) : operations.length ? (
+				operations.slice(0, 12).map((operation) => (
+					<div
+						key={operation.operationId}
+						className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm"
+					>
+						<div>
+							<strong>{operation.market}</strong>
+							<span className="ml-2 text-muted-foreground">{operation.venue}</span>
+							<p className="text-xs text-muted-foreground">{operation.operationId}</p>
+							{operation.error ? (
+								<p className="text-destructive">{operation.error}</p>
+							) : null}
+						</div>
+						<div className="flex items-center gap-2">
+							<Badge variant={operation.state === "completed" ? "default" : "outline"}>
+								{t(`dataFoundation.states.${operation.state}`)}
+							</Badge>
+							{operation.state === "failed" || operation.state === "cancelled" ? (
+								<button
+									type="button"
+									className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+									onClick={() => onRetry(operation)}
+								>
+									{t("dataFoundation.retryAcquisition")}
+								</button>
+							) : null}
+						</div>
+					</div>
+				))
+			) : (
+				<p className="text-sm text-muted-foreground">
+					{t("dataFoundation.emptyHistory")}
+				</p>
+			)}
+		</div>
+	);
+}
+
+function SnapshotHistory({
+	title,
+	loading,
+	snapshots,
+}: {
+	title: string;
+	loading: boolean;
+	snapshots: InstrumentMasterSnapshot[];
+}) {
+	const { t } = useTranslation();
+	return (
+		<div className="mt-4 grid gap-2 border-t pt-4">
+			<strong className="text-sm">{title}</strong>
+			{loading ? (
+				<p className="text-sm text-muted-foreground" role="status">
+					{t("dataFoundation.loadingHistory")}
+				</p>
+			) : snapshots.length ? (
+				snapshots.slice(0, 8).map((snapshot) => (
+					<div
+						key={snapshot.snapshotId}
+						className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm"
+					>
+						<div>
+							<strong>{snapshot.snapshotId}</strong>
+							<p className="text-muted-foreground">
+								{snapshot.provider} · {snapshot.instruments.length}{" "}
+								{t("dataFoundation.instruments")}
+							</p>
+						</div>
+						<Badge variant="default">{snapshot.evidenceState}</Badge>
+					</div>
+				))
+			) : (
+				<p className="text-sm text-muted-foreground">
+					{t("dataFoundation.emptyHistory")}
+				</p>
+			)}
 		</div>
 	);
 }

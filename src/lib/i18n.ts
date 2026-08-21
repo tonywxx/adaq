@@ -169,6 +169,19 @@ const english = {
 			sourceEvidence: "Source datasets",
 			canonicalEvidence: "Canonical datasets",
 			degradedOrRejected: "Degraded or rejected",
+			publicationTitle: "Publication evidence",
+			publicationDescription:
+				"Inspect each published dataset before selecting it for research.",
+			emptyPublication: "No published dataset is available.",
+			publishSnapshot: "Publish Snapshot",
+			publishing: "Publishing…",
+			publicationCounts:
+				"{{source}} source · {{canonical}} canonical · {{quarantined}} quarantined · {{gaps}} gaps",
+			qualityDetail: "Quality detail",
+			qualityCounts:
+				"{{duplicateCount}} duplicates · {{conflictCount}} conflicts · {{quarantineCount}} quarantined · {{gapCount}} gaps · {{warningCount}} warnings",
+			downstreamBlocked:
+				"Downstream research is blocked until this evidence is reviewed or replaced.",
 			running: "Acquiring",
 			readyToAcquire: "Ready",
 			startAcquisition: "Start acquisition",
@@ -193,12 +206,20 @@ const english = {
 			selectUniverse: "Select a Point-in-Time Universe",
 			contextEmpty: "No compatible Research Evidence Context is selected.",
 			operationHistoryTitle: "Acquisition history",
+			operationLedger: "Foundation operation ledger",
+			aShareHistory: "China A-share evidence history",
+			usEquityHistory: "U.S. equity evidence history",
+			instruments: "instruments",
 			operationHistoryDescription:
 				"Recent OKX acquisition checkpoints and retained states.",
+			revision: "revision {{revision}}",
+			retries: "{{count}} retries",
+			retryAcquisition: "Retry",
 			loadingHistory: "Loading acquisition history…",
 			emptyHistory: "No acquisition checkpoints are available.",
 			pages: "{{count}} pages",
 			states: {
+				passed: "Passed",
 				pending: "Pending",
 				running: "Running",
 				completed: "Completed",
@@ -2300,6 +2321,17 @@ const simplifiedChinese = {
 			sourceEvidence: "Source Dataset",
 			canonicalEvidence: "Canonical Dataset",
 			degradedOrRejected: "Degraded 或 Rejected",
+			publicationTitle: "Publication 证据",
+			publicationDescription: "选择研究前检查每个已发布 Dataset。",
+			emptyPublication: "暂无已发布 Dataset。",
+			publishSnapshot: "发布 Snapshot",
+			publishing: "发布中…",
+			publicationCounts:
+				"{{source}} Source · {{canonical}} Canonical · {{quarantined}} Quarantined · {{gaps}} 个缺口",
+			qualityDetail: "质量详情",
+			qualityCounts:
+				"{{duplicateCount}} 重复 · {{conflictCount}} 冲突 · {{quarantineCount}} 隔离 · {{gapCount}} 个缺口 · {{warningCount}} 个警告",
+			downstreamBlocked: "检查或替换该证据后才能继续下游研究。",
 			running: "获取中",
 			readyToAcquire: "准备获取",
 			startAcquisition: "开始获取",
@@ -2324,11 +2356,19 @@ const simplifiedChinese = {
 			selectUniverse: "选择 Point-in-Time Universe",
 			contextEmpty: "尚未选择兼容的 Research Evidence Context。",
 			operationHistoryTitle: "获取历史",
+			operationLedger: "基础数据操作台账",
+			aShareHistory: "中国 A 股证据历史",
+			usEquityHistory: "美股证据历史",
+			instruments: "个交易品种",
 			operationHistoryDescription: "最近的 OKX 获取检查点与保留状态。",
+			revision: "Revision {{revision}}",
+			retries: "{{count}} 次重试",
+			retryAcquisition: "重试获取",
 			loadingHistory: "正在加载获取历史…",
 			emptyHistory: "暂无获取检查点。",
 			pages: "{{count}} 页",
 			states: {
+				passed: "通过",
 				pending: "待处理",
 				running: "运行中",
 				completed: "已完成",
@@ -3093,8 +3133,15 @@ const simplifiedChinese = {
 } as const;
 
 export const resources = {
-	"en-US": { translation: english },
-	"zh-CN": { translation: simplifiedChinese },
+	"en-US": {
+		translation: { ...english, dataFoundation: english.markets.dataFoundation },
+	},
+	"zh-CN": {
+		translation: {
+			...simplifiedChinese,
+			dataFoundation: simplifiedChinese.markets.dataFoundation,
+		},
+	},
 } as const;
 
 function localStorageOrNull() {

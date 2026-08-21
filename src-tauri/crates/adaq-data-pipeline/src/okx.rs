@@ -227,6 +227,7 @@ pub struct OkxSpotDataPath {
     client: OkxClient,
     trade_retention: OkxTradeRetentionPolicy,
     active_backfills: Arc<Mutex<HashMap<String, (String, CancellationToken)>>>,
+    active_acquisitions: Arc<Mutex<HashMap<String, (String, CancellationToken)>>>,
 }
 
 impl OkxSpotDataPath {
@@ -251,6 +252,7 @@ impl OkxSpotDataPath {
             client,
             trade_retention,
             active_backfills: Arc::new(Mutex::new(HashMap::new())),
+            active_acquisitions: Arc::new(Mutex::new(HashMap::new())),
         };
         path.initialize_schema()?;
         Ok(path)
@@ -258,6 +260,59 @@ impl OkxSpotDataPath {
 
     pub fn client(&self) -> &OkxClient {
         &self.client
+    }
+
+    pub fn begin_acquisition(
+        &self,
+        operation_id: &str,
+        user_id: &str,
+    ) -> Result<CancellationToken, PipelineError> {
+        validate_user(user_id)?;
+        if operation_id.trim().is_empty() {
+            return Err(PipelineError::InvalidRequest(
+                "OKX acquisition operation ID must be non-empty".into(),
+            ));
+        }
+        let token = CancellationToken::new();
+        let mut active = self
+            .active_acquisitions
+            .lock()
+            .map_err(|_| PipelineError::Storage("OKX acquisition state lock failed".into()))?;
+        if active.contains_key(operation_id) {
+            return Err(PipelineError::InvalidRequest(
+                "OKX acquisition operation is already in progress".into(),
+            ));
+        }
+        active.insert(operation_id.into(), (user_id.into(), token.clone()));
+        Ok(token)
+    }
+
+    pub fn cancel_acquisition(
+        &self,
+        operation_id: &str,
+        user_id: &str,
+    ) -> Result<(), PipelineError> {
+        validate_user(user_id)?;
+        if let Some((owner, token)) = self
+            .active_acquisitions
+            .lock()
+            .map_err(|_| PipelineError::Storage("OKX acquisition state lock failed".into()))?
+            .get(operation_id)
+        {
+            if owner != user_id {
+                return Err(PipelineError::NotFound("OKX acquisition operation".into()));
+            }
+            token.cancel();
+        }
+        Ok(())
+    }
+
+    pub fn finish_acquisition(&self, operation_id: &str) -> Result<(), PipelineError> {
+        self.active_acquisitions
+            .lock()
+            .map_err(|_| PipelineError::Storage("OKX acquisition state lock failed".into()))?
+            .remove(operation_id);
+        Ok(())
     }
 
     pub fn begin_backfill(
@@ -313,12 +368,26 @@ impl OkxSpotDataPath {
         &self,
         user_id: &str,
     ) -> Result<InstrumentMasterSnapshot, PipelineError> {
+        self.acquire_instrument_master_with_cancel(user_id, &CancellationToken::new())
+            .await
+    }
+
+    pub async fn acquire_instrument_master_with_cancel(
+        &self,
+        user_id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<InstrumentMasterSnapshot, PipelineError> {
         validate_user(user_id)?;
         let acquisition = self
             .client
             .list_spot_instrument_master()
             .await
             .map_err(connector_error)?;
+        if cancellation.is_cancelled() {
+            return Err(PipelineError::Cancelled {
+                source_id: "okx-instrument-master".into(),
+            });
+        }
         self.record_instrument_master(user_id, acquisition)
     }
 

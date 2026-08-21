@@ -132,6 +132,16 @@ test("keeps resource keys and interpolation variables in parity", () => {
 	);
 });
 
+test("localizes Data Foundation labels and states", async () => {
+	expect(i18n.t("dataFoundation.title")).toBe("Data Foundation");
+	expect(i18n.t("dataFoundation.states.passed")).toBe("Passed");
+
+	await changeInterfaceLocale("zh-CN");
+
+	expect(i18n.t("dataFoundation.title")).toBe("数据基础");
+	expect(i18n.t("dataFoundation.states.passed")).toBe("通过");
+});
+
 test("falls back to English for a missing active-locale key", async () => {
 	i18n.addResource("en-US", "translation", "test.fallback", "English fallback");
 	await changeInterfaceLocale("zh-CN");

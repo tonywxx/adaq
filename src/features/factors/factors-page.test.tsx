@@ -3,6 +3,7 @@
 import "@/lib/i18n";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { clearSessionCache } from "@/lib/session-cache";
 import { i18n } from "@/lib/i18n";
 import { useMarketSessionStore } from "@/lib/market-session";
@@ -25,6 +26,28 @@ jest.mock("@/lib/market-session", () => {
 	);
 	return { useMarketSessionStore };
 });
+
+jest.mock("@tauri-apps/api/core", () => ({
+	invoke: jest.fn().mockResolvedValue(null),
+}));
+jest.mock("@tauri-apps/plugin-fs", () => ({
+	readFile: jest.fn(),
+	writeFile: jest.fn(),
+}));
+jest.mock("@tauri-apps/plugin-dialog", () => ({
+	open: jest.fn(),
+	save: jest.fn(),
+}));
+jest.mock("@tauri-apps/plugin-opener", () => ({ openPath: jest.fn() }));
+jest.mock("@/features/python-research/python-projects-panel", () => ({
+	PythonProjectsPanel: () => null,
+}));
+jest.mock("@/features/python-research/python-factor-lab-panel", () => ({
+	PythonFactorLabPanel: () => null,
+}));
+jest.mock("@/features/python-research/python-tutorial-panel", () => ({
+	PythonTutorialPanel: () => null,
+}));
 
 jest.mock("@tanstack/react-router", () => ({
 	Link: ({
@@ -86,7 +109,10 @@ function mount(adapter: FactorAdapter) {
 	const container = document.createElement("div");
 	document.body.append(container);
 	const root = createRoot(container);
-	return { container, root, adapter };
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	return { container, root, adapter, queryClient };
 }
 
 async function unmount(root: Root, container: HTMLDivElement) {
@@ -130,7 +156,11 @@ test("renders the Factor Lab shell and surfaces family loading errors", async ()
 	const mounted = mount(makeAdapter({ listFamilies }));
 
 	await act(async () => {
-		mounted.root.render(<FactorsPage adapter={mounted.adapter} />);
+		mounted.root.render(
+			<QueryClientProvider client={mounted.queryClient}>
+				<FactorsPage adapter={mounted.adapter} />
+			</QueryClientProvider>,
+		);
 	});
 	await settle();
 
@@ -167,7 +197,11 @@ test("shows cached families before replacing them with a refresh", async () => {
 	);
 
 	await act(async () => {
-		mounted.root.render(<FactorsPage adapter={mounted.adapter} />);
+		mounted.root.render(
+			<QueryClientProvider client={mounted.queryClient}>
+				<FactorsPage adapter={mounted.adapter} />
+			</QueryClientProvider>,
+		);
 	});
 	await settle();
 

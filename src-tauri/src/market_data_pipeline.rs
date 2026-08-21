@@ -113,6 +113,19 @@ impl SourceRecordRequest {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FoundationAcquisitionView {
+    pub operation_id: String,
+    pub market: String,
+    pub venue: String,
+    pub state: String,
+    pub revision: Option<u64>,
+    pub error: Option<String>,
+    pub started_at_ms: i64,
+    pub finished_at_ms: Option<i64>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UserEvidenceRequest {
@@ -124,6 +137,24 @@ pub(crate) struct UserEvidenceRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UserRequest {
     pub user_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OkxInstrumentMasterRequest {
+    pub user_id: String,
+    #[serde(default)]
+    pub operation_id: String,
+}
+
+impl OkxInstrumentMasterRequest {
+    pub(crate) fn operation_id(&self) -> String {
+        if self.operation_id.trim().is_empty() {
+            "instrument-master".into()
+        } else {
+            self.operation_id.clone()
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

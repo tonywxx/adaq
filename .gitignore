@@ -54,3 +54,4 @@ graphify-out/
 __pycache__/
 *.py[cod]
 .venv/
+.pi/*

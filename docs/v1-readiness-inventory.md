@@ -22,11 +22,11 @@ Real Trading, a public Unified Data/Trading API, margin and short-selling A-shar
 
 | Milestone | Scope | Current assessment | Evidence / blocker |
 |---|---|---|---|
-| M9 | Three-market data foundation, localization, secure connections, Markets workspaces | Core workflow entry and OKX checkpoint history implemented; readiness unverified | `docs/v1-roadmap.md` and M9 acceptance docs cover the engine boundary. `/data-foundation` now exposes shared acquisition/readiness and recent OKX checkpoints, while full publication, cancellation/retry, and evidence acceptance remain to verify. |
+| M9 | Three-market data foundation, localization, secure connections, Markets workspaces | Core remediation implemented; product-run readiness pending | `docs/m13-entry-gate-acceptance.md` records passed automated gates. Desktop GUI/provider runs still need operation-level evidence for the three markets. |
 | M10 | Host Feature Engine, Plans, transformations, immutable Feature Datasets | Accepted foundation | Existing Feature Engine contracts/tests and `docs/m10-manual-acceptance.md`. The next gap is Context selection and handoff, not a bottom-up Feature Engine rewrite. |
 | M11 | Factor Lab, evaluation, Families/Trials, promotion decisions | Accepted foundation, with a product-surface remediation | Existing Factor evidence and `src/m11-manual-acceptance.test.ts`. Factor setup still exposes copied IDs/hashes/protocol data across boundaries. |
 | M12 | Python SDK, managed runtime, Qlib Ridge Model Lab, tutorial | Accepted foundation | Roadmap states all seven M12 child issues closed. `docs/m12-python-research-manual-acceptance.md` explicitly defers Strategy to M13 and Component generation to M14. |
-| M13 | Strategy Projects, Single-Instrument/Portfolio Backtest, Strategy selection and final evaluation | Core implemented; readiness unverified | Recent `09b0d03` adds portfolio backtest core. Full product gate still requires the Data Foundation and Evidence Context gates, Python Strategy tutorial, deterministic Top-N Portfolio Target, and complete acceptance evidence. |
+| M13 | Strategy Projects, Single-Instrument/Portfolio Backtest, Strategy selection and final evaluation | Entry gates automated; product acceptance pending | `docs/m13-entry-gate-acceptance.md` records the current automated evidence. Product acceptance still requires the desktop GUI/provider matrix and the existing Strategy-specific acceptance evidence. |
 | M14 | Component generation, Build, Conformance, Equivalence, `.adaq` packaging/import | Core implemented; readiness unverified | Recent `54ebf6a` and `1d473b4` add qualification/conformance work. Full package trust, all allowed parameter combinations, equivalence, failure evidence, and GUI import acceptance remain to verify. |
 | M15 | Secure Paper Accounts, provider adapters, Risk/OMS, orders/Fills, A-share simulator | Core implemented; readiness unverified | Recent `9272968` adds Paper Trading ledger core. Provider connection tests, reconciliation, uncertain outcomes, credentials, GUI journey, and three-market Paper acceptance remain. |
 | M16 | Supervised Bot Runtime, workers, decision clocks, deadlines, recovery | Core contracts implemented; readiness unverified | Recent `e64c8c0` adds fail-closed Bot Runtime contracts. A complete running worker journey, crash/restart/reconciliation evidence, and Paper deployment qualification remain. |
@@ -56,7 +56,7 @@ Relevant evidence:
 
 ### 2. Research Evidence Context handoff
 
-The Host now exposes establish/get commands, persists contexts in the local metadata store, and the Data Foundation page lets the User select a published Snapshot, Point-in-Time Universe, date range, Market, and Venue before establishing a Features Context. A shared preflight banner now projects Context state in Features, Factors, and Models. Host stage-specific freeze is available from each banner. Model dataset generation and forecast evaluation now freeze the Models Context before invoking their operation. Feature fitting/materialization and Factor materialization/evaluation now perform the same stage freeze before invocation; operation payloads still need to persist the returned frozen evidence explicitly.
+The Host exposes establish/get commands, persists contexts in the local metadata store, and the Data Foundation page lets the User select a published Snapshot, Point-in-Time Universe, date range, Market, and Venue before establishing a Features Context. A shared preflight banner projects Context state in Features, Factors, and Models. Host stage-specific freeze is available from each banner. Model dataset generation and forecast evaluation freeze the Models Context before invoking their operation. Feature fitting/materialization and Factor materialization/evaluation perform the same stage freeze before invocation. Automated handoff and typed rejection coverage is recorded in `docs/m13-entry-gate-acceptance.md`; desktop GUI evidence remains pending.
 
 Required behavior:
 
@@ -88,10 +88,10 @@ Relevant evidence:
 
 | Journey | Status | Next honest action |
 |---|---|---|
-| Acquire and inspect OKX, A-share, and U.S. equity evidence | Product remediation required | Build and accept Data Foundation Workspace |
-| Define, materialize, and inspect Features | Accepted at M10 boundary | Add Context selection/preflight |
-| Research and promote Factors | Accepted at M11 boundary | Replace copied handoff with Context |
-| Train and evaluate Qlib-first Models | Accepted at M12 boundary | Consume Context and preserve lineage |
+| Acquire and inspect OKX, A-share, and U.S. equity evidence | Automated gate passed; product run pending | Execute and record the three-market Data Foundation matrix |
+| Define, materialize, and inspect Features | Context preflight implemented; product run pending | Execute and record the Features Context freeze |
+| Research and promote Factors | Context preflight implemented; product run pending | Execute and record the Factors Context freeze |
+| Train and evaluate Qlib-first Models | Context preflight implemented; product run pending | Execute and record the Models Context freeze |
 | Build and backtest Strategies | Core implemented; blocked by entry gates | Complete Context gates, then M13 product acceptance |
 | Generate/import qualified Components | Core implemented; downstream | Complete M13 and qualification evidence |
 | Deploy Paper Accounts/Bots | Core implemented; downstream | Complete M14, then three Paper journeys |

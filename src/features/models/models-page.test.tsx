@@ -2,11 +2,24 @@
 
 import "@/lib/i18n";
 import { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import type { LibraryComponent } from "@/features/components/component-library";
 import { useMarketSessionStore } from "@/lib/market-session";
 import type { ModelsAdapter } from "./models-adapter";
 import { ModelsPage } from "./models-page";
+
+jest.mock("@tauri-apps/api/core", () => ({
+	invoke: jest.fn().mockResolvedValue(null),
+}));
+jest.mock("@tauri-apps/plugin-fs", () => ({
+	open: jest.fn(),
+	readFile: jest.fn(),
+}));
+jest.mock("@tauri-apps/plugin-dialog", () => ({
+	open: jest.fn(),
+	save: jest.fn(),
+}));
 
 jest.mock("@/lib/market-session", () => {
 	const state = { userId: null as string | null, ready: false };
@@ -22,6 +35,16 @@ jest.mock("@/lib/market-session", () => {
 	);
 	return { useMarketSessionStore };
 });
+
+jest.mock("@tanstack/react-router", () => ({
+	Link: ({
+		children,
+		...props
+	}: {
+		children?: unknown;
+		[key: string]: unknown;
+	}) => require("react").createElement("a", props, children),
+}));
 
 jest.mock("@/lib/navigation-history", () => ({
 	useHistoryTab: (_scope: string, fallback: string) => [fallback, jest.fn()],
@@ -116,8 +139,17 @@ test("Models page keeps its shell while an injected transport reports an error",
 	const container = document.createElement("div");
 	const root = createRoot(container);
 	document.body.append(container);
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
 
-	await act(async () => root.render(<ModelsPage adapter={adapter} />));
+	await act(async () =>
+		root.render(
+			<QueryClientProvider client={queryClient}>
+				<ModelsPage adapter={adapter} />
+			</QueryClientProvider>,
+		),
+	);
 	await settle();
 
 	expect(listComponents).toHaveBeenCalledWith("user-1");

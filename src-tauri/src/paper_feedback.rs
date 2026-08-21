@@ -3,7 +3,7 @@
 //! This boundary intentionally stores references and evidence state, not mutable
 //! projections from the running Bot. Reports and review decisions are append-only.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -325,14 +325,15 @@ mod tests {
             })
             .unwrap();
         assert!(!decision.decision_id.is_empty());
-        assert!(s
-            .record_review_decision(ReviewDecisionInput {
+        assert!(
+            s.record_review_decision(ReviewDecisionInput {
                 user_id: "other".into(),
                 report_ids: vec!["missing".into()],
                 action: ReviewAction::NoChange,
                 rationale: "x".into(),
                 decided_at_ms: 4
             })
-            .is_err());
+            .is_err()
+        );
     }
 }

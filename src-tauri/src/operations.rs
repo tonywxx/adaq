@@ -255,8 +255,16 @@ impl OperationsStore {
             if changed == 1 {
                 conn.execute(
                     "INSERT INTO operational_alert_lifecycle VALUES (?1,?2,?3,?4,?5,?6)",
-                    params![Uuid::new_v4().to_string(), id, observation.user_id, resolved, event.event_id, observation.observed_at_ms],
-                ).map_err(|e| e.to_string())?;
+                    params![
+                        Uuid::new_v4().to_string(),
+                        id,
+                        observation.user_id,
+                        resolved,
+                        event.event_id,
+                        observation.observed_at_ms
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
             }
             None
         } else {
@@ -316,7 +324,8 @@ impl OperationsStore {
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let current = current.ok_or_else(|| "operational alert was not found for User".to_string())?;
+        let current =
+            current.ok_or_else(|| "operational alert was not found for User".to_string())?;
         let event_exists: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM operational_events WHERE event_id=?1 AND user_id=?2)",
@@ -327,14 +336,19 @@ impl OperationsStore {
         if !event_exists {
             return Err("operational transition must reference User evidence".into());
         }
-        let legal = matches!((current.as_str(), state), ("active", AlertState::Acknowledged | AlertState::Resolved) | ("acknowledged", AlertState::Resolved));
+        let legal = matches!(
+            (current.as_str(), state),
+            ("active", AlertState::Acknowledged | AlertState::Resolved)
+                | ("acknowledged", AlertState::Resolved)
+        );
         if !legal {
             return Err("invalid operational alert lifecycle transition".into());
         }
         conn.execute(
             "UPDATE operational_alerts SET state=?1 WHERE alert_id=?2 AND user_id=?3",
             params![state_name, alert_id, user_id],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO operational_alert_lifecycle VALUES (?1,?2,?3,?4,?5,?6)",
             params![
@@ -511,15 +525,29 @@ mod tests {
         let (event, alert, _) = s.observe(obs(HealthState::Critical, true)).unwrap();
         let alert = alert.unwrap();
         s.observe(obs(HealthState::Healthy, true)).unwrap();
-        assert_eq!(s.alerts_for_user("u").unwrap()[0].state, AlertState::Resolved);
+        assert_eq!(
+            s.alerts_for_user("u").unwrap()[0].state,
+            AlertState::Resolved
+        );
         let conn = s.database.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM operational_alert_lifecycle WHERE alert_id=?1",
-            [&alert.alert_id],
-            |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM operational_alert_lifecycle WHERE alert_id=?1",
+                [&alert.alert_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 2);
         drop(conn);
-        assert!(s.transition_alert("u", &alert.alert_id, AlertState::Acknowledged, &event.event_id, 2).is_err());
+        assert!(
+            s.transition_alert(
+                "u",
+                &alert.alert_id,
+                AlertState::Acknowledged,
+                &event.event_id,
+                2
+            )
+            .is_err()
+        );
     }
 }

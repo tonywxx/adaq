@@ -184,16 +184,16 @@ fn research_context_get(
 
 #[tauri::command]
 fn research_context_freeze(
-	user_id: String,
-	operation_id: String,
-	stage: adaq_factor_research::ResearchStage,
-	state: State<'_, Arc<LocalResearchState>>,
+    user_id: String,
+    operation_id: String,
+    stage: adaq_factor_research::ResearchStage,
+    state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<adaq_factor_research::FrozenResearchEvidence, String> {
-	validate_user(&user_id)?;
-	if operation_id.trim().is_empty() {
-		return Err("research context operation ID must be non-empty".into());
-	}
-	state.freeze_research_context(&user_id, operation_id, stage)
+    validate_user(&user_id)?;
+    if operation_id.trim().is_empty() {
+        return Err("research context operation ID must be non-empty".into());
+    }
+    state.freeze_research_context(&user_id, operation_id, stage)
 }
 
 #[tauri::command]
@@ -336,12 +336,7 @@ fn dataset_generation_retry(
         .research_attempt_binding(&user_id, &attempt_id)?
         .ok_or("research Context binding is missing for this Attempt")?;
     let attempt = state.generation.retry(&attempt_id, &user_id)?;
-    state.record_research_attempt_binding(
-        &user_id,
-        &operation_id,
-        stage,
-        &attempt.attempt_id,
-    )?;
+    state.record_research_attempt_binding(&user_id, &operation_id, stage, &attempt.attempt_id)?;
     Ok(attempt)
 }
 
@@ -1164,6 +1159,20 @@ fn market_data_pipeline_cancel(
 }
 
 #[tauri::command]
+async fn foundation_acquisition_history(
+    user_id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<market_data_pipeline::FoundationAcquisitionView>, String> {
+    validate_user(&user_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .foundation_acquisition_history(&user_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn market_data_pipeline_list(
     user_id: String,
     app: tauri::AppHandle,
@@ -1331,17 +1340,53 @@ async fn market_data_pipeline_delete(
 
 #[tauri::command]
 async fn okx_instrument_master_acquire(
-    request: market_data_pipeline::UserRequest,
+    request: market_data_pipeline::OkxInstrumentMasterRequest,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::okx::InstrumentMasterSnapshot, String> {
     validate_user(&request.user_id)?;
+    let operation_id = request.operation_id();
+    let user_id = request.user_id;
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let cancellation = state
+        .okx
+        .begin_acquisition(&operation_id, &user_id)
+        .map_err(string)?;
+    state.foundation_acquisition_start(&user_id, &operation_id, "crypto", "okx")?;
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<Arc<LocalResearchState>>();
-        tauri::async_runtime::block_on(state.okx.acquire_instrument_master(&request.user_id))
-            .map_err(string)
+        let result = tauri::async_runtime::block_on(
+            state
+                .okx
+                .acquire_instrument_master_with_cancel(&user_id, &cancellation),
+        )
+        .map_err(string);
+        let finish = state.okx.finish_acquisition(&operation_id);
+        let (state_name, error) = match &result {
+            Ok(_) => ("completed", None),
+            Err(error) if error.contains("cancelled") => ("cancelled", Some(error.as_str())),
+            Err(error) => ("failed", Some(error.as_str())),
+        };
+        let _ =
+            state.foundation_acquisition_finish(&user_id, &operation_id, state_name, None, error);
+        match (result, finish) {
+            (Ok(snapshot), Ok(())) => Ok(snapshot),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(string(error)),
+        }
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn okx_instrument_master_cancel(
+    request: market_data_pipeline::AshareAcquisitionCancelRequest,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    validate_user(&request.user_id)?;
+    state
+        .okx
+        .cancel_acquisition(&request.operation_id, &request.user_id)
+        .map_err(string)
 }
 
 #[tauri::command]
@@ -1464,6 +1509,7 @@ async fn ashare_instrument_master_acquire(
         .ashare
         .begin_acquisition(&user_id, &operation_id)
         .map_err(string)?;
+    state.foundation_acquisition_start(&user_id, &operation_id, "a-shares", "sse/szse")?;
     tauri::async_runtime::spawn_blocking(move || {
         let connector_cancellation = cancellation.clone();
         let result = tauri::async_runtime::block_on(
@@ -1475,6 +1521,13 @@ async fn ashare_instrument_master_acquire(
         )
         .map_err(string);
         let finish = state.ashare.finish_acquisition(&user_id, &operation_id);
+        let (state_name, error) = match &result {
+            Ok(_) => ("completed", None),
+            Err(error) if error.contains("cancelled") => ("cancelled", Some(error.as_str())),
+            Err(error) => ("failed", Some(error.as_str())),
+        };
+        let _ =
+            state.foundation_acquisition_finish(&user_id, &operation_id, state_name, None, error);
         match (result, finish) {
             (Ok(snapshot), Ok(())) => Ok(snapshot.gui_dto()),
             (Err(error), _) => Err(error),
@@ -1674,6 +1727,7 @@ async fn alpaca_instrument_master_acquire(
         .us_equity
         .begin_acquisition(&user_id, &operation_id)
         .map_err(string)?;
+    state.foundation_acquisition_start(&user_id, &operation_id, "us-equities", "alpaca")?;
     tauri::async_runtime::spawn_blocking(move || {
         let operation_user_id = user_id.clone();
         let cancellation_for_operation = cancellation.clone();
@@ -1690,6 +1744,13 @@ async fn alpaca_instrument_master_acquire(
             })
             .and_then(|result| result.map_err(string));
         let finish = state.us_equity.finish_acquisition(&user_id, &operation_id);
+        let (state_name, error) = match &result {
+            Ok(_) => ("completed", None),
+            Err(error) if error.contains("cancelled") => ("cancelled", Some(error.as_str())),
+            Err(error) => ("failed", Some(error.as_str())),
+        };
+        let _ =
+            state.foundation_acquisition_finish(&user_id, &operation_id, state_name, None, error);
         match (result, finish) {
             (Ok(snapshot), Ok(())) => Ok(snapshot.gui_dto()),
             (Err(error), _) => Err(error),
@@ -2934,6 +2995,7 @@ pub fn run() {
             snapshot_cancel,
             market_data_pipeline_publish,
             market_data_pipeline_cancel,
+            foundation_acquisition_history,
             market_data_pipeline_list,
             market_data_pipeline_derive,
             market_data_pipeline_derived_list,
@@ -2944,6 +3006,7 @@ pub fn run() {
             market_data_pipeline_publish_derived_snapshot,
             market_data_pipeline_delete,
             okx_instrument_master_acquire,
+            okx_instrument_master_cancel,
             okx_instrument_master_list,
             okx_universe,
             okx_backfill,

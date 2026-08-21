@@ -12,11 +12,11 @@
 //! domains still live here).
 
 use std::{
-	collections::HashMap,
-	fs,
-	path::{Path, PathBuf},
-	sync::{Arc, Mutex, Weak},
-    time::Duration,
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, Weak},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use adaq_backtest_core::{
@@ -26,11 +26,11 @@ use adaq_component_tooling::{
     ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotSource,
 };
 use adaq_data_core::{OhlcvBar, OkxClient, a_share::AshareClient};
-use adaq_factor_research::ResearchEvidenceContext;
 use adaq_data_pipeline::{
     CancellationToken, DataPipeline, DataQualityReport, DataQualityState, a_share::AshareDataPath,
     okx::OkxSpotDataPath, us_equity::UsEquityDataPath,
 };
+use adaq_factor_research::ResearchEvidenceContext;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -71,7 +71,7 @@ pub struct LocalResearchState {
     pub(crate) connections: crate::connections::ConnectionManager,
     pub(crate) operations: OperationsStore,
     pub(crate) paper_feedback: PaperFeedbackStore,
-	pub(crate) research_contexts: Mutex<HashMap<String, ResearchEvidenceContext>>,
+    pub(crate) research_contexts: Mutex<HashMap<String, ResearchEvidenceContext>>,
 }
 
 #[derive(Serialize)]
@@ -533,7 +533,27 @@ impl LocalResearchState {
                 stage TEXT NOT NULL,
                 attempt_id TEXT NOT NULL,
                 PRIMARY KEY(user_id, operation_id)
+             );
+             CREATE TABLE IF NOT EXISTS foundation_acquisitions (
+                user_id TEXT NOT NULL,
+                operation_id TEXT NOT NULL,
+                market TEXT NOT NULL,
+                venue TEXT NOT NULL,
+                state TEXT NOT NULL,
+                revision INTEGER,
+                error TEXT,
+                started_at_ms INTEGER NOT NULL,
+                finished_at_ms INTEGER,
+                PRIMARY KEY(user_id, operation_id)
              );",
+            )
+            .map_err(string)?;
+        database
+            .execute(
+                "UPDATE foundation_acquisitions
+                 SET state = 'failed', error = 'operation interrupted by host restart', finished_at_ms = ?1
+                 WHERE state = 'running'",
+                [now_ms()],
             )
             .map_err(string)?;
         let database = Arc::new(Mutex::new(database));
@@ -618,9 +638,9 @@ impl LocalResearchState {
                 connections,
                 operations,
                 paper_feedback,
-				research_contexts: Mutex::new(HashMap::new()),
-			}
-		}))
+                research_contexts: Mutex::new(HashMap::new()),
+            }
+        }))
     }
 
     pub fn store_research_context(
@@ -668,7 +688,10 @@ impl LocalResearchState {
         {
             return Ok(Some(context));
         }
-        let database = self.database.lock().map_err(|_| "database lock failed".to_string())?;
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| "database lock failed".to_string())?;
         let mut statement = database
             .prepare("SELECT context_json FROM research_evidence_contexts WHERE user_id = ?1 ORDER BY market LIMIT 1")
             .map_err(string)?;
@@ -695,7 +718,9 @@ impl LocalResearchState {
         &self,
         user_id: &str,
     ) -> Result<Option<adaq_factor_research::ResearchEvidenceProjection>, String> {
-        Ok(self.context_for_user(user_id)?.map(|context| context.projection()))
+        Ok(self
+            .context_for_user(user_id)?
+            .map(|context| context.projection()))
     }
 
     pub fn freeze_research_context(
@@ -707,7 +732,9 @@ impl LocalResearchState {
         let context = self
             .context_for_user(user_id)?
             .ok_or_else(|| "Research Evidence Context is not established".to_string())?;
-        let frozen = context.freeze(operation_id, stage).map_err(|error| error.to_string())?;
+        let frozen = context
+            .freeze(operation_id, stage)
+            .map_err(|error| error.to_string())?;
         self.database
             .lock()
             .map_err(|_| "database lock failed".to_string())?
@@ -729,7 +756,10 @@ impl LocalResearchState {
         operation_id: &str,
     ) -> Result<Option<adaq_factor_research::FrozenResearchEvidence>, String> {
         validate_user(user_id)?;
-        let database = self.database.lock().map_err(|_| "database lock failed".to_string())?;
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| "database lock failed".to_string())?;
         database
             .query_row(
                 "SELECT frozen_json FROM research_frozen_evidence WHERE user_id = ?1 AND operation_id = ?2",
@@ -750,9 +780,13 @@ impl LocalResearchState {
     ) -> Result<adaq_factor_research::FrozenResearchEvidence, String> {
         let frozen = self
             .frozen_research_evidence(user_id, operation_id)?
-            .ok_or_else(|| "Research Evidence Context is not frozen for this operation".to_string())?;
+            .ok_or_else(|| {
+                "Research Evidence Context is not frozen for this operation".to_string()
+            })?;
         if frozen.stage != stage {
-            return Err("Research Evidence Context stage is incompatible with this operation".into());
+            return Err(
+                "Research Evidence Context stage is incompatible with this operation".into(),
+            );
         }
         Ok(frozen)
     }
@@ -782,7 +816,10 @@ impl LocalResearchState {
         attempt_id: &str,
     ) -> Result<Option<(String, adaq_factor_research::ResearchStage)>, String> {
         validate_user(user_id)?;
-        let database = self.database.lock().map_err(|_| "database lock failed".to_string())?;
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| "database lock failed".to_string())?;
         database
             .query_row(
                 "SELECT operation_id, stage FROM research_attempt_context_bindings WHERE user_id = ?1 AND attempt_id = ?2",
@@ -812,10 +849,96 @@ impl LocalResearchState {
         user_id: &str,
         attempt_id: &str,
     ) -> Result<Option<adaq_factor_research::FrozenResearchEvidence>, String> {
-        let Some((operation_id, _stage)) = self.research_attempt_binding(user_id, attempt_id)? else {
+        let Some((operation_id, _stage)) = self.research_attempt_binding(user_id, attempt_id)?
+        else {
             return Ok(None);
         };
         self.frozen_research_evidence(user_id, &operation_id)
+    }
+
+    pub fn foundation_acquisition_start(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+        market: &str,
+        venue: &str,
+    ) -> Result<(), String> {
+        validate_user(user_id)?;
+        if operation_id.trim().is_empty() {
+            return Err("foundation acquisition operation ID must be non-empty".into());
+        }
+        self.database
+            .lock()
+            .map_err(|_| "database lock failed".to_string())?
+            .execute(
+                "INSERT OR REPLACE INTO foundation_acquisitions
+                 (user_id, operation_id, market, venue, state, revision, error, started_at_ms, finished_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, 'running', NULL, NULL, ?5, NULL)",
+                params![user_id, operation_id, market, venue, now_ms()],
+            )
+            .map_err(string)?;
+        Ok(())
+    }
+
+    pub fn foundation_acquisition_finish(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+        state: &str,
+        revision: Option<u64>,
+        error: Option<&str>,
+    ) -> Result<(), String> {
+        validate_user(user_id)?;
+        self.database
+            .lock()
+            .map_err(|_| "database lock failed".to_string())?
+            .execute(
+                "UPDATE foundation_acquisitions
+                 SET state = ?1, revision = ?2, error = ?3, finished_at_ms = ?4
+                 WHERE user_id = ?5 AND operation_id = ?6",
+                params![
+                    state,
+                    revision.map(|value| value as i64),
+                    error,
+                    now_ms(),
+                    user_id,
+                    operation_id
+                ],
+            )
+            .map_err(string)?;
+        Ok(())
+    }
+
+    pub fn foundation_acquisition_history(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<crate::market_data_pipeline::FoundationAcquisitionView>, String> {
+        validate_user(user_id)?;
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| "database lock failed".to_string())?;
+        let mut statement = database
+            .prepare(
+                "SELECT operation_id, market, venue, state, revision, error, started_at_ms, finished_at_ms
+                 FROM foundation_acquisitions WHERE user_id = ?1 ORDER BY started_at_ms DESC",
+            )
+            .map_err(string)?;
+        let rows = statement
+            .query_map([user_id], |row| {
+                Ok(crate::market_data_pipeline::FoundationAcquisitionView {
+                    operation_id: row.get(0)?,
+                    market: row.get(1)?,
+                    venue: row.get(2)?,
+                    state: row.get(3)?,
+                    revision: row.get::<_, Option<i64>>(4)?.map(|value| value as u64),
+                    error: row.get(5)?,
+                    started_at_ms: row.get(6)?,
+                    finished_at_ms: row.get(7)?,
+                })
+            })
+            .map_err(string)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(string)
     }
 
     pub fn local_data_summary(&self, user_id: &str) -> Result<LocalDataSummary, String> {
@@ -1540,6 +1663,13 @@ fn string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1991,7 +2121,7 @@ mod tests {
         state
             .freeze_research_context(
                 "alice",
-                "model-dataset:one:model",
+                "model-dataset:one:model".into(),
                 adaq_factor_research::ResearchStage::Models,
             )
             .unwrap();
@@ -2020,6 +2150,85 @@ mod tests {
                 .unwrap()
                 .operation_id,
             "model-dataset:one:model"
+        );
+        drop(reloaded);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn foundation_acquisition_history_preserves_three_markets_cancel_and_retry() {
+        let (root, state, _watchlist) = local_data_state("foundation-lifecycle");
+        for (operation_id, market, venue) in [
+            ("okx-1", "crypto", "okx"),
+            ("ashare-1", "a-share", "local"),
+            ("us-1", "us-equity", "alpaca"),
+        ] {
+            state
+                .foundation_acquisition_start("alice", operation_id, market, venue)
+                .unwrap();
+        }
+        state
+            .foundation_acquisition_finish("alice", "okx-1", "completed", Some(1), None)
+            .unwrap();
+        state
+            .foundation_acquisition_finish(
+                "alice",
+                "ashare-1",
+                "cancelled",
+                None,
+                Some("cancelled by user"),
+            )
+            .unwrap();
+        state
+            .foundation_acquisition_start("alice", "ashare-2", "a-share", "local")
+            .unwrap();
+        state
+            .foundation_acquisition_finish(
+                "alice",
+                "ashare-2",
+                "failed",
+                None,
+                Some("retry failed"),
+            )
+            .unwrap();
+
+        let history = state.foundation_acquisition_history("alice").unwrap();
+        assert_eq!(history.len(), 4);
+        assert!(history.iter().any(|entry| {
+            entry.operation_id == "ashare-1"
+                && entry.state == "cancelled"
+                && entry.error.as_deref() == Some("cancelled by user")
+        }));
+        assert!(history.iter().any(|entry| {
+            entry.operation_id == "ashare-2"
+                && entry.state == "failed"
+                && entry.error.as_deref() == Some("retry failed")
+        }));
+        assert!(
+            state
+                .foundation_acquisition_history("bob")
+                .unwrap()
+                .is_empty()
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_foundation_acquisition_is_recovered_on_reload() {
+        let (root, state, _watchlist) = local_data_state("foundation-recovery");
+        state
+            .foundation_acquisition_start("alice", "crypto-foundation-1", "crypto", "okx")
+            .unwrap();
+        drop(state);
+
+        let reloaded = LocalResearchState::open(&root).unwrap();
+        let history = reloaded.foundation_acquisition_history("alice").unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].state, "failed");
+        assert_eq!(
+            history[0].error.as_deref(),
+            Some("operation interrupted by host restart")
         );
         drop(reloaded);
         fs::remove_dir_all(root).unwrap();
