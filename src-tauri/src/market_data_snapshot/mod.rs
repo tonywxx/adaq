@@ -75,7 +75,7 @@ pub(crate) struct SnapshotSummary {
 
 struct SnapshotInner {
     source: Arc<dyn SnapshotSource>,
-    downloads: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    downloads: Mutex<HashMap<String, (String, Arc<AtomicBool>)>>,
 }
 
 /// The Market Data Snapshot interface: create, download, cancel, list, and
@@ -187,7 +187,10 @@ impl MarketDataSnapshots {
             if downloads.contains_key(&request.task_id) {
                 return Err("Snapshot download is already in progress".into());
             }
-            downloads.insert(request.task_id.clone(), cancelled.clone());
+            downloads.insert(
+                request.task_id.clone(),
+                (request.user_id.clone(), cancelled.clone()),
+            );
         }
         let result = client
             .get_bar_series_range_with_progress(
@@ -233,8 +236,11 @@ impl MarketDataSnapshots {
 
     /// Signals one in-flight download to stop; unknown task IDs are
     /// ignored.
-    pub(crate) fn cancel_download(&self, task_id: &str) -> Result<(), String> {
-        if let Some(cancelled) = self.0.downloads.lock().map_err(string)?.get(task_id) {
+    pub(crate) fn cancel_download(&self, user_id: &str, task_id: &str) -> Result<(), String> {
+        validate_user(user_id)?;
+        if let Some((owner, cancelled)) = self.0.downloads.lock().map_err(string)?.get(task_id)
+            && owner == user_id
+        {
             cancelled.store(true, Ordering::Relaxed);
         }
         Ok(())

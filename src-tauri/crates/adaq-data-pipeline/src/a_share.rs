@@ -443,7 +443,7 @@ impl AshareDataPath {
             }
             for (key, token) in tokens {
                 token.cancel();
-                self.pipeline.cancel(&key)?;
+                self.pipeline.cancel(&key, user_id)?;
             }
             if Instant::now() >= deadline {
                 return Err(PipelineError::Storage(
@@ -752,7 +752,7 @@ impl AshareDataPath {
     pub fn cancel_backfill(&self, user_id: &str, task_id: &str) -> Result<(), PipelineError> {
         validate_user(user_id)?;
         let key = active_key(user_id, task_id);
-        self.pipeline.cancel(&key)?;
+        self.pipeline.cancel(&key, user_id)?;
         if let Some(token) = self.active.lock().map_err(lock_error)?.get(&key) {
             token.cancel();
         }
@@ -791,7 +791,7 @@ impl AshareDataPath {
         validate_user(user_id)?;
         validate_operation_id(operation_id)?;
         let key = acquisition_key(user_id, operation_id);
-        self.pipeline.cancel(&key)?;
+        self.pipeline.cancel(&key, user_id)?;
         if let Some(token) = self.active.lock().map_err(lock_error)?.get(&key) {
             token.cancel();
         }

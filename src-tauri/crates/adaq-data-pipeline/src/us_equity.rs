@@ -362,7 +362,7 @@ impl UsEquityDataPath {
         operation_id: &str,
     ) -> Result<(), PipelineError> {
         let key = acquisition_key(user_id, operation_id);
-        self.pipeline.cancel(&key)?;
+        self.pipeline.cancel(&key, user_id)?;
         if let Some(token) = self.active.lock().map_err(lock_error)?.get(&key) {
             token.cancel();
         }
@@ -397,7 +397,7 @@ impl UsEquityDataPath {
 
     pub fn cancel_backfill(&self, user_id: &str, task_id: &str) -> Result<(), PipelineError> {
         let key = backfill_key(user_id, task_id);
-        self.pipeline.cancel(&key)?;
+        self.pipeline.cancel(&key, user_id)?;
         if let Some(token) = self.active.lock().map_err(lock_error)?.get(&key) {
             token.cancel();
         }
@@ -428,7 +428,7 @@ impl UsEquityDataPath {
             }
             for (key, token) in tokens {
                 token.cancel();
-                self.pipeline.cancel(&key)?;
+                self.pipeline.cancel(&key, user_id)?;
             }
             if Instant::now() >= deadline {
                 return Err(PipelineError::Storage(

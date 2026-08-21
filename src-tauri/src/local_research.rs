@@ -2101,7 +2101,7 @@ mod tests {
 
     #[test]
     fn frozen_context_binding_survives_state_reload_and_attempt_lookup() {
-        let (root, state, _watchlist) = local_data_state("research-context-binding");
+        let (root, state, watchlist) = local_data_state("research-context-binding");
         let draft = adaq_factor_research::ResearchEvidenceContextDraft {
             user_id: "alice".into(),
             market: "crypto".into(),
@@ -2168,12 +2168,13 @@ mod tests {
             "model-dataset:one:model"
         );
         drop(reloaded);
+        drop(watchlist);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn foundation_acquisition_history_preserves_three_markets_cancel_and_retry() {
-        let (root, state, _watchlist) = local_data_state("foundation-lifecycle");
+        let (root, state, watchlist) = local_data_state("foundation-lifecycle");
         for (operation_id, market, venue) in [
             ("okx-1", "crypto", "okx"),
             ("ashare-1", "a-share", "local"),
@@ -2227,12 +2228,13 @@ mod tests {
                 .is_empty()
         );
         drop(state);
+        drop(watchlist);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn interrupted_foundation_acquisition_is_recovered_on_reload() {
-        let (root, state, _watchlist) = local_data_state("foundation-recovery");
+        let (root, state, watchlist) = local_data_state("foundation-recovery");
         state
             .foundation_acquisition_start("alice", "crypto-foundation-1", "crypto", "okx")
             .unwrap();
@@ -2247,6 +2249,7 @@ mod tests {
             Some("operation interrupted by host restart")
         );
         drop(reloaded);
+        drop(watchlist);
         fs::remove_dir_all(root).unwrap();
     }
 }

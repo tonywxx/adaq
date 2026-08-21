@@ -1265,9 +1265,12 @@ async fn snapshot_list_readable(
 
 #[tauri::command]
 async fn snapshot_publish_universe(
-    request: market_data_snapshot::UniverseSnapshotRequest,
+    mut request: market_data_snapshot::UniverseSnapshotRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_backtest_core::MarketDataUniverseSnapshot, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .snapshots
@@ -1296,9 +1299,12 @@ async fn snapshot_list_universe(
 
 #[tauri::command]
 async fn snapshot_read_universe(
-    request: market_data_pipeline::UserEvidenceRequest,
+    mut request: market_data_pipeline::UserEvidenceRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_backtest_core::MarketDataUniverseSnapshot, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .snapshots
@@ -1311,9 +1317,12 @@ async fn snapshot_read_universe(
 #[tauri::command]
 fn snapshot_cancel(
     request: market_data_snapshot::TaskRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
-    state.snapshots.cancel_download(&request.task_id)
+    let user_id = auth.user_id_for_window(window.label())?;
+    state.snapshots.cancel_download(&user_id, &request.task_id)
 }
 
 /// Tauri Data Pipeline commands are thin adapters: provider-neutral typed
@@ -1350,9 +1359,12 @@ async fn market_data_pipeline_publish(
 #[tauri::command]
 fn market_data_pipeline_cancel(
     task_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
-    state.pipeline.cancel(&task_id).map_err(string)
+    let user_id = auth.user_id_for_window(window.label())?;
+    state.pipeline.cancel(&task_id, &user_id).map_err(string)
 }
 
 #[tauri::command]
@@ -1393,9 +1405,12 @@ async fn market_data_pipeline_list(
 
 #[tauri::command]
 async fn market_data_pipeline_derive(
-    request: market_data_pipeline::DeriveRequest,
+    mut request: market_data_pipeline::DeriveRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::DerivedMarketDataset, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let (user_id, canonical_id, derivation, allow_degraded) = request.into_parts();
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
@@ -1410,8 +1425,12 @@ async fn market_data_pipeline_derive(
 #[tauri::command]
 async fn market_data_pipeline_derived_list(
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<adaq_data_pipeline::DerivedMarketDataset>, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .pipeline
@@ -1424,9 +1443,12 @@ async fn market_data_pipeline_derived_list(
 
 #[tauri::command]
 async fn market_data_pipeline_derived(
-    request: market_data_pipeline::UserEvidenceRequest,
+    mut request: market_data_pipeline::UserEvidenceRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::DerivedMarketDataset, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .pipeline
@@ -1459,8 +1481,12 @@ async fn market_data_pipeline_quality(
 #[tauri::command]
 async fn market_data_pipeline_failures(
     user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<adaq_data_pipeline::PipelineFailure>, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .pipeline
@@ -1499,9 +1525,12 @@ async fn market_data_pipeline_publish_snapshot(
 
 #[tauri::command]
 async fn market_data_pipeline_publish_derived_snapshot(
-    request: market_data_pipeline::DerivedSnapshotRequest,
+    mut request: market_data_pipeline::DerivedSnapshotRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<market_data_pipeline::SnapshotPublicationView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .publish_pipeline_derived_snapshot_for_user_with_policy(
@@ -1522,9 +1551,12 @@ async fn market_data_pipeline_publish_derived_snapshot(
 
 #[tauri::command]
 async fn market_data_pipeline_delete(
-    request: market_data_pipeline::DeleteRequest,
+    mut request: market_data_pipeline::DeleteRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
         match request.evidence_kind.as_str() {
@@ -1623,10 +1655,12 @@ async fn okx_instrument_master_list(
 
 #[tauri::command]
 async fn okx_universe(
-    request: market_data_pipeline::UniverseRequest,
+    mut request: market_data_pipeline::UniverseRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::okx::PointInTimeInstrumentUniverse, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .okx
@@ -1639,11 +1673,13 @@ async fn okx_universe(
 
 #[tauri::command]
 async fn okx_backfill(
-    request: adaq_data_pipeline::okx::OkxBackfillRequest,
+    mut request: adaq_data_pipeline::okx::OkxBackfillRequest,
     on_event: Channel<adaq_data_pipeline::okx::OkxBackfillEvent>,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<market_data_pipeline::PublicationView>, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let state = app.state::<Arc<LocalResearchState>>().inner().clone();
     let task_id = request.task_id.clone();
     let cancellation = state
@@ -1670,10 +1706,12 @@ async fn okx_backfill(
 
 #[tauri::command]
 fn okx_backfill_cancel(
-    request: market_data_pipeline::BackfillCancelRequest,
+    mut request: market_data_pipeline::BackfillCancelRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     state
         .okx
         .cancel_backfill(&request.task_id, &request.user_id)
@@ -1700,10 +1738,12 @@ async fn okx_acquisition_status(
 
 #[tauri::command]
 async fn okx_stream_health(
-    request: market_data_pipeline::UserRequest,
+    mut request: market_data_pipeline::UserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<adaq_data_pipeline::okx::OkxStreamHealth>, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .okx
@@ -1784,10 +1824,12 @@ async fn ashare_instrument_master_list(
 
 #[tauri::command]
 async fn ashare_universe(
-    request: market_data_pipeline::UniverseRequest,
+    mut request: market_data_pipeline::UniverseRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::a_share::AsharePointInTimeUniverse, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .ashare
@@ -1800,10 +1842,12 @@ async fn ashare_universe(
 
 #[tauri::command]
 async fn ashare_calendar_acquire(
-    request: market_data_pipeline::AshareCalendarRequest,
+    mut request: market_data_pipeline::AshareCalendarRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<adaq_data_pipeline::a_share::AshareCalendarSnapshotDto>, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let range = request.range();
     let operation_id = request.operation_id();
     let user_id = request.user_id.clone();
@@ -1836,10 +1880,12 @@ async fn ashare_calendar_acquire(
 
 #[tauri::command]
 async fn ashare_corporate_actions_acquire(
-    request: market_data_pipeline::AshareCorporateActionRequest,
+    mut request: market_data_pipeline::AshareCorporateActionRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::a_share::AshareCorporateActionDatasetDto, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let operation_id = request.operation_id();
     let user_id = request.user_id.clone();
     let state = app.state::<Arc<LocalResearchState>>().inner().clone();
@@ -1869,11 +1915,13 @@ async fn ashare_corporate_actions_acquire(
 
 #[tauri::command]
 async fn ashare_backfill(
-    request: adaq_data_pipeline::a_share::AshareBackfillRequest,
+    mut request: adaq_data_pipeline::a_share::AshareBackfillRequest,
     on_event: Channel<adaq_data_pipeline::a_share::AshareBackfillEvent>,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Option<market_data_pipeline::PublicationView>, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let state = app.state::<Arc<LocalResearchState>>().inner().clone();
     let cancellation = state
         .ashare
@@ -1898,10 +1946,12 @@ async fn ashare_backfill(
 
 #[tauri::command]
 fn ashare_backfill_cancel(
-    request: market_data_pipeline::BackfillCancelRequest,
+    mut request: market_data_pipeline::BackfillCancelRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     state
         .ashare
         .cancel_backfill(&request.user_id, &request.task_id)
@@ -1924,10 +1974,12 @@ fn ashare_acquisition_cancel(
 
 #[tauri::command]
 async fn ashare_workspace(
-    request: market_data_pipeline::UserEvidenceRequest,
+    mut request: market_data_pipeline::UserEvidenceRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::a_share::AshareMarketWorkspaceDto, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .ashare
@@ -2013,10 +2065,12 @@ async fn alpaca_instrument_master_list(
 
 #[tauri::command]
 async fn alpaca_universe(
-    request: market_data_pipeline::UniverseRequest,
+    mut request: market_data_pipeline::UniverseRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::us_equity::UsEquityPointInTimeUniverse, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .us_equity
@@ -2029,10 +2083,12 @@ async fn alpaca_universe(
 
 #[tauri::command]
 async fn alpaca_calendar_acquire(
-    request: market_data_pipeline::UsEquityCalendarRequest,
+    mut request: market_data_pipeline::UsEquityCalendarRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::us_equity::UsEquityCalendarSnapshotDto, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let range = request.range();
     let operation_id = request.operation_id();
     let venue = request.venue;
@@ -2072,11 +2128,13 @@ async fn alpaca_calendar_acquire(
 
 #[tauri::command]
 async fn alpaca_backfill(
-    request: adaq_data_pipeline::us_equity::UsEquityBackfillRequest,
+    mut request: adaq_data_pipeline::us_equity::UsEquityBackfillRequest,
     on_event: Channel<adaq_data_pipeline::us_equity::UsEquityBackfillEvent>,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Option<market_data_pipeline::PublicationView>, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let state = app.state::<Arc<LocalResearchState>>().inner().clone();
     let task_id = request.task_id.clone();
     let user_id = request.user_id.clone();
@@ -2116,10 +2174,12 @@ async fn alpaca_backfill(
 
 #[tauri::command]
 fn alpaca_backfill_cancel(
-    request: market_data_pipeline::BackfillCancelRequest,
+    mut request: market_data_pipeline::BackfillCancelRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<(), String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     state
         .us_equity
         .cancel_backfill(&request.user_id, &request.task_id)
@@ -2142,10 +2202,12 @@ fn alpaca_acquisition_cancel(
 
 #[tauri::command]
 async fn alpaca_acquisition_status(
-    request: market_data_pipeline::UserEvidenceRequest,
+    mut request: market_data_pipeline::UserEvidenceRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<Option<adaq_data_pipeline::us_equity::UsEquityAcquisitionStatus>, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .us_equity
@@ -2158,10 +2220,12 @@ async fn alpaca_acquisition_status(
 
 #[tauri::command]
 async fn alpaca_snapshot(
-    request: market_data_pipeline::UsEquitySnapshotRequest,
+    mut request: market_data_pipeline::UsEquitySnapshotRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::us_equity::UsEquityMarketSnapshotDto, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>().inner().clone();
         state
@@ -2181,11 +2245,13 @@ async fn alpaca_snapshot(
 
 #[tauri::command]
 async fn alpaca_stream(
-    request: market_data_pipeline::UsEquityStreamRequest,
+    mut request: market_data_pipeline::UsEquityStreamRequest,
     on_event: Channel<adaq_data_core::alpaca::AlpacaStreamEvent>,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     let operation_id = request.operation_id();
     let user_id = request.user_id;
     let subscription = request.subscription;
@@ -2221,10 +2287,12 @@ async fn alpaca_stream(
 
 #[tauri::command]
 async fn alpaca_workspace(
-    request: market_data_pipeline::UserEvidenceRequest,
+    mut request: market_data_pipeline::UserEvidenceRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<adaq_data_pipeline::us_equity::UsEquityMarketWorkspaceDto, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<Arc<LocalResearchState>>()
             .us_equity
@@ -2436,6 +2504,7 @@ struct ActiveBarStream {
 struct BarStreamState(Mutex<Option<ActiveBarStream>>);
 
 struct ActiveTradeStream {
+    user_id: String,
     subscription_id: String,
     task: tauri::async_runtime::JoinHandle<()>,
     on_event: Channel<TradeStreamEvent>,
@@ -2445,6 +2514,7 @@ struct ActiveTradeStream {
 struct TradeStreamState(Mutex<Option<ActiveTradeStream>>);
 
 struct ActiveLevel2Stream {
+    user_id: String,
     subscription_id: String,
     task: tauri::async_runtime::JoinHandle<()>,
     on_event: Channel<Level2StreamEvent>,
@@ -2494,10 +2564,12 @@ async fn market_get_bar_series(
 
 #[tauri::command]
 async fn market_workspace_get_bars(
-    request: MarketWorkspaceBarsRequest,
+    mut request: MarketWorkspaceBarsRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
 ) -> Result<MarketWorkspaceBarsView, String> {
-    validate_user(&request.user_id)?;
+    request.user_id = auth.user_id_for_window(window.label())?;
     if request.start_time_ms >= request.end_time_ms {
         return Err("Market Bar range must be increasing".to_owned());
     }
@@ -2664,18 +2736,24 @@ async fn market_get_ticker(
 
 #[tauri::command]
 fn watchlist_get(
-    request: WatchlistUserRequest,
+    mut request: WatchlistUserRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     database: State<'_, WatchlistDb>,
 ) -> Result<WatchlistState, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     database.get(&request.user_id)
 }
 
 #[tauri::command]
 async fn watchlist_add(
-    request: WatchlistInstrumentRequest,
+    mut request: WatchlistInstrumentRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     database: State<'_, WatchlistDb>,
     client: State<'_, OkxClient>,
 ) -> Result<WatchlistState, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     validate_provider_venue(&request.instrument)?;
     if request.instrument.src == "okx" {
         let instruments = client
@@ -2696,27 +2774,36 @@ async fn watchlist_add(
 
 #[tauri::command]
 fn watchlist_remove(
-    request: WatchlistInstrumentRequest,
+    mut request: WatchlistInstrumentRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     database: State<'_, WatchlistDb>,
 ) -> Result<WatchlistState, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     validate_provider_venue(&request.instrument)?;
     database.remove(&request.user_id, &request.instrument)
 }
 
 #[tauri::command]
 fn watchlist_set_active(
-    request: WatchlistInstrumentRequest,
+    mut request: WatchlistInstrumentRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     database: State<'_, WatchlistDb>,
 ) -> Result<WatchlistState, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     validate_provider_venue(&request.instrument)?;
     database.set_active(&request.user_id, &request.instrument)
 }
 
 #[tauri::command]
 fn watchlist_set_interval(
-    request: WatchlistIntervalRequest,
+    mut request: WatchlistIntervalRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     database: State<'_, WatchlistDb>,
 ) -> Result<WatchlistState, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     database.set_interval(&request.user_id, request.interval)
 }
 
@@ -2767,11 +2854,16 @@ fn market_subscribe_tickers(
 
 #[tauri::command]
 fn market_subscribe_trades(
-    request: MarketSubscribeRealtimeRequest,
+    mut request: MarketSubscribeRealtimeRequest,
     on_event: Channel<TradeStreamEvent>,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
     streams: State<'_, TradeStreamState>,
 ) -> Result<(), DataError> {
+    request.user_id = auth
+        .user_id_for_window(window.label())
+        .map_err(|message| DataError::new("okx", "unauthenticated", message))?;
     validate_realtime_request(
         &request.src,
         &request.user_id,
@@ -2785,6 +2877,7 @@ fn market_subscribe_trades(
     let task_path = app.state::<Arc<LocalResearchState>>().okx.clone();
     let task_channel = on_event.clone();
     let user_id = request.user_id;
+    let stream_user_id = user_id.clone();
     let codes = request.codes;
     let task = tauri::async_runtime::spawn(async move {
         if let Err(error) = task_path
@@ -2795,6 +2888,7 @@ fn market_subscribe_trades(
         }
     });
     if let Some(previous) = active.replace(ActiveTradeStream {
+        user_id: stream_user_id,
         subscription_id: request.subscription_id,
         task,
         on_event,
@@ -2808,16 +2902,20 @@ fn market_subscribe_trades(
 #[tauri::command]
 fn market_unsubscribe_trades(
     request: MarketUnsubscribeTickerRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     streams: State<'_, TradeStreamState>,
 ) -> Result<(), DataError> {
     let mut active = streams
         .0
         .lock()
         .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
-    if active
-        .as_ref()
-        .is_some_and(|stream| stream.subscription_id == request.subscription_id)
-    {
+    let user_id = auth
+        .user_id_for_window(window.label())
+        .map_err(|message| DataError::new("okx", "unauthenticated", message))?;
+    if active.as_ref().is_some_and(|stream| {
+        stream.user_id == user_id && stream.subscription_id == request.subscription_id
+    }) {
         if let Some(previous) = active.take() {
             let _ = previous.on_event.send(TradeStreamEvent::Closed);
             previous.task.abort();
@@ -2828,11 +2926,16 @@ fn market_unsubscribe_trades(
 
 #[tauri::command]
 fn market_subscribe_level2(
-    request: MarketSubscribeRealtimeRequest,
+    mut request: MarketSubscribeRealtimeRequest,
     on_event: Channel<Level2StreamEvent>,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
     streams: State<'_, Level2StreamState>,
 ) -> Result<(), DataError> {
+    request.user_id = auth
+        .user_id_for_window(window.label())
+        .map_err(|message| DataError::new("okx", "unauthenticated", message))?;
     validate_realtime_request(
         &request.src,
         &request.user_id,
@@ -2846,6 +2949,7 @@ fn market_subscribe_level2(
     let task_path = app.state::<Arc<LocalResearchState>>().okx.clone();
     let task_channel = on_event.clone();
     let user_id = request.user_id;
+    let stream_user_id = user_id.clone();
     let codes = request.codes;
     let task = tauri::async_runtime::spawn(async move {
         if let Err(error) = task_path
@@ -2856,6 +2960,7 @@ fn market_subscribe_level2(
         }
     });
     if let Some(previous) = active.replace(ActiveLevel2Stream {
+        user_id: stream_user_id,
         subscription_id: request.subscription_id,
         task,
         on_event,
@@ -2869,16 +2974,20 @@ fn market_subscribe_level2(
 #[tauri::command]
 fn market_unsubscribe_level2(
     request: MarketUnsubscribeTickerRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     streams: State<'_, Level2StreamState>,
 ) -> Result<(), DataError> {
     let mut active = streams
         .0
         .lock()
         .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
-    if active
-        .as_ref()
-        .is_some_and(|stream| stream.subscription_id == request.subscription_id)
-    {
+    let user_id = auth
+        .user_id_for_window(window.label())
+        .map_err(|message| DataError::new("okx", "unauthenticated", message))?;
+    if active.as_ref().is_some_and(|stream| {
+        stream.user_id == user_id && stream.subscription_id == request.subscription_id
+    }) {
         if let Some(previous) = active.take() {
             let _ = previous.on_event.send(Level2StreamEvent::Closed);
             previous.task.abort();

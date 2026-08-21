@@ -1168,9 +1168,16 @@ impl DataPipeline {
         Ok(token)
     }
 
-    pub fn cancel(&self, attempt_id: &str) -> Result<(), PipelineError> {
-        if let Some(token) = self.0.active.lock().map_err(lock_error)?.get(attempt_id) {
-            token.cancel();
+    pub fn cancel(&self, attempt_id: &str, user_id: &str) -> Result<(), PipelineError> {
+        validate_user(user_id)?;
+        let attempt_users = self.0.attempt_users.lock().map_err(lock_error)?;
+        if attempt_users
+            .get(attempt_id)
+            .is_some_and(|owner| owner == user_id)
+        {
+            if let Some(token) = self.0.active.lock().map_err(lock_error)?.get(attempt_id) {
+                token.cancel();
+            }
         }
         Ok(())
     }

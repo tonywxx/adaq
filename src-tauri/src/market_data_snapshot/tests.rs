@@ -388,7 +388,9 @@ fn download_cancellation_stops_the_in_flight_download() {
             );
             thread::sleep(Duration::from_millis(10));
         }
-        control_module.cancel_download("task-cancel").unwrap();
+        control_module
+            .cancel_download("alice", "task-cancel")
+            .unwrap();
     });
     let download_events = events.clone();
     let error = block_on(module.download_for_user(
@@ -406,7 +408,7 @@ fn download_cancellation_stops_the_in_flight_download() {
     drop(recorded);
     // A cancelled download persists no Snapshot and frees its task slot.
     assert!(module.list_readable("alice").unwrap().is_empty());
-    module.cancel_download("task-cancel").unwrap();
+    module.cancel_download("alice", "task-cancel").unwrap();
 
     drop(module);
     fs::remove_dir_all(root).unwrap();
