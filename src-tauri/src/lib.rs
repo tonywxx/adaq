@@ -9,6 +9,7 @@ mod forecast_signal_dataset;
 mod local_research;
 mod market_data_pipeline;
 mod market_data_snapshot;
+mod operations;
 mod python_research;
 mod research_queue;
 mod run_engine;
@@ -60,6 +61,54 @@ fn unix_now_ms() -> i64 {
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+#[tauri::command]
+fn operations_observe(
+    observation: operations::HealthObservation,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<
+    (
+        operations::OperationalEvent,
+        Option<operations::AlertView>,
+        operations::SafetyAction,
+    ),
+    String,
+> {
+    state.operations.observe(observation)
+}
+
+#[tauri::command]
+fn operations_health(
+    user_id: String,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<Vec<operations::HealthView>, String> {
+    validate_user(&user_id)?;
+    state.operations.health_for_user(&user_id)
+}
+
+#[tauri::command]
+fn operations_alerts(
+    user_id: String,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<Vec<operations::AlertView>, String> {
+    validate_user(&user_id)?;
+    state.operations.alerts_for_user(&user_id)
+}
+
+#[tauri::command]
+fn operations_alert_transition(
+    user_id: String,
+    alert_id: String,
+    state: operations::AlertState,
+    event_id: String,
+    occurred_at_ms: i64,
+    store: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    validate_user(&user_id)?;
+    store
+        .operations
+        .transition_alert(&user_id, &alert_id, state, &event_id, occurred_at_ms)
 }
 
 #[tauri::command]
@@ -2557,6 +2606,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            operations_observe,
+            operations_health,
+            operations_alerts,
+            operations_alert_transition,
             python_research::project_list,
             python_research::project_create,
             python_research::project_import,
