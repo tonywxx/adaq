@@ -212,8 +212,8 @@ impl OperationsStore {
             ],
         )
         .map_err(|e| e.to_string())?;
+        let existing: Option<String> = conn.query_row("SELECT alert_id FROM operational_alerts WHERE user_id=?1 AND entity_id=?2 AND dimension=?3 AND condition=?4", params![observation.user_id, observation.entity_id, dimension, observation.condition], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
         let alert = if observation.state >= HealthState::Degraded {
-            let existing: Option<String> = conn.query_row("SELECT alert_id FROM operational_alerts WHERE user_id=?1 AND entity_id=?2 AND dimension=?3 AND condition=?4", params![observation.user_id, observation.entity_id, dimension, observation.condition], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
             let id = existing.unwrap_or_else(|| Uuid::new_v4().to_string());
             let active_state = serde_json::to_string(&AlertState::Active)
                 .map_err(|e| e.to_string())?
@@ -243,6 +243,22 @@ impl OperationsStore {
                 safety_action: action,
                 last_event_id: event.event_id.clone(),
             })
+        } else if let Some(id) = existing {
+            let resolved = serde_json::to_string(&AlertState::Resolved)
+                .map_err(|e| e.to_string())?
+                .trim_matches('"')
+                .to_string();
+            let changed = conn.execute(
+                "UPDATE operational_alerts SET state=?1,last_event_id=?2 WHERE alert_id=?3 AND user_id=?4 AND state != ?1",
+                params![resolved, event.event_id, id, observation.user_id],
+            ).map_err(|e| e.to_string())?;
+            if changed == 1 {
+                conn.execute(
+                    "INSERT INTO operational_alert_lifecycle VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![Uuid::new_v4().to_string(), id, observation.user_id, resolved, event.event_id, observation.observed_at_ms],
+                ).map_err(|e| e.to_string())?;
+            }
+            None
         } else {
             None
         };
@@ -292,15 +308,33 @@ impl OperationsStore {
             .trim_matches('"')
             .to_string();
         let conn = self.database.lock().map_err(|e| e.to_string())?;
-        let changed = conn
-            .execute(
-                "UPDATE operational_alerts SET state=?1 WHERE alert_id=?2 AND user_id=?3",
-                params![state_name, alert_id, user_id],
+        let current: Option<String> = conn
+            .query_row(
+                "SELECT state FROM operational_alerts WHERE alert_id=?1 AND user_id=?2",
+                params![alert_id, user_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let current = current.ok_or_else(|| "operational alert was not found for User".to_string())?;
+        let event_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM operational_events WHERE event_id=?1 AND user_id=?2)",
+                params![event_id, user_id],
+                |row| row.get(0),
             )
             .map_err(|e| e.to_string())?;
-        if changed != 1 {
-            return Err("operational alert was not found for User".into());
+        if !event_exists {
+            return Err("operational transition must reference User evidence".into());
         }
+        let legal = matches!((current.as_str(), state), ("active", AlertState::Acknowledged | AlertState::Resolved) | ("acknowledged", AlertState::Resolved));
+        if !legal {
+            return Err("invalid operational alert lifecycle transition".into());
+        }
+        conn.execute(
+            "UPDATE operational_alerts SET state=?1 WHERE alert_id=?2 AND user_id=?3",
+            params![state_name, alert_id, user_id],
+        ).map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO operational_alert_lifecycle VALUES (?1,?2,?3,?4,?5,?6)",
             params![
@@ -469,5 +503,23 @@ mod tests {
         let (_, a, action) = s.observe(obs(HealthState::Healthy, true)).unwrap();
         assert!(a.is_none());
         assert_eq!(action, SafetyAction::None);
+    }
+
+    #[test]
+    fn recovery_resolves_existing_alert_and_keeps_history() {
+        let s = store();
+        let (event, alert, _) = s.observe(obs(HealthState::Critical, true)).unwrap();
+        let alert = alert.unwrap();
+        s.observe(obs(HealthState::Healthy, true)).unwrap();
+        assert_eq!(s.alerts_for_user("u").unwrap()[0].state, AlertState::Resolved);
+        let conn = s.database.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM operational_alert_lifecycle WHERE alert_id=?1",
+            [&alert.alert_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 2);
+        drop(conn);
+        assert!(s.transition_alert("u", &alert.alert_id, AlertState::Acknowledged, &event.event_id, 2).is_err());
     }
 }

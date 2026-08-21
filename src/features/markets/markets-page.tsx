@@ -127,6 +127,8 @@ type WorkspaceBars = {
 
 const STALE_AFTER_MS = 5 * 60_000;
 
+export { OperationsDashboard } from "@/features/operations/operations-dashboard";
+
 const MARKET_CONFIG = {
 	"a-shares": {
 		title: "markets.aShares.title",
@@ -146,7 +148,7 @@ const MARKET_CONFIG = {
 	},
 } as const;
 
-export function OperationsDashboard() {
+export function LegacyOperationsDashboard() {
 	const { t } = useTranslation();
 	return (
 		<PageFrame
