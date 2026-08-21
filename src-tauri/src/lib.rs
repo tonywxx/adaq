@@ -10,6 +10,7 @@ mod local_research;
 mod market_data_pipeline;
 mod market_data_snapshot;
 mod operations;
+mod paper_feedback;
 mod python_research;
 mod research_queue;
 mod run_engine;
@@ -94,6 +95,32 @@ fn operations_alerts(
 ) -> Result<Vec<operations::AlertView>, String> {
     validate_user(&user_id)?;
     state.operations.alerts_for_user(&user_id)
+}
+
+#[tauri::command]
+fn paper_feedback_snapshot_create(
+    input: paper_feedback::FeedbackSnapshotInput,
+    created_at_ms: i64,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<paper_feedback::FeedbackSnapshot, String> {
+    state.paper_feedback.create_snapshot(input, created_at_ms)
+}
+
+#[tauri::command]
+fn paper_feedback_report_create(
+    input: paper_feedback::FeedbackReportInput,
+    created_at_ms: i64,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<paper_feedback::FeedbackReport, String> {
+    state.paper_feedback.create_report(input, created_at_ms)
+}
+
+#[tauri::command]
+fn paper_feedback_review_decide(
+    input: paper_feedback::ReviewDecisionInput,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<paper_feedback::ReviewDecision, String> {
+    state.paper_feedback.record_review_decision(input)
 }
 
 #[tauri::command]
@@ -2610,6 +2637,9 @@ pub fn run() {
             operations_health,
             operations_alerts,
             operations_alert_transition,
+            paper_feedback_snapshot_create,
+            paper_feedback_report_create,
+            paper_feedback_review_decide,
             python_research::project_list,
             python_research::project_create,
             python_research::project_import,

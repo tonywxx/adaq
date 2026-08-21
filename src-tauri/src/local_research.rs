@@ -44,6 +44,7 @@ use crate::{
     forecast_signal_dataset::{BacktestSignalDataset, backtest_signal_datasets},
     market_data_snapshot::{LocalSnapshotSource, MarketDataSnapshots},
     operations::OperationsStore,
+    paper_feedback::PaperFeedbackStore,
     research_queue::ResearchQueue,
     user::validate_user,
     validation::{ValidationRunOutcome, ValidationSource, ValidationStudies},
@@ -67,6 +68,7 @@ pub struct LocalResearchState {
     pub(crate) backtests: Backtests,
     pub(crate) connections: crate::connections::ConnectionManager,
     pub(crate) operations: OperationsStore,
+    pub(crate) paper_feedback: PaperFeedbackStore,
 }
 
 #[derive(Serialize)]
@@ -519,6 +521,7 @@ impl LocalResearchState {
         let us_equity = UsEquityDataPath::open(pipeline.clone()).map_err(string)?;
         let connections = crate::connections::ConnectionManager::open_production(database.clone())?;
         let operations = OperationsStore::open(database.clone())?;
+        let paper_feedback = PaperFeedbackStore::open(database.clone())?;
         let snapshot_source = Arc::new(LocalSnapshotSource::new(
             database.clone(),
             Arc::new(snapshot_store),
@@ -590,6 +593,7 @@ impl LocalResearchState {
                 backtests,
                 connections,
                 operations,
+                paper_feedback,
             }
         }))
     }
