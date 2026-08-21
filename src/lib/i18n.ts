@@ -137,6 +137,10 @@ const english = {
 				"Alpaca U.S. equity evidence with feed and coverage limitations visible.",
 			overview: "U.S. equity evidence through Alpaca Market Data.",
 		},
+		foundation: {
+			startAcquisition: "Start foundation acquisition",
+			cancelAcquisition: "Cancel acquisition",
+		},
 		instrumentSearch: {
 			title: "Instrument search",
 			description:
@@ -2151,6 +2155,10 @@ const simplifiedChinese = {
 			title: "美股",
 			description: "显示 Feed 与 Coverage 限制的 Alpaca 美股证据。",
 			overview: "通过 Alpaca Market Data 获取美股证据。",
+		},
+		foundation: {
+			startAcquisition: "开始获取基础数据",
+			cancelAcquisition: "取消获取",
 		},
 		instrumentSearch: {
 			title: "Instrument Search",

@@ -134,6 +134,7 @@ const MARKET_CONFIG = {
 		provider: "akshare-rs",
 		listCommand: "ashare_instrument_master_list",
 		acquireCommand: "ashare_instrument_master_acquire",
+		cancelCommand: "ashare_acquisition_cancel",
 	},
 	"us-equities": {
 		title: "markets.usEquities.title",
@@ -141,6 +142,7 @@ const MARKET_CONFIG = {
 		provider: "alpaca",
 		listCommand: "alpaca_instrument_master_list",
 		acquireCommand: "alpaca_instrument_master_acquire",
+		cancelCommand: "alpaca_acquisition_cancel",
 	},
 } as const;
 
@@ -278,6 +280,9 @@ export function MarketWorkspacePage({
 		(state) => state.activeInstrument,
 	);
 	const [search, setSearch] = useState("");
+	const [foundationRequested, setFoundationRequested] = useState(false);
+	const [activeOperationId, setActiveOperationId] = useState<string>();
+	const [acquisitionError, setAcquisitionError] = useState<string>();
 	const instrumentSearchRef = useRef<HTMLInputElement>(null);
 	const catalogQuery = useMarketCatalog(market, userId);
 	const instruments = useMemo(() => {
@@ -306,7 +311,12 @@ export function MarketWorkspacePage({
 		if (activeKey === selected.key) return;
 		void setActiveInstrument(selected.ref).catch(() => {});
 	}, [activeInstrument, selected]);
-	const calendarQuery = useMarketCalendar(market, userId, selected);
+	const calendarQuery = useMarketCalendar(
+		market,
+		userId,
+		selected,
+		foundationRequested,
+	);
 	const pipelineQuery = useQuery({
 		queryKey: ["market-pipeline-summary", userId],
 		queryFn: () =>
@@ -320,7 +330,9 @@ export function MarketWorkspacePage({
 			invoke<MarketSnapshot>("alpaca_snapshot", {
 				request: { userId, instrument: selected?.instrument },
 			}),
-		enabled: Boolean(userId && selected && market === "us-equities"),
+		enabled: Boolean(
+			userId && selected && foundationRequested && market === "us-equities",
+		),
 		staleTime: 30_000,
 	});
 	const barsQuery = useQuery({
@@ -337,22 +349,67 @@ export function MarketWorkspacePage({
 				},
 			});
 		},
-		enabled: Boolean(userId && selected),
+		enabled: Boolean(userId && selected && foundationRequested),
 		staleTime: 60_000,
 	});
 	const config = MARKET_CONFIG[market];
+	const startFoundationAcquisition = async () => {
+		if (!userId) return;
+		setAcquisitionError(undefined);
+		const operationId = `${market}-instrument-master-${crypto.randomUUID()}`;
+		setActiveOperationId(operationId);
+		try {
+			await invoke(config.acquireCommand, {
+				request: { userId, operationId },
+			});
+			setFoundationRequested(true);
+			await catalogQuery.refetch();
+		} catch (error) {
+			setAcquisitionError(getErrorMessage(error));
+		} finally {
+			setActiveOperationId(undefined);
+		}
+	};
+	const cancelFoundationAcquisition = async () => {
+		if (!userId || !activeOperationId) return;
+		try {
+			await invoke(config.cancelCommand, {
+				request: { userId, operationId: activeOperationId },
+			});
+		} catch (error) {
+			setAcquisitionError(getErrorMessage(error));
+		}
+	};
 
 	return (
 		<PageFrame
 			title={t(config.title)}
 			description={t(config.description)}
 			trailing={
-				catalogQuery.isFetching ? (
-					<Badge variant="outline" aria-live="polite">
-						<LoaderCircleIcon className="animate-spin" aria-hidden="true" />
-						{t("markets.refreshing")}
-					</Badge>
-				) : null
+				<div className="flex items-center gap-2">
+					{catalogQuery.isFetching ? (
+						<Badge variant="outline" aria-live="polite">
+							<LoaderCircleIcon className="animate-spin" aria-hidden="true" />
+							{t("markets.refreshing")}
+						</Badge>
+					) : null}
+					<Button
+						type="button"
+						onClick={() => void startFoundationAcquisition()}
+						disabled={catalogQuery.isFetching || Boolean(activeOperationId)}
+					>
+						{t("markets.foundation.startAcquisition")}
+					</Button>
+					{activeOperationId ? (
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() => void cancelFoundationAcquisition()}
+						>
+							{t("markets.foundation.cancelAcquisition")}
+						</Button>
+					) : null}
+				</div>
 			}
 		>
 			<div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(300px,360px)_minmax(0,1fr)]">
@@ -362,6 +419,11 @@ export function MarketWorkspacePage({
 					onAdd={() => instrumentSearchRef.current?.focus()}
 				/>
 				<main className="grid min-w-0 gap-4" aria-busy={catalogQuery.isPending}>
+					{acquisitionError ? (
+						<p className="text-sm text-destructive" role="alert">
+							{acquisitionError}
+						</p>
+					) : null}
 					<InstrumentSearchCard
 						market={market}
 						instruments={instruments}
@@ -1126,20 +1188,9 @@ function useMarketCatalog(
 		queryFn: async (): Promise<CatalogResult> => {
 			if (!userId) throw new Error("Market workspace is not authenticated");
 			const request = { request: { userId } };
-			let snapshots = await invoke<
+			const snapshots = await invoke<
 				InstrumentMasterSnapshot<AshareInstrument | AlpacaInstrument>[]
 			>(config.listCommand, request);
-			if (snapshots.length === 0) {
-				const acquired = await invoke<
-					InstrumentMasterSnapshot<AshareInstrument | AlpacaInstrument>
-				>(config.acquireCommand, {
-					request: {
-						userId,
-						operationId: `${market}-instrument-master-${crypto.randomUUID()}`,
-					},
-				});
-				snapshots = [acquired];
-			}
 			const snapshot = [...snapshots].sort(
 				(left, right) => right.effectiveAtMs - left.effectiveAtMs,
 			)[0];
@@ -1164,6 +1215,7 @@ function useMarketCalendar(
 	market: Exclude<MarketId, "crypto">,
 	userId: string | null,
 	instrument?: MarketInstrument,
+	enabled = true,
 ) {
 	return useQuery({
 		queryKey: [
@@ -1195,7 +1247,7 @@ function useMarketCalendar(
 				request: { ...request, venue: instrument.instrument.venue },
 			});
 		},
-		enabled: Boolean(userId && instrument),
+		enabled: Boolean(userId && instrument && enabled),
 		staleTime: 5 * 60_000,
 		gcTime: 30 * 60_000,
 	});
