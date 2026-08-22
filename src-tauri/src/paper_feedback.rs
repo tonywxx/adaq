@@ -303,6 +303,19 @@ mod tests {
     fn reports_and_decisions_are_user_scoped_and_append_only() {
         let s = store();
         let snap = s.create_snapshot(snapshot_input(), 1).unwrap();
+        assert!(
+            s.create_report(
+                FeedbackReportInput {
+                    user_id: "other".into(),
+                    snapshot_id: snap.snapshot_id.clone(),
+                    lens: FeedbackLens::Execution,
+                    metrics: serde_json::json!({}),
+                    comparable_evidence_id: None,
+                },
+                2,
+            )
+            .is_err()
+        );
         let report = s
             .create_report(
                 FeedbackReportInput {

@@ -1620,9 +1620,12 @@ pub struct BacktestSignalCandidate {
 /// Snapshot module, and Signal Dataset reads through the forecast_signal_dataset-owned path.
 #[tauri::command]
 pub fn backtest_compatible_signals(
-    request: BacktestSignalCompatibilityRequest,
+    mut request: BacktestSignalCompatibilityRequest,
+    window: tauri::WebviewWindow,
+    auth: tauri::State<'_, crate::auth::AuthState>,
     state: tauri::State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<BacktestSignalCandidate>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
     let strategy = state.package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
     if strategy.manifest.kind != ComponentKind::Strategy {
         return Err("Compatible Signals require a Strategy Component".into());
