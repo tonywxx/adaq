@@ -1001,7 +1001,7 @@ mod tests {
         let (root, state, request) = setup("non-finite", "runner-failure");
         let (attempt_id, cancelled) = seed_running_attempt(&state, "alice", "bounded-failure");
         let error = generate(&state.generation.0, &request, &cancelled, &attempt_id).unwrap_err();
-        assert!(error.starts_with("invalid-model-forecast:"));
+        assert!(error.contains("not an allowed value"));
         record_failure(
             &state.generation.0,
             &attempt_id,
@@ -1039,7 +1039,7 @@ mod tests {
         assert!(
             generate(&state.generation.0, &request, &cancelled, &attempt_id)
                 .unwrap_err()
-                .starts_with("invalid-model-forecast:"),
+                .contains("not an allowed value"),
         );
         drop(state);
         fs::remove_dir_all(root).unwrap();

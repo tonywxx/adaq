@@ -337,6 +337,7 @@ pub(super) mod tests {
         let wasm = fs::read(fixture).unwrap();
         let mut manifest: ComponentManifest =
             serde_json::from_str(include_str!("../../fixtures/model/manifest.json")).unwrap();
+        manifest.parameters[0].allowed_values = vec!["valid".into()];
         let wasm_sha256 = crate::forecast_signal_dataset::hash(&wasm);
         manifest.wasm_sha256 = wasm_sha256.clone();
         manifest.model_artifact.as_mut().unwrap().sha256 = wasm_sha256;
