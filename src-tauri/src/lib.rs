@@ -2005,22 +2005,28 @@ async fn alpaca_instrument_master_acquire(
         .us_equity
         .begin_acquisition(&user_id, &operation_id)
         .map_err(string)?;
-    state.foundation_acquisition_start(&user_id, &operation_id, "us-equities", "alpaca")?;
+    state.foundation_acquisition_start(
+        &user_id,
+        &operation_id,
+        "us-equities",
+        adaq_data_core::stock_us::STOCK_US_SRC,
+    )?;
     tauri::async_runtime::spawn_blocking(move || {
         let operation_user_id = user_id.clone();
         let cancellation_for_operation = cancellation.clone();
         let operation_state = state.clone();
-        let result = state
-            .connections
-            .with_alpaca_client(&user_id, move |client| {
+        let result = match adaq_data_core::stock_us::StockUsClient::new() {
+            Ok(client) => {
                 tauri::async_runtime::block_on(operation_state.us_equity.acquire_instrument_master(
                     &operation_user_id,
                     &client,
                     &cancellation_for_operation,
                     unix_now_ms(),
                 ))
-            })
-            .and_then(|result| result.map_err(string));
+                .map_err(string)
+            }
+            Err(error) => Err(string(error)),
+        };
         let finish = state.us_equity.finish_acquisition(&user_id, &operation_id);
         let (state_name, error) = match &result {
             Ok(_) => ("completed", None),
@@ -2102,9 +2108,8 @@ async fn alpaca_calendar_acquire(
         let operation_user_id = user_id.clone();
         let cancellation_for_operation = cancellation.clone();
         let operation_state = state.clone();
-        let result = state
-            .connections
-            .with_alpaca_client(&user_id, move |client| {
+        let result = match adaq_data_core::stock_us::StockUsClient::new() {
+            Ok(client) => {
                 tauri::async_runtime::block_on(operation_state.us_equity.acquire_calendar(
                     &operation_user_id,
                     &client,
@@ -2113,8 +2118,10 @@ async fn alpaca_calendar_acquire(
                     &cancellation_for_operation,
                     unix_now_ms(),
                 ))
-            })
-            .and_then(|result| result.map_err(string));
+                .map_err(string)
+            }
+            Err(error) => Err(string(error)),
+        };
         let finish = state.us_equity.finish_acquisition(&user_id, &operation_id);
         match (result, finish) {
             (Ok(snapshot), Ok(())) => Ok(snapshot.gui_dto()),
@@ -2146,19 +2153,18 @@ async fn alpaca_backfill(
         let request_user_id = request.user_id.clone();
         let cancellation_for_operation = cancellation.clone();
         let operation_state = state.clone();
-        let result = state
-            .connections
-            .with_alpaca_client(&user_id, move |client| {
-                tauri::async_runtime::block_on(operation_state.us_equity.backfill(
-                    request,
-                    &client,
-                    cancellation_for_operation,
-                    |event| {
-                        let _ = on_event.send(event);
-                    },
-                ))
-            })
-            .and_then(|result| result.map_err(string));
+        let result = match adaq_data_core::stock_us::StockUsClient::new() {
+            Ok(client) => tauri::async_runtime::block_on(operation_state.us_equity.backfill(
+                request,
+                &client,
+                cancellation_for_operation,
+                |event| {
+                    let _ = on_event.send(event);
+                },
+            ))
+            .map_err(string),
+            Err(error) => Err(string(error)),
+        };
         let finish = state.us_equity.finish_backfill(&request_user_id, &task_id);
         match (result, finish) {
             (Ok(publication), Ok(())) => {
@@ -2228,16 +2234,13 @@ async fn alpaca_snapshot(
     request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>().inner().clone();
-        state
-            .connections
-            .with_alpaca_client(&request.user_id, |client| {
-                tauri::async_runtime::block_on(state.us_equity.snapshot(
-                    &client,
-                    request.instrument,
-                    unix_now_ms(),
-                ))
-            })
-            .and_then(|result| result.map_err(string))
+        let client = adaq_data_core::stock_us::StockUsClient::new().map_err(string)?;
+        tauri::async_runtime::block_on(state.us_equity.snapshot(
+            &client,
+            request.instrument,
+            unix_now_ms(),
+        ))
+        .map_err(string)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -2618,23 +2621,19 @@ async fn market_workspace_get_bars(
             })
         }
         VenueKind::UsEquity => {
-            let user_id = request.user_id.clone();
             let instrument = request.instrument;
             let interval = request.interval;
-            let state = app.state::<Arc<LocalResearchState>>().inner().clone();
             tauri::async_runtime::spawn_blocking(move || {
-                let acquisition = state
-                    .connections
-                    .with_alpaca_client(&user_id, |client| {
-                        tauri::async_runtime::block_on(client.acquire_bars(
-                            instrument.clone(),
-                            interval,
-                            range,
-                            retrieved_at_ms,
-                            || false,
-                        ))
-                    })
-                    .and_then(|value| value.map_err(|error| error.to_string()))?;
+                let client = adaq_data_core::stock_us::StockUsClient::new()
+                    .map_err(|error| error.to_string())?;
+                let acquisition = tauri::async_runtime::block_on(client.acquire_bars(
+                    instrument.clone(),
+                    interval,
+                    range,
+                    retrieved_at_ms,
+                    || false,
+                ))
+                .map_err(|error| error.to_string())?;
                 Ok(MarketWorkspaceBarsView {
                     instrument,
                     provider: acquisition.provider,

@@ -1,4 +1,4 @@
-//! Alpaca Basic U.S. equity Source -> Canonical publication and evidence.
+//! U.S. equity Source -> Canonical publication and evidence.
 //!
 //! This module owns persistence and user scoping. Credentials never enter it;
 //! the Host supplies an already-authenticated client for each operation.
@@ -15,10 +15,11 @@ use std::{
 use adaq_data_core::{
     BarInterval, HistoricalBarRange, InstrumentStatus, TickerSnapshot,
     alpaca::{
-        AlpacaBarsAcquisition, AlpacaCalendarAcquisition, AlpacaCapabilitySnapshot, AlpacaClient,
+        AlpacaBarsAcquisition, AlpacaCalendarAcquisition, AlpacaCapabilitySnapshot,
         AlpacaInstrument, AlpacaInstrumentMasterAcquisition, AlpacaMarketSnapshot,
     },
     market::{InstrumentId, PriceBasis, TradingCalendarSnapshot, VenueKind},
+    stock_us::StockUsClient,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -498,7 +499,7 @@ impl UsEquityDataPath {
     pub async fn acquire_instrument_master(
         &self,
         user_id: &str,
-        client: &AlpacaClient,
+        client: &StockUsClient,
         cancellation: &CancellationToken,
         retrieved_at_ms: i64,
     ) -> Result<UsEquityInstrumentMasterSnapshot, PipelineError> {
@@ -519,12 +520,12 @@ impl UsEquityDataPath {
     pub fn record_instrument_master(
         &self,
         user_id: &str,
-        client: &AlpacaClient,
+        client: &StockUsClient,
         acquisition: AlpacaInstrumentMasterAcquisition,
     ) -> Result<UsEquityInstrumentMasterSnapshot, PipelineError> {
         validate_user(user_id)?;
         self.ensure_user_available(user_id)?;
-        if acquisition.provider != "alpaca"
+        if acquisition.provider != "adaq-data-stock-us"
             || acquisition.actual_upstream.trim().is_empty()
             || acquisition.method.trim().is_empty()
             || acquisition.connector_version.trim().is_empty()
@@ -695,7 +696,7 @@ impl UsEquityDataPath {
     pub async fn acquire_calendar(
         &self,
         user_id: &str,
-        client: &AlpacaClient,
+        client: &StockUsClient,
         venue: adaq_data_core::market::Venue,
         range: HistoricalBarRange,
         cancellation: &CancellationToken,
@@ -718,12 +719,12 @@ impl UsEquityDataPath {
     pub fn record_calendar(
         &self,
         user_id: &str,
-        client: &AlpacaClient,
+        client: &StockUsClient,
         acquisition: AlpacaCalendarAcquisition,
     ) -> Result<UsEquityCalendarSnapshot, PipelineError> {
         validate_user(user_id)?;
         self.ensure_user_available(user_id)?;
-        if acquisition.provider != "alpaca"
+        if acquisition.provider != "adaq-data-stock-us"
             || acquisition.retrieved_at_ms < 0
             || acquisition.response_sha256.trim().is_empty()
             || acquisition.raw_response.is_empty()
@@ -784,7 +785,7 @@ impl UsEquityDataPath {
     pub async fn backfill<F>(
         &self,
         request: UsEquityBackfillRequest,
-        client: &AlpacaClient,
+        client: &StockUsClient,
         cancellation: CancellationToken,
         mut on_event: F,
     ) -> Result<Option<PipelinePublication>, PipelineError>
@@ -1022,7 +1023,7 @@ impl UsEquityDataPath {
 
     pub async fn snapshot(
         &self,
-        client: &AlpacaClient,
+        client: &StockUsClient,
         instrument: InstrumentId,
         retrieved_at_ms: i64,
     ) -> Result<UsEquityMarketSnapshotDto, PipelineError> {
@@ -1555,7 +1556,7 @@ fn validate_instruments(instruments: &[AlpacaInstrument]) -> Result<(), Pipeline
         if instrument.instrument.venue.kind != VenueKind::UsEquity
             || instrument.instrument.venue.time_zone != "America/New_York"
             || instrument.mapping.instrument != instrument.instrument
-            || instrument.mapping.provider != "alpaca"
+            || instrument.mapping.provider != "adaq-data-stock-us"
             || instrument.mapping.provider_symbol != instrument.provider_symbol
             || !identities.insert(instrument.instrument.clone())
             || !provider_symbols.insert(instrument.provider_symbol.clone())
@@ -1576,13 +1577,13 @@ fn capability_snapshot(
     instruments: &[AlpacaInstrument],
 ) -> ProviderCapabilitySnapshot {
     let mut all_limitations = limitations.to_vec();
-    all_limitations.push("Basic U.S. equity feed is IEX-only; no consolidated/full-market realtime claim is permitted".into());
+    all_limitations.push("Yahoo Finance history is not a consolidated realtime feed".into());
     all_limitations.push(
         "Canonical Bars are Unadjusted; corporate actions are not merged or used for gap repair"
             .into(),
     );
     ProviderCapabilitySnapshot {
-        provider: "alpaca".into(),
+        provider: "adaq-data-stock-us".into(),
         captured_at_ms,
         subscription_plan: Some(capability.subscription_plan.clone()),
         feed: Some(capability.feed.clone()),
@@ -1604,9 +1605,15 @@ fn capability_snapshot(
         delayed: capability.delayed,
         delayed_known: true,
         delay_ms: capability.delay_ms,
-        rate_limit: Some("200 historical requests per minute".into()),
-        rate_limit_known: true,
-        requests_per_minute: Some(capability.historical_calls_per_minute),
+        rate_limit: (capability.historical_calls_per_minute > 0).then(|| {
+            format!(
+                "{} historical requests per minute",
+                capability.historical_calls_per_minute
+            )
+        }),
+        rate_limit_known: capability.historical_calls_per_minute > 0,
+        requests_per_minute: (capability.historical_calls_per_minute > 0)
+            .then_some(capability.historical_calls_per_minute),
         stream_connection_limit: Some(capability.stream_connection_limit as u32),
         streaming_symbol_limit: Some(capability.stream_symbol_limit as u32),
         unavailable_capabilities: capability.unavailable_capabilities.clone(),
@@ -1625,11 +1632,11 @@ fn source_acquisition(
             "Alpaca Bars content hash does not match retained rows".into(),
         ));
     }
-    let capability = AlpacaCapabilitySnapshot::basic(acquisition.retrieved_at_ms);
+    let capability = AlpacaCapabilitySnapshot::yahoo(acquisition.retrieved_at_ms);
     Ok(SourceAcquisition {
         provider: acquisition.provider.clone(),
         actual_upstream: Some(acquisition.actual_upstream.clone()),
-        connector: "adaq-alpaca-market-data".into(),
+        connector: "adaq-data-stock-us".into(),
         connector_version: acquisition.connector_version.clone(),
         request_parameters: acquisition.request_parameters.clone(),
         retrieved_at_ms: acquisition.retrieved_at_ms,
@@ -1676,7 +1683,7 @@ fn snapshot_dto(
     now_ms: i64,
 ) -> UsEquityMarketSnapshotDto {
     UsEquityMarketSnapshotDto {
-        provider: "alpaca".into(),
+        provider: "adaq-data-stock-us".into(),
         instrument,
         feed: snapshot.feed,
         retrieved_at_ms: snapshot.retrieved_at_ms,
@@ -1837,7 +1844,7 @@ mod tests {
         let pipeline = DataPipeline::open(directory.path(), database).unwrap();
         let path = UsEquityDataPath::open(pipeline).unwrap();
         let venue = Venue::us_equity("nasdaq").unwrap();
-        let calendar = adaq_data_core::alpaca::AlpacaClient::with_key_pair("k", "s");
+        let calendar = StockUsClient::new().unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let result = runtime.block_on(calendar.acquire_calendar(
             venue,
@@ -1858,16 +1865,19 @@ mod tests {
                 .len(),
             0
         );
-        assert_eq!(snapshot.capability_snapshot.feed.as_deref(), Some("iex"));
+        assert_eq!(
+            snapshot.capability_snapshot.feed.as_deref(),
+            Some("yahoo-chart")
+        );
     }
 
     #[test]
-    fn alpaca_source_reaches_canonical_quality_with_exact_decimals() {
+    fn yahoo_source_reaches_canonical_quality_with_exact_decimals() {
         let directory = tempdir().unwrap();
         let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
         let pipeline = DataPipeline::open(directory.path(), database).unwrap();
         let venue = Venue::us_equity("nasdaq").unwrap();
-        let client = AlpacaClient::with_key_pair("key", "secret");
+        let client = StockUsClient::new().unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let calendar = runtime
             .block_on(client.acquire_calendar(
@@ -1906,11 +1916,11 @@ mod tests {
         let invalid = Vec::new();
         let raw_response = br#"{"bars":{"AAPL":[]}}"#.to_vec();
         let acquisition = AlpacaBarsAcquisition {
-            provider: "alpaca".into(),
-            actual_upstream: "Alpaca Market Data API".into(),
-            method: "GET /v2/stocks/{symbol}/bars".into(),
+            provider: "adaq-data-stock-us".into(),
+            actual_upstream: "Yahoo Finance".into(),
+            method: "GET /v8/finance/chart/{symbol}".into(),
             connector_version: client.connector_version().into(),
-            request_parameters: serde_json::json!({"symbol":"AAPL","feed":"iex"}),
+            request_parameters: serde_json::json!({"symbol":"AAPL","interval":"1m"}),
             retrieved_at_ms: 1_704_163_200_000,
             response_sha256s: vec![digest(&raw_response)],
             content_sha256: digest(&serde_json::to_vec(&(&vec![bar.clone()], &invalid)).unwrap()),
@@ -1918,7 +1928,7 @@ mod tests {
             diagnostics: Default::default(),
             bars: vec![bar],
             invalid_bars: invalid,
-            limitations: vec!["IEX-only fixture".into()],
+            limitations: vec!["Yahoo history fixture".into()],
         };
         let mut canonicalization = CanonicalizationRequest::new(
             instrument,
@@ -1946,7 +1956,7 @@ mod tests {
                 .capability_snapshot
                 .feed
                 .as_deref(),
-            Some("iex")
+            Some("yahoo-chart")
         );
         assert_eq!(publication.canonical.unwrap().bars.len(), 1);
         assert_ne!(publication.quality.state, DataQualityState::Rejected);

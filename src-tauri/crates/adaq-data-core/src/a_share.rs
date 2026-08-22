@@ -23,6 +23,8 @@ use crate::market::{
 use crate::{BarInterval, DataError, HistoricalBarRange, InstrumentStatus};
 
 pub const ASHARE_SRC: &str = "akshare-rs";
+pub const STOCK_CN_SRC: &str = "adaq-data-stock-cn";
+pub const STOCK_CN_CONNECTOR_VERSION: &str = "adaq-data-core-stock-cn-v1";
 pub const ASHARE_CONNECTOR_VERSION: &str = "adaq-data-core-akshare-v1";
 pub const ASHARE_RAW_WIRE_ADAPTER_VERSION: &str = "adaq-data-core-raw-wire-v1";
 
@@ -209,6 +211,7 @@ pub struct AshareCorporateActionAcquisition {
 #[derive(Clone)]
 pub struct AshareClient {
     client: AkShareClient,
+    stock_client: adaq_data_stock_cn::Client,
     raw_http: reqwest::Client,
     mock_uri: Option<String>,
     policy: AshareRequestPolicy,
@@ -270,6 +273,7 @@ impl AshareClient {
         let mock_uri = mock_uri.into();
         Self {
             client: AkShareClient::with_mock(mock_uri.clone()),
+            stock_client: adaq_data_stock_cn::Client::new(),
             raw_http: raw_http_client(AshareRequestPolicy::default()),
             mock_uri: Some(mock_uri),
             policy: AshareRequestPolicy::default(),
@@ -282,6 +286,7 @@ impl AshareClient {
             .build();
         Self {
             client,
+            stock_client: adaq_data_stock_cn::Client::new(),
             raw_http: raw_http_client(policy),
             mock_uri: None,
             policy,
@@ -292,6 +297,7 @@ impl AshareClient {
         let mock_uri = mock_uri.into();
         Self {
             client: AkShareClient::with_mock(mock_uri.clone()),
+            stock_client: adaq_data_stock_cn::Client::new(),
             raw_http: raw_http_client(policy),
             mock_uri: Some(mock_uri),
             policy,
@@ -325,6 +331,14 @@ impl AshareClient {
     where
         F: Fn() -> bool,
     {
+        if self.mock_uri.is_none() {
+            return acquire_stock_instrument_master(
+                &self.stock_client,
+                retrieved_at_ms,
+                is_cancelled,
+            )
+            .await;
+        }
         if retrieved_at_ms < 0 {
             return Err(error(
                 "invalid_request",
@@ -482,6 +496,17 @@ impl AshareClient {
     where
         F: Fn() -> bool,
     {
+        if self.mock_uri.is_none() {
+            return acquire_stock_bars(
+                &self.stock_client,
+                instrument,
+                interval,
+                range,
+                retrieved_at_ms,
+                is_cancelled,
+            )
+            .await;
+        }
         if range.start_time_ms >= range.end_time_ms || retrieved_at_ms < 0 {
             return Err(error(
                 "invalid_request",
@@ -720,11 +745,56 @@ impl AshareClient {
                 "calendar range exceeds the bounded acquisition window or retrieval time is invalid",
             ));
         }
-        let (response, mut diagnostics) = self
-            .retry_raw(|| self.fetch_calendar_raw(), &is_cancelled)
-            .await?;
-        let date_strings = parse_trade_date_response(&response.bytes)
-            .map_err(|error| with_raw_evidence(error, &response.bytes))?;
+        let (
+            date_strings,
+            raw_response,
+            mut diagnostics,
+            provider,
+            actual_upstream,
+            method,
+            connector_version,
+        ) = if self.mock_uri.is_none() {
+            let rows = adaq_data_stock_cn::calendar::tool_trade_date(&self.stock_client)
+                .await
+                .map_err(|value| error("upstream", value.to_string()))?;
+            if is_cancelled() {
+                return Err(error("cancelled", "A-share acquisition was cancelled"));
+            }
+            let raw_response = serde_json::to_vec(&rows)
+                .map_err(|value| error("serialization", value.to_string()))?;
+            (
+                    rows.into_iter().map(|row| row.date).collect::<Vec<_>>(),
+                    raw_response,
+                    AshareRequestDiagnostics {
+                        request_count: 1,
+                        response_statuses: vec![200],
+                        notes: vec![
+                            "Trading dates are sourced from adaq-data-stock-cn calendar::tool_trade_date"
+                                .into(),
+                        ],
+                        ..Default::default()
+                    },
+                    STOCK_CN_SRC.to_owned(),
+                    "Sina via adaq-data-stock-cn".to_owned(),
+                    "typed calendar::tool_trade_date".to_owned(),
+                    STOCK_CN_CONNECTOR_VERSION.to_owned(),
+                )
+        } else {
+            let (response, diagnostics) = self
+                .retry_raw(|| self.fetch_calendar_raw(), &is_cancelled)
+                .await?;
+            let date_strings = parse_trade_date_response(&response.bytes)
+                .map_err(|error| with_raw_evidence(error, &response.bytes))?;
+            (
+                date_strings,
+                response.bytes,
+                diagnostics,
+                ASHARE_SRC.to_owned(),
+                SINA_UPSTREAM.to_owned(),
+                "raw-wire tool_trade_date_hist (Sina klc_td_sh)".to_owned(),
+                raw_wire_connector_version(),
+            )
+        };
         let invalid_date_count = date_strings
             .iter()
             .filter(|value| parse_date(value).is_err())
@@ -852,7 +922,7 @@ impl AshareClient {
             ));
         }
         diagnostics.notes.push(
-            "Sina trade-date history provides shared open-date evidence; exchange-specific auction and early-close detail is unavailable"
+            "Trade-date history provides shared open-date evidence; exchange-specific auction and early-close detail is unavailable"
                 .into(),
         );
         let content_bytes = serde_json::to_vec(&snapshots)
@@ -872,18 +942,18 @@ impl AshareClient {
             ));
         }
         Ok(AshareCalendarAcquisition {
-            provider: ASHARE_SRC.into(),
-            actual_upstream: SINA_UPSTREAM.into(),
-            method: "raw-wire tool_trade_date_hist (Sina klc_td_sh)".into(),
-            connector_version: raw_wire_connector_version(),
+            provider,
+            actual_upstream,
+            method,
+            connector_version,
             request_parameters: serde_json::json!({
                 "startTimeMs": range.start_time_ms,
                 "endTimeMs": range.end_time_ms
             }),
             retrieved_at_ms,
-            response_sha256: sha256(&response.bytes),
+            response_sha256: sha256(&raw_response),
             content_sha256: sha256(&content_bytes),
-            raw_response: Some(response.bytes),
+            raw_response: Some(raw_response),
             diagnostics,
             snapshots,
             limitations,
@@ -1394,6 +1464,307 @@ async fn sleep_or_cancel(
             _ = tokio::time::sleep(Duration::from_millis(25)) => {}
         }
     }
+}
+
+async fn acquire_stock_instrument_master<F>(
+    client: &adaq_data_stock_cn::Client,
+    retrieved_at_ms: i64,
+    is_cancelled: F,
+) -> Result<AshareInstrumentMasterAcquisition, DataError>
+where
+    F: Fn() -> bool,
+{
+    if retrieved_at_ms < 0 {
+        return Err(error(
+            "invalid_request",
+            "retrieval time must be non-negative",
+        ));
+    }
+    if is_cancelled() {
+        return Err(error("cancelled", "A-share acquisition was cancelled"));
+    }
+    let quotes = adaq_data_stock_cn::stock::spot::realtime(client)
+        .await
+        .map_err(|value| error("upstream", value.to_string()))?;
+    let raw_response =
+        serde_json::to_vec(&quotes).map_err(|value| error("serialization", value.to_string()))?;
+    let mut diagnostics = AshareRequestDiagnostics {
+        request_count: 1,
+        response_statuses: vec![200],
+        notes: vec![
+            "Instrument master and current observations are sourced from adaq-data-stock-cn typed spot rows".into(),
+        ],
+        ..Default::default()
+    };
+    let mut instruments = Vec::with_capacity(quotes.len());
+    let mut seen = HashMap::new();
+    for quote in &quotes {
+        if is_cancelled() {
+            return Err(error("cancelled", "A-share acquisition was cancelled"));
+        }
+        let provider_symbol = if quote.code.starts_with('6') {
+            format!("sh{}", quote.code)
+        } else {
+            format!("sz{}", quote.code)
+        };
+        let Ok((venue, code)) = normalize_provider_instrument(&provider_symbol, &quote.code) else {
+            diagnostics
+                .notes
+                .push(format!("unsupported A-share code skipped: {}", quote.code));
+            continue;
+        };
+        let instrument = InstrumentId::new(venue, code.clone())
+            .map_err(|value| error("invalid_instrument", value.to_string()))?;
+        if let Some(previous) = seen.insert(instrument.clone(), provider_symbol.clone())
+            && previous != provider_symbol
+        {
+            return Err(error(
+                "ambiguous_mapping",
+                format!(
+                    "provider symbols {previous} and {provider_symbol} map to the same Instrument"
+                ),
+            ));
+        }
+        let current_price = stock_cn_decimal(quote.price);
+        let status = match current_price
+            .as_deref()
+            .and_then(|value| Decimal::from_str(value).ok())
+        {
+            Some(value) if value > Decimal::ZERO => InstrumentStatus::Live,
+            Some(_) => InstrumentStatus::Suspended,
+            None => InstrumentStatus::Unknown,
+        };
+        instruments.push(AshareInstrument {
+            mapping: InstrumentSourceMapping {
+                instrument: instrument.clone(),
+                provider: STOCK_CN_SRC.into(),
+                provider_symbol: provider_symbol.clone(),
+                connector_version: STOCK_CN_CONNECTOR_VERSION.into(),
+                captured_at_ms: retrieved_at_ms,
+            },
+            instrument,
+            provider_symbol,
+            name: non_empty(quote.name.clone()),
+            status,
+            listing_time_ms: None,
+            continuous_trading_time_ms: None,
+            current_price,
+            current_base_volume: stock_cn_decimal(quote.volume),
+            current_quote_volume: stock_cn_decimal(quote.amount),
+            current_observed_at_ms: Some(retrieved_at_ms),
+        });
+    }
+    instruments.sort_by(|left, right| {
+        left.instrument
+            .venue
+            .id
+            .cmp(&right.instrument.venue.id)
+            .then_with(|| left.instrument.code.cmp(&right.instrument.code))
+    });
+    if instruments.is_empty() {
+        return Err(error(
+            "not_found",
+            "A-share spot returned no supported instruments",
+        ));
+    }
+    let content_sha256 = sha256(
+        &serde_json::to_vec(&instruments)
+            .map_err(|value| error("serialization", value.to_string()))?,
+    );
+    let response_sha256 = sha256(&raw_response);
+    Ok(AshareInstrumentMasterAcquisition {
+        provider: STOCK_CN_SRC.into(),
+        actual_upstream: "Eastmoney/Sina/Tencent via adaq-data-stock-cn".into(),
+        method: "typed stock::spot::realtime".into(),
+        connector_version: STOCK_CN_CONNECTOR_VERSION.into(),
+        request_parameters: serde_json::json!({"endpoint":"stock::spot::realtime"}),
+        retrieved_at_ms,
+        response_sha256: response_sha256.clone(),
+        parsed_response_sha256: response_sha256,
+        parsed_response: Some(raw_response.clone()),
+        content_sha256,
+        raw_response: Some(raw_response),
+        diagnostics,
+        instruments,
+        limitations: vec![
+            "Current membership is observed from the provider spot response; historical listing and suspension times are unavailable".into(),
+        ],
+    })
+}
+
+async fn acquire_stock_bars<F>(
+    client: &adaq_data_stock_cn::Client,
+    instrument: InstrumentId,
+    interval: BarInterval,
+    range: HistoricalBarRange,
+    retrieved_at_ms: i64,
+    is_cancelled: F,
+) -> Result<AshareBarsAcquisition, DataError>
+where
+    F: Fn() -> bool,
+{
+    if range.start_time_ms >= range.end_time_ms || retrieved_at_ms < 0 {
+        return Err(error(
+            "invalid_request",
+            "bar range or retrieval time is invalid",
+        ));
+    }
+    if is_cancelled() {
+        return Err(error("cancelled", "A-share acquisition was cancelled"));
+    }
+    let provider_symbol = provider_symbol_for(&instrument)?;
+    let (bars, invalid_bars, raw_response, request_parameters, actual_upstream) = if interval
+        == BarInterval::OneDay
+    {
+        let start = instrument
+            .venue
+            .local_time(range.start_time_ms)
+            .map_err(|value| error("invalid_timestamp", value.to_string()))?
+            .date()
+            .format("%Y%m%d")
+            .to_string();
+        let end = instrument
+            .venue
+            .local_time(range.end_time_ms)
+            .map_err(|value| error("invalid_timestamp", value.to_string()))?
+            .date()
+            .format("%Y%m%d")
+            .to_string();
+        let rows = adaq_data_stock_cn::stock::hist::daily(
+            client,
+            &instrument.code,
+            "daily",
+            "",
+            &start,
+            &end,
+        )
+        .await
+        .map_err(|value| error("upstream", value.to_string()))?;
+        let raw_response =
+            serde_json::to_vec(&rows).map_err(|value| error("serialization", value.to_string()))?;
+        let mut bars = Vec::new();
+        let mut invalid_bars = Vec::new();
+        for row in rows {
+            let candle = RawDailyCandle {
+                date: row.date.clone(),
+                open: stock_cn_decimal(row.open),
+                high: stock_cn_decimal(row.high),
+                low: stock_cn_decimal(row.low),
+                close: stock_cn_decimal(row.close),
+                volume: stock_cn_decimal(row.volume),
+                amount: stock_cn_decimal(row.amount),
+                raw_payload: serde_json::to_value(&row)
+                    .map_err(|value| error("serialization", value.to_string()))?,
+            };
+            match daily_bar(
+                &instrument,
+                &provider_symbol,
+                &candle,
+                range,
+                retrieved_at_ms,
+            ) {
+                Ok(bar) => bars.push(bar),
+                Err(value) if value.code == "outside_range" => {}
+                Err(_) => {
+                    invalid_bars.push(invalid_daily_bar(&instrument, &provider_symbol, &candle))
+                }
+            }
+        }
+        (
+            bars,
+            invalid_bars,
+            raw_response,
+            serde_json::json!({"symbol": instrument.code, "period":"daily", "adjust":"", "startDate":start, "endDate":end}),
+            "Eastmoney/Tencent via adaq-data-stock-cn".to_owned(),
+        )
+    } else if interval == BarInterval::OneMinute {
+        let rows = adaq_data_stock_cn::stock::stock_hist_em::stock_zh_a_hist_pre_min_em(
+            client,
+            &instrument.code,
+        )
+        .await
+        .map_err(|value| error("upstream", value.to_string()))?;
+        let raw_response =
+            serde_json::to_vec(&rows).map_err(|value| error("serialization", value.to_string()))?;
+        let mut bars = Vec::new();
+        let mut invalid_bars = Vec::new();
+        for row in rows {
+            let candle = RawMinuteCandle {
+                datetime: Some(row.date.clone()),
+                open: stock_cn_decimal(row.open),
+                high: stock_cn_decimal(row.high),
+                low: stock_cn_decimal(row.low),
+                close: stock_cn_decimal(row.close),
+                volume: stock_cn_decimal(row.volume),
+                amount: stock_cn_decimal(row.amount),
+                raw_payload: serde_json::to_value(&row)
+                    .map_err(|value| error("serialization", value.to_string()))?,
+            };
+            match minute_bar(
+                &instrument,
+                &provider_symbol,
+                interval,
+                &candle,
+                range,
+                retrieved_at_ms,
+            ) {
+                Ok(bar) => bars.push(bar),
+                Err(value) if value.code == "outside_range" => {}
+                Err(_) => invalid_bars.push(invalid_minute_bar(
+                    &instrument,
+                    &provider_symbol,
+                    interval,
+                    &candle,
+                )),
+            }
+        }
+        (
+            bars,
+            invalid_bars,
+            raw_response,
+            serde_json::json!({"symbol": instrument.code, "interval":"1m"}),
+            "Eastmoney via adaq-data-stock-cn".to_owned(),
+        )
+    } else {
+        return Err(error(
+            "unsupported_interval",
+            format!("adaq-data-stock-cn currently supports A-share 1m and 1d acquisition"),
+        ));
+    };
+    let content_sha256 = sha256(
+        &serde_json::to_vec(&(&bars, &invalid_bars))
+            .map_err(|value| error("serialization", value.to_string()))?,
+    );
+    Ok(AshareBarsAcquisition {
+        provider: STOCK_CN_SRC.into(),
+        actual_upstream,
+        method: "typed adaq-data-stock-cn stock history".into(),
+        connector_version: STOCK_CN_CONNECTOR_VERSION.into(),
+        request_parameters,
+        retrieved_at_ms,
+        response_sha256s: vec![sha256(&raw_response)],
+        content_sha256,
+        raw_responses: vec![raw_response],
+        diagnostics: AshareRequestDiagnostics {
+            request_count: 1,
+            response_statuses: vec![200],
+            notes: vec!["Provider rows were decoded through typed adaq-data-stock-cn APIs".into()],
+            ..Default::default()
+        },
+        bars,
+        invalid_bars,
+        limitations: vec![
+            "Historical A-share membership and corporate actions remain separate evidence paths"
+                .into(),
+        ],
+    })
+}
+
+fn stock_cn_decimal(value: Option<f64>) -> Option<String> {
+    value
+        .filter(|value| value.is_finite())
+        .and_then(|value| rust_decimal::Decimal::from_f64_retain(value))
+        .map(|value| value.to_string())
 }
 
 fn raw_wire_connector_version() -> String {

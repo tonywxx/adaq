@@ -6,6 +6,8 @@ license = "Apache-2.0"
 
 [dependencies]
 akshare = { version = "=0.1.14", default-features = false, features = ["equity", "misc"] }
+adaq-data-stock-cn = "0.1.4"
+adaq-data-stock-us = "0.1.2"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 chrono-tz = { version = "0.10", features = ["serde"] }
 futures-util = "0.3.34"

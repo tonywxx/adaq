@@ -14,7 +14,7 @@
 		"lint:fix": "biome lint --write ./src",
 		"format": "biome format --write ./src",
 		"format:check": "biome format ./src",
-		"tauri": "tauri",
+		"tauri": "node scripts/tauri.mjs",
 		"tauri:build:win-x86_64": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc"
 	},
 	"dependencies": {

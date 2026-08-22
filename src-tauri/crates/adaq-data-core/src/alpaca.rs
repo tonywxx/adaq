@@ -1114,6 +1114,29 @@ pub struct AlpacaCapabilitySnapshot {
 }
 
 impl AlpacaCapabilitySnapshot {
+    pub fn yahoo(captured_at_ms: i64) -> Self {
+        Self {
+            subscription_plan: "Yahoo Finance public API".into(),
+            feed: "yahoo-chart".into(),
+            coverage: "Yahoo Finance query-bounded history".into(),
+            realtime: false,
+            delayed: true,
+            delay_ms: None,
+            history_start_ms: None,
+            historical_latest_cutoff_ms: None,
+            historical_calls_per_minute: 0,
+            stream_connection_limit: 0,
+            stream_symbol_limit: 0,
+            record_types: vec!["instrument-master".into(), "bars".into(), "ticker".into()],
+            unavailable_capabilities: vec![
+                "complete-us-equity-universe".into(),
+                "consolidated-realtime-quotes".into(),
+                "trade-and-quote-stream".into(),
+            ],
+            captured_at_ms,
+        }
+    }
+
     pub fn basic(captured_at_ms: i64) -> Self {
         let cutoff = captured_at_ms.checked_sub(ALPACA_HISTORY_LATEST_DELAY_MS);
         Self {

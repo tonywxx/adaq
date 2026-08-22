@@ -14,6 +14,7 @@ use tokio_tungstenite::tungstenite::Message;
 pub mod a_share;
 pub mod alpaca;
 pub mod market;
+pub mod stock_us;
 
 pub(crate) const OKX_SRC: &str = "okx";
 pub const OKX_CONNECTOR_VERSION: &str = "adaq-data-core-okx-v1";
