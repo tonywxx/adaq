@@ -106,10 +106,6 @@ jobs:
         working-directory: src-tauri
         shell: bash
         run: sh crates/adaq-factor-research/scripts/check_generated.sh
-      - name: Run official TA-Lib C regression suite
-        working-directory: src-tauri
-        shell: bash
-        run: sh crates/adaq-indicator-engine/scripts/verify_talib_regtest.sh
       - name: Run Catalog and mixed-Run acceptance suites
         working-directory: src-tauri
         run: cargo test --workspace

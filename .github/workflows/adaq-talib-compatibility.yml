@@ -1,0 +1,34 @@
+name: Validate adaq-talib against C TA-Lib 0.7.1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            runner: macos-14
+          - name: Windows x86_64
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup MSVC environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/scripts/setup-msvc.ps1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run vendored C TA-Lib 0.7.1 regression suite
+        working-directory: src-tauri
+        shell: bash
+        run: sh crates/adaq-indicator-engine/scripts/verify_talib_regtest.sh
+      - name: Compare adaq-talib with C TA-Lib 0.7.1
+        working-directory: src-tauri
+        run: cargo test -p adaq-indicator-engine --features backend-rust,backend-c -- --test-threads=1
