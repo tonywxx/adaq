@@ -1,5 +1,5 @@
 export type WorkflowModuleId = "factor" | "model" | "strategy" | "operations";
-export type WorkflowCapability = "partial" | "planned";
+export type WorkflowCapability = "available" | "partial" | "planned";
 export type WorkflowStepId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 export const workflowModules = [
@@ -16,10 +16,10 @@ export const workflowSteps: readonly {
 	milestone?: string;
 	target?: "/factors" | "/components" | "/models" | "/backtest";
 }[] = [
-	{ id: 1, module: "factor", capability: "partial", target: "/factors" },
-	{ id: 2, module: "factor", capability: "partial", target: "/factors" },
+	{ id: 1, module: "factor", capability: "available", target: "/factors" },
+	{ id: 2, module: "factor", capability: "available", target: "/factors" },
 	{ id: 3, module: "factor", capability: "partial", target: "/components" },
-	{ id: 4, module: "model", capability: "planned", milestone: "M12" },
+	{ id: 4, module: "model", capability: "available", target: "/models" },
 	{ id: 5, module: "model", capability: "partial", target: "/models" },
 	{ id: 6, module: "model", capability: "partial", target: "/models" },
 	{ id: 7, module: "strategy", capability: "planned", milestone: "M13" },

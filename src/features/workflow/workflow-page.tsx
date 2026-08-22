@@ -443,7 +443,7 @@ function CapabilityBadge({ step }: { step: (typeof workflowSteps)[number] }) {
 		<Badge variant={step.capability === "planned" ? "outline" : "secondary"}>
 			{step.capability === "planned"
 				? t("workflow.capability.planned", { milestone: step.milestone })
-				: t("workflow.capability.partial")}
+				: t(`workflow.capability.${step.capability}`)}
 		</Badge>
 	);
 }

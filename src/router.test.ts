@@ -77,13 +77,28 @@ test("keeps the ten-step workflow ordered and mapped to four modules", () => {
 		["strategy", [7, 8]],
 		["operations", [9, 10]],
 	]);
-	for (const step of workflowSteps) {
-		expect(step.capability === "partial" || step.milestone).toBeTruthy();
-	}
-	expect(workflowSteps.slice(0, 2)).toEqual([
-		{ id: 1, module: "factor", capability: "partial", target: "/factors" },
-		{ id: 2, module: "factor", capability: "partial", target: "/factors" },
+	expect(workflowSteps.map((step) => step.capability)).toEqual([
+		"available",
+		"available",
+		"partial",
+		"available",
+		"partial",
+		"partial",
+		"planned",
+		"partial",
+		"planned",
+		"planned",
 	]);
+	expect(workflowSteps.slice(0, 2)).toEqual([
+		{ id: 1, module: "factor", capability: "available", target: "/factors" },
+		{ id: 2, module: "factor", capability: "available", target: "/factors" },
+	]);
+	expect(workflowSteps[3]).toEqual({
+		id: 4,
+		module: "model",
+		capability: "available",
+		target: "/models",
+	});
 });
 
 test("Models switches immediately and keeps loading inside its controls", () => {

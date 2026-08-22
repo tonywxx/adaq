@@ -482,7 +482,7 @@ const english = {
 				output: "Validated Model Artifact",
 				requirement:
 					"Research Validated factors or qualified factor components plus a Feature Dataset.",
-				entry: "Dedicated Model Training workspace planned for M12.",
+				entry: "Open the Models workspace for the M12 Python Model Lab and tutorial.",
 			},
 			5: {
 				title: "Evaluate Model",
@@ -2630,7 +2630,7 @@ const simplifiedChinese = {
 				summary: "选择模型与训练方法，绑定已验证研究输入，并产出冻结工件。",
 				output: "已验证模型工件",
 				requirement: "研究验证通过的因子或合格因子组件，以及 Feature Dataset。",
-				entry: "专用模型训练工作区计划在 M12 实现。",
+				entry: "在模型工作区打开 M12 Python Model Lab 与 Tutorial。",
 			},
 			5: {
 				title: "评估模型",
