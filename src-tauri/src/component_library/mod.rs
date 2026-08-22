@@ -23,8 +23,8 @@ use std::{
 
 use adaq_component_tooling::{
     ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotDefinition,
-    ModelArtifact, ModelOutput, ModelScope, ParameterDefinition, StrategyArchitecture,
-    strategy_architecture, verify_package,
+    ModelArtifact, ModelOutput, ModelScope, ParameterDefinition, QualificationAttempt,
+    StrategyArchitecture, qualify_package, strategy_architecture, verify_package,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -103,6 +103,14 @@ impl ComponentLibrary {
                 archive_sha256 TEXT NOT NULL,
                 PRIMARY KEY(user_id, archive_sha256),
                 FOREIGN KEY(archive_sha256) REFERENCES component_content(archive_sha256)
+             );
+             CREATE TABLE IF NOT EXISTS component_qualification_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                archive_sha256 TEXT NOT NULL,
+                qualified INTEGER NOT NULL,
+                evidence_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
              );",
             )
             .map_err(string)?;
@@ -113,6 +121,10 @@ impl ComponentLibrary {
     /// identity whose archive or wasm no longer matches.
     pub(crate) fn import(&self, user_id: &str, bytes: &[u8]) -> Result<LibraryComponent, String> {
         validate_user(user_id)?;
+        let qualification = self.qualify(user_id, bytes)?;
+        if !qualification.qualified {
+            return Err("Component Package failed qualification".into());
+        }
         let package = ComponentPackage::read(bytes).map_err(string)?;
         verify_package(&package)?;
         let component_id = package.manifest.component_id.to_string();
@@ -186,6 +198,37 @@ impl ComponentLibrary {
             .map_err(string)?;
         transaction.commit().map_err(string)?;
         Ok(component)
+    }
+
+    pub(crate) fn qualify(
+        &self,
+        user_id: &str,
+        bytes: &[u8],
+    ) -> Result<QualificationAttempt, String> {
+        validate_user(user_id)?;
+        // Imported archives do not carry a second source runtime. The tooling
+        // conformance replay is therefore the package's executable equivalence
+        // witness at this trust boundary.
+        let attempt = qualify_package(uuid::Uuid::new_v4().to_string(), bytes, |package, _| {
+            verify_package(package)
+        });
+        let database = self.0.database()?;
+        database
+            .execute(
+                "INSERT INTO component_qualification_attempts
+                 (attempt_id, user_id, archive_sha256, qualified, evidence_json, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    attempt.attempt_id,
+                    user_id,
+                    attempt.archive_sha256,
+                    attempt.qualified,
+                    serde_json::to_string(&attempt.evidence).map_err(string)?,
+                    crate::unix_now_ms(),
+                ],
+            )
+            .map_err(string)?;
+        Ok(attempt)
     }
 
     /// Lists every Component Package one User is entitled to, with Run

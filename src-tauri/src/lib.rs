@@ -280,14 +280,37 @@ fn research_context_for_attempt(
 /// Library module, and serialize the result. Command names and camelCase
 /// shapes are frozen.
 #[tauri::command]
-fn component_import(
+async fn component_import(
     mut request: component_library::ComponentImportRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
-    state: State<'_, Arc<LocalResearchState>>,
+    app: tauri::AppHandle,
 ) -> Result<component_library::LibraryComponent, String> {
     request.user_id = auth.user_id_for_window(window.label())?;
-    state.components.import(&request.user_id, &request.bytes)
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .components
+            .import(&request.user_id, &request.bytes)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn component_qualify(
+    mut request: component_library::ComponentImportRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<adaq_component_tooling::QualificationAttempt, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .components
+            .qualify(&request.user_id, &request.bytes)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -3577,6 +3600,7 @@ pub fn run() {
             market_subscribe_bars,
             market_unsubscribe_bar,
             component_import,
+            component_qualify,
             component_list,
             component_page,
             component_is_imported,
