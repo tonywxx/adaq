@@ -44,6 +44,7 @@ export function ResearchContextPreflight({
 	const { t } = useTranslation();
 	const [frozen, setFrozen] = useState<FrozenResearchEvidence>();
 	const [freezing, setFreezing] = useState(false);
+	const [freezeError, setFreezeError] = useState<string>();
 	const query = useQuery({
 		queryKey: ["research-evidence-context", userId],
 		queryFn: () =>
@@ -54,6 +55,7 @@ export function ResearchContextPreflight({
 	});
 	const freeze = async () => {
 		setFreezing(true);
+		setFreezeError(undefined);
 		try {
 			const result = await invoke<FrozenResearchEvidence>(
 				"research_context_freeze",
@@ -64,6 +66,8 @@ export function ResearchContextPreflight({
 				},
 			);
 			setFrozen(result);
+		} catch (error) {
+			setFreezeError(String(error));
 		} finally {
 			setFreezing(false);
 		}
@@ -120,6 +124,11 @@ export function ResearchContextPreflight({
 							{frozen ? (
 								<span className="text-xs text-muted-foreground">
 									{t("researchContext.frozen", { revision: frozen.contextRevision })}
+								</span>
+							) : null}
+							{freezeError ? (
+								<span className="text-xs text-destructive" role="alert">
+									{freezeError}
 								</span>
 							) : null}
 						</div>
