@@ -4,6 +4,8 @@
 
 The authenticated application shell presents ADAQ as one research-to-paper workflow. A user opening the app should see the next honest action, understand which capabilities exist today, and reach every step without learning the underlying milestone structure.
 
+For V1, this workflow is scoped to OKX Spot data and OKX Demo Paper execution under ADR 0090 and the [V1 Completion Recovery Map](./v1-completion-recovery-map.md). Retained A-share and U.S. equity routes are Post-V1 and must not appear as supported V1 steps or readiness claims.
+
 ## Home selection
 
 - `/` shows the Workflow Guide when the user has no Operational Responsibility.
@@ -80,7 +82,7 @@ Step 10 instead uses Healthy, Degraded, Critical, or Unknown. A Partial capabili
 
 Product readiness is recorded as an immutable `Readiness Assertion` for a declared Capability, Journey, Market/Data Context, Supported Platform, and Interface Locale scope. It is not a global green flag and does not create a runtime record or grant permission. The Guide exposes the assertion's declared scope, known limitations, blockers, evidence entry points, and next honest action beside the existing Capability State and user-scoped Step State. A Ready assertion means only `Ready for declared scope`; any in-scope change requires a new reviewed assertion.
 
-The complete acceptance journey must not contain a hidden manual edit of SQLite, Parquet, configuration, Python output, or an external script. Cancellation, failure, restart, recovery, evidence inspection, localization, keyboard/assistive access, and supported-platform behavior are part of the same gate rather than optional polish. The final V1 acceptance set additionally covers OKX Crypto Paper, China A-share local Paper, Alpaca U.S. Equity Paper, and the declared missing-data, provider-disconnect, clock-skew, Worker-crash, uncertain-order, credential-rotation, and restart-reconciliation failures.
+The complete acceptance journey must not contain a hidden manual edit of SQLite, Parquet, configuration, Python output, or an external script. Cancellation, failure, restart, recovery, evidence inspection, localization, keyboard/assistive access, and supported-platform behavior are part of the same gate rather than optional polish. The final V1 acceptance set covers the OKX Crypto Paper journey and the declared missing-data, provider-disconnect, clock-skew, Worker-crash, uncertain-order, credential-rotation, and restart-reconciliation failures.
 
 ## Workflow Guide
 

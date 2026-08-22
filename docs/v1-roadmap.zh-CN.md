@@ -2,21 +2,19 @@
 
 [English](./v1-roadmap.md)
 
-状态：已接受的 V1 架构与依赖顺序交付基线。M1–M10 是已经实现的研究、多市场与 Feature Engineering 基础；扩展后的 V1 只有在 M11–M18 全部完成后才能声明真正可用。
+状态：已接受的 OKX-only V1 架构。规范的剩余工作计划是 [V1 完成度恢复图](./v1-completion-recovery-map.zh-CN.md)。
 
-当前 Delivery Slice：在找到稳定的 A 股和美国股票数据源之前，开发与端到端验收只推进 OKX Spot。A 股和美股在本 Slice 中标记为 Not Tested / Deferred；除非另行重新规划，目标 V1 市场范围不变。
+根据 [ADR 0090](./adr/0090-rebaseline-v1-to-okx-spot-end-to-end.md)，OKX Spot 是正式 V1 市场范围。中国 A 股和美国股票属于 V1 后市场扩展，不再是“临时延期”的 V1 验收工作。保留现有代码与 Asset-neutral Contract，但它们不得破坏或扩大默认 V1 产品声明。
 
 本 Roadmap 实现完整的“研究 → Paper Trading → 反馈”系统，不是缩减版演示闭环。真实资金下单仍然属于独立资格认证后的 V1 后能力。
 
 ## V1 最终结果
 
-V1 用户可以获取并检查 Crypto、中国 A 股和美国股票数据；生成不可变、经过质量控制的研究证据；计算 Feature；研究和晋升 Time-Series 或 Cross-Sectional Factor；训练和评估 Qlib-first Model；构建并回测 Single-Instrument 或 Portfolio Strategy；生成、编译、验证和导入合格 Component；把不可变 Bundle 部署到受监督 Paper Trading Bot；在双语 GUI 中监控 Account、Health、Alert 和研究工作；并把已实现的 Paper 证据反馈到人工复核的研究流程，而不修改正在运行的 Deployment。
+V1 用户可以获取并检查 OKX Spot 数据；生成不可变、经过质量控制的研究证据；计算 Feature；研究和晋升 Time-Series 或 Cross-Sectional Factor；训练和评估 Qlib-first Model；构建并回测 Single-Instrument 或 Portfolio Strategy；生成、编译、验证和导入合格 Component；把不可变 Bundle 部署到受监督 OKX Demo Paper Trading Bot；在双语 GUI 中监控 Account、Health、Alert 和研究工作；并把已实现的 Paper 证据反馈到人工复核的研究流程，而不修改正在运行的 Deployment。
 
 V1 执行只使用：
 
 - Crypto Spot：OKX Demo Trading。
-- 美国股票：Alpaca Paper。
-- 中国 A 股：ADAQ 自有 A-share Ordinary Securities Account 模拟器。
 
 任何 V1 路径都不接受 Live Endpoint 或 Real Trading Credential。
 
@@ -30,7 +28,7 @@ V1 执行只使用：
 | Model 研究 | Model Lab | Qlib-first，ADAQ Native 可选；Inference Deployment 保持 Engine-neutral |
 | Strategy 研究 | Strategy Lab + Strategy Component | 一个 Strategy 产品，包含 Single-Instrument 与 Portfolio Scope |
 | Package 生成 | Component Generation and Qualification | Factor、Model、Strategy 复用现有 SDK/CLI/Package Trust Boundary |
-| Paper Account 与 Execution | Host Paper Trading Core | `adaq-paper-trading-core` + OKX、Alpaca、A-share Adapter |
+| Paper Account 与 Execution | Host Paper Trading Core | `adaq-paper-trading-core` + OKX Demo Adapter；股票 Adapter 属于 V1 后 |
 | Bot Evaluation | 受监督 Child Process | 每个 Active Bot 一个预编译 `adaq-bot-worker` Sidecar；不生成独立 Bot Executable |
 | Operations | Host Monitoring Engine + GUI | Tauri/React Operations Dashboard，不做 TUI |
 
@@ -40,7 +38,7 @@ V1 不发布推测性的 Unified Data API 或 Unified Trading API。只有证据
 
 ```mermaid
 flowchart LR
-    M8["M8：Model Research Foundation"] --> M9["M9：Multi-market Data and Platform Foundation"]
+    M8["M8：Model Research Foundation"] --> M9["M9：OKX Data and Platform Foundation"]
     M9 --> M10["M10：Feature Engineering"]
     M10 --> M11["M11：Factor Research"]
     M11 --> M12["M12：Python Research SDK 与 Qlib-first Model Lab"]
@@ -57,11 +55,11 @@ flowchart LR
 
 ## Milestones
 
-### M9 — Multi-market Data and Platform Foundation
+### M9 — OKX Data and Platform Foundation
 
-交付 OKX Spot、通过 `akshare-rs` 获取的中国 A 股、通过 Alpaca Market Data Basic 获取的美国股票的最终 V1 数据信任边界。加入 Venue-aware Instrument、Calendar 与 Session 语义；Source → Canonical → Snapshot Pipeline；Append-only Revision；Data Quality Report；Point-in-Time Instrument Universe；安全 Provider Connection Profile；`en-US` 与 `zh-CN` GUI Localization；以及三个市场的基础 Market Workspace。
+交付 OKX Spot 的最终 V1 数据信任边界。加入 Venue-aware Instrument、Calendar 与 Session 语义；Source → Canonical → Snapshot Pipeline；Append-only Revision；Data Quality Report；Point-in-Time Instrument Universe；安全 Provider Connection Profile；`en-US` 与 `zh-CN` GUI Localization；以及 OKX Workspace。保留股票 Foundation 供 V1 后市场扩展，但不作为受支持 V1 路径暴露。
 
-完成 Gate：三个 Provider 都能生成可检查的 Source/Canonical Evidence 和不可变 Snapshot，并保留 Provider Capability、Calendar、Quality、Gap、Quarantine 与 Revision Provenance；GUI 能以两种 Locale 检查每个 Market；Credential 不进入 SQLite、Log、Component 或 Frontend State。
+完成 Gate：OKX 生成可检查的 Source/Canonical Evidence 和不可变 Snapshot，并保留 Provider Capability、Calendar、Quality、Gap、Quarantine 与 Revision Provenance；GUI 能以两种 Locale 检查完整 OKX 路径；Credential 不进入 SQLite、Log、Component 或 Frontend State；Deferred Equity Path 不影响默认 Build 或 Readiness 声明。
 
 ### M10 — Feature Engineering
 
@@ -85,7 +83,15 @@ M12 已交付共享 Python Research SDK，包括一个显式 `create_project()` 
 
 完成 Gate：Apache-2.0 的 `py-factor-cross-sectional-momentum` 与 `py-model-qlib-ridge-return` Project 不使用 Network Data 或额外 Wheel，在不可变的 12-Instrument × 180-Session `python-tutorial-a-share@1` Fixture、固定 Train/Purge/Selection/Embargo/Final Window、托管 Environment、Host-owned Grid、显式 User Decision 与既有 Evidence Contract 上通过所有支持平台。Factor Golden Evidence 必须精确；Ridge Experiment 在严格有限 Tolerance 下发布并重新加载不含 pickle 的 Linear Model Artifact，并且只保持显式 WASI Export Path 资格，同时不削弱 M8 Forecast Signal Contract。
 
+该 A 股 Tutorial Fixture 是确定性的离线研究测试数据，不提供或暗示 A 股 V1 Provider/Product 支持。
+
 集中整理的 M12 实现与验证记录由 [M12 Python Research 与 Model Lab 架构](./m12-python-research-and-model-lab.zh-CN.md)及其[人工验收指南](./m12-python-research-manual-acceptance.zh-CN.md)组成。逐项验收证据记录在 Parent Issue [#97](https://github.com/tonywxx/adaq/issues/97) 与 Child Issue #98–#104 中。
+
+## V1 Recovery Gate 与实现图
+
+[V1 完成度恢复图](./v1-completion-recovery-map.zh-CN.md)是从当前仓库状态到 Readiness 的规范执行图。其 R1–R14 Child 取代旧 M13–M18 Issue 顺序，成为剩余工作计划。已关闭的 #105 与 #120–#128 继续作为历史 Foundation/Partial Core Evidence，不重新打开，也不视为产品完成。
+
+初始 Frontier 是 Deferred-market Isolation（R1）与 Host-derived User Authority（R2）。之后按 Recovery Map 的精确依赖顺序完成 Current-head Verification、OKX Data Foundation/Context Acceptance 与 M13–M18 Integration。Real Trading 仍属于 V1 后。
 
 ### M13 — Strategy and Portfolio Backtest
 
@@ -103,11 +109,11 @@ M12 已交付共享 Python Research SDK，包括一个显式 `create_project()` 
 
 ### M15 — Secure Paper Trading Accounts and Execution
 
-交付 `adaq-paper-trading-core`、`adaq-okx-paper`、`adaq-alpaca-paper`、`adaq-a-share-paper`、Provider Connection Test、Account Snapshot/Reconciliation、Capital Reservation、Host Risk/OMS、Provider-normalized Order/Fill Journal，以及仅支持 Ordinary Securities Account 的 A-share Event-driven Fill Engine。
+交付 `adaq-paper-trading-core` 与 OKX Demo Adapter、Provider Connection Test、Account Snapshot/Reconciliation、Capital Reservation、Host Risk/OMS、Provider-normalized Order/Fill Journal。保留 Equity Adapter 为 V1 后代码，但不加入默认 V1 产品路径。
 
-创建三个独立 Funding Target：1,000,000 CNY、1,000,000 USD、1,000,000 USDT。外部 Account Snapshot 不一致时仍保持权威；不得发明 Cross-account 或 Cross-currency Capital。
+创建一个 V1 Funding Target：1,000,000 USDT。外部 Account Snapshot 不一致时仍保持权威；不得发明 Cross-account 或 Cross-currency Capital。
 
-完成 Gate：每个 Account 都能 Reconcile，通过 Host Risk/OMS 接收 Venue-valid Paper Order，保存 Partial Fill 和 Provider Evidence，从不确定结果恢复，并且 Fail-closed 而不创建 Real Order。
+完成 Gate：OKX Demo Account 能 Reconcile，通过 Host Risk/OMS 接收 Venue-valid Paper Order，保存 Partial Fill 和 Provider Evidence，从不确定结果恢复，并且 Fail-closed 而不创建 Real Order。
 
 ### M16 — Trading Bot Runtime
 
@@ -117,7 +123,7 @@ M12 已交付共享 Python Research SDK，包括一个显式 `create_project()` 
 
 ### M17 — Monitoring, Alerts, and Operations Dashboard
 
-交付多维 Health、Append-only Operational Event、具备 Active/Acknowledged/Resolved Lifecycle 的 Typed Alert、Debounce/Hysteresis、Safety Action、Notification Center、Critical Banner、OS Notification、Bot/Account/Research Drill-down 和 GUI Home Operations Dashboard。完成 Global Status，但不把 CNY、USD、USDT 相加，也不让 Frontend Cache 获得 Trading Authority。
+交付多维 Health、Append-only Operational Event、具备 Active/Acknowledged/Resolved Lifecycle 的 Typed Alert、Debounce/Hysteresis、Safety Action、Notification Center、Critical Banner、OS Notification、Bot/Account/Research Drill-down 和 GUI Home Operations Dashboard。为未来扩展保留 Asset-neutral Currency Semantics，同时不让 Frontend Cache 获得 Trading Authority。
 
 完成 Gate：Data、Worker、Model、Account、Risk/OMS、Adapter、Local System 和 Feedback Failure 独立可见，并触发其 Frozen Fail-closed Action；Dashboard 立即 Paint、Card 独立加载，并在两个 V1 Locale 下可用。
 
@@ -125,7 +131,7 @@ M12 已交付共享 Python Research SDK，包括一个显式 `create_project()` 
 
 交付不可变 Paper Feedback Snapshot 与 Factor/Model/Strategy/Execution Feedback Report、Sample Sufficiency 与 Realized Horizon Gate、Research Review Required Alert、显式 User Review Decision，以及创建 New Attempt/New Bundle 的 Promotion Path。加入 Fault Injection、Restart/Reconciliation Drill、Retention/Diagnostic Control、完整双语用户文档、Accessibility Review、Performance Budget、Release Packaging 与 Supported-platform Acceptance。
 
-完成 Gate：三个市场完整 Workflow 在受支持平台通过自动与人工 Acceptance；Fault/Recovery Evidence 被保留；任何 Drift Response 都不能自动 Retrain、切换 Challenger 或 Hot-patch Running Bundle；全部 V1 Security 与 No-Live Invariant 都得到验证。
+完成 Gate：完整 OKX Spot → OKX Demo Paper Workflow 在受支持平台通过自动与人工 Acceptance；Fault/Recovery Evidence 被保留；任何 Drift Response 都不能自动 Retrain、切换 Challenger 或 Hot-patch Running Bundle；全部 V1 Security 与 No-Live Invariant 通过 Scoped Readiness Assertion 验证。
 
 ## 对原始 Workflow 的追踪
 
@@ -139,11 +145,13 @@ M12 已交付共享 Python Research SDK，包括一个显式 `create_project()` 
 | 6. 构建并回测 Strategy | M13 Strategy/Portfolio Backtest；M14 Component Generation 与 Import |
 | 7. 部署 Trading Bot | M16 Supervisor + 每 Bot Worker，运行于 M15 Paper Account |
 | 8. Monitoring 与 Alert | M17 Health、Event、Alert、Safety Action、Notification |
-| 9. Global Dashboard 与 Market View | M9 三市场 Workspace；M17 Operations Dashboard |
+| 9. Global Dashboard 与 Market View | M9 OKX Workspace；M17 Operations Dashboard |
 | 10. Real Trading | 明确属于 V1 后；M18 只生成 Paper 与 Operational Qualification Evidence，不授予 Live Authority |
 | Feedback Closure | M18 不可变 Paper Feedback + 人工复核的新 Research Attempt |
 
 ## M9 可执行交付图
+
+以下 Issue Graph 作为历史交付证据保留。其中 A 股与美股条目根据 ADR 0090 属于 V1 后 Foundation，不是当前 V1 Gate。
 
 M9 已发布为 [Parent Issue #66](https://github.com/tonywxx/adaq/issues/66)，并包含十个具备独立证据的 Child Slice：
 
@@ -330,14 +338,15 @@ flowchart TD
 - 保证每个内置 Python Example 可执行且双语：Pull Request 在 Supported CI Matrix 上运行完整 Offline Tutorial，并在所有平台运行快速 Contract；main、Release、Manual Acceptance 与接受 M12–M14 的 Slice 记录 Supported-platform Golden 和 Failure-path Matrix。
 - 保留无关 User Change；Child 未获得显式授权时绝不关闭 Parent Issue。
 
-最终 V1 Manual Acceptance 必须覆盖三个 Reference Journey：OKX Crypto Paper、A-share Local Paper、Alpaca U.S. Equity Paper；并覆盖 Missing Data、Provider Disconnect、Clock Skew、Worker Crash、Uncertain Order State、Credential Rotation 与 Restart Reconciliation 的 Failure Journey。
+最终 V1 Manual Acceptance 必须覆盖 OKX Crypto Paper Reference Journey，并覆盖 Missing Data、Provider Disconnect、Clock Skew、Worker Crash、Uncertain Order State、Credential Rotation 与 Restart Reconciliation 的 Failure Journey。
 
-V1 发布就绪通过不可变的 `Readiness Assertion` 集合记录，而不是应用内的全局 Flag。每条 Assertion 只覆盖明确声明的 Capability、Journey、Market/Data Context、Supported Platform 与 Interface Locale；所有必需 Criterion 通过后，才能称为 `Ready for declared scope`。验收记录必须绑定 Reviewed Commit、自动化与人工证据、精确平台/语言观察、限制项以及指定的 Acceptance Reviewer 或 Release Owner。平台或语言缺口、隐藏人工步骤、缺失恢复证据、Host/fail-closed 边界失败都会阻断对应 Assertion。发布集合必须包含上面的三条 Reference Journey 与完整 Failure Matrix；Assertion 不授予运行时权限，也不能静默泛化到其他 Scope。
+V1 发布就绪通过不可变的 `Readiness Assertion` 集合记录，而不是应用内的全局 Flag。每条 Assertion 只覆盖明确声明的 Capability、Journey、Market/Data Context、Supported Platform 与 Interface Locale；所有必需 Criterion 通过后，才能称为 `Ready for declared scope`。验收记录必须绑定 Reviewed Commit、自动化与人工证据、精确平台/语言观察、限制项以及指定的 Acceptance Reviewer 或 Release Owner。平台或语言缺口、隐藏人工步骤、缺失恢复证据、Host/fail-closed 边界失败都会阻断对应 Assertion。发布集合必须包含上面的 OKX Reference Journey 与完整 Failure Matrix；Assertion 不授予运行时权限，也不能静默泛化到其他 Scope。
 
 ## 明确的 V1 后工作
 
 - Real Trading Endpoint、Credential 与 Order Authority。
 - Public Unified Data API 或 Unified Trading API。
+- 中国 A 股和美国股票数据、Paper Execution、产品 Workflow 与 Readiness Qualification。
 - A-share Credit Account、融资、融券、卖空与 Margin。
 - Cross-account/Cross-currency Global Portfolio 与换算后的 Total Equity。
 - Historical Full-depth Order-book Replay、HFT、Tick-driven Strategy、Derivative 与 Advanced Market Terminal。

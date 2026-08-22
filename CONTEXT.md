@@ -129,8 +129,12 @@ _Avoid_: Provider credential, normalized truth, translated error string
 ### Market Data
 
 **Market Data Foundation**:
-The evidence-grade V1 Data product that acquires, preserves, canonicalizes, grades, snapshots, and exposes three-market evidence required by Research and Paper Trading. It is not a comprehensive financial-information terminal or a promise of identical Provider coverage.
+The evidence-grade V1 Data product that acquires, preserves, canonicalizes, grades, snapshots, and exposes OKX Spot evidence required by Research and OKX Demo Paper Trading. Its contracts remain asset-neutral, but retained A-share and U.S. equity paths are Post-V1 Market Expansion rather than supported V1 inputs. It is not a comprehensive financial-information terminal or a promise of identical Provider coverage.
 _Avoid_: Unified Data API, market-data terminal, all financial data
+
+**Post-V1 Market Expansion**:
+The separately planned qualification of a Market outside the accepted OKX-only V1 scope, including its data source, Connector, Paper Adapter, product workflow, supported-platform evidence, and scoped Readiness Assertions. Retained code or generic compatibility does not make that Market a supported V1 capability.
+_Avoid_: temporarily disabled V1 market, hidden supported market, deleted equity code
 
 **Data Foundation Workspace**:
 The User-owned workspace for explicitly acquiring, inspecting, and publishing Market Data Foundation evidence. It makes Source/Canonical/Quality lifecycle, Snapshot and Point-in-Time Universe readiness, cancellation/retry, evidence, and downstream prerequisite blockers visible without moving authority out of the Host.

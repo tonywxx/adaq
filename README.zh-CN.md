@@ -182,11 +182,12 @@ adaq-component verify dist/my-factor-0.1.0.adaq --previous ../my-factor-0.1.0/ma
 | [M7 Research Workspace](docs/m7-research-workspace.md) | [M7 研究工作区中文](docs/m7-research-workspace.zh-CN.md) | 桌面研究工作区设计与验收范围 |
 | [M7 Manual Acceptance](docs/m7-manual-acceptance.md) | [M7 人工验收中文](docs/m7-manual-acceptance.zh-CN.md) | 完整、需人工复核的研究工作区验收路径 |
 | [M8 Manual Acceptance](docs/m8-manual-acceptance.md) | [M8 人工验收中文](docs/m8-manual-acceptance.zh-CN.md) | 完整的 Model、Forecast Evaluation 与 Dataset-first Backtest 验收路径 |
-| [M9 Manual Acceptance](docs/m9-manual-acceptance.md) | [M9 人工验收中文](docs/m9-manual-acceptance.zh-CN.md) | 本地化、Connections、三个市场、Quality、Snapshot 与 GUI 边界的双语跨平台验收路径 |
+| [M9 Manual Acceptance](docs/m9-manual-acceptance.md) | [M9 人工验收中文](docs/m9-manual-acceptance.zh-CN.md) | 历史多市场 M9 验收记录；当前 V1 Readiness 仅为 OKX |
 | [M10 Manual Acceptance](docs/m10-manual-acceptance.md) | [M10 人工验收中文](docs/m10-manual-acceptance.zh-CN.md) | Feature Definitions、fitting、materialization、Feature Datasets 与 `/features` workspace 的双语跨平台验收路径 |
 | [M11 Factor Research Architecture](docs/m11-factor-research.md) | [M11 Factor Research 架构中文](docs/m11-factor-research.zh-CN.md) | 已接受的 Factor Lab、ABI v2、Evaluation、Promotion 与 Delivery Baseline；参见 [M11 双语人工验收指南](docs/m11-manual-acceptance.zh-CN.md)（[English](docs/m11-manual-acceptance.md)） |
 | [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | 外部 `Kronos-small` 推理、规范 Forecast Signals、评估与 Dataset-first Backtest |
-| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | 已接受的 Python Research 与 Model Lab 之后的 M12–M18 交付计划（Strategy、Component Generation、Paper Trading、Bot 与后续 V1 能力） |
+| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | 已接受的 OKX-only“研究到 Paper”V1 范围与 Milestone 架构 |
+| [V1 Completion Recovery Map](docs/v1-completion-recovery-map.md) | [V1 完成度恢复图](docs/v1-completion-recovery-map.zh-CN.md) | 当前 HEAD 清单、R1–R14 恢复图、验收边界与关闭证据 |
 
 M12 已通过同一 External Model Adapter 边界提供受控 Microsoft Qlib Ridge 训练。M8 不包含训练、内嵌或受控 Python Runner、Verified external inference 或 Marketplace 发布。
 

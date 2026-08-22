@@ -182,11 +182,12 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 | [M7 Research Workspace](docs/m7-research-workspace.md) | [M7 研究工作区中文](docs/m7-research-workspace.zh-CN.md) | Desktop research-workspace design and acceptance scope |
 | [M7 Manual Acceptance](docs/m7-manual-acceptance.md) | [M7 人工验收中文](docs/m7-manual-acceptance.zh-CN.md) | Complete human-reviewed research-workspace acceptance path |
 | [M8 Manual Acceptance](docs/m8-manual-acceptance.md) | [M8 人工验收中文](docs/m8-manual-acceptance.zh-CN.md) | Complete Model, Forecast Evaluation, and Dataset-first Backtest acceptance path |
-| [M9 Manual Acceptance](docs/m9-manual-acceptance.md) | [M9 人工验收中文](docs/m9-manual-acceptance.zh-CN.md) | Bilingual cross-platform acceptance path for localization, connections, three markets, quality, Snapshots, and GUI boundaries |
+| [M9 Manual Acceptance](docs/m9-manual-acceptance.md) | [M9 人工验收中文](docs/m9-manual-acceptance.zh-CN.md) | Historical multi-market M9 acceptance record; current V1 readiness is OKX-only |
 | [M10 Manual Acceptance](docs/m10-manual-acceptance.md) | [M10 人工验收中文](docs/m10-manual-acceptance.zh-CN.md) | Bilingual cross-platform acceptance path for Feature Definitions, fitting, materialization, Feature Datasets, and the `/features` workspace |
 | [M11 Factor Research Architecture](docs/m11-factor-research.md) | [M11 Factor Research 架构中文](docs/m11-factor-research.zh-CN.md) | Accepted Factor Lab, ABI v2, evaluation, promotion, and delivery baseline; see the [M11 manual acceptance guides](docs/m11-manual-acceptance.md) ([中文](docs/m11-manual-acceptance.zh-CN.md)) |
 | [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | External `Kronos-small` inference, canonical Forecast Signals, evaluation, and Dataset-first Backtest |
-| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | M12–M18 delivery plan following the accepted Python Research and Model Lab (Strategy, Component generation, Paper Trading, Bots, and later V1 work) |
+| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | Accepted OKX-only research-to-Paper V1 scope and milestone architecture |
+| [V1 Completion Recovery Map](docs/v1-completion-recovery-map.md) | [V1 完成度恢复图](docs/v1-completion-recovery-map.zh-CN.md) | Current-head inventory, R1–R14 recovery graph, acceptance boundaries, and closure evidence |
 
 M12 delivers controlled Microsoft Qlib Ridge training through the same External Model Adapter boundary. M8 did not include training, an embedded or controlled Python Runner, Verified external inference, or Marketplace publishing.
 

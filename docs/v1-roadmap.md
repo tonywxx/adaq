@@ -2,21 +2,19 @@
 
 [简体中文](./v1-roadmap.zh-CN.md)
 
-Status: accepted V1 architecture and dependency-ordered delivery baseline. M1 through M10 are the implemented research, multi-market, and Feature Engineering foundation; every milestone from M11 through M18 is required before the expanded V1 is declared usable.
+Status: accepted OKX-only V1 architecture. The canonical remaining-work plan is the [V1 Completion Recovery Map](./v1-completion-recovery-map.md).
 
-Current delivery slice: until stable A-share and U.S. equity data sources are available, implementation and end-to-end acceptance proceed through OKX Spot only. A-share and U.S. equity work is Not Tested / Deferred for this slice; the target V1 market scope is unchanged unless separately rebaselined.
+Under [ADR 0090](./adr/0090-rebaseline-v1-to-okx-spot-end-to-end.md), OKX Spot is the formal V1 market scope. China A-share and U.S. equity support are Post-V1 Market Expansion, not temporarily deferred V1 acceptance work. Existing code and asset-neutral contracts remain in place but cannot break or expand the default V1 product claim.
 
 This roadmap implements the complete research-to-Paper feedback system. It is not a reduced demonstration loop. Real-money order submission remains a separately qualified post-V1 capability.
 
 ## V1 outcome
 
-A V1 user can acquire and inspect crypto, China A-share, and U.S. equity data; produce immutable quality-controlled research evidence; compute Features; research and promote time-series or cross-sectional Factors; train and evaluate Qlib-first Models; build and backtest single-instrument or portfolio Strategies; generate, compile, verify, and import qualified Components; deploy immutable Bundles to supervised Paper Trading Bots; monitor accounts, health, alerts, and research work in a bilingual GUI; and feed realized Paper evidence back into human-reviewed research without mutating a running deployment.
+A V1 user can acquire and inspect OKX Spot data; produce immutable quality-controlled research evidence; compute Features; research and promote time-series or cross-sectional Factors; train and evaluate Qlib-first Models; build and backtest single-instrument or portfolio Strategies; generate, compile, verify, and import qualified Components; deploy immutable Bundles to supervised OKX Demo Paper Trading Bots; monitor accounts, health, alerts, and research work in a bilingual GUI; and feed realized Paper evidence back into human-reviewed research without mutating a running deployment.
 
 V1 execution uses only:
 
 - OKX Demo Trading for Crypto Spot.
-- Alpaca Paper for U.S. equities.
-- The ADAQ-owned A-share Ordinary Securities Account simulator for China A-shares.
 
 No V1 path accepts a Live endpoint or Real Trading credential.
 
@@ -30,7 +28,7 @@ No V1 path accepts a Live endpoint or Real Trading credential.
 | Model research | Model Lab | Qlib-first, with ADAQ Native optional; inference deployment remains engine-neutral |
 | Strategy research | Strategy Lab plus Strategy Components | One Strategy product with Single-Instrument and Portfolio scopes |
 | Package generation | Component Generation and Qualification | Factor, Model, and Strategy use the existing SDK/CLI/package trust boundary |
-| Paper accounts and execution | Host Paper Trading Core | `adaq-paper-trading-core` with OKX, Alpaca, and A-share Adapters |
+| Paper accounts and execution | Host Paper Trading Core | `adaq-paper-trading-core` with the OKX Demo Adapter; equity adapters are Post-V1 |
 | Bot evaluation | Supervised child process | One prebuilt `adaq-bot-worker` Sidecar per active Bot; no generated Bot executable |
 | Operations | Host Monitoring Engine and GUI | Tauri/React Operations Dashboard, not a TUI |
 
@@ -40,7 +38,7 @@ ADAQ does not publish a speculative Unified Data API or Unified Trading API in V
 
 ```mermaid
 flowchart LR
-    M8["M8: Model research foundation"] --> M9["M9: Multi-market data and platform foundation"]
+    M8["M8: Model research foundation"] --> M9["M9: OKX data and platform foundation"]
     M9 --> M10["M10: Feature Engineering"]
     M10 --> M11["M11: Factor Research"]
     M11 --> M12["M12: Python Research SDK and Qlib-first Model Lab"]
@@ -57,11 +55,11 @@ Later implementation may prepare an independent slice in parallel only when its 
 
 ## Milestones
 
-### M9 — Multi-market data and platform foundation
+### M9 — OKX data and platform foundation
 
-Deliver the final V1 data trust boundary for OKX Spot, China A-shares through `akshare-rs`, and U.S. equities through Alpaca Market Data Basic. Add venue-aware Instrument, calendar, and session semantics; the Source → Canonical → Snapshot pipeline; append-only revisions; Data Quality Reports; Point-in-Time Instrument Universes; secure Provider Connection Profiles; `en-US` and `zh-CN` GUI localization; and the basic three-market workspaces.
+Deliver the final V1 data trust boundary for OKX Spot. Add venue-aware Instrument, calendar, and session semantics; the Source → Canonical → Snapshot pipeline; append-only revisions; Data Quality Reports; Point-in-Time Instrument Universes; secure Provider Connection Profiles; `en-US` and `zh-CN` GUI localization; and the OKX workspace. Retain existing equity foundations for Post-V1 Market Expansion without exposing them as supported V1 paths.
 
-Completion gate: all three providers produce inspectable Source and Canonical evidence and immutable Snapshots with provider capability, calendar, quality, gap, quarantine, and revision provenance; the GUI can inspect each market in both locales; no credential enters SQLite, logs, Components, or frontend state.
+Completion gate: OKX produces inspectable Source and Canonical evidence and immutable Snapshots with provider capability, calendar, quality, gap, quarantine, and revision provenance; the GUI can inspect the complete OKX path in both locales; no credential enters SQLite, logs, Components, or frontend state; deferred equity paths do not affect the default build or readiness claim.
 
 ### M10 — Feature Engineering
 
@@ -85,22 +83,15 @@ Keep WASI Model Component, controlled ONNX, and Local Qlib Paper as distinct tru
 
 Completion gate: the Apache-2.0 `py-factor-cross-sectional-momentum` and `py-model-qlib-ridge-return` Projects run without network data or extra wheels against the immutable 12-Instrument × 180-session `python-tutorial-a-share@1` fixture, fixed Train/Purge/Selection/Embargo/Final windows, managed environments, Host-owned Grids, explicit User Decisions, and existing evidence contracts on every supported platform. Golden Factor evidence is exact; the Ridge experiment publishes and reloads a pickle-free Linear Model Artifact under its strict finite tolerance and remains eligible only for the explicit WASI export path without weakening M8 Forecast Signal contracts.
 
+The A-share tutorial fixture is deterministic offline research test data. It does not provide or imply A-share V1 provider/product support.
+
 The consolidated bilingual M12 implementation and verification record is the [M12 Python Research and Model Lab architecture](./m12-python-research-and-model-lab.md) plus its [manual acceptance guide](./m12-python-research-manual-acceptance.md). Criterion-level evidence is recorded under parent issue [#97](https://github.com/tonywxx/adaq/issues/97) and child issues #98–#104.
 
-## M13–M18 rebaseline gates and implementation graph
+## V1 recovery gates and implementation graph
 
-Before M13 implementation begins, the [Data Foundation Workspace](https://github.com/tonywxx/adaq/issues/122) and [Research Evidence Context handoff](https://github.com/tonywxx/adaq/issues/124) slices must both be complete. The [Operations Evidence and Safety Foundation](https://github.com/tonywxx/adaq/issues/126) may proceed in parallel, but it is a shared implementation prerequisite for Paper Accounts, Trading Bots, and the Operations Dashboard.
+The [V1 Completion Recovery Map](./v1-completion-recovery-map.md) is the canonical execution graph from the current repository state through readiness. Its R1–R14 children supersede the old M13–M18 issue order as the remaining-work plan. Closed issues #105 and #120–#128 remain historical foundation/partial-core evidence and are not reopened or treated as product completion.
 
-The implementation order is:
-
-1. [M13 Strategy and Portfolio Backtest](https://github.com/tonywxx/adaq/issues/127), after both remediation slices.
-2. [M14 Component Generation and Qualification](https://github.com/tonywxx/adaq/issues/128), after M13.
-3. [M15 Secure Paper Accounts and Execution](https://github.com/tonywxx/adaq/issues/120), after M14 and the Operations foundation.
-4. [M16 Trading Bot Runtime](https://github.com/tonywxx/adaq/issues/125), after M15 and the Operations foundation.
-5. [M17 Monitoring, Alerts, and Operations Dashboard](https://github.com/tonywxx/adaq/issues/121), after M16 and the Operations foundation.
-6. [M18 Paper Feedback, Hardening, and V1 Acceptance](https://github.com/tonywxx/adaq/issues/123), after M17.
-
-These issues are children of the [M13–M18 rebaseline](https://github.com/tonywxx/adaq/issues/108) and use native GitHub `blocked_by` edges. Each child is an independently usable vertical slice with explicit acceptance, failure/recovery evidence, and Out of Scope boundaries. Real Trading remains post-V1.
+The initial frontier is deferred-market isolation (R1) and Host-derived User authority (R2). Current-head verification, OKX Data Foundation/Context acceptance, and M13–M18 integration then proceed in the exact dependency order recorded by the recovery map. Real Trading remains post-V1.
 
 ### M13 — Strategy and Portfolio Backtest
 
@@ -118,11 +109,11 @@ Completion gate: no generated package is imported as qualified unless build, num
 
 ### M15 — Secure Paper Trading Accounts and Execution
 
-Deliver `adaq-paper-trading-core`, `adaq-okx-paper`, `adaq-alpaca-paper`, and `adaq-a-share-paper`; Provider Connection tests; account snapshots and reconciliation; capital reservations; host Risk and OMS; provider-normalized order and Fill journals; and the A-share event-driven Fill Engine for an Ordinary Securities Account only.
+Deliver `adaq-paper-trading-core` and the OKX Demo adapter; Provider Connection tests; account snapshots and reconciliation; capital reservations; Host Risk and OMS; and provider-normalized order and Fill journals. Retain equity adapters as Post-V1 code without including them in the default V1 product path.
 
-Create the three independent funding targets: CNY 1,000,000, USD 1,000,000, and USDT 1,000,000. External account snapshots remain authoritative when they differ. No cross-account or cross-currency capital is invented.
+Create one V1 funding target: USDT 1,000,000. External account snapshots remain authoritative when they differ. No cross-account or cross-currency capital is invented.
 
-Completion gate: each account can reconcile, accept venue-valid Paper orders through Host Risk and OMS, preserve partial Fills and provider evidence, recover from uncertain outcomes, and fail closed without creating a Real order.
+Completion gate: the OKX Demo account can reconcile, accept venue-valid Paper orders through Host Risk and OMS, preserve partial Fills and provider evidence, recover from uncertain outcomes, and fail closed without creating a Real order.
 
 ### M16 — Trading Bot Runtime
 
@@ -132,7 +123,7 @@ Completion gate: only Running may authorize new risk; Workers and Python never r
 
 ### M17 — Monitoring, Alerts, and Operations Dashboard
 
-Deliver multidimensional Health, append-only Operational Events, typed Alerts with Active/Acknowledged/Resolved lifecycle, debounce and hysteresis, safety actions, Notification Center, Critical banner, OS notifications, Bot/account/research drill-down, and the GUI home Operations Dashboard. Complete global status without summing CNY, USD, and USDT and without letting frontend cache grant trading authority.
+Deliver multidimensional Health, append-only Operational Events, typed Alerts with Active/Acknowledged/Resolved lifecycle, debounce and hysteresis, safety actions, Notification Center, Critical banner, OS notifications, Bot/account/research drill-down, and the GUI home Operations Dashboard. Preserve asset-neutral currency semantics for future expansion without letting frontend cache grant trading authority.
 
 Completion gate: data, Worker, Model, account, Risk/OMS, Adapter, local-system, and feedback failures are independently visible and trigger their frozen fail-closed actions; the Dashboard paints immediately, loads cards independently, and works in both V1 locales.
 
@@ -140,7 +131,7 @@ Completion gate: data, Worker, Model, account, Risk/OMS, Adapter, local-system, 
 
 Deliver immutable Paper Feedback Snapshots and Factor, Model, Strategy, and Execution Feedback Reports; sample-sufficiency and realized-horizon gates; Research Review Required Alerts; explicit User Review Decisions; and new-attempt/new-Bundle promotion paths. Add fault injection, restart and reconciliation drills, retention and diagnostics controls, full bilingual user documentation, accessibility review, performance budgets, release packaging, and supported-platform acceptance.
 
-Completion gate: the complete three-market workflow passes automated and reviewed acceptance on supported platforms; fault and recovery evidence is retained; no drift response retrains, switches a challenger, or hot-patches a running Bundle automatically; every V1 security and no-Live invariant is verified.
+Completion gate: the complete OKX Spot → OKX Demo Paper workflow passes automated and reviewed acceptance on supported platforms; fault and recovery evidence is retained; no drift response retrains, switches a challenger, or hot-patches a running Bundle automatically; every V1 security and no-Live invariant is verified through scoped Readiness Assertions.
 
 ## Traceability to the requested workflow
 
@@ -154,11 +145,13 @@ Completion gate: the complete three-market workflow passes automated and reviewe
 | 6. Build and backtest Strategies | M13 Strategy/Portfolio Backtest; M14 Component generation and import |
 | 7. Deploy Trading Bots | M16 Supervisor plus per-Bot worker, over M15 Paper accounts |
 | 8. Monitor and alert | M17 Health, events, alerts, safety actions, notifications |
-| 9. Global Dashboard and market views | M9 three-market workspaces; M17 Operations Dashboard |
+| 9. Global Dashboard and market views | M9 OKX workspace; M17 Operations Dashboard |
 | 10. Real Trading | Deliberately post-V1; M18 produces Paper and operational qualification evidence but grants no Live authority |
 | Feedback closure | M18 immutable Paper feedback and human-reviewed new research Attempts |
 
 ## M9 executable delivery map
+
+The following issue graph is retained as historical delivery evidence. Its A-share and U.S. equity entries are Post-V1 foundations under ADR 0090 and are not current V1 gates.
 
 M9 is published as [parent issue #66](https://github.com/tonywxx/adaq/issues/66) with ten independently evidenced child slices:
 
@@ -345,14 +338,15 @@ Every milestone and child issue must:
 - Keep every bundled Python example executable and bilingual: pull requests run the complete offline tutorial on the supported CI matrix plus fast contracts on all platforms, while main, Release, manual acceptance, and the accepting M12–M14 slice record the supported-platform Golden and failure-path matrix.
 - Preserve unrelated user changes and never close a parent issue from a child unless explicitly authorized.
 
-The final V1 manual acceptance must exercise three reference journeys—OKX Crypto Paper, A-share local Paper, and Alpaca U.S. Equity Paper—and failure journeys for missing data, provider disconnect, clock skew, Worker crash, uncertain order state, credential rotation, and restart reconciliation.
+The final V1 manual acceptance must exercise the OKX Crypto Paper reference journey and failure journeys for missing data, provider disconnect, clock skew, Worker crash, uncertain order state, credential rotation, and restart reconciliation.
 
-V1 release readiness is recorded as an immutable `Readiness Assertion` set, not a global application flag. Each assertion covers one declared Capability, Journey, Market/Data Context, Supported Platform, and Interface Locale and is `Ready for declared scope` only when every required criterion passes. The acceptance record binds criteria to the reviewed commit, automated and manual evidence, exact platform/locale observations, limitations, and the designated Acceptance Reviewer or Release Owner. A platform or locale gap, hidden manual step, missing recovery evidence, or failed Host/fail-closed boundary blocks the applicable assertion. The release set must contain the three reference journeys and the complete failure matrix above; an assertion never grants runtime permission or silently generalizes to another scope.
+V1 release readiness is recorded as an immutable `Readiness Assertion` set, not a global application flag. Each assertion covers one declared Capability, Journey, Market/Data Context, Supported Platform, and Interface Locale and is `Ready for declared scope` only when every required criterion passes. The acceptance record binds criteria to the reviewed commit, automated and manual evidence, exact platform/locale observations, limitations, and the designated Acceptance Reviewer or Release Owner. A platform or locale gap, hidden manual step, missing recovery evidence, or failed Host/fail-closed boundary blocks the applicable assertion. The release set must contain the OKX reference journey and the complete failure matrix above; an assertion never grants runtime permission or silently generalizes to another scope.
 
 ## Explicit post-V1 work
 
 - Real Trading endpoints, credentials, and order authority.
 - A public Unified Data API or Unified Trading API.
+- China A-share and U.S. equity data, Paper execution, product workflows, and readiness qualification.
 - A-share Credit Accounts, financing, securities lending, short selling, or margin.
 - Cross-account or cross-currency Global Portfolio and converted total equity.
 - Historical full-depth order-book replay, HFT, tick-driven Strategies, derivatives, and advanced market terminals.
