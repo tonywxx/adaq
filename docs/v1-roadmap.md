@@ -4,6 +4,8 @@
 
 Status: accepted V1 architecture and dependency-ordered delivery baseline. M1 through M10 are the implemented research, multi-market, and Feature Engineering foundation; every milestone from M11 through M18 is required before the expanded V1 is declared usable.
 
+Current delivery slice: until stable A-share and U.S. equity data sources are available, implementation and end-to-end acceptance proceed through OKX Spot only. A-share and U.S. equity work is Not Tested / Deferred for this slice; the target V1 market scope is unchanged unless separately rebaselined.
+
 This roadmap implements the complete research-to-Paper feedback system. It is not a reduced demonstration loop. Real-money order submission remains a separately qualified post-V1 capability.
 
 ## V1 outcome

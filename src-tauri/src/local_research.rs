@@ -12,7 +12,7 @@
 //! domains still live here).
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
@@ -20,15 +20,18 @@ use std::{
 };
 
 use adaq_backtest_core::{
-    MarketDataSnapshot, SnapshotDatasetBinding, SnapshotProvenance, SnapshotStore,
+    MarketDataSnapshot, MarketDataUniverseSnapshot, SnapshotDatasetBinding, SnapshotProvenance,
+    SnapshotStore, SnapshotUniverseBinding, UniverseSnapshotComponent,
 };
 use adaq_component_tooling::{
     ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotSource,
 };
-use adaq_data_core::{OhlcvBar, OkxClient, a_share::AshareClient};
+use adaq_data_core::{BarInterval, OhlcvBar, OkxClient, a_share::AshareClient, market::Venue};
 use adaq_data_pipeline::{
-    CancellationToken, DataPipeline, DataQualityReport, DataQualityState, a_share::AshareDataPath,
-    okx::OkxSpotDataPath, us_equity::UsEquityDataPath,
+    CancellationToken, DataPipeline, DataQualityReport, DataQualityState,
+    a_share::AshareDataPath,
+    okx::{OkxSpotDataPath, PointInTimeInstrumentUniverse},
+    us_equity::UsEquityDataPath,
 };
 use adaq_factor_research::ResearchEvidenceContext;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -1305,6 +1308,130 @@ impl LocalResearchState {
         Ok((snapshot, quality))
     }
 
+    pub(crate) fn publish_okx_backfill(
+        &self,
+        user_id: &str,
+        start_time_ms: i64,
+        end_time_ms: i64,
+        interval: BarInterval,
+        publications: &[adaq_data_pipeline::PipelinePublication],
+    ) -> Result<MarketDataUniverseSnapshot, String> {
+        let universe = self
+            .okx
+            .point_in_time_universe(user_id, end_time_ms)
+            .map_err(string)?;
+        let venue = Venue::crypto_spot("okx").map_err(string)?;
+        let expected_instruments = universe
+            .instruments
+            .iter()
+            .map(|instrument| format!("{}:{}", venue.id, instrument.code))
+            .collect::<HashSet<_>>();
+        let mut published_instruments = HashSet::new();
+        let canonical_publications = publications
+            .iter()
+            .map(|publication| {
+                publication
+                    .canonical
+                    .as_ref()
+                    .ok_or_else(|| "OKX backfill did not produce Canonical evidence".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for canonical in &canonical_publications {
+            let instrument_key = format!(
+                "{}:{}",
+                canonical.instrument.venue.id, canonical.instrument.code
+            );
+            if !published_instruments.insert(instrument_key) {
+                return Err("OKX backfill produced duplicate instrument evidence".into());
+            }
+        }
+        if published_instruments != expected_instruments {
+            return Err(
+                "OKX backfill did not produce complete Point-in-Time Universe coverage".into(),
+            );
+        }
+        let mut components = Vec::with_capacity(canonical_publications.len());
+        let mut quality_report_ids = Vec::new();
+        let mut calendar_snapshot_ids = Vec::new();
+        let mut provider_capability_snapshots = Vec::new();
+        let mut coverage = None;
+
+        for canonical in canonical_publications {
+            let (snapshot, _) = self.publish_pipeline_snapshot_for_user_with_policy(
+                user_id,
+                &canonical.canonical_id,
+                false,
+            )?;
+            let provenance = snapshot
+                .provenance
+                .as_ref()
+                .ok_or_else(|| "OKX Snapshot provenance is missing".to_owned())?;
+            let dataset = provenance
+                .datasets
+                .first()
+                .cloned()
+                .ok_or_else(|| "OKX Snapshot dataset provenance is missing".to_owned())?;
+            if provenance.venue != venue
+                || snapshot.interval != interval
+                || snapshot.start_time_ms < start_time_ms
+                || snapshot.end_time_ms > end_time_ms
+            {
+                return Err("OKX Snapshot coverage or venue does not match the backfill".into());
+            }
+            if let Some((expected_start, expected_end)) = coverage {
+                if snapshot.start_time_ms != expected_start || snapshot.end_time_ms != expected_end
+                {
+                    return Err("OKX Snapshot coverage is not aligned across instruments".into());
+                }
+            } else {
+                coverage = Some((snapshot.start_time_ms, snapshot.end_time_ms));
+            }
+            quality_report_ids.extend(provenance.quality_report_ids.iter().cloned());
+            calendar_snapshot_ids.extend(provenance.calendar_snapshot_ids.iter().cloned());
+            provider_capability_snapshots
+                .extend(provenance.provider_capability_snapshots.iter().cloned());
+            components.push(UniverseSnapshotComponent {
+                snapshot_id: snapshot.snapshot_id,
+                dataset,
+            });
+        }
+
+        let (snapshot_start, snapshot_end) =
+            coverage.ok_or_else(|| "OKX backfill produced no Snapshot evidence".to_owned())?;
+        let instruments = components
+            .iter()
+            .map(|component| component.dataset.instrument.clone())
+            .collect::<Vec<_>>();
+        quality_report_ids.sort_unstable();
+        quality_report_ids.dedup();
+        calendar_snapshot_ids.sort_unstable();
+        calendar_snapshot_ids.dedup();
+        let evidence_state = universe_evidence_state(&universe);
+        let universe_snapshot = MarketDataUniverseSnapshot {
+            snapshot_id: String::new(),
+            venue: venue.clone(),
+            interval,
+            start_time_ms: snapshot_start,
+            end_time_ms: snapshot_end,
+            universe: SnapshotUniverseBinding {
+                universe_id: universe.universe_id,
+                as_of_ms: universe.as_of_ms,
+                evidence_state,
+                evidence_reasons: universe.evidence_reasons,
+                coverage_start_ms: universe.coverage_start_ms,
+                coverage_end_ms: universe.coverage_end_ms,
+                instruments,
+            },
+            components,
+            quality_report_ids,
+            calendar_snapshot_ids,
+            provider_capability_snapshots,
+            content_sha256: String::new(),
+        };
+        self.snapshots
+            .persist_universe_for_user(user_id, universe_snapshot)
+    }
+
     pub(crate) fn publish_pipeline_derived_snapshot_for_user_with_policy(
         &self,
         user_id: &str,
@@ -1673,6 +1800,14 @@ fn strings(database: &Connection, sql: &str, user_id: &str) -> Result<Vec<String
 
 fn file_bytes(path: impl AsRef<Path>) -> u64 {
     fs::metadata(path).map_or(0, |metadata| metadata.len())
+}
+
+fn universe_evidence_state(universe: &PointInTimeInstrumentUniverse) -> String {
+    match universe.evidence_state {
+        adaq_data_pipeline::okx::UniverseEvidenceState::Observed => "observed".into(),
+        adaq_data_pipeline::okx::UniverseEvidenceState::Reconstructed => "reconstructed".into(),
+        adaq_data_pipeline::okx::UniverseEvidenceState::Unknown => "unknown".into(),
+    }
 }
 
 fn string(error: impl std::fmt::Display) -> String {

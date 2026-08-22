@@ -172,6 +172,12 @@ const english = {
 			publicationTitle: "Publication evidence",
 			publicationDescription:
 				"Inspect each published dataset before selecting it for research.",
+			okxBackfillTitle: "OKX Spot bars",
+			okxBackfillDescription:
+				"Backfill the selected range, publish Snapshots, and assemble the Point-in-Time Universe.",
+			okxBackfillStart: "Run OKX backfill",
+			okxBackfillRunning: "Backfill running…",
+			okxBackfillCancel: "Cancel backfill",
 			emptyPublication: "No published dataset is available.",
 			publishSnapshot: "Publish Snapshot",
 			publishing: "Publishing…",
@@ -2326,6 +2332,12 @@ const simplifiedChinese = {
 			degradedOrRejected: "Degraded 或 Rejected",
 			publicationTitle: "Publication 证据",
 			publicationDescription: "选择研究前检查每个已发布 Dataset。",
+			okxBackfillTitle: "OKX 现货 bars",
+			okxBackfillDescription:
+				"获取所选范围，发布 Snapshots，并组装 Point-in-Time Universe。",
+			okxBackfillStart: "运行 OKX 回补",
+			okxBackfillRunning: "回补运行中…",
+			okxBackfillCancel: "取消回补",
 			emptyPublication: "暂无已发布 Dataset。",
 			publishSnapshot: "发布 Snapshot",
 			publishing: "发布中…",

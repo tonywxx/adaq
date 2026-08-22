@@ -9,7 +9,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { getErrorMessage, useMarketSessionStore } from "@/lib/market-session";
 import { Link } from "@tanstack/react-router";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import {
 	ArrowRightIcon,
 	CheckCircle2Icon,
@@ -106,6 +106,16 @@ type OkxAcquisitionStatus = {
 	lastError?: string;
 };
 
+type OkxBackfillEvent = {
+	event:
+		| "universeLoaded"
+		| "instrumentStarted"
+		| "page"
+		| "published"
+		| "instrumentCompleted";
+	data?: { downloadedRecords?: number; instrumentCount?: number };
+};
+
 type FoundationMarket = {
 	id: "crypto" | "a-shares" | "us-equities";
 	titleKey: string;
@@ -152,6 +162,8 @@ export function DataFoundationPage() {
 	const { t } = useTranslation();
 	const userId = useMarketSessionStore((state) => state.userId);
 	const [activeOperation, setActiveOperation] = useState<string>();
+	const [backfillTaskId, setBackfillTaskId] = useState<string>();
+	const [backfillProgress, setBackfillProgress] = useState<string>();
 	const [error, setError] = useState<string>();
 	const [contextMarket, setContextMarket] =
 		useState<FoundationMarket["id"]>("crypto");
@@ -273,6 +285,49 @@ export function DataFoundationPage() {
 		}
 	};
 
+	const runOkxBackfill = async () => {
+		if (!userId || backfillTaskId) return;
+		const startTimeMs = Date.parse(`${rangeStart}T00:00:00Z`);
+		const endTimeMs = Date.parse(`${rangeEnd}T00:00:00Z`) + 86_400_000;
+		if (
+			!Number.isFinite(startTimeMs) ||
+			!Number.isFinite(endTimeMs) ||
+			startTimeMs >= endTimeMs
+		) {
+			setError("OKX backfill requires an increasing date range");
+			return;
+		}
+		const taskId = `crypto-foundation-${crypto.randomUUID()}`;
+		const onEvent = new Channel<OkxBackfillEvent>();
+		onEvent.onmessage = (event) => setBackfillProgress(event.event);
+		setError(undefined);
+		setBackfillTaskId(taskId);
+		try {
+			await invoke("okx_backfill_publish", {
+				request: {
+					userId,
+					taskId,
+					startTimeMs,
+					endTimeMs,
+					interval: "1m",
+				},
+				onEvent,
+			});
+			await Promise.all([
+				pipelineQuery.refetch(),
+				acquisitionQuery.refetch(),
+				foundationHistoryQuery.refetch(),
+				snapshotsQuery.refetch(),
+				universeQuery.refetch(),
+			]);
+		} catch (cause) {
+			setError(getErrorMessage(cause));
+		} finally {
+			setBackfillTaskId(undefined);
+			setBackfillProgress(undefined);
+		}
+	};
+
 	const establishContext = async () => {
 		if (!userId || !snapshotId) return;
 		setError(undefined);
@@ -349,6 +404,17 @@ export function DataFoundationPage() {
 		}
 	};
 
+	const cancelOkxBackfill = async () => {
+		if (!userId || !backfillTaskId) return;
+		try {
+			await invoke("okx_backfill_cancel", {
+				request: { userId, taskId: backfillTaskId },
+			});
+		} catch (cause) {
+			setError(getErrorMessage(cause));
+		}
+	};
+
 	const retry = async (operation: OkxAcquisitionStatus) => {
 		if (operation.instrument.venue.id !== "okx") return;
 		await acquire(markets[0]);
@@ -408,6 +474,40 @@ export function DataFoundationPage() {
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="grid gap-3">
+					<div className="flex flex-wrap items-center gap-3 rounded-md border p-3">
+						<div className="min-w-0 flex-1">
+							<strong className="text-sm">
+								{t("dataFoundation.okxBackfillTitle")}
+							</strong>
+							<p className="text-xs text-muted-foreground">
+								{t("dataFoundation.okxBackfillDescription")}
+							</p>
+							{backfillProgress ? (
+								<p className="text-xs text-muted-foreground" role="status">
+									{backfillProgress}
+								</p>
+							) : null}
+						</div>
+						<button
+							type="button"
+							className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+							disabled={Boolean(activeOperation || backfillTaskId)}
+							onClick={() => void runOkxBackfill()}
+						>
+							{backfillTaskId
+								? t("dataFoundation.okxBackfillRunning")
+								: t("dataFoundation.okxBackfillStart")}
+						</button>
+						{backfillTaskId ? (
+							<button
+								type="button"
+								className="rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted"
+								onClick={() => void cancelOkxBackfill()}
+							>
+								{t("dataFoundation.okxBackfillCancel")}
+							</button>
+						) : null}
+					</div>
 					{pipelineQuery.data?.length ? (
 						pipelineQuery.data.map((dataset) => (
 							<div key={dataset.sourceId} className="grid gap-2 rounded-md border p-3">

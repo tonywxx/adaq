@@ -8,6 +8,9 @@ import { i18n } from "@/lib/i18n";
 import { DataFoundationPage } from "./data-foundation-page";
 
 jest.mock("@tauri-apps/api/core", () => ({
+	Channel: class Channel<T> {
+		onmessage?: (event: T) => void;
+	},
 	invoke: jest.fn(async (command: string) => {
 		if (command === "market_data_pipeline_list") {
 			return [
@@ -121,6 +124,22 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(mockInvoke).toHaveBeenCalledWith("foundation_acquisition_history", {
 		userId: "user-1",
 	});
+
+	const backfillButton = Array.from(container.querySelectorAll("button")).find(
+		(button) => button.textContent === i18n.t("dataFoundation.okxBackfillStart"),
+	);
+	expect(backfillButton).toBeDefined();
+	await act(async () => {
+		backfillButton?.click();
+		await Promise.resolve();
+	});
+	expect(mockInvoke).toHaveBeenCalledWith(
+		"okx_backfill_publish",
+		expect.objectContaining({
+			request: expect.objectContaining({ interval: "1m" }),
+			onEvent: expect.anything(),
+		}),
+	);
 
 	await act(async () => root.unmount());
 });

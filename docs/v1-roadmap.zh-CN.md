@@ -4,6 +4,8 @@
 
 状态：已接受的 V1 架构与依赖顺序交付基线。M1–M10 是已经实现的研究、多市场与 Feature Engineering 基础；扩展后的 V1 只有在 M11–M18 全部完成后才能声明真正可用。
 
+当前 Delivery Slice：在找到稳定的 A 股和美国股票数据源之前，开发与端到端验收只推进 OKX Spot。A 股和美股在本 Slice 中标记为 Not Tested / Deferred；除非另行重新规划，目标 V1 市场范围不变。
+
 本 Roadmap 实现完整的“研究 → Paper Trading → 反馈”系统，不是缩减版演示闭环。真实资金下单仍然属于独立资格认证后的 V1 后能力。
 
 ## V1 最终结果
