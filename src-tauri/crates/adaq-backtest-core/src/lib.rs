@@ -1,6 +1,7 @@
 mod portfolio;
 mod simulation;
 mod snapshot;
+mod strategy;
 
 pub use portfolio::{
     ApprovedPortfolioTarget, Attribution, BacktestDecision, BacktestError, BacktestEvidence,
@@ -16,4 +17,8 @@ pub use simulation::{
 pub use snapshot::{
     MarketDataSnapshot, MarketDataUniverseSnapshot, SnapshotDatasetBinding, SnapshotError,
     SnapshotProvenance, SnapshotStore, SnapshotUniverseBinding, UniverseSnapshotComponent,
+};
+pub use strategy::{
+    EvaluationWindow, StrategyAttempt, StrategyAttemptStatus, StrategyBinding, StrategyError,
+    StrategyEvidence, StrategyProject, StrategyScope, StrategyWindow,
 };
