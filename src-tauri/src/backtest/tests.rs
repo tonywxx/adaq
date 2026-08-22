@@ -16,7 +16,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use adaq_backtest_core::{ExecutionProfile, MarketDataSnapshot};
+use adaq_backtest_core::{
+    EvaluationWindow, ExecutionProfile, MarketDataSnapshot, StrategyBinding, StrategyProject,
+    StrategyScope, StrategyWindow,
+};
 use adaq_component_tooling::{ComponentManifest, ComponentPackage, pack_component};
 use adaq_data_core::{BarInterval, OhlcvBar};
 use rusqlite::{Connection, params};
@@ -803,4 +806,51 @@ fn incompatible_stored_feature_plan_fails_with_reset_required_diagnostic() {
     invalid.feature_plan_json = "{".into();
     let error = super::pipeline::validate_provenance(&invalid).unwrap_err();
     assert!(error.contains("invalid frozen Feature Plan"), "{error}");
+}
+
+#[test]
+fn strategy_projects_are_user_scoped_append_only_and_retain_attempt_evidence() {
+    let harness = harness("strategy");
+    let project = StrategyProject::create(
+        "strategy-project",
+        "alice",
+        harness.strategy_hash.clone(),
+        StrategyScope::Portfolio,
+        "context-1",
+        0,
+        100,
+        StrategyWindow {
+            start_time_ms: 1,
+            end_time_ms: 40,
+        },
+        StrategyWindow {
+            start_time_ms: 60,
+            end_time_ms: 90,
+        },
+        vec![StrategyBinding {
+            slot: "forecast".into(),
+            evidence_id: "dataset-1".into(),
+            lineage_hash: "lineage-1".into(),
+        }],
+        Default::default(),
+    )
+    .unwrap();
+    harness.module.save_strategy_project(&project).unwrap();
+    assert_eq!(harness.module.strategy_projects("alice").unwrap().len(), 1);
+    assert!(harness.module.strategy_projects("bob").unwrap().is_empty());
+
+    let attempt = harness
+        .module
+        .start_strategy_attempt("alice", "strategy-project", EvaluationWindow::Final)
+        .unwrap();
+    let completed = harness
+        .module
+        .complete_strategy_attempt("alice", &attempt.attempt_id, "run-1")
+        .unwrap();
+    assert_eq!(
+        completed.status,
+        adaq_backtest_core::StrategyAttemptStatus::Completed
+    );
+    assert_eq!(completed.evidence.unwrap().run_ids, vec!["run-1"]);
+    finish(harness);
 }

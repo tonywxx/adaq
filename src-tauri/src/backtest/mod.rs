@@ -23,7 +23,10 @@ use std::{
     sync::{Arc, MutexGuard},
 };
 
-use adaq_backtest_core::{ExecutionProfile, MarketDataSnapshot};
+use adaq_backtest_core::{
+    EvaluationWindow, ExecutionProfile, MarketDataSnapshot, StrategyAttempt, StrategyEvidence,
+    StrategyProject,
+};
 use adaq_component_tooling::{ComponentPackage, StrategyArchitecture};
 use adaq_data_core::{BarInterval, OhlcvBar};
 use rusqlite::{Connection, Transaction, params};
@@ -118,6 +121,19 @@ impl Backtests {
                 PRIMARY KEY(run_id, dataset_id, signal_name),
                 FOREIGN KEY(run_id) REFERENCES backtest_runs(run_id) ON DELETE CASCADE,
                 FOREIGN KEY(dataset_id) REFERENCES signal_dataset_content(dataset_id)
+             );
+             CREATE TABLE IF NOT EXISTS strategy_projects (
+                strategy_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                project_json TEXT NOT NULL,
+                PRIMARY KEY(strategy_id, revision)
+             );
+             CREATE TABLE IF NOT EXISTS strategy_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                attempt_json TEXT NOT NULL
              );",
             )
             .map_err(string)?;
@@ -154,6 +170,143 @@ impl Backtests {
     /// provenance.
     pub(crate) fn run(&self, request: BacktestRunRequest) -> Result<BacktestRunView, String> {
         pipeline::execute(self, request)
+    }
+
+    pub(crate) fn save_strategy_project(&self, project: &StrategyProject) -> Result<(), String> {
+        project.validate().map_err(string)?;
+        let json = serde_json::to_string(project).map_err(string)?;
+        let database = self.0.database()?;
+        let latest: Option<u64> = database
+            .query_row(
+                "SELECT MAX(revision) FROM strategy_projects
+                 WHERE strategy_id = ?1 AND user_id = ?2",
+                params![project.strategy_id, project.user_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(string)?
+            .map(|value| u64::try_from(value).map_err(string))
+            .transpose()?;
+        if latest.is_some_and(|revision| revision >= project.revision) {
+            return Err("Strategy Project revisions are append-only".into());
+        }
+        if latest.is_some_and(|revision| revision + 1 != project.revision) {
+            return Err("Strategy Project revision does not follow the current revision".into());
+        }
+        database
+            .execute(
+                "INSERT INTO strategy_projects(strategy_id, user_id, revision, project_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    project.strategy_id,
+                    project.user_id,
+                    i64::try_from(project.revision).map_err(string)?,
+                    json
+                ],
+            )
+            .map_err(string)?;
+        Ok(())
+    }
+
+    pub(crate) fn strategy_projects(&self, user_id: &str) -> Result<Vec<StrategyProject>, String> {
+        validate_user(user_id)?;
+        let database = self.0.database()?;
+        let mut statement = database
+            .prepare(
+                "SELECT project_json FROM strategy_projects
+                 WHERE user_id = ?1 AND revision = (
+                    SELECT MAX(revision) FROM strategy_projects latest
+                    WHERE latest.strategy_id = strategy_projects.strategy_id
+                      AND latest.user_id = strategy_projects.user_id
+                 ) ORDER BY strategy_id",
+            )
+            .map_err(string)?;
+        statement
+            .query_map([user_id], |row| row.get::<_, String>(0))
+            .map_err(string)?
+            .map(|row| {
+                let json = row.map_err(string)?;
+                serde_json::from_str(&json).map_err(string)
+            })
+            .collect()
+    }
+
+    pub(crate) fn start_strategy_attempt(
+        &self,
+        user_id: &str,
+        project_id: &str,
+        window: EvaluationWindow,
+    ) -> Result<StrategyAttempt, String> {
+        let project = self.strategy_project(user_id, project_id)?;
+        let attempt = StrategyAttempt::new(uuid::Uuid::new_v4().to_string(), &project, window);
+        let json = serde_json::to_string(&attempt).map_err(string)?;
+        self.0
+            .database()?
+            .execute(
+                "INSERT INTO strategy_attempts(attempt_id, user_id, project_id, attempt_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![attempt.attempt_id, user_id, project_id, json],
+            )
+            .map_err(string)?;
+        Ok(attempt)
+    }
+
+    pub(crate) fn complete_strategy_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+        run_id: &str,
+    ) -> Result<StrategyAttempt, String> {
+        let database = self.0.database()?;
+        let (project_id, attempt_json): (String, String) = database
+            .query_row(
+                "SELECT project_id, attempt_json FROM strategy_attempts
+                 WHERE attempt_id = ?1 AND user_id = ?2",
+                params![attempt_id, user_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| "Strategy Attempt was not found".to_owned())?;
+        drop(database);
+        let mut attempt: StrategyAttempt = serde_json::from_str(&attempt_json).map_err(string)?;
+        let project = self.strategy_project(user_id, &project_id)?;
+        attempt.begin().map_err(string)?;
+        attempt
+            .complete(
+                &project,
+                StrategyEvidence {
+                    attempt_id: attempt.attempt_id.clone(),
+                    project_revision: project.revision,
+                    context_hash: project.context_hash.clone(),
+                    window: attempt.window,
+                    run_ids: vec![run_id.to_owned()],
+                    provenance: BTreeMap::from([(String::from("runId"), run_id.to_owned())]),
+                },
+            )
+            .map_err(string)?;
+        let json = serde_json::to_string(&attempt).map_err(string)?;
+        self.0
+            .database()?
+            .execute(
+                "UPDATE strategy_attempts SET attempt_json = ?1
+                 WHERE attempt_id = ?2 AND user_id = ?3",
+                params![json, attempt_id, user_id],
+            )
+            .map_err(string)?;
+        Ok(attempt)
+    }
+
+    fn strategy_project(&self, user_id: &str, project_id: &str) -> Result<StrategyProject, String> {
+        validate_user(user_id)?;
+        let database = self.0.database()?;
+        let json: String = database
+            .query_row(
+                "SELECT project_json FROM strategy_projects
+                 WHERE strategy_id = ?1 AND user_id = ?2
+                 ORDER BY revision DESC LIMIT 1",
+                params![project_id, user_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Strategy Project was not found".to_owned())?;
+        serde_json::from_str(&json).map_err(string)
     }
 
     /// Pages one User's Run history, optionally filtered by one exact
@@ -707,6 +860,26 @@ pub struct BacktestExecutionRequest {
     pub run_id: String,
     pub offset: usize,
     pub limit: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrategyProjectRequest {
+    pub project: StrategyProject,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrategyAttemptStartRequest {
+    pub project_id: String,
+    pub window: EvaluationWindow,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrategyAttemptCompleteRequest {
+    pub attempt_id: String,
+    pub run_id: String,
 }
 
 #[derive(Serialize)]

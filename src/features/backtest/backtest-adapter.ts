@@ -13,6 +13,8 @@ import type {
 	SnapshotDownloadRequest,
 	SnapshotListRequest,
 	SnapshotPage,
+	StrategyAttempt,
+	StrategyProject,
 } from "./backtest-types";
 import type {
 	BacktestPreflight,
@@ -81,6 +83,22 @@ export function createBacktestAdapter(invoke: TauriInvoke) {
 			return invoke("backtest_get", {
 				request: { userId, runId },
 			}) as Promise<BacktestRun>;
+		},
+		listStrategyProjects() {
+			return invoke("strategy_project_list", {}) as Promise<StrategyProject[]>;
+		},
+		saveStrategyProject(project: StrategyProject) {
+			return invoke("strategy_project_save", { request: { project } });
+		},
+		startStrategyAttempt(projectId: string, window: "selection" | "final") {
+			return invoke("strategy_attempt_start", {
+				request: { projectId, window },
+			}) as Promise<StrategyAttempt>;
+		},
+		completeStrategyAttempt(attemptId: string, runId: string) {
+			return invoke("strategy_attempt_complete", {
+				request: { attemptId, runId },
+			}) as Promise<StrategyAttempt>;
 		},
 	};
 }

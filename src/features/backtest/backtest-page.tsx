@@ -47,6 +47,8 @@ import type {
 	ExecutionPage,
 	RunSummary,
 	Snapshot,
+	StrategyProject,
+	StrategyScope,
 } from "./backtest-types";
 import { formatDecimal } from "./format-decimal";
 const EXECUTION_PAGE_SIZE = 100;
@@ -120,6 +122,12 @@ export function BacktestPage({
 	const [historyTotal, setHistoryTotal] = useState(0);
 	const [message, setMessage] = useState("");
 	const [runTechnicalError, setRunTechnicalError] = useState("");
+	const [strategyProjects, setStrategyProjects] = useState<StrategyProject[]>([]);
+	const [strategyProjectId, setStrategyProjectId] = useState("strategy-lab");
+	const [strategyScope, setStrategyScope] = useState<StrategyScope>(
+		"single-instrument",
+	);
+	const [strategyProjectMessage, setStrategyProjectMessage] = useState("");
 	const [snapshotTechnicalError, setSnapshotTechnicalError] = useState("");
 	const [downloadTaskId, setDownloadTaskId] = useState<string>();
 	const [componentsLoading, setComponentsLoading] = useState(true);
@@ -240,6 +248,17 @@ export function BacktestPage({
 			})
 			.catch((error) => active && setMessage(String(error)))
 			.finally(() => active && setComponentsLoading(false));
+		return () => {
+			active = false;
+		};
+	}, [adapter, userId]);
+	useEffect(() => {
+		if (!userId || typeof adapter.listStrategyProjects !== "function") return;
+		let active = true;
+		void adapter
+			.listStrategyProjects()
+			.then((projects) => active && setStrategyProjects(projects))
+			.catch((error) => active && setStrategyProjectMessage(String(error)));
 		return () => {
 			active = false;
 		};
@@ -452,6 +471,12 @@ export function BacktestPage({
 	};
 	const execute = async () => {
 		if (!userId || running) return;
+		if (strategyScope === "portfolio") {
+			setMessage(
+				"Portfolio execution is not available until a universe-backed runner is connected.",
+			);
+			return;
+		}
 		if (
 			draftSession.preflight.status !== "ready" ||
 			draftSession.preflight.revision !== draft.revision
@@ -466,8 +491,58 @@ export function BacktestPage({
 		setRunning(true);
 		setRunTechnicalError("");
 		setMessage("Running deterministic Backtest…");
+		let attemptId: string | undefined;
 		try {
+			if (snapshot && selectedStrategy) {
+				const midpoint = Math.floor(
+					(snapshot.startTimeMs + snapshot.endTimeMs) / 2,
+				);
+				const project: StrategyProject = {
+					strategyId: strategyProjectId.trim() || "strategy-lab",
+					userId,
+					revision:
+						(strategyProjects.find((item) => item.strategyId === strategyProjectId)
+							?.revision ?? 0) + 1,
+					strategyArchiveSha256: selectedStrategy.archiveSha256,
+					scope: strategyScope,
+					contextHash: snapshot.snapshotId,
+					contextStartTimeMs: snapshot.startTimeMs,
+					contextEndTimeMs: snapshot.endTimeMs,
+					selectionWindow: {
+						startTimeMs: snapshot.startTimeMs,
+						endTimeMs: midpoint,
+					},
+					finalWindow: {
+						startTimeMs: midpoint + 1,
+						endTimeMs: snapshot.endTimeMs,
+					},
+					bindings: [
+						...Object.entries(factorSelections).map(([slot, evidenceId]) => ({
+							slot,
+							evidenceId,
+							lineageHash: evidenceId,
+						})),
+						...Object.entries(draft.signalSelections).map(([slot, signal]) => ({
+							slot,
+							evidenceId: signal.datasetId,
+							lineageHash: signal.datasetId,
+						})),
+					],
+					parameters: { ...draft.strategyParameters },
+				};
+				await adapter.saveStrategyProject(project);
+				setStrategyProjects((current) => [
+					...current.filter((item) => item.strategyId !== project.strategyId),
+					project,
+				]);
+				const attempt = await adapter.startStrategyAttempt(
+					project.strategyId,
+					"final",
+				);
+				attemptId = attempt.attemptId;
+			}
 			const value = await adapter.run(runEffect.request);
+			if (attemptId) await adapter.completeStrategyAttempt(attemptId, value.runId);
 			setRun(value);
 			setExecutionOffset(0);
 			setShowResults(true);
@@ -708,6 +783,24 @@ export function BacktestPage({
 									))}
 								</select>
 							</Field>
+							<Field label="Strategy Project">
+								<Input
+									value={strategyProjectId}
+									onChange={(event) => setStrategyProjectId(event.target.value)}
+								/>
+							</Field>
+							<Field label="Scope">
+								<select
+									className="h-9 rounded-md border bg-background px-3"
+									value={strategyScope}
+									onChange={(event) =>
+										setStrategyScope(event.target.value as StrategyScope)
+									}
+								>
+									<option value="single-instrument">Single Instrument</option>
+									<option value="portfolio">Portfolio</option>
+								</select>
+							</Field>
 							{selectedStrategy?.dependencies.map((dependency) => (
 								<Field key={dependency.alias} label={`Factor · ${dependency.alias}`}>
 									<select
@@ -775,6 +868,11 @@ export function BacktestPage({
 									</select>
 								</Field>
 							))}
+							{strategyProjectMessage && (
+								<p className="text-sm text-muted-foreground" role="status">
+									{strategyProjectMessage}
+								</p>
+							)}
 							{selectedStrategy?.architecture && (
 								<p className="self-end text-sm text-muted-foreground">
 									Architecture · {selectedStrategy.architecture}

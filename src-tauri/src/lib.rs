@@ -2481,6 +2481,53 @@ fn backtest_delete(
     state.backtests.delete(&request.user_id, &request.run_id)
 }
 
+#[tauri::command]
+fn strategy_project_save(
+    mut request: backtest::StrategyProjectRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    request.project.user_id = auth.user_id_for_window(window.label())?;
+    state.backtests.save_strategy_project(&request.project)
+}
+
+#[tauri::command]
+fn strategy_project_list(
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<Vec<adaq_backtest_core::StrategyProject>, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state.backtests.strategy_projects(&user_id)
+}
+
+#[tauri::command]
+fn strategy_attempt_start(
+    request: backtest::StrategyAttemptStartRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<adaq_backtest_core::StrategyAttempt, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state
+        .backtests
+        .start_strategy_attempt(&user_id, &request.project_id, request.window)
+}
+
+#[tauri::command]
+fn strategy_attempt_complete(
+    request: backtest::StrategyAttemptCompleteRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<adaq_backtest_core::StrategyAttempt, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state
+        .backtests
+        .complete_strategy_attempt(&user_id, &request.attempt_id, &request.run_id)
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MarketGetBarSeriesRequest {
@@ -3549,6 +3596,10 @@ pub fn run() {
             backtest_chart_data,
             backtest_execution_data,
             backtest_delete,
+            strategy_project_save,
+            strategy_project_list,
+            strategy_attempt_start,
+            strategy_attempt_complete,
             local_research::local_data_summary,
             local_research::local_data_reset,
             local_research::factor_research_device_reset,

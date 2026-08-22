@@ -179,3 +179,38 @@ export type ChartDataRequest = {
 	endTimeMs: number;
 	maxPoints: number;
 };
+
+export type StrategyScope = "single-instrument" | "portfolio";
+export type EvaluationWindow = "selection" | "final";
+export type StrategyProject = {
+	strategyId: string;
+	userId: string;
+	revision: number;
+	strategyArchiveSha256: string;
+	scope: StrategyScope;
+	contextHash: string;
+	contextStartTimeMs: number;
+	contextEndTimeMs: number;
+	selectionWindow: { startTimeMs: number; endTimeMs: number };
+	finalWindow: { startTimeMs: number; endTimeMs: number };
+	bindings: Array<{ slot: string; evidenceId: string; lineageHash: string }>;
+	parameters: Record<string, string>;
+};
+
+export type StrategyAttempt = {
+	attemptId: string;
+	projectId: string;
+	projectRevision: number;
+	contextHash: string;
+	window: EvaluationWindow;
+	status: "pending" | "running" | "completed" | "failed" | "cancelled";
+	failure?: string;
+	evidence?: {
+		attemptId: string;
+		projectRevision: number;
+		contextHash: string;
+		window: EvaluationWindow;
+		runIds: string[];
+		provenance: Record<string, string>;
+	};
+};
