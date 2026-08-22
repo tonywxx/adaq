@@ -1749,6 +1749,7 @@ async fn okx_backfill_publish(
                     request.start_time_ms,
                     request.end_time_ms,
                     request.interval,
+                    &request.instrument_codes,
                     &publications,
                 )
                 .map(|_| publications)

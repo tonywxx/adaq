@@ -17,7 +17,7 @@ import {
 	DatabaseIcon,
 	LoaderCircleIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 
@@ -104,8 +104,51 @@ type OkxBackfillEvent = {
 		| "page"
 		| "published"
 		| "instrumentCompleted";
-	data?: { downloadedRecords?: number; instrumentCount?: number };
+	data?: {
+		downloadedRecords?: number;
+		instrumentCount?: number;
+		instrument?: { code?: string };
+	};
 };
+
+type OkxBackfillProgress = {
+	instrumentCount: number;
+	completedInstruments: number;
+	currentInstrument?: string;
+	downloadedRecords: number;
+	startedAtMs: number;
+};
+
+type BackfillDraft = {
+	rangeStart: string;
+	rangeEnd: string;
+	interval: OkxInterval;
+	scope: "selected" | "all";
+	instrumentCodes: string[];
+	startedAtMs: number;
+};
+
+const OKX_INTERVALS = [
+	"1s",
+	"1m",
+	"3m",
+	"5m",
+	"15m",
+	"30m",
+	"1h",
+	"2h",
+	"4h",
+	"6h",
+	"12h",
+	"1d",
+	"2d",
+	"3d",
+	"5d",
+	"1w",
+	"1mo",
+	"3mo",
+] as const;
+type OkxInterval = (typeof OKX_INTERVALS)[number];
 
 type FoundationMarket = {
 	id: "crypto";
@@ -137,6 +180,14 @@ export function DataFoundationPage() {
 	const [activeOperation, setActiveOperation] = useState<string>();
 	const [backfillTaskId, setBackfillTaskId] = useState<string>();
 	const [backfillProgress, setBackfillProgress] = useState<string>();
+	const [backfillStats, setBackfillStats] = useState<OkxBackfillProgress>();
+	const [backfillScope, setBackfillScope] = useState<"selected" | "all">(
+		"selected",
+	);
+	const [instrumentCodes, setInstrumentCodes] = useState("BTC-USDT");
+	const [backfillInterval, setBackfillInterval] = useState<OkxInterval>("1m");
+	const [savedBackfill, setSavedBackfill] = useState<BackfillDraft>();
+	const [clockMs, setClockMs] = useState(() => Date.now());
 	const [error, setError] = useState<string>();
 	const [contextMarket, setContextMarket] =
 		useState<FoundationMarket["id"]>("crypto");
@@ -151,6 +202,28 @@ export function DataFoundationPage() {
 	const [rangeEnd, setRangeEnd] = useState(() =>
 		new Date().toISOString().slice(0, 10),
 	);
+	useEffect(() => {
+		const raw = localStorage.getItem("adaq.okx-backfill-draft");
+		if (!raw) return;
+		try {
+			const parsed = JSON.parse(raw) as Partial<BackfillDraft>;
+			setSavedBackfill({
+				rangeStart: parsed.rangeStart ?? "",
+				rangeEnd: parsed.rangeEnd ?? "",
+				interval: parsed.interval ?? "1m",
+				scope: parsed.scope ?? "selected",
+				instrumentCodes: parsed.instrumentCodes ?? ["BTC-USDT"],
+				startedAtMs: parsed.startedAtMs ?? Date.now(),
+			});
+		} catch {
+			localStorage.removeItem("adaq.okx-backfill-draft");
+		}
+	}, []);
+	useEffect(() => {
+		if (!backfillTaskId) return;
+		const timer = window.setInterval(() => setClockMs(Date.now()), 1000);
+		return () => window.clearInterval(timer);
+	}, [backfillTaskId]);
 	const pipelineQuery = useQuery({
 		queryKey: ["data-foundation-pipeline", userId],
 		queryFn: () =>
@@ -173,7 +246,7 @@ export function DataFoundationPage() {
 			const page = await invoke<{ items: UniverseOption[] }>(
 				"snapshot_list_universe",
 				{
-					request: { userId, page: 0 },
+					request: { userId, page: 1 },
 				},
 			);
 			return page.items;
@@ -220,7 +293,10 @@ export function DataFoundationPage() {
 		staleTime: 30_000,
 	});
 
-	const publish = async (dataset: PipelineDatasetSummary) => {
+	const publish = async (
+		dataset: PipelineDatasetSummary,
+		allowDegraded = false,
+	) => {
 		if (!userId || !dataset.canonicalId) return;
 		setError(undefined);
 		setPublishingId(dataset.canonicalId);
@@ -229,7 +305,7 @@ export function DataFoundationPage() {
 				request: {
 					userId,
 					canonicalId: dataset.canonicalId,
-					allowDegraded: false,
+					allowDegraded,
 				},
 			});
 			await snapshotsQuery.refetch();
@@ -240,10 +316,27 @@ export function DataFoundationPage() {
 		}
 	};
 
-	const runOkxBackfill = async () => {
+	const runOkxBackfill = async (draft?: BackfillDraft) => {
 		if (!userId || backfillTaskId) return;
-		const startTimeMs = Date.parse(`${rangeStart}T00:00:00Z`);
-		const endTimeMs = Date.parse(`${rangeEnd}T00:00:00Z`) + 86_400_000;
+		const nextDraft = draft ?? {
+			rangeStart,
+			rangeEnd,
+			interval: backfillInterval,
+			scope: backfillScope,
+			instrumentCodes: instrumentCodes
+				.split(",")
+				.map((code) => code.trim().toUpperCase())
+				.filter(Boolean),
+			startedAtMs: Date.now(),
+		};
+		if (nextDraft.scope === "selected" && !nextDraft.instrumentCodes.length) {
+			setError(
+				"Select at least one OKX instrument, or explicitly choose all instruments.",
+			);
+			return;
+		}
+		const startTimeMs = Date.parse(`${nextDraft.rangeStart}T00:00:00Z`);
+		const endTimeMs = Date.parse(`${nextDraft.rangeEnd}T00:00:00Z`) + 86_400_000;
 		if (
 			!Number.isFinite(startTimeMs) ||
 			!Number.isFinite(endTimeMs) ||
@@ -253,10 +346,39 @@ export function DataFoundationPage() {
 			return;
 		}
 		const taskId = `crypto-foundation-${crypto.randomUUID()}`;
+		localStorage.setItem("adaq.okx-backfill-draft", JSON.stringify(nextDraft));
 		const onEvent = new Channel<OkxBackfillEvent>();
-		onEvent.onmessage = (event) => setBackfillProgress(event.event);
+		onEvent.onmessage = (event) => {
+			setBackfillProgress(event.event);
+			setBackfillStats((current) => {
+				const next = current ?? {
+					instrumentCount: 0,
+					completedInstruments: 0,
+					downloadedRecords: 0,
+					startedAtMs: nextDraft.startedAtMs,
+				};
+				return {
+					...next,
+					instrumentCount: event.data?.instrumentCount ?? next.instrumentCount,
+					downloadedRecords:
+						next.downloadedRecords + (event.data?.downloadedRecords ?? 0),
+					completedInstruments:
+						event.event === "instrumentCompleted"
+							? next.completedInstruments + 1
+							: next.completedInstruments,
+					currentInstrument: event.data?.instrument?.code ?? next.currentInstrument,
+				};
+			});
+		};
 		setError(undefined);
 		setBackfillTaskId(taskId);
+		setBackfillStats({
+			instrumentCount: 0,
+			completedInstruments: 0,
+			downloadedRecords: 0,
+			startedAtMs: nextDraft.startedAtMs,
+		});
+		let completed = false;
 		try {
 			await invoke("okx_backfill_publish", {
 				request: {
@@ -264,7 +386,9 @@ export function DataFoundationPage() {
 					taskId,
 					startTimeMs,
 					endTimeMs,
-					interval: "1m",
+					interval: nextDraft.interval,
+					instrumentCodes:
+						nextDraft.scope === "all" ? [] : nextDraft.instrumentCodes,
 				},
 				onEvent,
 			});
@@ -275,11 +399,19 @@ export function DataFoundationPage() {
 				snapshotsQuery.refetch(),
 				universeQuery.refetch(),
 			]);
+			completed = true;
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 		} finally {
 			setBackfillTaskId(undefined);
 			setBackfillProgress(undefined);
+			setBackfillStats(undefined);
+			if (completed) {
+				localStorage.removeItem("adaq.okx-backfill-draft");
+				setSavedBackfill(undefined);
+			} else {
+				setSavedBackfill(nextDraft);
+			}
 		}
 	};
 
@@ -374,6 +506,23 @@ export function DataFoundationPage() {
 		if (operation.instrument.venue.id !== "okx") return;
 		await acquire(markets[0]);
 	};
+	const elapsedMs = backfillStats
+		? Math.max(
+				0,
+				(backfillTaskId ? clockMs : backfillStats.startedAtMs) -
+					backfillStats.startedAtMs,
+			)
+		: 0;
+	const elapsedLabel = `${Math.floor(elapsedMs / 60_000)}m ${Math.floor((elapsedMs % 60_000) / 1_000)}s`;
+	const etaMs =
+		backfillStats && backfillStats.completedInstruments > 0
+			? (elapsedMs / backfillStats.completedInstruments) *
+				Math.max(
+					0,
+					backfillStats.instrumentCount - backfillStats.completedInstruments,
+				)
+			: undefined;
+	const etaLabel = etaMs == null ? "—" : `${Math.ceil(etaMs / 60_000)}m`;
 
 	return (
 		<div className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
@@ -429,6 +578,52 @@ export function DataFoundationPage() {
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="grid gap-3">
+					<div className="grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-3">
+						<label className="grid gap-1">
+							<span>{t("dataFoundation.backfillScope")}</span>
+							<select
+								className="h-9 rounded-md border bg-background px-3"
+								value={backfillScope}
+								disabled={Boolean(backfillTaskId)}
+								onChange={(event) =>
+									setBackfillScope(event.target.value as "selected" | "all")
+								}
+							>
+								<option value="selected">{t("dataFoundation.backfillSelected")}</option>
+								<option value="all">{t("dataFoundation.backfillAll")}</option>
+							</select>
+						</label>
+						<label
+							className="grid gap-1 sm:col-span-2"
+							htmlFor="okx-backfill-instruments"
+						>
+							<span>{t("dataFoundation.backfillInstruments")}</span>
+							<Input
+								id="okx-backfill-instruments"
+								value={instrumentCodes}
+								disabled={backfillScope === "all" || Boolean(backfillTaskId)}
+								placeholder="BTC-USDT, ETH-USDT"
+								onChange={(event) => setInstrumentCodes(event.target.value)}
+							/>
+						</label>
+						<label className="grid gap-1">
+							<span>{t("dataFoundation.backfillInterval")}</span>
+							<select
+								className="h-9 rounded-md border bg-background px-3"
+								value={backfillInterval}
+								disabled={Boolean(backfillTaskId)}
+								onChange={(event) =>
+									setBackfillInterval(event.target.value as OkxInterval)
+								}
+							>
+								{OKX_INTERVALS.map((interval) => (
+									<option key={interval} value={interval}>
+										{interval}
+									</option>
+								))}
+							</select>
+						</label>
+					</div>
 					<div className="flex flex-wrap items-center gap-3 rounded-md border p-3">
 						<div className="min-w-0 flex-1">
 							<strong className="text-sm">
@@ -438,9 +633,28 @@ export function DataFoundationPage() {
 								{t("dataFoundation.okxBackfillDescription")}
 							</p>
 							{backfillProgress ? (
-								<p className="text-xs text-muted-foreground" role="status">
-									{backfillProgress}
-								</p>
+								<div className="grid gap-1" role="status">
+									<p className="text-xs text-muted-foreground">
+										{backfillProgress}
+										{backfillStats?.currentInstrument
+											? ` · ${backfillStats.currentInstrument}`
+											: ""}
+									</p>
+									{backfillStats?.instrumentCount ? (
+										<>
+											<progress
+												className="h-2 w-full"
+												max={backfillStats.instrumentCount}
+												value={backfillStats.completedInstruments}
+												aria-label="OKX backfill progress"
+											/>
+											<span className="text-xs text-muted-foreground">
+												{backfillStats.completedInstruments}/{backfillStats.instrumentCount}{" "}
+												instruments
+											</span>
+										</>
+									) : null}
+								</div>
 							) : null}
 						</div>
 						<button
@@ -462,7 +676,32 @@ export function DataFoundationPage() {
 								{t("dataFoundation.okxBackfillCancel")}
 							</button>
 						) : null}
+						{savedBackfill && !backfillTaskId ? (
+							<button
+								type="button"
+								className="rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted"
+								onClick={() => void runOkxBackfill(savedBackfill)}
+							>
+								{t("dataFoundation.backfillResume")}
+							</button>
+						) : null}
 					</div>
+					{backfillTaskId && backfillStats ? (
+						<div className="grid gap-1 rounded-md border p-3 text-xs text-muted-foreground">
+							<div className="flex justify-between gap-2">
+								<span>{t("dataFoundation.backfillElapsed")}</span>
+								<span>{elapsedLabel}</span>
+							</div>
+							<div className="flex justify-between gap-2">
+								<span>{t("dataFoundation.backfillEta")}</span>
+								<span>{etaLabel}</span>
+							</div>
+							<div className="flex justify-between gap-2">
+								<span>{t("dataFoundation.backfillRecords")}</span>
+								<span>{backfillStats.downloadedRecords}</span>
+							</div>
+						</div>
+					) : null}
 					{pipelineQuery.data?.length ? (
 						pipelineQuery.data.map((dataset) => (
 							<div key={dataset.sourceId} className="grid gap-2 rounded-md border p-3">
@@ -485,11 +724,13 @@ export function DataFoundationPage() {
 									type="button"
 									className="justify-self-start rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
 									disabled={!dataset.canonicalId || Boolean(publishingId)}
-									onClick={() => void publish(dataset)}
+									onClick={() => void publish(dataset, dataset.state === "degraded")}
 								>
 									{publishingId === dataset.canonicalId
 										? t("dataFoundation.publishing")
-										: t("dataFoundation.publishSnapshot")}
+										: dataset.state === "degraded"
+											? t("dataFoundation.acceptDegradedPublish")
+											: t("dataFoundation.publishSnapshot")}
 								</button>
 							</div>
 						))
@@ -623,6 +864,11 @@ export function DataFoundationPage() {
 					>
 						{t("dataFoundation.establishContext")}
 					</button>
+					{snapshotsQuery.error || universeQuery.error ? (
+						<p className="text-sm text-destructive" role="alert">
+							{getErrorMessage(snapshotsQuery.error ?? universeQuery.error)}
+						</p>
+					) : null}
 				</CardContent>
 			</Card>
 			<Card>
@@ -665,6 +911,25 @@ export function DataFoundationPage() {
 					<AcquisitionOperationHistory
 						loading={foundationHistoryQuery.isPending}
 						operations={foundationHistoryQuery.data ?? []}
+						onCancel={async (operation) => {
+							if (
+								!userId ||
+								operation.market !== "crypto" ||
+								operation.venue !== "okx"
+							)
+								return;
+							try {
+								await invoke("okx_backfill_cancel", {
+									request: { userId, taskId: operation.operationId },
+								});
+								await Promise.all([
+									acquisitionQuery.refetch(),
+									foundationHistoryQuery.refetch(),
+								]);
+							} catch (cause) {
+								setError(getErrorMessage(cause));
+							}
+						}}
 						onRetry={(operation) => {
 							const market = markets.find((item) => item.id === operation.market);
 							if (market) void acquire(market);
@@ -783,10 +1048,12 @@ export function DataFoundationPage() {
 function AcquisitionOperationHistory({
 	loading,
 	operations,
+	onCancel,
 	onRetry,
 }: {
 	loading: boolean;
 	operations: FoundationAcquisitionView[];
+	onCancel: (operation: FoundationAcquisitionView) => void;
 	onRetry: (operation: FoundationAcquisitionView) => void;
 }) {
 	const { t } = useTranslation();
@@ -822,6 +1089,17 @@ function AcquisitionOperationHistory({
 									onClick={() => onRetry(operation)}
 								>
 									{t("dataFoundation.retryAcquisition")}
+								</button>
+							) : null}
+							{operation.state === "running" &&
+							operation.market === "crypto" &&
+							operation.venue === "okx" ? (
+								<button
+									type="button"
+									className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+									onClick={() => onCancel(operation)}
+								>
+									{t("dataFoundation.okxBackfillCancel")}
 								</button>
 							) : null}
 						</div>

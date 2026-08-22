@@ -1399,6 +1399,7 @@ impl LocalResearchState {
         start_time_ms: i64,
         end_time_ms: i64,
         interval: BarInterval,
+        instrument_codes: &[String],
         publications: &[adaq_data_pipeline::PipelinePublication],
     ) -> Result<MarketDataUniverseSnapshot, String> {
         let universe = self
@@ -1409,6 +1410,9 @@ impl LocalResearchState {
         let expected_instruments = universe
             .instruments
             .iter()
+            .filter(|instrument| {
+                instrument_codes.is_empty() || instrument_codes.contains(&instrument.code)
+            })
             .map(|instrument| format!("{}:{}", venue.id, instrument.code))
             .collect::<HashSet<_>>();
         let mut published_instruments = HashSet::new();

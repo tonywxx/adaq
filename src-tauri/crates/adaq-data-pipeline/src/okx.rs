@@ -29,7 +29,6 @@ use crate::{
     SourceAcquisition, SourceMarketRecord, canonical_json_bytes, digest, validate_user,
 };
 
-const OKX_BAR_INTERVAL: BarInterval = BarInterval::OneMinute;
 const DAY_MS: i64 = 86_400_000;
 const BAR_OVERLAP_COUNT: i64 = 2;
 
@@ -109,6 +108,8 @@ pub struct OkxBackfillRequest {
     pub start_time_ms: i64,
     pub end_time_ms: i64,
     pub interval: BarInterval,
+    #[serde(default)]
+    pub instrument_codes: Vec<String>,
     #[serde(default = "default_gap_retries")]
     pub max_gap_retries: u8,
 }
@@ -554,13 +555,27 @@ impl OkxSpotDataPath {
                 "OKX Instrument Master evidence for the requested observation time".into(),
             ));
         };
+        let instruments = if request.instrument_codes.is_empty() {
+            universe.instruments
+        } else {
+            universe
+                .instruments
+                .into_iter()
+                .filter(|instrument| request.instrument_codes.contains(&instrument.code))
+                .collect::<Vec<_>>()
+        };
+        if instruments.is_empty() {
+            return Err(PipelineError::NotFound(
+                "No requested OKX instruments are present in the point-in-time universe".into(),
+            ));
+        }
         on_event(OkxBackfillEvent::UniverseLoaded {
             snapshot_id: snapshot_id.clone(),
-            instrument_count: universe.instruments.len(),
+            instrument_count: instruments.len(),
         });
 
         let mut publications = Vec::new();
-        for instrument in universe.instruments {
+        for instrument in instruments {
             if cancellation.is_cancelled() {
                 break;
             }
@@ -1661,10 +1676,9 @@ fn validate_backfill_request(request: &OkxBackfillRequest) -> Result<(), Pipelin
     if request.task_id.trim().is_empty()
         || request.start_time_ms < 0
         || request.start_time_ms >= request.end_time_ms
-        || request.interval != OKX_BAR_INTERVAL
     {
         return Err(PipelineError::InvalidRequest(
-            "OKX backfill requires a non-empty task, increasing UTC range, and 1m interval".into(),
+            "OKX backfill requires a non-empty task and increasing UTC range".into(),
         ));
     }
     Ok(())
@@ -2031,6 +2045,7 @@ mod tests {
                     start_time_ms: 0,
                     end_time_ms: 120_000,
                     interval: BarInterval::OneMinute,
+                    instrument_codes: vec![],
                     max_gap_retries: 0,
                 },
                 cancellation.clone(),
@@ -2050,6 +2065,7 @@ mod tests {
                     start_time_ms: 0,
                     end_time_ms: 180_000,
                     interval: BarInterval::OneMinute,
+                    instrument_codes: vec![],
                     max_gap_retries: 0,
                 },
                 cancellation,
@@ -2103,6 +2119,7 @@ mod tests {
             start_time_ms: 0,
             end_time_ms: 6_060_000,
             interval: BarInterval::OneMinute,
+            instrument_codes: vec![],
             max_gap_retries: 0,
         };
         let cancellation = CancellationToken::new();
@@ -2168,6 +2185,7 @@ mod tests {
                     start_time_ms: 0,
                     end_time_ms: 60_000,
                     interval: BarInterval::OneMinute,
+                    instrument_codes: vec![],
                     max_gap_retries: 0,
                 },
                 CancellationToken::new(),
@@ -2194,6 +2212,7 @@ mod tests {
                     start_time_ms: 0,
                     end_time_ms: 60_000,
                     interval: BarInterval::OneMinute,
+                    instrument_codes: vec![],
                     max_gap_retries: 0,
                 },
                 CancellationToken::new(),
