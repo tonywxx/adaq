@@ -843,6 +843,10 @@ fn strategy_projects_are_user_scoped_append_only_and_retain_attempt_evidence() {
         .module
         .start_strategy_attempt("alice", "strategy-project", EvaluationWindow::Final)
         .unwrap();
+    let attempt = harness
+        .module
+        .begin_strategy_attempt("alice", &attempt.attempt_id)
+        .unwrap();
     let completed = harness
         .module
         .complete_strategy_attempt("alice", &attempt.attempt_id, "run-1")

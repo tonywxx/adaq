@@ -15,6 +15,8 @@ import type {
 	SnapshotPage,
 	StrategyAttempt,
 	StrategyProject,
+	UniverseSnapshot,
+	PortfolioBacktest,
 } from "./backtest-types";
 import type {
 	BacktestPreflight,
@@ -95,10 +97,41 @@ export function createBacktestAdapter(invoke: TauriInvoke) {
 				request: { projectId, window },
 			}) as Promise<StrategyAttempt>;
 		},
+		beginStrategyAttempt(attemptId: string) {
+			return invoke("strategy_attempt_begin", { request: { attemptId } }) as Promise<StrategyAttempt>;
+		},
 		completeStrategyAttempt(attemptId: string, runId: string) {
 			return invoke("strategy_attempt_complete", {
 				request: { attemptId, runId },
 			}) as Promise<StrategyAttempt>;
+		},
+		failStrategyAttempt(attemptId: string, reason: string) {
+			return invoke("strategy_attempt_fail", { request: { attemptId, reason } }) as Promise<StrategyAttempt>;
+		},
+		cancelStrategyAttempt(attemptId: string) {
+			return invoke("strategy_attempt_cancel", { request: { attemptId } }) as Promise<StrategyAttempt>;
+		},
+		recoverStrategyAttempt(attemptId: string) {
+			return invoke("strategy_attempt_recover", { request: { attemptId } }) as Promise<StrategyAttempt>;
+		},
+		listUniverseSnapshots(userId: string, page = 1) {
+			return invoke("snapshot_list_universe", {
+				request: { userId, page },
+			}) as Promise<{ items: UniverseSnapshot[]; total: number }>;
+		},
+		portfolioRun(request: {
+			userId: string;
+			strategyId: string;
+			window: "selection" | "final";
+			universeSnapshotId: string;
+			signalDatasetIds: string[];
+			topN: number;
+			initialCapital: string;
+			executionCostRate: string;
+			maxInstrumentWeight: string;
+			maxTurnover?: string;
+		}) {
+			return invoke("portfolio_backtest_run", { request }) as Promise<PortfolioBacktest>;
 		},
 	};
 }

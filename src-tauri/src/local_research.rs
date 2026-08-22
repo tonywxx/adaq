@@ -450,6 +450,16 @@ impl SnapshotReadSource for LocalBacktestSource {
     ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
         self.state()?.snapshot_for_user(user_id, snapshot_id)
     }
+
+    fn portfolio_universe_snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<adaq_backtest_core::MarketDataUniverseSnapshot, String> {
+        self.state()?
+            .snapshots
+            .universe_snapshot_for_user(user_id, snapshot_id)
+    }
 }
 
 impl ComponentPackageSource for LocalBacktestSource {

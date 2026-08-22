@@ -13,6 +13,7 @@
 //! root.
 
 mod pipeline;
+mod portfolio_pipeline;
 
 #[cfg(test)]
 mod tests;
@@ -24,8 +25,8 @@ use std::{
 };
 
 use adaq_backtest_core::{
-    EvaluationWindow, ExecutionProfile, MarketDataSnapshot, StrategyAttempt, StrategyEvidence,
-    StrategyProject,
+    EvaluationWindow, ExecutionProfile, MarketDataSnapshot, MarketDataUniverseSnapshot,
+    StrategyAttempt, StrategyEvidence, StrategyProject,
 };
 use adaq_component_tooling::{ComponentPackage, StrategyArchitecture};
 use adaq_data_core::{BarInterval, OhlcvBar};
@@ -46,6 +47,14 @@ pub(crate) trait SnapshotReadSource: Send + Sync {
         user_id: &str,
         snapshot_id: &str,
     ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String>;
+    fn portfolio_universe_snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<MarketDataUniverseSnapshot, String> {
+        let _ = (user_id, snapshot_id);
+        Err("Portfolio Backtest requires a Market Data Universe Snapshot".into())
+    }
 }
 
 /// Entitlement-scoped Component Package reads consumed by Backtest Runs,
@@ -134,6 +143,13 @@ impl Backtests {
                 user_id TEXT NOT NULL,
                 project_id TEXT NOT NULL,
                 attempt_json TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS portfolio_backtest_runs (
+                run_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                UNIQUE(user_id, request_hash)
              );",
             )
             .map_err(string)?;
@@ -170,6 +186,13 @@ impl Backtests {
     /// provenance.
     pub(crate) fn run(&self, request: BacktestRunRequest) -> Result<BacktestRunView, String> {
         pipeline::execute(self, request)
+    }
+
+    pub(crate) fn portfolio_run(
+        &self,
+        request: PortfolioBacktestRequest,
+    ) -> Result<PortfolioBacktestView, String> {
+        portfolio_pipeline::execute(self, request)
     }
 
     pub(crate) fn save_strategy_project(&self, project: &StrategyProject) -> Result<(), String> {
@@ -268,7 +291,6 @@ impl Backtests {
         drop(database);
         let mut attempt: StrategyAttempt = serde_json::from_str(&attempt_json).map_err(string)?;
         let project = self.strategy_project(user_id, &project_id)?;
-        attempt.begin().map_err(string)?;
         attempt
             .complete(
                 &project,
@@ -292,6 +314,84 @@ impl Backtests {
             )
             .map_err(string)?;
         Ok(attempt)
+    }
+
+    pub(crate) fn begin_strategy_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<StrategyAttempt, String> {
+        let mut attempt = self.load_strategy_attempt(user_id, attempt_id)?;
+        attempt.begin().map_err(string)?;
+        self.save_strategy_attempt(user_id, &attempt)?;
+        Ok(attempt)
+    }
+
+    pub(crate) fn fail_strategy_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+        reason: &str,
+    ) -> Result<StrategyAttempt, String> {
+        let mut attempt = self.load_strategy_attempt(user_id, attempt_id)?;
+        attempt.fail(reason).map_err(string)?;
+        self.save_strategy_attempt(user_id, &attempt)?;
+        Ok(attempt)
+    }
+
+    pub(crate) fn cancel_strategy_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<StrategyAttempt, String> {
+        let mut attempt = self.load_strategy_attempt(user_id, attempt_id)?;
+        attempt.cancel().map_err(string)?;
+        self.save_strategy_attempt(user_id, &attempt)?;
+        Ok(attempt)
+    }
+
+    pub(crate) fn recover_strategy_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<StrategyAttempt, String> {
+        let mut attempt = self.load_strategy_attempt(user_id, attempt_id)?;
+        attempt.recover_after_restart().map_err(string)?;
+        self.save_strategy_attempt(user_id, &attempt)?;
+        Ok(attempt)
+    }
+
+    fn load_strategy_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<StrategyAttempt, String> {
+        let json: String = self
+            .0
+            .database()?
+            .query_row(
+                "SELECT attempt_json FROM strategy_attempts WHERE attempt_id = ?1 AND user_id = ?2",
+                params![attempt_id, user_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Strategy Attempt was not found".to_owned())?;
+        serde_json::from_str(&json).map_err(string)
+    }
+
+    fn save_strategy_attempt(
+        &self,
+        user_id: &str,
+        attempt: &StrategyAttempt,
+    ) -> Result<(), String> {
+        let json = serde_json::to_string(attempt).map_err(string)?;
+        self.0
+            .database()?
+            .execute(
+                "UPDATE strategy_attempts SET attempt_json = ?1 WHERE attempt_id = ?2 AND user_id = ?3",
+                params![json, attempt.attempt_id, user_id],
+            )
+            .map_err(string)?;
+        Ok(())
     }
 
     fn strategy_project(&self, user_id: &str, project_id: &str) -> Result<StrategyProject, String> {
@@ -862,6 +962,29 @@ pub struct BacktestExecutionRequest {
     pub limit: usize,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortfolioBacktestRequest {
+    pub user_id: String,
+    pub strategy_id: String,
+    pub window: EvaluationWindow,
+    pub universe_snapshot_id: String,
+    pub signal_dataset_ids: Vec<String>,
+    pub top_n: usize,
+    pub initial_capital: String,
+    pub execution_cost_rate: String,
+    pub max_instrument_weight: String,
+    pub max_turnover: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortfolioBacktestView {
+    pub run_id: String,
+    pub reused_existing_run: bool,
+    pub evidence: adaq_backtest_core::BacktestEvidence,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StrategyProjectRequest {
@@ -880,6 +1003,19 @@ pub struct StrategyAttemptStartRequest {
 pub struct StrategyAttemptCompleteRequest {
     pub attempt_id: String,
     pub run_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrategyAttemptFailureRequest {
+    pub attempt_id: String,
+    pub reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrategyAttemptIdRequest {
+    pub attempt_id: String,
 }
 
 #[derive(Serialize)]

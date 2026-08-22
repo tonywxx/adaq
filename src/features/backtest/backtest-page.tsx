@@ -49,6 +49,7 @@ import type {
 	Snapshot,
 	StrategyProject,
 	StrategyScope,
+	UniverseSnapshot,
 } from "./backtest-types";
 import { formatDecimal } from "./format-decimal";
 const EXECUTION_PAGE_SIZE = 100;
@@ -128,6 +129,9 @@ export function BacktestPage({
 		"single-instrument",
 	);
 	const [strategyProjectMessage, setStrategyProjectMessage] = useState("");
+	const [universeSnapshots, setUniverseSnapshots] = useState<UniverseSnapshot[]>([]);
+	const [selectedUniverseId, setSelectedUniverseId] = useState("");
+	const [portfolioSignalDatasetIds, setPortfolioSignalDatasetIds] = useState("");
 	const [snapshotTechnicalError, setSnapshotTechnicalError] = useState("");
 	const [downloadTaskId, setDownloadTaskId] = useState<string>();
 	const [componentsLoading, setComponentsLoading] = useState(true);
@@ -248,6 +252,21 @@ export function BacktestPage({
 			})
 			.catch((error) => active && setMessage(String(error)))
 			.finally(() => active && setComponentsLoading(false));
+		return () => {
+			active = false;
+		};
+	}, [adapter, userId]);
+	useEffect(() => {
+		if (!userId || typeof adapter.listUniverseSnapshots !== "function") return;
+		let active = true;
+		void adapter
+			.listUniverseSnapshots(userId)
+			.then((page) => {
+				if (!active) return;
+				setUniverseSnapshots(page.items);
+				setSelectedUniverseId((current) => current || page.items[0]?.snapshotId || "");
+			})
+			.catch((error) => active && setStrategyProjectMessage(String(error)));
 		return () => {
 			active = false;
 		};
@@ -471,10 +490,12 @@ export function BacktestPage({
 	};
 	const execute = async () => {
 		if (!userId || running) return;
-		if (strategyScope === "portfolio") {
-			setMessage(
-				"Portfolio execution is not available until a universe-backed runner is connected.",
-			);
+		if (
+			strategyScope === "portfolio" &&
+			(!selectedUniverseId ||
+				portfolioSignalDatasetIds.split(",").filter(Boolean).length === 0)
+		) {
+			setMessage("Select a frozen Universe and at least one signal Dataset.");
 			return;
 		}
 		if (
@@ -493,9 +514,13 @@ export function BacktestPage({
 		setMessage("Running deterministic Backtest…");
 		let attemptId: string | undefined;
 		try {
-			if (snapshot && selectedStrategy) {
+			const universe = universeSnapshots.find(
+				(item) => item.snapshotId === selectedUniverseId,
+			);
+			const projectContext = strategyScope === "portfolio" ? universe : snapshot;
+			if (projectContext && selectedStrategy) {
 				const midpoint = Math.floor(
-					(snapshot.startTimeMs + snapshot.endTimeMs) / 2,
+					(projectContext.startTimeMs + projectContext.endTimeMs) / 2,
 				);
 				const project: StrategyProject = {
 					strategyId: strategyProjectId.trim() || "strategy-lab",
@@ -505,16 +530,16 @@ export function BacktestPage({
 							?.revision ?? 0) + 1,
 					strategyArchiveSha256: selectedStrategy.archiveSha256,
 					scope: strategyScope,
-					contextHash: snapshot.snapshotId,
-					contextStartTimeMs: snapshot.startTimeMs,
-					contextEndTimeMs: snapshot.endTimeMs,
+					contextHash: projectContext.snapshotId,
+					contextStartTimeMs: projectContext.startTimeMs,
+					contextEndTimeMs: projectContext.endTimeMs,
 					selectionWindow: {
-						startTimeMs: snapshot.startTimeMs,
+						startTimeMs: projectContext.startTimeMs,
 						endTimeMs: midpoint,
 					},
 					finalWindow: {
 						startTimeMs: midpoint + 1,
-						endTimeMs: snapshot.endTimeMs,
+						endTimeMs: projectContext.endTimeMs,
 					},
 					bindings: [
 						...Object.entries(factorSelections).map(([slot, evidenceId]) => ({
@@ -540,6 +565,26 @@ export function BacktestPage({
 					"final",
 				);
 				attemptId = attempt.attemptId;
+				await adapter.beginStrategyAttempt(attemptId);
+			}
+			if (strategyScope === "portfolio") {
+				const value = await adapter.portfolioRun({
+					userId,
+					strategyId: strategyProjectId.trim() || "strategy-lab",
+					window: "final",
+					universeSnapshotId: selectedUniverseId,
+					signalDatasetIds: portfolioSignalDatasetIds
+						.split(",")
+						.map((value) => value.trim())
+						.filter(Boolean),
+					topN: 1,
+					initialCapital: initialQuoteAllocation,
+					executionCostRate: executionProfile.takerFeeRate,
+					maxInstrumentWeight: "1",
+				});
+				if (attemptId) await adapter.completeStrategyAttempt(attemptId, value.runId);
+				setMessage(`Portfolio Attempt ${value.runId.slice(0, 12)} completed.`);
+				return;
 			}
 			const value = await adapter.run(runEffect.request);
 			if (attemptId) await adapter.completeStrategyAttempt(attemptId, value.runId);
@@ -789,7 +834,7 @@ export function BacktestPage({
 									onChange={(event) => setStrategyProjectId(event.target.value)}
 								/>
 							</Field>
-							<Field label="Scope">
+			<Field label="Scope">
 								<select
 									className="h-9 rounded-md border bg-background px-3"
 									value={strategyScope}
@@ -798,9 +843,36 @@ export function BacktestPage({
 									}
 								>
 									<option value="single-instrument">Single Instrument</option>
-									<option value="portfolio">Portfolio</option>
-								</select>
-							</Field>
+										<option value="portfolio">Portfolio</option>
+									</select>
+								</Field>
+								{strategyScope === "portfolio" && (
+									<>
+										<Field label="Frozen Universe">
+											<select
+												className="h-9 rounded-md border bg-background px-3"
+												value={selectedUniverseId}
+												onChange={(event) => setSelectedUniverseId(event.target.value)}
+											>
+												<option value="">Select</option>
+												{universeSnapshots.map((item) => (
+													<option key={item.snapshotId} value={item.snapshotId}>
+														{item.universe.universeId} · {item.universe.evidenceState}
+													</option>
+												))}
+											</select>
+										</Field>
+										<Field label="Signal Dataset IDs">
+											<Input
+												value={portfolioSignalDatasetIds}
+												placeholder="id-1,id-2"
+												onChange={(event) =>
+													setPortfolioSignalDatasetIds(event.target.value)
+												}
+											/>
+										</Field>
+									</>
+								)}
 							{selectedStrategy?.dependencies.map((dependency) => (
 								<Field key={dependency.alias} label={`Factor · ${dependency.alias}`}>
 									<select

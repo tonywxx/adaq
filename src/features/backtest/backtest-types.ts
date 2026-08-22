@@ -214,3 +214,21 @@ export type StrategyAttempt = {
 		provenance: Record<string, string>;
 	};
 };
+
+export type UniverseSnapshot = {
+	snapshotId: string;
+	interval: BarInterval;
+	startTimeMs: number;
+	endTimeMs: number;
+	universe: {
+		universeId: string;
+		evidenceState: string;
+		instruments: Array<{ code: string }>;
+	};
+};
+
+export type PortfolioBacktest = {
+	runId: string;
+	reusedExistingRun: boolean;
+	evidence: { finalEquity: string; totalCosts: string; turnover: string };
+};

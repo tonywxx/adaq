@@ -2528,6 +2528,69 @@ fn strategy_attempt_complete(
         .complete_strategy_attempt(&user_id, &request.attempt_id, &request.run_id)
 }
 
+#[tauri::command]
+fn strategy_attempt_begin(
+    request: backtest::StrategyAttemptIdRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<adaq_backtest_core::StrategyAttempt, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state
+        .backtests
+        .begin_strategy_attempt(&user_id, &request.attempt_id)
+}
+
+#[tauri::command]
+fn strategy_attempt_fail(
+    request: backtest::StrategyAttemptFailureRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<adaq_backtest_core::StrategyAttempt, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state
+        .backtests
+        .fail_strategy_attempt(&user_id, &request.attempt_id, &request.reason)
+}
+
+#[tauri::command]
+fn strategy_attempt_cancel(
+    request: backtest::StrategyAttemptIdRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<adaq_backtest_core::StrategyAttempt, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state
+        .backtests
+        .cancel_strategy_attempt(&user_id, &request.attempt_id)
+}
+
+#[tauri::command]
+fn strategy_attempt_recover(
+    request: backtest::StrategyAttemptIdRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<adaq_backtest_core::StrategyAttempt, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state
+        .backtests
+        .recover_strategy_attempt(&user_id, &request.attempt_id)
+}
+
+#[tauri::command]
+fn portfolio_backtest_run(
+    mut request: backtest::PortfolioBacktestRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<backtest::PortfolioBacktestView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    state.backtests.portfolio_run(request)
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MarketGetBarSeriesRequest {
@@ -3599,7 +3662,12 @@ pub fn run() {
             strategy_project_save,
             strategy_project_list,
             strategy_attempt_start,
+            strategy_attempt_begin,
             strategy_attempt_complete,
+            strategy_attempt_fail,
+            strategy_attempt_cancel,
+            strategy_attempt_recover,
+            portfolio_backtest_run,
             local_research::local_data_summary,
             local_research::local_data_reset,
             local_research::factor_research_device_reset,
