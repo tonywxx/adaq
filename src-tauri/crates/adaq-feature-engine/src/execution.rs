@@ -275,6 +275,7 @@ impl FeatureMarketBar {
         }
     }
 
+    #[cfg(feature = "deferred-equity")]
     pub fn from_ashare_action(
         action: &adaq_data_core::a_share::AshareCorporateAction,
     ) -> Result<Vec<CorporateAction>, FeatureInputError> {

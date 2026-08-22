@@ -69,15 +69,6 @@ type QualityView = {
 	reasons: Array<{ code: string; message: string }>;
 };
 
-type InstrumentMasterSnapshot = {
-	snapshotId: string;
-	effectiveAtMs: number;
-	provider: string;
-	evidenceState: string;
-	instruments: unknown[];
-	limitations: string[];
-};
-
 type FoundationAcquisitionView = {
 	operationId: string;
 	market: string;
@@ -117,18 +108,16 @@ type OkxBackfillEvent = {
 };
 
 type FoundationMarket = {
-	id: "crypto" | "a-shares" | "us-equities";
+	id: "crypto";
 	titleKey: string;
 	descriptionKey: string;
-	workspace: "/markets/crypto" | "/markets/a-shares" | "/markets/us-equities";
+	workspace: "/markets/crypto";
 	acquireCommand: string;
 	cancelCommand?: string;
 };
 
 const MARKET_VENUES = {
 	crypto: ["okx"],
-	"a-shares": ["sse", "szse"],
-	"us-equities": ["alpaca"],
 } as const;
 
 const markets: FoundationMarket[] = [
@@ -139,22 +128,6 @@ const markets: FoundationMarket[] = [
 		workspace: "/markets/crypto",
 		acquireCommand: "okx_instrument_master_acquire",
 		cancelCommand: "okx_instrument_master_cancel",
-	},
-	{
-		id: "a-shares",
-		titleKey: "markets.aShares.title",
-		descriptionKey: "markets.aShares.description",
-		workspace: "/markets/a-shares",
-		acquireCommand: "ashare_instrument_master_acquire",
-		cancelCommand: "ashare_acquisition_cancel",
-	},
-	{
-		id: "us-equities",
-		titleKey: "markets.usEquities.title",
-		descriptionKey: "markets.usEquities.description",
-		workspace: "/markets/us-equities",
-		acquireCommand: "alpaca_instrument_master_acquire",
-		cancelCommand: "alpaca_acquisition_cancel",
 	},
 ];
 
@@ -213,24 +186,6 @@ export function DataFoundationPage() {
 		queryFn: () =>
 			invoke<ResearchEvidenceProjection | null>("research_context_get", {
 				userId,
-			}),
-		enabled: Boolean(userId),
-		staleTime: 30_000,
-	});
-	const aShareHistoryQuery = useQuery({
-		queryKey: ["data-foundation-a-share-history", userId],
-		queryFn: () =>
-			invoke<InstrumentMasterSnapshot[]>("ashare_instrument_master_list", {
-				request: { userId },
-			}),
-		enabled: Boolean(userId),
-		staleTime: 30_000,
-	});
-	const usEquityHistoryQuery = useQuery({
-		queryKey: ["data-foundation-us-equity-history", userId],
-		queryFn: () =>
-			invoke<InstrumentMasterSnapshot[]>("alpaca_instrument_master_list", {
-				request: { userId },
 			}),
 		enabled: Boolean(userId),
 		staleTime: 30_000,
@@ -765,16 +720,6 @@ export function DataFoundationPage() {
 							{t("dataFoundation.emptyHistory")}
 						</p>
 					)}
-					<SnapshotHistory
-						title={t("dataFoundation.aShareHistory")}
-						loading={aShareHistoryQuery.isPending}
-						snapshots={aShareHistoryQuery.data ?? []}
-					/>
-					<SnapshotHistory
-						title={t("dataFoundation.usEquityHistory")}
-						loading={usEquityHistoryQuery.isPending}
-						snapshots={usEquityHistoryQuery.data ?? []}
-					/>
 				</CardContent>
 			</Card>
 			<div className="grid gap-4 lg:grid-cols-3">
@@ -880,48 +825,6 @@ function AcquisitionOperationHistory({
 								</button>
 							) : null}
 						</div>
-					</div>
-				))
-			) : (
-				<p className="text-sm text-muted-foreground">
-					{t("dataFoundation.emptyHistory")}
-				</p>
-			)}
-		</div>
-	);
-}
-
-function SnapshotHistory({
-	title,
-	loading,
-	snapshots,
-}: {
-	title: string;
-	loading: boolean;
-	snapshots: InstrumentMasterSnapshot[];
-}) {
-	const { t } = useTranslation();
-	return (
-		<div className="mt-4 grid gap-2 border-t pt-4">
-			<strong className="text-sm">{title}</strong>
-			{loading ? (
-				<p className="text-sm text-muted-foreground" role="status">
-					{t("dataFoundation.loadingHistory")}
-				</p>
-			) : snapshots.length ? (
-				snapshots.slice(0, 8).map((snapshot) => (
-					<div
-						key={snapshot.snapshotId}
-						className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm"
-					>
-						<div>
-							<strong>{snapshot.snapshotId}</strong>
-							<p className="text-muted-foreground">
-								{snapshot.provider} · {snapshot.instruments.length}{" "}
-								{t("dataFoundation.instruments")}
-							</p>
-						</div>
-						<Badge variant="default">{snapshot.evidenceState}</Badge>
 					</div>
 				))
 			) : (

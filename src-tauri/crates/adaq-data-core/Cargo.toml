@@ -4,10 +4,14 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 
+[features]
+default = []
+deferred-equity = ["dep:akshare", "dep:adaq-data-stock-cn", "dep:adaq-data-stock-us"]
+
 [dependencies]
-akshare = { version = "=0.1.14", default-features = false, features = ["equity", "misc"] }
-adaq-data-stock-cn = "0.1.4"
-adaq-data-stock-us = "0.1.2"
+akshare = { version = "=0.1.14", default-features = false, features = ["equity", "misc"], optional = true }
+adaq-data-stock-cn = { version = "0.1.4", optional = true }
+adaq-data-stock-us = { version = "0.1.2", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 chrono-tz = { version = "0.10", features = ["serde"] }
 futures-util = "0.3.34"

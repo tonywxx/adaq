@@ -247,6 +247,7 @@ pub(crate) struct UsEquitySnapshotRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "deferred-equity")]
 pub(crate) struct UsEquityStreamRequest {
     pub user_id: String,
     pub subscription: adaq_data_core::alpaca::AlpacaStreamSubscription,
@@ -254,6 +255,7 @@ pub(crate) struct UsEquityStreamRequest {
     pub operation_id: String,
 }
 
+#[cfg(feature = "deferred-equity")]
 impl UsEquityStreamRequest {
     pub(crate) fn operation_id(&self) -> String {
         if self.operation_id.trim().is_empty() {

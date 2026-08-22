@@ -16,7 +16,7 @@ test("workspace navigation keeps one authenticated shell mounted", () => {
 	expect(source).toMatch(/path: "\/settings\/\$section"/);
 });
 
-test("routes adaptive home, Help, Operations, and localized market workspaces", () => {
+	test("routes adaptive home, Help, Operations, and the supported OKX workspace", () => {
 	const routerSource = readFileSync(
 		new URL("./router.tsx", import.meta.url),
 		"utf8",
@@ -44,8 +44,6 @@ test("routes adaptive home, Help, Operations, and localized market workspaces", 
 	for (const path of [
 		"/markets",
 		"/markets/crypto",
-		"/markets/a-shares",
-		"/markets/us-equities",
 	]) {
 		expect(routerSource).toContain(`path: "${path}"`);
 	}

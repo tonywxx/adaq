@@ -1103,6 +1103,7 @@ fn split_and_dividend_features_are_forward_and_causally_available() {
 }
 
 #[test]
+#[cfg(feature = "deferred-equity")]
 fn ashare_corporate_actions_retain_instrument_and_evidence_identity() {
     let instrument = InstrumentId::new(Venue::china_a_share("sse").unwrap(), "600000").unwrap();
     let action = adaq_data_core::a_share::AshareCorporateAction {

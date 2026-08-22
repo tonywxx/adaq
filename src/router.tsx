@@ -11,7 +11,6 @@ import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
 import { DataFoundationPage } from "@/features/data-foundation/data-foundation-page";
 import {
 	CryptoMarketPage,
-	MarketWorkspacePage,
 	MarketsOverview,
 	OperationsDashboard,
 } from "@/features/markets/markets-page";
@@ -103,18 +102,6 @@ const cryptoMarketRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/markets/crypto",
 	component: CryptoMarketPage,
-});
-
-const ashareMarketRoute = createRoute({
-	getParentRoute: () => rootRoute,
-	path: "/markets/a-shares",
-	component: () => <MarketWorkspacePage market="a-shares" />,
-});
-
-const usEquitiesMarketRoute = createRoute({
-	getParentRoute: () => rootRoute,
-	path: "/markets/us-equities",
-	component: () => <MarketWorkspacePage market="us-equities" />,
 });
 
 const backtestRoute = createRoute({
@@ -222,8 +209,6 @@ const routeTree = rootRoute.addChildren([
 	dataFoundationRoute,
 	marketsRoute,
 	cryptoMarketRoute,
-	ashareMarketRoute,
-	usEquitiesMarketRoute,
 	backtestRoute,
 	componentsRoute,
 	validationRoute,

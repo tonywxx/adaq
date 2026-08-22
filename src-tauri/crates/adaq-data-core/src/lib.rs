@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::tungstenite::Message;
 
+#[cfg(feature = "deferred-equity")]
 pub mod a_share;
 pub mod alpaca;
 pub mod market;
+#[cfg(feature = "deferred-equity")]
 pub mod stock_us;
 
 pub(crate) const OKX_SRC: &str = "okx";

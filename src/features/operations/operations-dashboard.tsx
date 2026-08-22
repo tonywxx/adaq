@@ -220,8 +220,6 @@ export function OperationsDashboard() {
 						[
 							"/factors",
 							"/markets/crypto",
-							"/markets/a-shares",
-							"/markets/us-equities",
 						] as const
 					).map((to) => (
 						<Link

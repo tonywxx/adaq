@@ -39,8 +39,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+#[cfg(feature = "deferred-equity")]
 pub mod a_share;
 pub mod okx;
+#[cfg(feature = "deferred-equity")]
 pub mod us_equity;
 
 pub const NORMALIZATION_CONTRACT_VERSION: &str = "lossless-v1";

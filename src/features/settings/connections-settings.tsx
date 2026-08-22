@@ -1,9 +1,6 @@
 import {
 	Card,
 	CardContent,
-	CardDescription,
-	CardHeader,
-	CardTitle,
 } from "@/components/ui/card";
 import { supabase } from "@/lib/supabase";
 import type { User } from "@supabase/supabase-js";
@@ -84,32 +81,14 @@ export function ConnectionsSettings() {
 						</CardContent>
 					</Card>
 				) : (
-					<>
-						<ConnectionCard
-							provider="alpaca_paper"
-							profile={profileFor("alpaca_paper")}
-							disabled={!user}
-							userId={user?.id}
-							adapter={adapter}
-							onChanged={() => void refresh()}
-						/>
-						<ConnectionCard
+					<ConnectionCard
 							provider="okx_demo"
 							profile={profileFor("okx_demo")}
 							disabled={!user}
 							userId={user?.id}
 							adapter={adapter}
 							onChanged={() => void refresh()}
-						/>
-						<Card>
-							<CardHeader>
-								<CardTitle>{t("settings.connections.aShare.title")}</CardTitle>
-								<CardDescription>
-									{t("settings.connections.aShare.description")}
-								</CardDescription>
-							</CardHeader>
-						</Card>
-					</>
+					/>
 				)}
 			</div>
 		</>

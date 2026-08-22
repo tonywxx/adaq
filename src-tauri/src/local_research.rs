@@ -26,13 +26,15 @@ use adaq_backtest_core::{
 use adaq_component_tooling::{
     ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotSource,
 };
-use adaq_data_core::{BarInterval, OhlcvBar, OkxClient, a_share::AshareClient, market::Venue};
+#[cfg(feature = "deferred-equity")]
+use adaq_data_core::a_share::AshareClient;
+use adaq_data_core::{BarInterval, OhlcvBar, OkxClient, market::Venue};
 use adaq_data_pipeline::{
     CancellationToken, DataPipeline, DataQualityReport, DataQualityState,
-    a_share::AshareDataPath,
     okx::{OkxSpotDataPath, PointInTimeInstrumentUniverse},
-    us_equity::UsEquityDataPath,
 };
+#[cfg(feature = "deferred-equity")]
+use adaq_data_pipeline::{a_share::AshareDataPath, us_equity::UsEquityDataPath};
 use adaq_factor_research::ResearchEvidenceContext;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -61,7 +63,9 @@ pub struct LocalResearchState {
     pub(crate) database: Arc<Mutex<Connection>>,
     pub(crate) pipeline: DataPipeline,
     pub(crate) okx: OkxSpotDataPath,
+    #[cfg(feature = "deferred-equity")]
     pub(crate) ashare: AshareDataPath,
+    #[cfg(feature = "deferred-equity")]
     pub(crate) us_equity: UsEquityDataPath,
     pub(crate) snapshots: MarketDataSnapshots,
     pub(crate) components: ComponentLibrary,
@@ -571,8 +575,10 @@ impl LocalResearchState {
         let pipeline = DataPipeline::open(root.join("market-data-pipeline"), database.clone())
             .map_err(string)?;
         let okx = OkxSpotDataPath::open(pipeline.clone(), OkxClient::default()).map_err(string)?;
+        #[cfg(feature = "deferred-equity")]
         let ashare =
             AshareDataPath::open(pipeline.clone(), AshareClient::default()).map_err(string)?;
+        #[cfg(feature = "deferred-equity")]
         let us_equity = UsEquityDataPath::open(pipeline.clone()).map_err(string)?;
         let connections = crate::connections::ConnectionManager::open_production(database.clone())?;
         let operations = OperationsStore::open(database.clone())?;
@@ -636,7 +642,9 @@ impl LocalResearchState {
                 database,
                 pipeline,
                 okx,
+                #[cfg(feature = "deferred-equity")]
                 ashare,
+                #[cfg(feature = "deferred-equity")]
                 us_equity,
                 snapshots,
                 components,
@@ -1008,6 +1016,7 @@ impl LocalResearchState {
         })
     }
 
+    #[cfg(feature = "deferred-equity")]
     pub fn reset_local_data(&self, user_id: &str, kind: LocalDataResetKind) -> Result<(), String> {
         validate_user(user_id)?;
         let _reset_block = if matches!(kind, LocalDataResetKind::All) {
@@ -1168,6 +1177,82 @@ impl LocalResearchState {
         } else {
             result
         }
+    }
+
+    #[cfg(not(feature = "deferred-equity"))]
+    pub fn reset_local_data(&self, user_id: &str, kind: LocalDataResetKind) -> Result<(), String> {
+        validate_user(user_id)?;
+        let reset_block = if matches!(kind, LocalDataResetKind::All) {
+            Some(self.generation.stop_all_for_user(user_id)?)
+        } else {
+            None
+        };
+        let feature_reset_block = if matches!(kind, LocalDataResetKind::All) {
+            Some(self.features.stop_all_for_user(user_id)?)
+        } else {
+            None
+        };
+        if matches!(kind, LocalDataResetKind::All) {
+            self.factor.reset_for_user(user_id)?;
+            self.features.reset_materialization_for_user(user_id)?;
+        }
+        let resets_market_data = matches!(
+            kind,
+            LocalDataResetKind::MarketData | LocalDataResetKind::All
+        );
+        if resets_market_data {
+            self.pipeline.begin_user_reset(user_id).map_err(string)?;
+        }
+        let blocker_count = if resets_market_data {
+            self.pipeline
+                .snapshot_deletion_blockers_for_user(user_id)
+                .map_err(string)?
+                .len() as u64
+        } else {
+            0
+        };
+        let mut database = self.database.lock().map_err(string)?;
+        let pipeline_paths = if resets_market_data {
+            self.pipeline
+                .reset_paths_for_user_with_connection(&database, user_id)
+                .map_err(string)?
+        } else {
+            Vec::new()
+        };
+        let result = match kind {
+            LocalDataResetKind::Watchlist => reset_watchlist(&mut database, user_id),
+            LocalDataResetKind::Components => {
+                self.components.reset_for_user(&mut database, user_id)
+            }
+            LocalDataResetKind::MarketData => reset_market_data_okx(
+                &mut database,
+                user_id,
+                &self.root,
+                &self.snapshots,
+                &self.backtests,
+                blocker_count,
+                &self.pipeline,
+                pipeline_paths,
+            ),
+            LocalDataResetKind::All => reset_all_okx(
+                &mut database,
+                user_id,
+                &self.root,
+                reset_block.as_ref().unwrap(),
+                feature_reset_block.as_ref().unwrap(),
+                &self.components,
+                &self.validation,
+                &self.snapshots,
+                &self.backtests,
+                blocker_count,
+                &self.pipeline,
+                pipeline_paths,
+            ),
+        };
+        if resets_market_data {
+            self.pipeline.finish_user_reset(user_id).map_err(string)?;
+        }
+        result
     }
 
     pub(crate) fn persist_snapshot_for_user(
@@ -1643,6 +1728,118 @@ fn reset_watchlist(database: &mut Connection, user_id: &str) -> Result<(), Strin
     transaction.commit().map_err(string)
 }
 
+#[cfg(not(feature = "deferred-equity"))]
+fn reset_market_data_okx(
+    database: &mut Connection,
+    user_id: &str,
+    root: &Path,
+    snapshots: &MarketDataSnapshots,
+    backtests: &Backtests,
+    blocker_count: u64,
+    pipeline: &DataPipeline,
+    pipeline_paths: Vec<PathBuf>,
+) -> Result<(), String> {
+    if blocker_count > 0 {
+        return Err(format!(
+            "Market Data reset is blocked by {blocker_count} immutable research record(s)"
+        ));
+    }
+    let blocking_datasets: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM signal_dataset_access WHERE user_id = ?1",
+            [user_id],
+            |row| row.get(0),
+        )
+        .map_err(string)?;
+    if backtests.run_count(database, user_id)? + blocking_datasets.max(0) as u64 > 0 {
+        return Err("Market Data reset is blocked by immutable research records".into());
+    }
+    let staged = stage_files(
+        snapshots
+            .orphaned_parquet_paths(database, user_id)?
+            .into_iter()
+            .chain(pipeline_paths),
+        root,
+    )?;
+    let result = (|| {
+        let transaction = database.transaction().map_err(string)?;
+        snapshots.reset_for_user(&transaction, user_id)?;
+        pipeline
+            .reset_user_rows(&transaction, user_id)
+            .map_err(string)?;
+        transaction.commit().map_err(string)
+    })();
+    finish_staged_files(staged, result)
+}
+
+#[cfg(not(feature = "deferred-equity"))]
+fn reset_all_okx(
+    database: &mut Connection,
+    user_id: &str,
+    root: &Path,
+    reset_block: &crate::dataset_generation::UserResetBlock<'_>,
+    feature_reset_block: &crate::features::UserFeatureResetBlock<'_>,
+    components: &ComponentLibrary,
+    validation: &ValidationStudies,
+    snapshots: &MarketDataSnapshots,
+    backtests: &Backtests,
+    blocker_count: u64,
+    pipeline: &DataPipeline,
+    pipeline_paths: Vec<PathBuf>,
+) -> Result<(), String> {
+    if blocker_count > 0 {
+        return Err(format!(
+            "All local data reset is blocked by {blocker_count} pipeline snapshot reference(s)"
+        ));
+    }
+    let component_paths = components.orphan_archive_paths(database, user_id, Some(user_id))?;
+    let dataset_paths = strings(
+        database,
+        "SELECT c.parquet_path FROM signal_dataset_content c JOIN signal_dataset_access a USING(dataset_id) WHERE a.user_id = ?1 AND NOT EXISTS(SELECT 1 FROM signal_dataset_access other WHERE other.dataset_id = c.dataset_id AND other.user_id <> ?1)",
+        user_id,
+    )?;
+    let staged = stage_files(
+        component_paths
+            .into_iter()
+            .chain(snapshots.orphaned_parquet_paths(database, user_id)?)
+            .chain(dataset_paths.into_iter().map(PathBuf::from))
+            .chain(pipeline_paths),
+        root,
+    )?;
+    let result = (|| {
+        let transaction = database.transaction().map_err(string)?;
+        validation.reset_for_user(&transaction, user_id)?;
+        reset_block.delete_attempt_evidence(&transaction)?;
+        feature_reset_block.delete_attempt_evidence(&transaction)?;
+        backtests.reset_for_user(&transaction, user_id)?;
+        transaction
+            .execute(
+                "DELETE FROM signal_dataset_access WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction
+            .execute("DELETE FROM signal_dataset_content WHERE NOT EXISTS(SELECT 1 FROM signal_dataset_access a WHERE a.dataset_id = signal_dataset_content.dataset_id)", [])
+            .map_err(string)?;
+        components.reset_access_for_user(&transaction, user_id)?;
+        snapshots.reset_for_user(&transaction, user_id)?;
+        pipeline
+            .reset_user_rows(&transaction, user_id)
+            .map_err(string)?;
+        components.delete_orphan_content(&transaction, Some(user_id))?;
+        transaction
+            .execute(
+                "DELETE FROM watchlist_settings WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        insert_default_watchlist(&transaction, user_id)?;
+        transaction.commit().map_err(string)
+    })();
+    finish_staged_files(staged, result)
+}
+
+#[cfg(feature = "deferred-equity")]
 fn reset_market_data(
     database: &mut Connection,
     user_id: &str,
@@ -1700,6 +1897,7 @@ fn reset_market_data(
     finish_staged_files(staged, result)
 }
 
+#[cfg(feature = "deferred-equity")]
 fn reset_all(
     database: &mut Connection,
     user_id: &str,

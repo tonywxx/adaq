@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 
+[features]
+default = []
+deferred-equity = ["adaq-data-core/deferred-equity"]
+
 [dependencies]
-adaq-data-core = { path = "../adaq-data-core" }
+adaq-data-core = { path = "../adaq-data-core", default-features = false }
 arrow-array = "59.2"
 arrow-schema = "59.2"
 chrono = { version = "0.4", default-features = false, features = ["std"] }

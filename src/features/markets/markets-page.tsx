@@ -142,9 +142,9 @@ const MARKET_CONFIG = {
 		title: "markets.usEquities.title",
 		description: "markets.usEquities.description",
 		provider: "alpaca",
-		listCommand: "alpaca_instrument_master_list",
-		acquireCommand: "alpaca_instrument_master_acquire",
-		cancelCommand: "alpaca_acquisition_cancel",
+		listCommand: "yahoo_instrument_master_list",
+		acquireCommand: "yahoo_instrument_master_acquire",
+		cancelCommand: "yahoo_acquisition_cancel",
 	},
 } as const;
 
@@ -178,8 +178,6 @@ export function LegacyOperationsDashboard() {
 						[
 							["/factors", t("nav.factorResearch")],
 							["/markets/crypto", t("markets.crypto.title")],
-							["/markets/a-shares", t("markets.aShares.title")],
-							["/markets/us-equities", t("markets.usEquities.title")],
 						] as const
 					).map(([to, label]) => (
 						<Link
@@ -208,8 +206,6 @@ export function MarketsOverview() {
 			<div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,420px)]">
 				<div className="grid gap-4 sm:grid-cols-3">
 					<MarketEntry market="crypto" />
-					<MarketEntry market="a-shares" />
-					<MarketEntry market="us-equities" />
 				</div>
 				<UnifiedWatchlistCard market="all" catalog={[]} />
 			</div>
@@ -329,7 +325,7 @@ export function MarketWorkspacePage({
 	const snapshotQuery = useQuery({
 		queryKey: ["market-us-snapshot", userId, selected?.key],
 		queryFn: () =>
-			invoke<MarketSnapshot>("alpaca_snapshot", {
+			invoke<MarketSnapshot>("yahoo_snapshot", {
 				request: { userId, instrument: selected?.instrument },
 			}),
 		enabled: Boolean(
@@ -1245,7 +1241,7 @@ function useMarketCalendar(
 					) ?? values[0]
 				);
 			}
-			return invoke<CalendarDto>("alpaca_calendar_acquire", {
+			return invoke<CalendarDto>("yahoo_calendar_acquire", {
 				request: { ...request, venue: instrument.instrument.venue },
 			});
 		},

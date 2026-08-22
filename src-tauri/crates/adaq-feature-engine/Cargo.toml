@@ -6,8 +6,12 @@ license = "Apache-2.0"
 description = "Tauri-independent feature engineering contracts for ADAQ"
 build = "build.rs"
 
+[features]
+default = []
+deferred-equity = ["adaq-data-core/deferred-equity"]
+
 [dependencies]
-adaq-data-core = { path = "../adaq-data-core" }
+adaq-data-core = { path = "../adaq-data-core", default-features = false }
 adaq-indicator-engine = { path = "../adaq-indicator-engine" }
 arrow-array = "59.2"
 arrow-schema = "59.2"

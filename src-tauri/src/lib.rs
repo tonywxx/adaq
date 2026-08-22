@@ -129,27 +129,36 @@ fn operations_alerts(
 
 #[tauri::command]
 fn paper_feedback_snapshot_create(
-    input: paper_feedback::FeedbackSnapshotInput,
+    mut input: paper_feedback::FeedbackSnapshotInput,
     created_at_ms: i64,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<paper_feedback::FeedbackSnapshot, String> {
+    input.user_id = auth.user_id_for_window(window.label())?;
     state.paper_feedback.create_snapshot(input, created_at_ms)
 }
 
 #[tauri::command]
 fn paper_feedback_report_create(
-    input: paper_feedback::FeedbackReportInput,
+    mut input: paper_feedback::FeedbackReportInput,
     created_at_ms: i64,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<paper_feedback::FeedbackReport, String> {
+    input.user_id = auth.user_id_for_window(window.label())?;
     state.paper_feedback.create_report(input, created_at_ms)
 }
 
 #[tauri::command]
 fn paper_feedback_review_decide(
-    input: paper_feedback::ReviewDecisionInput,
+    mut input: paper_feedback::ReviewDecisionInput,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<paper_feedback::ReviewDecision, String> {
+    input.user_id = auth.user_id_for_window(window.label())?;
     state.paper_feedback.record_review_decision(input)
 }
 
@@ -1819,6 +1828,7 @@ async fn okx_stream_health(
 }
 
 #[tauri::command]
+#[cfg(feature = "deferred-equity")]
 async fn ashare_instrument_master_acquire(
     mut request: market_data_pipeline::AshareInstrumentMasterRequest,
     window: WebviewWindow,
@@ -1863,6 +1873,7 @@ async fn ashare_instrument_master_acquire(
 }
 
 #[tauri::command]
+#[cfg(feature = "deferred-equity")]
 async fn ashare_instrument_master_list(
     mut request: market_data_pipeline::UserRequest,
     window: WebviewWindow,
@@ -1887,6 +1898,7 @@ async fn ashare_instrument_master_list(
 }
 
 #[tauri::command]
+#[cfg(feature = "deferred-equity")]
 async fn ashare_universe(
     mut request: market_data_pipeline::UniverseRequest,
     window: WebviewWindow,
@@ -1905,6 +1917,7 @@ async fn ashare_universe(
 }
 
 #[tauri::command]
+#[cfg(feature = "deferred-equity")]
 async fn ashare_calendar_acquire(
     mut request: market_data_pipeline::AshareCalendarRequest,
     window: WebviewWindow,
@@ -1943,6 +1956,7 @@ async fn ashare_calendar_acquire(
 }
 
 #[tauri::command]
+#[cfg(feature = "deferred-equity")]
 async fn ashare_corporate_actions_acquire(
     mut request: market_data_pipeline::AshareCorporateActionRequest,
     window: WebviewWindow,
@@ -1978,6 +1992,7 @@ async fn ashare_corporate_actions_acquire(
 }
 
 #[tauri::command]
+#[cfg(feature = "deferred-equity")]
 async fn ashare_backfill(
     mut request: adaq_data_pipeline::a_share::AshareBackfillRequest,
     on_event: Channel<adaq_data_pipeline::a_share::AshareBackfillEvent>,
@@ -2009,6 +2024,7 @@ async fn ashare_backfill(
 }
 
 #[tauri::command]
+#[cfg(feature = "deferred-equity")]
 fn ashare_backfill_cancel(
     mut request: market_data_pipeline::BackfillCancelRequest,
     window: WebviewWindow,
@@ -2023,6 +2039,7 @@ fn ashare_backfill_cancel(
 }
 
 #[tauri::command]
+#[cfg(feature = "deferred-equity")]
 fn ashare_acquisition_cancel(
     mut request: market_data_pipeline::AshareAcquisitionCancelRequest,
     window: WebviewWindow,
@@ -2037,6 +2054,7 @@ fn ashare_acquisition_cancel(
 }
 
 #[tauri::command]
+#[cfg(feature = "deferred-equity")]
 async fn ashare_workspace(
     mut request: market_data_pipeline::UserEvidenceRequest,
     window: WebviewWindow,
@@ -2055,7 +2073,8 @@ async fn ashare_workspace(
 }
 
 #[tauri::command]
-async fn alpaca_instrument_master_acquire(
+#[cfg(feature = "deferred-equity")]
+async fn yahoo_instrument_master_acquire(
     mut request: market_data_pipeline::UsEquityInstrumentMasterRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
@@ -2110,7 +2129,8 @@ async fn alpaca_instrument_master_acquire(
 }
 
 #[tauri::command]
-async fn alpaca_instrument_master_list(
+#[cfg(feature = "deferred-equity")]
+async fn yahoo_instrument_master_list(
     mut request: market_data_pipeline::UserRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
@@ -2134,7 +2154,8 @@ async fn alpaca_instrument_master_list(
 }
 
 #[tauri::command]
-async fn alpaca_universe(
+#[cfg(feature = "deferred-equity")]
+async fn yahoo_universe(
     mut request: market_data_pipeline::UniverseRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
@@ -2152,7 +2173,8 @@ async fn alpaca_universe(
 }
 
 #[tauri::command]
-async fn alpaca_calendar_acquire(
+#[cfg(feature = "deferred-equity")]
+async fn yahoo_calendar_acquire(
     mut request: market_data_pipeline::UsEquityCalendarRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
@@ -2198,7 +2220,8 @@ async fn alpaca_calendar_acquire(
 }
 
 #[tauri::command]
-async fn alpaca_backfill(
+#[cfg(feature = "deferred-equity")]
+async fn yahoo_backfill(
     mut request: adaq_data_pipeline::us_equity::UsEquityBackfillRequest,
     on_event: Channel<adaq_data_pipeline::us_equity::UsEquityBackfillEvent>,
     window: WebviewWindow,
@@ -2243,7 +2266,8 @@ async fn alpaca_backfill(
 }
 
 #[tauri::command]
-fn alpaca_backfill_cancel(
+#[cfg(feature = "deferred-equity")]
+fn yahoo_backfill_cancel(
     mut request: market_data_pipeline::BackfillCancelRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
@@ -2257,7 +2281,8 @@ fn alpaca_backfill_cancel(
 }
 
 #[tauri::command]
-fn alpaca_acquisition_cancel(
+#[cfg(feature = "deferred-equity")]
+fn yahoo_acquisition_cancel(
     mut request: market_data_pipeline::AshareAcquisitionCancelRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
@@ -2271,7 +2296,8 @@ fn alpaca_acquisition_cancel(
 }
 
 #[tauri::command]
-async fn alpaca_acquisition_status(
+#[cfg(feature = "deferred-equity")]
+async fn yahoo_acquisition_status(
     mut request: market_data_pipeline::UserEvidenceRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
@@ -2289,7 +2315,8 @@ async fn alpaca_acquisition_status(
 }
 
 #[tauri::command]
-async fn alpaca_snapshot(
+#[cfg(feature = "deferred-equity")]
+async fn yahoo_snapshot(
     mut request: market_data_pipeline::UsEquitySnapshotRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
@@ -2311,7 +2338,8 @@ async fn alpaca_snapshot(
 }
 
 #[tauri::command]
-async fn alpaca_stream(
+#[cfg(feature = "deferred-equity")]
+async fn yahoo_stream(
     mut request: market_data_pipeline::UsEquityStreamRequest,
     on_event: Channel<adaq_data_core::alpaca::AlpacaStreamEvent>,
     window: WebviewWindow,
@@ -2353,7 +2381,8 @@ async fn alpaca_stream(
 }
 
 #[tauri::command]
-async fn alpaca_workspace(
+#[cfg(feature = "deferred-equity")]
+async fn yahoo_workspace(
     mut request: market_data_pipeline::UserEvidenceRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
@@ -2646,6 +2675,7 @@ async fn market_workspace_get_bars(
         end_time_ms: request.end_time_ms,
     };
     match request.instrument.venue.kind {
+        #[cfg(feature = "deferred-equity")]
         VenueKind::ChinaAShareEquity => {
             let client = app
                 .state::<Arc<LocalResearchState>>()
@@ -2684,6 +2714,7 @@ async fn market_workspace_get_bars(
                 limitations: direct_bar_limitations(acquisition.limitations),
             })
         }
+        #[cfg(feature = "deferred-equity")]
         VenueKind::UsEquity => {
             let instrument = request.instrument;
             let interval = request.interval;
@@ -2717,9 +2748,12 @@ async fn market_workspace_get_bars(
             .map_err(|error| error.to_string())?
         }
         VenueKind::CryptoSpot => Err("Use the OKX market Bar command for Crypto Spot".to_owned()),
+        #[cfg(not(feature = "deferred-equity"))]
+        _ => Err("Only OKX Spot market bars are supported in V1".to_owned()),
     }
 }
 
+#[cfg(feature = "deferred-equity")]
 fn ashare_bars(bars: Vec<adaq_data_core::a_share::AshareBar>) -> Result<Vec<OhlcvBar>, String> {
     bars.into_iter()
         .filter_map(|bar| {
@@ -2739,6 +2773,7 @@ fn ashare_bars(bars: Vec<adaq_data_core::a_share::AshareBar>) -> Result<Vec<Ohlc
         .collect()
 }
 
+#[cfg(feature = "deferred-equity")]
 fn alpaca_bars(bars: Vec<adaq_data_core::alpaca::AlpacaBar>) -> Result<Vec<OhlcvBar>, String> {
     bars.into_iter()
         .filter_map(|bar| {
@@ -3466,26 +3501,46 @@ pub fn run() {
             okx_backfill_cancel,
             okx_acquisition_status,
             okx_stream_health,
+            #[cfg(feature = "deferred-equity")]
             ashare_instrument_master_acquire,
+            #[cfg(feature = "deferred-equity")]
             ashare_instrument_master_list,
+            #[cfg(feature = "deferred-equity")]
             ashare_universe,
+            #[cfg(feature = "deferred-equity")]
             ashare_calendar_acquire,
+            #[cfg(feature = "deferred-equity")]
             ashare_corporate_actions_acquire,
+            #[cfg(feature = "deferred-equity")]
             ashare_backfill,
+            #[cfg(feature = "deferred-equity")]
             ashare_backfill_cancel,
+            #[cfg(feature = "deferred-equity")]
             ashare_acquisition_cancel,
+            #[cfg(feature = "deferred-equity")]
             ashare_workspace,
-            alpaca_instrument_master_acquire,
-            alpaca_instrument_master_list,
-            alpaca_universe,
-            alpaca_calendar_acquire,
-            alpaca_backfill,
-            alpaca_backfill_cancel,
-            alpaca_acquisition_cancel,
-            alpaca_acquisition_status,
-            alpaca_snapshot,
-            alpaca_stream,
-            alpaca_workspace,
+            #[cfg(feature = "deferred-equity")]
+            yahoo_instrument_master_acquire,
+            #[cfg(feature = "deferred-equity")]
+            yahoo_instrument_master_list,
+            #[cfg(feature = "deferred-equity")]
+            yahoo_universe,
+            #[cfg(feature = "deferred-equity")]
+            yahoo_calendar_acquire,
+            #[cfg(feature = "deferred-equity")]
+            yahoo_backfill,
+            #[cfg(feature = "deferred-equity")]
+            yahoo_backfill_cancel,
+            #[cfg(feature = "deferred-equity")]
+            yahoo_acquisition_cancel,
+            #[cfg(feature = "deferred-equity")]
+            yahoo_acquisition_status,
+            #[cfg(feature = "deferred-equity")]
+            yahoo_snapshot,
+            #[cfg(feature = "deferred-equity")]
+            yahoo_stream,
+            #[cfg(feature = "deferred-equity")]
+            yahoo_workspace,
             backtest_preflight,
             backtest_run,
             backtest_list,

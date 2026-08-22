@@ -26,6 +26,10 @@ members = [
 ]
 resolver = "2"
 
+[features]
+default = []
+deferred-equity = ["adaq-data-core/deferred-equity", "adaq-data-pipeline/deferred-equity", "adaq-feature-engine/deferred-equity"]
+
 [patch.crates-io]
 adaq-trading-crypto = {path = "patches/adaq-trading-crypto"}
 
@@ -45,8 +49,8 @@ tauri-build = {version = "2", features = [] }
 adaq-backtest-core = {path = "crates/adaq-backtest-core"}
 adaq-component-sdk = {path = "crates/adaq-component-sdk", features = ["host"] }
 adaq-component-tooling = {path = "crates/adaq-component-tooling"}
-adaq-data-core = {path = "crates/adaq-data-core"}
-adaq-data-pipeline = {path = "crates/adaq-data-pipeline"}
+adaq-data-core = {path = "crates/adaq-data-core", default-features = false}
+adaq-data-pipeline = {path = "crates/adaq-data-pipeline", default-features = false}
 adaq-factor-research = {path = "crates/adaq-factor-research"}
 adaq-feature-engine = {path = "crates/adaq-feature-engine"}
 adaq-indicator-engine = {path = "crates/adaq-indicator-engine"}

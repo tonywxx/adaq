@@ -29,4 +29,5 @@ This decision supersedes only the V1 market-scope and completion-gate portions o
 - Internal domain contracts remain asset-neutral; V1 product surfaces and assertions are honestly OKX-specific.
 - The offline A-share tutorial fixture may remain as deterministic research test data. It does not constitute A-share provider or product support.
 - Adding A-share or U.S. equity support requires a separate post-V1 plan, qualified data source, adapter evidence, product workflow, and scoped readiness assertions.
+- Deferred markets return through an opt-in feature build and a separate post-V1 product surface. That extension may reuse asset-neutral `Instrument`, calendar, evidence, quality, snapshot, and research-context contracts, but it must add provider-owned adapters, explicit capability snapshots, dedicated commands/routes, and scoped readiness assertions before re-entering the default product.
 - The final V1 readiness decision remains a human Release Owner decision recorded through scoped Readiness Assertions; it is not inferred from issue closure or automated tests alone.
