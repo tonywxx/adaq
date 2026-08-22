@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use wasmparser::{Encoding, Parser, Payload, Validator};
-use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
+use zip::{DateTime, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 const MANIFEST_NAME: &str = "manifest.json";
 const COMPONENT_NAME: &str = "component.wasm";
@@ -324,6 +324,7 @@ pub fn pack_component(
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
+        .last_modified_time(DateTime::DEFAULT)
         .unix_permissions(0o644);
     writer.start_file(MANIFEST_NAME, options).map_err(error)?;
     writer.write_all(&manifest_json).map_err(error)?;
@@ -797,6 +798,15 @@ mod tests {
         manifest.factor_scope = None;
         manifest.abi_version = Version::parse(adaq_component_sdk::ABI_VERSION).unwrap();
         manifest
+    }
+
+    #[test]
+    fn packing_is_deterministic() {
+        let wasm = b"\0asm\x0d\0\x01\0";
+        assert_eq!(
+            pack_component(manifest(), wasm),
+            pack_component(manifest(), wasm)
+        );
     }
 
     #[test]
