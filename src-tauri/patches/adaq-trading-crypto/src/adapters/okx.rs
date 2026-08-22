@@ -127,6 +127,12 @@ impl Okx {
         crate::signing::set_header(&mut headers, "OK-ACCESS-SIGN", &signature)?;
         crate::signing::set_header(&mut headers, "OK-ACCESS-TIMESTAMP", &timestamp)?;
         crate::signing::set_header(&mut headers, "OK-ACCESS-PASSPHRASE", passphrase)?;
+        if self.config.sandbox {
+            headers.insert(
+                "x-simulated-trading",
+                "1".parse().expect("static header is valid"),
+            );
+        }
         self.core
             .request(method, &request_path, &headers, body_json)
             .await

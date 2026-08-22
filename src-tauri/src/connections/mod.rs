@@ -18,6 +18,7 @@ use std::{
 };
 
 use adaq_data_core::alpaca::{AlpacaClient, AlpacaCredentials};
+use adaq_trading_crypto::{Config as TradingConfig, adapters::okx::Okx};
 use rand::RngCore;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -413,6 +414,57 @@ impl ConnectionManager {
             AlpacaCredentials::new(key_id, secret_key),
             self.alpaca_rate_gate.clone(),
         )))
+    }
+
+    /// Resolves the validated OKX Demo credential only inside the Host and
+    /// constructs a sandbox client. The callback must not escape the client;
+    /// Workers and Components never receive this value.
+    pub(crate) fn with_okx_demo_client<T>(
+        &self,
+        user_id: &str,
+        operation: impl FnOnce(Okx) -> T,
+    ) -> Result<T, String> {
+        validate_user_id(user_id)?;
+        let row = {
+            let database = self.database.lock().map_err(|error| error.to_string())?;
+            query_profile(&database, user_id, &self.device_id, Provider::OkxDemo)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "No OKX Demo connection is configured.".to_owned())?
+        };
+        if row.status != ProfileStatus::Usable {
+            return Err("The OKX Demo connection is unusable; test or re-save it in Settings > Connections.".to_owned());
+        }
+        let stored = self
+            .secrets
+            .get(&row.os_store_entry())
+            .map_err(|error| match error {
+                secret_store::SecretStoreError::Missing => {
+                    "The stored OKX credential is missing; re-save the connection.".to_owned()
+                }
+                secret_store::SecretStoreError::Unavailable(_) => {
+                    "The operating-system secret store is unavailable.".to_owned()
+                }
+            })?;
+        let TestCredential::OkxDemo {
+            api_key,
+            secret_key,
+            passphrase,
+        } = serde_json::from_str(&stored).map_err(|_| {
+            "The stored OKX credential is invalid; re-save the connection.".to_owned()
+        })?
+        else {
+            return Err("The saved credential does not match the OKX Demo provider.".to_owned());
+        };
+        let client = Okx::new(TradingConfig {
+            api_key: Some(api_key),
+            secret: Some(secret_key),
+            password: Some(passphrase),
+            sandbox: true,
+            enable_rate_limit: true,
+            ..TradingConfig::new()
+        })
+        .map_err(|error| format!("failed to initialize OKX Demo client: {error}"))?;
+        Ok(operation(client))
     }
 
     /// Saves (or rotates) a Profile: writes the secret to the OS store

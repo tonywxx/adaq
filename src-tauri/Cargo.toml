@@ -54,7 +54,9 @@ adaq-data-pipeline = {path = "crates/adaq-data-pipeline", default-features = fal
 adaq-factor-research = {path = "crates/adaq-factor-research"}
 adaq-feature-engine = {path = "crates/adaq-feature-engine"}
 adaq-indicator-engine = {path = "crates/adaq-indicator-engine"}
+adaq-paper-trading-core = {path = "crates/adaq-paper-trading-core"}
 adaq-python-research = {path = "crates/adaq-python-research"}
+adaq-trading-crypto = {path = "patches/adaq-trading-crypto"}
 arrow-array = "59.2"
 arrow-schema = "59.2"
 base64 = "0.23.1"

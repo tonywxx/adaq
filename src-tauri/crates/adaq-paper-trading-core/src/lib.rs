@@ -24,11 +24,189 @@ pub enum AdapterKind {
     AShareLocal,
 }
 
+pub const OKX_DEMO_FUNDING_TARGET: Decimal = Decimal::from_parts(1_000_000, 0, 0, false, 0);
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RiskPolicy {
+    pub max_order_notional: Decimal,
+    pub reserve_cash: Decimal,
+    pub freeze_new_risk: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RiskDecision {
+    pub approved: bool,
+    pub reason: String,
+    pub requested_notional: Decimal,
+    pub approved_notional: Decimal,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ProviderEvidence {
+    pub provider: AdapterKind,
+    pub operation_id: String,
+    pub provider_order_id: Option<String>,
+    pub status: String,
+    pub error_code: Option<String>,
+    pub observed_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum ExecutionOutcome {
+    Accepted(ProviderEvidence),
+    Rejected(ProviderEvidence),
+    Uncertain(ProviderEvidence),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExecutionError {
+    InvalidRiskPolicy,
+    RiskRejected(RiskDecision),
+    VenueMismatch,
+    DuplicateOperation,
+    ReconciliationRequired,
+    UncertainOutcome,
+}
+
+impl std::fmt::Display for ExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl std::error::Error for ExecutionError {}
+
+/// Host-owned, provider-neutral gate for new execution. It never receives a
+/// credential and never delegates Risk authority to an adapter or Worker.
+#[derive(Clone, Debug)]
+pub struct PaperExecution {
+    adapter: AdapterKind,
+    policy: RiskPolicy,
+    blocked: bool,
+    operations: BTreeMap<String, ExecutionOutcome>,
+}
+
+impl PaperExecution {
+    pub fn okx_demo(policy: RiskPolicy) -> Result<Self, ExecutionError> {
+        if policy.max_order_notional <= Decimal::ZERO || policy.reserve_cash < Decimal::ZERO {
+            return Err(ExecutionError::InvalidRiskPolicy);
+        }
+        Ok(Self {
+            adapter: AdapterKind::OkxDemo,
+            policy,
+            blocked: false,
+            operations: BTreeMap::new(),
+        })
+    }
+
+    pub fn adapter(&self) -> AdapterKind {
+        self.adapter
+    }
+    pub fn policy(&self) -> &RiskPolicy {
+        &self.policy
+    }
+    pub fn is_blocked(&self) -> bool {
+        self.blocked
+    }
+    pub fn evidence(&self) -> impl Iterator<Item = &ExecutionOutcome> {
+        self.operations.values()
+    }
+
+    pub fn approve(&self, account: &PaperLedger, notional: Decimal) -> RiskDecision {
+        let reason = if self.blocked || self.policy.freeze_new_risk {
+            "new risk is frozen"
+        } else if notional <= Decimal::ZERO {
+            "order notional must be positive"
+        } else if notional > self.policy.max_order_notional {
+            "order exceeds the Host Risk limit"
+        } else if account.buying_power() - self.policy.reserve_cash < notional {
+            "order exceeds available reserved buying power"
+        } else {
+            "approved"
+        };
+        let approved = reason == "approved";
+        RiskDecision {
+            approved,
+            reason: reason.to_owned(),
+            requested_notional: notional,
+            approved_notional: if approved { notional } else { Decimal::ZERO },
+        }
+    }
+
+    pub fn begin(
+        &mut self,
+        operation_id: impl Into<String>,
+        account: &mut PaperLedger,
+        instrument: &str,
+        side: Side,
+        quantity: Decimal,
+        limit_price: Decimal,
+        now_ms: i64,
+    ) -> Result<(String, RiskDecision), ExecutionError> {
+        let operation_id = operation_id.into();
+        if self.operations.contains_key(&operation_id) {
+            return Err(ExecutionError::DuplicateOperation);
+        }
+        if self.blocked {
+            return Err(ExecutionError::ReconciliationRequired);
+        }
+        if self.adapter != AdapterKind::OkxDemo || !instrument.contains('-') {
+            return Err(ExecutionError::VenueMismatch);
+        }
+        let decision = self.approve(account, quantity * limit_price);
+        if !decision.approved {
+            return Err(ExecutionError::RiskRejected(decision));
+        }
+        let user_id = account.account().user_id.clone();
+        account
+            .submit_order(&user_id, instrument, side, quantity, limit_price, now_ms)
+            .map_err(|_| ExecutionError::ReconciliationRequired)?;
+        let order_id = operation_id.clone();
+        self.operations.insert(
+            operation_id,
+            ExecutionOutcome::Accepted(ProviderEvidence {
+                provider: AdapterKind::OkxDemo,
+                operation_id: order_id.clone(),
+                provider_order_id: None,
+                status: format!("intent_{:?}", side).to_lowercase(),
+                error_code: None,
+                observed_at_ms: now_ms,
+            }),
+        );
+        Ok((order_id, decision))
+    }
+
+    pub fn mark_uncertain(
+        &mut self,
+        operation_id: &str,
+        now_ms: i64,
+    ) -> Result<(), ExecutionError> {
+        let outcome = self
+            .operations
+            .get_mut(operation_id)
+            .ok_or(ExecutionError::DuplicateOperation)?;
+        *outcome = ExecutionOutcome::Uncertain(ProviderEvidence {
+            provider: AdapterKind::OkxDemo,
+            operation_id: operation_id.to_owned(),
+            provider_order_id: None,
+            status: "unknown".to_owned(),
+            error_code: Some("provider_timeout".to_owned()),
+            observed_at_ms: now_ms,
+        });
+        self.blocked = true;
+        Ok(())
+    }
+
+    pub fn reconcile(&mut self, matches: bool) {
+        self.blocked = !matches;
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CapabilitySnapshot {
     pub adapter: AdapterKind,
     pub market: Market,
     pub currency: Currency,
+    pub funding_target: Decimal,
     pub supports_market_orders: bool,
     pub supports_limit_orders: bool,
     pub supports_short_sales: bool,
@@ -47,6 +225,7 @@ impl AdapterKind {
             adapter: self,
             market,
             currency,
+            funding_target: Decimal::new(1_000_000, 0),
             supports_market_orders: true,
             supports_limit_orders: true,
             supports_short_sales: false,
@@ -521,6 +700,94 @@ mod tests {
         assert!(matches!(
             l.submit_order("bob", "BTC-USDT", Side::Buy, Decimal::ONE, Decimal::ONE, 1),
             Err(LedgerError::AccountMismatch)
+        ));
+    }
+
+    #[test]
+    fn okx_execution_is_risk_gated_idempotent_and_fail_closed() {
+        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        let mut execution = PaperExecution::okx_demo(RiskPolicy {
+            max_order_notional: Decimal::new(10_000, 0),
+            reserve_cash: Decimal::new(100, 0),
+            freeze_new_risk: false,
+        })
+        .unwrap();
+        let (id, decision) = execution
+            .begin(
+                "op-1",
+                &mut ledger,
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::ONE,
+                Decimal::new(100, 0),
+                1,
+            )
+            .unwrap();
+        assert_eq!(id, "op-1");
+        assert!(decision.approved);
+        assert!(matches!(
+            execution.begin(
+                "op-1",
+                &mut ledger,
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::ONE,
+                Decimal::ONE,
+                2
+            ),
+            Err(ExecutionError::DuplicateOperation)
+        ));
+        execution.mark_uncertain("op-1", 3).unwrap();
+        assert!(execution.is_blocked());
+        assert!(matches!(
+            execution.begin(
+                "op-2",
+                &mut ledger,
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::ONE,
+                Decimal::ONE,
+                4
+            ),
+            Err(ExecutionError::ReconciliationRequired)
+        ));
+        execution.reconcile(true);
+        ledger.reconcile(ledger.account().clone()).unwrap();
+        assert!(!execution.is_blocked());
+    }
+
+    #[test]
+    fn okx_execution_rejects_non_venue_and_over_limit_orders() {
+        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        let mut execution = PaperExecution::okx_demo(RiskPolicy {
+            max_order_notional: Decimal::new(10, 0),
+            reserve_cash: Decimal::ZERO,
+            freeze_new_risk: false,
+        })
+        .unwrap();
+        assert!(matches!(
+            execution.begin(
+                "op-1",
+                &mut ledger,
+                "AAPL",
+                Side::Buy,
+                Decimal::ONE,
+                Decimal::ONE,
+                1
+            ),
+            Err(ExecutionError::VenueMismatch)
+        ));
+        assert!(matches!(
+            execution.begin(
+                "op-2",
+                &mut ledger,
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::new(11, 0),
+                Decimal::ONE,
+                1
+            ),
+            Err(ExecutionError::RiskRejected(_))
         ));
     }
 }
