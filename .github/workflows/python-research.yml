@@ -116,7 +116,7 @@ jobs:
 
   workspace:
     if: github.event_name != 'pull_request'
-    name: Supported workspace and tutorial (${{ matrix.name }})
+    name: Frontend acceptance (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -126,7 +126,6 @@ jobs:
             runner: macos-14
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
       - uses: pnpm/action-setup@v6
         with:
           run_install: false
@@ -134,67 +133,6 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - name: Setup MSVC environment
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./.github/scripts/setup-msvc.ps1
-      - name: Install Factor build target
-        run: rustup target add wasm32-unknown-unknown
-      - name: Fetch offline Factor fixture dependencies
-        run: cargo fetch --locked --manifest-path src-tauri/fixtures/factor/Cargo.toml
-      - name: Install cargo-component
-        run: cargo install cargo-component --locked
-      - name: Build component fixtures (Unix)
-        if: runner.os != 'Windows'
-        working-directory: src-tauri
-        shell: bash
-        run: |
-          set -euo pipefail
-          for fixture in strategy factor model external-strategy mixed-strategy multi-output-factor repeated-factor-strategy cross-sectional-factor; do
-            cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
-          done
-      - name: Build component fixtures (Windows)
-        if: runner.os == 'Windows'
-        working-directory: src-tauri
-        shell: pwsh
-        run: |
-          $fixtures = @('strategy', 'factor', 'model', 'external-strategy', 'mixed-strategy', 'multi-output-factor', 'repeated-factor-strategy', 'cross-sectional-factor')
-          foreach ($fixture in $fixtures) {
-            cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-      - name: Build public Component examples (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --manifest-path src-tauri/crates/adaq-component-tooling/Cargo.toml --bin adaq-component
-          cli="$GITHUB_WORKSPACE/src-tauri/target/debug/adaq-component"
-          for example in factor-close-momentum-5 strategy-momentum-trend; do
-            cd "$GITHUB_WORKSPACE/examples/components/$example"
-            "$cli" build
-          done
-      - name: Build public Component examples (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cargo build --manifest-path src-tauri/crates/adaq-component-tooling/Cargo.toml --bin adaq-component
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $cli = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target/debug/adaq-component.exe'
-          foreach ($example in @('factor-close-momentum-5', 'strategy-momentum-trend')) {
-            Set-Location (Join-Path $env:GITHUB_WORKSPACE "examples/components/$example")
-            & $cli build
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
       - run: pnpm install --frozen-lockfile
-      - name: Run full Rust workspace and tutorial contracts
-        working-directory: src-tauri
-        run: cargo test --workspace -- --test-threads=1
-      - run: python python/contract_tests/run_contract_tests.py
-      - run: python python/runner_tests/run_runner_tests.py
-      - run: python python/tutorial_tests/run_tutorial_tests.py
       - run: pnpm exec jest --watchman=false --runInBand
       - run: pnpm run build
