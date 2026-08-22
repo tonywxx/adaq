@@ -1,4 +1,4 @@
-name: Python Research contracts
+name: Python Research and Frontend Acceptance
 
 on:
   workflow_dispatch:

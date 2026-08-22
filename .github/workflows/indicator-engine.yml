@@ -18,6 +18,9 @@ on:
       - 'examples/components/**'
       - 'src-tauri/**'
 
+permissions:
+  contents: read
+
 jobs:
   native-acceptance:
     name: ${{ matrix.name }}
