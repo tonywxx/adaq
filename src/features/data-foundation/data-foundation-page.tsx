@@ -503,7 +503,7 @@ export function DataFoundationPage() {
 
 	const acquire = async (market: FoundationMarket) => {
 		if (!userId) return;
-		const latest = instrumentMasterQuery.data?.[0];
+		const latest = instrumentMasterQuery.data?.at(-1);
 		if (market.id === "crypto" && latest) {
 			const retrieved = new Date(latest.retrievedAtMs).toLocaleString(undefined, {
 				second: "2-digit",
@@ -526,6 +526,7 @@ export function DataFoundationPage() {
 					minimumQuoteVolume24h,
 				},
 			});
+			await instrumentMasterQuery.refetch();
 			await Promise.all([
 				pipelineQuery.refetch(),
 				acquisitionQuery.refetch(),
@@ -786,8 +787,7 @@ export function DataFoundationPage() {
 															{instrument.baseAsset}/{instrument.quoteAsset}
 														</td>
 														<td className="p-2">
-															{humanizeNumber(latest.quoteVolume24hUsdt?.[instrument.code])}{" "}
-															USDT
+															{humanizeNumber(latest.quoteVolume24hUsdt?.[instrument.code])}
 														</td>
 														<td className="p-2">{instrument.status}</td>
 														<td className="p-2">
