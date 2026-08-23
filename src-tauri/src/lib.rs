@@ -1624,6 +1624,16 @@ async fn okx_instrument_master_acquire(
     request.user_id = auth.user_id_for_window(window.label())?;
     let operation_id = request.operation_id();
     let user_id = request.user_id;
+    let ignore_untradable = request.ignore_untradable;
+    let only_usdt = request.only_usdt;
+    let minimum_quote_volume_24h = if request.minimum_quote_volume_24h.trim().is_empty() {
+        rust_decimal::Decimal::from(5_000_000)
+    } else {
+        request
+            .minimum_quote_volume_24h
+            .parse::<rust_decimal::Decimal>()
+            .map_err(|_| "minimum quote volume must be a valid decimal".to_owned())?
+    };
     let state = app.state::<Arc<LocalResearchState>>().inner().clone();
     let cancellation = state
         .okx
@@ -1634,7 +1644,13 @@ async fn okx_instrument_master_acquire(
         let result = tauri::async_runtime::block_on(
             state
                 .okx
-                .acquire_instrument_master_with_cancel(&user_id, &cancellation),
+                .acquire_instrument_master_filtered_with_cancel(
+                    &user_id,
+                    &cancellation,
+                    ignore_untradable,
+                    only_usdt,
+                    minimum_quote_volume_24h,
+                ),
         )
         .map_err(string);
         let finish = state.okx.finish_acquisition(&operation_id);

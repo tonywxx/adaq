@@ -110,8 +110,12 @@ type InstrumentMasterSnapshot = {
 		priceIncrement: string;
 		quantityIncrement: string;
 		minimumQuantity: string;
+		quoteVolume24h?: string;
 	}>;
 };
+
+const shortId = (value: string) =>
+	value.length > 8 ? `${value.slice(0, 3)}...${value.slice(-3)}` : value;
 
 type OkxBackfillEvent = {
 	event:
@@ -214,6 +218,9 @@ export function DataFoundationPage() {
 		useState<FoundationMarket["id"]>("crypto");
 	const [contextVenue, setContextVenue] = useState("okx");
 	const [snapshotId, setSnapshotId] = useState("");
+	const [ignoreUntradable, setIgnoreUntradable] = useState(true);
+	const [onlyUsdt, setOnlyUsdt] = useState(true);
+	const [minimumQuoteVolume24h, setMinimumQuoteVolume24h] = useState("5000000");
 	const [universeId, setUniverseId] = useState("");
 	const [selectedSourceId, setSelectedSourceId] = useState<string>();
 	const [publishingId, setPublishingId] = useState<string>();
@@ -488,12 +495,29 @@ export function DataFoundationPage() {
 
 	const acquire = async (market: FoundationMarket) => {
 		if (!userId) return;
+		const latest = instrumentMasterQuery.data?.[0];
+		if (market.id === "crypto" && latest) {
+			const retrieved = new Date(latest.retrievedAtMs).toLocaleString(undefined, {
+				second: "2-digit",
+			});
+			if (
+				!window.confirm(`OKX 交易品种目录已于 ${retrieved} 获取。是否重新获取？`)
+			) {
+				return;
+			}
+		}
 		const operationId = `${market.id}-foundation-${crypto.randomUUID()}`;
 		setError(undefined);
 		setActiveOperation(operationId);
 		try {
 			await invoke(market.acquireCommand, {
-				request: { userId, operationId },
+				request: {
+					userId,
+					operationId,
+					ignoreUntradable,
+					onlyUsdt,
+					minimumQuoteVolume24h,
+				},
 			});
 			await Promise.all([
 				pipelineQuery.refetch(),
@@ -648,6 +672,33 @@ export function DataFoundationPage() {
 								</div>
 							</CardHeader>
 							<CardContent className="flex flex-wrap gap-2">
+								<div className="w-full grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-2">
+									<label className="flex items-center gap-2">
+										<input
+											type="checkbox"
+											checked={ignoreUntradable}
+											onChange={(event) => setIgnoreUntradable(event.target.checked)}
+										/>
+										{t("dataFoundation.okxIgnoreUntradable")}
+									</label>
+									<label className="flex items-center gap-2">
+										<input
+											type="checkbox"
+											checked={onlyUsdt}
+											onChange={(event) => setOnlyUsdt(event.target.checked)}
+										/>
+										{t("dataFoundation.okxOnlyUsdt")}
+									</label>
+									<label className="grid gap-1">
+										<span>{t("dataFoundation.okxMinimumQuoteVolume")}</span>
+										<input
+											className="h-9 rounded-md border bg-background px-2"
+											inputMode="decimal"
+											value={minimumQuoteVolume24h}
+											onChange={(event) => setMinimumQuoteVolume24h(event.target.value)}
+										/>
+									</label>
+								</div>
 								<button
 									type="button"
 									className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
@@ -693,13 +744,17 @@ export function DataFoundationPage() {
 						</p>
 					) : instrumentMasterQuery.data?.length ? (
 						(() => {
-							const latest = instrumentMasterQuery.data[0];
+							const latest = instrumentMasterQuery.data.at(-1);
+							if (!latest) return null;
 							return (
 								<div className="grid gap-3 text-sm">
+									<p className="text-xs text-muted-foreground">
+										{t("dataFoundation.okxInstrumentMasterTableDescription")}
+									</p>
 									<div className="grid gap-1 sm:grid-cols-3">
 										<span>
 											{t("dataFoundation.okxInstrumentMasterSnapshot", {
-												id: latest.snapshotId,
+												id: shortId(latest.snapshotId),
 											})}
 										</span>
 										<span>
@@ -713,19 +768,31 @@ export function DataFoundationPage() {
 											})}
 										</span>
 									</div>
-									<div className="max-h-64 overflow-auto rounded-md border">
-										{latest.instruments.map((instrument) => (
-											<div
-												key={instrument.code}
-												className="flex flex-wrap justify-between gap-2 border-b p-2 last:border-b-0"
-											>
-												<span className="font-medium">{instrument.code}</span>
-												<span className="text-muted-foreground">
-													{instrument.baseAsset}/{instrument.quoteAsset} ·{" "}
-													{instrument.status} · min {instrument.minimumQuantity}
-												</span>
-											</div>
-										))}
+									<div className="max-h-72 overflow-auto rounded-md border">
+										<table className="w-full text-left text-xs">
+											<thead className="sticky top-0 bg-muted">
+												<tr>
+													<th className="p-2">{t("dataFoundation.okxColumnCode")}</th>
+													<th className="p-2">{t("dataFoundation.okxColumnAssets")}</th>
+													<th className="p-2">{t("dataFoundation.okxColumnVolume")}</th>
+													<th className="p-2">{t("dataFoundation.okxColumnStatus")}</th>
+													<th className="p-2">{t("dataFoundation.okxColumnMinimum")}</th>
+												</tr>
+											</thead>
+											<tbody>
+												{latest.instruments.map((instrument) => (
+													<tr key={instrument.code} className="border-t">
+														<td className="p-2 font-medium">{instrument.code}</td>
+														<td className="p-2">
+															{instrument.baseAsset}/{instrument.quoteAsset}
+														</td>
+														<td className="p-2">{instrument.quoteVolume24h ?? "—"}</td>
+														<td className="p-2">{instrument.status}</td>
+														<td className="p-2">{instrument.minimumQuantity}</td>
+													</tr>
+												))}
+											</tbody>
+										</table>
 									</div>
 									<p className="text-xs text-muted-foreground">
 										{t("dataFoundation.okxInstrumentMasterUse")}

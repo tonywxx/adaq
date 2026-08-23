@@ -146,6 +146,12 @@ pub(crate) struct OkxInstrumentMasterRequest {
     pub user_id: String,
     #[serde(default)]
     pub operation_id: String,
+    #[serde(default)]
+    pub ignore_untradable: bool,
+    #[serde(default)]
+    pub only_usdt: bool,
+    #[serde(default)]
+    pub minimum_quote_volume_24h: String,
 }
 
 impl OkxInstrumentMasterRequest {

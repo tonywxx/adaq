@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -303,6 +304,8 @@ pub struct InstrumentMasterAcquisition {
     pub connector_version: String,
     pub diagnostics: OkxRequestDiagnostics,
     pub instruments: Vec<SpotInstrument>,
+    #[serde(default)]
+    pub quote_volume_24h: BTreeMap<String, Decimal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1334,7 +1337,14 @@ impl OkxClient {
     }
 
     pub async fn list_spot_instruments(&self) -> Result<Vec<SpotInstrument>, DataError> {
-        Ok(self.list_spot_instrument_master().await?.instruments)
+        let markets = self.engine.fetch_markets().await.map_err(map_crate_error)?;
+        let mut instruments = markets
+            .iter()
+            .filter(|market| market.spot == Some(true))
+            .map(map_crate_market)
+            .collect::<Result<Vec<_>, _>>()?;
+        instruments.sort_unstable_by(|left, right| left.code.cmp(&right.code));
+        Ok(instruments)
     }
 
     pub async fn list_spot_instrument_master(
@@ -1365,6 +1375,21 @@ impl OkxClient {
             .map(map_crate_market)
             .collect::<Result<Vec<_>, _>>()?;
         instruments.sort_unstable_by(|left, right| left.code.cmp(&right.code));
+        let tickers = self
+            .engine
+            .fetch_tickers(None, Default::default())
+            .await
+            .map_err(map_crate_error)?;
+        let quote_volume_24h = instruments
+            .iter()
+            .filter_map(|instrument| {
+                let symbol = dash_to_slash(&instrument.code);
+                tickers
+                    .get(&symbol)
+                    .and_then(|ticker| ticker.quote_volume)
+                    .map(|volume| (instrument.code.clone(), volume))
+            })
+            .collect();
         Ok(InstrumentMasterAcquisition {
             retrieved_at_ms,
             response_sha256,
@@ -1375,6 +1400,7 @@ impl OkxClient {
                 ..Default::default()
             },
             instruments,
+            quote_volume_24h,
         })
     }
 }

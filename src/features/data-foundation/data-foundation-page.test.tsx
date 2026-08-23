@@ -64,6 +64,7 @@ jest.mock("@tauri-apps/api/core", () => ({
 							quoteAsset: "USDT",
 							status: "live",
 							minimumQuantity: "0.0001",
+							quoteVolume24h: "10000000",
 							priceIncrement: "0.1",
 							quantityIncrement: "0.0001",
 						},
@@ -160,7 +161,13 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(mockInvoke).toHaveBeenCalledWith(
 		"okx_instrument_master_acquire",
 		expect.objectContaining({
-			request: { userId: "user-1", operationId: expect.any(String) },
+			request: {
+				userId: "user-1",
+				operationId: expect.any(String),
+				ignoreUntradable: true,
+				onlyUsdt: true,
+				minimumQuoteVolume24h: "5000000",
+			},
 		}),
 	);
 
