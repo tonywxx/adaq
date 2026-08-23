@@ -97,6 +97,22 @@ type OkxAcquisitionStatus = {
 	lastError?: string;
 };
 
+type InstrumentMasterSnapshot = {
+	snapshotId: string;
+	retrievedAtMs: number;
+	connectorVersion: string;
+	instruments: Array<{
+		code: string;
+		baseAsset: string;
+		quoteAsset: string;
+		status: string;
+		listingTimeMs?: number;
+		priceIncrement: string;
+		quantityIncrement: string;
+		minimumQuantity: string;
+	}>;
+};
+
 type OkxBackfillEvent = {
 	event:
 		| "universeLoaded"
@@ -155,6 +171,7 @@ type FoundationMarket = {
 	id: "crypto";
 	titleKey: string;
 	descriptionKey: string;
+	acquireButtonKey: string;
 	workspace: "/markets/crypto";
 	acquireCommand: string;
 	cancelCommand?: string;
@@ -167,8 +184,9 @@ const MARKET_VENUES = {
 const markets: FoundationMarket[] = [
 	{
 		id: "crypto",
-		titleKey: "markets.crypto.title",
-		descriptionKey: "markets.crypto.description",
+		titleKey: "dataFoundation.okxInstrumentMasterTitle",
+		descriptionKey: "dataFoundation.okxInstrumentMasterDescription",
+		acquireButtonKey: "dataFoundation.okxInstrumentMasterStart",
 		workspace: "/markets/crypto",
 		acquireCommand: "okx_instrument_master_acquire",
 		cancelCommand: "okx_instrument_master_cancel",
@@ -276,6 +294,15 @@ export function DataFoundationPage() {
 			}),
 		enabled: Boolean(userId),
 		staleTime: 10_000,
+	});
+	const instrumentMasterQuery = useQuery({
+		queryKey: ["okx-instrument-master", userId],
+		queryFn: () =>
+			invoke<InstrumentMasterSnapshot[]>("okx_instrument_master_list", {
+				request: { userId },
+			}),
+		enabled: Boolean(userId),
+		staleTime: 30_000,
 	});
 	const acquisitionQuery = useQuery({
 		queryKey: ["data-foundation-acquisitions", userId],
@@ -401,6 +428,7 @@ export function DataFoundationPage() {
 				pipelineQuery.refetch(),
 				acquisitionQuery.refetch(),
 				foundationHistoryQuery.refetch(),
+				instrumentMasterQuery.refetch(),
 			]);
 			completed = true;
 		} catch (cause) {
@@ -527,16 +555,26 @@ export function DataFoundationPage() {
 			: undefined;
 	const etaLabel = etaMs == null ? "—" : `${Math.ceil(etaMs / 60_000)}m`;
 
-	const publicationItems = pipelineQuery.data ? [...pipelineQuery.data].reverse() : [];
-	const publicationPageCount = Math.max(1, Math.ceil(publicationItems.length / PAGE_SIZE));
+	const publicationItems = pipelineQuery.data
+		? [...pipelineQuery.data].reverse()
+		: [];
+	const publicationPageCount = Math.max(
+		1,
+		Math.ceil(publicationItems.length / PAGE_SIZE),
+	);
 	const publicationSafePage = Math.min(publicationPage, publicationPageCount);
 	const publicationSlice = publicationItems.slice(
 		(publicationSafePage - 1) * PAGE_SIZE,
 		publicationSafePage * PAGE_SIZE,
 	);
 
-	const acquisitionItems = acquisitionQuery.data ? [...acquisitionQuery.data].reverse() : [];
-	const acquisitionPageCount = Math.max(1, Math.ceil(acquisitionItems.length / PAGE_SIZE));
+	const acquisitionItems = acquisitionQuery.data
+		? [...acquisitionQuery.data].reverse()
+		: [];
+	const acquisitionPageCount = Math.max(
+		1,
+		Math.ceil(acquisitionItems.length / PAGE_SIZE),
+	);
 	const acquisitionSafePage = Math.min(acquisitionPage, acquisitionPageCount);
 	const acquisitionSlice = acquisitionItems.slice(
 		(acquisitionSafePage - 1) * PAGE_SIZE,
@@ -616,7 +654,7 @@ export function DataFoundationPage() {
 									onClick={() => void acquire(market)}
 									disabled={Boolean(activeOperation)}
 								>
-									{t("dataFoundation.startAcquisition")}
+									{t(market.acquireButtonKey)}
 								</button>
 								{active && market.cancelCommand ? (
 									<button
@@ -641,6 +679,69 @@ export function DataFoundationPage() {
 			</div>
 			<Card>
 				<CardHeader>
+					<CardTitle>
+						{t("dataFoundation.okxInstrumentMasterEvidenceTitle")}
+					</CardTitle>
+					<CardDescription>
+						{t("dataFoundation.okxInstrumentMasterEvidenceDescription")}
+					</CardDescription>
+				</CardHeader>
+				<CardContent>
+					{instrumentMasterQuery.isPending ? (
+						<p className="text-sm text-muted-foreground" role="status">
+							{t("dataFoundation.loadingHistory")}
+						</p>
+					) : instrumentMasterQuery.data?.length ? (
+						(() => {
+							const latest = instrumentMasterQuery.data[0];
+							return (
+								<div className="grid gap-3 text-sm">
+									<div className="grid gap-1 sm:grid-cols-3">
+										<span>
+											{t("dataFoundation.okxInstrumentMasterSnapshot", {
+												id: latest.snapshotId,
+											})}
+										</span>
+										<span>
+											{t("dataFoundation.okxInstrumentMasterRetrieved", {
+												date: new Date(latest.retrievedAtMs).toLocaleString(),
+											})}
+										</span>
+										<span>
+											{t("dataFoundation.okxInstrumentMasterCount", {
+												count: latest.instruments.length,
+											})}
+										</span>
+									</div>
+									<div className="max-h-64 overflow-auto rounded-md border">
+										{latest.instruments.map((instrument) => (
+											<div
+												key={instrument.code}
+												className="flex flex-wrap justify-between gap-2 border-b p-2 last:border-b-0"
+											>
+												<span className="font-medium">{instrument.code}</span>
+												<span className="text-muted-foreground">
+													{instrument.baseAsset}/{instrument.quoteAsset} ·{" "}
+													{instrument.status} · min {instrument.minimumQuantity}
+												</span>
+											</div>
+										))}
+									</div>
+									<p className="text-xs text-muted-foreground">
+										{t("dataFoundation.okxInstrumentMasterUse")}
+									</p>
+								</div>
+							);
+						})()
+					) : (
+						<p className="text-sm text-muted-foreground">
+							{t("dataFoundation.okxInstrumentMasterEmpty")}
+						</p>
+					)}
+				</CardContent>
+			</Card>
+			<Card>
+				<CardHeader>
 					<CardTitle>{t("dataFoundation.selectContextTitle")}</CardTitle>
 					<CardDescription>
 						{t("dataFoundation.selectContextDescription")}
@@ -650,8 +751,8 @@ export function DataFoundationPage() {
 					<label className="grid gap-1 text-sm">
 						<span>{t("dataFoundation.contextMarket")}</span>
 						<select
-						className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
-						value={contextMarket}
+							className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+							value={contextMarket}
 							onChange={(event) => {
 								const next = event.target.value as FoundationMarket["id"];
 								setContextMarket(next);
@@ -668,8 +769,8 @@ export function DataFoundationPage() {
 					<label className="grid gap-1 text-sm">
 						<span>{t("dataFoundation.contextVenue")}</span>
 						<select
-						className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
-						value={contextVenue}
+							className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+							value={contextVenue}
 							onChange={(event) => setContextVenue(event.target.value)}
 						>
 							{MARKET_VENUES[contextMarket].map((venue) => (
@@ -680,8 +781,8 @@ export function DataFoundationPage() {
 					<label className="grid gap-1 text-sm">
 						<span>{t("dataFoundation.contextSnapshot")}</span>
 						<select
-						className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
-						value={snapshotId}
+							className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+							value={snapshotId}
 							onChange={(event) => setSnapshotId(event.target.value)}
 						>
 							<option value="">{t("dataFoundation.selectSnapshot")}</option>
@@ -695,8 +796,8 @@ export function DataFoundationPage() {
 					<label className="grid gap-1 text-sm">
 						<span>{t("dataFoundation.contextUniverse")}</span>
 						<select
-						className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
-						value={universeId}
+							className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+							value={universeId}
 							onChange={(event) => setUniverseId(event.target.value)}
 						>
 							<option value="">{t("dataFoundation.selectUniverse")}</option>
@@ -872,50 +973,53 @@ export function DataFoundationPage() {
 							</div>
 						</div>
 					) : null}
-				{pipelineQuery.data?.length ? (
-					<>
-						{publicationSlice.map((dataset) => (
-							<div key={dataset.sourceId} className="grid gap-2 rounded-md border p-3">
-								<button
-									type="button"
-									className={`grid gap-1 text-left text-sm ${selectedSourceId === dataset.sourceId ? "text-primary" : ""}`}
-									onClick={() => setSelectedSourceId(dataset.sourceId)}
+					{pipelineQuery.data?.length ? (
+						<>
+							{publicationSlice.map((dataset) => (
+								<div
+									key={dataset.sourceId}
+									className="grid gap-2 rounded-md border p-3"
 								>
-									<span className="font-medium">{dataset.sourceId}</span>
-									<span className="text-muted-foreground">
-										{t("dataFoundation.publicationCounts", {
-											source: dataset.sourceRecordCount,
-											canonical: dataset.canonicalRecordCount,
-											quarantined: dataset.quarantinedRecordCount,
-											gaps: dataset.gapCount,
-										})}
-									</span>
-								</button>
-								<button
-									type="button"
-									className="justify-self-start rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-									disabled={!dataset.canonicalId || Boolean(publishingId)}
-									onClick={() => void publish(dataset, dataset.state === "degraded")}
-								>
-									{publishingId === dataset.canonicalId
-										? t("dataFoundation.publishing")
-										: dataset.state === "degraded"
-											? t("dataFoundation.acceptDegradedPublish")
-											: t("dataFoundation.publishSnapshot")}
-								</button>
-							</div>
-						))}
-						<Pagination
-							page={publicationSafePage}
-							pageCount={publicationPageCount}
-							onPageChange={setPublicationPage}
-						/>
-					</>
-				) : (
-					<p className="text-sm text-muted-foreground">
-						{t("dataFoundation.emptyPublication")}
-					</p>
-				)}
+									<button
+										type="button"
+										className={`grid gap-1 text-left text-sm ${selectedSourceId === dataset.sourceId ? "text-primary" : ""}`}
+										onClick={() => setSelectedSourceId(dataset.sourceId)}
+									>
+										<span className="font-medium">{dataset.sourceId}</span>
+										<span className="text-muted-foreground">
+											{t("dataFoundation.publicationCounts", {
+												source: dataset.sourceRecordCount,
+												canonical: dataset.canonicalRecordCount,
+												quarantined: dataset.quarantinedRecordCount,
+												gaps: dataset.gapCount,
+											})}
+										</span>
+									</button>
+									<button
+										type="button"
+										className="justify-self-start rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+										disabled={!dataset.canonicalId || Boolean(publishingId)}
+										onClick={() => void publish(dataset, dataset.state === "degraded")}
+									>
+										{publishingId === dataset.canonicalId
+											? t("dataFoundation.publishing")
+											: dataset.state === "degraded"
+												? t("dataFoundation.acceptDegradedPublish")
+												: t("dataFoundation.publishSnapshot")}
+									</button>
+								</div>
+							))}
+							<Pagination
+								page={publicationSafePage}
+								pageCount={publicationPageCount}
+								onPageChange={setPublicationPage}
+							/>
+						</>
+					) : (
+						<p className="text-sm text-muted-foreground">
+							{t("dataFoundation.emptyPublication")}
+						</p>
+					)}
 					{qualityQuery.data ? (
 						<div className="rounded-md border p-3 text-sm">
 							<div className="flex flex-wrap items-center justify-between gap-2">
@@ -984,64 +1088,66 @@ export function DataFoundationPage() {
 					</CardDescription>
 				</CardHeader>
 				<CardContent>
-				{acquisitionQuery.isPending ? (
-					<p className="text-sm text-muted-foreground" role="status">
-						{t("dataFoundation.loadingHistory")}
-					</p>
-				) : acquisitionQuery.data?.length ? (
-					<div className="grid gap-3">
-						<strong className="text-sm">{t("dataFoundation.executionStatus")}</strong>
-						<div className="grid gap-2">
-							{acquisitionSlice.map((operation) => (
-								<div
-									key={`${operation.instrument.venue.id}:${operation.instrument.code}:${operation.interval}`}
-									className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm"
-								>
-									<div>
-										<strong>{operation.instrument.code}</strong>
-										<span className="ml-2 text-muted-foreground">
-											{operation.interval} ·{" "}
-											{t("dataFoundation.pages", { count: operation.pages })} ·{" "}
-											{t("dataFoundation.revision", {
-												revision: operation.revision ?? "—",
-											})}{" "}
-											· {t("dataFoundation.retries", { count: operation.retryCount })}
-										</span>
-										{operation.lastError ? (
-											<p className="mt-1 text-destructive">{operation.lastError}</p>
-										) : null}
-									</div>
-									<div className="flex items-center gap-2">
-										<Badge
-											variant={operation.state === "completed" ? "default" : "outline"}
-										>
-											{t(`dataFoundation.states.${operation.state}`)}
-										</Badge>
-										{operation.state === "failed" || operation.state === "cancelled" ? (
-											<button
-												type="button"
-												className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-												onClick={() => void retry(operation)}
-												disabled={Boolean(activeOperation)}
+					{acquisitionQuery.isPending ? (
+						<p className="text-sm text-muted-foreground" role="status">
+							{t("dataFoundation.loadingHistory")}
+						</p>
+					) : acquisitionQuery.data?.length ? (
+						<div className="grid gap-3">
+							<strong className="text-sm">
+								{t("dataFoundation.executionStatus")}
+							</strong>
+							<div className="grid gap-2">
+								{acquisitionSlice.map((operation) => (
+									<div
+										key={`${operation.instrument.venue.id}:${operation.instrument.code}:${operation.interval}`}
+										className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm"
+									>
+										<div>
+											<strong>{operation.instrument.code}</strong>
+											<span className="ml-2 text-muted-foreground">
+												{operation.interval} ·{" "}
+												{t("dataFoundation.pages", { count: operation.pages })} ·{" "}
+												{t("dataFoundation.revision", {
+													revision: operation.revision ?? "—",
+												})}{" "}
+												· {t("dataFoundation.retries", { count: operation.retryCount })}
+											</span>
+											{operation.lastError ? (
+												<p className="mt-1 text-destructive">{operation.lastError}</p>
+											) : null}
+										</div>
+										<div className="flex items-center gap-2">
+											<Badge
+												variant={operation.state === "completed" ? "default" : "outline"}
 											>
-												{t("dataFoundation.retryAcquisition")}
-											</button>
-										) : null}
+												{t(`dataFoundation.states.${operation.state}`)}
+											</Badge>
+											{operation.state === "failed" || operation.state === "cancelled" ? (
+												<button
+													type="button"
+													className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+													onClick={() => void retry(operation)}
+													disabled={Boolean(activeOperation)}
+												>
+													{t("dataFoundation.retryAcquisition")}
+												</button>
+											) : null}
+										</div>
 									</div>
-								</div>
-							))}
+								))}
+							</div>
+							<Pagination
+								page={acquisitionSafePage}
+								pageCount={acquisitionPageCount}
+								onPageChange={setAcquisitionPage}
+							/>
 						</div>
-						<Pagination
-							page={acquisitionSafePage}
-							pageCount={acquisitionPageCount}
-							onPageChange={setAcquisitionPage}
-						/>
-					</div>
-				) : (
-					<p className="text-sm text-muted-foreground">
-						{t("dataFoundation.emptyHistory")}
-					</p>
-				)}
+					) : (
+						<p className="text-sm text-muted-foreground">
+							{t("dataFoundation.emptyHistory")}
+						</p>
+					)}
 					<AcquisitionOperationHistory
 						loading={foundationHistoryQuery.isPending}
 						operations={foundationHistoryQuery.data ?? []}
@@ -1099,7 +1205,10 @@ function AcquisitionOperationHistory({
 	const orderedOperations = [...operations].reverse();
 	const pageCount = Math.max(1, Math.ceil(orderedOperations.length / PAGE_SIZE));
 	const safePage = Math.min(page, pageCount);
-	const slice = orderedOperations.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+	const slice = orderedOperations.slice(
+		(safePage - 1) * PAGE_SIZE,
+		safePage * PAGE_SIZE,
+	);
 	return (
 		<div className="mt-4 grid gap-2 border-t pt-4">
 			<strong className="text-sm">{t("dataFoundation.operationLedger")}</strong>
@@ -1123,7 +1232,9 @@ function AcquisitionOperationHistory({
 								) : null}
 							</div>
 							<div className="flex items-center gap-2">
-								<Badge variant={operation.state === "completed" ? "default" : "outline"}>
+								<Badge
+									variant={operation.state === "completed" ? "default" : "outline"}
+								>
 									{t(`dataFoundation.states.${operation.state}`)}
 								</Badge>
 								{operation.state === "failed" || operation.state === "cancelled" ? (

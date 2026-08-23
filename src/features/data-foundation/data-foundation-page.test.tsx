@@ -51,6 +51,26 @@ jest.mock("@tauri-apps/api/core", () => ({
 				},
 			];
 		}
+		if (command === "okx_instrument_master_list") {
+			return [
+				{
+					snapshotId: "master-1",
+					retrievedAtMs: 1,
+					connectorVersion: "okx-1",
+					instruments: [
+						{
+							code: "BTC-USDT",
+							baseAsset: "BTC",
+							quoteAsset: "USDT",
+							status: "live",
+							minimumQuantity: "0.0001",
+							priceIncrement: "0.1",
+							quantityIncrement: "0.0001",
+						},
+					],
+				},
+			];
+		}
 		if (
 			command === "okx_acquisition_status" ||
 			command === "ashare_instrument_master_list" ||
@@ -121,9 +141,28 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(container.textContent).toContain(
 		i18n.t("dataFoundation.operationLedger"),
 	);
+	expect(container.textContent).toContain(
+		i18n.t("dataFoundation.okxInstrumentMasterEvidenceTitle"),
+	);
 	expect(mockInvoke).toHaveBeenCalledWith("foundation_acquisition_history", {
 		userId: "user-1",
 	});
+
+	const instrumentButton = Array.from(container.querySelectorAll("button")).find(
+		(button) =>
+			button.textContent === i18n.t("dataFoundation.okxInstrumentMasterStart"),
+	);
+	expect(instrumentButton).toBeDefined();
+	await act(async () => {
+		instrumentButton?.click();
+		await Promise.resolve();
+	});
+	expect(mockInvoke).toHaveBeenCalledWith(
+		"okx_instrument_master_acquire",
+		expect.objectContaining({
+			request: { userId: "user-1", operationId: expect.any(String) },
+		}),
+	);
 
 	const backfillButton = Array.from(container.querySelectorAll("button")).find(
 		(button) => button.textContent === i18n.t("dataFoundation.okxBackfillStart"),

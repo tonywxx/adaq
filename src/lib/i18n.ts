@@ -169,6 +169,19 @@ const english = {
 			sourceEvidence: "Source datasets",
 			canonicalEvidence: "Canonical datasets",
 			degradedOrRejected: "Degraded or rejected",
+			okxInstrumentMasterTitle: "OKX Spot instrument catalog",
+			okxInstrumentMasterDescription:
+				"Fetches OKX Spot trading-pair metadata, not prices or historical bars.",
+			okxInstrumentMasterStart: "Fetch OKX instrument catalog",
+			okxInstrumentMasterEvidenceTitle: "Fetched OKX instrument catalog",
+			okxInstrumentMasterEvidenceDescription:
+				"This snapshot is used to choose valid instruments for later historical-bar acquisition.",
+			okxInstrumentMasterSnapshot: "Snapshot {{id}}",
+			okxInstrumentMasterRetrieved: "Retrieved {{date}}",
+			okxInstrumentMasterCount: "{{count}} Spot instruments",
+			okxInstrumentMasterUse:
+				"This is metadata only. It does not contain prices, Klines, Canonical data, Quality, or Market Snapshots.",
+			okxInstrumentMasterEmpty: "No OKX instrument catalog has been fetched yet.",
 			publicationTitle: "Publication evidence",
 			publicationDescription:
 				"Inspect each published dataset before selecting it for research.",
@@ -486,7 +499,8 @@ const english = {
 				output: "Validated Model Artifact",
 				requirement:
 					"Research Validated factors or qualified factor components plus a Feature Dataset.",
-				entry: "Open the Models workspace for the M12 Python Model Lab and tutorial.",
+				entry:
+					"Open the Models workspace for the M12 Python Model Lab and tutorial.",
 			},
 			5: {
 				title: "Evaluate Model",
@@ -2344,6 +2358,19 @@ const simplifiedChinese = {
 			sourceEvidence: "数据来源（Source Dataset）",
 			canonicalEvidence: "规范数据集（Canonical Dataset）",
 			degradedOrRejected: "降级或拒绝（Degraded / Rejected）",
+			okxInstrumentMasterTitle: "OKX 现货交易品种目录",
+			okxInstrumentMasterDescription:
+				"获取 OKX 现货交易对的元数据，不获取价格或历史 K 线。",
+			okxInstrumentMasterStart: "获取 OKX 交易品种目录",
+			okxInstrumentMasterEvidenceTitle: "已获取的 OKX 交易品种目录",
+			okxInstrumentMasterEvidenceDescription:
+				"这份快照用于后续选择有效交易品种并获取历史 K 线。",
+			okxInstrumentMasterSnapshot: "快照 {{id}}",
+			okxInstrumentMasterRetrieved: "获取时间 {{date}}",
+			okxInstrumentMasterCount: "{{count}} 个现货交易品种",
+			okxInstrumentMasterUse:
+				"这里只是元数据，不包含价格、K 线、Canonical、Quality 或行情快照。",
+			okxInstrumentMasterEmpty: "尚未获取 OKX 交易品种目录。",
 			publicationTitle: "发布证据（Publication）",
 			publicationDescription: "选择用于研究之前，请检查每个已发布的数据集。",
 			okxBackfillTitle: "OKX 现货 K 线（bars）",
