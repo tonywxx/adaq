@@ -1247,8 +1247,8 @@ A current condition that requires the User's operational attention even when no 
 _Avoid_: Running process, Bot Lifecycle State, dashboard visibility flag
 
 **Workflow Foundations**:
-The unnumbered Markets and Data plus Feature Engineering prerequisites that feed the ten-step Research-to-Paper workflow. One research context is ready when it has a compatible readable Market Data Snapshot, Point-in-Time Instrument Universe, and Completed Feature Dataset; ADAQ does not require every supported market to be ready before Factor research can begin.
-_Avoid_: Step 0, global readiness flag, three-market completion gate
+The ordered preparation modules that feed the ten-step Research-to-Paper Workflow: Market Data Acquisition; Data Validation, Canonicalization, Quality, and Persistence; then Feature Engineering. A Workflow Foundation is accepted only from inspectable evidence produced by its accepted predecessor.
+_Avoid_: setup checklist, optional prerequisite, parallel foundation, Step 0, global readiness flag, three-market completion gate
 
 **Workflow Guide**:
 The localized, read-only presentation of ADAQ's Foundations and ordered ten-step Research-to-Paper workflow. It distinguishes Workflow Capability State from evidence-backed Workflow Step State, exposes the next eligible entry point, remains directly accessible from Help, and is the default GUI home only while no Operational Responsibility exists. Users may inspect downstream steps while their actions remain gated by exact prerequisites, and ambiguous evidence lineages require explicit selection rather than an inferred global project.
@@ -1261,6 +1261,14 @@ _Avoid_: Workflow Step State, feature availability, optimistic completion
 **Workflow Step State**:
 A user-scoped read projection derived from authoritative domain records as Not Started, In Progress, Needs Review, Blocked, or Complete under that step's exact evidence gate. It is not a persisted generic workflow record; continuous Monitoring uses Bot Health States instead of pretending to become Complete.
 _Avoid_: Workflow Capability State, mutable checklist, global completion percentage
+
+**Workflow Module Acceptance**:
+The reviewed decision that one Workflow Foundation or numbered Workflow Step has complete current-head automated, product-run, failure/recovery, locale, and platform evidence from its accepted upstream input. Issue closure, a reusable core, fixture-only evidence, or green CI alone is not Module Acceptance.
+_Avoid_: milestone closure, implementation complete, CI success
+
+**Workflow Continuation Approval**:
+The User's explicit authorization to begin the next Workflow Foundation or numbered Workflow Step after reviewing the current module's Acceptance evidence. No issue frontier, agent plan, or downstream implementation can substitute for this approval.
+_Avoid_: automatic unblocking, inferred approval, agent self-approval
 
 **Product Readiness Gate**:
 The release-level rule that every required acceptance criterion inside one declared capability scope must pass before the scope can be called product-ready. It is not a global V1 flag, a score, a permission, a Workflow Step State, or a runtime Health summary.

@@ -32,6 +32,12 @@ Do not commit signing keys, release tokens, or local environment files. Tauri up
 
 ## Agent skills
 
+### Development workflow
+
+ADAQ exclusively uses the Matt skills workflow documented by [ADR 0091](docs/adr/0091-use-one-matt-skills-workflow-and-user-gated-delivery-order.md): `/grill-with-docs` → `/to-spec` → `/to-tickets` → one fresh `/implement <issue>` session per ticket. Do not use `planning-with-files`, create repository-root `task_plan.md`, `findings.md`, or `progress.md`, or substitute another agent planning workflow.
+
+All agents must preserve the strict product order: Market Data Acquisition → Data Validation/Canonicalization/Quality/Persistence → Feature Engineering → Factor Steps 1–3 → Model Steps 4–6 → Strategy Steps 7–8 → Paper Operations Steps 9–10. Complete current-head verification for one module, stop for User verification, and wait for explicit User approval before starting the next module. Issue closure, reusable cores, fixtures, green CI, and issue frontiers do not waive this gate.
+
 ### Issue tracker
 
 Issues and PRDs are tracked in GitHub Issues via the `gh` CLI. See `docs/agents/issue-tracker.md`.
