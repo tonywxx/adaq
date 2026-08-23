@@ -118,6 +118,13 @@ pub struct OkxAcquisitionStatus {
     pub backoff_ms: u64,
     pub last_error_code: Option<String>,
     pub last_error: Option<String>,
+    pub provider: String,
+    pub actual_upstream: String,
+    pub connector: String,
+    pub connector_version: String,
+    pub request_parameters: serde_json::Value,
+    pub capability_snapshot: ProviderCapabilitySnapshot,
+    pub updated_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +234,8 @@ struct BackfillCheckpoint {
     last_error: Option<String>,
     #[serde(default)]
     partial_records: Vec<SourceMarketRecord>,
+    #[serde(default)]
+    updated_at_ms: Option<i64>,
 }
 
 impl Default for BackfillCheckpoint {
@@ -250,6 +259,7 @@ impl Default for BackfillCheckpoint {
             last_error_code: None,
             last_error: None,
             partial_records: Vec::new(),
+            updated_at_ms: None,
         }
     }
 }
@@ -465,7 +475,10 @@ impl OkxSpotDataPath {
                     .is_some_and(|volume| *volume >= minimum_quote_volume_24h)
         });
         acquisition.quote_volume_24h_usdt.retain(|code, _| {
-            acquisition.instruments.iter().any(|instrument| instrument.code == *code)
+            acquisition
+                .instruments
+                .iter()
+                .any(|instrument| instrument.code == *code)
         });
         self.persist_master_if_due_with_filter(
             user_id,
@@ -1785,7 +1798,9 @@ impl OkxSpotDataPath {
         checkpoint: &BackfillCheckpoint,
     ) -> Result<(), PipelineError> {
         let interval_json = serde_json::to_string(&interval).map_err(storage)?;
-        let status_json = serde_json::to_string(checkpoint).map_err(storage)?;
+        let mut retained = checkpoint.clone();
+        retained.updated_at_ms = Some(now_ms());
+        let status_json = serde_json::to_string(&retained).map_err(storage)?;
         let database = self.database()?;
         database
             .execute(
@@ -2014,6 +2029,17 @@ fn status_from_checkpoint(
     interval: BarInterval,
     checkpoint: BackfillCheckpoint,
 ) -> OkxAcquisitionStatus {
+    let request_parameters = request_parameters(
+        instrument,
+        interval,
+        checkpoint.universe_snapshot_id.as_deref(),
+        checkpoint.start_time_ms.unwrap_or_default(),
+        checkpoint.end_time_ms.unwrap_or_default(),
+    );
+    let capability_snapshot = capability_snapshot(
+        checkpoint.updated_at_ms.unwrap_or_default(),
+        checkpoint.last_error.as_deref(),
+    );
     OkxAcquisitionStatus {
         operation_id: checkpoint.operation_id,
         instrument: instrument.clone(),
@@ -2034,6 +2060,13 @@ fn status_from_checkpoint(
         backoff_ms: checkpoint.backoff_ms,
         last_error_code: checkpoint.last_error_code,
         last_error: checkpoint.last_error,
+        provider: "okx".into(),
+        actual_upstream: "OKX public history-candles REST".into(),
+        connector: adaq_data_core::OKX_CONNECTOR_VERSION.into(),
+        connector_version: adaq_data_core::OKX_CONNECTOR_VERSION.into(),
+        request_parameters,
+        capability_snapshot,
+        updated_at_ms: checkpoint.updated_at_ms,
     }
 }
 
@@ -2593,9 +2626,12 @@ mod tests {
             .unwrap()
             .is_empty()
         );
+        let cancelled = path.acquisition_statuses("alice").unwrap().remove(0);
+        assert_eq!(cancelled.state, OkxAcquisitionState::Cancelled);
+        assert_eq!(cancelled.provider, "okx");
         assert_eq!(
-            path.acquisition_statuses("alice").unwrap()[0].state,
-            OkxAcquisitionState::Cancelled
+            cancelled.request_parameters["universeSnapshotId"],
+            snapshot.snapshot_id
         );
         drop(path);
 
@@ -2624,8 +2660,14 @@ mod tests {
         );
         assert_eq!(publications[0].source.revision, 1);
         assert_eq!(publications[0].source.identity.provider, "okx");
-        assert_eq!(publications[0].source.identity.request_parameters["startTimeMs"], 0);
-        assert_eq!(publications[0].source.identity.request_parameters["endTimeMs"], 6_060_000);
+        assert_eq!(
+            publications[0].source.identity.request_parameters["startTimeMs"],
+            0
+        );
+        assert_eq!(
+            publications[0].source.identity.request_parameters["endTimeMs"],
+            6_060_000
+        );
         assert_eq!(
             publications[0].source.identity.request_parameters["universeSnapshotId"],
             snapshot.snapshot_id
@@ -2668,6 +2710,8 @@ mod tests {
         let status = path.acquisition_statuses("alice").unwrap();
         assert_eq!(status[0].state, OkxAcquisitionState::Failed);
         assert_eq!(status[0].last_error_code.as_deref(), Some("50011"));
+        assert_eq!(status[0].actual_upstream, "OKX public history-candles REST");
+        assert_eq!(status[0].request_parameters["startTimeMs"], 0);
     }
 
     #[tokio::test]

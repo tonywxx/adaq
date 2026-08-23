@@ -23,6 +23,39 @@ jest.mock("@tauri-apps/api/core", () => ({
 					canonicalRecordCount: 10,
 					quarantinedRecordCount: 0,
 					gapCount: 0,
+					source: {
+						logicalKey: "okx|BTC-USDT|1h|1|2",
+						provider: "okx",
+						actualUpstream: "OKX public history-candles REST",
+						connector: "adaq-data-core",
+						connectorVersion: "1.0.0",
+						requestParameters: {
+							startTimeMs: 1,
+							endTimeMs: 2,
+						},
+						retrievedAtMs: 3,
+						responseSha256s: ["response-hash"],
+						payloadSha256: "payload-hash",
+						contentSha256: "content-hash",
+						capabilitySnapshot: {
+							provider: "okx",
+							capturedAtMs: 3,
+							venues: ["OKX Spot"],
+							recordTypes: ["candles"],
+							unavailableCapabilities: [],
+							limitations: [],
+						},
+						instrument: { venue: { id: "okx" }, code: "BTC-USDT" },
+						interval: "1h",
+						requestedStartTimeMs: 1,
+						requestedEndTimeMs: 2,
+						receivedStartTimeMs: 1,
+						receivedEndTimeMs: 2,
+						requestCount: 1,
+						retryCount: 0,
+						responseStatuses: [200],
+						notes: [],
+					},
 				},
 			];
 		}
@@ -82,6 +115,18 @@ jest.mock("@tauri-apps/api/core", () => ({
 					pages: 1,
 					gapCount: 0,
 					retryCount: 0,
+					provider: "okx",
+					actualUpstream: "OKX public history-candles REST",
+					connector: "okx-connector",
+					connectorVersion: "1.0.0",
+					requestParameters: { startTimeMs: 1, endTimeMs: 2 },
+					capabilitySnapshot: { provider: "okx", capturedAtMs: 3 },
+					updatedAtMs: 3,
+					startTimeMs: 1,
+					endTimeMs: 2,
+					nextCursorMs: 2,
+					lastErrorCode: "upstream_timeout",
+					lastError: "retained upstream timeout",
 				},
 			];
 		}
@@ -121,7 +166,8 @@ jest.mock("@/lib/market-session", () => ({
 			userId: string;
 			watchlist: Array<{ src: string; code: string }>;
 		}) => unknown,
-	) => selector({ userId: "user-1", watchlist: [{ src: "okx", code: "BTC-USDT" }] }),
+	) =>
+		selector({ userId: "user-1", watchlist: [{ src: "okx", code: "BTC-USDT" }] }),
 	getErrorMessage: (error: unknown) => String(error),
 }));
 
@@ -130,9 +176,11 @@ const mockInvoke = jest.requireMock("@tauri-apps/api/core").invoke as jest.Mock;
 	globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-afterEach(() => {
+afterEach(async () => {
 	document.body.replaceChildren();
 	mockInvoke.mockClear();
+	jest.restoreAllMocks();
+	await i18n.changeLanguage("en-US");
 });
 
 test("renders localized evidence and persisted operation history", async () => {
@@ -149,9 +197,10 @@ test("renders localized evidence and persisted operation history", async () => {
 				<DataFoundationPage />
 			</QueryClientProvider>,
 		);
+	});
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	await act(async () => {
 		await Promise.resolve();
-		await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 50));
 	});
 
 	expect(container.textContent).toContain(i18n.t("dataFoundation.title"));
@@ -164,9 +213,17 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(container.textContent).toContain(
 		i18n.t("dataFoundation.okxInstrumentMasterEvidenceTitle"),
 	);
+	expect(container.textContent).toContain(
+		i18n.t("dataFoundation.sourceProvenanceTitle"),
+	);
+	expect(container.textContent).toContain("OKX public history-candles REST");
+	expect(container.textContent).toContain("content-hash");
+	expect(container.textContent).toContain("okx|BTC-USDT|1h|1|2");
+	expect(container.textContent).toContain("retained upstream timeout");
 	expect(mockInvoke).toHaveBeenCalledWith("foundation_acquisition_history", {
 		userId: "user-1",
 	});
+	jest.spyOn(window, "confirm").mockReturnValue(true);
 
 	const instrumentButton = Array.from(container.querySelectorAll("button")).find(
 		(button) =>
@@ -224,5 +281,35 @@ test("renders localized evidence and persisted operation history", async () => {
 		}),
 	);
 
+	await act(async () => root.unmount());
+});
+
+test("renders source provenance in Chinese", async () => {
+	await act(async () => {
+		await i18n.changeLanguage("zh-CN");
+	});
+	const container = document.createElement("div");
+	document.body.append(container);
+	const root = createRoot(container);
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+
+	await act(async () => {
+		root.render(
+			<QueryClientProvider client={queryClient}>
+				<DataFoundationPage />
+			</QueryClientProvider>,
+		);
+	});
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	await act(async () => {
+		await Promise.resolve();
+	});
+
+	expect(container.textContent).toContain(
+		i18n.t("dataFoundation.sourceProvenanceTitle"),
+	);
+	expect(container.textContent).toContain("OKX public history-candles REST");
 	await act(async () => root.unmount());
 });

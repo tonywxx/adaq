@@ -793,6 +793,7 @@ pub struct PipelinePublication {
 #[serde(rename_all = "camelCase")]
 pub struct PipelineDatasetSummary {
     pub source_id: String,
+    pub source: SourceEvidenceSummary,
     pub canonical_id: Option<String>,
     pub revision: u64,
     pub state: PipelineDatasetState,
@@ -800,6 +801,33 @@ pub struct PipelineDatasetSummary {
     pub canonical_record_count: usize,
     pub quarantined_record_count: usize,
     pub gap_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceEvidenceSummary {
+    pub logical_key: String,
+    pub provider: String,
+    pub actual_upstream: Option<String>,
+    pub connector: String,
+    pub connector_version: String,
+    pub request_parameters: Value,
+    pub retrieved_at_ms: i64,
+    pub response_sha256s: Vec<String>,
+    pub acquisition_content_sha256: Option<String>,
+    pub payload_sha256: String,
+    pub content_sha256: String,
+    pub capability_snapshot: ProviderCapabilitySnapshot,
+    pub instrument: Option<InstrumentId>,
+    pub interval: Option<BarInterval>,
+    pub requested_start_time_ms: Option<i64>,
+    pub requested_end_time_ms: Option<i64>,
+    pub received_start_time_ms: Option<i64>,
+    pub received_end_time_ms: Option<i64>,
+    pub request_count: u32,
+    pub retry_count: u32,
+    pub response_statuses: Vec<u16>,
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1305,51 +1333,62 @@ impl DataPipeline {
 
     pub fn list(&self, user_id: &str) -> Result<Vec<PipelineDatasetSummary>, PipelineError> {
         validate_user(user_id)?;
-        let database = self.0.database.lock().map_err(lock_error)?;
-        let mut statement = database
-            .prepare(
-                "SELECT s.source_json, c.canonical_json, q.report_json
+        let entries = {
+            let database = self.0.database.lock().map_err(lock_error)?;
+            let mut statement = database
+                .prepare(
+                    "SELECT s.source_json, c.canonical_json, q.report_json
                  FROM pipeline_sources s
                  JOIN pipeline_source_access sa USING(source_id)
                  LEFT JOIN pipeline_canonical_datasets c USING(source_id)
                  LEFT JOIN pipeline_quality_reports q USING(source_id)
                  WHERE sa.user_id = ?1
                  ORDER BY s.created_at_ms DESC, s.source_id DESC",
-            )
-            .map_err(storage)?;
-        statement
-            .query_map([user_id], |row| {
-                let source: SourceCatalog = serde_json::from_str(&row.get::<_, String>(0)?)
-                    .map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            0,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?;
-                let canonical = row
-                    .get::<_, Option<String>>(1)?
-                    .map(|json| serde_json::from_str::<CanonicalCatalog>(&json))
-                    .transpose()
-                    .map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            1,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?;
-                let quality = row
-                    .get::<_, Option<String>>(2)?
-                    .map(|json| serde_json::from_str::<QualityCatalog>(&json))
-                    .transpose()
-                    .map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            2,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?;
+                )
+                .map_err(storage)?;
+            statement
+                .query_map([user_id], |row| {
+                    let source: SourceCatalog = serde_json::from_str(&row.get::<_, String>(0)?)
+                        .map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?;
+                    let canonical = row
+                        .get::<_, Option<String>>(1)?
+                        .map(|json| serde_json::from_str::<CanonicalCatalog>(&json))
+                        .transpose()
+                        .map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                1,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?;
+                    let quality = row
+                        .get::<_, Option<String>>(2)?
+                        .map(|json| serde_json::from_str::<QualityCatalog>(&json))
+                        .transpose()
+                        .map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                2,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?;
+                    Ok((source, canonical, quality))
+                })
+                .map_err(storage)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?
+        };
+        entries
+            .into_iter()
+            .map(|(source, canonical, quality)| {
                 Ok(PipelineDatasetSummary {
+                    source: source_evidence_summary(&source)?,
                     source_id: source.source_id,
                     canonical_id: canonical.as_ref().map(|value| value.canonical_id.clone()),
                     revision: source.revision,
@@ -1370,9 +1409,7 @@ impl DataPipeline {
                     gap_count: quality.as_ref().map_or(0, |value| value.gap_count),
                 })
             })
-            .map_err(storage)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(storage)
+            .collect()
     }
 
     pub fn source_for_user(
@@ -3116,6 +3153,53 @@ impl SourceCatalog {
             evidence_path: source.evidence_path.clone(),
         }
     }
+}
+
+fn source_evidence_summary(source: &SourceCatalog) -> Result<SourceEvidenceSummary, PipelineError> {
+    let records: Vec<SourceMarketRecord> = read_json_lines(&source.evidence_path)?;
+    let first = records.first();
+    let request = &source.identity.request_parameters;
+    let requested_time = |key| request.get(key).and_then(Value::as_i64);
+    let received_start_time_ms = records.iter().map(|record| record.open_time_ms).min();
+    let received_end_time_ms = records.iter().map(|record| record.open_time_ms).max();
+    Ok(SourceEvidenceSummary {
+        provider: source.identity.provider.clone(),
+        actual_upstream: source.identity.actual_upstream.clone(),
+        connector: source.identity.connector.clone(),
+        connector_version: source.identity.connector_version.clone(),
+        request_parameters: request.clone(),
+        retrieved_at_ms: source.identity.retrieved_at_ms,
+        response_sha256s: source.identity.response_sha256s.clone(),
+        acquisition_content_sha256: source.identity.acquisition_content_sha256.clone(),
+        payload_sha256: source.identity.payload_sha256.clone(),
+        content_sha256: source.identity.content_sha256.clone(),
+        capability_snapshot: source.identity.capability_snapshot.clone(),
+        logical_key: source.logical_key.clone(),
+        instrument: first.map(|record| record.instrument.clone()).or_else(|| {
+            request
+                .get("instrument")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+        }),
+        interval: first.map(|record| record.interval).or_else(|| {
+            request
+                .get("interval")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+        }),
+        requested_start_time_ms: requested_time("startTimeMs"),
+        requested_end_time_ms: requested_time("endTimeMs"),
+        received_start_time_ms,
+        received_end_time_ms,
+        request_count: source.identity.acquisition_diagnostics.request_count,
+        retry_count: source.identity.acquisition_diagnostics.retry_count,
+        response_statuses: source
+            .identity
+            .acquisition_diagnostics
+            .response_statuses
+            .clone(),
+        notes: source.identity.acquisition_diagnostics.notes.clone(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5317,6 +5401,14 @@ mod tests {
         assert_eq!(source.records.len(), 1);
         let summary = pipeline.list("alice").unwrap();
         assert_eq!(summary[0].source_id, source.source_id);
+        assert_eq!(summary[0].source.logical_key, source.logical_key);
+        assert_eq!(summary[0].source.provider, "fixture");
+        assert_eq!(
+            summary[0].source.instrument,
+            Some(canonical_request.instrument)
+        );
+        assert_eq!(summary[0].source.received_start_time_ms, Some(0));
+        assert_eq!(summary[0].source.received_end_time_ms, Some(0));
         assert_eq!(summary[0].state, PipelineDatasetState::Unassessed);
         assert_eq!(summary[0].canonical_id, None);
     }
