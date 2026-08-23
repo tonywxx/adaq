@@ -755,10 +755,10 @@ export function DataFoundationPage() {
 									</p>
 									<div className="grid gap-1 sm:grid-cols-3">
 										<span>
-											{t("dataFoundation.okxInstrumentMasterCountLabel")}{" "}
 											<strong className="text-primary">
 												{humanizeNumber(latest.instruments.length)}
-											</strong>
+											</strong>{" "}
+											{t("dataFoundation.okxInstrumentMasterCountLabel")}
 										</span>
 										<span>
 											{t("dataFoundation.okxInstrumentMasterRetrieved", {
