@@ -761,13 +761,13 @@ export function DataFoundationPage() {
 											</strong>
 										</span>
 										<span>
-											{t("dataFoundation.okxInstrumentMasterSnapshot", {
-												id: shortId(latest.snapshotId),
+											{t("dataFoundation.okxInstrumentMasterRetrieved", {
+												date: new Date(latest.retrievedAtMs).toLocaleString(),
 											})}
 										</span>
 										<span>
-											{t("dataFoundation.okxInstrumentMasterRetrieved", {
-												date: new Date(latest.retrievedAtMs).toLocaleString(),
+											{t("dataFoundation.okxInstrumentMasterSnapshot", {
+												id: shortId(latest.snapshotId),
 											})}
 										</span>
 									</div>
