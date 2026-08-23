@@ -32,6 +32,7 @@ use crate::{
 
 const DAY_MS: i64 = 86_400_000;
 const BAR_OVERLAP_COUNT: i64 = 2;
+const INSTRUMENT_MASTER_COOLDOWN_MS: i64 = 60_000;
 
 #[derive(Debug, Clone, Copy)]
 enum BackfillMode {
@@ -61,7 +62,7 @@ pub struct InstrumentMasterSnapshot {
     pub connector_version: String,
     pub instruments: Vec<SpotInstrument>,
     #[serde(default)]
-    pub quote_volume_24h: std::collections::BTreeMap<String, Decimal>,
+    pub quote_volume_24h_usdt: std::collections::BTreeMap<String, Decimal>,
     pub content_sha256: String,
     pub evidence_path: PathBuf,
 }
@@ -416,10 +417,17 @@ impl OkxSpotDataPath {
         user_id: &str,
         cancellation: &CancellationToken,
         ignore_untradable: bool,
-        only_usdt: bool,
         minimum_quote_volume_24h: Decimal,
     ) -> Result<InstrumentMasterSnapshot, PipelineError> {
         validate_user(user_id)?;
+        if let Some(latest) = self
+            .list_instrument_master_snapshots(user_id)?
+            .into_iter()
+            .max_by_key(|snapshot| snapshot.retrieved_at_ms)
+            && now_ms().saturating_sub(latest.retrieved_at_ms) < INSTRUMENT_MASTER_COOLDOWN_MS
+        {
+            return Ok(latest);
+        }
         if minimum_quote_volume_24h < Decimal::ZERO {
             return Err(PipelineError::InvalidRequest(
                 "minimum quote volume must be non-negative".into(),
@@ -437,13 +445,12 @@ impl OkxSpotDataPath {
         }
         acquisition.instruments.retain(|instrument| {
             (!ignore_untradable || instrument.status == InstrumentStatus::Live)
-                && (!only_usdt || instrument.quote_asset == "USDT")
                 && acquisition
-                    .quote_volume_24h
+                    .quote_volume_24h_usdt
                     .get(&instrument.code)
                     .is_some_and(|volume| *volume >= minimum_quote_volume_24h)
         });
-        acquisition.quote_volume_24h.retain(|code, _| {
+        acquisition.quote_volume_24h_usdt.retain(|code, _| {
             acquisition.instruments.iter().any(|instrument| instrument.code == *code)
         });
         self.record_instrument_master(user_id, acquisition)
@@ -1570,7 +1577,7 @@ impl OkxSpotDataPath {
             response_sha256: acquisition.response_sha256,
             connector_version: acquisition.connector_version,
             instruments: acquisition.instruments,
-            quote_volume_24h: acquisition.quote_volume_24h,
+            quote_volume_24h_usdt: acquisition.quote_volume_24h_usdt,
             content_sha256: String::new(),
             evidence_path,
         };
@@ -2073,7 +2080,7 @@ mod tests {
             connector_version: adaq_data_core::OKX_CONNECTOR_VERSION.into(),
             diagnostics: OkxRequestDiagnostics::default(),
             instruments: vec![spot("BTC-USDT", InstrumentStatus::Live)],
-            quote_volume_24h: std::collections::BTreeMap::from([(
+            quote_volume_24h_usdt: std::collections::BTreeMap::from([(
                 "BTC-USDT".into(),
                 Decimal::from(10_000_000),
             )]),

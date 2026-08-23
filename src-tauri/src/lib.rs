@@ -1625,7 +1625,6 @@ async fn okx_instrument_master_acquire(
     let operation_id = request.operation_id();
     let user_id = request.user_id;
     let ignore_untradable = request.ignore_untradable;
-    let only_usdt = request.only_usdt;
     let minimum_quote_volume_24h = if request.minimum_quote_volume_24h.trim().is_empty() {
         rust_decimal::Decimal::from(5_000_000)
     } else {
@@ -1648,7 +1647,6 @@ async fn okx_instrument_master_acquire(
                     &user_id,
                     &cancellation,
                     ignore_untradable,
-                    only_usdt,
                     minimum_quote_volume_24h,
                 ),
         )

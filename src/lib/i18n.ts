@@ -182,11 +182,10 @@ const english = {
 			okxInstrumentMasterUse:
 				"This is metadata only. It does not contain prices, Klines, Canonical data, Quality, or Market Snapshots.",
 			okxInstrumentMasterTableDescription:
-				"Each row is one OKX Spot trading pair. 24h volume is the latest quote-currency turnover used by the filter; minimum quantity is the smallest order size.",
+				"Each row is one OKX Spot trading pair. 24h volume is converted to an approximate USDT value (USDT/USDC/USD are treated as equivalent; other quotes use their latest quote-USDT price).",
 			okxInstrumentMasterEmpty: "No OKX instrument catalog has been fetched yet.",
 			okxIgnoreUntradable: "Ignore instruments that are not tradable",
-			okxOnlyUsdt: "Only keep USDT-quoted pairs",
-			okxMinimumQuoteVolume: "Minimum 24h quote volume (USDT)",
+			okxMinimumQuoteVolume: "Minimum 24h volume equivalent (USDT)",
 			okxColumnCode: "Instrument",
 			okxColumnAssets: "Base / quote",
 			okxColumnVolume: "24h volume (USDT)",
@@ -2381,11 +2380,10 @@ const simplifiedChinese = {
 			okxInstrumentMasterUse:
 				"这里只是元数据，不包含价格、K 线、Canonical、Quality 或行情快照。",
 			okxInstrumentMasterTableDescription:
-				"每一行代表一个 OKX 现货交易对；24 小时成交额是该交易对最近 24 小时的计价币成交额，用于筛选；最小数量是最小下单量。",
+				"每一行代表一个 OKX 现货交易对；24 小时成交额会折算为约当 USDT（USDT/USDC/USD 按等值处理，其他计价币使用最新的计价币-USDT 价格）。",
 			okxInstrumentMasterEmpty: "尚未获取 OKX 交易品种目录。",
 			okxIgnoreUntradable: "忽略不可交易品种",
-			okxOnlyUsdt: "只保留 USDT 计价交易对",
-			okxMinimumQuoteVolume: "最低 24 小时成交额（USDT）",
+			okxMinimumQuoteVolume: "最低 24 小时折算成交额（USDT）",
 			okxColumnCode: "交易对",
 			okxColumnAssets: "基础资产 / 计价资产",
 			okxColumnVolume: "24 小时成交额（USDT）",

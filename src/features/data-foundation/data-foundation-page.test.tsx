@@ -57,6 +57,7 @@ jest.mock("@tauri-apps/api/core", () => ({
 					snapshotId: "master-1",
 					retrievedAtMs: 1,
 					connectorVersion: "okx-1",
+					quoteVolume24hUsdt: { "BTC-USDT": "10000000" },
 					instruments: [
 						{
 							code: "BTC-USDT",
@@ -64,7 +65,6 @@ jest.mock("@tauri-apps/api/core", () => ({
 							quoteAsset: "USDT",
 							status: "live",
 							minimumQuantity: "0.0001",
-							quoteVolume24h: "10000000",
 							priceIncrement: "0.1",
 							quantityIncrement: "0.0001",
 						},
@@ -165,7 +165,6 @@ test("renders localized evidence and persisted operation history", async () => {
 				userId: "user-1",
 				operationId: expect.any(String),
 				ignoreUntradable: true,
-				onlyUsdt: true,
 				minimumQuoteVolume24h: "5000000",
 			},
 		}),

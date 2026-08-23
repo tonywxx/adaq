@@ -110,8 +110,8 @@ type InstrumentMasterSnapshot = {
 		priceIncrement: string;
 		quantityIncrement: string;
 		minimumQuantity: string;
-		quoteVolume24h?: string;
 	}>;
+	quoteVolume24hUsdt?: Record<string, string>;
 };
 
 const shortId = (value: string) =>
@@ -219,7 +219,6 @@ export function DataFoundationPage() {
 	const [contextVenue, setContextVenue] = useState("okx");
 	const [snapshotId, setSnapshotId] = useState("");
 	const [ignoreUntradable, setIgnoreUntradable] = useState(true);
-	const [onlyUsdt, setOnlyUsdt] = useState(true);
 	const [minimumQuoteVolume24h, setMinimumQuoteVolume24h] = useState("5000000");
 	const [universeId, setUniverseId] = useState("");
 	const [selectedSourceId, setSelectedSourceId] = useState<string>();
@@ -515,7 +514,6 @@ export function DataFoundationPage() {
 					userId,
 					operationId,
 					ignoreUntradable,
-					onlyUsdt,
 					minimumQuoteVolume24h,
 				},
 			});
@@ -681,14 +679,6 @@ export function DataFoundationPage() {
 										/>
 										{t("dataFoundation.okxIgnoreUntradable")}
 									</label>
-									<label className="flex items-center gap-2">
-										<input
-											type="checkbox"
-											checked={onlyUsdt}
-											onChange={(event) => setOnlyUsdt(event.target.checked)}
-										/>
-										{t("dataFoundation.okxOnlyUsdt")}
-									</label>
 									<label className="grid gap-1">
 										<span>{t("dataFoundation.okxMinimumQuoteVolume")}</span>
 										<input
@@ -786,7 +776,9 @@ export function DataFoundationPage() {
 														<td className="p-2">
 															{instrument.baseAsset}/{instrument.quoteAsset}
 														</td>
-														<td className="p-2">{instrument.quoteVolume24h ?? "—"}</td>
+														<td className="p-2">
+															{latest.quoteVolume24hUsdt?.[instrument.code] ?? "—"}
+														</td>
 														<td className="p-2">{instrument.status}</td>
 														<td className="p-2">{instrument.minimumQuantity}</td>
 													</tr>

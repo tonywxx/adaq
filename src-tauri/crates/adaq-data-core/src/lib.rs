@@ -305,7 +305,7 @@ pub struct InstrumentMasterAcquisition {
     pub diagnostics: OkxRequestDiagnostics,
     pub instruments: Vec<SpotInstrument>,
     #[serde(default)]
-    pub quote_volume_24h: BTreeMap<String, Decimal>,
+    pub quote_volume_24h_usdt: BTreeMap<String, Decimal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1380,14 +1380,23 @@ impl OkxClient {
             .fetch_tickers(None, Default::default())
             .await
             .map_err(map_crate_error)?;
-        let quote_volume_24h = instruments
+        let quote_volume_24h_usdt = instruments
             .iter()
             .filter_map(|instrument| {
                 let symbol = dash_to_slash(&instrument.code);
-                tickers
-                    .get(&symbol)
-                    .and_then(|ticker| ticker.quote_volume)
-                    .map(|volume| (instrument.code.clone(), volume))
+                let ticker = tickers.get(&symbol).or_else(|| tickers.get(&instrument.code))?;
+                let quote_volume = ticker.quote_volume?;
+                let volume_usdt = if instrument.quote_asset == "USDT"
+                    || instrument.quote_asset == "USDC"
+                    || instrument.quote_asset == "USD"
+                {
+                    quote_volume
+                } else {
+                    let conversion = format!("{}/USDT", instrument.quote_asset);
+                    let conversion_ticker = tickers.get(&conversion)?;
+                    quote_volume * conversion_ticker.last?
+                };
+                Some((instrument.code.clone(), volume_usdt))
             })
             .collect();
         Ok(InstrumentMasterAcquisition {
@@ -1395,12 +1404,12 @@ impl OkxClient {
             response_sha256,
             connector_version: OKX_CONNECTOR_VERSION.into(),
             diagnostics: OkxRequestDiagnostics {
-                request_count: 1,
+                request_count: 2,
                 response_statuses: vec![200],
                 ..Default::default()
             },
             instruments,
-            quote_volume_24h,
+            quote_volume_24h_usdt,
         })
     }
 }

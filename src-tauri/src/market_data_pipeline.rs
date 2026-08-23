@@ -149,8 +149,6 @@ pub(crate) struct OkxInstrumentMasterRequest {
     #[serde(default)]
     pub ignore_untradable: bool,
     #[serde(default)]
-    pub only_usdt: bool,
-    #[serde(default)]
     pub minimum_quote_volume_24h: String,
 }
 
