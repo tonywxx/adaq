@@ -1314,7 +1314,7 @@ impl DataPipeline {
                  LEFT JOIN pipeline_canonical_datasets c USING(source_id)
                  LEFT JOIN pipeline_quality_reports q USING(source_id)
                  WHERE sa.user_id = ?1
-                 ORDER BY CAST(json_extract(s.source_json, '$.revision') AS INTEGER), s.source_id",
+                 ORDER BY s.created_at_ms DESC, s.source_id DESC",
             )
             .map_err(storage)?;
         statement
@@ -5032,6 +5032,49 @@ mod tests {
             Err(PipelineError::Cancelled { .. })
         ));
         assert_eq!(pipeline.list("alice").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn list_orders_newest_source_evidence_first() {
+        let directory = tempdir().unwrap();
+        let pipeline = DataPipeline::open(
+            directory.path(),
+            Arc::new(Mutex::new(
+                Connection::open(directory.path().join("pipeline.sqlite")).unwrap(),
+            )),
+        )
+        .unwrap();
+        let mut older_acquisition = acquisition(&[0]);
+        older_acquisition.retrieved_at_ms = 1;
+        let older = pipeline
+            .publish(
+                "alice",
+                older_acquisition,
+                request(),
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap();
+        let mut newer_acquisition = acquisition(&[60_000]);
+        newer_acquisition.retrieved_at_ms = 2;
+        let newer = pipeline
+            .publish(
+                "alice",
+                newer_acquisition,
+                request(),
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap();
+
+        let history = pipeline.list("alice").unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .map(|item| &item.source_id)
+                .collect::<Vec<_>>(),
+            vec![&newer.source.source_id, &older.source.source_id]
+        );
     }
 
     #[test]

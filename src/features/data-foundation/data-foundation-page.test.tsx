@@ -104,8 +104,12 @@ jest.mock("@tanstack/react-router", () => ({
 	}) => require("react").createElement("a", props, children),
 }));
 jest.mock("@/lib/market-session", () => ({
-	useMarketSessionStore: (selector: (state: { userId: string }) => unknown) =>
-		selector({ userId: "user-1" }),
+	useMarketSessionStore: (
+		selector: (state: {
+			userId: string;
+			watchlist: Array<{ src: string; code: string }>;
+		}) => unknown,
+	) => selector({ userId: "user-1", watchlist: [{ src: "okx", code: "BTC-USDT" }] }),
 	getErrorMessage: (error: unknown) => String(error),
 }));
 
@@ -140,7 +144,10 @@ test("renders localized evidence and persisted operation history", async () => {
 
 	expect(container.textContent).toContain(i18n.t("dataFoundation.title"));
 	expect(container.textContent).toContain(
-		i18n.t("dataFoundation.operationLedger"),
+		i18n.t("dataFoundation.executionStatus"),
+	);
+	expect(container.textContent).toContain(
+		i18n.t("dataFoundation.operationHistoryTitle"),
 	);
 	expect(container.textContent).toContain(
 		i18n.t("dataFoundation.okxInstrumentMasterEvidenceTitle"),
@@ -181,7 +188,7 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(mockInvoke).toHaveBeenCalledWith(
 		"okx_backfill_source",
 		expect.objectContaining({
-			request: expect.objectContaining({ interval: "1m" }),
+			request: expect.objectContaining({ interval: "1h" }),
 			onEvent: expect.anything(),
 		}),
 	);

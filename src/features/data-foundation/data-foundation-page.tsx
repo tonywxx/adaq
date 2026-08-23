@@ -13,7 +13,6 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import {
 	ArrowRightIcon,
 	CheckCircle2Icon,
-	CircleAlertIcon,
 	DatabaseIcon,
 	LoaderCircleIcon,
 } from "lucide-react";
@@ -157,6 +156,7 @@ type BackfillDraft = {
 	interval: OkxInterval;
 	scope: "selected" | "watchlist" | "all";
 	instrumentCodes: string[];
+	instrumentMasterSnapshotId?: string;
 	startedAtMs: number;
 };
 
@@ -228,13 +228,16 @@ function InstrumentEvidencePanel({
 	pending: boolean;
 	t: (key: string, options?: Record<string, unknown>) => string;
 }) {
+	const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>();
 	if (pending)
 		return (
 			<p className="text-sm text-muted-foreground">
 				{t("dataFoundation.loadingHistory")}
 			</p>
 		);
-	const latest = snapshots?.at(-1);
+	const latest =
+		snapshots?.find((snapshot) => snapshot.snapshotId === selectedSnapshotId) ??
+		snapshots?.at(-1);
 	if (!latest)
 		return (
 			<p className="text-sm text-muted-foreground">
@@ -303,9 +306,34 @@ function InstrumentEvidencePanel({
 				</summary>
 				<div className="mt-3 max-h-48 overflow-auto">
 					<table className="w-full text-left text-xs">
+						<thead className="sticky top-0 bg-muted">
+							<tr>
+								<th className="p-2">
+									{t("dataFoundation.okxInstrumentMasterSnapshotHeader")}
+								</th>
+								<th className="p-2">
+									{t("dataFoundation.okxInstrumentMasterRetrievedHeader")}
+								</th>
+								<th className="p-2">
+									{t("dataFoundation.okxInstrumentMasterCountHeader")}
+								</th>
+							</tr>
+						</thead>
 						<tbody>
 							{[...(snapshots ?? [])].reverse().map((snapshot) => (
-								<tr key={snapshot.snapshotId} className="border-t">
+								<tr
+									key={snapshot.snapshotId}
+									className={`cursor-pointer border-t hover:bg-muted/50 ${snapshot.snapshotId === latest.snapshotId ? "bg-primary/10 font-medium ring-1 ring-inset ring-primary/30" : ""}`}
+									aria-current={snapshot.snapshotId === latest.snapshotId}
+									onClick={() => setSelectedSnapshotId(snapshot.snapshotId)}
+									onKeyDown={(event) => {
+										if (event.key === "Enter" || event.key === " ") {
+											event.preventDefault();
+											setSelectedSnapshotId(snapshot.snapshotId);
+										}
+									}}
+									tabIndex={0}
+								>
 									<td className="p-2 font-mono">{shortId(snapshot.snapshotId)}</td>
 									<td className="p-2">
 										{new Date(snapshot.retrievedAtMs).toLocaleString()}
@@ -332,13 +360,15 @@ export function DataFoundationPage() {
 	const [backfillStats, setBackfillStats] = useState<OkxBackfillProgress>();
 	const [backfillScope, setBackfillScope] = useState<
 		"selected" | "watchlist" | "all"
-	>("selected");
+	>("watchlist");
 	const [instrumentCodes, setInstrumentCodes] = useState("BTC-USDT, ETH-USDT");
 	const watchlist = useMarketSessionStore((state) => state.watchlist);
 	const watchlistCodes = (watchlist ?? [])
 		.filter((instrument) => instrument.src === "okx")
 		.map((instrument) => instrument.code);
-	const [backfillInterval, setBackfillInterval] = useState<OkxInterval>("1m");
+	const [backfillInterval, setBackfillInterval] = useState<OkxInterval>("1h");
+	const [selectedBackfillSnapshotId, setSelectedBackfillSnapshotId] =
+		useState<string>();
 	const [savedBackfill, setSavedBackfill] = useState<BackfillDraft>();
 	const [clockMs, setClockMs] = useState(() => Date.now());
 	const [error, setError] = useState<string>();
@@ -367,9 +397,10 @@ export function DataFoundationPage() {
 			setSavedBackfill({
 				rangeStart: parsed.rangeStart ?? "",
 				rangeEnd: parsed.rangeEnd ?? "",
-				interval: parsed.interval ?? "1m",
-				scope: parsed.scope ?? "selected",
+				interval: parsed.interval ?? "1h",
+				scope: parsed.scope ?? "watchlist",
 				instrumentCodes: parsed.instrumentCodes ?? ["BTC-USDT", "ETH-USDT"],
+				instrumentMasterSnapshotId: parsed.instrumentMasterSnapshotId,
 				startedAtMs: parsed.startedAtMs ?? Date.now(),
 			});
 		} catch {
@@ -458,6 +489,17 @@ export function DataFoundationPage() {
 		enabled: Boolean(userId && selectedSourceId),
 		staleTime: 30_000,
 	});
+	const backfillSnapshots = [...(instrumentMasterQuery.data ?? [])]
+		.filter(
+			(snapshot) =>
+				snapshot.retrievedAtMs <= Date.parse(`${rangeEnd}T00:00:00Z`) + 86_400_000,
+		)
+		.reverse()
+		.slice(0, 10);
+	const selectedBackfillSnapshot =
+		backfillSnapshots.find(
+			(snapshot) => snapshot.snapshotId === selectedBackfillSnapshotId,
+		) ?? backfillSnapshots[0];
 
 	const publish = async (
 		dataset: PipelineDatasetSummary,
@@ -493,10 +535,20 @@ export function DataFoundationPage() {
 				.split(",")
 				.map((code) => code.trim().toUpperCase())
 				.filter(Boolean),
+			instrumentMasterSnapshotId: selectedBackfillSnapshot?.snapshotId,
 			startedAtMs: Date.now(),
 		};
+		const selectedSnapshot = instrumentMasterQuery.data?.find(
+			(snapshot) => snapshot.snapshotId === nextDraft.instrumentMasterSnapshotId,
+		);
 		const requestedCodes =
-			nextDraft.scope === "watchlist" ? watchlistCodes : nextDraft.instrumentCodes;
+			nextDraft.scope === "watchlist"
+				? watchlistCodes
+				: nextDraft.scope === "all"
+					? (selectedSnapshot?.instruments
+							.filter((instrument) => instrument.status === "live")
+							.map((instrument) => instrument.code) ?? [])
+					: nextDraft.instrumentCodes;
 		if (nextDraft.scope !== "all" && !requestedCodes.length) {
 			setError(
 				"Select at least one OKX instrument, or explicitly choose all instruments.",
@@ -555,7 +607,7 @@ export function DataFoundationPage() {
 					startTimeMs,
 					endTimeMs,
 					interval: nextDraft.interval,
-					instrumentCodes: nextDraft.scope === "all" ? [] : requestedCodes,
+					instrumentCodes: requestedCodes,
 				},
 				onEvent,
 			});
@@ -707,9 +759,7 @@ export function DataFoundationPage() {
 			: undefined;
 	const etaLabel = etaMs == null ? "—" : `${Math.ceil(etaMs / 60_000)}m`;
 
-	const publicationItems = pipelineQuery.data
-		? [...pipelineQuery.data].reverse()
-		: [];
+	const publicationItems = pipelineQuery.data ?? [];
 	const publicationPageCount = Math.max(
 		1,
 		Math.ceil(publicationItems.length / PAGE_SIZE),
@@ -1054,24 +1104,6 @@ export function DataFoundationPage() {
 							))}
 						</select>
 					</label>
-					<label className="grid gap-1 text-sm" htmlFor="context-range-start">
-						<span>{t("dataFoundation.rangeStart")}</span>
-						<Input
-							id="context-range-start"
-							type="date"
-							value={rangeStart}
-							onChange={(event) => setRangeStart(event.target.value)}
-						/>
-					</label>
-					<label className="grid gap-1 text-sm" htmlFor="context-range-end">
-						<span>{t("dataFoundation.rangeEnd")}</span>
-						<Input
-							id="context-range-end"
-							type="date"
-							value={rangeEnd}
-							onChange={(event) => setRangeEnd(event.target.value)}
-						/>
-					</label>
 					<button
 						type="button"
 						className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50 md:col-span-2 lg:col-span-2 lg:justify-self-start"
@@ -1095,7 +1127,7 @@ export function DataFoundationPage() {
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="grid gap-3">
-					<div className="grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-3">
+					<div className="grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
 						<label className="grid gap-1">
 							<span>{t("dataFoundation.backfillScope")}</span>
 							<select
@@ -1115,8 +1147,45 @@ export function DataFoundationPage() {
 								<option value="all">{t("dataFoundation.backfillAll")}</option>
 							</select>
 						</label>
+						<label className="grid gap-1 text-right">
+							<span>{t("dataFoundation.backfillInterval")}</span>
+							<select
+								className="ml-auto h-9 w-1/2 rounded-md border bg-background px-3"
+								value={backfillInterval}
+								disabled={Boolean(backfillTaskId)}
+								onChange={(event) =>
+									setBackfillInterval(event.target.value as OkxInterval)
+								}
+							>
+								{OKX_INTERVALS.map((interval) => (
+									<option key={interval} value={interval}>
+										{interval}
+									</option>
+								))}
+							</select>
+						</label>
+						<label className="grid gap-1" htmlFor="backfill-range-start">
+							<span>{t("dataFoundation.rangeStart")}</span>
+							<Input
+								id="backfill-range-start"
+								type="date"
+								value={rangeStart}
+								disabled={Boolean(backfillTaskId)}
+								onChange={(event) => setRangeStart(event.target.value)}
+							/>
+						</label>
+						<label className="grid gap-1" htmlFor="backfill-range-end">
+							<span>{t("dataFoundation.rangeEnd")}</span>
+							<Input
+								id="backfill-range-end"
+								type="date"
+								value={rangeEnd}
+								disabled={Boolean(backfillTaskId)}
+								onChange={(event) => setRangeEnd(event.target.value)}
+							/>
+						</label>
 						<label
-							className="grid gap-1 sm:col-span-2"
+							className="grid gap-1 sm:col-span-2 lg:col-span-4"
 							htmlFor="okx-backfill-instruments"
 						>
 							<span>{t("dataFoundation.backfillCustomInstruments")}</span>
@@ -1132,7 +1201,7 @@ export function DataFoundationPage() {
 							</p>
 						</label>
 						{backfillScope === "watchlist" ? (
-							<div className="rounded-md border p-2 text-xs text-muted-foreground sm:col-span-2">
+							<div className="rounded-md border p-2 text-xs text-muted-foreground sm:col-span-2 lg:col-span-4">
 								<strong className="text-foreground">
 									{t("dataFoundation.backfillWatchlistContents")}
 								</strong>
@@ -1144,32 +1213,30 @@ export function DataFoundationPage() {
 							</div>
 						) : null}
 						{backfillScope === "all" ? (
-							<div className="rounded-md border p-2 text-xs text-muted-foreground sm:col-span-2">
-								<strong className="text-foreground">
-									{t("dataFoundation.backfillAllSnapshot")}
-								</strong>{" "}
-								{instrumentMasterQuery.data?.at(-1)
-									? shortId(instrumentMasterQuery.data.at(-1)?.snapshotId ?? "")
-									: t("dataFoundation.okxInstrumentMasterEmpty")}
-							</div>
+							<label className="grid gap-1 sm:col-span-2 lg:col-span-4">
+								<span>{t("dataFoundation.backfillAllSnapshot")}</span>
+								<select
+									className="h-9 rounded-md border bg-background px-3"
+									value={selectedBackfillSnapshot?.snapshotId ?? ""}
+									disabled={Boolean(backfillTaskId) || !backfillSnapshots.length}
+									onChange={(event) => setSelectedBackfillSnapshotId(event.target.value)}
+								>
+									{backfillSnapshots.length ? (
+										backfillSnapshots.map((snapshot) => (
+											<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
+												{shortId(snapshot.snapshotId)} -{" "}
+												{new Date(snapshot.retrievedAtMs).toLocaleString()} -{" "}
+												{humanizeNumber(snapshot.instruments.length)}
+											</option>
+										))
+									) : (
+										<option value="">
+											{t("dataFoundation.okxInstrumentMasterEmpty")}
+										</option>
+									)}
+								</select>
+							</label>
 						) : null}
-						<label className="grid gap-1">
-							<span>{t("dataFoundation.backfillInterval")}</span>
-							<select
-								className="h-9 rounded-md border bg-background px-3"
-								value={backfillInterval}
-								disabled={Boolean(backfillTaskId)}
-								onChange={(event) =>
-									setBackfillInterval(event.target.value as OkxInterval)
-								}
-							>
-								{OKX_INTERVALS.map((interval) => (
-									<option key={interval} value={interval}>
-										{interval}
-									</option>
-								))}
-							</select>
-						</label>
 					</div>
 					<div className="flex flex-wrap items-center gap-3 rounded-md border p-3">
 						<div className="min-w-0 flex-1">
@@ -1249,6 +1316,11 @@ export function DataFoundationPage() {
 							</div>
 						</div>
 					) : null}
+					<div className="mt-4 border-t pt-3">
+						<strong className="text-base">
+							{t("dataFoundation.backfillHistoryTitle")}
+						</strong>
+					</div>
 					{pipelineQuery.data?.length ? (
 						<>
 							{publicationSlice.map((dataset) => (
@@ -1261,7 +1333,9 @@ export function DataFoundationPage() {
 										className={`grid gap-1 text-left text-sm ${selectedSourceId === dataset.sourceId ? "text-primary" : ""}`}
 										onClick={() => setSelectedSourceId(dataset.sourceId)}
 									>
-										<span className="font-medium">{dataset.sourceId}</span>
+									<span className="font-medium" title={dataset.sourceId}>
+										{shortId(dataset.sourceId)}
+									</span>
 										<span className="text-muted-foreground">
 											{t("dataFoundation.publicationCounts", {
 												source: dataset.sourceRecordCount,
@@ -1325,9 +1399,98 @@ export function DataFoundationPage() {
 							) : null}
 						</div>
 					) : null}
+					<div className="mt-4 border-t pt-4">
+						<p className="mb-3 text-base font-medium">
+							{t("dataFoundation.executionStatus")}
+						</p>
+						{acquisitionQuery.isPending ? (
+							<p className="text-sm text-muted-foreground" role="status">
+								{t("dataFoundation.loadingHistory")}
+							</p>
+						) : acquisitionQuery.data?.length ? (
+							<div className="grid gap-3 text-sm">
+								<div className="grid gap-2">
+									{acquisitionSlice.map((operation) => (
+										<div
+											key={`${operation.instrument.venue.id}:${operation.instrument.code}:${operation.interval}`}
+											className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3"
+										>
+											<div>
+												<strong>{operation.instrument.code}</strong>
+												<span className="ml-2 text-muted-foreground">
+													{operation.interval} ·{" "}
+													{t("dataFoundation.pages", { count: operation.pages })} ·{" "}
+													{t("dataFoundation.revision", {
+														revision: operation.revision ?? "—",
+													})}{" "}
+													· {t("dataFoundation.retries", { count: operation.retryCount })}
+												</span>
+												{operation.lastError ? (
+													<p className="mt-1 text-destructive">{operation.lastError}</p>
+												) : null}
+											</div>
+											<div className="flex items-center gap-2">
+												<Badge
+													variant={operation.state === "completed" ? "default" : "outline"}
+												>
+													{t(`dataFoundation.states.${operation.state}`)}
+												</Badge>
+												{operation.state === "failed" || operation.state === "cancelled" ? (
+													<button
+														type="button"
+														className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+														onClick={() => void retry(operation)}
+														disabled={Boolean(activeOperation)}
+													>
+														{t("dataFoundation.retryAcquisition")}
+													</button>
+												) : null}
+											</div>
+										</div>
+									))}
+								</div>
+								<Pagination
+									page={acquisitionSafePage}
+									pageCount={acquisitionPageCount}
+									onPageChange={setAcquisitionPage}
+								/>
+							</div>
+						) : (
+							<p className="text-sm text-muted-foreground">
+								{t("dataFoundation.emptyHistory")}
+							</p>
+						)}
+						<AcquisitionOperationHistory
+							loading={foundationHistoryQuery.isPending}
+							operations={foundationHistoryQuery.data ?? []}
+							onCancel={async (operation) => {
+								if (
+									!userId ||
+									operation.market !== "crypto" ||
+									operation.venue !== "okx"
+								)
+									return;
+								try {
+									await invoke("okx_backfill_cancel", {
+										request: { userId, taskId: operation.operationId },
+									});
+									await Promise.all([
+										acquisitionQuery.refetch(),
+										foundationHistoryQuery.refetch(),
+									]);
+								} catch (cause) {
+									setError(getErrorMessage(cause));
+								}
+							}}
+							onRetry={(operation) => {
+								const market = markets.find((item) => item.id === operation.market);
+								if (market) void acquire(market);
+							}}
+						/>
+					</div>
 				</CardContent>
 			</Card>
-			<Card>
+			<Card className="order-3">
 				<CardHeader>
 					<CardTitle>{t("dataFoundation.contextTitle")}</CardTitle>
 					<CardDescription>{t("dataFoundation.contextDescription")}</CardDescription>
@@ -1356,111 +1519,6 @@ export function DataFoundationPage() {
 					)}
 				</CardContent>
 			</Card>
-			<Card>
-				<CardHeader>
-					<CardTitle>{t("dataFoundation.operationHistoryTitle")}</CardTitle>
-					<CardDescription>
-						{t("dataFoundation.operationHistoryDescription")}
-					</CardDescription>
-				</CardHeader>
-				<CardContent>
-					{acquisitionQuery.isPending ? (
-						<p className="text-sm text-muted-foreground" role="status">
-							{t("dataFoundation.loadingHistory")}
-						</p>
-					) : acquisitionQuery.data?.length ? (
-						<div className="grid gap-3">
-							<strong className="text-sm">
-								{t("dataFoundation.executionStatus")}
-							</strong>
-							<div className="grid gap-2">
-								{acquisitionSlice.map((operation) => (
-									<div
-										key={`${operation.instrument.venue.id}:${operation.instrument.code}:${operation.interval}`}
-										className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm"
-									>
-										<div>
-											<strong>{operation.instrument.code}</strong>
-											<span className="ml-2 text-muted-foreground">
-												{operation.interval} ·{" "}
-												{t("dataFoundation.pages", { count: operation.pages })} ·{" "}
-												{t("dataFoundation.revision", {
-													revision: operation.revision ?? "—",
-												})}{" "}
-												· {t("dataFoundation.retries", { count: operation.retryCount })}
-											</span>
-											{operation.lastError ? (
-												<p className="mt-1 text-destructive">{operation.lastError}</p>
-											) : null}
-										</div>
-										<div className="flex items-center gap-2">
-											<Badge
-												variant={operation.state === "completed" ? "default" : "outline"}
-											>
-												{t(`dataFoundation.states.${operation.state}`)}
-											</Badge>
-											{operation.state === "failed" || operation.state === "cancelled" ? (
-												<button
-													type="button"
-													className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-													onClick={() => void retry(operation)}
-													disabled={Boolean(activeOperation)}
-												>
-													{t("dataFoundation.retryAcquisition")}
-												</button>
-											) : null}
-										</div>
-									</div>
-								))}
-							</div>
-							<Pagination
-								page={acquisitionSafePage}
-								pageCount={acquisitionPageCount}
-								onPageChange={setAcquisitionPage}
-							/>
-						</div>
-					) : (
-						<p className="text-sm text-muted-foreground">
-							{t("dataFoundation.emptyHistory")}
-						</p>
-					)}
-					<AcquisitionOperationHistory
-						loading={foundationHistoryQuery.isPending}
-						operations={foundationHistoryQuery.data ?? []}
-						onCancel={async (operation) => {
-							if (
-								!userId ||
-								operation.market !== "crypto" ||
-								operation.venue !== "okx"
-							)
-								return;
-							try {
-								await invoke("okx_backfill_cancel", {
-									request: { userId, taskId: operation.operationId },
-								});
-								await Promise.all([
-									acquisitionQuery.refetch(),
-									foundationHistoryQuery.refetch(),
-								]);
-							} catch (cause) {
-								setError(getErrorMessage(cause));
-							}
-						}}
-						onRetry={(operation) => {
-							const market = markets.find((item) => item.id === operation.market);
-							if (market) void acquire(market);
-						}}
-					/>
-				</CardContent>
-			</Card>
-			{pipelineQuery.data?.some(
-				(item) => item.state === "degraded" || item.state === "rejected",
-			) ? (
-				<p className="text-sm text-amber-700 dark:text-amber-300" role="status">
-					<CircleAlertIcon className="mr-1 inline size-4" aria-hidden="true" />
-					{t("dataFoundation.qualityWarning")}
-				</p>
-			) : null}
 		</div>
 	);
 }
@@ -1487,7 +1545,9 @@ function AcquisitionOperationHistory({
 	);
 	return (
 		<div className="mt-4 grid gap-2 border-t pt-4">
-			<strong className="text-sm">{t("dataFoundation.operationLedger")}</strong>
+			<strong className="text-sm">
+				{t("dataFoundation.operationHistoryTitle")}
+			</strong>
 			{loading ? (
 				<p className="text-sm text-muted-foreground" role="status">
 					{t("dataFoundation.loadingHistory")}
