@@ -19,6 +19,7 @@ tony/
 supabase/
 bak/
 .omx
+.tmp
 
 # Editor directories and files
 .vscode/*
