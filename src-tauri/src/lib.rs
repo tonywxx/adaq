@@ -1809,6 +1809,117 @@ async fn okx_backfill_source(
 }
 
 #[tauri::command]
+async fn okx_publish_sources(
+    mut request: adaq_data_pipeline::okx::OkxSourcePublicationRequest,
+    on_event: Channel<adaq_data_pipeline::okx::OkxBackfillEvent>,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<market_data_pipeline::PublicationView>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let task_id = request.task_id.clone();
+    let user_id = request.user_id.clone();
+    let cancellation = state
+        .okx
+        .begin_backfill(&task_id, &user_id)
+        .map_err(string)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = state
+            .okx
+            .publish_sources(&request, cancellation.clone(), |event| {
+                let _ = on_event.send(event);
+            })
+            .map_err(string)
+            .map(|publications| {
+                publications
+                    .into_iter()
+                    .map(market_data_pipeline::PublicationView::from)
+                    .collect::<Vec<_>>()
+            });
+        let finish = state.okx.finish_backfill(&task_id);
+        match (result, finish) {
+            (Ok(publications), Ok(())) => Ok(publications),
+            (Err(error), _) => Err(error),
+            (_, Err(error)) => Err(string(error)),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn okx_publish_gate_two(
+    mut request: adaq_data_pipeline::okx::OkxSourcePublicationRequest,
+    on_event: Channel<adaq_data_pipeline::okx::OkxBackfillEvent>,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<market_data_pipeline::GateTwoPublicationView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let task_id = request.task_id.clone();
+    let user_id = request.user_id.clone();
+    let cancellation = state
+        .okx
+        .begin_backfill(&task_id, &user_id)
+        .map_err(string)?;
+    state.foundation_acquisition_start(&user_id, &task_id, "crypto", "okx")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = state
+            .okx
+            .publish_sources(&request, cancellation.clone(), |event| {
+                let _ = on_event.send(event);
+            })
+            .map_err(string)
+            .and_then(|publications| {
+                if cancellation.is_cancelled() {
+                    return Err("OKX Gate 2 publication was cancelled".into());
+                }
+                state
+                    .publish_okx_backfill(
+                        &request.user_id,
+                        request.start_time_ms,
+                        request.end_time_ms,
+                        request.interval,
+                        &request.instrument_codes,
+                        &cancellation,
+                        &publications,
+                    )
+                    .map(|universe| market_data_pipeline::GateTwoPublicationView {
+                        publications: publications
+                            .into_iter()
+                            .map(market_data_pipeline::PublicationView::from)
+                            .collect(),
+                        universe_snapshot_id: universe.snapshot_id,
+                    })
+            });
+        let finish = state.okx.finish_backfill(&task_id);
+        let (state_name, revision, error) = match &result {
+            Ok(publication) => (
+                "completed",
+                publication
+                    .publications
+                    .iter()
+                    .map(|item| item.source_revision)
+                    .max(),
+                None,
+            ),
+            Err(error) if error.contains("cancelled") => ("cancelled", None, Some(error.as_str())),
+            Err(error) => ("failed", None, Some(error.as_str())),
+        };
+        let history =
+            state.foundation_acquisition_finish(&user_id, &task_id, state_name, revision, error);
+        let publication = result?;
+        finish.map_err(string)?;
+        history?;
+        Ok(publication)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn okx_backfill_retry(
     mut retry: market_data_pipeline::BackfillRetryRequest,
     on_event: Channel<adaq_data_pipeline::okx::OkxBackfillEvent>,
@@ -1905,6 +2016,7 @@ async fn okx_backfill_publish(
                     request.end_time_ms,
                     request.interval,
                     &request.instrument_codes,
+                    &cancellation,
                     &publications,
                 )
                 .map(|_| publications)
@@ -3940,6 +4052,8 @@ pub fn run() {
             okx_universe,
             okx_backfill,
             okx_backfill_source,
+            okx_publish_sources,
+            okx_publish_gate_two,
             okx_backfill_retry,
             okx_backfill_publish,
             okx_backfill_cancel,

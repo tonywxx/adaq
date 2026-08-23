@@ -795,6 +795,7 @@ pub struct PipelineDatasetSummary {
     pub source_id: String,
     pub source: SourceEvidenceSummary,
     pub canonical_id: Option<String>,
+    pub quality_report_id: Option<String>,
     pub revision: u64,
     pub state: PipelineDatasetState,
     pub source_record_count: usize,
@@ -1391,6 +1392,7 @@ impl DataPipeline {
                     source: source_evidence_summary(&source)?,
                     source_id: source.source_id,
                     canonical_id: canonical.as_ref().map(|value| value.canonical_id.clone()),
+                    quality_report_id: quality.as_ref().map(|value| value.report_id.clone()),
                     revision: source.revision,
                     state: quality
                         .as_ref()
@@ -1454,6 +1456,53 @@ impl DataPipeline {
             self.create_source(user_id, &acquisition, &request.instrument, request.interval)?;
         self.grant_source_for_user(user_id, &source.source_id)?;
         Ok(source)
+    }
+
+    /// Publishes canonical and quality evidence from an already-retained Source.
+    pub fn publish_source_for_user(
+        &self,
+        user_id: &str,
+        source_id: &str,
+        request: CanonicalizationRequest,
+        cancellation: CancellationToken,
+        on_event: impl FnMut(PipelineProgress),
+    ) -> Result<PipelinePublication, PipelineError> {
+        validate_user(user_id)?;
+        request.validate()?;
+        let source = self.source_for_user(user_id, source_id)?;
+        if source.identity.price_basis != request.price_basis {
+            return Err(PipelineError::InvalidRequest(
+                "Source evidence Price Basis differs from canonical request".into(),
+            ));
+        }
+        if source.records.iter().any(|record| {
+            record.instrument != request.instrument || record.interval != request.interval
+        }) {
+            return Err(PipelineError::InvalidRequest(
+                "Source evidence identity differs from canonical request".into(),
+            ));
+        }
+
+        let acquisition = SourceAcquisition {
+            provider: source.identity.provider.clone(),
+            actual_upstream: source.identity.actual_upstream.clone(),
+            connector: source.identity.connector.clone(),
+            connector_version: source.identity.connector_version.clone(),
+            request_parameters: source.identity.request_parameters.clone(),
+            retrieved_at_ms: source.identity.retrieved_at_ms,
+            response_sha256s: source.identity.response_sha256s.clone(),
+            acquisition_content_sha256: source.identity.acquisition_content_sha256.clone(),
+            capability_snapshot: source.identity.capability_snapshot.clone(),
+            acquisition_diagnostics: source.identity.acquisition_diagnostics.clone(),
+            price_basis: source.identity.price_basis,
+            records: source.records,
+        };
+        if source.logical_key != source_logical_key(&acquisition, &request.instrument, request.interval)? {
+            return Err(PipelineError::InvalidRequest(
+                "Source evidence request identity differs from canonical request".into(),
+            ));
+        }
+        self.publish(user_id, acquisition, request, cancellation, on_event)
     }
 
     pub fn canonical_for_user(
@@ -2835,31 +2884,7 @@ impl DataPipeline {
         instrument: &InstrumentId,
         interval: BarInterval,
     ) -> Result<(SourceMarketDataset, bool), PipelineError> {
-        // OKX revisions stay range-independent; the exact range remains in Source identity.
-        let logical_request_parameters = if acquisition.provider == "okx" {
-            match &acquisition.request_parameters {
-                Value::Object(parameters) => Value::Object(
-                    parameters
-                        .iter()
-                        .filter(|(key, _)| *key != "startTimeMs" && *key != "endTimeMs")
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect(),
-                ),
-                value => value.clone(),
-            }
-        } else {
-            acquisition.request_parameters.clone()
-        };
-        let logical_key = digest(&canonical_json_bytes(&(
-            &acquisition.provider,
-            &acquisition.actual_upstream,
-            &acquisition.connector,
-            &acquisition.connector_version,
-            &logical_request_parameters,
-            acquisition.price_basis,
-            instrument,
-            interval,
-        ))?);
+        let logical_key = source_logical_key(acquisition, instrument, interval)?;
         let payload_sha256 = payload_hash(&acquisition.records)?;
         let evidence_bytes = source_evidence_bytes(&acquisition.records)?;
         let content_sha256 = digest(&evidence_bytes);
@@ -3129,6 +3154,38 @@ impl DataPipeline {
             .map_err(storage)?;
         Ok(())
     }
+}
+
+fn source_logical_key(
+    acquisition: &SourceAcquisition,
+    instrument: &InstrumentId,
+    interval: BarInterval,
+) -> Result<String, PipelineError> {
+    // OKX revisions stay range-independent; the exact range remains in Source identity.
+    let logical_request_parameters = if acquisition.provider == "okx" {
+        match &acquisition.request_parameters {
+            Value::Object(parameters) => Value::Object(
+                parameters
+                    .iter()
+                    .filter(|(key, _)| *key != "startTimeMs" && *key != "endTimeMs")
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            ),
+            value => value.clone(),
+        }
+    } else {
+        acquisition.request_parameters.clone()
+    };
+    Ok(digest(&canonical_json_bytes(&(
+        &acquisition.provider,
+        &acquisition.actual_upstream,
+        &acquisition.connector,
+        &acquisition.connector_version,
+        &logical_request_parameters,
+        acquisition.price_basis,
+        instrument,
+        interval,
+    ))?))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5411,6 +5468,87 @@ mod tests {
         assert_eq!(summary[0].source.received_end_time_ms, Some(0));
         assert_eq!(summary[0].state, PipelineDatasetState::Unassessed);
         assert_eq!(summary[0].canonical_id, None);
+    }
+
+    #[test]
+    fn retained_source_can_publish_canonical_and_quality_without_new_source_revision() {
+        let directory = tempdir().unwrap();
+        let pipeline = DataPipeline::open(
+            directory.path(),
+            Arc::new(Mutex::new(
+                Connection::open(directory.path().join("pipeline.sqlite")).unwrap(),
+            )),
+        )
+        .unwrap();
+        let canonical_request = request();
+        let source = pipeline
+            .retain_source(
+                "alice",
+                acquisition(&[0]),
+                SourceRetentionRequest {
+                    instrument: canonical_request.instrument.clone(),
+                    interval: canonical_request.interval,
+                },
+            )
+            .unwrap();
+
+        let publication = pipeline
+            .publish_source_for_user(
+                "alice",
+                &source.source_id,
+                canonical_request.clone(),
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap();
+
+        assert_eq!(publication.source.source_id, source.source_id);
+        assert_eq!(publication.source.revision, source.revision);
+        assert!(publication.canonical.is_some());
+        assert_eq!(publication.quality.source_id, source.source_id);
+        assert_eq!(
+            pipeline.list("alice").unwrap()[0].canonical_id,
+            publication.canonical.as_ref().map(|value| value.canonical_id.clone())
+        );
+        assert_eq!(
+            pipeline.list("alice").unwrap()[0].quality_report_id,
+            Some(publication.quality.report_id.clone())
+        );
+    }
+
+    #[test]
+    fn retained_source_publication_rejects_another_users_source() {
+        let directory = tempdir().unwrap();
+        let pipeline = DataPipeline::open(
+            directory.path(),
+            Arc::new(Mutex::new(
+                Connection::open(directory.path().join("pipeline.sqlite")).unwrap(),
+            )),
+        )
+        .unwrap();
+        let canonical_request = request();
+        let source = pipeline
+            .retain_source(
+                "alice",
+                acquisition(&[0]),
+                SourceRetentionRequest {
+                    instrument: canonical_request.instrument.clone(),
+                    interval: canonical_request.interval,
+                },
+            )
+            .unwrap();
+
+        let error = pipeline
+            .publish_source_for_user(
+                "bob",
+                &source.source_id,
+                canonical_request,
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, PipelineError::NotFound(_)));
     }
 
     #[test]

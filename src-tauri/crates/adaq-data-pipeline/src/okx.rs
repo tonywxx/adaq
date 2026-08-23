@@ -4,7 +4,7 @@
 //! orders, and fills never enter this boundary.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -12,9 +12,9 @@ use std::{
 };
 
 use adaq_data_core::{
-    BarAcquisition, BarInterval, BarSeries, BarSnapshot, InstrumentMasterAcquisition,
-    InstrumentStatus, Level2StreamEvent, MarketTrade, OhlcvBar, OkxClient, SpotInstrument,
-    TickerStreamEvent, TradeStreamEvent,
+    BarAcquisition, BarInterval, BarSeries, BarSnapshot, HistoricalBarRange,
+    InstrumentMasterAcquisition, InstrumentStatus, Level2StreamEvent, MarketTrade, OhlcvBar,
+    OkxClient, SpotInstrument, TickerStreamEvent, TradeStreamEvent,
     market::{InstrumentId, Venue},
     next_bar_open_time_ms,
 };
@@ -143,6 +143,19 @@ pub struct OkxBackfillRequest {
     pub checkpoint_operation_id: Option<String>,
     #[serde(default = "default_gap_retries")]
     pub max_gap_retries: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OkxSourcePublicationRequest {
+    pub task_id: String,
+    pub user_id: String,
+    pub source_ids: Vec<String>,
+    pub start_time_ms: i64,
+    pub end_time_ms: i64,
+    pub interval: BarInterval,
+    #[serde(default)]
+    pub instrument_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -685,6 +698,158 @@ impl OkxSpotDataPath {
                 })
                 .collect()
         })
+    }
+
+    pub fn publish_sources(
+        &self,
+        request: &OkxSourcePublicationRequest,
+        cancellation: CancellationToken,
+        mut on_event: impl FnMut(OkxBackfillEvent),
+    ) -> Result<Vec<PipelinePublication>, PipelineError> {
+        validate_user(&request.user_id)?;
+        if request.source_ids.is_empty() {
+            return Err(PipelineError::InvalidRequest(
+                "Gate 2 publication requires at least one retained Source ID".into(),
+            ));
+        }
+        if request.start_time_ms >= request.end_time_ms {
+            return Err(PipelineError::InvalidRequest(
+                "Gate 2 publication requires an increasing time range".into(),
+            ));
+        }
+
+        let mut seen = HashSet::with_capacity(request.source_ids.len());
+        let mut publications = Vec::with_capacity(request.source_ids.len());
+        for source_id in &request.source_ids {
+            if !seen.insert(source_id) {
+                return Err(PipelineError::InvalidRequest(
+                    "Gate 2 publication contains duplicate Source IDs".into(),
+                ));
+            }
+            if cancellation.is_cancelled() {
+                return Err(PipelineError::Cancelled {
+                    source_id: source_id.clone(),
+                });
+            }
+            let source = self.pipeline.source_for_user(&request.user_id, source_id)?;
+            if source.identity.provider != "okx"
+                || source.identity.connector != adaq_data_core::OKX_CONNECTOR_VERSION
+            {
+                return Err(PipelineError::InvalidRequest(
+                    "Gate 2 publication requires an OKX Source identity".into(),
+                ));
+            }
+            let instrument = source
+                .records
+                .first()
+                .map(|record| record.instrument.clone())
+                .or_else(|| {
+                    source
+                        .identity
+                        .request_parameters
+                        .get("instrument")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                })
+                .ok_or_else(|| {
+                    PipelineError::InvalidRequest(
+                        "Gate 2 publication cannot identify the Source Instrument".into(),
+                    )
+                })?;
+            let source_interval = source
+                .records
+                .first()
+                .map(|record| record.interval)
+                .or_else(|| {
+                    source
+                        .identity
+                        .request_parameters
+                        .get("interval")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                })
+                .ok_or_else(|| {
+                    PipelineError::InvalidRequest(
+                        "Gate 2 publication cannot identify the Source interval".into(),
+                    )
+                })?;
+            if source_interval != request.interval
+                || source.records.iter().any(|record| {
+                    record.instrument != instrument || record.interval != source_interval
+                })
+            {
+                return Err(PipelineError::InvalidRequest(
+                    "Gate 2 publication Source identity does not match the requested interval"
+                        .into(),
+                ));
+            }
+            if !request.instrument_codes.is_empty()
+                && !request.instrument_codes.contains(&instrument.code)
+            {
+                return Err(PipelineError::InvalidRequest(
+                    "Gate 2 publication Source is outside the requested instrument set".into(),
+                ));
+            }
+            let Some(source_start_time_ms) = source
+                .identity
+                .request_parameters
+                .get("startTimeMs")
+                .and_then(serde_json::Value::as_i64)
+            else {
+                return Err(PipelineError::InvalidRequest(
+                    "Gate 2 publication Source has no requested start time".into(),
+                ));
+            };
+            let Some(source_end_time_ms) = source
+                .identity
+                .request_parameters
+                .get("endTimeMs")
+                .and_then(serde_json::Value::as_i64)
+            else {
+                return Err(PipelineError::InvalidRequest(
+                    "Gate 2 publication Source has no requested end time".into(),
+                ));
+            };
+            if source_start_time_ms != request.start_time_ms
+                || source_end_time_ms != request.end_time_ms
+            {
+                return Err(PipelineError::InvalidRequest(
+                    "Gate 2 publication Source range does not match the request".into(),
+                ));
+            }
+
+            let mut canonicalization = CanonicalizationRequest::new(
+                instrument.clone(),
+                request.interval,
+                CalendarEvidence::UtcGrid {
+                    calendar_id: "okx-utc-grid".into(),
+                    closures: Vec::new(),
+                },
+            )?;
+            canonicalization.historical_range = Some(HistoricalBarRange {
+                start_time_ms: request.start_time_ms,
+                end_time_ms: request.end_time_ms,
+            });
+            let publication = self.pipeline.publish_source_for_user(
+                &request.user_id,
+                source_id,
+                canonicalization,
+                cancellation.clone(),
+                |_| {},
+            )?;
+            on_event(OkxBackfillEvent::Published {
+                instrument,
+                source_id: publication.source.source_id.clone(),
+                canonical_id: publication
+                    .canonical
+                    .as_ref()
+                    .map(|canonical| canonical.canonical_id.clone()),
+                revision: publication.source.revision,
+                state: publication.quality.state.clone(),
+            });
+            publications.push(publication);
+        }
+        Ok(publications)
     }
 
     async fn backfill_with_mode(
@@ -2292,6 +2457,8 @@ mod tests {
     use rusqlite::Connection;
     use tempfile::tempdir;
 
+    use crate::PipelineDatasetState;
+
     use super::*;
 
     fn spot(code: &str, status: InstrumentStatus) -> SpotInstrument {
@@ -2607,6 +2774,122 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn retained_source_publication_creates_canonical_and_quality_without_refetching() {
+        let (_root, path, _requests) = data_path(vec![bar_row(0, "1.5")]);
+        path.record_instrument_master("alice", master(1, "master"))
+            .unwrap();
+        let source = path
+            .backfill_source_only(
+                &OkxBackfillRequest {
+                    task_id: "source-for-gate-two".into(),
+                    user_id: "alice".into(),
+                    start_time_ms: 0,
+                    end_time_ms: 60_000,
+                    interval: BarInterval::OneMinute,
+                    instrument_codes: vec![],
+                    universe_snapshot_id: None,
+                    checkpoint_operation_id: None,
+                    max_gap_retries: 0,
+                },
+                CancellationToken::new(),
+                |_| {},
+            )
+            .await
+            .unwrap()
+            .remove(0);
+
+        let publications = path
+            .publish_sources(
+                &OkxSourcePublicationRequest {
+                    task_id: "publish-gate-two".into(),
+                    user_id: "alice".into(),
+                    source_ids: vec![source.source_id.clone()],
+                    start_time_ms: 0,
+                    end_time_ms: 60_000,
+                    interval: BarInterval::OneMinute,
+                    instrument_codes: vec!["BTC-USDT".into()],
+                },
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap();
+
+        assert_eq!(publications.len(), 1);
+        assert_eq!(publications[0].source.source_id, source.source_id);
+        assert!(publications[0].canonical.is_some());
+        assert_eq!(
+            path.pipeline.list("alice").unwrap()[0].state,
+            PipelineDatasetState::Passed
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_source_publication_rejects_invalid_source_selection() {
+        let (_root, path, _requests) = data_path(vec![bar_row(0, "1.5")]);
+        path.record_instrument_master("alice", master(1, "master"))
+            .unwrap();
+        let source = path
+            .backfill_source_only(
+                &OkxBackfillRequest {
+                    task_id: "source-for-gate-two-errors".into(),
+                    user_id: "alice".into(),
+                    start_time_ms: 0,
+                    end_time_ms: 60_000,
+                    interval: BarInterval::OneMinute,
+                    instrument_codes: vec![],
+                    universe_snapshot_id: None,
+                    checkpoint_operation_id: None,
+                    max_gap_retries: 0,
+                },
+                CancellationToken::new(),
+                |_| {},
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        let request = |source_ids, start_time_ms, end_time_ms| OkxSourcePublicationRequest {
+            task_id: "publish-gate-two-errors".into(),
+            user_id: "alice".into(),
+            source_ids,
+            start_time_ms,
+            end_time_ms,
+            interval: BarInterval::OneMinute,
+            instrument_codes: vec!["BTC-USDT".into()],
+        };
+
+        let duplicate = path
+            .publish_sources(
+                &request(
+                    vec![source.source_id.clone(), source.source_id.clone()],
+                    0,
+                    60_000,
+                ),
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap_err();
+        assert!(matches!(duplicate, PipelineError::InvalidRequest(_)));
+
+        let mismatch = path
+            .publish_sources(
+                &request(vec![source.source_id.clone()], 1, 60_000),
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap_err();
+        assert!(matches!(mismatch, PipelineError::InvalidRequest(_)));
+
+        let inaccessible = path
+            .publish_sources(
+                &request(vec!["missing-source".into()], 0, 60_000),
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap_err();
+        assert!(matches!(inaccessible, PipelineError::NotFound(_)));
     }
 
     #[tokio::test]

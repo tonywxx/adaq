@@ -410,6 +410,13 @@ pub(crate) struct PublicationView {
     pub warning_count: usize,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GateTwoPublicationView {
+    pub publications: Vec<PublicationView>,
+    pub universe_snapshot_id: String,
+}
+
 impl From<PipelinePublication> for PublicationView {
     fn from(value: PipelinePublication) -> Self {
         Self {

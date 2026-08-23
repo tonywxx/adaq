@@ -172,13 +172,17 @@ jest.mock("@/lib/market-session", () => ({
 }));
 
 const mockInvoke = jest.requireMock("@tauri-apps/api/core").invoke as jest.Mock;
+const defaultInvokeImplementation = mockInvoke.getMockImplementation();
 (
 	globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 afterEach(async () => {
 	document.body.replaceChildren();
-	mockInvoke.mockClear();
+	mockInvoke.mockReset();
+	if (defaultInvokeImplementation) {
+		mockInvoke.mockImplementation(defaultInvokeImplementation);
+	}
 	jest.restoreAllMocks();
 	await i18n.changeLanguage("en-US");
 });
@@ -261,6 +265,70 @@ test("renders localized evidence and persisted operation history", async () => {
 			onEvent: expect.anything(),
 		}),
 	);
+	mockInvoke.mockImplementation(async (command: string) => {
+		if (command === "market_data_pipeline_list") {
+			return [
+				{
+					sourceId: "source-1",
+					canonicalId: "canonical-1",
+					qualityReportId: "report-1",
+					revision: 1,
+					state: "passed",
+					sourceRecordCount: 10,
+					canonicalRecordCount: 10,
+					quarantinedRecordCount: 0,
+					gapCount: 0,
+					source: {
+						logicalKey: "okx|BTC-USDT|1h|1|2",
+						provider: "okx",
+						connector: "adaq-data-core",
+						connectorVersion: "1.0.0",
+						requestParameters: { startTimeMs: 1, endTimeMs: 2 },
+						retrievedAtMs: 3,
+						responseSha256s: [],
+						payloadSha256: "payload-hash",
+						contentSha256: "content-hash",
+						capabilitySnapshot: { provider: "okx" },
+						instrument: { venue: { id: "okx" }, code: "BTC-USDT" },
+						interval: "1h",
+						requestedStartTimeMs: 1,
+						requestedEndTimeMs: 2,
+						receivedStartTimeMs: 1,
+						receivedEndTimeMs: 2,
+						requestCount: 1,
+						retryCount: 0,
+						responseStatuses: [200],
+						notes: [],
+					},
+				},
+			];
+		}
+		return null;
+	});
+	const assessQualityButton = Array.from(
+		container.querySelectorAll("button"),
+	).find(
+		(button) => button.textContent === i18n.t("dataFoundation.assessQuality"),
+	);
+	expect(assessQualityButton).toBeDefined();
+	await act(async () => {
+		assessQualityButton?.click();
+		await Promise.resolve();
+	});
+	expect(mockInvoke).toHaveBeenCalledWith(
+		"okx_publish_sources",
+		expect.objectContaining({
+			request: expect.objectContaining({
+				sourceIds: ["source-1"],
+				interval: "1h",
+			}),
+			onEvent: expect.anything(),
+		}),
+	);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	expect(mockInvoke).toHaveBeenCalledWith("market_data_pipeline_quality", {
+		request: { userId: "user-1", evidenceId: "report-1" },
+	});
 
 	const retryButton = Array.from(container.querySelectorAll("button")).find(
 		(button) => button.textContent === i18n.t("dataFoundation.retryAcquisition"),
@@ -311,5 +379,114 @@ test("renders source provenance in Chinese", async () => {
 		i18n.t("dataFoundation.sourceProvenanceTitle"),
 	);
 	expect(container.textContent).toContain("OKX public history-candles REST");
+	await act(async () => root.unmount());
+});
+
+test("publishes Gate 2 from retained Source evidence", async () => {
+	mockInvoke.mockImplementation(async (command: string) => {
+		if (command === "market_data_pipeline_list") {
+			return [
+				{
+					sourceId: "source-1",
+					canonicalId: "canonical-1",
+					revision: 1,
+					state: "unassessed",
+					sourceRecordCount: 10,
+					canonicalRecordCount: 0,
+					quarantinedRecordCount: 0,
+					gapCount: 0,
+					source: {
+						logicalKey: "okx|BTC-USDT|1h|1|2",
+						provider: "okx",
+						connector: "adaq-data-core",
+						connectorVersion: "1.0.0",
+						requestParameters: { startTimeMs: 1, endTimeMs: 2 },
+						retrievedAtMs: 3,
+						responseSha256s: [],
+						payloadSha256: "payload-hash",
+						contentSha256: "content-hash",
+						capabilitySnapshot: { provider: "okx" },
+						instrument: { venue: { id: "okx" }, code: "BTC-USDT" },
+						interval: "1h",
+						requestedStartTimeMs: 1,
+						requestedEndTimeMs: 2,
+						receivedStartTimeMs: 1,
+						receivedEndTimeMs: 2,
+						requestCount: 1,
+						retryCount: 0,
+						responseStatuses: [200],
+						notes: [],
+					},
+				},
+			];
+		}
+		if (command === "snapshot_list_readable") return [];
+		if (command === "snapshot_list_universe") return { items: [] };
+		if (command === "foundation_acquisition_history") return [];
+		if (command === "okx_instrument_master_list") return [];
+		if (command === "okx_acquisition_status") return [];
+		if (command === "okx_publish_gate_two") {
+			return {
+				publications: [{ sourceId: "source-1", canonicalId: "canonical-1" }],
+				universeSnapshotId: "universe-gate-two",
+			};
+		}
+		return null;
+	});
+	const container = document.createElement("div");
+	document.body.append(container);
+	const root = createRoot(container);
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+
+	await act(async () => {
+		root.render(
+			<QueryClientProvider client={queryClient}>
+				<DataFoundationPage />
+			</QueryClientProvider>,
+		);
+	});
+	await new Promise((resolve) => setTimeout(resolve, 20));
+
+	const assessQualityButton = Array.from(
+		container.querySelectorAll("button"),
+	).find(
+		(button) => button.textContent === i18n.t("dataFoundation.assessQuality"),
+	);
+	expect(assessQualityButton).toBeDefined();
+	await act(async () => {
+		assessQualityButton?.click();
+		await Promise.resolve();
+	});
+	const publishGateTwoButton = Array.from(
+		container.querySelectorAll("button"),
+	).find(
+		(button) => button.textContent === i18n.t("dataFoundation.publishGateTwo"),
+	);
+	expect(publishGateTwoButton).toBeDefined();
+	await act(async () => {
+		publishGateTwoButton?.click();
+		await Promise.resolve();
+	});
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	});
+	expect(mockInvoke).toHaveBeenCalledWith(
+		"okx_publish_gate_two",
+		expect.objectContaining({
+			request: expect.objectContaining({
+				sourceIds: ["source-1"],
+				interval: "1h",
+			}),
+			onEvent: expect.anything(),
+		}),
+	);
+	expect(container.textContent).toContain("universe-gate-two");
+	await act(async () => {
+		await i18n.changeLanguage("zh-CN");
+	});
+	expect(container.textContent).toContain(i18n.t("dataFoundation.publishGateTwo"));
+	expect(container.textContent).toContain("universe-gate-two");
 	await act(async () => root.unmount());
 });

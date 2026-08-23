@@ -1370,9 +1370,24 @@ impl LocalResearchState {
         allow_degraded: bool,
     ) -> Result<(MarketDataSnapshot, DataQualityReport), String> {
         let cancellation = CancellationToken::new();
+        self.publish_pipeline_snapshot_for_user_with_policy_and_cancellation(
+            user_id,
+            canonical_id,
+            allow_degraded,
+            &cancellation,
+        )
+    }
+
+    fn publish_pipeline_snapshot_for_user_with_policy_and_cancellation(
+        &self,
+        user_id: &str,
+        canonical_id: &str,
+        allow_degraded: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<(MarketDataSnapshot, DataQualityReport), String> {
         let _operation = self
             .pipeline
-            .begin_user_operation(user_id, format!("snapshot:{canonical_id}"), &cancellation)
+            .begin_user_operation(user_id, format!("snapshot:{canonical_id}"), cancellation)
             .map_err(string)?;
         let canonical = self
             .pipeline
@@ -1475,6 +1490,7 @@ impl LocalResearchState {
         end_time_ms: i64,
         interval: BarInterval,
         instrument_codes: &[String],
+        cancellation: &CancellationToken,
         publications: &[adaq_data_pipeline::PipelinePublication],
     ) -> Result<MarketDataUniverseSnapshot, String> {
         let universe = self
@@ -1521,11 +1537,16 @@ impl LocalResearchState {
         let mut coverage = None;
 
         for canonical in canonical_publications {
-            let (snapshot, _) = self.publish_pipeline_snapshot_for_user_with_policy(
-                user_id,
-                &canonical.canonical_id,
-                false,
-            )?;
+            if cancellation.is_cancelled() {
+                return Err("OKX Gate 2 publication was cancelled".into());
+            }
+            let (snapshot, _) = self
+                .publish_pipeline_snapshot_for_user_with_policy_and_cancellation(
+                    user_id,
+                    &canonical.canonical_id,
+                    false,
+                    cancellation,
+                )?;
             let provenance = snapshot
                 .provenance
                 .as_ref()
@@ -1592,6 +1613,9 @@ impl LocalResearchState {
             provider_capability_snapshots,
             content_sha256: String::new(),
         };
+        if cancellation.is_cancelled() {
+            return Err("OKX Gate 2 publication was cancelled".into());
+        }
         self.snapshots
             .persist_universe_for_user(user_id, universe_snapshot)
     }
@@ -2109,7 +2133,16 @@ mod tests {
         watchlist::WatchlistDb,
     };
     use adaq_backtest_core::ExecutionProfile;
-    use adaq_data_core::{BarGap, BarInterval};
+    use adaq_data_core::{
+        BarGap, BarInterval, HistoricalBarRange, InstrumentMasterAcquisition, InstrumentStatus,
+        OkxRequestDiagnostics, SpotInstrument,
+        market::{InstrumentId, Venue},
+    };
+    use adaq_data_pipeline::{
+        AcquisitionDiagnostics, CalendarEvidence, CanonicalizationRequest,
+        ProviderCapabilitySnapshot, SourceAcquisition, SourceMarketRecord,
+    };
+    use rust_decimal::Decimal;
     use std::{
         collections::HashMap,
         time::{SystemTime, UNIX_EPOCH},
@@ -2701,6 +2734,152 @@ mod tests {
             "failed"
         );
         drop(reloaded);
+        drop(watchlist);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_source_publication_composes_snapshot_and_point_in_time_universe() {
+        let (root, state, watchlist) = local_data_state("gate-two-composition");
+        let user_id = "alice";
+        let start_time_ms = 1_704_067_200_000;
+        let end_time_ms = start_time_ms + 2 * 3_600_000;
+        let venue = Venue::crypto_spot("okx").unwrap();
+        let instrument = InstrumentId::new(venue.clone(), "BTC-USDT").unwrap();
+        state
+            .okx
+            .record_instrument_master(
+                user_id,
+                InstrumentMasterAcquisition {
+                    retrieved_at_ms: start_time_ms,
+                    response_sha256: "master-response".into(),
+                    connector_version: adaq_data_core::OKX_CONNECTOR_VERSION.into(),
+                    diagnostics: OkxRequestDiagnostics::default(),
+                    instruments: vec![SpotInstrument {
+                        src: "okx".into(),
+                        code: "BTC-USDT".into(),
+                        base_asset: "BTC".into(),
+                        quote_asset: "USDT".into(),
+                        status: InstrumentStatus::Live,
+                        listing_time_ms: None,
+                        continuous_trading_time_ms: None,
+                        price_increment: Decimal::new(1, 1),
+                        quantity_increment: Decimal::new(1, 4),
+                        minimum_quantity: Decimal::new(1, 4),
+                    }],
+                    quote_volume_24h_usdt: Default::default(),
+                },
+            )
+            .unwrap();
+        let records = (0..2)
+            .map(|offset| SourceMarketRecord {
+                provider_symbol: "BTC-USDT".into(),
+                instrument: instrument.clone(),
+                interval: BarInterval::OneHour,
+                open_time_ms: start_time_ms + offset * 3_600_000,
+                open: Some("1".into()),
+                high: Some("2".into()),
+                low: Some("0.5".into()),
+                close: Some("1.5".into()),
+                base_volume: Some("1".into()),
+                quote_volume: Some("1.5".into()),
+                raw_payload: serde_json::Value::Null,
+            })
+            .collect();
+        let publication = state
+            .pipeline
+            .publish(
+                user_id,
+                SourceAcquisition {
+                    provider: "okx".into(),
+                    actual_upstream: Some("OKX public history-candles REST".into()),
+                    connector: adaq_data_core::OKX_CONNECTOR_VERSION.into(),
+                    connector_version: adaq_data_core::OKX_CONNECTOR_VERSION.into(),
+                    request_parameters: serde_json::json!({
+                        "instrument": instrument,
+                        "interval": "1h",
+                        "startTimeMs": start_time_ms,
+                        "endTimeMs": end_time_ms,
+                    }),
+                    retrieved_at_ms: end_time_ms,
+                    response_sha256s: vec!["response".into()],
+                    acquisition_content_sha256: None,
+                    capability_snapshot: ProviderCapabilitySnapshot {
+                        provider: "okx".into(),
+                        captured_at_ms: end_time_ms,
+                        venues: vec!["OKX Spot".into()],
+                        record_types: vec!["candles".into()],
+                        ..ProviderCapabilitySnapshot::default()
+                    },
+                    acquisition_diagnostics: AcquisitionDiagnostics {
+                        request_count: 1,
+                        response_statuses: vec![200],
+                        ..AcquisitionDiagnostics::default()
+                    },
+                    price_basis: adaq_data_core::market::PriceBasis::Unadjusted,
+                    records,
+                },
+                {
+                    let mut request = CanonicalizationRequest::new(
+                        InstrumentId::new(venue, "BTC-USDT").unwrap(),
+                        BarInterval::OneHour,
+                        CalendarEvidence::UtcGrid {
+                            calendar_id: "okx-utc-grid".into(),
+                            closures: Vec::new(),
+                        },
+                    )
+                    .unwrap();
+                    request.historical_range = Some(HistoricalBarRange {
+                        start_time_ms,
+                        end_time_ms,
+                    });
+                    request
+                },
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap();
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(
+            state
+                .publish_okx_backfill(
+                    user_id,
+                    start_time_ms,
+                    end_time_ms,
+                    BarInterval::OneHour,
+                    &["BTC-USDT".into()],
+                    &cancelled,
+                    std::slice::from_ref(&publication),
+                )
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        let universe = state
+            .publish_okx_backfill(
+                user_id,
+                start_time_ms,
+                end_time_ms,
+                BarInterval::OneHour,
+                &["BTC-USDT".into()],
+                &CancellationToken::new(),
+                std::slice::from_ref(&publication),
+            )
+            .unwrap();
+
+        assert_eq!(universe.components.len(), 1);
+        assert_eq!(universe.universe.instruments.len(), 1);
+        assert_eq!(
+            universe.components[0].dataset.source_id,
+            publication.source.source_id
+        );
+        let persisted = state
+            .snapshots
+            .universe_snapshot_for_user(user_id, &universe.snapshot_id)
+            .unwrap();
+        assert_eq!(persisted.snapshot_id, universe.snapshot_id);
+        assert_eq!(persisted.components.len(), 1);
+        drop(state);
         drop(watchlist);
         fs::remove_dir_all(root).unwrap();
     }

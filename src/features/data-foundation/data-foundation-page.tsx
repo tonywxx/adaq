@@ -25,12 +25,26 @@ type PipelineDatasetSummary = {
 	sourceId: string;
 	source: SourceEvidenceSummary;
 	canonicalId?: string;
+	qualityReportId?: string;
 	revision: number;
 	state: "unassessed" | "passed" | "degraded" | "rejected";
 	sourceRecordCount: number;
 	canonicalRecordCount: number;
 	quarantinedRecordCount: number;
 	gapCount: number;
+};
+
+type GateTwoRequest = {
+	sourceIds: string[];
+	startTimeMs: number;
+	endTimeMs: number;
+	interval: OkxInterval;
+	instrumentCodes: string[];
+};
+
+type GateTwoPublicationView = {
+	publications: Array<{ sourceId: string; canonicalId?: string }>;
+	universeSnapshotId: string;
 };
 
 type SourceEvidenceSummary = {
@@ -595,6 +609,10 @@ export function DataFoundationPage() {
 	const [universeId, setUniverseId] = useState("");
 	const [selectedSourceId, setSelectedSourceId] = useState<string>();
 	const [publishingId, setPublishingId] = useState<string>();
+	const [publishingSourceId, setPublishingSourceId] = useState<string>();
+	const [gateTwoRequest, setGateTwoRequest] = useState<GateTwoRequest>();
+	const [publishingGateTwo, setPublishingGateTwo] = useState(false);
+	const [gateTwoUniverseId, setGateTwoUniverseId] = useState<string>();
 	const [publicationPage, setPublicationPage] = useState(1);
 	const [acquisitionPage, setAcquisitionPage] = useState(1);
 	const [rangeStart, setRangeStart] = useState(() =>
@@ -692,15 +710,23 @@ export function DataFoundationPage() {
 		enabled: Boolean(userId),
 		staleTime: 30_000,
 	});
+	const selectedDataset = pipelineQuery.data?.find(
+		(dataset) => dataset.sourceId === selectedSourceId,
+	);
 	const qualityQuery = useQuery({
-		queryKey: ["data-foundation-quality", userId, selectedSourceId],
+		queryKey: [
+			"data-foundation-quality",
+			userId,
+			selectedDataset?.qualityReportId,
+		],
 		queryFn: () => {
-			if (!selectedSourceId) throw new Error("Source evidence is not selected");
+			if (!selectedDataset?.qualityReportId)
+				throw new Error("Data Quality Report is not published");
 			return invoke<QualityView>("market_data_pipeline_quality", {
-				request: { userId, evidenceId: selectedSourceId },
+				request: { userId, evidenceId: selectedDataset.qualityReportId },
 			});
 		},
-		enabled: Boolean(userId && selectedSourceId),
+		enabled: Boolean(userId && selectedDataset?.qualityReportId),
 		staleTime: 30_000,
 	});
 	const backfillSnapshots = [...(instrumentMasterQuery.data ?? [])]
@@ -735,6 +761,79 @@ export function DataFoundationPage() {
 			setError(getErrorMessage(cause));
 		} finally {
 			setPublishingId(undefined);
+		}
+	};
+
+	const publishSource = async (dataset: PipelineDatasetSummary) => {
+		const source = dataset.source;
+		if (
+			!userId ||
+			!source.instrument ||
+			!source.interval ||
+			source.requestedStartTimeMs == null ||
+			source.requestedEndTimeMs == null
+		) {
+			setError("Source evidence is missing its canonicalization request identity");
+			return;
+		}
+		setError(undefined);
+		setPublishingSourceId(dataset.sourceId);
+		try {
+			const onEvent = new Channel<OkxBackfillEvent>();
+			await invoke("okx_publish_sources", {
+				request: {
+					userId,
+					taskId: `crypto-gate-two-${crypto.randomUUID()}`,
+					sourceIds: [dataset.sourceId],
+					startTimeMs: source.requestedStartTimeMs,
+					endTimeMs: source.requestedEndTimeMs,
+					interval: source.interval,
+					instrumentCodes: [source.instrument.code],
+				},
+				onEvent,
+			});
+			setSelectedSourceId(dataset.sourceId);
+			setGateTwoRequest({
+				sourceIds: [dataset.sourceId],
+				startTimeMs: source.requestedStartTimeMs,
+				endTimeMs: source.requestedEndTimeMs,
+				interval: source.interval as OkxInterval,
+				instrumentCodes: [source.instrument.code],
+			});
+			await pipelineQuery.refetch();
+		} catch (cause) {
+			setError(getErrorMessage(cause));
+		} finally {
+			setPublishingSourceId(undefined);
+		}
+	};
+
+	const publishGateTwo = async () => {
+		if (!userId || !gateTwoRequest) return;
+		setError(undefined);
+		setPublishingGateTwo(true);
+		try {
+			const onEvent = new Channel<OkxBackfillEvent>();
+			const result = await invoke<GateTwoPublicationView>("okx_publish_gate_two", {
+				request: {
+					userId,
+					taskId: `crypto-gate-two-${crypto.randomUUID()}`,
+					...gateTwoRequest,
+				},
+				onEvent,
+			});
+			setGateTwoUniverseId(result.universeSnapshotId);
+			setUniverseId(result.universeSnapshotId);
+			await Promise.all([
+				pipelineQuery.refetch(),
+				snapshotsQuery.refetch(),
+				universeQuery.refetch(),
+				foundationHistoryQuery.refetch(),
+			]);
+		} catch (cause) {
+			setError(getErrorMessage(cause));
+		} finally {
+			setPublishingGateTwo(false);
 		}
 	};
 
@@ -814,18 +913,31 @@ export function DataFoundationPage() {
 		});
 		let completed = false;
 		try {
-			await invoke("okx_backfill_source", {
-				request: {
-					userId,
-					taskId,
+			const sources = await invoke<Array<{ sourceId: string }> | null>(
+				"okx_backfill_source",
+				{
+					request: {
+						userId,
+						taskId,
+						startTimeMs,
+						endTimeMs,
+						interval: nextDraft.interval,
+						instrumentCodes: requestedCodes,
+						universeSnapshotId: nextDraft.instrumentMasterSnapshotId,
+					},
+					onEvent,
+				},
+			);
+			if (sources?.length) {
+				setSelectedSourceId(sources[0].sourceId);
+				setGateTwoRequest({
+					sourceIds: sources.map((source) => source.sourceId),
 					startTimeMs,
 					endTimeMs,
 					interval: nextDraft.interval,
 					instrumentCodes: requestedCodes,
-					universeSnapshotId: nextDraft.instrumentMasterSnapshotId,
-				},
-				onEvent,
-			});
+				});
+			}
 			await Promise.all([
 				pipelineQuery.refetch(),
 				acquisitionQuery.refetch(),
@@ -1559,7 +1671,29 @@ export function DataFoundationPage() {
 								{t("dataFoundation.backfillResume")}
 							</button>
 						) : null}
+						<button
+							type="button"
+							className="rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
+							disabled={Boolean(
+								activeOperation ||
+									backfillTaskId ||
+									publishingGateTwo ||
+									!gateTwoRequest,
+							)}
+							onClick={() => void publishGateTwo()}
+						>
+							{publishingGateTwo
+								? t("dataFoundation.publishingGateTwo")
+								: t("dataFoundation.publishGateTwo")}
+						</button>
 					</div>
+					{gateTwoUniverseId ? (
+						<p className="text-xs text-muted-foreground" role="status">
+							{t("dataFoundation.gateTwoPublished", {
+								id: gateTwoUniverseId,
+							})}
+						</p>
+					) : null}
 					{backfillTaskId && backfillStats ? (
 						<div className="grid gap-1 rounded-md border p-3 text-xs text-muted-foreground">
 							<div className="flex justify-between gap-2">
@@ -1604,6 +1738,18 @@ export function DataFoundationPage() {
 												gaps: dataset.gapCount,
 											})}
 										</span>
+									</button>
+									<button
+										type="button"
+										className="justify-self-start rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+										disabled={Boolean(
+											dataset.qualityReportId || publishingSourceId || backfillTaskId,
+										)}
+										onClick={() => void publishSource(dataset)}
+									>
+										{publishingSourceId === dataset.sourceId
+											? t("dataFoundation.assessingQuality")
+											: t("dataFoundation.assessQuality")}
 									</button>
 									<button
 										type="button"
