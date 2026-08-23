@@ -17,7 +17,7 @@ import {
 	DatabaseIcon,
 	LoaderCircleIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 
@@ -207,6 +207,17 @@ const markets: FoundationMarket[] = [
 		cancelCommand: "okx_instrument_master_cancel",
 	},
 ];
+
+function StepTitle({ step, children }: { step: number; children: ReactNode }) {
+	return (
+		<CardTitle className="flex items-center gap-2">
+			<span className="inline-flex size-7 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground">
+				{step}
+			</span>
+			{children}
+		</CardTitle>
+	);
+}
 
 const PAGE_SIZE = 5;
 
@@ -676,7 +687,7 @@ export function DataFoundationPage() {
 							<CardHeader>
 								<div className="flex items-start justify-between gap-3">
 									<div>
-										<CardTitle>{t(market.titleKey)}</CardTitle>
+										<StepTitle step={1}>{t(market.titleKey)}</StepTitle>
 										<CardDescription>{t(market.descriptionKey)}</CardDescription>
 									</div>
 									<Badge variant={active ? "default" : "outline"}>
@@ -737,9 +748,9 @@ export function DataFoundationPage() {
 			</div>
 			<Card>
 				<CardHeader>
-					<CardTitle>
+					<StepTitle step={1}>
 						{t("dataFoundation.okxInstrumentMasterEvidenceTitle")}
-					</CardTitle>
+					</StepTitle>
 					<CardDescription>
 						{t("dataFoundation.okxInstrumentMasterEvidenceDescription")}
 					</CardDescription>
@@ -865,7 +876,7 @@ export function DataFoundationPage() {
 			</Card>
 			<Card className="order-2">
 				<CardHeader>
-					<CardTitle>{t("dataFoundation.selectContextTitle")}</CardTitle>
+					<StepTitle step={3}>{t("dataFoundation.selectContextTitle")}</StepTitle>
 					<CardDescription>
 						{t("dataFoundation.selectContextDescription")}
 					</CardDescription>
@@ -966,7 +977,7 @@ export function DataFoundationPage() {
 			</Card>
 			<Card className="order-1">
 				<CardHeader>
-					<CardTitle>{t("dataFoundation.publicationTitle")}</CardTitle>
+					<StepTitle step={2}>{t("dataFoundation.publicationTitle")}</StepTitle>
 					<CardDescription>
 						{t("dataFoundation.publicationDescription")}
 					</CardDescription>
