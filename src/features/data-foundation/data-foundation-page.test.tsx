@@ -165,7 +165,7 @@ test("renders localized evidence and persisted operation history", async () => {
 				userId: "user-1",
 				operationId: expect.any(String),
 				ignoreUntradable: true,
-				minimumQuoteVolume24h: "5000000",
+				minimumQuoteVolume24h: "1000000",
 			},
 		}),
 	);

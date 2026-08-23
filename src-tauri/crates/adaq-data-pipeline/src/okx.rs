@@ -63,6 +63,10 @@ pub struct InstrumentMasterSnapshot {
     pub instruments: Vec<SpotInstrument>,
     #[serde(default)]
     pub quote_volume_24h_usdt: std::collections::BTreeMap<String, Decimal>,
+    #[serde(default)]
+    pub ignore_untradable: bool,
+    #[serde(default)]
+    pub minimum_quote_volume_24h: Decimal,
     pub content_sha256: String,
     pub evidence_path: PathBuf,
 }
@@ -409,7 +413,7 @@ impl OkxSpotDataPath {
                 source_id: "okx-instrument-master".into(),
             });
         }
-        self.record_instrument_master(user_id, acquisition)
+        self.persist_master_if_due_with_filter(user_id, acquisition, false, Decimal::ZERO)
     }
 
     pub async fn acquire_instrument_master_filtered_with_cancel(
@@ -424,6 +428,8 @@ impl OkxSpotDataPath {
             .list_instrument_master_snapshots(user_id)?
             .into_iter()
             .max_by_key(|snapshot| snapshot.retrieved_at_ms)
+            && latest.ignore_untradable == ignore_untradable
+            && latest.minimum_quote_volume_24h == minimum_quote_volume_24h
             && now_ms().saturating_sub(latest.retrieved_at_ms) < INSTRUMENT_MASTER_COOLDOWN_MS
         {
             return Ok(latest);
@@ -453,7 +459,12 @@ impl OkxSpotDataPath {
         acquisition.quote_volume_24h_usdt.retain(|code, _| {
             acquisition.instruments.iter().any(|instrument| instrument.code == *code)
         });
-        self.record_instrument_master(user_id, acquisition)
+        self.persist_master_if_due_with_filter(
+            user_id,
+            acquisition,
+            ignore_untradable,
+            minimum_quote_volume_24h,
+        )
     }
 
     pub fn record_instrument_master(
@@ -1548,11 +1559,23 @@ impl OkxSpotDataPath {
         user_id: &str,
         acquisition: InstrumentMasterAcquisition,
     ) -> Result<InstrumentMasterSnapshot, PipelineError> {
+        self.persist_master_if_due_with_filter(user_id, acquisition, false, Decimal::ZERO)
+    }
+
+    fn persist_master_if_due_with_filter(
+        &self,
+        user_id: &str,
+        acquisition: InstrumentMasterAcquisition,
+        ignore_untradable: bool,
+        minimum_quote_volume_24h: Decimal,
+    ) -> Result<InstrumentMasterSnapshot, PipelineError> {
         let previous = self.latest_snapshot_before(user_id, i64::MAX)?;
         let should_persist = previous.as_ref().is_none_or(|previous| {
             previous.retrieved_at_ms.div_euclid(DAY_MS)
                 != acquisition.retrieved_at_ms.div_euclid(DAY_MS)
                 || previous.instruments != acquisition.instruments
+                || previous.ignore_untradable != ignore_untradable
+                || previous.minimum_quote_volume_24h != minimum_quote_volume_24h
         });
         if !should_persist {
             let snapshot = previous.expect("previous Instrument Master snapshot exists");
@@ -1564,6 +1587,8 @@ impl OkxSpotDataPath {
             &acquisition.response_sha256,
             &acquisition.connector_version,
             &acquisition.instruments,
+            ignore_untradable,
+            minimum_quote_volume_24h,
         ))?);
         let evidence_path = self
             .pipeline
@@ -1578,6 +1603,8 @@ impl OkxSpotDataPath {
             connector_version: acquisition.connector_version,
             instruments: acquisition.instruments,
             quote_volume_24h_usdt: acquisition.quote_volume_24h_usdt,
+            ignore_untradable,
+            minimum_quote_volume_24h,
             content_sha256: String::new(),
             evidence_path,
         };

@@ -117,6 +117,15 @@ type InstrumentMasterSnapshot = {
 const shortId = (value: string) =>
 	value.length > 8 ? `${value.slice(0, 3)}...${value.slice(-3)}` : value;
 
+const humanizeNumber = (value: string | number | undefined) => {
+	const number = Number(value);
+	if (!Number.isFinite(number)) return "—";
+	return new Intl.NumberFormat(undefined, {
+		notation: Math.abs(number) >= 1_000 ? "compact" : "standard",
+		maximumFractionDigits: Math.abs(number) < 1 ? 8 : 2,
+	}).format(number);
+};
+
 type OkxBackfillEvent = {
 	event:
 		| "universeLoaded"
@@ -219,7 +228,7 @@ export function DataFoundationPage() {
 	const [contextVenue, setContextVenue] = useState("okx");
 	const [snapshotId, setSnapshotId] = useState("");
 	const [ignoreUntradable, setIgnoreUntradable] = useState(true);
-	const [minimumQuoteVolume24h, setMinimumQuoteVolume24h] = useState("5000000");
+	const [minimumQuoteVolume24h, setMinimumQuoteVolume24h] = useState("1000000");
 	const [universeId, setUniverseId] = useState("");
 	const [selectedSourceId, setSelectedSourceId] = useState<string>();
 	const [publishingId, setPublishingId] = useState<string>();
@@ -777,10 +786,13 @@ export function DataFoundationPage() {
 															{instrument.baseAsset}/{instrument.quoteAsset}
 														</td>
 														<td className="p-2">
-															{latest.quoteVolume24hUsdt?.[instrument.code] ?? "—"}
+															{humanizeNumber(latest.quoteVolume24hUsdt?.[instrument.code])}{" "}
+															USDT
 														</td>
 														<td className="p-2">{instrument.status}</td>
-														<td className="p-2">{instrument.minimumQuantity}</td>
+														<td className="p-2">
+															{humanizeNumber(instrument.minimumQuantity)}
+														</td>
 													</tr>
 												))}
 											</tbody>
