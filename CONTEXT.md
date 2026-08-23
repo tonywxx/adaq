@@ -118,6 +118,10 @@ _Avoid_: Operational Event, stdout authority, permanent trace archive
 A bounded numeric observation or deterministic rollup of host operation, retained under an explicit policy for trend and threshold evaluation. It is not a Market Data record, a universal score, or an unbounded time-series database.
 _Avoid_: Research Metric, raw Tick archive, Health State
 
+**Operational Observability and Monitoring**:
+The system-wide integration that correlates producer-owned Operational Events, Diagnostic Logs, Operational Metrics, Health Projections, Alerts, and safety actions across Data, Research, Provider connectivity, Paper Trading, Bots, Workers, and the local Host. Each producing module emits its typed operational evidence at its own boundary; this integration does not reconstruct missing evidence after the fact or become domain authority.
+_Avoid_: Log System, telemetry authority, Dashboard, retrospective instrumentation
+
 **Health Projection**:
 A rebuildable current view derived from validated Operational Events and required domain evidence. It summarizes one dependency's Healthy, Degraded, Critical, or Unknown condition and never grants authority independently of Lifecycle, Risk, OMS, or Reconciliation gates.
 _Avoid_: Operational Event, Alert acknowledgement, online boolean
@@ -1250,6 +1254,10 @@ _Avoid_: Running process, Bot Lifecycle State, dashboard visibility flag
 The ordered preparation modules that feed the ten-step Research-to-Paper Workflow: Market Data Acquisition; Data Validation, Canonicalization, Quality, and Persistence; then Feature Engineering. A Workflow Foundation is accepted only from inspectable evidence produced by its accepted predecessor.
 _Avoid_: setup checklist, optional prerequisite, parallel foundation, Step 0, global readiness flag, three-market completion gate
 
+**Workflow Delivery Sequence**:
+The fifteen strictly ordered module gates comprising three Workflow Foundations, ten Research-to-Paper Steps, Operational Observability and Monitoring, and the System Dashboard. Each gate consumes the exact accepted output of its predecessor and requires Workflow Module Acceptance plus Workflow Continuation Approval before the next gate begins.
+_Avoid_: milestone order, parallel delivery frontier, implementation roadmap, automatic unblocking
+
 **Workflow Guide**:
 The localized, read-only presentation of ADAQ's Foundations and ordered ten-step Research-to-Paper workflow. It distinguishes Workflow Capability State from evidence-backed Workflow Step State, exposes the next eligible entry point, remains directly accessible from Help, and is the default GUI home only while no Operational Responsibility exists. Users may inspect downstream steps while their actions remain gated by exact prerequisites, and ambiguous evidence lineages require explicit selection rather than an inferred global project.
 _Avoid_: Operations Dashboard, workflow record, global completion percentage
@@ -1263,11 +1271,11 @@ A user-scoped read projection derived from authoritative domain records as Not S
 _Avoid_: Workflow Capability State, mutable checklist, global completion percentage
 
 **Workflow Module Acceptance**:
-The reviewed decision that one Workflow Foundation or numbered Workflow Step has complete current-head automated, product-run, failure/recovery, locale, and platform evidence from its accepted upstream input. Issue closure, a reusable core, fixture-only evidence, or green CI alone is not Module Acceptance.
+The reviewed decision that one Workflow Foundation, numbered Workflow Step, or final operational module has complete current-head automated, product-run, failure/recovery, locale, and platform evidence from its accepted upstream input. Issue closure, a reusable core, fixture-only evidence, or green CI alone is not Module Acceptance.
 _Avoid_: milestone closure, implementation complete, CI success
 
 **Workflow Continuation Approval**:
-The User's explicit authorization to begin the next Workflow Foundation or numbered Workflow Step after reviewing the current module's Acceptance evidence. No issue frontier, agent plan, or downstream implementation can substitute for this approval.
+The User's explicit authorization to begin the next module in the Workflow Delivery Sequence after reviewing the current module's Acceptance evidence. No issue frontier, agent plan, or downstream implementation can substitute for this approval.
 _Avoid_: automatic unblocking, inferred approval, agent self-approval
 
 **Product Readiness Gate**:
@@ -1287,7 +1295,7 @@ The explicit Capability, Journey, Market/Data Context, Supported Platform, and I
 _Avoid_: universal V1 support, provider parity, global completion
 
 **Operations Dashboard**:
-The localized Tauri and React GUI operational view that projects global Paper Trading, Bot, account, Alert, infrastructure, data, Factor, Model, Component-build, Backtest, and Validation status and exposes host-controlled emergency actions. It is the default GUI home whenever any Operational Responsibility exists and is an overview and drill-down entry point, not the Workflow Guide, Crypto market page, a TUI, an authoritative event store, or a direct provider client.
+The localized Tauri and React GUI view that projects authorized global Data, Research, Paper Trading, Bot, account, Alert, and infrastructure information and links to the owning workspace for actions and evidence. It is the default GUI home whenever any Operational Responsibility exists and is an overview and drill-down entry point, not an authoritative store, control authority, direct provider client, or replacement for an owning workspace.
 _Avoid_: Market Workspace, status database, remote operations console
 
 **Dashboard Projection**:
