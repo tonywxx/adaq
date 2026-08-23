@@ -1384,7 +1384,9 @@ impl OkxClient {
             .iter()
             .filter_map(|instrument| {
                 let symbol = dash_to_slash(&instrument.code);
-                let ticker = tickers.get(&symbol).or_else(|| tickers.get(&instrument.code))?;
+                let ticker = tickers
+                    .get(&symbol)
+                    .or_else(|| tickers.get(&instrument.code))?;
                 let quote_volume = ticker.quote_volume?;
                 let volume_usdt = if instrument.quote_asset == "USDT"
                     || instrument.quote_asset == "USDC"

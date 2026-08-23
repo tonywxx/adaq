@@ -1641,14 +1641,12 @@ async fn okx_instrument_master_acquire(
     state.foundation_acquisition_start(&user_id, &operation_id, "crypto", "okx")?;
     tauri::async_runtime::spawn_blocking(move || {
         let result = tauri::async_runtime::block_on(
-            state
-                .okx
-                .acquire_instrument_master_filtered_with_cancel(
-                    &user_id,
-                    &cancellation,
-                    ignore_untradable,
-                    minimum_quote_volume_24h,
-                ),
+            state.okx.acquire_instrument_master_filtered_with_cancel(
+                &user_id,
+                &cancellation,
+                ignore_untradable,
+                minimum_quote_volume_24h,
+            ),
         )
         .map_err(string);
         let finish = state.okx.finish_acquisition(&operation_id);

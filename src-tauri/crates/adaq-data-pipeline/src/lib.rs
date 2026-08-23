@@ -1497,7 +1497,9 @@ impl DataPipeline {
             price_basis: source.identity.price_basis,
             records: source.records,
         };
-        if source.logical_key != source_logical_key(&acquisition, &request.instrument, request.interval)? {
+        if source.logical_key
+            != source_logical_key(&acquisition, &request.instrument, request.interval)?
+        {
             return Err(PipelineError::InvalidRequest(
                 "Source evidence request identity differs from canonical request".into(),
             ));
@@ -5508,7 +5510,10 @@ mod tests {
         assert_eq!(publication.quality.source_id, source.source_id);
         assert_eq!(
             pipeline.list("alice").unwrap()[0].canonical_id,
-            publication.canonical.as_ref().map(|value| value.canonical_id.clone())
+            publication
+                .canonical
+                .as_ref()
+                .map(|value| value.canonical_id.clone())
         );
         assert_eq!(
             pipeline.list("alice").unwrap()[0].quality_report_id,
