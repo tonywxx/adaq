@@ -219,6 +219,108 @@ function StepTitle({ step, children }: { step: number; children: ReactNode }) {
 	);
 }
 
+function InstrumentEvidencePanel({
+	snapshots,
+	pending,
+	t,
+}: {
+	snapshots?: InstrumentMasterSnapshot[];
+	pending: boolean;
+	t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+	if (pending)
+		return (
+			<p className="text-sm text-muted-foreground">
+				{t("dataFoundation.loadingHistory")}
+			</p>
+		);
+	const latest = snapshots?.at(-1);
+	if (!latest)
+		return (
+			<p className="text-sm text-muted-foreground">
+				{t("dataFoundation.okxInstrumentMasterEmpty")}
+			</p>
+		);
+	return (
+		<div className="grid gap-3 text-sm">
+			<p className="text-xs text-muted-foreground">
+				{t("dataFoundation.okxInstrumentMasterTableDescription")}
+			</p>
+			<div className="grid gap-1 sm:grid-cols-3">
+				<span>
+					<strong className="text-primary">
+						{humanizeNumber(latest.instruments.length)}
+					</strong>{" "}
+					{t("dataFoundation.okxInstrumentMasterCountLabel")}
+				</span>
+				<span>
+					{t("dataFoundation.okxInstrumentMasterRetrieved", {
+						date: new Date(latest.retrievedAtMs).toLocaleString(),
+					})}
+				</span>
+				<span>
+					{t("dataFoundation.okxInstrumentMasterSnapshot", {
+						id: shortId(latest.snapshotId),
+					})}
+				</span>
+			</div>
+			<div className="max-h-72 overflow-auto rounded-md border">
+				<table className="w-full text-left text-xs">
+					<thead className="sticky top-0 bg-muted">
+						<tr>
+							<th className="p-2">{t("dataFoundation.okxColumnCode")}</th>
+							<th className="p-2">{t("dataFoundation.okxColumnAssets")}</th>
+							<th className="p-2">{t("dataFoundation.okxColumnVolume")}</th>
+							<th className="p-2">{t("dataFoundation.okxColumnStatus")}</th>
+							<th className="p-2">{t("dataFoundation.okxColumnMinimum")}</th>
+						</tr>
+					</thead>
+					<tbody>
+						{latest.instruments.map((instrument) => (
+							<tr key={instrument.code} className="border-t">
+								<td className="p-2 font-medium">{instrument.code}</td>
+								<td className="p-2">
+									{instrument.baseAsset}/{instrument.quoteAsset}
+								</td>
+								<td className="p-2">
+									{humanizeNumber(latest.quoteVolume24hUsdt?.[instrument.code])}
+								</td>
+								<td className="p-2">{instrument.status}</td>
+								<td className="p-2">{humanizeNumber(instrument.minimumQuantity)}</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+			</div>
+			<p className="text-xs text-muted-foreground">
+				{t("dataFoundation.okxInstrumentMasterUse")}
+			</p>
+			<details className="rounded-md border p-3">
+				<summary className="cursor-pointer text-sm font-medium">
+					{t("dataFoundation.okxInstrumentMasterHistory", {
+						count: snapshots?.length ?? 0,
+					})}
+				</summary>
+				<div className="mt-3 max-h-48 overflow-auto">
+					<table className="w-full text-left text-xs">
+						<tbody>
+							{[...(snapshots ?? [])].reverse().map((snapshot) => (
+								<tr key={snapshot.snapshotId} className="border-t">
+									<td className="p-2 font-mono">{shortId(snapshot.snapshotId)}</td>
+									<td className="p-2">
+										{new Date(snapshot.retrievedAtMs).toLocaleString()}
+									</td>
+									<td className="p-2">{humanizeNumber(snapshot.instruments.length)}</td>
+								</tr>
+							))}
+						</tbody>
+					</table>
+				</div>
+			</details>
+		</div>
+	);
+}
+
 const PAGE_SIZE = 5;
 
 export function DataFoundationPage() {
@@ -683,7 +785,7 @@ export function DataFoundationPage() {
 				{markets.map((market) => {
 					const active = activeOperation?.startsWith(`${market.id}-`) ?? false;
 					return (
-						<Card key={market.id} className="h-fit rounded-b-none lg:col-span-3">
+						<Card key={market.id} className="h-fit lg:col-span-3">
 							<CardHeader>
 								<div className="flex items-start justify-between gap-3">
 									<div>
@@ -741,12 +843,22 @@ export function DataFoundationPage() {
 									{t("dataFoundation.openMarketWorkspace")}
 									<ArrowRightIcon className="size-4" aria-hidden="true" />
 								</Link>
+								<div className="w-full border-t pt-4">
+									<p className="mb-3 text-sm font-medium">
+										{t("dataFoundation.okxInstrumentMasterEvidenceTitle")}
+									</p>
+									<InstrumentEvidencePanel
+										snapshots={instrumentMasterQuery.data}
+										pending={instrumentMasterQuery.isPending}
+										t={t}
+									/>
+								</div>
 							</CardContent>
 						</Card>
 					);
 				})}
 			</div>
-			<section className="order-0 -mt-5 rounded-b-xl border-x border-b border-t-0 bg-card px-6 pb-6">
+			<section className="hidden">
 				<div className="pb-4">
 					<CardTitle>
 						{t("dataFoundation.okxInstrumentMasterEvidenceTitle")}
