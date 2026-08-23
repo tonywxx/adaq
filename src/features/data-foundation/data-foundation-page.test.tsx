@@ -134,7 +134,7 @@ test("renders localized evidence and persisted operation history", async () => {
 		await Promise.resolve();
 	});
 	expect(mockInvoke).toHaveBeenCalledWith(
-		"okx_backfill_publish",
+		"okx_backfill_source",
 		expect.objectContaining({
 			request: expect.objectContaining({ interval: "1m" }),
 			onEvent: expect.anything(),

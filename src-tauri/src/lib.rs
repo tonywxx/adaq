@@ -1739,6 +1739,62 @@ async fn okx_backfill(
 }
 
 #[tauri::command]
+async fn okx_backfill_source(
+    mut request: adaq_data_pipeline::okx::OkxBackfillRequest,
+    on_event: Channel<adaq_data_pipeline::okx::OkxBackfillEvent>,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<market_data_pipeline::SourceView>, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    let state = app.state::<Arc<LocalResearchState>>().inner().clone();
+    let task_id = request.task_id.clone();
+    let user_id = request.user_id.clone();
+    let cancellation = state
+        .okx
+        .begin_backfill(&task_id, &user_id)
+        .map_err(string)?;
+    state.foundation_acquisition_start(&user_id, &task_id, "crypto", "okx")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = tauri::async_runtime::block_on(state.okx.backfill_source_only(
+            &request,
+            cancellation.clone(),
+            |event| {
+                let _ = on_event.send(event);
+            },
+        ))
+        .map_err(string)
+        .and_then(|sources| {
+            if cancellation.is_cancelled() {
+                return Err("OKX backfill cancelled".into());
+            }
+            Ok(sources)
+        });
+        let finish = state.okx.finish_backfill(&task_id);
+        let (state_name, revision, error) = match &result {
+            Ok(sources) => (
+                "completed",
+                sources.iter().map(|source| source.revision).max(),
+                None,
+            ),
+            Err(error) if error.contains("cancelled") => ("cancelled", None, Some(error.as_str())),
+            Err(error) => ("failed", None, Some(error.as_str())),
+        };
+        let history =
+            state.foundation_acquisition_finish(&user_id, &task_id, state_name, revision, error);
+        let sources = result?;
+        finish.map_err(string)?;
+        history?;
+        Ok(sources
+            .into_iter()
+            .map(market_data_pipeline::SourceView::from)
+            .collect())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn okx_backfill_publish(
     mut request: adaq_data_pipeline::okx::OkxBackfillRequest,
     on_event: Channel<adaq_data_pipeline::okx::OkxBackfillEvent>,
@@ -3809,6 +3865,7 @@ pub fn run() {
             okx_instrument_master_list,
             okx_universe,
             okx_backfill,
+            okx_backfill_source,
             okx_backfill_publish,
             okx_backfill_cancel,
             okx_acquisition_status,

@@ -280,6 +280,13 @@ pub struct SourceMarketDataset {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SourceRetentionRequest {
+    pub instrument: InstrumentId,
+    pub interval: BarInterval,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum CalendarEvidence {
     UtcGrid {
         calendar_id: String,
@@ -788,11 +795,20 @@ pub struct PipelineDatasetSummary {
     pub source_id: String,
     pub canonical_id: Option<String>,
     pub revision: u64,
-    pub state: DataQualityState,
+    pub state: PipelineDatasetState,
     pub source_record_count: usize,
     pub canonical_record_count: usize,
     pub quarantined_record_count: usize,
     pub gap_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PipelineDatasetState {
+    Unassessed,
+    Passed,
+    Degraded,
+    Rejected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1339,8 +1355,13 @@ impl DataPipeline {
                     revision: source.revision,
                     state: quality
                         .as_ref()
-                        .map(|value| value.state.clone())
-                        .unwrap_or(DataQualityState::Rejected),
+                        .map_or(PipelineDatasetState::Unassessed, |value| {
+                            match value.state {
+                                DataQualityState::Passed => PipelineDatasetState::Passed,
+                                DataQualityState::Degraded => PipelineDatasetState::Degraded,
+                                DataQualityState::Rejected => PipelineDatasetState::Rejected,
+                            }
+                        }),
                     source_record_count: source.record_count,
                     canonical_record_count: canonical.map_or(0, |value| value.bar_count),
                     quarantined_record_count: quality
@@ -1375,6 +1396,26 @@ impl DataPipeline {
                 "Source evidence content hash does not match its catalog".into(),
             ));
         }
+        Ok(source)
+    }
+
+    pub fn retain_source(
+        &self,
+        user_id: &str,
+        acquisition: SourceAcquisition,
+        request: SourceRetentionRequest,
+    ) -> Result<SourceMarketDataset, PipelineError> {
+        validate_user(user_id)?;
+        validate_acquisition(&acquisition)?;
+        let operation_id = format!(
+            "source-retention-{}",
+            self.0.next_operation.fetch_add(1, Ordering::Relaxed)
+        );
+        let cancellation = CancellationToken::new();
+        let _user_operation = self.begin_user_operation(user_id, operation_id, &cancellation)?;
+        let (source, _) =
+            self.create_source(user_id, &acquisition, &request.instrument, request.interval)?;
+        self.grant_source_for_user(user_id, &source.source_id)?;
         Ok(source)
     }
 
@@ -2280,7 +2321,8 @@ impl DataPipeline {
                 "Source acquisition Price Basis differs from canonical request".into(),
             ));
         }
-        let (source, access_inserted) = self.create_source(user_id, &acquisition, &request)?;
+        let (source, access_inserted) =
+            self.create_source(user_id, &acquisition, &request.instrument, request.interval)?;
         let mut source_access = SourceAccessGuard {
             pipeline: self.clone(),
             user_id: user_id.to_owned(),
@@ -2753,17 +2795,33 @@ impl DataPipeline {
         &self,
         user_id: &str,
         acquisition: &SourceAcquisition,
-        request: &CanonicalizationRequest,
+        instrument: &InstrumentId,
+        interval: BarInterval,
     ) -> Result<(SourceMarketDataset, bool), PipelineError> {
+        // OKX revisions stay range-independent; the exact range remains in Source identity.
+        let logical_request_parameters = if acquisition.provider == "okx" {
+            match &acquisition.request_parameters {
+                Value::Object(parameters) => Value::Object(
+                    parameters
+                        .iter()
+                        .filter(|(key, _)| *key != "startTimeMs" && *key != "endTimeMs")
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                ),
+                value => value.clone(),
+            }
+        } else {
+            acquisition.request_parameters.clone()
+        };
         let logical_key = digest(&canonical_json_bytes(&(
             &acquisition.provider,
             &acquisition.actual_upstream,
             &acquisition.connector,
             &acquisition.connector_version,
-            &acquisition.request_parameters,
+            &logical_request_parameters,
             acquisition.price_basis,
-            &request.instrument,
-            &request.interval,
+            instrument,
+            interval,
         ))?);
         let payload_sha256 = payload_hash(&acquisition.records)?;
         let evidence_bytes = source_evidence_bytes(&acquisition.records)?;
@@ -5188,6 +5246,36 @@ mod tests {
         assert_eq!(publication.quality.state, DataQualityState::Rejected);
         assert!(publication.canonical.is_none());
         assert_eq!(pipeline.list("alice").unwrap()[0].canonical_id, None);
+    }
+
+    #[test]
+    fn retain_source_persists_identity_without_running_gate_two() {
+        let directory = tempdir().unwrap();
+        let pipeline = DataPipeline::open(
+            directory.path(),
+            Arc::new(Mutex::new(
+                Connection::open(directory.path().join("pipeline.sqlite")).unwrap(),
+            )),
+        )
+        .unwrap();
+        let canonical_request = request();
+        let source = pipeline
+            .retain_source(
+                "alice",
+                acquisition(&[0]),
+                SourceRetentionRequest {
+                    instrument: canonical_request.instrument.clone(),
+                    interval: canonical_request.interval,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(source.identity.provider, "fixture");
+        assert_eq!(source.records.len(), 1);
+        let summary = pipeline.list("alice").unwrap();
+        assert_eq!(summary[0].source_id, source.source_id);
+        assert_eq!(summary[0].state, PipelineDatasetState::Unassessed);
+        assert_eq!(summary[0].canonical_id, None);
     }
 
     #[test]

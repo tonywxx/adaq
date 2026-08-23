@@ -26,11 +26,23 @@ use serde_json::json;
 use crate::{
     AcquisitionDiagnostics, CalendarEvidence, CancellationToken, CanonicalizationRequest,
     DataPipeline, DataQualityState, PipelineError, PipelinePublication, ProviderCapabilitySnapshot,
-    SourceAcquisition, SourceMarketRecord, canonical_json_bytes, digest, validate_user,
+    SourceAcquisition, SourceMarketDataset, SourceMarketRecord, SourceRetentionRequest,
+    canonical_json_bytes, digest, validate_user,
 };
 
 const DAY_MS: i64 = 86_400_000;
 const BAR_OVERLAP_COUNT: i64 = 2;
+
+#[derive(Debug, Clone, Copy)]
+enum BackfillMode {
+    SourceOnly,
+    Publish,
+}
+
+enum BackfillResult {
+    Source(SourceMarketDataset),
+    Publication(PipelinePublication),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -135,6 +147,11 @@ pub enum OkxBackfillEvent {
         canonical_id: Option<String>,
         revision: u64,
         state: DataQualityState,
+    },
+    SourceRetained {
+        instrument: InstrumentId,
+        source_id: String,
+        revision: u64,
     },
     InstrumentCompleted {
         instrument: InstrumentId,
@@ -548,6 +565,50 @@ impl OkxSpotDataPath {
         cancellation: CancellationToken,
         mut on_event: impl FnMut(OkxBackfillEvent),
     ) -> Result<Vec<PipelinePublication>, PipelineError> {
+        self.backfill_with_mode(request, cancellation, &mut on_event, BackfillMode::Publish)
+            .await
+            .map(|results| {
+                results
+                    .into_iter()
+                    .filter_map(|result| match result {
+                        BackfillResult::Publication(publication) => Some(publication),
+                        BackfillResult::Source(_) => None,
+                    })
+                    .collect()
+            })
+    }
+
+    pub async fn backfill_source_only(
+        &self,
+        request: &OkxBackfillRequest,
+        cancellation: CancellationToken,
+        mut on_event: impl FnMut(OkxBackfillEvent),
+    ) -> Result<Vec<SourceMarketDataset>, PipelineError> {
+        self.backfill_with_mode(
+            request,
+            cancellation,
+            &mut on_event,
+            BackfillMode::SourceOnly,
+        )
+        .await
+        .map(|results| {
+            results
+                .into_iter()
+                .filter_map(|result| match result {
+                    BackfillResult::Source(source) => Some(source),
+                    BackfillResult::Publication(_) => None,
+                })
+                .collect()
+        })
+    }
+
+    async fn backfill_with_mode(
+        &self,
+        request: &OkxBackfillRequest,
+        cancellation: CancellationToken,
+        on_event: &mut impl FnMut(OkxBackfillEvent),
+        mode: BackfillMode,
+    ) -> Result<Vec<BackfillResult>, PipelineError> {
         validate_backfill_request(request)?;
         let universe = self.point_in_time_universe(&request.user_id, request.end_time_ms)?;
         let Some(snapshot_id) = universe.snapshot_id.clone() else {
@@ -574,7 +635,7 @@ impl OkxSpotDataPath {
             instrument_count: instruments.len(),
         });
 
-        let mut publications = Vec::new();
+        let mut results = Vec::new();
         for instrument in instruments {
             if cancellation.is_cancelled() {
                 break;
@@ -594,22 +655,34 @@ impl OkxSpotDataPath {
                     &snapshot_id,
                     instrument_id.clone(),
                     cancellation.clone(),
-                    &mut on_event,
+                    on_event,
+                    mode,
                 )
                 .await
             {
-                Ok(Some(publication)) => {
-                    on_event(OkxBackfillEvent::Published {
-                        instrument: instrument_id.clone(),
-                        source_id: publication.source.source_id.clone(),
-                        canonical_id: publication
-                            .canonical
-                            .as_ref()
-                            .map(|canonical| canonical.canonical_id.clone()),
-                        revision: publication.source.revision,
-                        state: publication.quality.state.clone(),
-                    });
-                    publications.push(publication);
+                Ok(Some(result)) => {
+                    match &result {
+                        BackfillResult::Publication(publication) => {
+                            on_event(OkxBackfillEvent::Published {
+                                instrument: instrument_id.clone(),
+                                source_id: publication.source.source_id.clone(),
+                                canonical_id: publication
+                                    .canonical
+                                    .as_ref()
+                                    .map(|canonical| canonical.canonical_id.clone()),
+                                revision: publication.source.revision,
+                                state: publication.quality.state.clone(),
+                            });
+                        }
+                        BackfillResult::Source(source) => {
+                            on_event(OkxBackfillEvent::SourceRetained {
+                                instrument: instrument_id.clone(),
+                                source_id: source.source_id.clone(),
+                                revision: source.revision,
+                            });
+                        }
+                    }
+                    results.push(result);
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -635,7 +708,7 @@ impl OkxSpotDataPath {
                 }
             }
         }
-        Ok(publications)
+        Ok(results)
     }
 
     pub async fn reconcile_closed_bar(
@@ -763,6 +836,8 @@ impl OkxSpotDataPath {
                     self.latest_snapshot_before(user_id, i64::MAX)?
                         .as_ref()
                         .map(|snapshot| snapshot.snapshot_id.as_str()),
+                    websocket.bar.open_time_ms,
+                    end_time_ms,
                 )),
             retrieved_at_ms: rest.retrieved_at_ms,
             response_sha256s: Vec::new(),
@@ -1047,7 +1122,8 @@ impl OkxSpotDataPath {
         instrument: InstrumentId,
         cancellation: CancellationToken,
         on_event: &mut impl FnMut(OkxBackfillEvent),
-    ) -> Result<Option<PipelinePublication>, PipelineError> {
+        mode: BackfillMode,
+    ) -> Result<Option<BackfillResult>, PipelineError> {
         let mut checkpoint = self
             .read_checkpoint(&request.user_id, &instrument, request.interval)?
             .unwrap_or_default();
@@ -1099,9 +1175,14 @@ impl OkxSpotDataPath {
             checkpoint.next_cursor_ms = None;
             self.write_checkpoint(&request.user_id, &instrument, request.interval, &checkpoint)?;
             on_event(OkxBackfillEvent::InstrumentCompleted {
-                instrument,
+                instrument: instrument.clone(),
                 state: checkpoint.state,
             });
+            if matches!(mode, BackfillMode::SourceOnly) {
+                if let Some(source) = prior.clone() {
+                    return Ok(Some(BackfillResult::Source(source)));
+                }
+            }
             return Ok(None);
         }
 
@@ -1248,9 +1329,14 @@ impl OkxSpotDataPath {
             checkpoint.partial_records.clear();
             self.write_checkpoint(&request.user_id, &instrument, request.interval, &checkpoint)?;
             on_event(OkxBackfillEvent::InstrumentCompleted {
-                instrument,
+                instrument: instrument.clone(),
                 state: checkpoint.state,
             });
+            if matches!(mode, BackfillMode::SourceOnly) {
+                if let Some(source) = prior.clone() {
+                    return Ok(Some(BackfillResult::Source(source)));
+                }
+            }
             return Ok(None);
         }
         let retrieved_at_ms = acquisition.retrieved_at_ms;
@@ -1282,6 +1368,8 @@ impl OkxSpotDataPath {
                 &instrument,
                 request.interval,
                 Some(universe_snapshot_id),
+                request.start_time_ms,
+                request.end_time_ms,
             ),
             retrieved_at_ms,
             response_sha256s: Vec::new(),
@@ -1299,58 +1387,113 @@ impl OkxSpotDataPath {
             price_basis: adaq_data_core::market::PriceBasis::Unadjusted,
             records,
         };
-        let mut canonicalization = CanonicalizationRequest::new(
-            instrument.clone(),
-            request.interval,
-            CalendarEvidence::UtcGrid {
-                calendar_id: "okx-utc-grid".into(),
-                closures: Vec::new(),
-            },
-        )?;
-        canonicalization.historical_range = Some(adaq_data_core::HistoricalBarRange {
-            start_time_ms: request.start_time_ms,
-            end_time_ms: request.end_time_ms,
-        });
-        let publication = self.pipeline.publish(
-            &request.user_id,
-            source_acquisition,
-            canonicalization,
-            cancellation,
-            |_| {},
-        )?;
-        checkpoint.state = if publication.quality.state == DataQualityState::Passed {
-            OkxAcquisitionState::Completed
-        } else {
-            OkxAcquisitionState::Degraded
-        };
-        checkpoint.next_cursor_ms = None;
-        checkpoint.latest_confirmed_open_time_ms = publication
-            .source
-            .records
-            .iter()
-            .map(|record| record.open_time_ms)
-            .max();
-        checkpoint.coverage_start_ms = publication
-            .source
-            .records
-            .iter()
-            .map(|record| record.open_time_ms)
-            .min();
-        checkpoint.coverage_end_ms = checkpoint
-            .latest_confirmed_open_time_ms
-            .and_then(|time| next_bar_open_time_ms(time, request.interval).ok());
-        checkpoint.gap_count = publication.quality.gap_count;
-        checkpoint.revision = Some(publication.source.revision);
-        checkpoint.source_id = Some(publication.source.source_id.clone());
-        checkpoint.partial_records.clear();
-        checkpoint.last_error_code = None;
-        checkpoint.last_error = None;
-        self.write_checkpoint(&request.user_id, &instrument, request.interval, &checkpoint)?;
-        on_event(OkxBackfillEvent::InstrumentCompleted {
-            instrument,
-            state: checkpoint.state,
-        });
-        Ok(Some(publication))
+        match mode {
+            BackfillMode::SourceOnly => {
+                let source = self.pipeline.retain_source(
+                    &request.user_id,
+                    source_acquisition,
+                    SourceRetentionRequest {
+                        instrument: instrument.clone(),
+                        interval: request.interval,
+                    },
+                )?;
+                checkpoint.state = if acquisition.series.gaps.is_empty() {
+                    OkxAcquisitionState::Completed
+                } else {
+                    OkxAcquisitionState::Degraded
+                };
+                checkpoint.next_cursor_ms = None;
+                checkpoint.latest_confirmed_open_time_ms = source
+                    .records
+                    .iter()
+                    .map(|record| record.open_time_ms)
+                    .max();
+                checkpoint.coverage_start_ms = source
+                    .records
+                    .iter()
+                    .map(|record| record.open_time_ms)
+                    .min();
+                checkpoint.coverage_end_ms = checkpoint
+                    .latest_confirmed_open_time_ms
+                    .and_then(|time| next_bar_open_time_ms(time, request.interval).ok());
+                checkpoint.gap_count = acquisition.series.gaps.len();
+                checkpoint.revision = Some(source.revision);
+                checkpoint.source_id = Some(source.source_id.clone());
+                checkpoint.partial_records.clear();
+                checkpoint.last_error_code = None;
+                checkpoint.last_error = None;
+                self.write_checkpoint(
+                    &request.user_id,
+                    &instrument,
+                    request.interval,
+                    &checkpoint,
+                )?;
+                on_event(OkxBackfillEvent::InstrumentCompleted {
+                    instrument,
+                    state: checkpoint.state,
+                });
+                Ok(Some(BackfillResult::Source(source)))
+            }
+            BackfillMode::Publish => {
+                let mut canonicalization = CanonicalizationRequest::new(
+                    instrument.clone(),
+                    request.interval,
+                    CalendarEvidence::UtcGrid {
+                        calendar_id: "okx-utc-grid".into(),
+                        closures: Vec::new(),
+                    },
+                )?;
+                canonicalization.historical_range = Some(adaq_data_core::HistoricalBarRange {
+                    start_time_ms: request.start_time_ms,
+                    end_time_ms: request.end_time_ms,
+                });
+                let publication = self.pipeline.publish(
+                    &request.user_id,
+                    source_acquisition,
+                    canonicalization,
+                    cancellation,
+                    |_| {},
+                )?;
+                checkpoint.state = if publication.quality.state == DataQualityState::Passed {
+                    OkxAcquisitionState::Completed
+                } else {
+                    OkxAcquisitionState::Degraded
+                };
+                checkpoint.next_cursor_ms = None;
+                checkpoint.latest_confirmed_open_time_ms = publication
+                    .source
+                    .records
+                    .iter()
+                    .map(|record| record.open_time_ms)
+                    .max();
+                checkpoint.coverage_start_ms = publication
+                    .source
+                    .records
+                    .iter()
+                    .map(|record| record.open_time_ms)
+                    .min();
+                checkpoint.coverage_end_ms = checkpoint
+                    .latest_confirmed_open_time_ms
+                    .and_then(|time| next_bar_open_time_ms(time, request.interval).ok());
+                checkpoint.gap_count = publication.quality.gap_count;
+                checkpoint.revision = Some(publication.source.revision);
+                checkpoint.source_id = Some(publication.source.source_id.clone());
+                checkpoint.partial_records.clear();
+                checkpoint.last_error_code = None;
+                checkpoint.last_error = None;
+                self.write_checkpoint(
+                    &request.user_id,
+                    &instrument,
+                    request.interval,
+                    &checkpoint,
+                )?;
+                on_event(OkxBackfillEvent::InstrumentCompleted {
+                    instrument,
+                    state: checkpoint.state,
+                });
+                Ok(Some(BackfillResult::Publication(publication)))
+            }
+        }
     }
 
     fn persist_master_if_due(
@@ -1799,12 +1942,16 @@ fn request_parameters(
     instrument: &InstrumentId,
     interval: BarInterval,
     universe_snapshot_id: Option<&str>,
+    start_time_ms: i64,
+    end_time_ms: i64,
 ) -> serde_json::Value {
     json!({
         "kind": "okx-spot-closed-bars",
         "instrument": instrument,
         "interval": interval,
         "universeSnapshotId": universe_snapshot_id,
+        "startTimeMs": start_time_ms,
+        "endTimeMs": end_time_ms,
     })
 }
 
@@ -2086,6 +2233,85 @@ mod tests {
         assert_eq!(
             requests.recv().unwrap().split('?').next().unwrap(),
             "GET /api/v5/market/history-candles"
+        );
+    }
+
+    #[tokio::test]
+    async fn source_only_backfill_retains_provenance_without_gate_two_outputs() {
+        let (_root, path, _requests) = data_path(vec![bar_row(0, "1.5")]);
+        path.record_instrument_master("alice", master(1, "master"))
+            .unwrap();
+        let mut events = Vec::new();
+        let sources = path
+            .backfill_source_only(
+                &OkxBackfillRequest {
+                    task_id: "source-only".into(),
+                    user_id: "alice".into(),
+                    start_time_ms: 0,
+                    end_time_ms: 60_000,
+                    interval: BarInterval::OneMinute,
+                    instrument_codes: vec![],
+                    max_gap_retries: 0,
+                },
+                CancellationToken::new(),
+                |event| events.push(event),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(sources.len(), 1);
+        let source = &sources[0];
+        assert_eq!(source.identity.provider, "okx");
+        assert_eq!(
+            source.identity.connector,
+            adaq_data_core::OKX_CONNECTOR_VERSION
+        );
+        assert_eq!(source.identity.request_parameters["startTimeMs"], 0);
+        assert_eq!(source.identity.request_parameters["endTimeMs"], 60_000);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, OkxBackfillEvent::SourceRetained { .. }))
+        );
+
+        let summary = path.pipeline.list("alice").unwrap();
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].canonical_id, None);
+        assert_eq!(summary[0].state, crate::PipelineDatasetState::Unassessed);
+        assert_eq!(
+            path.pipeline
+                .source_for_user("alice", &source.source_id)
+                .unwrap()
+                .identity,
+            source.identity.clone()
+        );
+        let database_handle = path.pipeline.database();
+        let database = database_handle.lock().unwrap();
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT COUNT(*) FROM pipeline_canonical_datasets",
+                    [],
+                    |row| { row.get::<_, i64>(0) }
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            database
+                .query_row("SELECT COUNT(*) FROM pipeline_quality_reports", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            database
+                .query_row("SELECT COUNT(*) FROM pipeline_snapshot_links", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
         );
     }
 

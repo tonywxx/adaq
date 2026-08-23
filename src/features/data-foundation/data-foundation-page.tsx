@@ -25,7 +25,7 @@ type PipelineDatasetSummary = {
 	sourceId: string;
 	canonicalId?: string;
 	revision: number;
-	state: "passed" | "degraded" | "rejected";
+	state: "unassessed" | "passed" | "degraded" | "rejected";
 	sourceRecordCount: number;
 	canonicalRecordCount: number;
 	quarantinedRecordCount: number;
@@ -103,6 +103,7 @@ type OkxBackfillEvent = {
 		| "instrumentStarted"
 		| "page"
 		| "published"
+		| "sourceRetained"
 		| "instrumentCompleted";
 	data?: {
 		downloadedRecords?: number;
@@ -384,7 +385,7 @@ export function DataFoundationPage() {
 		});
 		let completed = false;
 		try {
-			await invoke("okx_backfill_publish", {
+			await invoke("okx_backfill_source", {
 				request: {
 					userId,
 					taskId,
@@ -400,8 +401,6 @@ export function DataFoundationPage() {
 				pipelineQuery.refetch(),
 				acquisitionQuery.refetch(),
 				foundationHistoryQuery.refetch(),
-				snapshotsQuery.refetch(),
-				universeQuery.refetch(),
 			]);
 			completed = true;
 		} catch (cause) {
@@ -584,7 +583,9 @@ export function DataFoundationPage() {
 					<ReadinessStat
 						label={t("dataFoundation.degradedOrRejected")}
 						value={
-							pipelineQuery.data?.filter((item) => item.state !== "passed").length ?? 0
+							pipelineQuery.data?.filter(
+								(item) => item.state === "degraded" || item.state === "rejected",
+							).length ?? 0
 						}
 						loading={pipelineQuery.isPending}
 					/>
@@ -1070,7 +1071,9 @@ export function DataFoundationPage() {
 					/>
 				</CardContent>
 			</Card>
-			{pipelineQuery.data?.some((item) => item.state !== "passed") ? (
+			{pipelineQuery.data?.some(
+				(item) => item.state === "degraded" || item.state === "rejected",
+			) ? (
 				<p className="text-sm text-amber-700 dark:text-amber-300" role="status">
 					<CircleAlertIcon className="mr-1 inline size-4" aria-hidden="true" />
 					{t("dataFoundation.qualityWarning")}

@@ -8,7 +8,8 @@ use adaq_data_core::{BarInterval, HistoricalBarRange};
 use adaq_data_pipeline::{
     AcquisitionDiagnostics, CalendarEvidence, CanonicalWarning, CanonicalizationRequest,
     DataQualityReport, DataQualityState, DerivationRequest, PipelinePublication,
-    ProviderCapabilitySnapshot, QuarantineReason, SourceAcquisition, SourceMarketRecord,
+    ProviderCapabilitySnapshot, QuarantineReason, SourceAcquisition, SourceMarketDataset,
+    SourceMarketRecord,
 };
 use serde::{Deserialize, Serialize};
 
@@ -416,6 +417,52 @@ impl From<PipelinePublication> for PublicationView {
             duplicate_count: value.quality.duplicate_count,
             gap_count: value.quality.gap_count,
             warning_count: value.quality.warning_count,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceView {
+    pub source_id: String,
+    pub source_revision: u64,
+    pub logical_key: String,
+    pub provider: String,
+    pub actual_upstream: Option<String>,
+    pub connector: String,
+    pub connector_version: String,
+    pub request_parameters: serde_json::Value,
+    pub retrieved_at_ms: i64,
+    pub response_sha256s: Vec<String>,
+    pub acquisition_content_sha256: Option<String>,
+    pub capability_snapshot: ProviderCapabilitySnapshot,
+    pub acquisition_diagnostics: AcquisitionDiagnostics,
+    pub price_basis: adaq_data_core::market::PriceBasis,
+    pub source_record_count: usize,
+    pub payload_sha256: String,
+    pub content_sha256: String,
+}
+
+impl From<SourceMarketDataset> for SourceView {
+    fn from(value: SourceMarketDataset) -> Self {
+        Self {
+            source_id: value.source_id,
+            source_revision: value.revision,
+            logical_key: value.logical_key,
+            provider: value.identity.provider,
+            actual_upstream: value.identity.actual_upstream,
+            connector: value.identity.connector,
+            connector_version: value.identity.connector_version,
+            request_parameters: value.identity.request_parameters,
+            retrieved_at_ms: value.identity.retrieved_at_ms,
+            response_sha256s: value.identity.response_sha256s,
+            acquisition_content_sha256: value.identity.acquisition_content_sha256,
+            capability_snapshot: value.identity.capability_snapshot,
+            acquisition_diagnostics: value.identity.acquisition_diagnostics,
+            price_basis: value.identity.price_basis,
+            source_record_count: value.records.len(),
+            payload_sha256: value.identity.payload_sha256,
+            content_sha256: value.identity.content_sha256,
         }
     }
 }

@@ -61,7 +61,7 @@ type PipelineDatasetSummary = {
 	sourceId: string;
 	canonicalId?: string;
 	revision: number;
-	state: "passed" | "degraded" | "rejected";
+	state: "unassessed" | "passed" | "degraded" | "rejected";
 	sourceRecordCount: number;
 	canonicalRecordCount: number;
 	quarantinedRecordCount: number;
