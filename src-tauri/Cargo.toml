@@ -30,9 +30,6 @@ resolver = "2"
 default = []
 deferred-equity = ["adaq-data-core/deferred-equity", "adaq-data-pipeline/deferred-equity", "adaq-feature-engine/deferred-equity"]
 
-[patch.crates-io]
-adaq-trading-crypto = {path = "patches/adaq-trading-crypto"}
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
@@ -56,7 +53,7 @@ adaq-feature-engine = {path = "crates/adaq-feature-engine"}
 adaq-indicator-engine = {path = "crates/adaq-indicator-engine"}
 adaq-paper-trading-core = {path = "crates/adaq-paper-trading-core"}
 adaq-python-research = {path = "crates/adaq-python-research"}
-adaq-trading-crypto = {path = "patches/adaq-trading-crypto"}
+adaq-trading-crypto = "1.1.1"
 arrow-array = "59.2"
 arrow-schema = "59.2"
 base64 = "0.23.1"
