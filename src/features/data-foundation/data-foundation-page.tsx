@@ -683,7 +683,7 @@ export function DataFoundationPage() {
 				{markets.map((market) => {
 					const active = activeOperation?.startsWith(`${market.id}-`) ?? false;
 					return (
-						<Card key={market.id} className="h-fit lg:col-span-3">
+						<Card key={market.id} className="h-fit rounded-b-none lg:col-span-3">
 							<CardHeader>
 								<div className="flex items-start justify-between gap-3">
 									<div>
@@ -746,11 +746,11 @@ export function DataFoundationPage() {
 					);
 				})}
 			</div>
-			<section className="order-0 -mt-4 rounded-b-xl border-x border-b bg-card px-6 pb-6">
+			<section className="order-0 -mt-5 rounded-b-xl border-x border-b border-t-0 bg-card px-6 pb-6">
 				<div className="pb-4">
-					<StepTitle step={1}>
+					<CardTitle>
 						{t("dataFoundation.okxInstrumentMasterEvidenceTitle")}
-					</StepTitle>
+					</CardTitle>
 					<CardDescription>
 						{t("dataFoundation.okxInstrumentMasterEvidenceDescription")}
 					</CardDescription>
