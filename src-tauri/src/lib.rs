@@ -12,6 +12,7 @@ mod market_data_pipeline;
 mod market_data_snapshot;
 mod operations;
 mod paper_feedback;
+mod paper_trading;
 mod python_research;
 mod research_queue;
 mod run_engine;
@@ -29,6 +30,7 @@ use adaq_data_core::{
     TickerStreamEvent, TradeStreamEvent,
     market::{InstrumentId, PriceBasis, VenueKind},
 };
+use adaq_trading_crypto::{Exchange, Params};
 use rust_decimal::Decimal;
 use std::{
     path::{Path, PathBuf},
@@ -3422,6 +3424,176 @@ async fn connection_profile_delete(
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+fn paper_account_view(
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<paper_trading::PaperAccountView, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state.paper_trading.view(&user_id)
+}
+
+#[tauri::command]
+async fn paper_account_reconcile(
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<paper_trading::PaperAccountView, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        let profile = state
+            .connections
+            .list(&user_id)?
+            .into_iter()
+            .find(|profile| profile.provider == connections::Provider::OkxDemo)
+            .ok_or_else(|| "No OKX Demo connection is configured.".to_owned())?;
+        let account_id = profile.account_id.ok_or_else(|| {
+            "The OKX Demo connection has no validated account identity.".to_owned()
+        })?;
+        state.connections.with_okx_demo_client(&user_id, |client| {
+            state
+                .paper_trading
+                .provider_balance(&user_id, account_id, &client, unix_now_ms())
+        })?
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn paper_order_submit(
+    mut request: paper_trading::PaperOrderRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<paper_trading::PaperAccountView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        state.paper_trading.begin_order(&request, unix_now_ms())?;
+        let side = request.side.to_lowercase();
+        let result = state
+            .connections
+            .with_okx_demo_client(&request.user_id, |client| {
+                tauri::async_runtime::block_on(client.create_order(
+                    &request.instrument,
+                    "limit",
+                    &side,
+                    &request.quantity.to_string(),
+                    Some(&request.limit_price.to_string()),
+                    Params::new(),
+                ))
+            });
+        match result {
+            Ok(Ok(order)) => state.paper_trading.record_order_result(
+                &request.user_id,
+                &request.operation_id,
+                order.id,
+                order.status.as_deref().unwrap_or("accepted"),
+                None,
+                unix_now_ms(),
+            ),
+            Ok(Err(_)) | Err(_) => state.paper_trading.mark_uncertain(
+                &request.user_id,
+                &request.operation_id,
+                unix_now_ms(),
+            ),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn paper_order_cancel(
+    mut request: paper_trading::PaperCancelRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<paper_trading::PaperAccountView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        let provider_order_id = state
+            .paper_trading
+            .provider_order_id(&request.user_id, &request.operation_id)?;
+        let result = state
+            .connections
+            .with_okx_demo_client(&request.user_id, |client| {
+                tauri::async_runtime::block_on(client.cancel_order(
+                    &provider_order_id,
+                    &request.instrument,
+                    Params::new(),
+                ))
+            });
+        match result {
+            Ok(Ok(order)) => {
+                state.paper_trading.record_order_result(
+                    &request.user_id,
+                    &request.operation_id,
+                    order.id,
+                    order.status.as_deref().unwrap_or("canceled"),
+                    None,
+                    unix_now_ms(),
+                )?;
+                state.paper_trading.cancel_local_order(
+                    &request.user_id,
+                    &request.operation_id,
+                    unix_now_ms(),
+                )
+            }
+            Ok(Err(_)) | Err(_) => state.paper_trading.mark_uncertain(
+                &request.user_id,
+                &request.operation_id,
+                unix_now_ms(),
+            ),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn paper_order_sync(
+    mut request: paper_trading::PaperSyncRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<paper_trading::PaperAccountView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        let provider_order_id = state
+            .paper_trading
+            .provider_order_id(&request.user_id, &request.operation_id)?;
+        let result = state
+            .connections
+            .with_okx_demo_client(&request.user_id, |client| {
+                tauri::async_runtime::block_on(client.fetch_orders(
+                    Some(&request.instrument),
+                    None,
+                    None,
+                    Params::new(),
+                ))
+            })?;
+        let remote = result
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|order| order.id.as_deref() == Some(provider_order_id.as_str()))
+            .ok_or_else(|| "OKX did not return the requested order.".to_owned())?;
+        state.paper_trading.sync_provider_order(
+            &request.user_id,
+            &request.operation_id,
+            &remote,
+            unix_now_ms(),
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 fn serialize_connection_error(error: connections::ConnectionError) -> String {
     serde_json::to_string(&error).unwrap_or_else(|_| error.message)
 }
@@ -3542,6 +3714,11 @@ pub fn run() {
             paper_feedback_snapshot_create,
             paper_feedback_report_create,
             paper_feedback_review_decide,
+            paper_account_view,
+            paper_account_reconcile,
+            paper_order_submit,
+            paper_order_cancel,
+            paper_order_sync,
             python_research::project_list,
             python_research::project_create,
             python_research::project_import,

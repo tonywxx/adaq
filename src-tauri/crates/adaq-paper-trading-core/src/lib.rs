@@ -45,6 +45,7 @@ pub struct RiskDecision {
 pub struct ProviderEvidence {
     pub provider: AdapterKind,
     pub operation_id: String,
+    pub local_order_id: Option<String>,
     pub provider_order_id: Option<String>,
     pub status: String,
     pub error_code: Option<String>,
@@ -77,7 +78,7 @@ impl std::error::Error for ExecutionError {}
 
 /// Host-owned, provider-neutral gate for new execution. It never receives a
 /// credential and never delegates Risk authority to an adapter or Worker.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PaperExecution {
     adapter: AdapterKind,
     policy: RiskPolicy,
@@ -109,6 +110,26 @@ impl PaperExecution {
     }
     pub fn evidence(&self) -> impl Iterator<Item = &ExecutionOutcome> {
         self.operations.values()
+    }
+
+    pub fn provider_order_id(&self, operation_id: &str) -> Option<String> {
+        self.operations
+            .get(operation_id)
+            .and_then(|outcome| match outcome {
+                ExecutionOutcome::Accepted(evidence)
+                | ExecutionOutcome::Rejected(evidence)
+                | ExecutionOutcome::Uncertain(evidence) => evidence.provider_order_id.clone(),
+            })
+    }
+
+    pub fn local_order_id(&self, operation_id: &str) -> Option<String> {
+        self.operations
+            .get(operation_id)
+            .and_then(|outcome| match outcome {
+                ExecutionOutcome::Accepted(evidence)
+                | ExecutionOutcome::Rejected(evidence)
+                | ExecutionOutcome::Uncertain(evidence) => evidence.local_order_id.clone(),
+            })
     }
 
     pub fn approve(&self, account: &PaperLedger, notional: Decimal) -> RiskDecision {
@@ -160,12 +181,14 @@ impl PaperExecution {
         account
             .submit_order(&user_id, instrument, side, quantity, limit_price, now_ms)
             .map_err(|_| ExecutionError::ReconciliationRequired)?;
+        let local_order_id = account.orders().last().map(|order| order.order_id.clone());
         let order_id = operation_id.clone();
         self.operations.insert(
             operation_id,
             ExecutionOutcome::Accepted(ProviderEvidence {
                 provider: AdapterKind::OkxDemo,
                 operation_id: order_id.clone(),
+                local_order_id,
                 provider_order_id: None,
                 status: format!("intent_{:?}", side).to_lowercase(),
                 error_code: None,
@@ -184,9 +207,15 @@ impl PaperExecution {
             .operations
             .get_mut(operation_id)
             .ok_or(ExecutionError::DuplicateOperation)?;
+        let local_order_id = match &*outcome {
+            ExecutionOutcome::Accepted(evidence)
+            | ExecutionOutcome::Rejected(evidence)
+            | ExecutionOutcome::Uncertain(evidence) => evidence.local_order_id.clone(),
+        };
         *outcome = ExecutionOutcome::Uncertain(ProviderEvidence {
             provider: AdapterKind::OkxDemo,
             operation_id: operation_id.to_owned(),
+            local_order_id,
             provider_order_id: None,
             status: "unknown".to_owned(),
             error_code: Some("provider_timeout".to_owned()),
@@ -196,8 +225,87 @@ impl PaperExecution {
         Ok(())
     }
 
+    pub fn record_provider_outcome(
+        &mut self,
+        operation_id: &str,
+        provider_order_id: Option<String>,
+        status: impl Into<String>,
+        error_code: Option<String>,
+        now_ms: i64,
+    ) -> Result<(), ExecutionError> {
+        let outcome = self
+            .operations
+            .get_mut(operation_id)
+            .ok_or(ExecutionError::DuplicateOperation)?;
+        let local_order_id = match &*outcome {
+            ExecutionOutcome::Accepted(evidence)
+            | ExecutionOutcome::Rejected(evidence)
+            | ExecutionOutcome::Uncertain(evidence) => evidence.local_order_id.clone(),
+        };
+        let evidence = ProviderEvidence {
+            provider: AdapterKind::OkxDemo,
+            operation_id: operation_id.to_owned(),
+            local_order_id,
+            provider_order_id,
+            status: status.into(),
+            error_code,
+            observed_at_ms: now_ms,
+        };
+        *outcome = if evidence.error_code.is_some() {
+            ExecutionOutcome::Rejected(evidence)
+        } else {
+            ExecutionOutcome::Accepted(evidence)
+        };
+        Ok(())
+    }
+
+    pub fn record_reconciliation(&mut self, operation_id: String, matches: bool, now_ms: i64) {
+        self.operations.insert(
+            operation_id.clone(),
+            ExecutionOutcome::Accepted(ProviderEvidence {
+                provider: AdapterKind::OkxDemo,
+                operation_id,
+                local_order_id: None,
+                provider_order_id: None,
+                status: if matches { "reconciled" } else { "mismatch" }.to_owned(),
+                error_code: if matches {
+                    None
+                } else {
+                    Some("reconciliation_required".to_owned())
+                },
+                observed_at_ms: now_ms,
+            }),
+        );
+        self.blocked = !matches;
+    }
+
+    pub fn record_provider_observation(
+        &mut self,
+        operation_id: String,
+        provider_order_id: String,
+        status: String,
+        now_ms: i64,
+    ) {
+        self.operations.insert(
+            operation_id.clone(),
+            ExecutionOutcome::Accepted(ProviderEvidence {
+                provider: AdapterKind::OkxDemo,
+                operation_id,
+                local_order_id: None,
+                provider_order_id: Some(provider_order_id),
+                status,
+                error_code: None,
+                observed_at_ms: now_ms,
+            }),
+        );
+    }
+
     pub fn reconcile(&mut self, matches: bool) {
         self.blocked = !matches;
+    }
+
+    pub fn block_for_recovery(&mut self) {
+        self.blocked = true;
     }
 }
 
@@ -348,7 +456,7 @@ impl std::error::Error for LedgerError {}
 
 /// An append-only-in-behavior ledger. Cancellation and fills add state
 /// transitions; they never rewrite or synthesize prior evidence.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PaperLedger {
     account: AccountSnapshot,
     reserved_cash: Decimal,
@@ -388,6 +496,10 @@ impl PaperLedger {
     pub fn account(&self) -> &AccountSnapshot {
         &self.account
     }
+
+    pub fn account_id(&self) -> &str {
+        &self.account.account_id
+    }
     pub fn reserved_cash(&self) -> Decimal {
         self.reserved_cash
     }
@@ -396,6 +508,10 @@ impl PaperLedger {
     }
     pub fn reconciliation(&self) -> ReconciliationState {
         self.reconciliation
+    }
+
+    pub fn require_reconciliation(&mut self) {
+        self.reconciliation = ReconciliationState::Required;
     }
     pub fn orders(&self) -> impl Iterator<Item = &Order> {
         self.orders.values()

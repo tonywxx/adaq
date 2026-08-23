@@ -78,6 +78,7 @@ pub struct LocalResearchState {
     pub(crate) connections: crate::connections::ConnectionManager,
     pub(crate) operations: OperationsStore,
     pub(crate) paper_feedback: PaperFeedbackStore,
+    pub(crate) paper_trading: crate::paper_trading::PaperTradingStore,
     pub(crate) research_contexts: Mutex<HashMap<String, ResearchEvidenceContext>>,
 }
 
@@ -593,6 +594,7 @@ impl LocalResearchState {
         let connections = crate::connections::ConnectionManager::open_production(database.clone())?;
         let operations = OperationsStore::open(database.clone())?;
         let paper_feedback = PaperFeedbackStore::open(database.clone())?;
+        let paper_trading = crate::paper_trading::PaperTradingStore::open(database.clone())?;
         let snapshot_source = Arc::new(LocalSnapshotSource::new(
             database.clone(),
             Arc::new(snapshot_store),
@@ -667,6 +669,7 @@ impl LocalResearchState {
                 connections,
                 operations,
                 paper_feedback,
+                paper_trading,
                 research_contexts: Mutex::new(HashMap::new()),
             }
         }))

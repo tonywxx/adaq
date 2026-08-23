@@ -274,22 +274,6 @@ zebpay = []
 name = "adaq_trading_crypto"
 path = "src/lib.rs"
 
-[[test]]
-name = "contract"
-path = "tests/contract.rs"
-
-[[test]]
-name = "differential_test"
-path = "tests/differential_test.rs"
-
-[[test]]
-name = "fixtures_test"
-path = "tests/fixtures_test.rs"
-
-[[test]]
-name = "realtime_smoke"
-path = "tests/realtime_smoke.rs"
-
 [dependencies.async-trait]
 version = "0.1"
 
