@@ -72,8 +72,20 @@ jest.mock("@tauri-apps/api/core", () => ({
 				},
 			];
 		}
+		if (command === "okx_acquisition_status") {
+			return [
+				{
+					operationId: "failed-backfill",
+					instrument: { venue: { id: "okx" }, code: "BTC-USDT" },
+					interval: "1h",
+					state: "failed",
+					pages: 1,
+					gapCount: 0,
+					retryCount: 0,
+				},
+			];
+		}
 		if (
-			command === "okx_acquisition_status" ||
 			command === "ashare_instrument_master_list" ||
 			command === "alpaca_instrument_master_list"
 		) {
@@ -189,6 +201,25 @@ test("renders localized evidence and persisted operation history", async () => {
 		"okx_backfill_source",
 		expect.objectContaining({
 			request: expect.objectContaining({ interval: "1h" }),
+			onEvent: expect.anything(),
+		}),
+	);
+
+	const retryButton = Array.from(container.querySelectorAll("button")).find(
+		(button) => button.textContent === i18n.t("dataFoundation.retryAcquisition"),
+	);
+	expect(retryButton).toBeDefined();
+	await act(async () => {
+		retryButton?.click();
+		await Promise.resolve();
+	});
+	expect(mockInvoke).toHaveBeenCalledWith(
+		"okx_backfill_retry",
+		expect.objectContaining({
+			request: expect.objectContaining({
+				operationId: "failed-backfill",
+				retryOperationId: expect.any(String),
+			}),
 			onEvent: expect.anything(),
 		}),
 	);

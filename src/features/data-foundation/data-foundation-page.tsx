@@ -80,6 +80,7 @@ type FoundationAcquisitionView = {
 };
 
 type OkxAcquisitionStatus = {
+	operationId?: string;
 	instrument: { venue: { id: string }; code: string };
 	interval: string;
 	state:
@@ -608,6 +609,7 @@ export function DataFoundationPage() {
 					endTimeMs,
 					interval: nextDraft.interval,
 					instrumentCodes: requestedCodes,
+					universeSnapshotId: nextDraft.instrumentMasterSnapshotId,
 				},
 				onEvent,
 			});
@@ -737,9 +739,31 @@ export function DataFoundationPage() {
 		}
 	};
 
+	const retryOkxBackfill = async (operationId?: string) => {
+		if (!userId || !operationId || backfillTaskId) return;
+		const retryOperationId = `crypto-foundation-${crypto.randomUUID()}`;
+		setError(undefined);
+		setBackfillTaskId(retryOperationId);
+		try {
+			await invoke("okx_backfill_retry", {
+				request: { userId, operationId, retryOperationId },
+				onEvent: new Channel<OkxBackfillEvent>(),
+			});
+			await Promise.all([
+				pipelineQuery.refetch(),
+				acquisitionQuery.refetch(),
+				foundationHistoryQuery.refetch(),
+			]);
+		} catch (cause) {
+			setError(getErrorMessage(cause));
+		} finally {
+			setBackfillTaskId(undefined);
+		}
+	};
 	const retry = async (operation: OkxAcquisitionStatus) => {
-		if (operation.instrument.venue.id !== "okx") return;
-		await acquire(markets[0]);
+		if (operation.instrument.venue.id === "okx") {
+			await retryOkxBackfill(operation.operationId);
+		}
 	};
 	const elapsedMs = backfillStats
 		? Math.max(
@@ -1482,10 +1506,7 @@ export function DataFoundationPage() {
 									setError(getErrorMessage(cause));
 								}
 							}}
-							onRetry={(operation) => {
-								const market = markets.find((item) => item.id === operation.market);
-								if (market) void acquire(market);
-							}}
+							onRetry={(operation) => void retryOkxBackfill(operation.operationId)}
 						/>
 					</div>
 				</CardContent>

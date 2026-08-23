@@ -142,6 +142,14 @@ pub(crate) struct UserRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct BackfillRetryRequest {
+    pub user_id: String,
+    pub operation_id: String,
+    pub retry_operation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct OkxInstrumentMasterRequest {
     pub user_id: String,
     #[serde(default)]

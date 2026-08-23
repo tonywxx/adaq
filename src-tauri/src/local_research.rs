@@ -568,12 +568,26 @@ impl LocalResearchState {
                 state TEXT NOT NULL,
                 revision INTEGER,
                 error TEXT,
+                request_json TEXT,
                 started_at_ms INTEGER NOT NULL,
                 finished_at_ms INTEGER,
                 PRIMARY KEY(user_id, operation_id)
              );",
             )
             .map_err(string)?;
+        let has_request_json = database
+            .prepare("SELECT 1 FROM pragma_table_info('foundation_acquisitions') WHERE name = 'request_json'")
+            .map_err(string)?
+            .exists([])
+            .map_err(string)?;
+        if !has_request_json {
+            database
+                .execute(
+                    "ALTER TABLE foundation_acquisitions ADD COLUMN request_json TEXT",
+                    [],
+                )
+                .map_err(string)?;
+        }
         database
             .execute(
                 "UPDATE foundation_acquisitions
@@ -939,6 +953,54 @@ impl LocalResearchState {
             )
             .map_err(string)?;
         Ok(())
+    }
+
+    pub fn foundation_okx_backfill_start(
+        &self,
+        request: &adaq_data_pipeline::okx::OkxBackfillRequest,
+    ) -> Result<(), String> {
+        self.foundation_acquisition_start(&request.user_id, &request.task_id, "crypto", "okx")?;
+        self.database
+            .lock()
+            .map_err(|_| "database lock failed".to_string())?
+            .execute(
+                "UPDATE foundation_acquisitions SET request_json = ?1
+                 WHERE user_id = ?2 AND operation_id = ?3",
+                params![
+                    serde_json::to_string(request).map_err(string)?,
+                    request.user_id,
+                    request.task_id
+                ],
+            )
+            .map_err(string)?;
+        Ok(())
+    }
+
+    pub fn foundation_okx_backfill_request(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+    ) -> Result<adaq_data_pipeline::okx::OkxBackfillRequest, String> {
+        validate_user(user_id)?;
+        let (state, request_json) = self
+            .database
+            .lock()
+            .map_err(|_| "database lock failed".to_string())?
+            .query_row(
+                "SELECT state, request_json FROM foundation_acquisitions
+                 WHERE user_id = ?1 AND operation_id = ?2 AND market = 'crypto' AND venue = 'okx'",
+                params![user_id, operation_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()
+            .map_err(string)?
+            .ok_or_else(|| "retained OKX backfill request was not found".to_string())?;
+        if !matches!(state.as_str(), "failed" | "cancelled") {
+            return Err("only failed or cancelled OKX backfills can be retried".into());
+        }
+        let request_json = request_json
+            .ok_or_else(|| "retained OKX backfill request was not found".to_string())?;
+        serde_json::from_str(&request_json).map_err(string)
     }
 
     pub fn foundation_acquisition_history(
@@ -2600,6 +2662,43 @@ mod tests {
         assert_eq!(
             history[0].error.as_deref(),
             Some("operation interrupted by host restart")
+        );
+        drop(reloaded);
+        drop(watchlist);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_okx_backfill_retains_its_exact_request_for_retry() {
+        let (root, state, watchlist) = local_data_state("okx-backfill-retry");
+        let request = adaq_data_pipeline::okx::OkxBackfillRequest {
+            task_id: "crypto-foundation-1".into(),
+            user_id: "alice".into(),
+            start_time_ms: 10,
+            end_time_ms: 20,
+            interval: BarInterval::OneHour,
+            instrument_codes: vec!["BTC-USDT".into()],
+            universe_snapshot_id: Some("master-1".into()),
+            checkpoint_operation_id: None,
+            max_gap_retries: 2,
+        };
+        state.foundation_okx_backfill_start(&request).unwrap();
+        assert!(
+            state
+                .foundation_okx_backfill_request("alice", "crypto-foundation-1")
+                .unwrap_err()
+                .contains("only failed or cancelled")
+        );
+        drop(state);
+
+        let reloaded = LocalResearchState::open(&root).unwrap();
+        let retained = reloaded
+            .foundation_okx_backfill_request("alice", "crypto-foundation-1")
+            .unwrap();
+        assert_eq!(retained, request);
+        assert_eq!(
+            reloaded.foundation_acquisition_history("alice").unwrap()[0].state,
+            "failed"
         );
         drop(reloaded);
         drop(watchlist);
