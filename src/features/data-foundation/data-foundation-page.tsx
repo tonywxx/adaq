@@ -7,6 +7,7 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { formatDateTime } from "@/lib/i18n";
 import { getErrorMessage, useMarketSessionStore } from "@/lib/market-session";
 import { Link } from "@tanstack/react-router";
 import { Channel, invoke } from "@tauri-apps/api/core";
@@ -169,7 +170,7 @@ const humanizeNumber = (value: string | number | undefined) => {
 };
 
 const formatTimestamp = (value: number | undefined) =>
-	value == null ? "—" : new Date(value).toLocaleString();
+	value == null ? "—" : formatDateTime(value);
 
 function SourceProvenancePanel({
 	datasets,
@@ -267,7 +268,7 @@ function SourceProvenancePanel({
 							{operation?.lastError ? (
 								<ContextField
 									label={t("dataFoundation.sourceNotes")}
-									value={`${operation.lastErrorCode ?? "error"}: ${operation.lastError}`}
+									value={`${operation.lastErrorCode ?? t("dataFoundation.unknownErrorCode")}: ${operation.lastError}`}
 								/>
 							) : null}
 						</div>
@@ -332,7 +333,7 @@ function SourceProvenancePanel({
 						{operation.lastError ? (
 							<ContextField
 								label={t("dataFoundation.sourceNotes")}
-								value={`${operation.lastErrorCode ?? "error"}: ${operation.lastError}`}
+								value={`${operation.lastErrorCode ?? t("dataFoundation.unknownErrorCode")}: ${operation.lastError}`}
 							/>
 						) : null}
 					</div>
@@ -473,7 +474,7 @@ function InstrumentEvidencePanel({
 				</span>
 				<span>
 					{t("dataFoundation.okxInstrumentMasterRetrieved", {
-						date: new Date(latest.retrievedAtMs).toLocaleString(),
+						date: formatDateTime(latest.retrievedAtMs),
 					})}
 				</span>
 				<span>
@@ -550,9 +551,7 @@ function InstrumentEvidencePanel({
 									tabIndex={0}
 								>
 									<td className="p-2 font-mono">{shortId(snapshot.snapshotId)}</td>
-									<td className="p-2">
-										{new Date(snapshot.retrievedAtMs).toLocaleString()}
-									</td>
+									<td className="p-2">{formatDateTime(snapshot.retrievedAtMs)}</td>
 									<td className="p-2">{humanizeNumber(snapshot.instruments.length)}</td>
 								</tr>
 							))}
@@ -893,11 +892,15 @@ export function DataFoundationPage() {
 		if (!userId) return;
 		const latest = instrumentMasterQuery.data?.at(-1);
 		if (market.id === "crypto" && latest) {
-			const retrieved = new Date(latest.retrievedAtMs).toLocaleString(undefined, {
+			const retrieved = formatDateTime(latest.retrievedAtMs, {
 				second: "2-digit",
 			});
 			if (
-				!window.confirm(`OKX 交易品种目录已于 ${retrieved} 获取。是否重新获取？`)
+				!window.confirm(
+					t("dataFoundation.okxInstrumentMasterRefreshConfirm", {
+						date: retrieved,
+					}),
+				)
 			) {
 				return;
 			}
@@ -1199,7 +1202,7 @@ export function DataFoundationPage() {
 										</span>
 										<span>
 											{t("dataFoundation.okxInstrumentMasterRetrieved", {
-												date: new Date(latest.retrievedAtMs).toLocaleString(),
+												date: formatDateTime(latest.retrievedAtMs),
 											})}
 										</span>
 										<span>
@@ -1269,9 +1272,7 @@ export function DataFoundationPage() {
 													{[...instrumentMasterQuery.data].reverse().map((snapshot) => (
 														<tr key={snapshot.snapshotId} className="border-t">
 															<td className="p-2 font-mono">{shortId(snapshot.snapshotId)}</td>
-															<td className="p-2">
-																{new Date(snapshot.retrievedAtMs).toLocaleString()}
-															</td>
+															<td className="p-2">{formatDateTime(snapshot.retrievedAtMs)}</td>
 															<td className="p-2">
 																{humanizeNumber(snapshot.instruments.length)}
 															</td>
@@ -1484,7 +1485,7 @@ export function DataFoundationPage() {
 										backfillSnapshots.map((snapshot) => (
 											<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
 												{shortId(snapshot.snapshotId)} -{" "}
-												{new Date(snapshot.retrievedAtMs).toLocaleString()} -{" "}
+												{formatDateTime(snapshot.retrievedAtMs)} -{" "}
 												{humanizeNumber(snapshot.instruments.length)}
 											</option>
 										))

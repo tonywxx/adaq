@@ -178,6 +178,8 @@ const english = {
 				"This snapshot is used to choose valid instruments for later historical-bar acquisition.",
 			okxInstrumentMasterSnapshot: "Snapshot {{id}}",
 			okxInstrumentMasterRetrieved: "Retrieved {{date}}",
+			okxInstrumentMasterRefreshConfirm:
+				"The OKX instrument catalog was retrieved on {{date}}. Fetch it again?",
 			okxInstrumentMasterCount: "{{count}} Spot instruments",
 			okxInstrumentMasterCountLabel: "Spot instruments",
 			okxInstrumentMasterCountHeader: "Instrument count",
@@ -215,6 +217,7 @@ const english = {
 			sourceRequests:
 				"{{count}} requests · {{retries}} retries · {{pages}} pages · next cursor {{cursor}} · statuses {{statuses}}",
 			sourceNotes: "Retained errors and notes",
+			unknownErrorCode: "Unknown error",
 			publicationTitle: "Publication evidence",
 			publicationDescription:
 				"Inspect each published dataset before selecting it for research.",
@@ -2406,6 +2409,8 @@ const simplifiedChinese = {
 				"这份快照用于后续选择有效交易品种并获取历史 K 线。",
 			okxInstrumentMasterSnapshot: "快照 {{id}}",
 			okxInstrumentMasterRetrieved: "获取时间 {{date}}",
+			okxInstrumentMasterRefreshConfirm:
+				"OKX 交易品种目录已于 {{date}} 获取。是否重新获取？",
 			okxInstrumentMasterCount: "{{count}} 个现货交易品种",
 			okxInstrumentMasterCountLabel: "个现货交易品种",
 			okxInstrumentMasterCountHeader: "标的数量",
@@ -2443,6 +2448,7 @@ const simplifiedChinese = {
 			sourceRequests:
 				"{{count}} 次请求 · {{retries}} 次重试 · {{pages}} 页 · 下个游标 {{cursor}} · 状态码 {{statuses}}",
 			sourceNotes: "保留的错误与说明",
+			unknownErrorCode: "未知错误",
 			publicationTitle: "发布证据（Publication）",
 			publicationDescription: "选择用于研究之前，请检查每个已发布的数据集。",
 			okxBackfillTitle: "OKX 现货 K 线（bars）",

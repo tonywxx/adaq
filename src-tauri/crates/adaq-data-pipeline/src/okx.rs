@@ -218,6 +218,10 @@ struct BackfillCheckpoint {
     end_time_ms: Option<i64>,
     #[serde(default)]
     universe_snapshot_id: Option<String>,
+    #[serde(default)]
+    request_parameters: Option<serde_json::Value>,
+    #[serde(default)]
+    capability_snapshot: Option<ProviderCapabilitySnapshot>,
     state: OkxAcquisitionState,
     pages: u64,
     next_cursor_ms: Option<i64>,
@@ -245,6 +249,8 @@ impl Default for BackfillCheckpoint {
             start_time_ms: None,
             end_time_ms: None,
             universe_snapshot_id: None,
+            request_parameters: None,
+            capability_snapshot: None,
             state: OkxAcquisitionState::Pending,
             pages: 0,
             next_cursor_ms: None,
@@ -689,7 +695,21 @@ impl OkxSpotDataPath {
         mode: BackfillMode,
     ) -> Result<Vec<BackfillResult>, PipelineError> {
         validate_backfill_request(request)?;
-        let universe = match request.universe_snapshot_id.as_deref() {
+        let checkpoint_snapshot_id = if request.universe_snapshot_id.is_none() {
+            request
+                .checkpoint_operation_id
+                .as_deref()
+                .map(|operation_id| self.checkpoint_snapshot_id(&request.user_id, operation_id))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        let universe_snapshot_id = request
+            .universe_snapshot_id
+            .clone()
+            .or(checkpoint_snapshot_id);
+        let universe = match universe_snapshot_id.as_deref() {
             Some(snapshot_id) => self.instrument_master_snapshot(&request.user_id, snapshot_id)?,
             None => self.point_in_time_universe(&request.user_id, request.end_time_ms)?,
         };
@@ -718,8 +738,9 @@ impl OkxSpotDataPath {
         });
 
         let mut results = Vec::new();
+        let mut started_instrument = false;
         for instrument in instruments {
-            if cancellation.is_cancelled() {
+            if cancellation.is_cancelled() && started_instrument {
                 break;
             }
             let instrument_id = InstrumentId::new(
@@ -728,6 +749,7 @@ impl OkxSpotDataPath {
                 instrument.code.clone(),
             )
             .map_err(|error| PipelineError::InvalidRequest(error.to_string()))?;
+            started_instrument = true;
             on_event(OkxBackfillEvent::InstrumentStarted {
                 instrument: instrument_id.clone(),
             });
@@ -1250,6 +1272,18 @@ impl OkxSpotDataPath {
         checkpoint.end_time_ms = Some(request.end_time_ms);
         checkpoint.operation_id = Some(checkpoint_operation_id.into());
         checkpoint.universe_snapshot_id = Some(universe_snapshot_id.to_owned());
+        checkpoint.request_parameters.get_or_insert_with(|| {
+            request_parameters(
+                &instrument,
+                request.interval,
+                Some(universe_snapshot_id),
+                request.start_time_ms,
+                request.end_time_ms,
+            )
+        });
+        checkpoint
+            .capability_snapshot
+            .get_or_insert_with(|| capability_snapshot(now_ms(), None));
         let previous_max = prior.as_ref().and_then(|source| {
             source
                 .records
@@ -1379,7 +1413,10 @@ impl OkxSpotDataPath {
                     Err(error) => {
                         checkpoint.state = OkxAcquisitionState::Failed;
                         checkpoint.last_error_code = Some(error.code.clone());
-                        checkpoint.last_error = Some(error.to_string());
+                        let error_text = error.to_string();
+                        checkpoint.last_error = Some(error_text.clone());
+                        checkpoint.capability_snapshot =
+                            Some(capability_snapshot(now_ms(), Some(&error_text)));
                         self.write_checkpoint(
                             &request.user_id,
                             &instrument,
@@ -1520,6 +1557,8 @@ impl OkxSpotDataPath {
                 checkpoint.gap_count = acquisition.series.gaps.len();
                 checkpoint.revision = Some(source.revision);
                 checkpoint.source_id = Some(source.source_id.clone());
+                checkpoint.request_parameters = Some(source.identity.request_parameters.clone());
+                checkpoint.capability_snapshot = Some(source.identity.capability_snapshot.clone());
                 checkpoint.partial_records.clear();
                 checkpoint.last_error_code = None;
                 checkpoint.last_error = None;
@@ -1579,6 +1618,10 @@ impl OkxSpotDataPath {
                 checkpoint.gap_count = publication.quality.gap_count;
                 checkpoint.revision = Some(publication.source.revision);
                 checkpoint.source_id = Some(publication.source.source_id.clone());
+                checkpoint.request_parameters =
+                    Some(publication.source.identity.request_parameters.clone());
+                checkpoint.capability_snapshot =
+                    Some(publication.source.identity.capability_snapshot.clone());
                 checkpoint.partial_records.clear();
                 checkpoint.last_error_code = None;
                 checkpoint.last_error = None;
@@ -1788,6 +1831,50 @@ impl OkxSpotDataPath {
             .map_err(storage)?
             .map(|json| serde_json::from_str(&json).map_err(storage))
             .transpose()
+    }
+
+    // ponytail: scan this small per-user checkpoint table; add a normalized operation column if volume warrants it.
+    fn checkpoint_snapshot_id(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+    ) -> Result<Option<String>, PipelineError> {
+        let database = self.database()?;
+        let mut statement = database
+            .prepare(
+                "SELECT instrument_code, status_json FROM okx_backfill_checkpoints
+                 WHERE user_id = ?1",
+            )
+            .map_err(storage)?;
+        let prefix = format!("{operation_id}\u{1f}");
+        let mut snapshot_id = None;
+        let rows = statement
+            .query_map([user_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage)?;
+        for row in rows {
+            let (instrument_code, status_json) = row.map_err(storage)?;
+            if !instrument_code.starts_with(&prefix) {
+                continue;
+            }
+            let checkpoint: BackfillCheckpoint =
+                serde_json::from_str(&status_json).map_err(storage)?;
+            let Some(candidate) = checkpoint.universe_snapshot_id else {
+                continue;
+            };
+            if snapshot_id
+                .as_ref()
+                .is_some_and(|existing| existing != &candidate)
+            {
+                return Err(PipelineError::InvalidRequest(
+                    "OKX backfill checkpoints disagree on the retained Instrument Master snapshot"
+                        .into(),
+                ));
+            }
+            snapshot_id = Some(candidate);
+        }
+        Ok(snapshot_id)
     }
 
     fn write_checkpoint(
@@ -2029,17 +2116,21 @@ fn status_from_checkpoint(
     interval: BarInterval,
     checkpoint: BackfillCheckpoint,
 ) -> OkxAcquisitionStatus {
-    let request_parameters = request_parameters(
-        instrument,
-        interval,
-        checkpoint.universe_snapshot_id.as_deref(),
-        checkpoint.start_time_ms.unwrap_or_default(),
-        checkpoint.end_time_ms.unwrap_or_default(),
-    );
-    let capability_snapshot = capability_snapshot(
-        checkpoint.updated_at_ms.unwrap_or_default(),
-        checkpoint.last_error.as_deref(),
-    );
+    let request_parameters = checkpoint.request_parameters.clone().unwrap_or_else(|| {
+        request_parameters(
+            instrument,
+            interval,
+            checkpoint.universe_snapshot_id.as_deref(),
+            checkpoint.start_time_ms.unwrap_or_default(),
+            checkpoint.end_time_ms.unwrap_or_default(),
+        )
+    });
+    let capability_snapshot = checkpoint.capability_snapshot.clone().unwrap_or_else(|| {
+        capability_snapshot(
+            checkpoint.updated_at_ms.unwrap_or_default(),
+            checkpoint.last_error.as_deref(),
+        )
+    });
     OkxAcquisitionStatus {
         operation_id: checkpoint.operation_id,
         instrument: instrument.clone(),
@@ -2552,6 +2643,54 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn cancellation_before_first_page_retains_snapshot_for_retry() {
+        let (_root, path, _requests) = data_path(vec![bar_row(0, "1.5")]);
+        let snapshot = path
+            .record_instrument_master("alice", master(1, "master"))
+            .unwrap();
+        let request = OkxBackfillRequest {
+            task_id: "cancelled-before-first-page".into(),
+            user_id: "alice".into(),
+            start_time_ms: 0,
+            end_time_ms: 60_000,
+            interval: BarInterval::OneMinute,
+            instrument_codes: vec![],
+            universe_snapshot_id: None,
+            checkpoint_operation_id: None,
+            max_gap_retries: 0,
+        };
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(
+            path.backfill_source_only(&request, cancellation, |_| {})
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let cancelled = path.acquisition_statuses("alice").unwrap().remove(0);
+        assert_eq!(cancelled.state, OkxAcquisitionState::Cancelled);
+        assert_eq!(
+            cancelled.request_parameters["universeSnapshotId"],
+            snapshot.snapshot_id
+        );
+
+        path.record_instrument_master("alice", master(DAY_MS + 1, "replacement"))
+            .unwrap();
+        let mut retry = request;
+        retry.task_id = "retry-before-first-page".into();
+        retry.checkpoint_operation_id = Some("cancelled-before-first-page".into());
+        let sources = path
+            .backfill_source_only(&retry, CancellationToken::new(), |_| {})
+            .await
+            .unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(
+            sources[0].identity.request_parameters["universeSnapshotId"],
+            snapshot.snapshot_id
+        );
+    }
+
     #[test]
     fn checkpoints_are_isolated_by_backfill_operation() {
         let (_root, path, _requests) = data_path(Vec::new());
@@ -2610,7 +2749,7 @@ mod tests {
             end_time_ms: 6_060_000,
             interval: BarInterval::OneMinute,
             instrument_codes: vec![],
-            universe_snapshot_id: Some(snapshot.snapshot_id.clone()),
+            universe_snapshot_id: None,
             checkpoint_operation_id: None,
             max_gap_retries: 0,
         };
@@ -2633,6 +2772,8 @@ mod tests {
             cancelled.request_parameters["universeSnapshotId"],
             snapshot.snapshot_id
         );
+        path.record_instrument_master("alice", master(DAY_MS + 1, "replacement"))
+            .unwrap();
         drop(path);
 
         let pipeline = DataPipeline::open(
@@ -2642,6 +2783,12 @@ mod tests {
         .unwrap();
         let path =
             OkxSpotDataPath::open(pipeline, OkxClient::new_with_policy(base_url, policy)).unwrap();
+        let restored = path.acquisition_statuses("alice").unwrap().remove(0);
+        assert_eq!(
+            restored.request_parameters["universeSnapshotId"],
+            snapshot.snapshot_id
+        );
+        assert_eq!(restored.capability_snapshot, cancelled.capability_snapshot);
         let mut retry = request.clone();
         retry.task_id = "retry-after-restart".into();
         retry.checkpoint_operation_id = Some(request.task_id.clone());
@@ -2674,6 +2821,35 @@ mod tests {
         );
         assert!(requests.recv().is_ok());
         assert!(requests.recv().is_ok());
+    }
+
+    #[test]
+    fn checkpoint_status_projects_persisted_request_and_capability_identity() {
+        let (_root, path, _requests) = data_path(Vec::new());
+        let instrument = InstrumentId::new(Venue::crypto_spot("okx").unwrap(), "BTC-USDT").unwrap();
+        let expected_request = json!({
+            "requestId": "exact-request",
+            "universeSnapshotId": "snapshot-exact"
+        });
+        let mut expected_capability = capability_snapshot(123, Some("retained failure"));
+        expected_capability.feed = Some("public-history".into());
+        path.write_checkpoint(
+            "alice",
+            &instrument,
+            BarInterval::OneMinute,
+            &BackfillCheckpoint {
+                operation_id: Some("identity".into()),
+                request_parameters: Some(expected_request.clone()),
+                capability_snapshot: Some(expected_capability.clone()),
+                state: OkxAcquisitionState::Failed,
+                ..BackfillCheckpoint::default()
+            },
+        )
+        .unwrap();
+
+        let status = path.acquisition_statuses("alice").unwrap().remove(0);
+        assert_eq!(status.request_parameters, expected_request);
+        assert_eq!(status.capability_snapshot, expected_capability);
     }
 
     #[tokio::test]
