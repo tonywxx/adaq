@@ -3,7 +3,7 @@
 	"version": "0.9.2",
 	"private": true,
 	"license": "Apache-2.0",
-	"packageManager": "pnpm@11.20.0",
+	"packageManager": "pnpm@11.22.0",
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
