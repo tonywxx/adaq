@@ -155,7 +155,7 @@ type BackfillDraft = {
 	rangeStart: string;
 	rangeEnd: string;
 	interval: OkxInterval;
-	scope: "selected" | "all";
+	scope: "selected" | "watchlist" | "all";
 	instrumentCodes: string[];
 	startedAtMs: number;
 };
@@ -217,10 +217,14 @@ export function DataFoundationPage() {
 	const [backfillTaskId, setBackfillTaskId] = useState<string>();
 	const [backfillProgress, setBackfillProgress] = useState<string>();
 	const [backfillStats, setBackfillStats] = useState<OkxBackfillProgress>();
-	const [backfillScope, setBackfillScope] = useState<"selected" | "all">(
-		"selected",
-	);
-	const [instrumentCodes, setInstrumentCodes] = useState("BTC-USDT");
+	const [backfillScope, setBackfillScope] = useState<
+		"selected" | "watchlist" | "all"
+	>("selected");
+	const [instrumentCodes, setInstrumentCodes] = useState("BTC-USDT, ETH-USDT");
+	const watchlist = useMarketSessionStore((state) => state.watchlist);
+	const watchlistCodes = (watchlist ?? [])
+		.filter((instrument) => instrument.src === "okx")
+		.map((instrument) => instrument.code);
 	const [backfillInterval, setBackfillInterval] = useState<OkxInterval>("1m");
 	const [savedBackfill, setSavedBackfill] = useState<BackfillDraft>();
 	const [clockMs, setClockMs] = useState(() => Date.now());
@@ -252,7 +256,7 @@ export function DataFoundationPage() {
 				rangeEnd: parsed.rangeEnd ?? "",
 				interval: parsed.interval ?? "1m",
 				scope: parsed.scope ?? "selected",
-				instrumentCodes: parsed.instrumentCodes ?? ["BTC-USDT"],
+				instrumentCodes: parsed.instrumentCodes ?? ["BTC-USDT", "ETH-USDT"],
 				startedAtMs: parsed.startedAtMs ?? Date.now(),
 			});
 		} catch {
@@ -378,7 +382,9 @@ export function DataFoundationPage() {
 				.filter(Boolean),
 			startedAtMs: Date.now(),
 		};
-		if (nextDraft.scope === "selected" && !nextDraft.instrumentCodes.length) {
+		const requestedCodes =
+			nextDraft.scope === "watchlist" ? watchlistCodes : nextDraft.instrumentCodes;
+		if (nextDraft.scope !== "all" && !requestedCodes.length) {
 			setError(
 				"Select at least one OKX instrument, or explicitly choose all instruments.",
 			);
@@ -436,8 +442,7 @@ export function DataFoundationPage() {
 					startTimeMs,
 					endTimeMs,
 					interval: nextDraft.interval,
-					instrumentCodes:
-						nextDraft.scope === "all" ? [] : nextDraft.instrumentCodes,
+					instrumentCodes: nextDraft.scope === "all" ? [] : requestedCodes,
 				},
 				onEvent,
 			});
@@ -858,7 +863,7 @@ export function DataFoundationPage() {
 					)}
 				</CardContent>
 			</Card>
-			<Card>
+			<Card className="order-2">
 				<CardHeader>
 					<CardTitle>{t("dataFoundation.selectContextTitle")}</CardTitle>
 					<CardDescription>
@@ -959,7 +964,7 @@ export function DataFoundationPage() {
 					) : null}
 				</CardContent>
 			</Card>
-			<Card>
+			<Card className="order-1">
 				<CardHeader>
 					<CardTitle>{t("dataFoundation.publicationTitle")}</CardTitle>
 					<CardDescription>
@@ -975,10 +980,15 @@ export function DataFoundationPage() {
 								value={backfillScope}
 								disabled={Boolean(backfillTaskId)}
 								onChange={(event) =>
-									setBackfillScope(event.target.value as "selected" | "all")
+									setBackfillScope(
+										event.target.value as "selected" | "watchlist" | "all",
+									)
 								}
 							>
 								<option value="selected">{t("dataFoundation.backfillSelected")}</option>
+								<option value="watchlist">
+									{t("dataFoundation.backfillWatchlist")}
+								</option>
 								<option value="all">{t("dataFoundation.backfillAll")}</option>
 							</select>
 						</label>
@@ -986,15 +996,40 @@ export function DataFoundationPage() {
 							className="grid gap-1 sm:col-span-2"
 							htmlFor="okx-backfill-instruments"
 						>
-							<span>{t("dataFoundation.backfillInstruments")}</span>
+							<span>{t("dataFoundation.backfillCustomInstruments")}</span>
 							<Input
 								id="okx-backfill-instruments"
 								value={instrumentCodes}
-								disabled={backfillScope === "all" || Boolean(backfillTaskId)}
+								disabled={backfillScope !== "selected" || Boolean(backfillTaskId)}
 								placeholder="BTC-USDT, ETH-USDT"
 								onChange={(event) => setInstrumentCodes(event.target.value)}
 							/>
+							<p className="text-xs text-muted-foreground">
+								{t("dataFoundation.backfillCustomInstrumentsHint")}
+							</p>
 						</label>
+						{backfillScope === "watchlist" ? (
+							<div className="rounded-md border p-2 text-xs text-muted-foreground sm:col-span-2">
+								<strong className="text-foreground">
+									{t("dataFoundation.backfillWatchlistContents")}
+								</strong>
+								<p>
+									{watchlistCodes.length
+										? watchlistCodes.join(", ")
+										: t("dataFoundation.backfillWatchlistEmpty")}
+								</p>
+							</div>
+						) : null}
+						{backfillScope === "all" ? (
+							<div className="rounded-md border p-2 text-xs text-muted-foreground sm:col-span-2">
+								<strong className="text-foreground">
+									{t("dataFoundation.backfillAllSnapshot")}
+								</strong>{" "}
+								{instrumentMasterQuery.data?.at(-1)
+									? shortId(instrumentMasterQuery.data.at(-1)?.snapshotId ?? "")
+									: t("dataFoundation.okxInstrumentMasterEmpty")}
+							</div>
+						) : null}
 						<label className="grid gap-1">
 							<span>{t("dataFoundation.backfillInterval")}</span>
 							<select
