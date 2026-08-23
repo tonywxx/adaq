@@ -112,6 +112,8 @@ type InstrumentMasterSnapshot = {
 		minimumQuantity: string;
 	}>;
 	quoteVolume24hUsdt?: Record<string, string>;
+	ignoreUntradable?: boolean;
+	minimumQuoteVolume24h?: string;
 };
 
 const shortId = (value: string) =>
@@ -753,6 +755,12 @@ export function DataFoundationPage() {
 									</p>
 									<div className="grid gap-1 sm:grid-cols-3">
 										<span>
+											{t("dataFoundation.okxInstrumentMasterCountLabel")}{" "}
+											<strong className="text-primary">
+												{humanizeNumber(latest.instruments.length)}
+											</strong>
+										</span>
+										<span>
 											{t("dataFoundation.okxInstrumentMasterSnapshot", {
 												id: shortId(latest.snapshotId),
 											})}
@@ -760,11 +768,6 @@ export function DataFoundationPage() {
 										<span>
 											{t("dataFoundation.okxInstrumentMasterRetrieved", {
 												date: new Date(latest.retrievedAtMs).toLocaleString(),
-											})}
-										</span>
-										<span>
-											{t("dataFoundation.okxInstrumentMasterCount", {
-												count: latest.instruments.length,
 											})}
 										</span>
 									</div>
@@ -801,6 +804,50 @@ export function DataFoundationPage() {
 									<p className="text-xs text-muted-foreground">
 										{t("dataFoundation.okxInstrumentMasterUse")}
 									</p>
+									<details className="rounded-md border p-3">
+										<summary className="cursor-pointer text-sm font-medium">
+											{t("dataFoundation.okxInstrumentMasterHistory", {
+												count: instrumentMasterQuery.data.length,
+											})}
+										</summary>
+										<div className="mt-3 max-h-48 overflow-auto rounded-md border">
+											<table className="w-full text-left text-xs">
+												<thead className="bg-muted">
+													<tr>
+														<th className="p-2">
+															{t("dataFoundation.okxInstrumentMasterSnapshotHeader")}
+														</th>
+														<th className="p-2">
+															{t("dataFoundation.okxInstrumentMasterRetrievedHeader")}
+														</th>
+														<th className="p-2">
+															{t("dataFoundation.okxInstrumentMasterCountLabel")}
+														</th>
+														<th className="p-2">
+															{t("dataFoundation.okxInstrumentMasterFilterHeader")}
+														</th>
+													</tr>
+												</thead>
+												<tbody>
+													{[...instrumentMasterQuery.data].reverse().map((snapshot) => (
+														<tr key={snapshot.snapshotId} className="border-t">
+															<td className="p-2 font-mono">{shortId(snapshot.snapshotId)}</td>
+															<td className="p-2">
+																{new Date(snapshot.retrievedAtMs).toLocaleString()}
+															</td>
+															<td className="p-2">
+																{humanizeNumber(snapshot.instruments.length)}
+															</td>
+															<td className="p-2">
+																{snapshot.ignoreUntradable ? "live · " : "all · "}
+																{humanizeNumber(snapshot.minimumQuoteVolume24h)}
+															</td>
+														</tr>
+													))}
+												</tbody>
+											</table>
+										</div>
+									</details>
 								</div>
 							);
 						})()

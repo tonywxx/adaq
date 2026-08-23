@@ -179,6 +179,11 @@ const english = {
 			okxInstrumentMasterSnapshot: "Snapshot {{id}}",
 			okxInstrumentMasterRetrieved: "Retrieved {{date}}",
 			okxInstrumentMasterCount: "{{count}} Spot instruments",
+			okxInstrumentMasterCountLabel: "Spot instruments",
+			okxInstrumentMasterHistory: "View all snapshots ({{count}})",
+			okxInstrumentMasterSnapshotHeader: "Snapshot",
+			okxInstrumentMasterRetrievedHeader: "Retrieved",
+			okxInstrumentMasterFilterHeader: "Filter",
 			okxInstrumentMasterUse:
 				"This is metadata only. It does not contain prices, Klines, Canonical data, Quality, or Market Snapshots.",
 			okxInstrumentMasterTableDescription:
@@ -2377,6 +2382,11 @@ const simplifiedChinese = {
 			okxInstrumentMasterSnapshot: "快照 {{id}}",
 			okxInstrumentMasterRetrieved: "获取时间 {{date}}",
 			okxInstrumentMasterCount: "{{count}} 个现货交易品种",
+			okxInstrumentMasterCountLabel: "个现货交易品种",
+			okxInstrumentMasterHistory: "查看全部历史快照（{{count}} 个）",
+			okxInstrumentMasterSnapshotHeader: "快照",
+			okxInstrumentMasterRetrievedHeader: "获取时间",
+			okxInstrumentMasterFilterHeader: "筛选条件",
 			okxInstrumentMasterUse:
 				"这里只是元数据，不包含价格、K 线、Canonical、Quality 或行情快照。",
 			okxInstrumentMasterTableDescription:
