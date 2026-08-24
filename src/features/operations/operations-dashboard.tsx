@@ -216,12 +216,7 @@ export function OperationsDashboard() {
 					<CardDescription>{t("operations.evidenceDescription")}</CardDescription>
 				</CardHeader>
 				<CardContent className="grid gap-2 text-sm sm:grid-cols-4">
-					{(
-						[
-							"/factors",
-							"/markets/crypto",
-						] as const
-					).map((to) => (
+					{(["/factors", "/markets/crypto"] as const).map((to) => (
 						<Link
 							key={to}
 							to={to}

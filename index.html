@@ -33,13 +33,53 @@
       body {
         margin: 0;
       }
+      #app-bootstrap {
+        display: grid;
+        min-height: 100vh;
+        place-content: center;
+        justify-items: center;
+        gap: 12px;
+      }
+      #app-bootstrap-spinner {
+        width: 28px;
+        height: 28px;
+        border: 3px solid rgba(17, 17, 17, 0.18);
+        border-top-color: #89c764;
+        border-radius: 999px;
+        animation: app-bootstrap-spin 0.8s linear infinite;
+      }
+      #app-bootstrap strong {
+        font-size: 16px;
+      }
+      @keyframes app-bootstrap-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          background: #1f1f1f;
+          color: #f5f5f5;
+        }
+        #app-bootstrap-spinner {
+          border-color: rgba(245, 245, 245, 0.18);
+          border-top-color: #aadb85;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #app-bootstrap-spinner {
+          animation-duration: 1.6s;
+        }
+      }
     </style>
   </head>
 
   <body>
     <div id="root">
-        <strong>AdaQ</strong>
-      </main>
+        <main id="app-bootstrap" role="status" aria-label="AdaQ">
+          <div id="app-bootstrap-spinner" aria-hidden="true"></div>
+          <strong>AdaQ</strong>
+        </main>
     </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

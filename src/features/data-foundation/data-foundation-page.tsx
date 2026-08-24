@@ -1190,11 +1190,11 @@ export function DataFoundationPage() {
 					<DatabaseIcon className="size-5 text-primary" aria-hidden="true" />
 					<h1 className="text-2xl font-semibold">{t("dataFoundation.title")}</h1>
 				</div>
-			<p className="text-sm text-muted-foreground">
-				{t("dataFoundation.description")}
-			</p>
-		</div>
-		<Card>
+				<p className="text-sm text-muted-foreground">
+					{t("dataFoundation.description")}
+				</p>
+			</div>
+			<Card>
 				<CardHeader>
 					<CardTitle>{t("dataFoundation.readinessTitle")}</CardTitle>
 					<CardDescription>
@@ -1585,12 +1585,12 @@ export function DataFoundationPage() {
 						</label>
 						<label className="grid gap-1" htmlFor="backfill-range-end">
 							<span>{t("dataFoundation.rangeEnd")}</span>
-								<Input
-									id="backfill-range-end"
-									type="date"
-									value={rangeEnd}
-									max={latestClosedDate}
-									disabled={Boolean(backfillTaskId)}
+							<Input
+								id="backfill-range-end"
+								type="date"
+								value={rangeEnd}
+								max={latestClosedDate}
+								disabled={Boolean(backfillTaskId)}
 								onChange={(event) => setRangeEnd(event.target.value)}
 							/>
 						</label>
@@ -1724,6 +1724,11 @@ export function DataFoundationPage() {
 								? t("dataFoundation.publishingGateTwo")
 								: t("dataFoundation.publishGateTwo")}
 						</button>
+						{universeId ? (
+							<p className="w-full text-xs text-muted-foreground" role="status">
+								{t("dataFoundation.gateTwoPublished", { id: universeId })}
+							</p>
+						) : null}
 					</div>
 					{backfillTaskId && backfillStats ? (
 						<div className="grid gap-1 rounded-md border p-3 text-xs text-muted-foreground">

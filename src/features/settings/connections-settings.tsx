@@ -1,7 +1,4 @@
-import {
-	Card,
-	CardContent,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { supabase } from "@/lib/supabase";
 import type { User } from "@supabase/supabase-js";
 import { invoke } from "@tauri-apps/api/core";
@@ -82,12 +79,12 @@ export function ConnectionsSettings() {
 					</Card>
 				) : (
 					<ConnectionCard
-							provider="okx_demo"
-							profile={profileFor("okx_demo")}
-							disabled={!user}
-							userId={user?.id}
-							adapter={adapter}
-							onChanged={() => void refresh()}
+						provider="okx_demo"
+						profile={profileFor("okx_demo")}
+						disabled={!user}
+						userId={user?.id}
+						adapter={adapter}
+						onChanged={() => void refresh()}
 					/>
 				)}
 			</div>

@@ -486,7 +486,9 @@ test("publishes Gate 2 from retained Source evidence", async () => {
 	await act(async () => {
 		await i18n.changeLanguage("zh-CN");
 	});
-	expect(container.textContent).toContain(i18n.t("dataFoundation.publishGateTwo"));
+	expect(container.textContent).toContain(
+		i18n.t("dataFoundation.publishGateTwo"),
+	);
 	expect(container.textContent).toContain("universe-gate-two");
 	await act(async () => root.unmount());
 });

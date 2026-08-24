@@ -123,13 +123,16 @@ export function BacktestPage({
 	const [historyTotal, setHistoryTotal] = useState(0);
 	const [message, setMessage] = useState("");
 	const [runTechnicalError, setRunTechnicalError] = useState("");
-	const [strategyProjects, setStrategyProjects] = useState<StrategyProject[]>([]);
-	const [strategyProjectId, setStrategyProjectId] = useState("strategy-lab");
-	const [strategyScope, setStrategyScope] = useState<StrategyScope>(
-		"single-instrument",
+	const [strategyProjects, setStrategyProjects] = useState<StrategyProject[]>(
+		[],
 	);
+	const [strategyProjectId, setStrategyProjectId] = useState("strategy-lab");
+	const [strategyScope, setStrategyScope] =
+		useState<StrategyScope>("single-instrument");
 	const [strategyProjectMessage, setStrategyProjectMessage] = useState("");
-	const [universeSnapshots, setUniverseSnapshots] = useState<UniverseSnapshot[]>([]);
+	const [universeSnapshots, setUniverseSnapshots] = useState<UniverseSnapshot[]>(
+		[],
+	);
 	const [selectedUniverseId, setSelectedUniverseId] = useState("");
 	const [portfolioSignalDatasetIds, setPortfolioSignalDatasetIds] = useState("");
 	const [snapshotTechnicalError, setSnapshotTechnicalError] = useState("");
@@ -264,7 +267,9 @@ export function BacktestPage({
 			.then((page) => {
 				if (!active) return;
 				setUniverseSnapshots(page.items);
-				setSelectedUniverseId((current) => current || page.items[0]?.snapshotId || "");
+				setSelectedUniverseId(
+					(current) => current || page.items[0]?.snapshotId || "",
+				);
 			})
 			.catch((error) => active && setStrategyProjectMessage(String(error)));
 		return () => {
@@ -582,7 +587,8 @@ export function BacktestPage({
 					executionCostRate: executionProfile.takerFeeRate,
 					maxInstrumentWeight: "1",
 				});
-				if (attemptId) await adapter.completeStrategyAttempt(attemptId, value.runId);
+				if (attemptId)
+					await adapter.completeStrategyAttempt(attemptId, value.runId);
 				setMessage(`Portfolio Attempt ${value.runId.slice(0, 12)} completed.`);
 				return;
 			}
@@ -834,7 +840,7 @@ export function BacktestPage({
 									onChange={(event) => setStrategyProjectId(event.target.value)}
 								/>
 							</Field>
-			<Field label="Scope">
+							<Field label="Scope">
 								<select
 									className="h-9 rounded-md border bg-background px-3"
 									value={strategyScope}
@@ -843,36 +849,36 @@ export function BacktestPage({
 									}
 								>
 									<option value="single-instrument">Single Instrument</option>
-										<option value="portfolio">Portfolio</option>
-									</select>
-								</Field>
-								{strategyScope === "portfolio" && (
-									<>
-										<Field label="Frozen Universe">
-											<select
-												className="h-9 rounded-md border bg-background px-3"
-												value={selectedUniverseId}
-												onChange={(event) => setSelectedUniverseId(event.target.value)}
-											>
-												<option value="">Select</option>
-												{universeSnapshots.map((item) => (
-													<option key={item.snapshotId} value={item.snapshotId}>
-														{item.universe.universeId} · {item.universe.evidenceState}
-													</option>
-												))}
-											</select>
-										</Field>
-										<Field label="Signal Dataset IDs">
-											<Input
-												value={portfolioSignalDatasetIds}
-												placeholder="id-1,id-2"
-												onChange={(event) =>
-													setPortfolioSignalDatasetIds(event.target.value)
-												}
-											/>
-										</Field>
-									</>
-								)}
+									<option value="portfolio">Portfolio</option>
+								</select>
+							</Field>
+							{strategyScope === "portfolio" && (
+								<>
+									<Field label="Frozen Universe">
+										<select
+											className="h-9 rounded-md border bg-background px-3"
+											value={selectedUniverseId}
+											onChange={(event) => setSelectedUniverseId(event.target.value)}
+										>
+											<option value="">Select</option>
+											{universeSnapshots.map((item) => (
+												<option key={item.snapshotId} value={item.snapshotId}>
+													{item.universe.universeId} · {item.universe.evidenceState}
+												</option>
+											))}
+										</select>
+									</Field>
+									<Field label="Signal Dataset IDs">
+										<Input
+											value={portfolioSignalDatasetIds}
+											placeholder="id-1,id-2"
+											onChange={(event) =>
+												setPortfolioSignalDatasetIds(event.target.value)
+											}
+										/>
+									</Field>
+								</>
+							)}
 							{selectedStrategy?.dependencies.map((dependency) => (
 								<Field key={dependency.alias} label={`Factor · ${dependency.alias}`}>
 									<select

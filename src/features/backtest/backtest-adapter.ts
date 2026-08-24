@@ -98,7 +98,9 @@ export function createBacktestAdapter(invoke: TauriInvoke) {
 			}) as Promise<StrategyAttempt>;
 		},
 		beginStrategyAttempt(attemptId: string) {
-			return invoke("strategy_attempt_begin", { request: { attemptId } }) as Promise<StrategyAttempt>;
+			return invoke("strategy_attempt_begin", {
+				request: { attemptId },
+			}) as Promise<StrategyAttempt>;
 		},
 		completeStrategyAttempt(attemptId: string, runId: string) {
 			return invoke("strategy_attempt_complete", {
@@ -106,13 +108,19 @@ export function createBacktestAdapter(invoke: TauriInvoke) {
 			}) as Promise<StrategyAttempt>;
 		},
 		failStrategyAttempt(attemptId: string, reason: string) {
-			return invoke("strategy_attempt_fail", { request: { attemptId, reason } }) as Promise<StrategyAttempt>;
+			return invoke("strategy_attempt_fail", {
+				request: { attemptId, reason },
+			}) as Promise<StrategyAttempt>;
 		},
 		cancelStrategyAttempt(attemptId: string) {
-			return invoke("strategy_attempt_cancel", { request: { attemptId } }) as Promise<StrategyAttempt>;
+			return invoke("strategy_attempt_cancel", {
+				request: { attemptId },
+			}) as Promise<StrategyAttempt>;
 		},
 		recoverStrategyAttempt(attemptId: string) {
-			return invoke("strategy_attempt_recover", { request: { attemptId } }) as Promise<StrategyAttempt>;
+			return invoke("strategy_attempt_recover", {
+				request: { attemptId },
+			}) as Promise<StrategyAttempt>;
 		},
 		listUniverseSnapshots(userId: string, page = 1) {
 			return invoke("snapshot_list_universe", {
@@ -131,7 +139,9 @@ export function createBacktestAdapter(invoke: TauriInvoke) {
 			maxInstrumentWeight: string;
 			maxTurnover?: string;
 		}) {
-			return invoke("portfolio_backtest_run", { request }) as Promise<PortfolioBacktest>;
+			return invoke("portfolio_backtest_run", {
+				request,
+			}) as Promise<PortfolioBacktest>;
 		},
 	};
 }
