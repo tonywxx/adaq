@@ -19,6 +19,7 @@ import {
 	WorkflowHomePage,
 } from "@/features/workflow/workflow-page";
 import Home from "@/layout/home";
+import { MarketRealtimeConnection } from "@/lib/market-session";
 import { lazy, Suspense, useEffect } from "react";
 import { LAST_APP_PATH_KEY } from "@/lib/app-settings";
 
@@ -189,6 +190,7 @@ function AppShell() {
 
 	return (
 		<AuthGate>
+			<MarketRealtimeConnection enabled={href.startsWith("/markets/crypto")} />
 			<Home showSidebar={!isSettings}>
 				<Outlet />
 			</Home>

@@ -468,13 +468,9 @@ pub struct OkxClient {
     engine: Arc<adaq_trading_crypto::adapters::Okx>,
     http: reqwest::Client,
     base_url: String,
-    /// Retained for API compatibility. Live WebSocket streams are served by
-    /// `adaq-trading-crypto`'s `OkxWs` (`Realtime` trait), which owns its own
-    /// connection URLs, so these are no longer read after the crate took over
-    /// the streaming layer.
-    #[allow(dead_code)]
+    /// Endpoints used by ADAQ-owned realtime stream tasks. Keeping the socket
+    /// in the task makes aborting a page subscription close the transport too.
     ws_url: String,
-    #[allow(dead_code)]
     business_ws_url: String,
     policy: OkxRequestPolicy,
     next_request_at: Arc<Mutex<Instant>>,
@@ -807,22 +803,103 @@ impl OkxClient {
         Ok(())
     }
 
-    async fn stream_tickers_once<F>(&self, codes: &[String], on_event: F) -> Result<(), DataError>
+    async fn stream_tickers_once<F>(
+        &self,
+        codes: &[String],
+        mut on_event: F,
+    ) -> Result<(), DataError>
     where
         F: FnMut(TickerStreamEvent) -> bool,
     {
-        self.drive_symbol_stream(codes, on_event, |ws, code| {
-            Box::pin(async move {
-                let ticker = ws
-                    .watch_ticker(&code, Default::default())
-                    .await
-                    .map_err(map_crate_error)?;
-                Ok(vec![TickerStreamEvent::Snapshot(map_crate_ticker(
-                    &ticker, &code,
-                )?)])
-            })
-        })
+        validate_ticker_codes(codes)?;
+        let mut socket = adaq_trading_crypto::realtime::ws::connect(
+            &self.ws_url,
+            &reqwest::header::HeaderMap::new(),
+        )
         .await
+        .map_err(map_crate_error)?;
+        let args = codes
+            .iter()
+            .map(|code| {
+                serde_json::json!({
+                    "channel": "tickers",
+                    "instId": code,
+                })
+            })
+            .collect::<Vec<_>>();
+        socket
+            .send(Message::Text(
+                serde_json::json!({ "op": "subscribe", "args": args })
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .map_err(|error| DataError::okx("transport", error.to_string()))?;
+
+        let heartbeat = Duration::from_secs(25);
+        let mut awaiting_pong = false;
+        let mut announced_connected = false;
+        loop {
+            let message = match tokio::time::timeout(heartbeat, socket.next()).await {
+                Ok(Some(Ok(message))) => message,
+                Ok(Some(Err(error))) => {
+                    return Err(DataError::okx("transport", error.to_string()));
+                }
+                Ok(None) => {
+                    return Err(DataError::okx(
+                        "connection_closed",
+                        "OKX ticker WebSocket closed",
+                    ));
+                }
+                Err(_) if awaiting_pong => {
+                    return Err(DataError::okx(
+                        "heartbeat_timeout",
+                        "OKX ticker WebSocket did not answer ping",
+                    ));
+                }
+                Err(_) => {
+                    socket
+                        .send(Message::Text("ping".into()))
+                        .await
+                        .map_err(|error| DataError::okx("transport", error.to_string()))?;
+                    awaiting_pong = true;
+                    continue;
+                }
+            };
+
+            match message {
+                Message::Text(text) if text.as_str() == "pong" => awaiting_pong = false,
+                Message::Text(text) => {
+                    awaiting_pong = false;
+                    let snapshots = parse_realtime_ticker_message(text.as_str(), codes)?;
+                    if !snapshots.is_empty() && !announced_connected {
+                        if !on_event(TickerStreamEvent::Connected) {
+                            return Ok(());
+                        }
+                        announced_connected = true;
+                    }
+                    for snapshot in snapshots {
+                        if !on_event(TickerStreamEvent::Snapshot(snapshot)) {
+                            return Ok(());
+                        }
+                    }
+                }
+                Message::Ping(payload) => {
+                    socket
+                        .send(Message::Pong(payload))
+                        .await
+                        .map_err(|error| DataError::okx("transport", error.to_string()))?;
+                }
+                Message::Pong(_) => awaiting_pong = false,
+                Message::Close(_) => {
+                    return Err(DataError::okx(
+                        "connection_closed",
+                        "OKX ticker WebSocket closed",
+                    ));
+                }
+                _ => {}
+            }
+        }
     }
 
     pub async fn stream_trades<F>(&self, codes: &[String], mut on_event: F) -> Result<(), DataError>
@@ -1829,12 +1906,89 @@ fn map_crate_market(
 
 // ===================== realtime bridge (adaq-trading-crypto) =====================
 //
-// Ticker/trade/order-book streams use the crate's `OkxWs` watch API. K-lines
-// preserve ADAQ's original single-session, heartbeat, and reconnect lifecycle,
-// using the crate's public websocket connector and OKX parser for the wire path.
+// Trade/order-book streams use the crate's `OkxWs` watch API. Ticker and
+// K-line streams own their websocket task so page teardown can abort the
+// transport without leaving the crate's reconnect task behind.
 
 fn map_crate_error(err: adaq_trading_crypto::Error) -> DataError {
     DataError::new(OKX_SRC, err.kind().as_str().to_owned(), err.to_string())
+}
+
+fn parse_realtime_ticker_message(
+    text: &str,
+    codes: &[String],
+) -> Result<Vec<TickerSnapshot>, DataError> {
+    let message = serde_json::from_str::<serde_json::Value>(text)
+        .map_err(|error| DataError::okx("invalid_response", error.to_string()))?;
+    if message["arg"]["channel"].as_str() != Some("tickers") {
+        return Ok(Vec::new());
+    }
+    let code = message["arg"]["instId"].as_str().unwrap_or_default();
+    if code.is_empty() || !codes.iter().any(|value| value == code) {
+        return Ok(Vec::new());
+    }
+    let Some(rows) = message["data"].as_array() else {
+        return Ok(Vec::new());
+    };
+
+    rows.iter()
+        .map(|row| {
+            let required_decimal = |field: &str| -> Result<Decimal, DataError> {
+                let value = row[field]
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        DataError::okx(
+                            "invalid_response",
+                            format!("OKX ticker missing {field} for {code}"),
+                        )
+                    })?;
+                value.parse::<Decimal>().map_err(|error| {
+                    DataError::okx(
+                        "invalid_response",
+                        format!("OKX ticker has invalid {field} for {code}: {error}"),
+                    )
+                })
+            };
+            let optional_decimal = |field: &str| -> Result<Option<Decimal>, DataError> {
+                let Some(value) = row[field].as_str().filter(|value| !value.is_empty()) else {
+                    return Ok(None);
+                };
+                value.parse::<Decimal>().map(Some).map_err(|error| {
+                    DataError::okx(
+                        "invalid_response",
+                        format!("OKX ticker has invalid {field} for {code}: {error}"),
+                    )
+                })
+            };
+            let timestamp_ms = row["ts"]
+                .as_str()
+                .and_then(|value| value.parse::<i64>().ok())
+                .ok_or_else(|| {
+                    DataError::okx(
+                        "invalid_response",
+                        format!("OKX ticker missing timestamp for {code}"),
+                    )
+                })?;
+
+            Ok(TickerSnapshot {
+                src: OKX_SRC.to_owned(),
+                code: code.to_owned(),
+                last: required_decimal("last")?,
+                last_quantity: optional_decimal("lastSz")?.unwrap_or(Decimal::ZERO),
+                ask_price: optional_decimal("askPx")?,
+                ask_quantity: optional_decimal("askSz")?,
+                bid_price: optional_decimal("bidPx")?,
+                bid_quantity: optional_decimal("bidSz")?,
+                open_24h: required_decimal("open24h")?,
+                high_24h: required_decimal("high24h")?,
+                low_24h: required_decimal("low24h")?,
+                base_volume_24h: required_decimal("vol24h")?,
+                quote_volume_24h: required_decimal("volCcy24h")?,
+                timestamp_ms,
+            })
+        })
+        .collect()
 }
 
 /// Event enums that carry a `Connected` variant. The stream drivers emit a
@@ -2683,6 +2837,45 @@ mod tests {
             Decimal::from_str_exact("83000000.0").unwrap()
         );
         assert_eq!(snapshot.timestamp_ms, 1_719_999_900_000);
+    }
+
+    #[test]
+    fn realtime_ticker_parser_maps_okx_payload() {
+        let text = serde_json::json!({
+            "arg": {"channel": "tickers", "instId": "BTC-USDT"},
+            "data": [{
+                "last": "67000.5",
+                "lastSz": "0.25",
+                "askPx": "67001.0",
+                "askSz": "1.2",
+                "bidPx": "66999.0",
+                "bidSz": "0.5",
+                "open24h": "66000.0",
+                "high24h": "68000.0",
+                "low24h": "65500.0",
+                "vol24h": "1234.5",
+                "volCcy24h": "83000000.0",
+                "ts": "1719999900000"
+            }]
+        })
+        .to_string();
+        let snapshots = super::parse_realtime_ticker_message(
+            &text,
+            &["BTC-USDT".to_owned(), "ETH-USDT".to_owned()],
+        )
+        .unwrap();
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].code, "BTC-USDT");
+        assert_eq!(
+            snapshots[0].last_quantity,
+            Decimal::from_str_exact("0.25").unwrap()
+        );
+        assert_eq!(
+            snapshots[0].bid_quantity,
+            Some(Decimal::from_str_exact("0.5").unwrap())
+        );
+        assert_eq!(snapshots[0].timestamp_ms, 1_719_999_900_000);
     }
 
     #[test]

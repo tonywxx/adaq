@@ -165,14 +165,12 @@ export const useMarketSessionStore = create<MarketSessionStore>((set) => ({
 		set((state) => ({
 			tickerStatus,
 			tickerError:
-				tickerError ??
-				(tickerStatus === "live" ? undefined : state.tickerError),
+				tickerError ?? (tickerStatus === "live" ? undefined : state.tickerError),
 		})),
 	setBarStatus: (barStatus, barError) =>
 		set((state) => ({
 			barStatus,
-			barError:
-				barError ?? (barStatus === "live" ? undefined : state.barError),
+			barError: barError ?? (barStatus === "live" ? undefined : state.barError),
 		})),
 	updateTicker: (ticker) =>
 		set((state) => {
@@ -204,18 +202,6 @@ export function MarketSessionProvider({
 	children: ReactNode;
 }) {
 	const ready = useMarketSessionStore((state) => state.ready);
-	const watchlist = useMarketSessionStore((state) => state.watchlist);
-	const activeInstrument = useMarketSessionStore(
-		(state) => state.activeInstrument,
-	);
-	const miniChartInterval = useMarketSessionStore(
-		(state) => state.miniChartInterval,
-	);
-	const mainChartInterval = useMarketSessionStore(
-		(state) => state.mainChartInterval,
-	);
-	const catalogLoaded = useMarketSessionStore((state) => state.catalogLoaded);
-	const catalog = useMarketSessionStore((state) => state.catalog);
 
 	useEffect(() => {
 		let disposed = false;
@@ -259,6 +245,24 @@ export function MarketSessionProvider({
 		};
 	}, [ready]);
 
+	return children;
+}
+
+export function MarketRealtimeConnection({ enabled }: { enabled: boolean }) {
+	const ready = useMarketSessionStore((state) => state.ready);
+	const watchlist = useMarketSessionStore((state) => state.watchlist);
+	const activeInstrument = useMarketSessionStore(
+		(state) => state.activeInstrument,
+	);
+	const miniChartInterval = useMarketSessionStore(
+		(state) => state.miniChartInterval,
+	);
+	const mainChartInterval = useMarketSessionStore(
+		(state) => state.mainChartInterval,
+	);
+	const catalogLoaded = useMarketSessionStore((state) => state.catalogLoaded);
+	const catalog = useMarketSessionStore((state) => state.catalog);
+
 	const tickerCodes = useMemo(
 		() =>
 			[
@@ -276,7 +280,7 @@ export function MarketSessionProvider({
 		[activeInstrument, catalog, catalogLoaded, watchlist],
 	);
 	useEffect(() => {
-		if (!ready || tickerCodes.length === 0) return;
+		if (!enabled || !ready || tickerCodes.length === 0) return;
 		let disposed = false;
 		const subscriptionId = crypto.randomUUID();
 		const onEvent = new Channel<TickerStreamEvent>();
@@ -302,7 +306,7 @@ export function MarketSessionProvider({
 				request: { subscriptionId },
 			});
 		};
-	}, [ready, tickerCodes]);
+	}, [enabled, ready, tickerCodes]);
 
 	const barSubscriptions = useMemo(() => {
 		const subscriptions = new Map<
@@ -348,7 +352,7 @@ export function MarketSessionProvider({
 		watchlist,
 	]);
 	useEffect(() => {
-		if (!ready || barSubscriptions.length === 0) return;
+		if (!enabled || !ready || barSubscriptions.length === 0) return;
 		let disposed = false;
 		const subscriptionId = crypto.randomUUID();
 		const onEvent = new Channel<BarStreamEvent>();
@@ -373,9 +377,9 @@ export function MarketSessionProvider({
 				request: { subscriptionId },
 			});
 		};
-	}, [barSubscriptions, ready]);
+	}, [barSubscriptions, enabled, ready]);
 
-	return children;
+	return null;
 }
 
 export async function addWatchlistInstrument(instrument: InstrumentRef) {

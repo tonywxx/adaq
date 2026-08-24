@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adaq"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "adaq-backtest-core",
  "adaq-component-sdk",
@@ -266,9 +266,9 @@ dependencies = [
 
 [[package]]
 name = "adaq-talib"
-version = "0.1.9"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c92f2772c53551fa71a4f4c4f0c068c0739319165ce55454018adb4c12937a3"
+checksum = "dfb35c3cdda259634833381b02bf5ee009da8ec7552454739589b741a056a5df"
 
 [[package]]
 name = "adaq-trading-crypto"

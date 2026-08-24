@@ -8,7 +8,7 @@ keywords = ["quant-trading", "crypto", "exchange", "prediction-market", "stock-m
 license = "Apache-2.0"
 name = "adaq"
 repository = "https://github.com/tonywxx/adaq"
-version = "0.9.3"
+version = "0.9.4"
 
 [workspace]
 members = [
@@ -40,11 +40,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "adaq_lib"
 
 [build-dependencies]
-tauri-build = {version = "2", features = [] }
+tauri-build = {version = "2", features = []}
 
 [dependencies]
 adaq-backtest-core = {path = "crates/adaq-backtest-core"}
-adaq-component-sdk = {path = "crates/adaq-component-sdk", features = ["host"] }
+adaq-component-sdk = {path = "crates/adaq-component-sdk", features = ["host"]}
 adaq-component-tooling = {path = "crates/adaq-component-tooling"}
 adaq-data-core = {path = "crates/adaq-data-core", default-features = false}
 adaq-data-pipeline = {path = "crates/adaq-data-pipeline", default-features = false}
@@ -62,30 +62,30 @@ chrono = {version = "0.4", default-features = false, features = [
   "std",
   "clock",
   "serde",
-] }
+]}
 hmac = "0.13"
 keyring = {version = "3", features = [
   "apple-native",
   "windows-native",
   "sync-secret-service",
   "crypto-rust",
-] }
+]}
 parquet = {version = "59.2", default-features = false, features = [
   "arrow",
   "snap",
-] }
+]}
 rand = "0.8"
 reqwest = {version = "0.13", default-features = false, features = [
   "json",
   "blocking",
   "rustls",
-] }
-rusqlite = {version = "0.40", features = ["bundled"] }
+]}
+rusqlite = {version = "0.40", features = ["bundled"]}
 rust_decimal = "1"
-serde = {version = "1", features = ["derive"] }
+serde = {version = "1", features = ["derive"]}
 serde_json = "1"
 sha2 = "0.11"
-tauri = {version = "2", features = ["tray-icon"] }
+tauri = {version = "2", features = ["tray-icon"]}
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-http = "2"
@@ -94,11 +94,11 @@ tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
-uuid = {version = "1.24.1", features = ["serde", "v4"] }
-zip = {version = "8", default-features = false, features = ["deflate"] }
+uuid = {version = "1.24.1", features = ["serde", "v4"]}
+zip = {version = "8", default-features = false, features = ["deflate"]}
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = {version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+windows-sys = {version = "0.61.2", features = ["Win32_Storage_FileSystem"]}
 
 [dev-dependencies]
-tokio = {version = "1", features = ["rt", "macros"] }
+tokio = {version = "1", features = ["rt", "macros"]}
