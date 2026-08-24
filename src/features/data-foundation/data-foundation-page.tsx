@@ -20,6 +20,7 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 type PipelineDatasetSummary = {
 	sourceId: string;
@@ -184,7 +185,17 @@ const humanizeNumber = (value: string | number | undefined) => {
 };
 
 const formatTimestamp = (value: number | undefined) =>
-	value == null ? "—" : formatDateTime(value);
+	value == null ? "—" : formatDateTime(value, { timeZone: "UTC" });
+
+type ProvenanceItem =
+	| {
+			kind: "dataset";
+			sourceId: string;
+			revision: number;
+			source: SourceEvidenceSummary;
+			operation?: OkxAcquisitionStatus;
+	  }
+	| { kind: "operation"; operation: OkxAcquisitionStatus };
 
 function SourceProvenancePanel({
 	datasets,
@@ -198,6 +209,7 @@ function SourceProvenancePanel({
 	const unresolvedOperations = operations.filter(
 		(operation) => !operation.sourceId,
 	);
+	const [page, setPage] = useState(1);
 	if (!datasets.length && !unresolvedOperations.length) {
 		return (
 			<p className="text-sm text-muted-foreground">
@@ -205,154 +217,174 @@ function SourceProvenancePanel({
 			</p>
 		);
 	}
+	const items: ProvenanceItem[] = [
+		...datasets.map((dataset) => ({
+			kind: "dataset" as const,
+			sourceId: dataset.sourceId,
+			revision: dataset.revision,
+			source: dataset.source,
+			operation: operations.find((item) => item.sourceId === dataset.sourceId),
+		})),
+		...unresolvedOperations.map((operation) => ({
+			kind: "operation" as const,
+			operation,
+		})),
+	];
+	const PROVENANCE_PAGE_SIZE = 6;
+	const pageCount = Math.max(1, Math.ceil(items.length / PROVENANCE_PAGE_SIZE));
+	const safePage = Math.min(page, pageCount);
+	const slice = items.slice(
+		(safePage - 1) * PROVENANCE_PAGE_SIZE,
+		safePage * PROVENANCE_PAGE_SIZE,
+	);
 	return (
 		<div className="grid gap-3">
-			{datasets.map(({ sourceId, revision, source }) => {
-				const operation = operations.find((item) => item.sourceId === sourceId);
-				return (
-					<details key={sourceId} className="rounded-md border p-3" open>
+			{slice.map((item) =>
+				item.kind === "dataset" ? (
+					<details key={item.sourceId} className="rounded-md border p-3">
 						<summary className="cursor-pointer text-sm font-medium">
-							{source.provider} · {source.instrument?.code ?? "—"} ·{" "}
-							{source.interval ?? "—"}
+							{item.source.provider} · {item.source.instrument?.code ?? "—"} ·{" "}
+							{item.source.interval ?? "—"}
 						</summary>
 						<div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
 							<ContextField
 								label={t("dataFoundation.sourceProvider")}
-								value={`${source.provider} · ${source.actualUpstream ?? "—"}`}
+								value={`${item.source.provider} · ${item.source.actualUpstream ?? "—"}`}
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceCapability")}
-								value={JSON.stringify(source.capabilitySnapshot)}
+								value={JSON.stringify(item.source.capabilitySnapshot)}
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceRequest")}
-								value={JSON.stringify(source.requestParameters)}
+								value={JSON.stringify(item.source.requestParameters)}
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceInstrument")}
-								value={`${source.instrument?.venue.id ?? "—"} · ${source.instrument?.code ?? "—"} · ${source.interval ?? "—"}`}
+								value={`${item.source.instrument?.venue.id ?? "—"} · ${item.source.instrument?.code ?? "—"} · ${item.source.interval ?? "—"}`}
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceRequestedRange")}
-								value={`${formatTimestamp(source.requestedStartTimeMs)} — ${formatTimestamp(source.requestedEndTimeMs)}`}
+								value={`${formatTimestamp(item.source.requestedStartTimeMs)} — ${formatTimestamp(item.source.requestedEndTimeMs)}`}
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceReceivedRange")}
-								value={`${formatTimestamp(source.receivedStartTimeMs)} — ${formatTimestamp(source.receivedEndTimeMs)}`}
+								value={`${formatTimestamp(item.source.receivedStartTimeMs)} — ${formatTimestamp(item.source.receivedEndTimeMs)}`}
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceRevision")}
-								value={`${revision} · ${sourceId}`}
+								value={`${item.revision} · ${item.sourceId}`}
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceLogicalKey")}
-								value={source.logicalKey}
+								value={item.source.logicalKey}
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceHashes")}
 								value={[
-									source.contentSha256,
-									source.payloadSha256,
-									source.acquisitionContentSha256,
-									...source.responseSha256s,
+									item.source.contentSha256,
+									item.source.payloadSha256,
+									item.source.acquisitionContentSha256,
+									...item.source.responseSha256s,
 								]
 									.filter(Boolean)
 									.join("\n")}
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceRetrieved")}
-								value={formatTimestamp(source.retrievedAtMs)}
+								value={formatTimestamp(item.source.retrievedAtMs)}
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceContinuation")}
 								value={t("dataFoundation.sourceRequests", {
-									count: source.requestCount,
-									retries: operation?.retryCount ?? source.retryCount,
-									statuses: source.responseStatuses.join(", ") || "—",
-									pages: operation?.pages ?? 0,
-									cursor: formatTimestamp(operation?.nextCursorMs),
+									count: item.source.requestCount,
+									retries: item.operation?.retryCount ?? item.source.retryCount,
+									statuses: item.source.responseStatuses.join(", ") || "—",
+									pages: item.operation?.pages ?? 0,
+									cursor: formatTimestamp(item.operation?.nextCursorMs),
 								})}
 							/>
-							{source.notes.length ? (
+							{item.source.notes.length ? (
 								<ContextField
 									label={t("dataFoundation.sourceNotes")}
-									value={source.notes.join("\n")}
+									value={item.source.notes.join("\n")}
 								/>
 							) : null}
-							{operation?.lastError ? (
+							{item.operation?.lastError ? (
 								<ContextField
 									label={t("dataFoundation.sourceNotes")}
-									value={`${operation.lastErrorCode ?? t("dataFoundation.unknownErrorCode")}: ${operation.lastError}`}
+									value={`${item.operation.lastErrorCode ?? t("dataFoundation.unknownErrorCode")}: ${item.operation.lastError}`}
 								/>
 							) : null}
 						</div>
 					</details>
-				);
-			})}
-			{unresolvedOperations.map((operation) => (
-				<details
-					key={
-						operation.operationId ?? `${operation.instrument.code}-${operation.state}`
-					}
-					className="rounded-md border p-3"
-					open
-				>
-					<summary className="cursor-pointer text-sm font-medium">
-						{operation.provider} · {operation.instrument.code} · {operation.interval}
-					</summary>
-					<div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
-						<ContextField
-							label={t("dataFoundation.sourceProvider")}
-							value={`${operation.provider} · ${operation.actualUpstream}`}
-						/>
-						<ContextField
-							label={t("dataFoundation.sourceCapability")}
-							value={JSON.stringify(operation.capabilitySnapshot)}
-						/>
-						<ContextField
-							label={t("dataFoundation.sourceRequest")}
-							value={JSON.stringify(operation.requestParameters)}
-						/>
-						<ContextField
-							label={t("dataFoundation.sourceInstrument")}
-							value={`${operation.instrument.venue.id} · ${operation.instrument.code} · ${operation.interval}`}
-						/>
-						<ContextField
-							label={t("dataFoundation.sourceRequestedRange")}
-							value={`${formatTimestamp(operation.startTimeMs)} — ${formatTimestamp(operation.endTimeMs)}`}
-						/>
-						<ContextField
-							label={t("dataFoundation.sourceReceivedRange")}
-							value={`${formatTimestamp(operation.coverageStartMs)} — ${formatTimestamp(operation.coverageEndMs)}`}
-						/>
-						<ContextField
-							label={t("dataFoundation.sourceRevision")}
-							value={`${operation.revision ?? "—"} · ${operation.sourceId ?? "—"}`}
-						/>
-						<ContextField label={t("dataFoundation.sourceHashes")} value="—" />
-						<ContextField
-							label={t("dataFoundation.sourceRetrieved")}
-							value={formatTimestamp(operation.updatedAtMs)}
-						/>
-						<ContextField
-							label={t("dataFoundation.sourceContinuation")}
-							value={t("dataFoundation.sourceRequests", {
-								count: "—",
-								retries: operation.retryCount,
-								statuses: "—",
-								pages: operation.pages,
-								cursor: formatTimestamp(operation.nextCursorMs),
-							})}
-						/>
-						{operation.lastError ? (
+				) : (
+					<details
+						key={
+							item.operation.operationId ??
+							`${item.operation.instrument.code}-${item.operation.state}`
+						}
+						className="rounded-md border p-3"
+					>
+						<summary className="cursor-pointer text-sm font-medium">
+							{item.operation.provider} · {item.operation.instrument.code} ·{" "}
+							{item.operation.interval}
+						</summary>
+						<div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
 							<ContextField
-								label={t("dataFoundation.sourceNotes")}
-								value={`${operation.lastErrorCode ?? t("dataFoundation.unknownErrorCode")}: ${operation.lastError}`}
+								label={t("dataFoundation.sourceProvider")}
+								value={`${item.operation.provider} · ${item.operation.actualUpstream}`}
 							/>
-						) : null}
-					</div>
-				</details>
-			))}
+							<ContextField
+								label={t("dataFoundation.sourceCapability")}
+								value={JSON.stringify(item.operation.capabilitySnapshot)}
+							/>
+							<ContextField
+								label={t("dataFoundation.sourceRequest")}
+								value={JSON.stringify(item.operation.requestParameters)}
+							/>
+							<ContextField
+								label={t("dataFoundation.sourceInstrument")}
+								value={`${item.operation.instrument.venue.id} · ${item.operation.instrument.code} · ${item.operation.interval}`}
+							/>
+							<ContextField
+								label={t("dataFoundation.sourceRequestedRange")}
+								value={`${formatTimestamp(item.operation.startTimeMs)} — ${formatTimestamp(item.operation.endTimeMs)}`}
+							/>
+							<ContextField
+								label={t("dataFoundation.sourceReceivedRange")}
+								value={`${formatTimestamp(item.operation.coverageStartMs)} — ${formatTimestamp(item.operation.coverageEndMs)}`}
+							/>
+							<ContextField
+								label={t("dataFoundation.sourceRevision")}
+								value={`${item.operation.revision ?? "—"} · ${item.operation.sourceId ?? "—"}`}
+							/>
+							<ContextField label={t("dataFoundation.sourceHashes")} value="—" />
+							<ContextField
+								label={t("dataFoundation.sourceRetrieved")}
+								value={formatTimestamp(item.operation.updatedAtMs)}
+							/>
+							<ContextField
+								label={t("dataFoundation.sourceContinuation")}
+								value={t("dataFoundation.sourceRequests", {
+									count: "—",
+									retries: item.operation.retryCount,
+									statuses: "—",
+									pages: item.operation.pages,
+									cursor: formatTimestamp(item.operation.nextCursorMs),
+								})}
+							/>
+							{item.operation.lastError ? (
+								<ContextField
+									label={t("dataFoundation.sourceNotes")}
+									value={`${item.operation.lastErrorCode ?? t("dataFoundation.unknownErrorCode")}: ${item.operation.lastError}`}
+								/>
+							) : null}
+						</div>
+					</details>
+				),
+			)}
+			<Pagination page={safePage} pageCount={pageCount} onPageChange={setPage} />
 		</div>
 	);
 }
@@ -612,15 +644,17 @@ export function DataFoundationPage() {
 	const [publishingSourceId, setPublishingSourceId] = useState<string>();
 	const [gateTwoRequest, setGateTwoRequest] = useState<GateTwoRequest>();
 	const [publishingGateTwo, setPublishingGateTwo] = useState(false);
-	const [gateTwoUniverseId, setGateTwoUniverseId] = useState<string>();
 	const [publicationPage, setPublicationPage] = useState(1);
 	const [acquisitionPage, setAcquisitionPage] = useState(1);
 	const [rangeStart, setRangeStart] = useState(() =>
 		new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10),
 	);
 	const [rangeEnd, setRangeEnd] = useState(() =>
-		new Date().toISOString().slice(0, 10),
+		new Date(Date.now() - 86_400_000).toISOString().slice(0, 10),
 	);
+	const latestClosedDate = new Date(clockMs - 86_400_000)
+		.toISOString()
+		.slice(0, 10);
 	useEffect(() => {
 		const raw = localStorage.getItem("adaq.okx-backfill-draft");
 		if (!raw) return;
@@ -644,6 +678,11 @@ export function DataFoundationPage() {
 		const timer = window.setInterval(() => setClockMs(Date.now()), 1000);
 		return () => window.clearInterval(timer);
 	}, [backfillTaskId]);
+	useEffect(() => {
+		if (!error) return;
+		toast.error(error);
+		setError(undefined);
+	}, [error]);
 	const pipelineQuery = useQuery({
 		queryKey: ["data-foundation-pipeline", userId],
 		queryFn: () =>
@@ -710,6 +749,10 @@ export function DataFoundationPage() {
 		enabled: Boolean(userId),
 		staleTime: 30_000,
 	});
+	useEffect(() => {
+		const queryError = snapshotsQuery.error ?? universeQuery.error;
+		if (queryError) toast.error(getErrorMessage(queryError));
+	}, [snapshotsQuery.error, universeQuery.error]);
 	const selectedDataset = pipelineQuery.data?.find(
 		(dataset) => dataset.sourceId === selectedSourceId,
 	);
@@ -822,8 +865,12 @@ export function DataFoundationPage() {
 				},
 				onEvent,
 			});
-			setGateTwoUniverseId(result.universeSnapshotId);
 			setUniverseId(result.universeSnapshotId);
+			toast.success(
+				t("dataFoundation.gateTwoPublished", {
+					id: result.universeSnapshotId,
+				}),
+			);
 			await Promise.all([
 				pipelineQuery.refetch(),
 				snapshotsQuery.refetch(),
@@ -1143,16 +1190,11 @@ export function DataFoundationPage() {
 					<DatabaseIcon className="size-5 text-primary" aria-hidden="true" />
 					<h1 className="text-2xl font-semibold">{t("dataFoundation.title")}</h1>
 				</div>
-				<p className="text-sm text-muted-foreground">
-					{t("dataFoundation.description")}
-				</p>
-			</div>
-			{error ? (
-				<p className="text-sm text-destructive" role="alert">
-					{error}
-				</p>
-			) : null}
-			<Card>
+			<p className="text-sm text-muted-foreground">
+				{t("dataFoundation.description")}
+			</p>
+		</div>
+		<Card>
 				<CardHeader>
 					<CardTitle>{t("dataFoundation.readinessTitle")}</CardTitle>
 					<CardDescription>
@@ -1484,11 +1526,6 @@ export function DataFoundationPage() {
 					>
 						{t("dataFoundation.establishContext")}
 					</button>
-					{snapshotsQuery.error || universeQuery.error ? (
-						<p className="text-sm text-destructive" role="alert">
-							{getErrorMessage(snapshotsQuery.error ?? universeQuery.error)}
-						</p>
-					) : null}
 				</CardContent>
 			</Card>
 			<Card className="order-1">
@@ -1548,11 +1585,12 @@ export function DataFoundationPage() {
 						</label>
 						<label className="grid gap-1" htmlFor="backfill-range-end">
 							<span>{t("dataFoundation.rangeEnd")}</span>
-							<Input
-								id="backfill-range-end"
-								type="date"
-								value={rangeEnd}
-								disabled={Boolean(backfillTaskId)}
+								<Input
+									id="backfill-range-end"
+									type="date"
+									value={rangeEnd}
+									max={latestClosedDate}
+									disabled={Boolean(backfillTaskId)}
 								onChange={(event) => setRangeEnd(event.target.value)}
 							/>
 						</label>
@@ -1687,13 +1725,6 @@ export function DataFoundationPage() {
 								: t("dataFoundation.publishGateTwo")}
 						</button>
 					</div>
-					{gateTwoUniverseId ? (
-						<p className="text-xs text-muted-foreground" role="status">
-							{t("dataFoundation.gateTwoPublished", {
-								id: gateTwoUniverseId,
-							})}
-						</p>
-					) : null}
 					{backfillTaskId && backfillStats ? (
 						<div className="grid gap-1 rounded-md border p-3 text-xs text-muted-foreground">
 							<div className="flex justify-between gap-2">

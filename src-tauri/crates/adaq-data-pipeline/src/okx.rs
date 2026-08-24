@@ -18,6 +18,7 @@ use adaq_data_core::{
     market::{InstrumentId, Venue},
     next_bar_open_time_ms,
 };
+use chrono::Datelike;
 use rusqlite::{Connection, OptionalExtension, params};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -717,6 +718,14 @@ impl OkxSpotDataPath {
                 "Gate 2 publication requires an increasing time range".into(),
             ));
         }
+        let effective_end_time_ms = request
+            .end_time_ms
+            .min(latest_closed_bar_boundary_ms(now_ms(), request.interval)?);
+        if request.start_time_ms >= effective_end_time_ms {
+            return Err(PipelineError::InvalidRequest(
+                "Gate 2 publication requires at least one fully closed OKX bar".into(),
+            ));
+        }
 
         let mut seen = HashSet::with_capacity(request.source_ids.len());
         let mut publications = Vec::with_capacity(request.source_ids.len());
@@ -828,7 +837,7 @@ impl OkxSpotDataPath {
             )?;
             canonicalization.historical_range = Some(HistoricalBarRange {
                 start_time_ms: request.start_time_ms,
-                end_time_ms: request.end_time_ms,
+                end_time_ms: effective_end_time_ms,
             });
             let publication = self.pipeline.publish_source_for_user(
                 &request.user_id,
@@ -860,6 +869,13 @@ impl OkxSpotDataPath {
         mode: BackfillMode,
     ) -> Result<Vec<BackfillResult>, PipelineError> {
         validate_backfill_request(request)?;
+        let request = OkxBackfillRequest {
+            end_time_ms: request
+                .end_time_ms
+                .min(latest_closed_bar_boundary_ms(now_ms(), request.interval)?),
+            ..request.clone()
+        };
+        validate_backfill_request(&request)?;
         let checkpoint_snapshot_id = if request.universe_snapshot_id.is_none() {
             request
                 .checkpoint_operation_id
@@ -920,7 +936,7 @@ impl OkxSpotDataPath {
             });
             match self
                 .backfill_instrument(
-                    request,
+                    &request,
                     &snapshot_id,
                     instrument_id.clone(),
                     cancellation.clone(),
@@ -2249,6 +2265,52 @@ fn validate_backfill_request(request: &OkxBackfillRequest) -> Result<(), Pipelin
     Ok(())
 }
 
+fn latest_closed_bar_boundary_ms(now_ms: i64, interval: BarInterval) -> Result<i64, PipelineError> {
+    if now_ms < 0 {
+        return Err(PipelineError::InvalidRequest(
+            "OKX current time must be non-negative".into(),
+        ));
+    }
+    let fixed_ms = match interval {
+        BarInterval::OneSecond => Some(1_000),
+        BarInterval::OneMinute => Some(60_000),
+        BarInterval::ThreeMinutes => Some(3 * 60_000),
+        BarInterval::FiveMinutes => Some(5 * 60_000),
+        BarInterval::FifteenMinutes => Some(15 * 60_000),
+        BarInterval::ThirtyMinutes => Some(30 * 60_000),
+        BarInterval::OneHour => Some(60 * 60_000),
+        BarInterval::TwoHours => Some(2 * 60 * 60_000),
+        BarInterval::FourHours => Some(4 * 60 * 60_000),
+        BarInterval::SixHours => Some(6 * 60 * 60_000),
+        BarInterval::TwelveHours => Some(12 * 60 * 60_000),
+        BarInterval::OneDay => Some(24 * 60 * 60_000),
+        BarInterval::TwoDays => Some(2 * 24 * 60 * 60_000),
+        BarInterval::ThreeDays => Some(3 * 24 * 60 * 60_000),
+        BarInterval::FiveDays => Some(5 * 24 * 60 * 60_000),
+        BarInterval::OneWeek => Some(7 * 24 * 60 * 60_000),
+        BarInterval::OneMonth | BarInterval::ThreeMonths => None,
+    };
+    if let Some(step_ms) = fixed_ms {
+        return Ok(now_ms.div_euclid(step_ms) * step_ms);
+    }
+
+    let current = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(now_ms)
+        .ok_or_else(|| PipelineError::InvalidRequest("invalid OKX current time".into()))?;
+    let months = match interval {
+        BarInterval::OneMonth => 1,
+        BarInterval::ThreeMonths => 3,
+        _ => unreachable!(),
+    };
+    let month_index = current.year() * 12 + current.month0() as i32;
+    let boundary_index = month_index.div_euclid(months) * months;
+    let year = boundary_index.div_euclid(12);
+    let month = boundary_index.rem_euclid(12) as u32 + 1;
+    chrono::NaiveDate::from_ymd_opt(year, month, 1)
+        .and_then(|date| date.and_hms_opt(0, 0, 0))
+        .map(|date| date.and_utc().timestamp_millis())
+        .ok_or_else(|| PipelineError::InvalidRequest("invalid OKX monthly boundary".into()))
+}
+
 fn default_gap_retries() -> u8 {
     2
 }
@@ -2581,6 +2643,19 @@ mod tests {
             OkxSpotDataPath::open(pipeline, client).unwrap(),
             requests,
         )
+    }
+
+    #[test]
+    fn latest_closed_bar_boundary_covers_every_okx_interval() {
+        let now = 1_787_517_789_643;
+        for interval in BarInterval::ALL {
+            let boundary = latest_closed_bar_boundary_ms(now, interval).unwrap();
+            assert!(boundary <= now, "{interval:?} boundary is in the future");
+            assert!(
+                next_bar_open_time_ms(boundary, interval).unwrap() > now,
+                "{interval:?} boundary still includes an open bar"
+            );
+        }
     }
 
     #[test]

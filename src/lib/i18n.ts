@@ -2435,10 +2435,10 @@ const simplifiedChinese = {
 			okxColumnVolume: "24 小时成交额（USDT）",
 			okxColumnStatus: "状态",
 			okxColumnMinimum: "最小成交",
-			sourceProvenanceTitle: "保留的来源溯源信息（Source provenance）",
+			sourceProvenanceTitle: "原始数据获取凭证",
 			sourceProvenanceDescription:
 				"这里只显示来源获取证据；它不是规范数据（Canonical）、质量已批准、已发布或可用于研究的数据。",
-			sourceProvenanceEmpty: "尚无保留的来源证据。",
+			sourceProvenanceEmpty: "尚无保留的原始数据获取凭证。",
 			sourceProvider: "提供商与上游来源",
 			sourceCapability: "提供商能力（Provider Capability）身份",
 			sourceRequest: "请求身份",

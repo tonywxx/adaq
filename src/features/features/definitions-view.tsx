@@ -452,7 +452,7 @@ export function DefinitionsView({
 									<option value="">{t("features.form.none")}</option>
 									{universes.map((universe) => (
 										<option key={universe.snapshotId} value={universe.snapshotId}>
-											{universe.venue} {universe.interval} ·{" "}
+											{universe.venue.id} {universe.interval} ·{" "}
 											{universe.snapshotId.slice(0, 8)}
 										</option>
 									))}

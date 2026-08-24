@@ -971,7 +971,7 @@ function EvidenceSelectors({
 					<option value="">{t("features.form.none")}</option>
 					{options.universes.map((universe) => (
 						<option key={universe.snapshotId} value={universe.snapshotId}>
-							{universe.venue} {universe.interval} · {universe.snapshotId.slice(0, 8)}
+										{universe.venue.id} {universe.interval} · {universe.snapshotId.slice(0, 8)}
 						</option>
 					))}
 				</select>

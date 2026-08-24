@@ -303,7 +303,11 @@ export type MarketDataSnapshotSummary = {
 
 export type UniverseSnapshotSummary = {
 	snapshotId: string;
-	venue: string;
+	venue: {
+		id: string;
+		kind: string;
+		timeZone: string;
+	};
 	interval: string;
 	startTimeMs: number;
 	endTimeMs: number;
