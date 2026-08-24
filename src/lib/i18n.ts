@@ -28,6 +28,7 @@ const english = {
 		revision: "Revision",
 		market: "Market and Venue",
 		snapshot: "Snapshot",
+		universe: "PIT Universe",
 	},
 	nav: {
 		dashboard: "Dashboard",
@@ -940,6 +941,7 @@ const english = {
 			tags: "Tags (comma-separated)",
 			snapshot: "Snapshot",
 			universe: "Universe",
+			valuationCurrency: "Valuation currency",
 			none: "None",
 			startTime: "Start time",
 			endTime: "End time",
@@ -1043,7 +1045,7 @@ const english = {
 			startInvalid:
 				"Select a Definition, Snapshot, Universe, and a valid observation range first.",
 			crossSectionalBlocked:
-				"Cross-Sectional Materialization evidence is not wired yet; those Attempts fail with a typed error.",
+				"Cross-Sectional materialization uses complete PIT batches and an explicit valuation currency.",
 			started: "Materialization Attempt queued in the device FIFO runner.",
 			seed: "Seed",
 			start: "Start Materialization",
@@ -1070,6 +1072,7 @@ const english = {
 				requestHash: "Request hash",
 				snapshot: "Snapshot",
 				universe: "Universe",
+				valuationCurrency: "Valuation currency",
 				range: "Observation range",
 				rowCount: "Rows",
 				reasonVersion: "Reason version",
@@ -2030,6 +2033,7 @@ const simplifiedChinese = {
 		revision: "Revision",
 		market: "Market 与 Venue",
 		snapshot: "Snapshot",
+		universe: "PIT 宇宙",
 	},
 	nav: {
 		dashboard: "仪表盘",
@@ -3122,6 +3126,7 @@ const simplifiedChinese = {
 			tags: "标签（逗号分隔）",
 			snapshot: "快照",
 			universe: "宇宙",
+			valuationCurrency: "估值货币",
 			none: "无",
 			startTime: "开始时间",
 			endTime: "结束时间",
@@ -3222,7 +3227,7 @@ const simplifiedChinese = {
 			startHeading: "启动物化尝试",
 			startInvalid: "请先选择定义、快照、宇宙和有效观测范围。",
 			crossSectionalBlocked:
-				"横截面物化证据尚未接入；此类尝试将以类型化错误失败。",
+				"横截面物化使用完整的 PIT 批次，并要求明确的估值货币。",
 			started: "物化尝试已加入设备 FIFO 队列。",
 			seed: "随机种子",
 			start: "启动物化",
@@ -3248,6 +3253,7 @@ const simplifiedChinese = {
 				requestHash: "请求哈希",
 				snapshot: "快照",
 				universe: "宇宙",
+				valuationCurrency: "估值货币",
 				range: "观测范围",
 				rowCount: "行数",
 				reasonVersion: "原因版本",

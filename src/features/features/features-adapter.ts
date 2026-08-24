@@ -24,6 +24,7 @@ export type FeatureInvoke = TauriInvoke;
 export type FeaturePreviewSelection = {
 	snapshotId?: string;
 	universeId?: string;
+	valuationCurrency?: string;
 	startTimeMs?: number;
 	endTimeMs?: number;
 	maxEvents?: number;
@@ -76,6 +77,7 @@ export function createFeaturesAdapter(invoke: FeatureInvoke) {
 					draft,
 					snapshotId: selection.snapshotId ?? null,
 					universeId: selection.universeId ?? null,
+					valuationCurrency: selection.valuationCurrency ?? null,
 					startTimeMs: selection.startTimeMs ?? null,
 					endTimeMs: selection.endTimeMs ?? null,
 					maxEvents: selection.maxEvents ?? null,

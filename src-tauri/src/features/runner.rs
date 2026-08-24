@@ -7,6 +7,7 @@
 //! terminalized after its worker has stopped and released its evidence.
 
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -15,11 +16,13 @@ use std::{
 };
 
 use adaq_backtest_core::MarketDataSnapshot;
+use adaq_data_core::market::PriceBasis;
 use adaq_data_core::{BarInterval, OhlcvBar, next_bar_open_time_ms};
 use adaq_feature_engine::{
     FeatureEngine, FeatureEvaluationError, FeatureEvaluationInput, FeatureInputEvent,
     FeatureMarketBar, FeatureObservation, FeaturePlan, FittedTransformationArtifact,
-    MaterializationAttempt, ObservationRange, TransformationFittingProtocol,
+    MaterializationAttempt, ObservationRange, PointInTimeInstrumentUniverse,
+    TransformationFittingProtocol, UniverseEvidenceState,
 };
 
 use super::{
@@ -230,25 +233,44 @@ fn run_materialization_body(
         Ok(artifacts) => artifacts,
         Err(outcome) => return outcome,
     };
-    let (snapshot, bars) = match inner
-        .source
-        .snapshot_for_user(user_id, &request.snapshot_id)
-    {
-        Ok(evidence) => evidence,
-        Err(error) => {
-            return Outcome::Failed {
-                code: "feature-evidence-not-found".into(),
-                diagnostic: bounded_diagnostic(error),
-            };
+    let events = if super::plan_has_cross_sectional_scope(&plan) {
+        match cross_sectional_events(
+            inner,
+            user_id,
+            Some(&request.snapshot_id),
+            &request.point_in_time_universe_id,
+            &request.observation_range,
+            &request.valuation_currency,
+        ) {
+            Ok(events) => events,
+            Err(error) => {
+                return Outcome::Failed {
+                    code: "invalid-feature-evidence".into(),
+                    diagnostic: bounded_diagnostic(error),
+                };
+            }
         }
-    };
-    let events = match snapshot_events(&snapshot, &bars, &request.observation_range) {
-        Ok(events) => events,
-        Err(error) => {
-            return Outcome::Failed {
-                code: "invalid-feature-evidence".into(),
-                diagnostic: bounded_diagnostic(error),
-            };
+    } else {
+        let (snapshot, bars) = match inner
+            .source
+            .snapshot_for_user(user_id, &request.snapshot_id)
+        {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                return Outcome::Failed {
+                    code: "feature-evidence-not-found".into(),
+                    diagnostic: bounded_diagnostic(error),
+                };
+            }
+        };
+        match snapshot_events(&snapshot, &bars, &request.observation_range) {
+            Ok(events) => events,
+            Err(error) => {
+                return Outcome::Failed {
+                    code: "invalid-feature-evidence".into(),
+                    diagnostic: bounded_diagnostic(error),
+                };
+            }
         }
     };
     let output_count: usize = plan
@@ -257,7 +279,13 @@ fn run_materialization_body(
         .map(|definition| definition.outputs().len())
         .sum::<usize>()
         .max(1);
-    let total = u64::try_from(events.len().saturating_mul(output_count)).unwrap_or(u64::MAX);
+    let total = u64::try_from(
+        events
+            .len()
+            .saturating_mul(output_count)
+            .saturating_mul(event_member_count(&events)),
+    )
+    .unwrap_or(u64::MAX);
     if let Err(error) = store.record_progress(user_id, attempt_id, 0, total) {
         return store_outcome(error);
     }
@@ -400,16 +428,30 @@ fn run_fitting_body(
         Ok(artifacts) => artifacts,
         Err(outcome) => return outcome,
     };
-    let (snapshot, bars) = match inner
-        .source
-        .snapshot_for_user(user_id, protocol.snapshot_id())
-    {
-        Ok(evidence) => evidence,
-        Err(error) => return failure("feature-evidence-not-found", error),
-    };
-    let events = match snapshot_events(&snapshot, &bars, protocol.fitting_window()) {
-        Ok(events) => events,
-        Err(error) => return failure("invalid-feature-evidence", error),
+    let events = if super::plan_has_cross_sectional_scope(&plan) {
+        match cross_sectional_events(
+            inner,
+            user_id,
+            Some(protocol.snapshot_id()),
+            protocol.point_in_time_universe_id(),
+            protocol.fitting_window(),
+            protocol.valuation_currency(),
+        ) {
+            Ok(events) => events,
+            Err(error) => return failure("invalid-feature-evidence", error),
+        }
+    } else {
+        let (snapshot, bars) = match inner
+            .source
+            .snapshot_for_user(user_id, protocol.snapshot_id())
+        {
+            Ok(evidence) => evidence,
+            Err(error) => return failure("feature-evidence-not-found", error),
+        };
+        match snapshot_events(&snapshot, &bars, protocol.fitting_window()) {
+            Ok(events) => events,
+            Err(error) => return failure("invalid-feature-evidence", error),
+        }
     };
     let output_count: usize = plan
         .definitions()
@@ -417,7 +459,13 @@ fn run_fitting_body(
         .map(|definition| definition.outputs().len())
         .sum::<usize>()
         .max(1);
-    let total = i64::try_from(events.len().saturating_mul(output_count)).unwrap_or(i64::MAX);
+    let total = i64::try_from(
+        events
+            .len()
+            .saturating_mul(output_count)
+            .saturating_mul(event_member_count(&events)),
+    )
+    .unwrap_or(i64::MAX);
     set_fitting_progress(inner, user_id, attempt_id, 0, total);
     let engine = FeatureEngine::new(plan.engine_identity());
     let mut evaluator = match engine.evaluator_with_artifacts(plan.clone(), &artifacts) {
@@ -567,6 +615,121 @@ pub(super) fn snapshot_events(
         last_observation_time = close;
     }
     Ok(events)
+}
+
+/// Builds one complete, deterministic batch per observation time from the
+/// accepted Point-in-Time Universe and its immutable component Snapshots.
+pub(super) fn cross_sectional_events(
+    inner: &FeaturesInner,
+    user_id: &str,
+    snapshot_id: Option<&str>,
+    universe_id: &str,
+    range: &ObservationRange,
+    valuation_currency: &str,
+) -> Result<Vec<FeatureInputEvent>, String> {
+    let universe = inner
+        .source
+        .universe_snapshot_for_user(user_id, universe_id)?;
+    if let Some(snapshot_id) = snapshot_id.filter(|id| !id.trim().is_empty()) {
+        if !universe
+            .components
+            .iter()
+            .any(|component| component.snapshot_id == snapshot_id)
+        {
+            return Err("feature-snapshot-universe-identity-mismatch".into());
+        }
+        inner.source.snapshot_for_user(user_id, snapshot_id)?;
+    }
+    let market_context = adaq_feature_engine::FeatureMarketContext::new(
+        universe.venue.clone(),
+        universe.venue.kind,
+        universe.interval,
+        PriceBasis::Unadjusted,
+        valuation_currency,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut members = universe
+        .universe
+        .instruments
+        .iter()
+        .map(|instrument| format!("{}:{}", instrument.venue.id, instrument.code))
+        .collect::<Vec<_>>();
+    members.sort_unstable();
+    let evidence_state = match universe.universe.evidence_state.as_str() {
+        "observed" => UniverseEvidenceState::Observed,
+        "reconstructed" => UniverseEvidenceState::Reconstructed,
+        _ => UniverseEvidenceState::Unknown,
+    };
+    let mut bars_by_instrument: BTreeMap<String, BTreeMap<i64, FeatureMarketBar>> = BTreeMap::new();
+    for component in &universe.components {
+        let (_, bars) = inner
+            .source
+            .snapshot_for_user(user_id, &component.snapshot_id)?;
+        let instrument_id = format!(
+            "{}:{}",
+            component.dataset.instrument.venue.id, component.dataset.instrument.code
+        );
+        if !members.iter().any(|member| member == &instrument_id) {
+            return Err("feature-universe-component-membership-mismatch".into());
+        }
+        let by_time = bars_by_instrument.entry(instrument_id).or_default();
+        for mut bar in bars {
+            let close = bar_close_time(universe.interval, bar.open_time_ms)?;
+            if close < range.start_time_ms || close >= range.end_time_ms {
+                continue;
+            }
+            // The engine validates Cross-Sectional bars at the batch's
+            // Observation Time, which is the closed-bar instant here.
+            bar.open_time_ms = close;
+            by_time.insert(close, FeatureMarketBar::from_ohlcv(bar));
+        }
+    }
+    let mut observation_times = bars_by_instrument
+        .values()
+        .flat_map(|by_time| by_time.keys().copied())
+        .collect::<Vec<_>>();
+    observation_times.sort_unstable();
+    observation_times.dedup();
+
+    observation_times
+        .into_iter()
+        .map(|time| {
+            let market_context = market_context.clone();
+            let pit_universe = PointInTimeInstrumentUniverse::new(
+                universe.snapshot_id.clone(),
+                time,
+                members.clone(),
+                market_context,
+                evidence_state,
+            )
+            .map_err(|error| error.to_string())?;
+            let inputs = members
+                .iter()
+                .map(|member| {
+                    bars_by_instrument
+                        .get(member)
+                        .and_then(|by_time| by_time.get(&time))
+                        .map(|bar| FeatureEvaluationInput::new(member, time, time, bar.clone()))
+                        .unwrap_or_else(|| FeatureEvaluationInput::missing(member, time, time))
+                })
+                .collect();
+            Ok(FeatureInputEvent::cross_sectional_batch(
+                time,
+                pit_universe,
+                inputs,
+            ))
+        })
+        .collect()
+}
+
+fn event_member_count(events: &[FeatureInputEvent]) -> usize {
+    events
+        .first()
+        .map(|event| match event {
+            FeatureInputEvent::CrossSectionalBatch(batch) => batch.universe.members.len(),
+            _ => 1,
+        })
+        .unwrap_or(1)
 }
 
 fn bar_close_time(interval: BarInterval, open_time_ms: i64) -> Result<i64, String> {

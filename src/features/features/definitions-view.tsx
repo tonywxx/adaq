@@ -70,6 +70,7 @@ export function DefinitionsView({
 	const [previewSelection, setPreviewSelection] = useState({
 		snapshotId: "",
 		universeId: "",
+		valuationCurrency: "",
 		startTime: "",
 		endTime: "",
 		maxEvents: "100",
@@ -188,6 +189,7 @@ export function DefinitionsView({
 			const result = await adapter.previewDraft(userId, editor.draft, {
 				snapshotId: previewSelection.snapshotId || undefined,
 				universeId: previewSelection.universeId || undefined,
+				valuationCurrency: previewSelection.valuationCurrency || undefined,
 				startTimeMs: parseTimestampInput(previewSelection.startTime),
 				endTimeMs: parseTimestampInput(previewSelection.endTime),
 				maxEvents: Number.parseInt(previewSelection.maxEvents, 10) || undefined,
@@ -457,6 +459,23 @@ export function DefinitionsView({
 										</option>
 									))}
 								</select>
+							</div>
+							<div>
+								<Label htmlFor="preview-valuation-currency">
+									{t("features.form.valuationCurrency")}
+								</Label>
+								<Input
+									id="preview-valuation-currency"
+									className="mt-1"
+									value={previewSelection.valuationCurrency}
+									onChange={(event) =>
+										setPreviewSelection({
+											...previewSelection,
+											valuationCurrency: event.target.value,
+										})
+									}
+									placeholder="USDT"
+								/>
 							</div>
 							<div>
 								<Label htmlFor="preview-max-events">

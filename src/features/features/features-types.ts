@@ -174,6 +174,7 @@ export type TransformationFittingProtocolDraft = {
 	fittedOutput: FeatureReference;
 	snapshotId: string;
 	pointInTimeUniverseId: string;
+	valuationCurrency: string;
 	fittingScope: "pooled-universe" | "per-instrument";
 	fittingWindow: ObservationRange;
 	algorithm: FittingAlgorithm;
@@ -186,6 +187,7 @@ export type FeatureMaterializationRequest = {
 	featurePlanHash: string;
 	snapshotId: string;
 	pointInTimeUniverseId: string;
+	valuationCurrency: string;
 	observationRange: ObservationRange;
 	parameters: Record<string, unknown>;
 	artifactIds?: string[];

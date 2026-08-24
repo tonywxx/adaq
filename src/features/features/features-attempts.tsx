@@ -112,6 +112,7 @@ export function FittingView({
 		fittedOutputName: "fitted-output",
 		snapshotId: "",
 		universeId: "",
+		valuationCurrency: "",
 		windowStart: "",
 		windowEnd: "",
 		scope: "pooled-universe" as "pooled-universe" | "per-instrument",
@@ -181,6 +182,7 @@ export function FittingView({
 					},
 					snapshotId: form.snapshotId,
 					pointInTimeUniverseId: form.universeId,
+					valuationCurrency: form.valuationCurrency,
 					fittingScope: form.scope,
 					fittingWindow: { startTimeMs: windowStart, endTimeMs: windowEnd },
 					algorithm:
@@ -393,6 +395,21 @@ export function FittingView({
 							onChange={(selection) => setForm({ ...form, ...selection })}
 						/>
 						<div>
+							<Label htmlFor="fitting-valuation-currency">
+								{t("features.form.valuationCurrency")}
+							</Label>
+							<Input
+								id="fitting-valuation-currency"
+								className="mt-1"
+								value={form.valuationCurrency}
+								onChange={(event) =>
+									setForm({ ...form, valuationCurrency: event.target.value })
+								}
+								placeholder="USDT"
+							/>
+						</div>
+
+						<div>
 							<Label htmlFor="fitting-output-name">
 								{t("features.fitting.fittedOutputName")}
 							</Label>
@@ -559,6 +576,7 @@ export function MaterializationView({
 		outputName: "",
 		snapshotId: "",
 		universeId: "",
+		valuationCurrency: "",
 		rangeStart: "",
 		rangeEnd: "",
 		seed: "1",
@@ -615,6 +633,7 @@ export function MaterializationView({
 					featurePlanHash: frozen.planHash,
 					snapshotId: form.snapshotId,
 					pointInTimeUniverseId: form.universeId,
+					valuationCurrency: form.valuationCurrency,
 					observationRange: { startTimeMs, endTimeMs },
 					parameters: {},
 					seed: Number.parseInt(form.seed, 10) || 0,
@@ -815,6 +834,21 @@ export function MaterializationView({
 							onChange={(selection) => setForm({ ...form, ...selection })}
 						/>
 						<div>
+							<Label htmlFor="materialization-valuation-currency">
+								{t("features.form.valuationCurrency")}
+							</Label>
+							<Input
+								id="materialization-valuation-currency"
+								className="mt-1"
+								value={form.valuationCurrency}
+								onChange={(event) =>
+									setForm({ ...form, valuationCurrency: event.target.value })
+								}
+								placeholder="USDT"
+							/>
+						</div>
+
+						<div>
 							<Label htmlFor="materialization-range-start">
 								{t("features.form.startTime")}
 							</Label>
@@ -971,7 +1005,8 @@ function EvidenceSelectors({
 					<option value="">{t("features.form.none")}</option>
 					{options.universes.map((universe) => (
 						<option key={universe.snapshotId} value={universe.snapshotId}>
-										{universe.venue.id} {universe.interval} · {universe.snapshotId.slice(0, 8)}
+							{universe.venue.id} {universe.interval} ·{" "}
+							{universe.snapshotId.slice(0, 8)}
 						</option>
 					))}
 				</select>

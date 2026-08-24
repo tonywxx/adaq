@@ -981,6 +981,7 @@ fn fitting_journey() -> Journey {
             },
             snapshot_id: format!("fixture-m109-snapshot-{fold}"),
             point_in_time_universe_id: "fixture-m109-universe".into(),
+            valuation_currency: String::new(),
             fitting_scope: scope,
             fitting_window: ObservationRange {
                 start_time_ms: window.0,

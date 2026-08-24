@@ -1,10 +1,15 @@
 use super::*;
 use crate::{local_research::LocalResearchState, watchlist::WatchlistDb};
+use adaq_backtest_core::{
+    MarketDataUniverseSnapshot, SnapshotDatasetBinding, SnapshotProvenance,
+    SnapshotUniverseBinding, UniverseSnapshotComponent,
+};
+use adaq_data_core::market::{InstrumentId, Venue};
 use adaq_data_core::{BarGap, BarInterval, BarSeries, OhlcvBar};
 use adaq_feature_engine::{
     DefinitionDraft, FeatureDefinition, FeatureEngineIdentity, FeatureInput, FeatureNode,
     FeatureOperator, FeatureOutput, FeaturePlan, FeaturePlanDraft, FeatureReference, FeatureScope,
-    FittingAlgorithm, FittingScope, MaterializationAttemptStatus, ObservationRange,
+    FittingAlgorithm, FittingScope, MarketField, MaterializationAttemptStatus, ObservationRange,
     TransformationFittingProtocol, TransformationFittingProtocolDraft,
 };
 use rust_decimal::Decimal;
@@ -75,6 +80,128 @@ fn setup(
         )
         .unwrap();
     (root, state, snapshot)
+}
+
+fn cross_sectional_setup(name: &str) -> (PathBuf, Arc<LocalResearchState>, String, String, String) {
+    let root = root(name);
+    let state = LocalResearchState::open(&root).unwrap();
+    let venue = Venue::crypto_spot("okx").unwrap();
+    let make_component = |code: &str, values: [i64; 3]| {
+        let instrument = InstrumentId::new(venue.clone(), code).unwrap();
+        let dataset = SnapshotDatasetBinding {
+            instrument: instrument.clone(),
+            source_id: format!("test-source-{code}"),
+            source_revision: 1,
+            canonical_id: Some(format!("test-canonical-{code}")),
+            derived_id: None,
+            quality_report_id: format!("test-quality-{code}"),
+            content_sha256: format!("test-content-{code}"),
+        };
+        let snapshot = state
+            .snapshots
+            .persist_for_user_with_provenance(
+                "alice",
+                &BarSeries {
+                    src: venue.id.clone(),
+                    code: code.into(),
+                    interval: BarInterval::OneHour,
+                    bars: values
+                        .into_iter()
+                        .map(|value| OhlcvBar {
+                            open_time_ms: value,
+                            open: Decimal::from(value + 10),
+                            high: Decimal::from(value + 10),
+                            low: Decimal::from(value + 10),
+                            close: Decimal::from(value + 10),
+                            base_volume: Decimal::ONE,
+                            quote_volume: Decimal::from(value + 10),
+                        })
+                        .collect(),
+                    gaps: vec![],
+                },
+                Some(SnapshotProvenance {
+                    venue: venue.clone(),
+                    datasets: vec![dataset.clone()],
+                    quality_report_ids: vec![dataset.quality_report_id.clone()],
+                    calendar_snapshot_ids: vec!["test-calendar".into()],
+                    provider_capability_snapshots: vec![],
+                    universe: None,
+                    derivation_algorithm_version: None,
+                }),
+            )
+            .unwrap();
+        (snapshot, dataset, instrument)
+    };
+    let (btc, btc_dataset, btc_instrument) = make_component("BTC-USDT", [0, HOUR, 2 * HOUR]);
+    let (eth, eth_dataset, eth_instrument) = make_component("ETH-USDT", [0, HOUR, 2 * HOUR]);
+    let universe = state
+        .snapshots
+        .persist_universe_for_user(
+            "alice",
+            MarketDataUniverseSnapshot {
+                snapshot_id: String::new(),
+                venue,
+                interval: BarInterval::OneHour,
+                start_time_ms: btc.start_time_ms,
+                end_time_ms: btc.end_time_ms,
+                universe: SnapshotUniverseBinding {
+                    universe_id: "test-pit-universe".into(),
+                    as_of_ms: 0,
+                    evidence_state: "observed".into(),
+                    evidence_reasons: vec!["test-observed-membership".into()],
+                    coverage_start_ms: Some(btc.start_time_ms),
+                    coverage_end_ms: Some(btc.end_time_ms),
+                    instruments: vec![btc_instrument, eth_instrument],
+                },
+                components: vec![
+                    UniverseSnapshotComponent {
+                        snapshot_id: btc.snapshot_id.clone(),
+                        dataset: btc_dataset,
+                    },
+                    UniverseSnapshotComponent {
+                        snapshot_id: eth.snapshot_id.clone(),
+                        dataset: eth_dataset,
+                    },
+                ],
+                quality_report_ids: vec![
+                    "test-quality-BTC-USDT".into(),
+                    "test-quality-ETH-USDT".into(),
+                ],
+                calendar_snapshot_ids: vec!["test-calendar".into()],
+                provider_capability_snapshots: vec![],
+                content_sha256: String::new(),
+            },
+        )
+        .unwrap();
+    (
+        root,
+        state,
+        btc.snapshot_id,
+        eth.snapshot_id,
+        universe.snapshot_id,
+    )
+}
+
+fn cross_sectional_rank_draft() -> DefinitionDraft {
+    DefinitionDraft {
+        definition_id: Uuid::from_u128(8),
+        revision: 1,
+        scope: FeatureScope::CrossSectional,
+        nodes: vec![FeatureNode {
+            id: "rank".into(),
+            operator: FeatureOperator::CrossSectionalRank,
+            scope: FeatureScope::CrossSectional,
+            inputs: vec![FeatureInput::Market {
+                field: MarketField::Close,
+            }],
+            parameters: BTreeMap::new(),
+            warmup_bars: 0,
+        }],
+        outputs: vec![FeatureOutput {
+            name: "rank".into(),
+            node_id: "rank".into(),
+        }],
+    }
 }
 
 fn return_draft() -> DefinitionDraft {
@@ -155,6 +282,7 @@ fn fitting_protocol_draft(
         },
         snapshot_id: snapshot_id.into(),
         point_in_time_universe_id: "universe-1".into(),
+        valuation_currency: String::new(),
         fitting_scope: FittingScope::PooledUniverse,
         fitting_window: ObservationRange {
             start_time_ms: 0,
@@ -556,6 +684,137 @@ fn preview_is_bounded_transient_and_fits_nothing() {
             .unwrap_err(),
         "Feature Preview requires a Snapshot"
     );
+    drop(state);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cross_sectional_preview_fitting_and_materialization_bind_complete_pit_batches() {
+    let (root, state, snapshot_id, _second_snapshot_id, universe_id) =
+        cross_sectional_setup("cross-sectional");
+    let definition = FeatureDefinition::freeze(cross_sectional_rank_draft()).unwrap();
+    let plan = native_plan(vec![definition.clone()]);
+    let preview = state
+        .features
+        .preview_definition_draft(FeaturePreviewRequest {
+            user_id: "alice".into(),
+            draft: cross_sectional_rank_draft(),
+            snapshot_id: Some(snapshot_id.clone()),
+            universe_id: Some(universe_id.clone()),
+            valuation_currency: Some("USDT".into()),
+            start_time_ms: Some(HOUR),
+            end_time_ms: Some(4 * HOUR),
+            max_events: None,
+            artifact_ids: vec![],
+        })
+        .unwrap();
+    assert_eq!(preview.event_count, 3);
+    assert_eq!(preview.observations.len(), 6);
+    assert!(
+        preview
+            .observations
+            .iter()
+            .all(|observation| observation.cross_sectional_coverage.is_some())
+    );
+
+    let request = FeatureMaterializationRequest::new(
+        "alice",
+        plan.plan_hash(),
+        snapshot_id.clone(),
+        universe_id.clone(),
+        ObservationRange {
+            start_time_ms: HOUR,
+            end_time_ms: 4 * HOUR,
+        },
+        BTreeMap::new(),
+        9,
+    )
+    .map(|mut request| {
+        request.valuation_currency = "USDT".into();
+        request
+    })
+    .unwrap();
+    let started = state
+        .features
+        .start_materialization(FeatureMaterializationStartRequest {
+            user_id: "alice".into(),
+            request: request.clone(),
+            plan: plan_draft(vec![definition.clone()]),
+        })
+        .unwrap();
+    let completed = wait_for_materialization(
+        &state,
+        "alice",
+        &started.attempt_id,
+        MaterializationAttemptStatus::Completed,
+    );
+    let dataset = state
+        .features
+        .list_datasets(FeatureUserRequest {
+            user_id: "alice".into(),
+        })
+        .unwrap()
+        .into_iter()
+        .find(|dataset| dataset.dataset_id == completed.dataset_id.clone().unwrap())
+        .unwrap();
+    assert_eq!(dataset.manifest.request.valuation_currency, "USDT");
+    assert_eq!(dataset.manifest.row_count, 6);
+
+    let missing_currency = FeatureMaterializationRequest {
+        valuation_currency: String::new(),
+        ..request
+    };
+    assert_eq!(
+        state
+            .features
+            .start_materialization(FeatureMaterializationStartRequest {
+                user_id: "alice".into(),
+                request: missing_currency,
+                plan: plan_draft(vec![definition.clone()]),
+            })
+            .unwrap_err(),
+        "cross-sectional-feature-valuation-currency-required"
+    );
+
+    let protocol = TransformationFittingProtocolDraft {
+        input_feature: FeatureReference {
+            definition_hash: definition.definition_hash().into(),
+            node_id: "rank".into(),
+            output_name: "rank".into(),
+        },
+        fitted_node_id: "rank".into(),
+        fitted_output: FeatureReference {
+            definition_hash: definition.definition_hash().into(),
+            node_id: "rank".into(),
+            output_name: "rank-standardized".into(),
+        },
+        snapshot_id,
+        point_in_time_universe_id: universe_id,
+        valuation_currency: "USDT".into(),
+        fitting_scope: FittingScope::PooledUniverse,
+        fitting_window: ObservationRange {
+            start_time_ms: HOUR,
+            end_time_ms: 4 * HOUR,
+        },
+        algorithm: FittingAlgorithm::Standardization,
+        minimum_samples: 2,
+        engine_identity: FeatureEngineIdentity::for_tests(),
+    };
+    let fitting = state
+        .features
+        .start_fitting(FeatureFittingStartRequest {
+            user_id: "alice".into(),
+            protocol,
+            plan: plan_draft(vec![definition]),
+        })
+        .unwrap();
+    let fitting_completed = wait_for_fitting(
+        &state,
+        "alice",
+        &fitting.attempt_id,
+        FeatureAttemptStatus::Completed,
+    );
+    assert!(fitting_completed.artifact_id.is_some());
     drop(state);
     fs::remove_dir_all(root).unwrap();
 }

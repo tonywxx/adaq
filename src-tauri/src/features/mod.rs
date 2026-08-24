@@ -26,7 +26,7 @@ use std::{
 };
 
 use adaq_backtest_core::MarketDataUniverseSnapshot;
-use adaq_factor_research::CompletedFeatureDataset;
+use adaq_factor_research::{CompletedFeatureDataset, FrozenResearchEvidence};
 use adaq_feature_engine::{
     DefinitionDraft, FeatureDatasetFilter, FeatureDatasetPage, FeatureDefinition,
     FeatureMaterializationRequest, FeatureMaterializationStore, FeatureObservation,
@@ -503,6 +503,29 @@ impl Features {
 
     // ---- Fitting ----
 
+    pub(crate) fn start_fitting_with_evidence(
+        &self,
+        request: FeatureFittingStartRequest,
+        evidence: &FrozenResearchEvidence,
+    ) -> Result<FittingAttemptView, String> {
+        let universe_id = evidence
+            .universe_id
+            .as_deref()
+            .ok_or("feature-evidence-universe-required")?;
+        validate_bound_feature_evidence(
+            Some(&evidence.snapshot_id),
+            Some(universe_id),
+            &request.protocol.snapshot_id,
+            &request.protocol.point_in_time_universe_id,
+        )?;
+        validate_bound_feature_sources(
+            &self.inner,
+            &request.user_id,
+            &request.protocol.point_in_time_universe_id,
+        )?;
+        self.start_fitting(request)
+    }
+
     pub(crate) fn start_fitting(
         &self,
         request: FeatureFittingStartRequest,
@@ -517,6 +540,10 @@ impl Features {
         })
         .map_err(|error| format!("fitting-protocol-validation-failed: {:?}", error.codes()))?;
         let plan = freeze_plan(request.plan, &identity)?;
+        if plan_has_cross_sectional_scope(&plan) && protocol.valuation_currency().trim().is_empty()
+        {
+            return Err("cross-sectional-feature-valuation-currency-required".into());
+        }
         validate_plan_artifacts(&self.inner, &request.user_id, &plan)?;
         let protocol_json = String::from_utf8(protocol.to_json()).map_err(string)?;
         let plan_json = String::from_utf8(plan.to_json()).map_err(string)?;
@@ -680,6 +707,29 @@ impl Features {
 
     // ---- Materialization ----
 
+    pub(crate) fn start_materialization_with_evidence(
+        &self,
+        request: FeatureMaterializationStartRequest,
+        evidence: &FrozenResearchEvidence,
+    ) -> Result<MaterializationAttempt, String> {
+        let universe_id = evidence
+            .universe_id
+            .as_deref()
+            .ok_or("feature-evidence-universe-required")?;
+        validate_bound_feature_evidence(
+            Some(&evidence.snapshot_id),
+            Some(universe_id),
+            &request.request.snapshot_id,
+            &request.request.point_in_time_universe_id,
+        )?;
+        validate_bound_feature_sources(
+            &self.inner,
+            &request.user_id,
+            &request.request.point_in_time_universe_id,
+        )?;
+        self.start_materialization(request)
+    }
+
     pub(crate) fn start_materialization(
         &self,
         request: FeatureMaterializationStartRequest,
@@ -693,7 +743,9 @@ impl Features {
         let identity = native_identity()?;
         let plan = freeze_plan(request.plan, &identity)?;
         if plan_has_cross_sectional_scope(&plan) {
-            return Err("cross-sectional-feature-evidence-not-wired".into());
+            if request.request.valuation_currency.trim().is_empty() {
+                return Err("cross-sectional-feature-valuation-currency-required".into());
+            }
         }
         validate_plan_artifacts(&self.inner, &request.user_id, &plan)?;
         let materialization_request = request
@@ -1011,6 +1063,35 @@ fn plan_has_cross_sectional_scope(plan: &FeaturePlan) -> bool {
     plan.definitions()
         .iter()
         .any(|definition| definition.scope() == FeatureScope::CrossSectional)
+}
+
+fn validate_bound_feature_evidence(
+    expected_snapshot_id: Option<&str>,
+    expected_universe_id: Option<&str>,
+    snapshot_id: &str,
+    universe_id: &str,
+) -> Result<(), String> {
+    if snapshot_id.trim().is_empty() || universe_id.trim().is_empty() {
+        return Err("feature-evidence-identity-missing".into());
+    }
+    if expected_snapshot_id.is_some_and(|expected| expected != snapshot_id)
+        || expected_universe_id.is_some_and(|expected| expected != universe_id)
+    {
+        return Err("feature-evidence-context-mismatch".into());
+    }
+    Ok(())
+}
+
+fn validate_bound_feature_sources(
+    inner: &FeaturesInner,
+    user_id: &str,
+    universe_id: &str,
+) -> Result<(), String> {
+    inner
+        .source
+        .universe_snapshot_for_user(user_id, universe_id)
+        .map_err(|error| format!("feature-universe-evidence-invalid: {error}"))?;
+    Ok(())
 }
 
 /// Every Fitted Artifact a Plan binds must already exist for the requesting

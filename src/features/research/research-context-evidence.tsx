@@ -48,6 +48,14 @@ export function ResearchContextEvidence({
 				{t("researchContext.revision")} {query.data.contextRevision} ·{" "}
 				{query.data.stage}
 			</span>
+			<span className="break-all">
+				{t("researchContext.snapshot")}: {query.data.snapshotId}
+			</span>
+			{query.data.universeId && (
+				<span className="break-all">
+					{t("researchContext.universe")}: {query.data.universeId}
+				</span>
+			)}
 			<span className="break-all">{query.data.operationId}</span>
 		</div>
 	);

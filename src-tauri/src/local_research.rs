@@ -560,6 +560,13 @@ impl LocalResearchState {
                 attempt_id TEXT NOT NULL,
                 PRIMARY KEY(user_id, operation_id)
              );
+             CREATE TABLE IF NOT EXISTS research_attempt_context_bindings_v2 (
+                user_id TEXT NOT NULL,
+                operation_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                PRIMARY KEY(user_id, attempt_id)
+             );
              CREATE TABLE IF NOT EXISTS foundation_acquisitions (
                 user_id TEXT NOT NULL,
                 operation_id TEXT NOT NULL,
@@ -834,6 +841,19 @@ impl LocalResearchState {
                 "Research Evidence Context stage is incompatible with this operation".into(),
             );
         }
+        let current = self
+            .context_for_user(user_id)?
+            .ok_or_else(|| "Research Evidence Context is not established".to_string())?;
+        current
+            .revalidate(&current, stage)
+            .map_err(|error| error.to_string())?;
+        if current.revision != frozen.context_revision
+            || current.context_hash != frozen.context_hash
+            || current.draft.snapshot_id != frozen.snapshot_id
+            || current.draft.universe_id != frozen.universe_id
+        {
+            return Err("Research Evidence Context is stale for this operation".into());
+        }
         Ok(frozen)
     }
 
@@ -849,7 +869,7 @@ impl LocalResearchState {
             .lock()
             .map_err(|_| "database lock failed".to_string())?
             .execute(
-                "INSERT OR REPLACE INTO research_attempt_context_bindings (user_id, operation_id, stage, attempt_id) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT OR REPLACE INTO research_attempt_context_bindings_v2 (user_id, operation_id, stage, attempt_id) VALUES (?1, ?2, ?3, ?4)",
                 params![user_id, operation_id, format!("{stage:?}"), attempt_id],
             )
             .map_err(string)?;
@@ -866,9 +886,9 @@ impl LocalResearchState {
             .database
             .lock()
             .map_err(|_| "database lock failed".to_string())?;
-        database
+        let binding = database
             .query_row(
-                "SELECT operation_id, stage FROM research_attempt_context_bindings WHERE user_id = ?1 AND attempt_id = ?2",
+                "SELECT operation_id, stage FROM research_attempt_context_bindings_v2 WHERE user_id = ?1 AND attempt_id = ?2",
                 params![user_id, attempt_id],
                 |row| {
                     let operation_id: String = row.get(0)?;
@@ -877,7 +897,23 @@ impl LocalResearchState {
                 },
             )
             .optional()
-            .map_err(string)?
+            .map_err(string)?;
+        let binding = match binding {
+            Some(binding) => Some(binding),
+            None => database
+                .query_row(
+                    "SELECT operation_id, stage FROM research_attempt_context_bindings WHERE user_id = ?1 AND attempt_id = ?2",
+                    params![user_id, attempt_id],
+                    |row| {
+                        let operation_id: String = row.get(0)?;
+                        let stage: String = row.get(1)?;
+                        Ok((operation_id, stage))
+                    },
+                )
+                .optional()
+                .map_err(string)?,
+        };
+        binding
             .map(|(operation_id, stage)| {
                 let stage = match stage.as_str() {
                     "Features" => adaq_factor_research::ResearchStage::Features,
@@ -2597,9 +2633,25 @@ mod tests {
                 "attempt-1",
             )
             .unwrap();
+        state
+            .record_research_attempt_binding(
+                "alice",
+                "model-dataset:one:model",
+                adaq_factor_research::ResearchStage::Models,
+                "attempt-2",
+            )
+            .unwrap();
         assert_eq!(
             state
                 .research_context_for_attempt("alice", "attempt-1")
+                .unwrap()
+                .unwrap()
+                .operation_id,
+            "model-dataset:one:model"
+        );
+        assert_eq!(
+            state
+                .research_context_for_attempt("alice", "attempt-2")
                 .unwrap()
                 .unwrap()
                 .operation_id,
@@ -2610,6 +2662,14 @@ mod tests {
         assert_eq!(
             reloaded
                 .research_context_for_attempt("alice", "attempt-1")
+                .unwrap()
+                .unwrap()
+                .operation_id,
+            "model-dataset:one:model"
+        );
+        assert_eq!(
+            reloaded
+                .research_context_for_attempt("alice", "attempt-2")
                 .unwrap()
                 .unwrap()
                 .operation_id,

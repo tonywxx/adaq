@@ -5,19 +5,15 @@
 //! observes complete Point-in-Time Universe batches; Pointwise and
 //! Time-Series previews may be bounded by Observation Time selection.
 
-use std::collections::BTreeMap;
-
-use adaq_data_core::market::PriceBasis;
 use adaq_feature_engine::{
-    FeatureDefinition, FeatureEngine, FeatureEvaluationInput, FeatureInputEvent, FeatureMarketBar,
-    FeatureObservation, FeaturePlan, FeaturePlanDraft, FeatureScope, FittedArtifactBinding,
-    FittedTransformationArtifact, ObservationRange, PointInTimeInstrumentUniverse,
-    UniverseEvidenceState,
+    FeatureDefinition, FeatureEngine, FeatureInputEvent, FeatureObservation, FeaturePlan,
+    FeaturePlanDraft, FeatureScope, FittedArtifactBinding, FittedTransformationArtifact,
+    ObservationRange,
 };
 
 use super::{
     FeaturePreviewRequest, FeaturePreviewView, FeaturesInner, MAX_PREVIEW_CROSS_SECTIONAL_BATCHES,
-    MAX_PREVIEW_OBSERVATIONS, runner, store, string,
+    MAX_PREVIEW_OBSERVATIONS, runner, store,
 };
 
 pub(super) fn preview(
@@ -131,92 +127,32 @@ fn preview_cross_sectional(
         .as_deref()
         .filter(|currency| !currency.trim().is_empty())
         .ok_or("Cross-Sectional Feature Preview requires a valuation currency")?;
-    let universe = inner
-        .source
-        .universe_snapshot_for_user(&request.user_id, universe_id)?;
-    let market_context = adaq_feature_engine::FeatureMarketContext::new(
-        universe.venue.clone(),
-        universe.venue.kind,
-        universe.interval,
-        PriceBasis::Unadjusted,
-        valuation_currency,
-    )
-    .map_err(|error| error.to_string())?;
-    let members = universe
-        .universe
-        .instruments
-        .iter()
-        .map(|instrument| format!("{}:{}", instrument.venue.id, instrument.code))
-        .collect::<Vec<_>>();
-    let evidence_state = match universe.universe.evidence_state.as_str() {
-        "observed" => UniverseEvidenceState::Observed,
-        "reconstructed" => UniverseEvidenceState::Reconstructed,
-        _ => UniverseEvidenceState::Unknown,
+    let snapshot_id = request
+        .snapshot_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or("Cross-Sectional Feature Preview requires a Snapshot")?;
+    let range = ObservationRange {
+        start_time_ms: request.start_time_ms.unwrap_or(i64::MIN),
+        end_time_ms: request.end_time_ms.unwrap_or(i64::MAX),
     };
-    let pit_universe = PointInTimeInstrumentUniverse::new(
-        universe.snapshot_id.clone(),
-        universe.universe.as_of_ms,
-        members.clone(),
-        market_context,
-        evidence_state,
-    )
-    .map_err(|error| error.to_string())?;
-    let mut bars_by_instrument: BTreeMap<String, BTreeMap<i64, FeatureMarketBar>> = BTreeMap::new();
-    for component in &universe.components {
-        let (_, bars) = inner
-            .source
-            .snapshot_for_user(&request.user_id, &component.snapshot_id)?;
-        let instrument_id = format!(
-            "{}:{}",
-            component.dataset.instrument.venue.id, component.dataset.instrument.code
-        );
-        let by_time = bars_by_instrument.entry(instrument_id).or_default();
-        for bar in bars {
-            let close = adaq_data_core::next_bar_open_time_ms(bar.open_time_ms, universe.interval)
-                .map_err(string)?;
-            by_time.insert(close, FeatureMarketBar::from_ohlcv(bar));
-        }
-    }
-    let mut observation_times = bars_by_instrument
-        .values()
-        .flat_map(|by_time| by_time.keys().copied())
-        .collect::<Vec<_>>();
-    observation_times.sort_unstable();
-    observation_times.dedup();
-    observation_times.retain(|time| {
-        request.start_time_ms.is_none_or(|start| *time >= start)
-            && request.end_time_ms.is_none_or(|end| *time < end)
-    });
+    let mut events = runner::cross_sectional_events(
+        inner,
+        &request.user_id,
+        Some(snapshot_id),
+        universe_id,
+        &range,
+        valuation_currency,
+    )?;
     let max_batches = request
         .max_events
         .unwrap_or(MAX_PREVIEW_CROSS_SECTIONAL_BATCHES)
         .min(MAX_PREVIEW_CROSS_SECTIONAL_BATCHES);
-    let truncated = observation_times.len() > max_batches;
-    observation_times.truncate(max_batches);
-    let event_count = observation_times.len();
-    let mut observations = Vec::new();
-    for time in observation_times {
-        let inputs = members
-            .iter()
-            .map(|member| {
-                match bars_by_instrument
-                    .get(member)
-                    .and_then(|by_time| by_time.get(&time))
-                {
-                    Some(bar) => FeatureEvaluationInput::new(member, time, time, bar.clone()),
-                    None => FeatureEvaluationInput::missing(member, time, time),
-                }
-            })
-            .collect::<Vec<_>>();
-        let event = FeatureInputEvent::cross_sectional_batch(time, pit_universe.clone(), inputs);
-        observations.extend(
-            evaluator
-                .observe(event)
-                .map_err(|error| error.to_string())?,
-        );
-    }
+    let truncated = events.len() > max_batches;
+    events.truncate(max_batches);
+    let observations = evaluate_all(evaluator, &events)?;
     Ok(FeaturePreviewView {
-        event_count,
+        event_count: events.len(),
         observations,
         truncated,
     })

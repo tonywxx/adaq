@@ -985,6 +985,8 @@ pub struct FeatureMaterializationRequest {
     pub snapshot_id: String,
     pub point_in_time_universe_id: String,
     pub observation_range: ObservationRange,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub valuation_currency: String,
     #[serde(default)]
     pub parameters: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1010,6 +1012,7 @@ impl FeatureMaterializationRequest {
             snapshot_id: snapshot_id.into(),
             point_in_time_universe_id: point_in_time_universe_id.into(),
             observation_range,
+            valuation_currency: String::new(),
             parameters,
             artifact_ids: Vec::new(),
             engine_identity: None,

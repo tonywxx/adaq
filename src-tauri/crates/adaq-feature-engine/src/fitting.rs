@@ -44,6 +44,8 @@ pub struct TransformationFittingProtocolDraft {
     pub fitted_output: FeatureReference,
     pub snapshot_id: String,
     pub point_in_time_universe_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub valuation_currency: String,
     pub fitting_scope: FittingScope,
     pub fitting_window: ObservationRange,
     pub algorithm: FittingAlgorithm,
@@ -61,6 +63,8 @@ struct ProtocolContent {
     fitted_output: FeatureReference,
     snapshot_id: String,
     point_in_time_universe_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    valuation_currency: String,
     fitting_scope: FittingScope,
     fitting_window: ObservationRange,
     algorithm: FittingAlgorithm,
@@ -151,6 +155,7 @@ impl TransformationFittingProtocol {
             fitted_output: draft.fitted_output,
             snapshot_id: draft.snapshot_id,
             point_in_time_universe_id: draft.point_in_time_universe_id,
+            valuation_currency: draft.valuation_currency,
             fitting_scope: draft.fitting_scope,
             fitting_window: draft.fitting_window,
             algorithm: draft.algorithm,
@@ -181,6 +186,7 @@ impl TransformationFittingProtocol {
             fitted_output: self.0.content.fitted_output.clone(),
             snapshot_id: self.0.content.snapshot_id.clone(),
             point_in_time_universe_id: self.0.content.point_in_time_universe_id.clone(),
+            valuation_currency: self.0.content.valuation_currency.clone(),
             fitting_scope: self.0.content.fitting_scope,
             fitting_window: self.0.content.fitting_window.clone(),
             algorithm: self.0.content.algorithm.clone(),
@@ -211,6 +217,10 @@ impl TransformationFittingProtocol {
 
     pub fn point_in_time_universe_id(&self) -> &str {
         &self.0.content.point_in_time_universe_id
+    }
+
+    pub fn valuation_currency(&self) -> &str {
+        &self.0.content.valuation_currency
     }
 
     pub const fn fitting_scope(&self) -> FittingScope {

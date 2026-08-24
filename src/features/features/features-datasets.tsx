@@ -289,6 +289,14 @@ function DatasetInspector({
 						</div>
 						<div>
 							<dt className="inline font-medium">
+								{t("features.datasets.manifest.valuationCurrency")}:{" "}
+							</dt>
+							<dd className="inline font-mono">
+								{manifest.request.valuationCurrency || "—"}
+							</dd>
+						</div>
+						<div>
+							<dt className="inline font-medium">
 								{t("features.datasets.manifest.range")}:{" "}
 							</dt>
 							<dd className="inline">

@@ -979,12 +979,14 @@ fn feature_fitting_start(
     let mut request: features::FeatureFittingStartRequest =
         serde_json::from_value(payload).map_err(|error| error.to_string())?;
     request.user_id = auth.user_id_for_window(window.label())?;
-    state.require_frozen_research_evidence(
+    let frozen = state.require_frozen_research_evidence(
         &request.user_id,
         &operation_id,
         adaq_factor_research::ResearchStage::Features,
     )?;
-    let attempt = state.features.start_fitting(request)?;
+    let attempt = state
+        .features
+        .start_fitting_with_evidence(request, &frozen)?;
     state.record_research_attempt_binding(
         &attempt.user_id,
         &operation_id,
@@ -1050,6 +1052,7 @@ fn feature_fitting_retry(
     let (operation_id, stage) = state
         .research_attempt_binding(&request.user_id, &request.attempt_id)?
         .ok_or("research Context binding is missing for this Attempt")?;
+    state.require_frozen_research_evidence(&request.user_id, &operation_id, stage)?;
     let attempt = state.features.retry_fitting_attempt(request)?;
     state.record_research_attempt_binding(
         &attempt.user_id,
@@ -1120,12 +1123,14 @@ fn feature_materialization_start(
     let mut request: features::FeatureMaterializationStartRequest =
         serde_json::from_value(payload).map_err(|error| error.to_string())?;
     request.user_id = auth.user_id_for_window(window.label())?;
-    state.require_frozen_research_evidence(
+    let frozen = state.require_frozen_research_evidence(
         &request.user_id,
         &operation_id,
         adaq_factor_research::ResearchStage::Features,
     )?;
-    let attempt = state.features.start_materialization(request)?;
+    let attempt = state
+        .features
+        .start_materialization_with_evidence(request, &frozen)?;
     state.record_research_attempt_binding(
         &attempt.user_id,
         &operation_id,
@@ -1191,6 +1196,7 @@ fn feature_materialization_retry(
     let (operation_id, stage) = state
         .research_attempt_binding(&request.user_id, &request.attempt_id)?
         .ok_or("research Context binding is missing for this Attempt")?;
+    state.require_frozen_research_evidence(&request.user_id, &operation_id, stage)?;
     let attempt = state.features.retry_materialization_attempt(request)?;
     state.record_research_attempt_binding(
         &attempt.user_id,

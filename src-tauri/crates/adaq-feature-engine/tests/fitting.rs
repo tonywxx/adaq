@@ -32,6 +32,7 @@ fn protocol(scope: FittingScope, algorithm: FittingAlgorithm) -> TransformationF
         fitted_output: reference("standardized"),
         snapshot_id: "snapshot-1".into(),
         point_in_time_universe_id: "universe-1".into(),
+        valuation_currency: String::new(),
         fitting_scope: scope,
         fitting_window: ObservationRange {
             start_time_ms: 0,
@@ -421,6 +422,7 @@ fn feature_evaluator_applies_bound_artifact_without_fitting_or_mutating_it() {
         fitted_output: fitted_output.clone(),
         snapshot_id: "snapshot-1".into(),
         point_in_time_universe_id: "universe-1".into(),
+        valuation_currency: String::new(),
         fitting_scope: FittingScope::PooledUniverse,
         fitting_window: ObservationRange {
             start_time_ms: 0,
@@ -581,6 +583,7 @@ fn bound_artifact_evaluation_is_identical_across_batch_stateful_and_replay_paths
         fitted_output: fitted_output.clone(),
         snapshot_id: "snapshot-1".into(),
         point_in_time_universe_id: "universe-1".into(),
+        valuation_currency: String::new(),
         fitting_scope: FittingScope::PooledUniverse,
         fitting_window: ObservationRange {
             start_time_ms: 0,
