@@ -6,22 +6,42 @@ import {
 	Outlet,
 	useRouterState,
 } from "@tanstack/react-router";
-import { AuthGate } from "@/components/auth-gate";
+import { useAuthenticatedUserId } from "@/authenticated-user";
 import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
-import { DataFoundationPage } from "@/features/data-foundation/data-foundation-page";
-import {
-	CryptoMarketPage,
-	MarketsOverview,
-	OperationsDashboard,
-} from "@/features/markets/markets-page";
+import { WorkspaceReadyBoundary } from "@/components/workspace-ready-boundary";
 import {
 	WorkflowGuidePage,
 	WorkflowHomePage,
 } from "@/features/workflow/workflow-page";
 import Home from "@/layout/home";
-import { MarketRealtimeConnection } from "@/lib/market-session";
 import { lazy, Suspense, useEffect } from "react";
 import { LAST_APP_PATH_KEY } from "@/lib/app-settings";
+
+const DataFoundationPage = lazy(() =>
+	import("@/features/data-foundation/data-foundation-page").then((module) => ({
+		default: module.DataFoundationPage,
+	})),
+);
+const OperationsDashboardPage = lazy(() =>
+	import("@/features/operations/operations-dashboard").then((module) => ({
+		default: module.OperationsDashboard,
+	})),
+);
+const MarketsOverviewPage = lazy(() =>
+	import("@/features/markets/markets-page").then((module) => ({
+		default: module.MarketsOverview,
+	})),
+);
+const CryptoMarketPage = lazy(() =>
+	import("@/features/markets/markets-page").then((module) => ({
+		default: module.CryptoMarketPage,
+	})),
+);
+const MarketSessionBoundary = lazy(() =>
+	import("@/components/market-session-boundary").then((module) => ({
+		default: module.MarketSessionBoundary,
+	})),
+);
 
 const BacktestPage = lazy(() =>
 	import("@/features/backtest/backtest-page").then((module) => ({
@@ -72,7 +92,11 @@ const appRoute = createRoute({
 const operationsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/operations",
-	component: OperationsDashboard,
+	component: () => (
+		<Suspense fallback={<PageLoadingSkeleton />}>
+			<OperationsDashboardPage />
+		</Suspense>
+	),
 });
 
 const workflowGuideRoute = createRoute({
@@ -90,19 +114,31 @@ const workflowStepRoute = createRoute({
 const dataFoundationRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/data-foundation",
-	component: DataFoundationPage,
+	component: () => (
+		<Suspense fallback={<PageLoadingSkeleton />}>
+			<DataFoundationPage />
+		</Suspense>
+	),
 });
 
 const marketsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/markets",
-	component: MarketsOverview,
+	component: () => (
+		<Suspense fallback={<PageLoadingSkeleton />}>
+			<MarketsOverviewPage />
+		</Suspense>
+	),
 });
 
 const cryptoMarketRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/markets/crypto",
-	component: CryptoMarketPage,
+	component: () => (
+		<Suspense fallback={<PageLoadingSkeleton />}>
+			<CryptoMarketPage />
+		</Suspense>
+	),
 });
 
 const backtestRoute = createRoute({
@@ -180,21 +216,58 @@ const settingsRoute = createRoute({
 	),
 });
 
+const MARKET_SESSION_PATHS = [
+	"/data-foundation",
+	"/operations",
+	"/markets",
+	"/backtest",
+	"/components",
+	"/validation",
+	"/features",
+	"/models",
+	"/factors",
+] as const;
+
+function usesMarketSession(pathname: string) {
+	return MARKET_SESSION_PATHS.some(
+		(path) => pathname === path || pathname.startsWith(`${path}/`),
+	);
+}
+
 function AppShell() {
+	const userId = useAuthenticatedUserId();
 	const href = useRouterState({ select: (state) => state.location.href });
-	const isSettings = href.startsWith("/settings");
+	const pathname = useRouterState({
+		select: (state) => state.location.pathname,
+	});
+	const isSettings = pathname.startsWith("/settings");
+	const isHelp = pathname === "/" || pathname.startsWith("/help/workflow");
+	const needsMarketSession = usesMarketSession(pathname);
+	const isCryptoMarket =
+		pathname === "/markets/crypto" || pathname.startsWith("/markets/crypto/");
 
 	useEffect(() => {
 		if (!isSettings) sessionStorage.setItem(LAST_APP_PATH_KEY, href);
 	}, [href, isSettings]);
 
-	return (
-		<AuthGate>
-			<MarketRealtimeConnection enabled={href.startsWith("/markets/crypto")} />
-			<Home showSidebar={!isSettings}>
+	const content = needsMarketSession ? (
+		<Suspense fallback={<PageLoadingSkeleton />}>
+			<MarketSessionBoundary userId={userId} realtime={isCryptoMarket}>
 				<Outlet />
-			</Home>
-		</AuthGate>
+			</MarketSessionBoundary>
+		</Suspense>
+	) : (
+		<Outlet />
+	);
+
+	return (
+		<Home showSidebar={!isSettings}>
+			{isHelp ? (
+				content
+			) : (
+				<WorkspaceReadyBoundary>{content}</WorkspaceReadyBoundary>
+			)}
+		</Home>
 	);
 }
 

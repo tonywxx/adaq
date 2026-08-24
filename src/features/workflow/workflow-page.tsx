@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { markStartup } from "@/lib/startup-timing";
 import { workflowModules, workflowSteps } from "./workflow";
 
 export function WorkflowHomePage() {
@@ -48,6 +49,9 @@ export function WorkflowGuidePage({
 	const navigate = useNavigate();
 	const isMobile = useIsMobile();
 	const selectedStep = workflowSteps.find((step) => step.id === selectedStepId);
+	useEffect(() => {
+		markStartup("adaq:help-visible");
+	}, []);
 	const selectStep = useCallback(
 		(stepId: number) => {
 			void navigate({

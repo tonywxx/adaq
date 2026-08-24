@@ -1,21 +1,25 @@
 import "./styles/globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
-import { useAppShortcuts } from "@/hooks/use-app-shortcuts";
-import { router } from "@/router";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { RouterProvider } from "@tanstack/react-router";
+import { AuthGate } from "@/components/auth-gate";
+import { lazy, Suspense } from "react";
 
-const queryClient = new QueryClient();
+const AuthenticatedApp = lazy(() => import("@/authenticated-app"));
+
+function PostAuthLoading() {
+	return <main className="min-h-svh bg-background" aria-busy="true" />;
+}
 
 function App() {
-	useAppShortcuts();
-
 	return (
-		<QueryClientProvider client={queryClient}>
-			<ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-				<RouterProvider router={router} />
-			</ThemeProvider>
-		</QueryClientProvider>
+		<ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+			<AuthGate>
+				{(userId) => (
+					<Suspense fallback={<PostAuthLoading />}>
+						<AuthenticatedApp userId={userId} />
+					</Suspense>
+				)}
+			</AuthGate>
+		</ThemeProvider>
 	);
 }
 

@@ -13,6 +13,12 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	const features = read("./features/features/features-page.tsx");
 	const factors = read("./features/factors/factors-page.tsx");
 	const workflow = read("./features/workflow/workflow-page.tsx");
+	const app = read("./App.tsx");
+	const main = read("./main.tsx");
+	const authenticatedApp = read("./authenticated-app.tsx");
+	const authGate = read("./components/auth-gate.tsx");
+	const startupTiming = read("./lib/startup-timing.ts");
+	const index = read("../index.html");
 
 	for (const source of [
 		backtest,
@@ -65,6 +71,25 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	expect(workflow).toMatch(
 		/requestAnimationFrame\([\s\S]*?requestAnimationFrame\([\s\S]*?import\("@antv\/infographic"\)/,
 	);
+	expect(workflow).toContain('markStartup("adaq:help-visible")');
+	expect(startupTiming).toContain(
+		'console.info("[AdaQ startup timing]", report)',
+	);
+	expect(startupTiming).toContain('"adaq:webview-to-help"');
+	expect(app).toMatch(
+		/const AuthenticatedApp = lazy\(\(\) => import\("@\/authenticated-app"\)/,
+	);
+	expect(app).toMatch(/<AuthGate>/);
+	expect(main).toContain('import "@/lib/i18n-core"');
+	expect(authenticatedApp).toContain('import "@/lib/i18n"');
+	expect(authGate).toMatch(
+		/const AuthEntry = lazy\(\(\) => import\("\.\/auth-entry"\)\)/,
+	);
+	expect(authGate).not.toContain('from "@/components/ui/card"');
+	expect(authGate).not.toContain("checkStrongPassword");
+	expect(index).toContain('performance.mark("adaq:webview-start")');
+	expect(main).toContain('markStartup("adaq:react-entry")');
+	expect(authGate).toContain('markStartup("adaq:auth-loading-visible")');
 	expect(workflow).toMatch(/id="workflow-steps"/);
 	const definitions = read("./features/features/definitions-view.tsx");
 	expect(definitions).toMatch(/useState<"validate" \| "publish" \| null>/);

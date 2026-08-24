@@ -1,8 +1,11 @@
 import type { BarInterval, OhlcvBar } from "@/lib/market-chart-adapter";
 import { formatDecimal as formatLocaleDecimal } from "@/lib/i18n";
+import { getErrorMessage } from "@/lib/utils";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { type ReactNode, useEffect, useMemo } from "react";
 import { create } from "zustand";
+
+export { getErrorMessage };
 
 export const DEFAULT_ACTIVE_INSTRUMENT = {
 	src: "okx",
@@ -470,16 +473,4 @@ export function calculateChange(last: string, open24h: string) {
 export function formatNumber(value: string | null, maximumFractionDigits = 8) {
 	if (value === null) return "—";
 	return formatLocaleDecimal(value, { maximumFractionDigits });
-}
-
-export function getErrorMessage(error: unknown) {
-	if (
-		typeof error === "object" &&
-		error !== null &&
-		"message" in error &&
-		typeof error.message === "string"
-	) {
-		return error.message;
-	}
-	return String(error);
 }

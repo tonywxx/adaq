@@ -1259,7 +1259,7 @@ The fifteen strictly ordered module gates comprising three Workflow Foundations,
 _Avoid_: milestone order, parallel delivery frontier, implementation roadmap, automatic unblocking
 
 **Workflow Guide**:
-The localized, read-only presentation of ADAQ's Foundations and ordered ten-step Research-to-Paper workflow. It distinguishes Workflow Capability State from evidence-backed Workflow Step State, exposes the next eligible entry point, remains directly accessible from Help, and is the default GUI home only while no Operational Responsibility exists. Users may inspect downstream steps while their actions remain gated by exact prerequisites, and ambiguous evidence lineages require explicit selection rather than an inferred global project.
+The localized, read-only presentation of ADAQ's Foundations and ordered ten-step Research-to-Paper workflow. It is the Help home, distinguishes Workflow Capability State from evidence-backed Workflow Step State, exposes the next eligible entry point, and is the default GUI home only while no Operational Responsibility exists. Users may inspect downstream steps while their actions remain gated by exact prerequisites, and ambiguous evidence lineages require explicit selection rather than an inferred global project.
 _Avoid_: Operations Dashboard, workflow record, global completion percentage
 
 **Workflow Capability State**:

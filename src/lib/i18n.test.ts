@@ -194,8 +194,8 @@ test("initializes localization before the React render call", () => {
 		"utf8",
 	);
 
-	expect(source.indexOf('import "@/lib/i18n"')).toBeGreaterThanOrEqual(0);
-	expect(source.indexOf('import "@/lib/i18n"')).toBeLessThan(
+	expect(source.indexOf('import "@/lib/i18n-core"')).toBeGreaterThanOrEqual(0);
+	expect(source.indexOf('import "@/lib/i18n-core"')).toBeLessThan(
 		source.indexOf("ReactDOM.createRoot"),
 	);
 	expect(i18nSource).toMatch(/initAsync: false/);

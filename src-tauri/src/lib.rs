@@ -34,10 +34,10 @@ use adaq_trading_crypto::{Exchange, Params};
 use rust_decimal::Decimal;
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
 };
 use tauri::{
-    Emitter, Manager, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent,
     ipc::Channel,
     menu::{AboutMetadata, MenuBuilder, SubmenuBuilder},
 };
@@ -51,6 +51,104 @@ const CHECK_FOR_UPDATES_EVENT: &str = "adaq-check-for-updates";
 
 fn database_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("adaq.db")
+}
+
+struct WorkspaceStates {
+    local_research: Arc<LocalResearchState>,
+    python_research: Arc<python_research::PythonResearchState>,
+    watchlist: WatchlistDb,
+}
+
+enum WorkspaceInitStatus {
+    NotStarted(PathBuf),
+    Pending,
+    Ready(Option<WorkspaceStates>),
+    Failed(String),
+    Managed,
+}
+
+struct WorkspaceInitialization {
+    status: Mutex<WorkspaceInitStatus>,
+    ready: Condvar,
+}
+
+impl WorkspaceInitialization {
+    fn new(app_data_dir: PathBuf) -> Arc<Self> {
+        Arc::new(Self {
+            status: Mutex::new(WorkspaceInitStatus::NotStarted(app_data_dir)),
+            ready: Condvar::new(),
+        })
+    }
+
+    fn install(self: &Arc<Self>, app: &AppHandle) -> Result<(), String> {
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "workspace initialization lock poisoned".to_owned())?;
+        if let WorkspaceInitStatus::NotStarted(app_data_dir) = &*status {
+            let app_data_dir = app_data_dir.clone();
+            *status = WorkspaceInitStatus::Pending;
+            let worker = Arc::clone(self);
+            std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    open_workspace_states(&app_data_dir)
+                }))
+                .map_err(|_| "workspace initialization panicked".to_owned())
+                .and_then(|result| result);
+                let status = match result {
+                    Ok(states) => WorkspaceInitStatus::Ready(Some(states)),
+                    Err(error) => WorkspaceInitStatus::Failed(error),
+                };
+                if let Ok(mut current) = worker.status.lock() {
+                    *current = status;
+                    worker.ready.notify_all();
+                }
+            });
+        }
+
+        loop {
+            match &mut *status {
+                WorkspaceInitStatus::NotStarted(_) => {
+                    unreachable!("workspace initialization must start")
+                }
+                WorkspaceInitStatus::Pending => {
+                    status = self
+                        .ready
+                        .wait(status)
+                        .map_err(|_| "workspace initialization wait failed".to_owned())?;
+                }
+                WorkspaceInitStatus::Ready(states) => {
+                    let states = states
+                        .take()
+                        .ok_or_else(|| "workspace states were already consumed".to_owned())?;
+                    app.manage(states.local_research);
+                    app.manage(states.python_research);
+                    app.manage(states.watchlist);
+                    *status = WorkspaceInitStatus::Managed;
+                    return Ok(());
+                }
+                WorkspaceInitStatus::Failed(error) => return Err(error.clone()),
+                WorkspaceInitStatus::Managed => return Ok(()),
+            }
+        }
+    }
+}
+
+fn open_workspace_states(app_data_dir: &Path) -> Result<WorkspaceStates, String> {
+    std::fs::create_dir_all(app_data_dir).map_err(|error| error.to_string())?;
+    let database_path = database_path(app_data_dir);
+    let local_research = LocalResearchState::open(app_data_dir)?;
+    let python_research = Arc::new(python_research::PythonResearchState::open(app_data_dir));
+    python_research.attach_queue(local_research.features.queue());
+    local_research
+        .features
+        .attach_python(python_research.clone())?;
+    let watchlist = WatchlistDb::open(&database_path)?;
+    Ok(WorkspaceStates {
+        local_research,
+        python_research,
+        watchlist,
+    })
 }
 
 fn unix_now_ms() -> i64 {
@@ -80,6 +178,17 @@ async fn auth_bind_session(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn workspace_ready(
+    app: AppHandle,
+    state: State<'_, Arc<WorkspaceInitialization>>,
+) -> Result<(), String> {
+    let initialization = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || initialization.install(&app))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -3873,21 +3982,8 @@ pub fn run() {
             app.manage(TradeStreamState::default());
             app.manage(Level2StreamState::default());
             let app_data_dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&app_data_dir)?;
-            let database_path = database_path(&app_data_dir);
-            let local_research =
-                LocalResearchState::open(&app_data_dir).map_err(std::io::Error::other)?;
-            let python_research =
-                Arc::new(python_research::PythonResearchState::open(&app_data_dir));
-            python_research.attach_queue(local_research.features.queue());
-            local_research
-                .features
-                .attach_python(python_research.clone())
-                .map_err(std::io::Error::other)?;
-            app.manage(local_research);
-            app.manage(python_research);
             app.manage(auth::AuthState::from_environment());
-            app.manage(WatchlistDb::open(&database_path).map_err(std::io::Error::other)?);
+            app.manage(WorkspaceInitialization::new(app_data_dir));
             let handle = app.handle();
             let app_menu = SubmenuBuilder::new(handle, "adaq")
                 .about(Some(AboutMetadata {
@@ -3947,6 +4043,7 @@ pub fn run() {
             greet,
             auth_bind_session,
             auth_clear_session,
+            workspace_ready,
             operations_observe,
             operations_health,
             operations_alerts,

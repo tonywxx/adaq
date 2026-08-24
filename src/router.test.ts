@@ -6,17 +6,17 @@ import { workflowModules, workflowSteps } from "@/features/workflow/workflow";
 test("workspace navigation keeps one authenticated shell mounted", () => {
 	const source = readFileSync(new URL("./router.tsx", import.meta.url), "utf8");
 
-	expect(source.match(/<AuthGate>/g)).toHaveLength(1);
+	expect(source).not.toContain("AuthGate");
+	expect(source).toContain("useAuthenticatedUserId");
 	expect(source).toMatch(
 		/const rootRoute = createRootRoute\(\{\s*component: AppShell/,
 	);
-	expect(source).toMatch(
-		/<AuthGate>\s*<Home showSidebar=\{!isSettings\}>\s*<Outlet \/>\s*<\/Home>\s*<\/AuthGate>/,
-	);
+	expect(source).toMatch(/<Home showSidebar=\{!isSettings\}>/);
+	expect(source).toMatch(/<Outlet \/>/);
 	expect(source).toMatch(/path: "\/settings\/\$section"/);
 });
 
-	test("routes adaptive home, Help, Operations, and the supported OKX workspace", () => {
+test("routes adaptive home, Help, Operations, and the supported OKX workspace", () => {
 	const routerSource = readFileSync(
 		new URL("./router.tsx", import.meta.url),
 		"utf8",
@@ -32,7 +32,18 @@ test("workspace navigation keeps one authenticated shell mounted", () => {
 
 	expect(routerSource).toMatch(/path: "\/",\s*component: WorkflowHomePage/);
 	expect(routerSource).toMatch(
-		/path: "\/operations",\s*component: OperationsDashboard/,
+		/path: "\/operations"[\s\S]*?<OperationsDashboardPage \/>/,
+	);
+	expect(routerSource).toMatch(/const DataFoundationPage = lazy\(/);
+	expect(routerSource).toMatch(/const OperationsDashboardPage = lazy\(/);
+	expect(routerSource).toMatch(/const MarketsOverviewPage = lazy\(/);
+	expect(routerSource).toMatch(/const CryptoMarketPage = lazy\(/);
+	expect(routerSource).toMatch(/const MarketSessionBoundary = lazy\(/);
+	expect(routerSource).not.toMatch(
+		/import \{ DataFoundationPage \} from "@\/features\/data-foundation\/data-foundation-page"/,
+	);
+	expect(routerSource).not.toMatch(
+		/import \{[\s\S]*MarketsOverview[\s\S]*\} from "@\/features\/markets\/markets-page"/,
 	);
 	expect(routerSource).toContain('path: "/help/workflow"');
 	expect(routerSource).toContain('path: "/help/workflow/$step"');
@@ -41,10 +52,7 @@ test("workspace navigation keeps one authenticated shell mounted", () => {
 		/path: "\/factors"[\s\S]*?component: \(\) => \([\s\S]*?<FactorsPage \/>/,
 	);
 	expect(routerSource).toContain('titleKey: "factors.title"');
-	for (const path of [
-		"/markets",
-		"/markets/crypto",
-	]) {
+	for (const path of ["/markets", "/markets/crypto"]) {
 		expect(routerSource).toContain(`path: "${path}"`);
 	}
 	expect(routerSource).not.toMatch(/path: "\/",\s*component: Dashboard/);

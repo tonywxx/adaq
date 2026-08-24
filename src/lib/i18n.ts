@@ -3470,4 +3470,14 @@ if (!i18n.isInitialized) {
 		returnEmptyString: false,
 		interpolation: { escapeValue: false },
 	});
+} else {
+	for (const locale of RESOURCE_LOCALES) {
+		i18n.addResourceBundle(
+			locale,
+			"translation",
+			resources[locale].translation,
+			true,
+			true,
+		);
+	}
 }

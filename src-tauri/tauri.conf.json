@@ -14,6 +14,7 @@
 		"windows": [
 			{
 				"title": "AdaQ",
+				"backgroundColor": "#ececec",
 				"width": 1280,
 				"height": 860,
 				"minWidth": 800,

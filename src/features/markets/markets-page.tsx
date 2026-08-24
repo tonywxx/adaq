@@ -10,7 +10,7 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Dashboard } from "@/layout/home";
+import { Dashboard } from "@/layout/dashboard";
 import {
 	addWatchlistInstrument,
 	DEFAULT_ACTIVE_INSTRUMENT,
