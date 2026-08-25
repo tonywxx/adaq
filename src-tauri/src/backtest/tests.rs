@@ -200,6 +200,7 @@ fn harness(name: &str) -> Harness {
         gaps: vec![],
         parquet_path: PathBuf::new(),
         provenance: None,
+        publication_evidence_name: None,
     };
     let source = Arc::new(FakeBacktestSource {
         database: Arc::new(Mutex::new(database)),

@@ -29,6 +29,8 @@ pub struct MarketDataSnapshot {
     pub parquet_path: PathBuf,
     #[serde(default)]
     pub provenance: Option<SnapshotProvenance>,
+    #[serde(default)]
+    pub publication_evidence_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +175,7 @@ impl SnapshotStore {
             gaps: series.gaps.iter().copied().map(Into::into).collect(),
             parquet_path,
             provenance,
+            publication_evidence_name: None,
         })
     }
 

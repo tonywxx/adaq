@@ -24,6 +24,7 @@ import { toast } from "sonner";
 
 type PipelineDatasetSummary = {
 	sourceId: string;
+	publicationEvidenceName?: string;
 	source: SourceEvidenceSummary;
 	canonicalId?: string;
 	qualityReportId?: string;
@@ -41,11 +42,17 @@ type GateTwoRequest = {
 	endTimeMs: number;
 	interval: OkxInterval;
 	instrumentCodes: string[];
+	publicationEvidenceName?: string;
 };
 
 type GateTwoPublicationView = {
-	publications: Array<{ sourceId: string; canonicalId?: string }>;
+	publications: Array<{
+		sourceId: string;
+		canonicalId?: string;
+		publicationEvidenceName?: string;
+	}>;
 	universeSnapshotId: string;
+	publicationEvidenceName?: string;
 };
 
 type SourceEvidenceSummary = {
@@ -86,6 +93,7 @@ type ResearchEvidenceProjection = {
 
 type SnapshotOption = {
 	snapshotId: string;
+	publicationEvidenceName?: string;
 	code: string;
 	interval: string;
 	barCount: number;
@@ -155,6 +163,7 @@ type OkxAcquisitionStatus = {
 
 type InstrumentMasterSnapshot = {
 	snapshotId: string;
+	catalogName?: string;
 	retrievedAtMs: number;
 	connectorVersion: string;
 	instruments: Array<{
@@ -175,6 +184,106 @@ type InstrumentMasterSnapshot = {
 const shortId = (value: string) =>
 	value.length > 8 ? `${value.slice(0, 3)}...${value.slice(-3)}` : value;
 
+type BackfillScope = "custom" | "watchlist" | "all";
+
+const normalizeNamePart = (value: string) => value.trim().replace(/\s+/g, "-");
+
+const joinDisplayName = (customName: string, suffix: string) => {
+	const prefix = normalizeNamePart(customName);
+	return prefix ? `${prefix}_${suffix}` : suffix;
+};
+
+const compactNameNumber = (value: string) => {
+	const number = Number(value);
+	if (!Number.isFinite(number)) return "0";
+	const absolute = Math.abs(number);
+	const unit =
+		absolute >= 1_000_000_000
+			? ([1_000_000_000, "b"] as const)
+			: absolute >= 1_000_000
+				? ([1_000_000, "m"] as const)
+				: absolute >= 1_000
+					? ([1_000, "k"] as const)
+					: ([1, ""] as const);
+	const formatted = (number / unit[0])
+		.toFixed(2)
+		.replace(/\.0+$|(?<=\.[0-9])0+$/, "");
+	return `${formatted}${unit[1]}`;
+};
+
+const buildCatalogName = (
+	customName: string,
+	minimumQuoteVolume24h: string,
+	ignoreUntradable: boolean,
+) =>
+	joinDisplayName(
+		customName,
+		`okx-${compactNameNumber(minimumQuoteVolume24h)}-${ignoreUntradable ? "t" : "a"}`,
+	);
+
+const catalogDateTimeOptions: Intl.DateTimeFormatOptions = {
+	year: "2-digit",
+	month: "2-digit",
+	day: "2-digit",
+	hour: "2-digit",
+	minute: "2-digit",
+	second: "2-digit",
+	hourCycle: "h23",
+};
+
+const formatCatalogDateTime = (value: number) => {
+	const parts = Object.fromEntries(
+		new Intl.DateTimeFormat("en-US", catalogDateTimeOptions)
+			.formatToParts(new Date(value))
+			.map(({ type, value: partValue }) => [type, partValue]),
+	);
+	return `${parts.month}/${parts.day}/${parts.year} ${parts.hour}:${parts.minute}:${parts.second}`;
+};
+
+const dateNamePart = (value: string | number | undefined) => {
+	if (typeof value === "string") return value.replaceAll("-", "");
+	if (value == null || !Number.isFinite(value)) return "unknown";
+	return new Date(value).toISOString().slice(0, 10).replaceAll("-", "");
+};
+
+const buildPublicationEvidenceName = (
+	customName: string,
+	scope: BackfillScope,
+	interval: string,
+	start: string | number | undefined,
+	end: string | number | undefined,
+	instrumentCodes: string[],
+) => {
+	const suffix = [
+		"okx",
+		scope,
+		interval,
+		dateNamePart(start),
+		dateNamePart(end),
+		scope === "custom"
+			? instrumentCodes
+					.map((code) => normalizeNamePart(code.toLowerCase()))
+					.join("+") || "custom-instruments"
+			: undefined,
+	]
+		.filter(Boolean)
+		.join("-");
+	return joinDisplayName(customName, suffix);
+};
+
+const backfillScopeFromStorage = (value: unknown): BackfillScope =>
+	value === "watchlist" ? "watchlist" : value === "all" ? "all" : "custom";
+
+const catalogDisplayName = (snapshot: InstrumentMasterSnapshot) =>
+	snapshot.catalogName ??
+	(snapshot.minimumQuoteVolume24h != null && snapshot.ignoreUntradable != null
+		? buildCatalogName(
+				"",
+				snapshot.minimumQuoteVolume24h,
+				snapshot.ignoreUntradable,
+			)
+		: "—");
+
 const humanizeNumber = (value: string | number | undefined) => {
 	const number = Number(value);
 	if (!Number.isFinite(number)) return "—";
@@ -191,6 +300,7 @@ type ProvenanceItem =
 	| {
 			kind: "dataset";
 			sourceId: string;
+			publicationEvidenceName?: string;
 			revision: number;
 			source: SourceEvidenceSummary;
 			operation?: OkxAcquisitionStatus;
@@ -221,6 +331,7 @@ function SourceProvenancePanel({
 		...datasets.map((dataset) => ({
 			kind: "dataset" as const,
 			sourceId: dataset.sourceId,
+			publicationEvidenceName: dataset.publicationEvidenceName,
 			revision: dataset.revision,
 			source: dataset.source,
 			operation: operations.find((item) => item.sourceId === dataset.sourceId),
@@ -243,8 +354,8 @@ function SourceProvenancePanel({
 				item.kind === "dataset" ? (
 					<details key={item.sourceId} className="rounded-md border p-3">
 						<summary className="cursor-pointer text-sm font-medium">
-							{item.source.provider} · {item.source.instrument?.code ?? "—"} ·{" "}
-							{item.source.interval ?? "—"}
+							{item.publicationEvidenceName ?? "—"} · {item.source.provider} ·{" "}
+							{item.source.instrument?.code ?? "—"} · {item.source.interval ?? "—"}
 						</summary>
 						<div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
 							<ContextField
@@ -416,9 +527,10 @@ type BackfillDraft = {
 	rangeStart: string;
 	rangeEnd: string;
 	interval: OkxInterval;
-	scope: "selected" | "watchlist" | "all";
+	scope: BackfillScope;
 	instrumentCodes: string[];
 	instrumentMasterSnapshotId?: string;
+	publicationEvidenceName?: string;
 	startedAtMs: number;
 };
 
@@ -511,22 +623,28 @@ function InstrumentEvidencePanel({
 			<p className="text-xs text-muted-foreground">
 				{t("dataFoundation.okxInstrumentMasterTableDescription")}
 			</p>
-			<div className="grid gap-1 sm:grid-cols-3">
+			<div className="grid gap-1 sm:grid-cols-4">
 				<span>
+					{t("dataFoundation.okxCatalogNameLabel")}{" "}
+					<strong className="text-primary">{catalogDisplayName(latest)}</strong>
+				</span>
+				<span>
+					{t("dataFoundation.okxInstrumentMasterCountLabel")}{" "}
 					<strong className="text-primary">
 						{humanizeNumber(latest.instruments.length)}
-					</strong>{" "}
-					{t("dataFoundation.okxInstrumentMasterCountLabel")}
+					</strong>
 				</span>
 				<span>
-					{t("dataFoundation.okxInstrumentMasterRetrieved", {
-						date: formatDateTime(latest.retrievedAtMs),
-					})}
+					{t("dataFoundation.okxInstrumentMasterRetrievedLabel")}{" "}
+					<strong className="text-primary">
+						{formatCatalogDateTime(latest.retrievedAtMs)}
+					</strong>
 				</span>
 				<span>
-					{t("dataFoundation.okxInstrumentMasterSnapshot", {
-						id: shortId(latest.snapshotId),
-					})}
+					{t("dataFoundation.okxInstrumentMasterSnapshotLabel")}{" "}
+					<strong className="font-mono text-primary">
+						{shortId(latest.snapshotId)}
+					</strong>
 				</span>
 			</div>
 			<div className="max-h-72 overflow-auto rounded-md border">
@@ -570,14 +688,17 @@ function InstrumentEvidencePanel({
 					<table className="w-full text-left text-xs">
 						<thead className="sticky top-0 bg-muted">
 							<tr>
+								<th className="p-2">{t("dataFoundation.okxCatalogName")}</th>
 								<th className="p-2">
-									{t("dataFoundation.okxInstrumentMasterSnapshotHeader")}
+									{t("dataFoundation.okxInstrumentMasterCountHeader")}
 								</th>
+								<th className="p-2">{t("dataFoundation.okxMinimumQuoteVolume")}</th>
+								<th className="p-2">{t("dataFoundation.okxIgnoreUntradable")}</th>
 								<th className="p-2">
 									{t("dataFoundation.okxInstrumentMasterRetrievedHeader")}
 								</th>
 								<th className="p-2">
-									{t("dataFoundation.okxInstrumentMasterCountHeader")}
+									{t("dataFoundation.okxInstrumentMasterSnapshotHeader")}
 								</th>
 							</tr>
 						</thead>
@@ -596,9 +717,26 @@ function InstrumentEvidencePanel({
 									}}
 									tabIndex={0}
 								>
-									<td className="p-2 font-mono">{shortId(snapshot.snapshotId)}</td>
-									<td className="p-2">{formatDateTime(snapshot.retrievedAtMs)}</td>
+									<td className="p-2 font-medium">{catalogDisplayName(snapshot)}</td>
 									<td className="p-2">{humanizeNumber(snapshot.instruments.length)}</td>
+									<td className="p-2">
+										{humanizeNumber(snapshot.minimumQuoteVolume24h)}
+									</td>
+									<td className="p-2">
+										{snapshot.ignoreUntradable == null
+											? "—"
+											: t(
+													snapshot.ignoreUntradable
+														? "dataFoundation.okxYes"
+														: "dataFoundation.okxNo",
+												)}
+									</td>
+									<td className="p-2">
+										{formatCatalogDateTime(snapshot.retrievedAtMs)}
+									</td>
+									<td className="p-2 font-mono" title={snapshot.snapshotId}>
+										{shortId(snapshot.snapshotId)}
+									</td>
 								</tr>
 							))}
 						</tbody>
@@ -618,9 +756,7 @@ export function DataFoundationPage() {
 	const [backfillTaskId, setBackfillTaskId] = useState<string>();
 	const [backfillProgress, setBackfillProgress] = useState<string>();
 	const [backfillStats, setBackfillStats] = useState<OkxBackfillProgress>();
-	const [backfillScope, setBackfillScope] = useState<
-		"selected" | "watchlist" | "all"
-	>("watchlist");
+	const [backfillScope, setBackfillScope] = useState<BackfillScope>("watchlist");
 	const [instrumentCodes, setInstrumentCodes] = useState("BTC-USDT, ETH-USDT");
 	const watchlist = useMarketSessionStore((state) => state.watchlist);
 	const watchlistCodes = (watchlist ?? [])
@@ -636,6 +772,9 @@ export function DataFoundationPage() {
 		useState<FoundationMarket["id"]>("crypto");
 	const [contextVenue, setContextVenue] = useState("okx");
 	const [snapshotId, setSnapshotId] = useState("");
+	const [catalogNameInput, setCatalogNameInput] = useState("");
+	const [publicationEvidenceNameInput, setPublicationEvidenceNameInput] =
+		useState("");
 	const [ignoreUntradable, setIgnoreUntradable] = useState(true);
 	const [minimumQuoteVolume24h, setMinimumQuoteVolume24h] = useState("1000000");
 	const [universeId, setUniverseId] = useState("");
@@ -660,15 +799,18 @@ export function DataFoundationPage() {
 		if (!raw) return;
 		try {
 			const parsed = JSON.parse(raw) as Partial<BackfillDraft>;
+			const scope = backfillScopeFromStorage(parsed.scope);
 			setSavedBackfill({
 				rangeStart: parsed.rangeStart ?? "",
 				rangeEnd: parsed.rangeEnd ?? "",
 				interval: parsed.interval ?? "1h",
-				scope: parsed.scope ?? "watchlist",
+				scope,
 				instrumentCodes: parsed.instrumentCodes ?? ["BTC-USDT", "ETH-USDT"],
 				instrumentMasterSnapshotId: parsed.instrumentMasterSnapshotId,
+				publicationEvidenceName: parsed.publicationEvidenceName,
 				startedAtMs: parsed.startedAtMs ?? Date.now(),
 			});
+			setPublicationEvidenceNameInput(parsed.publicationEvidenceName ?? "");
 		} catch {
 			localStorage.removeItem("adaq.okx-backfill-draft");
 		}
@@ -792,11 +934,22 @@ export function DataFoundationPage() {
 		setError(undefined);
 		setPublishingId(dataset.canonicalId);
 		try {
+			const publicationEvidenceName =
+				dataset.publicationEvidenceName ??
+				buildPublicationEvidenceName(
+					publicationEvidenceNameInput,
+					backfillScope,
+					dataset.source.interval ?? backfillInterval,
+					dataset.source.requestedStartTimeMs,
+					dataset.source.requestedEndTimeMs,
+					dataset.source.instrument?.code ? [dataset.source.instrument.code] : [],
+				);
 			await invoke("market_data_pipeline_publish_snapshot", {
 				request: {
 					userId,
 					canonicalId: dataset.canonicalId,
 					allowDegraded,
+					publicationEvidenceName,
 				},
 			});
 			await snapshotsQuery.refetch();
@@ -822,6 +975,16 @@ export function DataFoundationPage() {
 		setError(undefined);
 		setPublishingSourceId(dataset.sourceId);
 		try {
+			const publicationEvidenceName =
+				dataset.publicationEvidenceName ??
+				buildPublicationEvidenceName(
+					publicationEvidenceNameInput,
+					backfillScope,
+					source.interval,
+					source.requestedStartTimeMs,
+					source.requestedEndTimeMs,
+					[source.instrument.code],
+				);
 			const onEvent = new Channel<OkxBackfillEvent>();
 			await invoke("okx_publish_sources", {
 				request: {
@@ -832,6 +995,7 @@ export function DataFoundationPage() {
 					endTimeMs: source.requestedEndTimeMs,
 					interval: source.interval,
 					instrumentCodes: [source.instrument.code],
+					publicationEvidenceName,
 				},
 				onEvent,
 			});
@@ -842,6 +1006,7 @@ export function DataFoundationPage() {
 				endTimeMs: source.requestedEndTimeMs,
 				interval: source.interval as OkxInterval,
 				instrumentCodes: [source.instrument.code],
+				publicationEvidenceName,
 			});
 			await pipelineQuery.refetch();
 		} catch (cause) {
@@ -886,6 +1051,8 @@ export function DataFoundationPage() {
 
 	const runOkxBackfill = async (draft?: BackfillDraft) => {
 		if (!userId || backfillTaskId) return;
+		const publicationNameInput =
+			draft?.publicationEvidenceName ?? publicationEvidenceNameInput;
 		const nextDraft = draft ?? {
 			rangeStart,
 			rangeEnd,
@@ -896,6 +1063,7 @@ export function DataFoundationPage() {
 				.map((code) => code.trim().toUpperCase())
 				.filter(Boolean),
 			instrumentMasterSnapshotId: selectedBackfillSnapshot?.snapshotId,
+			publicationEvidenceName: publicationNameInput,
 			startedAtMs: Date.now(),
 		};
 		const selectedSnapshot = instrumentMasterQuery.data?.find(
@@ -971,6 +1139,14 @@ export function DataFoundationPage() {
 						interval: nextDraft.interval,
 						instrumentCodes: requestedCodes,
 						universeSnapshotId: nextDraft.instrumentMasterSnapshotId,
+						publicationEvidenceName: buildPublicationEvidenceName(
+							publicationNameInput,
+							nextDraft.scope,
+							nextDraft.interval,
+							nextDraft.rangeStart,
+							nextDraft.rangeEnd,
+							requestedCodes,
+						),
 					},
 					onEvent,
 				},
@@ -983,6 +1159,14 @@ export function DataFoundationPage() {
 					endTimeMs,
 					interval: nextDraft.interval,
 					instrumentCodes: requestedCodes,
+					publicationEvidenceName: buildPublicationEvidenceName(
+						publicationNameInput,
+						nextDraft.scope,
+						nextDraft.interval,
+						nextDraft.rangeStart,
+						nextDraft.rangeEnd,
+						requestedCodes,
+					),
 				});
 			}
 			await Promise.all([
@@ -1051,9 +1235,7 @@ export function DataFoundationPage() {
 		if (!userId) return;
 		const latest = instrumentMasterQuery.data?.at(-1);
 		if (market.id === "crypto" && latest) {
-			const retrieved = formatDateTime(latest.retrievedAtMs, {
-				second: "2-digit",
-			});
+			const retrieved = formatCatalogDateTime(latest.retrievedAtMs);
 			if (
 				!window.confirm(
 					t("dataFoundation.okxInstrumentMasterRefreshConfirm", {
@@ -1074,6 +1256,11 @@ export function DataFoundationPage() {
 					operationId,
 					ignoreUntradable,
 					minimumQuoteVolume24h,
+					catalogName: buildCatalogName(
+						catalogNameInput,
+						minimumQuoteVolume24h,
+						ignoreUntradable,
+					),
 				},
 			});
 			await instrumentMasterQuery.refetch();
@@ -1266,14 +1453,15 @@ export function DataFoundationPage() {
 								</div>
 							</CardHeader>
 							<CardContent className="flex flex-wrap gap-2">
-								<div className="w-full grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-2">
-									<label className="flex items-center gap-2">
+								<div className="w-full grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+									<label className="grid gap-1">
+										<span>{t("dataFoundation.okxCatalogName")}</span>
 										<input
-											type="checkbox"
-											checked={ignoreUntradable}
-											onChange={(event) => setIgnoreUntradable(event.target.checked)}
+											className="h-9 rounded-md border bg-background px-2"
+											value={catalogNameInput}
+											onChange={(event) => setCatalogNameInput(event.target.value)}
+											placeholder={t("dataFoundation.okxCatalogName")}
 										/>
-										{t("dataFoundation.okxIgnoreUntradable")}
 									</label>
 									<label className="grid gap-1">
 										<span>{t("dataFoundation.okxMinimumQuoteVolume")}</span>
@@ -1283,6 +1471,14 @@ export function DataFoundationPage() {
 											value={minimumQuoteVolume24h}
 											onChange={(event) => setMinimumQuoteVolume24h(event.target.value)}
 										/>
+									</label>
+									<label className="flex items-center gap-2">
+										<input
+											type="checkbox"
+											checked={ignoreUntradable}
+											onChange={(event) => setIgnoreUntradable(event.target.checked)}
+										/>
+										{t("dataFoundation.okxIgnoreUntradable")}
 									</label>
 								</div>
 								<button
@@ -1324,132 +1520,6 @@ export function DataFoundationPage() {
 					);
 				})}
 			</div>
-			<section className="hidden">
-				<div className="pb-4">
-					<CardTitle>
-						{t("dataFoundation.okxInstrumentMasterEvidenceTitle")}
-					</CardTitle>
-					<CardDescription>
-						{t("dataFoundation.okxInstrumentMasterEvidenceDescription")}
-					</CardDescription>
-				</div>
-				<div>
-					{instrumentMasterQuery.isPending ? (
-						<p className="text-sm text-muted-foreground" role="status">
-							{t("dataFoundation.loadingHistory")}
-						</p>
-					) : instrumentMasterQuery.data?.length ? (
-						(() => {
-							const latest = instrumentMasterQuery.data.at(-1);
-							if (!latest) return null;
-							return (
-								<div className="grid gap-3 text-sm">
-									<p className="text-xs text-muted-foreground">
-										{t("dataFoundation.okxInstrumentMasterTableDescription")}
-									</p>
-									<div className="grid gap-1 sm:grid-cols-3">
-										<span>
-											<strong className="text-primary">
-												{humanizeNumber(latest.instruments.length)}
-											</strong>{" "}
-											{t("dataFoundation.okxInstrumentMasterCountLabel")}
-										</span>
-										<span>
-											{t("dataFoundation.okxInstrumentMasterRetrieved", {
-												date: formatDateTime(latest.retrievedAtMs),
-											})}
-										</span>
-										<span>
-											{t("dataFoundation.okxInstrumentMasterSnapshot", {
-												id: shortId(latest.snapshotId),
-											})}
-										</span>
-									</div>
-									<div className="max-h-72 overflow-auto rounded-md border">
-										<table className="w-full text-left text-xs">
-											<thead className="sticky top-0 bg-muted">
-												<tr>
-													<th className="p-2">{t("dataFoundation.okxColumnCode")}</th>
-													<th className="p-2">{t("dataFoundation.okxColumnAssets")}</th>
-													<th className="p-2">{t("dataFoundation.okxColumnVolume")}</th>
-													<th className="p-2">{t("dataFoundation.okxColumnStatus")}</th>
-													<th className="p-2">{t("dataFoundation.okxColumnMinimum")}</th>
-												</tr>
-											</thead>
-											<tbody>
-												{latest.instruments.map((instrument) => (
-													<tr key={instrument.code} className="border-t">
-														<td className="p-2 font-medium">{instrument.code}</td>
-														<td className="p-2">
-															{instrument.baseAsset}/{instrument.quoteAsset}
-														</td>
-														<td className="p-2">
-															{humanizeNumber(latest.quoteVolume24hUsdt?.[instrument.code])}
-														</td>
-														<td className="p-2">{instrument.status}</td>
-														<td className="p-2">
-															{humanizeNumber(instrument.minimumQuantity)}
-														</td>
-													</tr>
-												))}
-											</tbody>
-										</table>
-									</div>
-									<p className="text-xs text-muted-foreground">
-										{t("dataFoundation.okxInstrumentMasterUse")}
-									</p>
-									<details className="rounded-md border p-3">
-										<summary className="cursor-pointer text-sm font-medium">
-											{t("dataFoundation.okxInstrumentMasterHistory", {
-												count: instrumentMasterQuery.data.length,
-											})}
-										</summary>
-										<div className="mt-3 max-h-48 overflow-auto rounded-md border">
-											<table className="w-full text-left text-xs">
-												<thead className="bg-muted">
-													<tr>
-														<th className="p-2">
-															{t("dataFoundation.okxInstrumentMasterSnapshotHeader")}
-														</th>
-														<th className="p-2">
-															{t("dataFoundation.okxInstrumentMasterRetrievedHeader")}
-														</th>
-														<th className="p-2">
-															{t("dataFoundation.okxInstrumentMasterCountLabel")}
-														</th>
-														<th className="p-2">
-															{t("dataFoundation.okxInstrumentMasterFilterHeader")}
-														</th>
-													</tr>
-												</thead>
-												<tbody>
-													{[...instrumentMasterQuery.data].reverse().map((snapshot) => (
-														<tr key={snapshot.snapshotId} className="border-t">
-															<td className="p-2 font-mono">{shortId(snapshot.snapshotId)}</td>
-															<td className="p-2">{formatDateTime(snapshot.retrievedAtMs)}</td>
-															<td className="p-2">
-																{humanizeNumber(snapshot.instruments.length)}
-															</td>
-															<td className="p-2">
-																{snapshot.ignoreUntradable ? "live · " : "all · "}
-																{humanizeNumber(snapshot.minimumQuoteVolume24h)}
-															</td>
-														</tr>
-													))}
-												</tbody>
-											</table>
-										</div>
-									</details>
-								</div>
-							);
-						})()
-					) : (
-						<p className="text-sm text-muted-foreground">
-							{t("dataFoundation.okxInstrumentMasterEmpty")}
-						</p>
-					)}
-				</div>
-			</section>
 			<Card className="order-2">
 				<CardHeader>
 					<StepTitle step={3}>{t("dataFoundation.selectContextTitle")}</StepTitle>
@@ -1498,7 +1568,8 @@ export function DataFoundationPage() {
 							<option value="">{t("dataFoundation.selectSnapshot")}</option>
 							{snapshotsQuery.data?.map((snapshot) => (
 								<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
-									{snapshot.code} · {snapshot.interval} · {snapshot.barCount}
+									{snapshot.publicationEvidenceName ?? "—"} · {snapshot.code} ·{" "}
+									{snapshot.interval} · {snapshot.barCount}
 								</option>
 							))}
 						</select>
@@ -1537,6 +1608,21 @@ export function DataFoundationPage() {
 				</CardHeader>
 				<CardContent className="grid gap-3">
 					<div className="grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+						<label
+							className="grid gap-1 sm:col-span-2 lg:col-span-4"
+							htmlFor="publication-evidence-name"
+						>
+							<span>{t("dataFoundation.publicationEvidenceName")}</span>
+							<Input
+								id="publication-evidence-name"
+								value={publicationEvidenceNameInput}
+								disabled={Boolean(backfillTaskId)}
+								placeholder={t("dataFoundation.publicationEvidenceNamePlaceholder")}
+								onChange={(event) =>
+									setPublicationEvidenceNameInput(event.target.value)
+								}
+							/>
+						</label>
 						<label className="grid gap-1">
 							<span>{t("dataFoundation.backfillScope")}</span>
 							<select
@@ -1544,12 +1630,10 @@ export function DataFoundationPage() {
 								value={backfillScope}
 								disabled={Boolean(backfillTaskId)}
 								onChange={(event) =>
-									setBackfillScope(
-										event.target.value as "selected" | "watchlist" | "all",
-									)
+									setBackfillScope(event.target.value as BackfillScope)
 								}
 							>
-								<option value="selected">{t("dataFoundation.backfillSelected")}</option>
+								<option value="custom">{t("dataFoundation.backfillCustom")}</option>
 								<option value="watchlist">
 									{t("dataFoundation.backfillWatchlist")}
 								</option>
@@ -1602,7 +1686,7 @@ export function DataFoundationPage() {
 							<Input
 								id="okx-backfill-instruments"
 								value={instrumentCodes}
-								disabled={backfillScope !== "selected" || Boolean(backfillTaskId)}
+								disabled={backfillScope !== "custom" || Boolean(backfillTaskId)}
 								placeholder="BTC-USDT, ETH-USDT"
 								onChange={(event) => setInstrumentCodes(event.target.value)}
 							/>
@@ -1634,8 +1718,8 @@ export function DataFoundationPage() {
 									{backfillSnapshots.length ? (
 										backfillSnapshots.map((snapshot) => (
 											<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
-												{shortId(snapshot.snapshotId)} -{" "}
-												{formatDateTime(snapshot.retrievedAtMs)} -{" "}
+												{catalogDisplayName(snapshot)} - {shortId(snapshot.snapshotId)} -{" "}
+												{formatCatalogDateTime(snapshot.retrievedAtMs)} -{" "}
 												{humanizeNumber(snapshot.instruments.length)}
 											</option>
 										))
@@ -1763,7 +1847,13 @@ export function DataFoundationPage() {
 										className={`grid gap-1 text-left text-sm ${selectedSourceId === dataset.sourceId ? "text-primary" : ""}`}
 										onClick={() => setSelectedSourceId(dataset.sourceId)}
 									>
-										<span className="font-medium" title={dataset.sourceId}>
+										<span className="font-medium">
+											{dataset.publicationEvidenceName ?? "—"}
+										</span>
+										<span
+											className="font-mono text-xs text-muted-foreground"
+											title={dataset.sourceId}
+										>
 											{shortId(dataset.sourceId)}
 										</span>
 										<span className="text-muted-foreground">

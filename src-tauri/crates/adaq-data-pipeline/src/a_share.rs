@@ -1962,6 +1962,7 @@ impl AshareDataPath {
         self.workspace_dto(
             &PipelinePublication {
                 attempt_id: None,
+                publication_evidence_name: None,
                 source,
                 canonical,
                 quality,

@@ -16,6 +16,7 @@ jest.mock("@tauri-apps/api/core", () => ({
 			return [
 				{
 					sourceId: "source-1",
+					publicationEvidenceName: "btc-usdt_okx-watchlist-1h-19700101-19700101",
 					canonicalId: "canonical-1",
 					revision: 1,
 					state: "passed",
@@ -88,9 +89,12 @@ jest.mock("@tauri-apps/api/core", () => ({
 			return [
 				{
 					snapshotId: "master-1",
+					catalogName: "btc-usdt_okx-1m-t",
 					retrievedAtMs: 1,
 					connectorVersion: "okx-1",
 					quoteVolume24hUsdt: { "BTC-USDT": "10000000" },
+					ignoreUntradable: true,
+					minimumQuoteVolume24h: "1000000",
 					instruments: [
 						{
 							code: "BTC-USDT",
@@ -218,9 +222,31 @@ test("renders localized evidence and persisted operation history", async () => {
 		i18n.t("dataFoundation.okxInstrumentMasterEvidenceTitle"),
 	);
 	expect(container.textContent).toContain(
+		i18n.t("dataFoundation.okxIgnoreUntradable"),
+	);
+	expect(container.textContent).toContain(i18n.t("dataFoundation.okxYes"));
+	expect(container.textContent).toContain(
+		i18n.t("dataFoundation.okxMinimumQuoteVolume"),
+	);
+	expect(container.textContent).toMatch(/\d{2}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}/);
+	const historyTable = Array.from(container.querySelectorAll("summary"))
+		.find(
+			(summary) =>
+				summary.textContent?.includes(
+					i18n.t("dataFoundation.okxInstrumentMasterHistory", { count: 1 }),
+				) && !summary.closest("section.hidden"),
+		)
+		?.parentElement?.querySelector("table");
+	expect(historyTable?.textContent).toContain(i18n.t("dataFoundation.okxYes"));
+	expect(historyTable?.textContent).toContain("1M");
+	expect(container.textContent).toContain("btc-usdt_okx-1m-t");
+	expect(container.textContent).toContain(
 		i18n.t("dataFoundation.sourceProvenanceTitle"),
 	);
 	expect(container.textContent).toContain("OKX public history-candles REST");
+	expect(container.textContent).toContain(
+		"btc-usdt_okx-watchlist-1h-19700101-19700101",
+	);
 	expect(container.textContent).toContain("content-hash");
 	expect(container.textContent).toContain("okx|BTC-USDT|1h|1|2");
 	expect(container.textContent).toContain("retained upstream timeout");
@@ -241,12 +267,13 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(mockInvoke).toHaveBeenCalledWith(
 		"okx_instrument_master_acquire",
 		expect.objectContaining({
-			request: {
+			request: expect.objectContaining({
 				userId: "user-1",
 				operationId: expect.any(String),
 				ignoreUntradable: true,
 				minimumQuoteVolume24h: "1000000",
-			},
+				catalogName: "okx-1m-t",
+			}),
 		}),
 	);
 
@@ -261,7 +288,10 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(mockInvoke).toHaveBeenCalledWith(
 		"okx_backfill_source",
 		expect.objectContaining({
-			request: expect.objectContaining({ interval: "1h" }),
+			request: expect.objectContaining({
+				interval: "1h",
+				publicationEvidenceName: expect.stringContaining("okx-watchlist-1h-"),
+			}),
 			onEvent: expect.anything(),
 		}),
 	);
@@ -321,6 +351,7 @@ test("renders localized evidence and persisted operation history", async () => {
 			request: expect.objectContaining({
 				sourceIds: ["source-1"],
 				interval: "1h",
+				publicationEvidenceName: expect.stringContaining("okx-watchlist-1h-"),
 			}),
 			onEvent: expect.anything(),
 		}),
@@ -478,6 +509,7 @@ test("publishes Gate 2 from retained Source evidence", async () => {
 			request: expect.objectContaining({
 				sourceIds: ["source-1"],
 				interval: "1h",
+				publicationEvidenceName: expect.stringContaining("okx-watchlist-1h-"),
 			}),
 			onEvent: expect.anything(),
 		}),

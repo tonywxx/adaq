@@ -28,7 +28,7 @@ use crate::{
     AcquisitionDiagnostics, CalendarEvidence, CancellationToken, CanonicalizationRequest,
     DataPipeline, DataQualityState, PipelineError, PipelinePublication, ProviderCapabilitySnapshot,
     SourceAcquisition, SourceMarketDataset, SourceMarketRecord, SourceRetentionRequest,
-    canonical_json_bytes, digest, validate_user,
+    canonical_json_bytes, digest, normalize_optional_display_name, validate_user,
 };
 
 const DAY_MS: i64 = 86_400_000;
@@ -58,6 +58,8 @@ pub enum UniverseEvidenceState {
 #[serde(rename_all = "camelCase")]
 pub struct InstrumentMasterSnapshot {
     pub snapshot_id: String,
+    #[serde(default)]
+    pub catalog_name: Option<String>,
     pub retrieved_at_ms: i64,
     pub response_sha256: String,
     pub connector_version: String,
@@ -144,6 +146,8 @@ pub struct OkxBackfillRequest {
     pub checkpoint_operation_id: Option<String>,
     #[serde(default = "default_gap_retries")]
     pub max_gap_retries: u8,
+    #[serde(default)]
+    pub publication_evidence_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +161,8 @@ pub struct OkxSourcePublicationRequest {
     pub interval: BarInterval,
     #[serde(default)]
     pub instrument_codes: Vec<String>,
+    #[serde(default)]
+    pub publication_evidence_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,7 +457,7 @@ impl OkxSpotDataPath {
                 source_id: "okx-instrument-master".into(),
             });
         }
-        self.persist_master_if_due_with_filter(user_id, acquisition, false, Decimal::ZERO)
+        self.persist_master_if_due_with_filter(user_id, acquisition, false, Decimal::ZERO, None)
     }
 
     pub async fn acquire_instrument_master_filtered_with_cancel(
@@ -460,6 +466,7 @@ impl OkxSpotDataPath {
         cancellation: &CancellationToken,
         ignore_untradable: bool,
         minimum_quote_volume_24h: Decimal,
+        catalog_name: Option<String>,
     ) -> Result<InstrumentMasterSnapshot, PipelineError> {
         validate_user(user_id)?;
         if let Some(latest) = self
@@ -505,6 +512,7 @@ impl OkxSpotDataPath {
             acquisition,
             ignore_untradable,
             minimum_quote_volume_24h,
+            catalog_name,
         )
     }
 
@@ -839,12 +847,17 @@ impl OkxSpotDataPath {
                 start_time_ms: request.start_time_ms,
                 end_time_ms: effective_end_time_ms,
             });
-            let publication = self.pipeline.publish_source_for_user(
+            let mut publication = self.pipeline.publish_source_for_user(
                 &request.user_id,
                 source_id,
                 canonicalization,
                 cancellation.clone(),
                 |_| {},
+            )?;
+            publication.publication_evidence_name = self.pipeline.set_publication_evidence_name(
+                &request.user_id,
+                &publication.source.source_id,
+                request.publication_evidence_name.clone(),
             )?;
             on_event(OkxBackfillEvent::Published {
                 instrument,
@@ -945,7 +958,19 @@ impl OkxSpotDataPath {
                 )
                 .await
             {
-                Ok(Some(result)) => {
+                Ok(Some(mut result)) => {
+                    let source_id = match &result {
+                        BackfillResult::Source(source) => &source.source_id,
+                        BackfillResult::Publication(publication) => &publication.source.source_id,
+                    };
+                    let publication_evidence_name = self.pipeline.set_publication_evidence_name(
+                        &request.user_id,
+                        source_id,
+                        request.publication_evidence_name.clone(),
+                    )?;
+                    if let BackfillResult::Publication(publication) = &mut result {
+                        publication.publication_evidence_name = publication_evidence_name;
+                    }
                     match &result {
                         BackfillResult::Publication(publication) => {
                             on_event(OkxBackfillEvent::Published {
@@ -1826,7 +1851,7 @@ impl OkxSpotDataPath {
         user_id: &str,
         acquisition: InstrumentMasterAcquisition,
     ) -> Result<InstrumentMasterSnapshot, PipelineError> {
-        self.persist_master_if_due_with_filter(user_id, acquisition, false, Decimal::ZERO)
+        self.persist_master_if_due_with_filter(user_id, acquisition, false, Decimal::ZERO, None)
     }
 
     fn persist_master_if_due_with_filter(
@@ -1835,7 +1860,9 @@ impl OkxSpotDataPath {
         acquisition: InstrumentMasterAcquisition,
         ignore_untradable: bool,
         minimum_quote_volume_24h: Decimal,
+        catalog_name: Option<String>,
     ) -> Result<InstrumentMasterSnapshot, PipelineError> {
+        let catalog_name = normalize_optional_display_name(catalog_name)?;
         let previous = self.latest_snapshot_before(user_id, i64::MAX)?;
         let should_persist = previous.as_ref().is_none_or(|previous| {
             previous.retrieved_at_ms.div_euclid(DAY_MS)
@@ -1845,7 +1872,19 @@ impl OkxSpotDataPath {
                 || previous.minimum_quote_volume_24h != minimum_quote_volume_24h
         });
         if !should_persist {
-            let snapshot = previous.expect("previous Instrument Master snapshot exists");
+            let mut snapshot = previous.expect("previous Instrument Master snapshot exists");
+            if catalog_name.is_some() && snapshot.catalog_name != catalog_name {
+                snapshot.catalog_name = catalog_name;
+                let snapshot_json = serde_json::to_string(&snapshot).map_err(storage)?;
+                self.database()?
+                    .execute(
+                        "UPDATE okx_instrument_master_snapshots
+                         SET snapshot_json = ?1
+                         WHERE snapshot_id = ?2",
+                        params![snapshot_json, snapshot.snapshot_id],
+                    )
+                    .map_err(storage)?;
+            }
             self.grant_master_access(user_id, &snapshot.snapshot_id)?;
             return Ok(snapshot);
         }
@@ -1865,6 +1904,7 @@ impl OkxSpotDataPath {
             .join(format!("{snapshot_id}.json"));
         let mut snapshot = InstrumentMasterSnapshot {
             snapshot_id,
+            catalog_name,
             retrieved_at_ms: acquisition.retrieved_at_ms,
             response_sha256: acquisition.response_sha256,
             connector_version: acquisition.connector_version,
@@ -1888,10 +1928,20 @@ impl OkxSpotDataPath {
                 params![
                     snapshot.snapshot_id,
                     snapshot.retrieved_at_ms,
-                    snapshot_json
+                    &snapshot_json
                 ],
             )
             .map_err(storage)?;
+        if snapshot.catalog_name.is_some() {
+            database
+                .execute(
+                    "UPDATE okx_instrument_master_snapshots
+                     SET snapshot_json = ?1
+                     WHERE snapshot_id = ?2",
+                    params![snapshot_json, snapshot.snapshot_id],
+                )
+                .map_err(storage)?;
+        }
         database
             .execute(
                 "INSERT OR IGNORE INTO okx_instrument_master_access
@@ -2726,6 +2776,7 @@ mod tests {
                     universe_snapshot_id: None,
                     checkpoint_operation_id: Some("first".into()),
                     max_gap_retries: 0,
+                    publication_evidence_name: None,
                 },
                 cancellation.clone(),
                 |_| {},
@@ -2748,6 +2799,7 @@ mod tests {
                     universe_snapshot_id: None,
                     checkpoint_operation_id: Some("first".into()),
                     max_gap_retries: 0,
+                    publication_evidence_name: None,
                 },
                 cancellation,
                 |_| {},
@@ -2788,6 +2840,7 @@ mod tests {
                     universe_snapshot_id: None,
                     checkpoint_operation_id: None,
                     max_gap_retries: 0,
+                    publication_evidence_name: None,
                 },
                 CancellationToken::new(),
                 |event| events.push(event),
@@ -2868,6 +2921,7 @@ mod tests {
                     universe_snapshot_id: None,
                     checkpoint_operation_id: None,
                     max_gap_retries: 0,
+                    publication_evidence_name: None,
                 },
                 CancellationToken::new(),
                 |_| {},
@@ -2886,6 +2940,7 @@ mod tests {
                     end_time_ms: 60_000,
                     interval: BarInterval::OneMinute,
                     instrument_codes: vec!["BTC-USDT".into()],
+                    publication_evidence_name: None,
                 },
                 CancellationToken::new(),
                 |_| {},
@@ -2918,6 +2973,7 @@ mod tests {
                     universe_snapshot_id: None,
                     checkpoint_operation_id: None,
                     max_gap_retries: 0,
+                    publication_evidence_name: None,
                 },
                 CancellationToken::new(),
                 |_| {},
@@ -2933,6 +2989,7 @@ mod tests {
             end_time_ms,
             interval: BarInterval::OneMinute,
             instrument_codes: vec!["BTC-USDT".into()],
+            publication_evidence_name: None,
         };
 
         let duplicate = path
@@ -2986,6 +3043,7 @@ mod tests {
                     universe_snapshot_id: Some(snapshot.snapshot_id.clone()),
                     checkpoint_operation_id: None,
                     max_gap_retries: 0,
+                    publication_evidence_name: None,
                 },
                 CancellationToken::new(),
                 |_| {},
@@ -3017,6 +3075,7 @@ mod tests {
             universe_snapshot_id: None,
             checkpoint_operation_id: None,
             max_gap_retries: 0,
+            publication_evidence_name: None,
         };
         let cancellation = CancellationToken::new();
         cancellation.cancel();
@@ -3110,6 +3169,7 @@ mod tests {
             universe_snapshot_id: None,
             checkpoint_operation_id: None,
             max_gap_retries: 0,
+            publication_evidence_name: None,
         };
         let cancellation = CancellationToken::new();
         let cancellation_for_event = cancellation.clone();
@@ -3234,6 +3294,7 @@ mod tests {
                     universe_snapshot_id: None,
                     checkpoint_operation_id: None,
                     max_gap_retries: 0,
+                    publication_evidence_name: None,
                 },
                 CancellationToken::new(),
                 |_| {},
@@ -3265,6 +3326,7 @@ mod tests {
                     universe_snapshot_id: None,
                     checkpoint_operation_id: None,
                     max_gap_retries: 0,
+                    publication_evidence_name: None,
                 },
                 CancellationToken::new(),
                 |_| {},

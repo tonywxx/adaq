@@ -3,7 +3,14 @@ import { markStartup } from "@/lib/startup-timing";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { Session } from "@supabase/supabase-js";
 import { invoke } from "@tauri-apps/api/core";
-import { lazy, Suspense, type ReactNode, useEffect, useState } from "react";
+import {
+	lazy,
+	Suspense,
+	type ReactNode,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { LoaderCircleIcon } from "lucide-react";
 import type { TFunction } from "i18next";
@@ -24,6 +31,7 @@ export function AuthGate({
 	>("idle");
 	const [hostAuthUserId, setHostAuthUserId] = useState<string>();
 	const [hostAuthError, setHostAuthError] = useState<string>();
+	const hostAuthBoundUserIdRef = useRef<string | null>(null);
 
 	useEffect(() => {
 		if (!supabase) {
@@ -40,8 +48,21 @@ export function AuthGate({
 
 		const {
 			data: { subscription },
-		} = supabase.auth.onAuthStateChange((_event, nextSession) => {
-			setSession(nextSession);
+		} = supabase.auth.onAuthStateChange((event, nextSession) => {
+			setSession((currentSession) => {
+				if (
+					event === "SIGNED_IN" &&
+					currentSession &&
+					nextSession &&
+					currentSession.user.id === nextSession.user.id &&
+					currentSession.access_token === nextSession.access_token &&
+					currentSession.refresh_token === nextSession.refresh_token
+				) {
+					return currentSession;
+				}
+
+				return nextSession;
+			});
 		});
 
 		return () => subscription.unsubscribe();
@@ -54,6 +75,7 @@ export function AuthGate({
 	useEffect(() => {
 		let disposed = false;
 		if (!session) {
+			hostAuthBoundUserIdRef.current = null;
 			setHostAuthStatus("idle");
 			setHostAuthUserId(undefined);
 			setHostAuthError(undefined);
@@ -63,9 +85,14 @@ export function AuthGate({
 			};
 		}
 
-		setHostAuthStatus("binding");
-		setHostAuthUserId(undefined);
-		setHostAuthError(undefined);
+		const sameUserAlreadyBound =
+			hostAuthBoundUserIdRef.current === session.user.id;
+		if (!sameUserAlreadyBound) {
+			hostAuthBoundUserIdRef.current = null;
+			setHostAuthStatus("binding");
+			setHostAuthUserId(undefined);
+			setHostAuthError(undefined);
+		}
 		void invoke<{ userId: string }>("auth_bind_session", {
 			accessToken: session.access_token,
 		})
@@ -74,12 +101,14 @@ export function AuthGate({
 				if (context.userId !== session.user.id) {
 					throw new Error("Host authentication user mismatch");
 				}
+				hostAuthBoundUserIdRef.current = context.userId;
 				setHostAuthUserId(context.userId);
 				setHostAuthStatus("bound");
 				markStartup("adaq:host-auth-bound");
 			})
 			.catch((error) => {
 				if (disposed) return;
+				hostAuthBoundUserIdRef.current = null;
 				setHostAuthError(getErrorMessage(error));
 				setHostAuthStatus("error");
 			});

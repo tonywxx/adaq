@@ -158,6 +158,8 @@ pub(crate) struct OkxInstrumentMasterRequest {
     pub ignore_untradable: bool,
     #[serde(default)]
     pub minimum_quote_volume_24h: String,
+    #[serde(default)]
+    pub catalog_name: Option<String>,
 }
 
 impl OkxInstrumentMasterRequest {
@@ -336,6 +338,8 @@ pub(crate) struct SnapshotRequest {
     pub canonical_id: String,
     #[serde(default)]
     pub allow_degraded: bool,
+    #[serde(default)]
+    pub publication_evidence_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -396,6 +400,7 @@ pub(crate) struct DeleteRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PublicationView {
     pub attempt_id: Option<String>,
+    pub publication_evidence_name: Option<String>,
     pub source_id: String,
     pub source_revision: u64,
     pub canonical_id: Option<String>,
@@ -415,12 +420,14 @@ pub(crate) struct PublicationView {
 pub(crate) struct GateTwoPublicationView {
     pub publications: Vec<PublicationView>,
     pub universe_snapshot_id: String,
+    pub publication_evidence_name: Option<String>,
 }
 
 impl From<PipelinePublication> for PublicationView {
     fn from(value: PipelinePublication) -> Self {
         Self {
             attempt_id: value.attempt_id,
+            publication_evidence_name: value.publication_evidence_name,
             source_id: value.source.source_id,
             source_revision: value.source.revision,
             canonical_id: value

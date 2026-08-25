@@ -791,6 +791,7 @@ fn cross_market_evidence_preserves_order_failures_dispersion_and_report_identity
         gaps: vec![],
         parquet_path: PathBuf::new(),
         provenance: None,
+        publication_evidence_name: None,
     };
     let run = |snapshot_id: &str| BacktestRunRequest {
         user_id: "alice".into(),

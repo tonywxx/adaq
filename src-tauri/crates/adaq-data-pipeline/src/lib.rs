@@ -784,6 +784,8 @@ fn default_derivation_algorithm_version() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct PipelinePublication {
     pub attempt_id: Option<String>,
+    #[serde(default)]
+    pub publication_evidence_name: Option<String>,
     pub source: SourceMarketDataset,
     pub canonical: Option<CanonicalMarketDataset>,
     pub quality: DataQualityReport,
@@ -793,6 +795,8 @@ pub struct PipelinePublication {
 #[serde(rename_all = "camelCase")]
 pub struct PipelineDatasetSummary {
     pub source_id: String,
+    #[serde(default)]
+    pub publication_evidence_name: Option<String>,
     pub source: SourceEvidenceSummary,
     pub canonical_id: Option<String>,
     pub quality_report_id: Option<String>,
@@ -1391,6 +1395,7 @@ impl DataPipeline {
                 Ok(PipelineDatasetSummary {
                     source: source_evidence_summary(&source)?,
                     source_id: source.source_id,
+                    publication_evidence_name: source.publication_evidence_name,
                     canonical_id: canonical.as_ref().map(|value| value.canonical_id.clone()),
                     quality_report_id: quality.as_ref().map(|value| value.report_id.clone()),
                     revision: source.revision,
@@ -1412,6 +1417,98 @@ impl DataPipeline {
                 })
             })
             .collect()
+    }
+
+    pub fn set_publication_evidence_name(
+        &self,
+        user_id: &str,
+        source_id: &str,
+        requested_name: Option<String>,
+    ) -> Result<Option<String>, PipelineError> {
+        validate_user(user_id)?;
+        let requested_name = normalize_optional_display_name(requested_name)?;
+        let database = self.0.database.lock().map_err(lock_error)?;
+        let transaction = database.unchecked_transaction().map_err(storage)?;
+        let source_json = transaction
+            .query_row(
+                "SELECT s.source_json
+                 FROM pipeline_sources s
+                 JOIN pipeline_source_access a USING(source_id)
+                 WHERE a.user_id = ?1 AND s.source_id = ?2",
+                params![user_id, source_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(storage)?
+            .ok_or_else(|| PipelineError::NotFound("Source evidence".into()))?;
+        let mut source: SourceCatalog = serde_json::from_str(&source_json).map_err(storage)?;
+        let Some(name) = requested_name else {
+            let current = source.publication_evidence_name.clone();
+            transaction.commit().map_err(storage)?;
+            return Ok(current);
+        };
+        source.publication_evidence_name = Some(name.clone());
+        transaction
+            .execute(
+                "UPDATE pipeline_sources SET source_json = ?1 WHERE source_id = ?2",
+                params![serde_json::to_string(&source).map_err(storage)?, source_id],
+            )
+            .map_err(storage)?;
+
+        if let Some(canonical_json) = transaction
+            .query_row(
+                "SELECT canonical_json
+                 FROM pipeline_canonical_datasets
+                 WHERE source_id = ?1
+                 LIMIT 1",
+                [source_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(storage)?
+        {
+            let mut canonical: CanonicalCatalog =
+                serde_json::from_str(&canonical_json).map_err(storage)?;
+            canonical.publication_evidence_name = Some(name.clone());
+            transaction
+                .execute(
+                    "UPDATE pipeline_canonical_datasets
+                     SET canonical_json = ?1
+                     WHERE source_id = ?2",
+                    params![
+                        serde_json::to_string(&canonical).map_err(storage)?,
+                        source_id
+                    ],
+                )
+                .map_err(storage)?;
+        }
+
+        if let Some(quality_json) = transaction
+            .query_row(
+                "SELECT report_json
+                 FROM pipeline_quality_reports
+                 WHERE source_id = ?1
+                 LIMIT 1",
+                [source_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(storage)?
+        {
+            let mut quality: QualityCatalog =
+                serde_json::from_str(&quality_json).map_err(storage)?;
+            quality.publication_evidence_name = Some(name.clone());
+            transaction
+                .execute(
+                    "UPDATE pipeline_quality_reports
+                     SET report_json = ?1
+                     WHERE source_id = ?2",
+                    params![serde_json::to_string(&quality).map_err(storage)?, source_id],
+                )
+                .map_err(storage)?;
+        }
+        transaction.commit().map_err(storage)?;
+        Ok(Some(name))
     }
 
     pub fn source_for_user(
@@ -2794,6 +2891,7 @@ impl DataPipeline {
         );
         Ok(PipelinePublication {
             attempt_id,
+            publication_evidence_name: None,
             source,
             canonical,
             quality,
@@ -3199,6 +3297,8 @@ struct SourceCatalog {
     identity: SourceIdentity,
     record_count: usize,
     evidence_path: PathBuf,
+    #[serde(default)]
+    publication_evidence_name: Option<String>,
 }
 
 impl SourceCatalog {
@@ -3210,6 +3310,7 @@ impl SourceCatalog {
             identity: source.identity.clone(),
             record_count: source.records.len(),
             evidence_path: source.evidence_path.clone(),
+            publication_evidence_name: None,
         }
     }
 }
@@ -3279,6 +3380,8 @@ struct CanonicalCatalog {
     evidence_path: PathBuf,
     evidence_sha256: String,
     bar_count: usize,
+    #[serde(default)]
+    publication_evidence_name: Option<String>,
 }
 
 impl CanonicalCatalog {
@@ -3302,6 +3405,7 @@ impl CanonicalCatalog {
             evidence_path,
             evidence_sha256,
             bar_count: canonical.bars.len(),
+            publication_evidence_name: None,
         }
     }
 }
@@ -3354,6 +3458,8 @@ struct QualityCatalog {
     gap_count: usize,
     evidence_path: PathBuf,
     evidence_sha256: String,
+    #[serde(default)]
+    publication_evidence_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3407,6 +3513,7 @@ impl QualityCatalog {
             gap_count: report.gap_count,
             evidence_path: report.evidence_path.clone(),
             evidence_sha256,
+            publication_evidence_name: None,
         }
     }
 }
@@ -3421,6 +3528,24 @@ pub(crate) fn validate_user(user_id: &str) -> Result<(), PipelineError> {
     } else {
         Ok(())
     }
+}
+
+pub(crate) fn normalize_optional_display_name(
+    value: Option<String>,
+) -> Result<Option<String>, PipelineError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim().to_owned();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > 256 || value.chars().any(|character| character.is_control()) {
+        return Err(PipelineError::InvalidRequest(
+            "Display name must be 1-256 characters without control characters".into(),
+        ));
+    }
+    Ok(Some(value))
 }
 
 fn validate_acquisition(acquisition: &SourceAcquisition) -> Result<(), PipelineError> {

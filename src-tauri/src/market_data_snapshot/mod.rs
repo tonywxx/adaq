@@ -490,13 +490,24 @@ impl MarketDataSnapshots {
         series: &BarSeries,
         provenance: Option<SnapshotProvenance>,
     ) -> Result<MarketDataSnapshot, String> {
+        self.persist_for_user_with_provenance_and_name(user_id, series, provenance, None)
+    }
+
+    pub(crate) fn persist_for_user_with_provenance_and_name(
+        &self,
+        user_id: &str,
+        series: &BarSeries,
+        provenance: Option<SnapshotProvenance>,
+        publication_evidence_name: Option<String>,
+    ) -> Result<MarketDataSnapshot, String> {
         validate_user(user_id)?;
-        let snapshot = self
+        let mut snapshot = self
             .0
             .source
             .store()
             .persist_with_provenance(series, provenance)
             .map_err(string)?;
+        snapshot.publication_evidence_name = publication_evidence_name;
         let metadata = serde_json::to_string(&snapshot).map_err(string)?;
         let interval = serde_json::to_string(&snapshot.interval).map_err(string)?;
         // One lock guard for both inserts; never call another interface
@@ -509,9 +520,19 @@ impl MarketDataSnapshots {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![snapshot.snapshot_id, snapshot.src, snapshot.code,
                     interval, snapshot.start_time_ms,
-                    snapshot.end_time_ms, snapshot.bar_count as i64, metadata],
+                    snapshot.end_time_ms, snapshot.bar_count as i64, &metadata],
             )
             .map_err(string)?;
+        if snapshot.publication_evidence_name.is_some() {
+            database
+                .execute(
+                    "UPDATE market_data_snapshots
+                     SET metadata_json = ?1
+                     WHERE snapshot_id = ?2",
+                    params![metadata, snapshot.snapshot_id],
+                )
+                .map_err(string)?;
+        }
         database
             .execute(
                 "INSERT OR IGNORE INTO market_data_snapshot_access (user_id, snapshot_id) VALUES (?1, ?2)",

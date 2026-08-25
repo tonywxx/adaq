@@ -274,6 +274,7 @@ fn seed_snapshot(harness: &Harness, user_id: &str, snapshot_id: &str) {
         gaps: vec![],
         parquet_path: PathBuf::new(),
         provenance: None,
+        publication_evidence_name: None,
     };
     harness.backtest_source.snapshots.lock().unwrap().insert(
         (user_id.to_owned(), snapshot_id.to_owned()),

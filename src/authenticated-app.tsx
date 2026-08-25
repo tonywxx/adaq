@@ -1,11 +1,10 @@
 import { AuthenticatedUserContext } from "@/authenticated-user";
+import { queryClient } from "@/config/react-query";
 import "@/lib/i18n";
 import { useAppShortcuts } from "@/hooks/use-app-shortcuts";
 import { router } from "@/router";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
-
-const queryClient = new QueryClient();
 
 export default function AuthenticatedApp({ userId }: { userId: string }) {
 	useAppShortcuts();

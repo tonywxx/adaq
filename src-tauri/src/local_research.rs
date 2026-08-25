@@ -1404,12 +1404,14 @@ impl LocalResearchState {
         user_id: &str,
         canonical_id: &str,
         allow_degraded: bool,
+        publication_evidence_name: Option<String>,
     ) -> Result<(MarketDataSnapshot, DataQualityReport), String> {
         let cancellation = CancellationToken::new();
         self.publish_pipeline_snapshot_for_user_with_policy_and_cancellation(
             user_id,
             canonical_id,
             allow_degraded,
+            publication_evidence_name,
             &cancellation,
         )
     }
@@ -1419,6 +1421,7 @@ impl LocalResearchState {
         user_id: &str,
         canonical_id: &str,
         allow_degraded: bool,
+        publication_evidence_name: Option<String>,
         cancellation: &CancellationToken,
     ) -> Result<(MarketDataSnapshot, DataQualityReport), String> {
         let _operation = self
@@ -1471,10 +1474,15 @@ impl LocalResearchState {
             universe: None,
             derivation_algorithm_version: None,
         };
-        let snapshot = self.snapshots.persist_for_user_with_provenance(
+        let publication_evidence_name = self
+            .pipeline
+            .set_publication_evidence_name(user_id, &canonical.source_id, publication_evidence_name)
+            .map_err(string)?;
+        let snapshot = self.snapshots.persist_for_user_with_provenance_and_name(
             user_id,
             &canonical.to_bar_series(),
             Some(provenance),
+            publication_evidence_name,
         )?;
         if cancellation.is_cancelled() {
             self.snapshots
@@ -1528,6 +1536,7 @@ impl LocalResearchState {
         instrument_codes: &[String],
         cancellation: &CancellationToken,
         publications: &[adaq_data_pipeline::PipelinePublication],
+        publication_evidence_name: Option<String>,
     ) -> Result<MarketDataUniverseSnapshot, String> {
         let universe = self
             .okx
@@ -1581,6 +1590,7 @@ impl LocalResearchState {
                     user_id,
                     &canonical.canonical_id,
                     false,
+                    publication_evidence_name.clone(),
                     cancellation,
                 )?;
             let provenance = snapshot
@@ -2244,6 +2254,7 @@ mod tests {
             gaps: vec![],
             parquet_path: PathBuf::new(),
             provenance: None,
+            publication_evidence_name: None,
         };
         let dataset = crate::forecast_signal_dataset::BacktestSignalDataset {
             dataset_id: "a".repeat(64),
@@ -2774,6 +2785,7 @@ mod tests {
             universe_snapshot_id: Some("master-1".into()),
             checkpoint_operation_id: None,
             max_gap_retries: 2,
+            publication_evidence_name: None,
         };
         state.foundation_okx_backfill_start(&request).unwrap();
         assert!(
@@ -2911,6 +2923,7 @@ mod tests {
                     &["BTC-USDT".into()],
                     &cancelled,
                     std::slice::from_ref(&publication),
+                    None,
                 )
                 .unwrap_err()
                 .contains("cancelled")
@@ -2924,6 +2937,7 @@ mod tests {
                 &["BTC-USDT".into()],
                 &CancellationToken::new(),
                 std::slice::from_ref(&publication),
+                None,
             )
             .unwrap();
 

@@ -1660,6 +1660,7 @@ async fn market_data_pipeline_publish_snapshot(
                 &request.user_id,
                 &request.canonical_id,
                 request.allow_degraded,
+                request.publication_evidence_name.clone(),
             )
             .map(
                 |(snapshot, quality)| market_data_pipeline::SnapshotPublicationView {
@@ -1748,6 +1749,7 @@ async fn okx_instrument_master_acquire(
             .parse::<rust_decimal::Decimal>()
             .map_err(|_| "minimum quote volume must be a valid decimal".to_owned())?
     };
+    let catalog_name = request.catalog_name.clone();
     let state = app.state::<Arc<LocalResearchState>>().inner().clone();
     let cancellation = state
         .okx
@@ -1761,6 +1763,7 @@ async fn okx_instrument_master_acquire(
                 &cancellation,
                 ignore_untradable,
                 minimum_quote_volume_24h,
+                catalog_name,
             ),
         )
         .map_err(string);
@@ -1998,6 +2001,7 @@ async fn okx_publish_gate_two(
                         &request.instrument_codes,
                         &cancellation,
                         &publications,
+                        request.publication_evidence_name.clone(),
                     )
                     .map(|universe| market_data_pipeline::GateTwoPublicationView {
                         publications: publications
@@ -2005,6 +2009,7 @@ async fn okx_publish_gate_two(
                             .map(market_data_pipeline::PublicationView::from)
                             .collect(),
                         universe_snapshot_id: universe.snapshot_id,
+                        publication_evidence_name: request.publication_evidence_name.clone(),
                     })
             });
         let finish = state.okx.finish_backfill(&task_id);
@@ -2131,6 +2136,7 @@ async fn okx_backfill_publish(
                     &request.instrument_codes,
                     &cancellation,
                     &publications,
+                    request.publication_evidence_name.clone(),
                 )
                 .map(|_| publications)
         });
