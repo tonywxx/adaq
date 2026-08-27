@@ -319,7 +319,7 @@ fn research_context_establish(
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<adaq_factor_research::ResearchEvidenceProjection, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    if stage == adaq_factor_research::ResearchStage::Factors || draft.feature_dataset.is_some() {
+    if stage == adaq_factor_research::ResearchStage::Factors {
         return Err("factor-context-requires-host-dataset-selection".into());
     }
     let mut draft = draft;
@@ -664,10 +664,21 @@ async fn factor_materialization_start(
     let user_id = request.user_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
-        state.require_frozen_research_evidence(
+        state.require_factor_context_for_request(
             &user_id,
             &operation_id,
-            adaq_factor_research::ResearchStage::Factors,
+            &request.protocol.feature_dataset_id,
+            &request.protocol.feature_plan_hash,
+            &request.protocol.market_data_snapshot_id,
+            &request.protocol.point_in_time_universe_id,
+            Some((
+                request.protocol.observation_range.start_time_ms,
+                request.protocol.observation_range.end_time_ms,
+            )),
+            true,
+            &request.protocol.market_context.asset_class,
+            &request.protocol.market_context.venue,
+            &request.protocol.market_context.point_in_time_universe_id,
         )?;
         let attempt = state.factor.start_materialization(request)?;
         state.record_research_attempt_binding(
@@ -705,10 +716,19 @@ async fn factor_evaluation_start(
     let user_id = request.user_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
-        state.require_frozen_research_evidence(
+        let (range_start_ms, range_end_ms) = factor_evaluation_context_range(&request.protocol)?;
+        state.require_factor_context_for_request(
             &user_id,
             &operation_id,
-            adaq_factor_research::ResearchStage::Factors,
+            &request.protocol.feature_dataset_id,
+            &request.protocol.feature_plan_hash,
+            &request.protocol.market_data_snapshot_id,
+            &request.protocol.point_in_time_universe_id,
+            Some((range_start_ms, range_end_ms)),
+            false,
+            &request.protocol.market_context.asset_class,
+            &request.protocol.market_context.venue,
+            &request.protocol.market_context.point_in_time_universe_id,
         )?;
         let attempt = state.factor.start_evaluation(request)?;
         state.record_research_attempt_binding(
@@ -722,6 +742,37 @@ async fn factor_evaluation_start(
     .await
     .map_err(|error| error.to_string())?
 }
+
+fn factor_evaluation_context_range(
+    protocol: &adaq_factor_research::FactorEvaluationProtocol,
+) -> Result<(i64, i64), String> {
+    let mut start_time_ms = i64::MAX;
+    let mut end_time_ms = i64::MIN;
+    let mut include = |range: &adaq_factor_research::ObservationRange| {
+        start_time_ms = start_time_ms.min(range.start_time_ms);
+        end_time_ms = end_time_ms.max(range.end_time_ms);
+    };
+    for window in &protocol.windows {
+        include(&window.selection);
+        include(&window.evaluation);
+        for range in [
+            window.training.as_ref(),
+            window.fitting.as_ref(),
+            window.normalization.as_ref(),
+            window.target_construction.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            include(range);
+        }
+    }
+    if start_time_ms == i64::MAX || end_time_ms == i64::MIN {
+        return Err("factor-context-range-mismatch".into());
+    }
+    Ok((start_time_ms, end_time_ms))
+}
+
 factor_blocking_command!(
     factor_evaluation_protocol_freeze,
     factor_research::FactorEvaluationProtocolFreezeRequest,

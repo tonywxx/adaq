@@ -1099,7 +1099,65 @@ fn completed_feature_dataset_establishes_a_user_scoped_factor_context() {
         )
         .unwrap();
     assert_eq!(frozen.feature_dataset.unwrap().dataset_id, dataset_id);
+    assert!(
+        state
+            .require_factor_context_for_request(
+                "alice",
+                "factor-context:one",
+                &dataset_id,
+                &feature_dataset.feature_plan_hash,
+                &snapshot_id,
+                &universe_id,
+                Some((0, 3 * HOUR)),
+                true,
+                "crypto",
+                "okx",
+                &universe_id,
+            )
+            .is_ok()
+    );
+    assert!(
+        state
+            .require_factor_context_for_request(
+                "alice",
+                "factor-context:one",
+                "another-feature-dataset",
+                &feature_dataset.feature_plan_hash,
+                &snapshot_id,
+                &universe_id,
+                Some((0, 3 * HOUR)),
+                true,
+                "crypto",
+                "okx",
+                &universe_id,
+            )
+            .is_err()
+    );
     assert!(state.establish_factor_context("bob", &dataset_id).is_err());
+    state
+        .features
+        .delete_dataset(FeatureDatasetRequest {
+            user_id: "alice".into(),
+            dataset_id: dataset_id.clone(),
+        })
+        .unwrap();
+    assert!(
+        state
+            .require_factor_context_for_request(
+                "alice",
+                "factor-context:one",
+                &dataset_id,
+                &feature_dataset.feature_plan_hash,
+                &snapshot_id,
+                &universe_id,
+                Some((0, 3 * HOUR)),
+                true,
+                "crypto",
+                "okx",
+                &universe_id,
+            )
+            .is_err()
+    );
 
     drop(state);
     fs::remove_dir_all(root).unwrap();

@@ -8,8 +8,9 @@ import { createRoot } from "react-dom/client";
 import { ResearchContextPreflight } from "./research-context-preflight";
 
 jest.mock("@tauri-apps/api/core", () => ({
-	invoke: jest.fn(async (command: string) => {
+	invoke: jest.fn(async (command: string, args?: { userId?: string }) => {
 		if (command === "research_context_get") {
+			if (args?.userId === "no-context-user") return null;
 			return {
 				contextRevision: 1,
 				contextHash: "context-hash",
@@ -98,6 +99,31 @@ test("shows a fail-closed context freeze error", async () => {
 	});
 
 	expect(container.textContent).toContain("Error: stale-context");
+	await act(async () => root.unmount());
+});
+
+test("keeps Factors blocked when no context is established", async () => {
+	const container = document.createElement("div");
+	const root = createRoot(container);
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+
+	await act(async () => {
+		root.render(
+			<QueryClientProvider client={queryClient}>
+				<ResearchContextPreflight userId="no-context-user" stage="factors" />
+			</QueryClientProvider>,
+		);
+	});
+	await act(async () => {
+		await Promise.resolve();
+		await Promise.resolve();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+
+	expect(container.textContent).toContain("Blocked");
+	expect(container.textContent).toContain("Open Features");
 	await act(async () => root.unmount());
 });
 

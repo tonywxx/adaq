@@ -42,6 +42,10 @@ const english = {
 		openFeatures: "Open Features",
 		handoffLoading: "Resolving the Factor Context…",
 		reasons: {
+			"factor-context-mismatch":
+				"The Factor request does not match the selected research context.",
+			"factor-context-requires-host-dataset-selection":
+				"Factor context must be resolved from a selected Feature Dataset.",
 			"factor-context-feature-dataset-required":
 				"Select an accepted Feature Dataset first.",
 			"factor-context-feature-dataset-inaccessible":
@@ -2086,7 +2090,7 @@ const simplifiedChinese = {
 		market: "Market 与 Venue",
 		snapshot: "Snapshot",
 		universe: "PIT 宇宙",
-		observationRange: "Observation Range",
+		observationRange: "观测范围",
 		featureDataset: "Feature Dataset",
 		featurePlan: "Feature Plan",
 		selectFeatureDataset: "已接受的 Feature Dataset",
@@ -2097,6 +2101,9 @@ const simplifiedChinese = {
 		openFeatures: "打开特征工作区",
 		handoffLoading: "正在解析 Factor Context…",
 		reasons: {
+			"factor-context-mismatch": "Factor 请求与已选择的研究 Context 不匹配。",
+			"factor-context-requires-host-dataset-selection":
+				"Factor Context 必须从已选择的 Feature Dataset 解析。",
 			"factor-context-feature-dataset-required":
 				"请先选择已接受的 Feature Dataset。",
 			"factor-context-feature-dataset-inaccessible":

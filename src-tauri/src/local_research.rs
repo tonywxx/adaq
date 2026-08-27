@@ -748,6 +748,7 @@ impl LocalResearchState {
                 dataset_id: dataset_id.to_owned(),
             })
             .map_err(|error| factor_context_dataset_error(&error))?;
+        self.validate_factor_dataset(user_id, dataset_id)?;
         let request = &dataset.manifest.request;
         if dataset.user_id != user_id || request.user_id != user_id {
             return Err("factor-context-user-mismatch".into());
@@ -766,6 +767,10 @@ impl LocalResearchState {
                 .provenance
                 .as_ref()
                 .is_some_and(|provenance| provenance.venue != universe.venue)
+            || !universe
+                .components
+                .iter()
+                .any(|component| component.snapshot_id == snapshot.snapshot_id)
         {
             return Err("factor-context-market-venue-mismatch".into());
         }
@@ -850,6 +855,61 @@ impl LocalResearchState {
         self.store_research_context(context)
     }
 
+    fn validate_factor_dataset(&self, user_id: &str, dataset_id: &str) -> Result<(), String> {
+        let store = self.features.materialization_store();
+        Features::completed_dataset_from_store(&store, user_id, dataset_id)
+            .map(|_| ())
+            .map_err(|error| factor_context_dataset_error(&error))
+    }
+
+    pub(crate) fn require_factor_context_for_request(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+        feature_dataset_id: &str,
+        feature_plan_hash: &str,
+        snapshot_id: &str,
+        universe_id: &str,
+        request_range: Option<(i64, i64)>,
+        require_exact_range: bool,
+        market: &str,
+        venue: &str,
+        market_context_universe_id: &str,
+    ) -> Result<adaq_factor_research::FrozenResearchEvidence, String> {
+        let frozen = self.require_frozen_research_evidence(
+            user_id,
+            operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+        )?;
+        let binding = frozen
+            .feature_dataset
+            .as_ref()
+            .ok_or("factor-context-feature-dataset-required")?;
+        let context = self
+            .context_for_user(user_id)?
+            .ok_or("Research Evidence Context is not established")?;
+        let range_matches = request_range.is_none_or(|(start, end)| {
+            if require_exact_range {
+                context.draft.range_start_ms == start && context.draft.range_end_ms == end
+            } else {
+                context.draft.range_start_ms <= start && context.draft.range_end_ms >= end
+            }
+        });
+        if binding.dataset_id != feature_dataset_id
+            || binding.feature_plan_hash != feature_plan_hash
+            || frozen.snapshot_id != snapshot_id
+            || frozen.universe_id.as_deref() != Some(universe_id)
+            || context.draft.market != market
+            || context.draft.venue != venue
+            || context.draft.universe_id.as_deref() != Some(market_context_universe_id)
+            || !range_matches
+        {
+            return Err("factor-context-mismatch".into());
+        }
+        self.validate_factor_dataset(user_id, feature_dataset_id)?;
+        Ok(frozen)
+    }
+
     fn context_for_user(&self, user_id: &str) -> Result<Option<ResearchEvidenceContext>, String> {
         validate_user(user_id)?;
         if let Some(context) = self
@@ -906,6 +966,16 @@ impl LocalResearchState {
         let context = self
             .context_for_user(user_id)?
             .ok_or_else(|| "Research Evidence Context is not established".to_string())?;
+        if stage == adaq_factor_research::ResearchStage::Factors {
+            let dataset_id = context
+                .draft
+                .feature_dataset
+                .as_ref()
+                .ok_or("factor-context-feature-dataset-required")?
+                .dataset_id
+                .clone();
+            self.validate_factor_dataset(user_id, &dataset_id)?;
+        }
         let frozen = context
             .freeze(operation_id, stage)
             .map_err(|error| error.to_string())?;
@@ -2286,13 +2356,10 @@ fn string(error: impl std::fmt::Display) -> String {
 }
 
 fn factor_context_market_venue(snapshot: &MarketDataSnapshot) -> Result<(String, String), String> {
-    let venue = if let Some(provenance) = snapshot.provenance.as_ref() {
-        provenance.venue.clone()
-    } else if snapshot.src == "okx" {
-        Venue::crypto_spot("okx").map_err(string)?
-    } else {
+    let Some(provenance) = snapshot.provenance.as_ref() else {
         return Err("factor-context-market-venue-unavailable".into());
     };
+    let venue = provenance.venue.clone();
     let market = match venue.kind {
         VenueKind::CryptoSpot => "crypto",
         VenueKind::ChinaAShareEquity => "a-share",
@@ -2309,6 +2376,8 @@ fn factor_context_dataset_error(error: &str) -> String {
         "invalid-feature-dataset-schema"
         | "incomplete-feature-dataset-rows"
         | "duplicate-feature-observation"
+        | "invalid-feature-observation"
+        | "feature-dataset-content-collision"
         | "incompatible-feature-schema" => "factor-context-feature-dataset-incomplete".into(),
         _ => "factor-context-feature-dataset-unavailable".into(),
     }
