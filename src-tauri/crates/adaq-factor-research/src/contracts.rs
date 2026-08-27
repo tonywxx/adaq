@@ -599,8 +599,53 @@ fn validate_factor_shape(
         parameters.iter().map(|parameter| parameter.name.as_str()),
         "parameter",
     )?;
+    for parameter in parameters {
+        validate_parameter(parameter)?;
+    }
     unique_names(outputs.iter().map(|output| output.name.as_str()), "output")?;
     Ok(())
+}
+
+fn validate_parameter(parameter: &FactorParameter) -> Result<(), ContractError> {
+    if !parameter_value_is_valid(&parameter.default_value, parameter.parameter_type) {
+        return Err(ContractError::Invalid(format!(
+            "Factor parameter {} has a default value incompatible with its declared type",
+            parameter.name
+        )));
+    }
+    let mut allowed_values = BTreeSet::new();
+    if parameter.allowed_values.iter().any(|value| {
+        !parameter_value_is_valid(value, parameter.parameter_type) || !allowed_values.insert(value)
+    }) {
+        return Err(ContractError::Invalid(format!(
+            "Factor parameter {} has invalid or duplicate allowed values",
+            parameter.name
+        )));
+    }
+    if !parameter.allowed_values.is_empty()
+        && !parameter
+            .allowed_values
+            .iter()
+            .any(|value| value == &parameter.default_value)
+    {
+        return Err(ContractError::Invalid(format!(
+            "Factor parameter {} default value is not in its allowed values",
+            parameter.name
+        )));
+    }
+    Ok(())
+}
+
+fn parameter_value_is_valid(value: &str, parameter_type: FactorParameterType) -> bool {
+    match parameter_type {
+        FactorParameterType::Decimal => value
+            .parse::<f64>()
+            .ok()
+            .is_some_and(|number| number.is_finite()),
+        FactorParameterType::Integer => value.parse::<i64>().is_ok(),
+        FactorParameterType::Boolean => matches!(value, "true" | "false"),
+        FactorParameterType::Text => true,
+    }
 }
 
 fn unique_names<'a>(
@@ -2322,6 +2367,43 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn rejects_factor_parameter_values_outside_the_declared_type() {
+        let result = FactorCandidate::freeze(FactorCandidateDraft {
+            candidate_id: Uuid::new_v4(),
+            revision: 1,
+            scope: FactorScope::TimeSeries,
+            feature_slots: vec![FactorFeatureSlot {
+                name: "close".into(),
+            }],
+            parameters: vec![FactorParameter {
+                name: "enabled".into(),
+                parameter_type: FactorParameterType::Boolean,
+                default_value: "yes".into(),
+                allowed_values: vec!["true".into(), "false".into()],
+            }],
+            outputs: vec![FactorOutput {
+                name: "momentum".into(),
+            }],
+            source: FactorCandidateSource::Declarative {
+                definition: DeclarativeFactorDefinition {
+                    feature_plan_hash: "a".repeat(64),
+                    operator_catalog_version: adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION
+                        .into(),
+                    outputs: vec![DeclarativeFactorOutputBinding {
+                        output_name: "momentum".into(),
+                        feature_slot: "close".into(),
+                    }],
+                },
+            },
+        });
+        assert!(matches!(
+            result,
+            Err(ContractError::Invalid(message))
+                if message.contains("default value incompatible")
+        ));
     }
 
     #[test]

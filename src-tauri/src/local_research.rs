@@ -49,7 +49,10 @@ use crate::{
         ComponentLibrary, ComponentLockSource, ComponentSource, finish_staged_files, stage_files,
     },
     dataset_generation::{DatasetGeneration, GenerationSource},
-    factor_research::{FactorResearch, FactorResearchSource, user_uuid},
+    factor_research::{
+        FactorCandidatePredecessor, FactorCandidatePublishRequest, FactorCandidateView,
+        FactorResearch, FactorResearchSource, user_uuid,
+    },
     features::{FeatureDatasetRequest, FeatureSource, Features},
     forecast_signal_dataset::{BacktestSignalDataset, backtest_signal_datasets},
     market_data_snapshot::{LocalSnapshotSource, MarketDataSnapshots},
@@ -851,6 +854,27 @@ impl LocalResearchState {
             .map_err(|error| error.to_string())?,
         };
         self.store_research_context(context)
+    }
+
+    pub(crate) fn publish_factor_candidate(
+        &self,
+        request: FactorCandidatePublishRequest,
+    ) -> Result<FactorCandidateView, String> {
+        let user_id = request.user_id.clone();
+        let context = self
+            .context_for_user(&user_id)?
+            .ok_or_else(|| "factor-context-required".to_owned())?;
+        let dataset_id = context
+            .draft
+            .feature_dataset
+            .as_ref()
+            .ok_or_else(|| "factor-context-feature-dataset-required".to_owned())?
+            .dataset_id
+            .clone();
+        let projection = self.establish_factor_context(&user_id, &dataset_id)?;
+        let predecessor = FactorCandidatePredecessor::from_projection(user_id, projection)?;
+        self.factor
+            .publish_candidate_with_predecessor(request, predecessor)
     }
 
     fn validate_factor_dataset(&self, user_id: &str, dataset_id: &str) -> Result<(), String> {

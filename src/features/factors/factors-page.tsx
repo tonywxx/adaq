@@ -134,6 +134,7 @@ export function FactorsPage({
 	const userId = useMarketSessionStore((state) => state.userId);
 	const adapter = useFactorAdapter(providedAdapter);
 	const [tab, setTab] = useState<FactorTab>("families");
+	const factorContextQuery = useResearchEvidenceContext(userId ?? "");
 
 	useEffect(() => {
 		const previousTitle = document.title;
@@ -205,7 +206,14 @@ export function FactorsPage({
 						<FamiliesWorkspace key={userId} userId={userId} adapter={adapter} />
 					</TabsContent>
 					<TabsContent value="candidates" className="mt-4">
-						<CandidatesWorkspace key={userId} userId={userId} adapter={adapter} />
+						<CandidatesWorkspace
+							key={userId}
+							userId={userId}
+							adapter={adapter}
+							context={factorContextQuery.data}
+							contextLoading={factorContextQuery.isPending}
+							contextError={factorContextQuery.error}
+						/>
 					</TabsContent>
 					<TabsContent value="datasets" className="mt-4">
 						<DatasetsWorkspace key={userId} userId={userId} adapter={adapter} />

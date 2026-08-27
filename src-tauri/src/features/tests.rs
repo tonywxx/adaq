@@ -1091,6 +1091,59 @@ fn completed_feature_dataset_establishes_a_user_scoped_factor_context() {
     assert_eq!(context.universe_id.as_deref(), Some(universe_id.as_str()));
     assert_eq!(context.context_revision, 1);
 
+    let candidate = state
+        .publish_factor_candidate(crate::factor_research::FactorCandidatePublishRequest {
+            user_id: "alice".into(),
+            draft: adaq_factor_research::FactorCandidateDraft {
+                candidate_id: Uuid::from_u128(169),
+                revision: 1,
+                scope: adaq_factor_research::FactorScope::CrossSectional,
+                feature_slots: vec![adaq_factor_research::FactorFeatureSlot {
+                    name: "rank".into(),
+                }],
+                parameters: vec![],
+                outputs: vec![adaq_factor_research::FactorOutput {
+                    name: "rank-score".into(),
+                }],
+                source: adaq_factor_research::FactorCandidateSource::Declarative {
+                    definition: adaq_factor_research::DeclarativeFactorDefinition {
+                        feature_plan_hash: feature_dataset.feature_plan_hash.clone(),
+                        operator_catalog_version:
+                            adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION.into(),
+                        outputs: vec![adaq_factor_research::DeclarativeFactorOutputBinding {
+                            output_name: "rank-score".into(),
+                            feature_slot: "rank".into(),
+                        }],
+                    },
+                },
+            },
+            presentation: adaq_factor_research::FactorPresentationMetadata {
+                name: "Rank score".into(),
+                description: "published from the Feature handoff".into(),
+                tags: vec!["cross-sectional".into()],
+            },
+        })
+        .unwrap();
+    let predecessor = candidate.predecessor.as_ref().unwrap();
+    assert_eq!(predecessor.user_id, "alice");
+    assert_eq!(predecessor.context_revision, context.context_revision);
+    assert_eq!(predecessor.context_hash, context.context_hash);
+    assert_eq!(predecessor.snapshot_id, snapshot_id);
+    assert_eq!(
+        predecessor.universe_id.as_deref(),
+        Some(universe_id.as_str())
+    );
+    assert_eq!(predecessor.feature_dataset, feature_dataset);
+    assert!(
+        state
+            .factor
+            .get_candidate(crate::factor_research::FactorEvidenceRequest {
+                user_id: "bob".into(),
+                evidence_id: candidate.candidate.candidate_hash,
+            })
+            .is_err()
+    );
+
     let frozen = state
         .freeze_research_context(
             "alice",

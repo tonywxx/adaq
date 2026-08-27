@@ -80,6 +80,7 @@ test("shows a fail-closed context freeze error", async () => {
 		market: "crypto",
 		venue: "okx",
 		snapshotId: "snapshot-1",
+		evidence: [],
 	});
 
 	await act(async () => {

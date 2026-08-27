@@ -34,6 +34,23 @@ export type FeatureDatasetBinding = {
 	outputNames: string[];
 };
 
+export type ResearchEvidenceBinding = {
+	id: string;
+	lineageHash: string;
+	userId: string;
+	market: string;
+	venue: string;
+	snapshotId: string;
+	universeId?: string | null;
+	featureId?: string | null;
+	factorId?: string | null;
+	modelId?: string | null;
+	grade: "provider-graded" | "degraded" | "unknown";
+	accessible: boolean;
+	complete: boolean;
+	fresh: boolean;
+};
+
 export type ResearchEvidenceProjection = {
 	contextRevision: number;
 	contextHash: string;
@@ -42,7 +59,8 @@ export type ResearchEvidenceProjection = {
 	rangeStartMs: number;
 	rangeEndMs: number;
 	snapshotId: string;
-	universeId?: string;
+	universeId?: string | null;
+	evidence: ResearchEvidenceBinding[];
 	featureDataset?: FeatureDatasetBinding;
 };
 
@@ -54,6 +72,7 @@ export function useResearchEvidenceContext(userId: string) {
 				userId,
 			}),
 		staleTime: 30_000,
+		enabled: Boolean(userId.trim()),
 	});
 }
 

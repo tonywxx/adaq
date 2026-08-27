@@ -1,3 +1,9 @@
+import type {
+	FeatureDatasetBinding,
+	ResearchEvidenceBinding,
+	ResearchEvidenceProjection,
+} from "@/features/research/research-context-preflight";
+
 export type FactorJson = Record<string, unknown>;
 
 export type FactorMetricCatalogView = {
@@ -50,6 +56,13 @@ export type FactorCandidateView = {
 	};
 	lockedBy: string[];
 	createdAtMs: number;
+	predecessor?: FactorCandidatePredecessor | null;
+};
+
+export type FactorCandidatePredecessor = ResearchEvidenceProjection & {
+	userId: string;
+	featureDataset: FeatureDatasetBinding;
+	evidence: ResearchEvidenceBinding[];
 };
 
 export type FactorDatasetView = {

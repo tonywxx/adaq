@@ -201,6 +201,7 @@ test("applies the selected context to Factor protocol identity and range", () =>
 			rangeEndMs: 2,
 			snapshotId: "snapshot-1",
 			universeId: "universe-1",
+			evidence: [],
 			featureDataset: {
 				datasetId: "feature-dataset-1",
 				requestHash: "request-hash",

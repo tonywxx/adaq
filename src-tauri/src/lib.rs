@@ -628,12 +628,21 @@ factor_blocking_command!(
     build_candidate,
     factor_research::FactorAttemptView
 );
-factor_blocking_command!(
-    factor_candidate_publish,
-    factor_research::FactorCandidatePublishRequest,
-    publish_candidate,
-    factor_research::FactorCandidateView
-);
+#[tauri::command]
+async fn factor_candidate_publish(
+    mut request: factor_research::FactorCandidatePublishRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<factor_research::FactorCandidateView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .publish_factor_candidate(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
 factor_blocking_command!(
     factor_candidate_list,
     factor_research::FactorPageRequest,

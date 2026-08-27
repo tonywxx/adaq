@@ -5,7 +5,7 @@
 //! and the Factor jobs consumed by the existing single Feature FIFO worker.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
     path::{Path, PathBuf},
     sync::{
@@ -137,6 +137,93 @@ pub(crate) struct FactorCandidateView {
     pub presentation: FactorPresentationMetadata,
     pub locked_by: Vec<String>,
     pub created_at_ms: i64,
+    pub predecessor: Option<FactorCandidatePredecessor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorCandidatePredecessor {
+    pub user_id: String,
+    pub context_revision: u64,
+    pub context_hash: String,
+    pub market: String,
+    pub venue: String,
+    pub range_start_ms: i64,
+    pub range_end_ms: i64,
+    pub snapshot_id: String,
+    pub universe_id: Option<String>,
+    pub evidence: Vec<adaq_factor_research::EvidenceBinding>,
+    pub feature_dataset: adaq_factor_research::FeatureDatasetBinding,
+}
+
+impl FactorCandidatePredecessor {
+    pub(crate) fn from_projection(
+        user_id: String,
+        projection: adaq_factor_research::ResearchEvidenceProjection,
+    ) -> Result<Self, String> {
+        let feature_dataset = projection
+            .feature_dataset
+            .ok_or_else(|| "factor-context-feature-dataset-required".to_owned())?;
+        let predecessor = Self {
+            user_id,
+            context_revision: projection.context_revision,
+            context_hash: projection.context_hash,
+            market: projection.market,
+            venue: projection.venue,
+            range_start_ms: projection.range_start_ms,
+            range_end_ms: projection.range_end_ms,
+            snapshot_id: projection.snapshot_id,
+            universe_id: projection.universe_id,
+            evidence: projection.evidence,
+            feature_dataset,
+        };
+        predecessor.validate()?;
+        Ok(predecessor)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        validate_user(&self.user_id)?;
+        if self.context_revision == 0
+            || !adaq_factor_research::is_sha256(&self.context_hash)
+            || self.market.trim().is_empty()
+            || self.venue.trim().is_empty()
+            || self.range_start_ms >= self.range_end_ms
+            || self.snapshot_id.trim().is_empty()
+            || self.universe_id.as_deref().is_none_or(str::is_empty)
+            || self.evidence.is_empty()
+        {
+            return Err("Factor Candidate predecessor identity is invalid".into());
+        }
+        let feature_dataset = &self.feature_dataset;
+        if feature_dataset.dataset_id.trim().is_empty()
+            || !adaq_factor_research::is_sha256(&feature_dataset.request_hash)
+            || !adaq_factor_research::is_sha256(&feature_dataset.feature_plan_hash)
+            || !adaq_factor_research::is_sha256(&feature_dataset.content_sha256)
+            || feature_dataset.output_names.is_empty()
+        {
+            return Err("Factor Candidate predecessor Feature Dataset is invalid".into());
+        }
+        let mut output_names = BTreeSet::new();
+        if feature_dataset
+            .output_names
+            .iter()
+            .any(|name| !adaq_factor_research::is_lower_kebab(name) || !output_names.insert(name))
+        {
+            return Err("Factor Candidate predecessor Feature outputs are invalid".into());
+        }
+        if !self.evidence.iter().any(|evidence| {
+            evidence.id == feature_dataset.dataset_id
+                && evidence.user_id == self.user_id
+                && evidence.market == self.market
+                && evidence.venue == self.venue
+                && evidence.accessible
+                && evidence.complete
+                && evidence.fresh
+        }) {
+            return Err("Factor Candidate predecessor evidence is incomplete".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -590,24 +677,69 @@ impl FactorResearch {
         self.enqueue(&request.user_id, "candidate-build", &job)
     }
 
-    pub(crate) fn publish_candidate(
+    pub(crate) fn publish_candidate_with_predecessor(
         &self,
         request: FactorCandidatePublishRequest,
+        predecessor: FactorCandidatePredecessor,
     ) -> Result<FactorCandidateView, String> {
         self.ensure_schema_ready()?;
         validate_user(&request.user_id)?;
-        if matches!(&request.draft.source, FactorCandidateSource::Python { .. }) {
+        if request.user_id != predecessor.user_id {
             return Err(
-                "Python Factor candidates require a Host-validated runner evidence path".into(),
+                "Factor Candidate predecessor User identity differs from the request".into(),
+            );
+        }
+        if !matches!(
+            &request.draft.source,
+            FactorCandidateSource::Declarative { .. }
+        ) {
+            return Err(
+                "Factor Candidate discovery requires a Declarative Factor definition".into(),
             );
         }
         request.presentation.validate().map_err(string)?;
+        predecessor.validate()?;
         let candidate = FactorCandidate::freeze(request.draft).map_err(string)?;
+        let definition = match &candidate.source {
+            FactorCandidateSource::Declarative { definition } => definition,
+            _ => unreachable!("the Candidate source was checked above"),
+        };
+        let available_outputs = predecessor
+            .feature_dataset
+            .output_names
+            .iter()
+            .collect::<BTreeSet<_>>();
+        if definition.feature_plan_hash != predecessor.feature_dataset.feature_plan_hash {
+            return Err(
+                "Factor Candidate Feature Plan does not match the selected Feature Dataset".into(),
+            );
+        }
+        if let Some(slot) = candidate
+            .feature_slots
+            .iter()
+            .find(|slot| !available_outputs.contains(&slot.name))
+        {
+            return Err(format!(
+                "Factor Candidate Feature Slot {} is not present in the selected Feature Dataset",
+                slot.name
+            ));
+        }
+        if let Some(binding) = definition
+            .outputs
+            .iter()
+            .find(|binding| !available_outputs.contains(&binding.feature_slot))
+        {
+            return Err(format!(
+                "Factor Candidate output {} references Feature Slot {} that is not present in the selected Feature Dataset",
+                binding.output_name, binding.feature_slot
+            ));
+        }
         let database = self.database()?;
-        ResearchStore::new(&database).save_candidate(
+        ResearchStore::new(&database).save_candidate_with_predecessor(
             &request.user_id,
             &candidate,
             &request.presentation,
+            &predecessor,
         )?;
         ResearchStore::new(&database)
             .candidate_for_user(&request.user_id, &candidate.candidate_hash)
@@ -1682,6 +1814,7 @@ impl<'a> ResearchStore<'a> {
             .prepare(
                 "SELECT user_id FROM factor_candidate_access
                  UNION SELECT user_id FROM factor_candidate_presentations
+                 UNION SELECT user_id FROM factor_candidate_predecessors
                  UNION SELECT user_id FROM factor_research_attempts
                  ORDER BY user_id",
             )
@@ -1751,6 +1884,12 @@ impl<'a> ResearchStore<'a> {
                     user_id TEXT NOT NULL,
                     candidate_hash TEXT NOT NULL,
                     presentation_json TEXT NOT NULL,
+                    PRIMARY KEY(user_id, candidate_hash)
+                 );
+                 CREATE TABLE IF NOT EXISTS factor_candidate_predecessors (
+                    user_id TEXT NOT NULL,
+                    candidate_hash TEXT NOT NULL,
+                    predecessor_json TEXT NOT NULL,
                     PRIMARY KEY(user_id, candidate_hash)
                  );
                  CREATE TABLE IF NOT EXISTS factor_python_host_evidence (
@@ -2319,11 +2458,43 @@ impl<'a> ResearchStore<'a> {
         candidate: &FactorCandidate,
         presentation: &FactorPresentationMetadata,
     ) -> Result<String, String> {
+        self.save_candidate_inner(user_id, candidate, presentation, None)
+    }
+
+    fn save_candidate_with_predecessor(
+        &self,
+        user_id: &str,
+        candidate: &FactorCandidate,
+        presentation: &FactorPresentationMetadata,
+        predecessor: &FactorCandidatePredecessor,
+    ) -> Result<String, String> {
+        self.save_candidate_inner(user_id, candidate, presentation, Some(predecessor))
+    }
+
+    fn save_candidate_inner(
+        &self,
+        user_id: &str,
+        candidate: &FactorCandidate,
+        presentation: &FactorPresentationMetadata,
+        predecessor: Option<&FactorCandidatePredecessor>,
+    ) -> Result<String, String> {
         candidate.validate().map_err(string)?;
         presentation.validate().map_err(string)?;
+        if let Some(predecessor) = predecessor {
+            predecessor.validate()?;
+            if predecessor.user_id != user_id {
+                return Err(
+                    "Factor Candidate predecessor User identity differs from the request".into(),
+                );
+            }
+        }
         let candidate_json =
             String::from_utf8(candidate.to_json().map_err(string)?).map_err(string)?;
         let presentation_json = serde_json::to_string(presentation).map_err(string)?;
+        let predecessor_json = predecessor
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(string)?;
         let transaction = self.database.unchecked_transaction().map_err(string)?;
         transaction
             .execute(
@@ -2356,6 +2527,26 @@ impl<'a> ResearchStore<'a> {
                 params![user_id, candidate.candidate_hash, presentation_json],
             )
             .map_err(string)?;
+        if let Some(predecessor_json) = predecessor_json {
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO factor_candidate_predecessors(user_id, candidate_hash, predecessor_json)
+                     VALUES (?1, ?2, ?3)",
+                    params![user_id, candidate.candidate_hash, predecessor_json],
+                )
+                .map_err(string)?;
+            let stored: String = transaction
+                .query_row(
+                    "SELECT predecessor_json FROM factor_candidate_predecessors
+                      WHERE user_id = ?1 AND candidate_hash = ?2",
+                    params![user_id, candidate.candidate_hash],
+                    |row| row.get(0),
+                )
+                .map_err(string)?;
+            if stored != predecessor_json {
+                return Err("Factor Candidate predecessor identity collision".into());
+            }
+        }
         transaction.commit().map_err(string)?;
         Ok(candidate.candidate_hash.clone())
     }
@@ -2403,27 +2594,48 @@ impl<'a> ResearchStore<'a> {
         user_id: &str,
         candidate_hash: &str,
     ) -> Result<FactorCandidateView, String> {
-        let (candidate_json, presentation_json, created_at): (String, String, i64) = self
+        let (candidate_json, presentation_json, created_at, predecessor_json): (
+            String,
+            String,
+            i64,
+            Option<String>,
+        ) = self
             .database
             .query_row(
-                "SELECT c.candidate_json, p.presentation_json, c.created_at_ms
+                "SELECT c.candidate_json, p.presentation_json, c.created_at_ms,
+                        predecessor.predecessor_json
                    FROM factor_candidate_access a
                    JOIN factor_candidate_content c USING(candidate_hash)
                    JOIN factor_candidate_presentations p
                      ON p.user_id = a.user_id AND p.candidate_hash = a.candidate_hash
+                   LEFT JOIN factor_candidate_predecessors predecessor
+                     ON predecessor.user_id = a.user_id
+                    AND predecessor.candidate_hash = a.candidate_hash
                   WHERE a.user_id = ?1 AND a.candidate_hash = ?2",
                 params![user_id, candidate_hash],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .map_err(|_| "Factor Candidate was not found".to_owned())?;
         let candidate = FactorCandidate::load(candidate_json.as_bytes()).map_err(string)?;
         let presentation = serde_json::from_str(&presentation_json).map_err(string)?;
+        let predecessor: Option<FactorCandidatePredecessor> = predecessor_json
+            .map(|json| serde_json::from_str(&json).map_err(string))
+            .transpose()?;
+        if let Some(predecessor) = &predecessor {
+            predecessor.validate()?;
+            if predecessor.user_id != user_id {
+                return Err(
+                    "Factor Candidate predecessor User identity differs from the owner".into(),
+                );
+            }
+        }
         let locked_by = self.locked_by(user_id, "candidate", candidate_hash)?;
         Ok(FactorCandidateView {
             candidate,
             presentation,
             locked_by,
             created_at_ms: created_at,
+            predecessor,
         })
     }
 
@@ -4203,6 +4415,7 @@ impl<'a> ResearchStore<'a> {
             "factor_research_attempts",
             "factor_research_protocols",
             "factor_python_host_evidence",
+            "factor_candidate_predecessors",
             "factor_candidate_presentations",
             "factor_candidate_access",
             "factor_candidate_content",
@@ -4241,6 +4454,12 @@ impl<'a> ResearchStore<'a> {
         transaction
             .execute(
                 "DELETE FROM factor_candidate_presentations WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM factor_candidate_predecessors WHERE user_id = ?1",
                 [user_id],
             )
             .map_err(string)?;
@@ -4301,6 +4520,7 @@ impl<'a> ResearchStore<'a> {
         transaction.execute("DELETE FROM factor_dataset_content WHERE NOT EXISTS (SELECT 1 FROM factor_dataset_access a WHERE a.dataset_id = factor_dataset_content.dataset_id)", []).map_err(string)?;
         transaction.execute("DELETE FROM factor_evaluation_reports WHERE NOT EXISTS (SELECT 1 FROM factor_evaluation_report_access a WHERE a.report_hash = factor_evaluation_reports.report_hash)", []).map_err(string)?;
         transaction.execute("DELETE FROM factor_candidate_content WHERE NOT EXISTS (SELECT 1 FROM factor_candidate_access a WHERE a.candidate_hash = factor_candidate_content.candidate_hash)", []).map_err(string)?;
+        transaction.execute("DELETE FROM factor_candidate_predecessors WHERE NOT EXISTS (SELECT 1 FROM factor_candidate_access a WHERE a.user_id = factor_candidate_predecessors.user_id AND a.candidate_hash = factor_candidate_predecessors.candidate_hash)", []).map_err(string)?;
         transaction.execute("DELETE FROM factor_python_host_evidence WHERE NOT EXISTS (SELECT 1 FROM factor_candidate_access a WHERE a.candidate_hash = factor_python_host_evidence.candidate_hash)", []).map_err(string)?;
         transaction.commit().map_err(string)?;
         for path in dataset_paths.into_iter().chain(report_paths) {
@@ -4771,7 +4991,7 @@ mod tests {
         let queue = ResearchQueue::open(database.clone()).unwrap();
         let research = FactorResearch::open(
             Arc::new(TestSource {
-                database,
+                database: database.clone(),
                 directory: directory.clone(),
             }),
             queue.admitter(),
@@ -5032,6 +5252,105 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn candidate_predecessor_is_persisted_with_user_scoped_identity() {
+        let database = store();
+        let store = ResearchStore::new(&database);
+        let candidate = test_candidate();
+        let predecessor = test_predecessor("alice", &["close"]);
+        let presentation = FactorPresentationMetadata {
+            name: "Original".into(),
+            description: String::new(),
+            tags: Vec::new(),
+        };
+        store
+            .save_candidate_with_predecessor("alice", &candidate, &presentation, &predecessor)
+            .unwrap();
+
+        assert_eq!(
+            store
+                .candidate_for_user("alice", &candidate.candidate_hash)
+                .unwrap()
+                .predecessor,
+            Some(predecessor.clone())
+        );
+        store
+            .save_candidate_with_predecessor(
+                "alice",
+                &candidate,
+                &FactorPresentationMetadata {
+                    name: "Renamed".into(),
+                    ..presentation
+                },
+                &predecessor,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .candidate_for_user("alice", &candidate.candidate_hash)
+                .unwrap()
+                .presentation
+                .name,
+            "Renamed"
+        );
+        assert!(
+            store
+                .candidate_for_user("bob", &candidate.candidate_hash)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn candidate_discovery_rejects_absent_feature_outputs_before_storage() {
+        let database = Arc::new(Mutex::new(store()));
+        let directory = tempfile_dir("factor-candidate-discovery");
+        let queue = ResearchQueue::open(database.clone()).unwrap();
+        let research = FactorResearch::open(
+            Arc::new(TestSource {
+                database: database.clone(),
+                directory: directory.clone(),
+            }),
+            queue.admitter(),
+        )
+        .unwrap();
+        let candidate = test_candidate();
+        let error = research
+            .publish_candidate_with_predecessor(
+                FactorCandidatePublishRequest {
+                    user_id: "alice".into(),
+                    draft: FactorCandidateDraft {
+                        candidate_id: candidate.candidate_id,
+                        revision: candidate.revision,
+                        scope: candidate.scope,
+                        feature_slots: candidate.feature_slots,
+                        parameters: candidate.parameters,
+                        outputs: candidate.outputs,
+                        source: candidate.source,
+                    },
+                    presentation: FactorPresentationMetadata {
+                        name: "Test".into(),
+                        description: String::new(),
+                        tags: Vec::new(),
+                    },
+                },
+                test_predecessor("alice", &["return"]),
+            )
+            .unwrap_err();
+        assert!(error.contains("not present in the selected Feature Dataset"));
+        assert_eq!(
+            database
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM factor_candidate_content", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            0
+        );
+        queue.shutdown();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     fn tempfile_dir(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("adaq-{name}-{}", Uuid::new_v4()));
         fs::create_dir_all(&path).unwrap();
@@ -5116,5 +5435,43 @@ mod tests {
             },
         })
         .unwrap()
+    }
+
+    fn test_predecessor(user_id: &str, output_names: &[&str]) -> FactorCandidatePredecessor {
+        let dataset_id = "feature-dataset-1".to_owned();
+        FactorCandidatePredecessor {
+            user_id: user_id.into(),
+            context_revision: 2,
+            context_hash: "c".repeat(64),
+            market: "crypto".into(),
+            venue: "okx".into(),
+            range_start_ms: 1,
+            range_end_ms: 2,
+            snapshot_id: "snapshot-1".into(),
+            universe_id: Some("universe-1".into()),
+            evidence: vec![adaq_factor_research::EvidenceBinding {
+                id: dataset_id.clone(),
+                lineage_hash: "d".repeat(64),
+                user_id: user_id.into(),
+                market: "crypto".into(),
+                venue: "okx".into(),
+                snapshot_id: "snapshot-1".into(),
+                universe_id: Some("universe-1".into()),
+                feature_id: Some(dataset_id.clone()),
+                factor_id: None,
+                model_id: None,
+                grade: adaq_factor_research::EvidenceGrade::ProviderGraded,
+                accessible: true,
+                complete: true,
+                fresh: true,
+            }],
+            feature_dataset: adaq_factor_research::FeatureDatasetBinding {
+                dataset_id,
+                request_hash: "a".repeat(64),
+                feature_plan_hash: "a".repeat(64),
+                content_sha256: "e".repeat(64),
+                output_names: output_names.iter().map(|name| (*name).into()).collect(),
+            },
+        }
     }
 }
