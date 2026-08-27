@@ -71,6 +71,18 @@ pub struct ResearchEvidenceContextDraft {
     pub snapshot_id: String,
     pub universe_id: Option<String>,
     pub evidence: Vec<EvidenceBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_dataset: Option<FeatureDatasetBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeatureDatasetBinding {
+    pub dataset_id: String,
+    pub request_hash: String,
+    pub feature_plan_hash: String,
+    pub content_sha256: String,
+    pub output_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +103,8 @@ pub struct FrozenResearchEvidence {
     pub snapshot_id: String,
     pub universe_id: Option<String>,
     pub lineage_hashes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_dataset: Option<FeatureDatasetBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +119,8 @@ pub struct ResearchEvidenceProjection {
     pub snapshot_id: String,
     pub universe_id: Option<String>,
     pub evidence: Vec<EvidenceBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_dataset: Option<FeatureDatasetBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +128,7 @@ pub enum ContextBlocker {
     InvalidRange,
     MissingSnapshot,
     MissingUniverse,
+    MissingFeatureDataset,
     InaccessibleEvidence(String),
     MixedMarketVenue { id: String },
     UncoveredEvidence(String),
@@ -120,6 +137,7 @@ pub enum ContextBlocker {
     DegradedEvidence(String),
     UserIsolation(String),
     InvalidLineage(String),
+    InvalidFeatureDataset(String),
 }
 
 impl std::fmt::Display for ContextBlocker {
@@ -128,6 +146,9 @@ impl std::fmt::Display for ContextBlocker {
             Self::InvalidRange => f.write_str("context time range must be increasing"),
             Self::MissingSnapshot => f.write_str("context requires an exact market data snapshot"),
             Self::MissingUniverse => f.write_str("this stage requires a point-in-time universe"),
+            Self::MissingFeatureDataset => {
+                f.write_str("this stage requires an accepted Feature Dataset")
+            }
             Self::InaccessibleEvidence(id) => write!(f, "evidence {id} is inaccessible"),
             Self::MixedMarketVenue { id } => write!(f, "evidence {id} has a mixed market or venue"),
             Self::UncoveredEvidence(id) => {
@@ -138,6 +159,9 @@ impl std::fmt::Display for ContextBlocker {
             Self::DegradedEvidence(id) => write!(f, "evidence {id} is degraded for this stage"),
             Self::UserIsolation(id) => write!(f, "evidence {id} belongs to another user"),
             Self::InvalidLineage(id) => write!(f, "evidence {id} has invalid immutable lineage"),
+            Self::InvalidFeatureDataset(id) => {
+                write!(f, "Feature Dataset binding {id} is invalid")
+            }
         }
     }
 }
@@ -217,6 +241,7 @@ impl ResearchEvidenceContext {
             snapshot_id: self.draft.snapshot_id.clone(),
             universe_id: self.draft.universe_id.clone(),
             lineage_hashes,
+            feature_dataset: self.draft.feature_dataset.clone(),
         })
     }
 
@@ -254,6 +279,7 @@ impl ResearchEvidenceContext {
             snapshot_id: self.draft.snapshot_id.clone(),
             universe_id: self.draft.universe_id.clone(),
             evidence: self.draft.evidence.clone(),
+            feature_dataset: self.draft.feature_dataset.clone(),
         }
     }
 
@@ -290,6 +316,40 @@ fn validate_draft(
         && draft.universe_id.is_none()
     {
         return Err(ContextBlocker::MissingUniverse);
+    }
+    if stage == ResearchStage::Factors {
+        let Some(feature_dataset) = draft.feature_dataset.as_ref() else {
+            return Err(ContextBlocker::MissingFeatureDataset);
+        };
+        if feature_dataset.dataset_id.trim().is_empty()
+            || feature_dataset.request_hash.trim().is_empty()
+            || feature_dataset.feature_plan_hash.trim().is_empty()
+            || feature_dataset.content_sha256.trim().is_empty()
+            || feature_dataset.output_names.is_empty()
+        {
+            return Err(ContextBlocker::InvalidFeatureDataset(
+                feature_dataset.dataset_id.clone(),
+            ));
+        }
+        let mut output_names = BTreeSet::new();
+        if feature_dataset
+            .output_names
+            .iter()
+            .any(|name| name.trim().is_empty() || !output_names.insert(name))
+        {
+            return Err(ContextBlocker::InvalidFeatureDataset(
+                feature_dataset.dataset_id.clone(),
+            ));
+        }
+        if !draft
+            .evidence
+            .iter()
+            .any(|evidence| evidence.id == feature_dataset.dataset_id)
+        {
+            return Err(ContextBlocker::InvalidFeatureDataset(
+                feature_dataset.dataset_id.clone(),
+            ));
+        }
     }
     let mut lineage = BTreeSet::new();
     for evidence in &draft.evidence {
@@ -338,7 +398,7 @@ mod tests {
 
     fn evidence(user_id: &str) -> EvidenceBinding {
         EvidenceBinding {
-            id: "snapshot-1".into(),
+            id: "feature-dataset-1".into(),
             lineage_hash: "lineage-1".into(),
             user_id: user_id.into(),
             market: "crypto".into(),
@@ -364,6 +424,13 @@ mod tests {
             snapshot_id: "snapshot-1".into(),
             universe_id: Some("universe-1".into()),
             evidence: vec![evidence(user_id)],
+            feature_dataset: Some(FeatureDatasetBinding {
+                dataset_id: "feature-dataset-1".into(),
+                request_hash: "request-hash".into(),
+                feature_plan_hash: "plan-hash".into(),
+                content_sha256: "content-hash".into(),
+                output_names: vec!["return".into()],
+            }),
         }
     }
 
@@ -420,13 +487,20 @@ mod tests {
     }
     #[test]
     fn revision_does_not_rebind_old_operation() {
-        let context = ResearchEvidenceContext::establish(draft("alice")).unwrap();
+        let context = ResearchEvidenceContext::establish_for_stage(
+            draft("alice"),
+            ResearchStage::Factors,
+            Default::default(),
+        )
+        .unwrap();
         let mut changed = draft("alice");
         changed.snapshot_id = "snapshot-2".into();
-        let revised = context.revise(changed).unwrap();
+        let revised = context
+            .revise_for_stage(changed, ResearchStage::Factors, Default::default())
+            .unwrap();
         assert!(
             context
-                .revalidate(&revised, ResearchStage::Features)
+                .revalidate(&revised, ResearchStage::Factors)
                 .is_err()
         );
     }
@@ -439,6 +513,34 @@ mod tests {
                 .unwrap()
                 .freeze("op", ResearchStage::Factors),
             Err(ContextBlocker::MissingUniverse)
+        ));
+    }
+
+    #[test]
+    fn factors_require_a_feature_dataset_binding() {
+        let mut value = draft("alice");
+        value.feature_dataset = None;
+        assert!(matches!(
+            ResearchEvidenceContext::establish_for_stage(
+                value,
+                ResearchStage::Factors,
+                Default::default(),
+            ),
+            Err(ContextBlocker::MissingFeatureDataset)
+        ));
+    }
+
+    #[test]
+    fn factors_require_dataset_binding_evidence() {
+        let mut value = draft("alice");
+        value.evidence[0].id = "different-dataset".into();
+        assert!(matches!(
+            ResearchEvidenceContext::establish_for_stage(
+                value,
+                ResearchStage::Factors,
+                Default::default(),
+            ),
+            Err(ContextBlocker::InvalidFeatureDataset(_))
         ));
     }
 }

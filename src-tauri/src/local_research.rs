@@ -28,7 +28,10 @@ use adaq_component_tooling::{
 };
 #[cfg(feature = "deferred-equity")]
 use adaq_data_core::a_share::AshareClient;
-use adaq_data_core::{BarInterval, OhlcvBar, OkxClient, market::Venue};
+use adaq_data_core::{
+    BarInterval, OhlcvBar, OkxClient,
+    market::{Venue, VenueKind},
+};
 use adaq_data_pipeline::{
     CancellationToken, DataPipeline, DataQualityReport, DataQualityState,
     okx::{OkxSpotDataPath, PointInTimeInstrumentUniverse},
@@ -47,7 +50,7 @@ use crate::{
     },
     dataset_generation::{DatasetGeneration, GenerationSource},
     factor_research::{FactorResearch, FactorResearchSource, user_uuid},
-    features::{FeatureSource, Features},
+    features::{FeatureDatasetRequest, FeatureSource, Features},
     forecast_signal_dataset::{BacktestSignalDataset, backtest_signal_datasets},
     market_data_snapshot::{LocalSnapshotSource, MarketDataSnapshots},
     operations::OperationsStore,
@@ -727,6 +730,124 @@ impl LocalResearchState {
             .map_err(|_| "research context store lock failed".to_string())?
             .insert(format!("{}:{}", user_id, projection.market), context);
         Ok(projection)
+    }
+
+    pub(crate) fn establish_factor_context(
+        &self,
+        user_id: &str,
+        dataset_id: &str,
+    ) -> Result<adaq_factor_research::ResearchEvidenceProjection, String> {
+        validate_user(user_id)?;
+        if dataset_id.trim().is_empty() {
+            return Err("factor-context-feature-dataset-required".into());
+        }
+        let dataset = self
+            .features
+            .get_dataset(FeatureDatasetRequest {
+                user_id: user_id.to_owned(),
+                dataset_id: dataset_id.to_owned(),
+            })
+            .map_err(|error| factor_context_dataset_error(&error))?;
+        let request = &dataset.manifest.request;
+        if dataset.user_id != user_id || request.user_id != user_id {
+            return Err("factor-context-user-mismatch".into());
+        }
+        let (snapshot, _) = self
+            .snapshots
+            .snapshot_for_user(user_id, &request.snapshot_id)
+            .map_err(|_| "factor-context-snapshot-inaccessible".to_owned())?;
+        let universe = self
+            .snapshots
+            .universe_snapshot_for_user(user_id, &request.point_in_time_universe_id)
+            .map_err(|_| "factor-context-universe-inaccessible".to_owned())?;
+        let (market, venue) = factor_context_market_venue(&snapshot)?;
+        if universe.venue.id != venue
+            || snapshot
+                .provenance
+                .as_ref()
+                .is_some_and(|provenance| provenance.venue != universe.venue)
+        {
+            return Err("factor-context-market-venue-mismatch".into());
+        }
+        if universe.interval != snapshot.interval {
+            return Err("factor-context-interval-mismatch".into());
+        }
+        let range = &request.observation_range;
+        if range.start_time_ms >= range.end_time_ms
+            || range.end_time_ms <= snapshot.start_time_ms
+            || range.start_time_ms >= snapshot.end_time_ms
+            || range.end_time_ms <= universe.start_time_ms
+            || range.start_time_ms >= universe.end_time_ms
+        {
+            return Err("factor-context-range-mismatch".into());
+        }
+        if universe.universe.evidence_state == "unknown" {
+            return Err("factor-context-universe-incomplete".into());
+        }
+        let feature_dataset = adaq_factor_research::FeatureDatasetBinding {
+            dataset_id: dataset.dataset_id.clone(),
+            request_hash: dataset.request_hash.clone(),
+            feature_plan_hash: request.feature_plan_hash.clone(),
+            content_sha256: dataset.manifest.content_sha256.clone(),
+            output_names: dataset
+                .manifest
+                .outputs
+                .iter()
+                .map(|output| output.output_name.clone())
+                .collect(),
+        };
+        let draft = adaq_factor_research::ResearchEvidenceContextDraft {
+            user_id: user_id.to_owned(),
+            market: market.clone(),
+            venue: venue.clone(),
+            range_start_ms: range.start_time_ms,
+            range_end_ms: range.end_time_ms,
+            snapshot_id: request.snapshot_id.clone(),
+            universe_id: Some(request.point_in_time_universe_id.clone()),
+            evidence: vec![adaq_factor_research::EvidenceBinding {
+                id: dataset.dataset_id.clone(),
+                lineage_hash: dataset.dataset_id.clone(),
+                user_id: user_id.to_owned(),
+                market: market.clone(),
+                venue: venue.clone(),
+                snapshot_id: request.snapshot_id.clone(),
+                universe_id: Some(request.point_in_time_universe_id.clone()),
+                feature_id: Some(dataset.dataset_id.clone()),
+                factor_id: None,
+                model_id: None,
+                grade: adaq_factor_research::EvidenceGrade::ProviderGraded,
+                accessible: true,
+                complete: true,
+                fresh: true,
+            }],
+            feature_dataset: Some(feature_dataset.clone()),
+        };
+        let context = match self.context_for_user(user_id)? {
+            Some(current) if current.draft == draft => {
+                current
+                    .revalidate_with_policy(
+                        &current,
+                        adaq_factor_research::ResearchStage::Factors,
+                        Default::default(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                current
+            }
+            Some(current) => current
+                .revise_for_stage(
+                    draft,
+                    adaq_factor_research::ResearchStage::Factors,
+                    Default::default(),
+                )
+                .map_err(|error| error.to_string())?,
+            None => adaq_factor_research::ResearchEvidenceContext::establish_for_stage(
+                draft,
+                adaq_factor_research::ResearchStage::Factors,
+                Default::default(),
+            )
+            .map_err(|error| error.to_string())?,
+        };
+        self.store_research_context(context)
     }
 
     fn context_for_user(&self, user_id: &str) -> Result<Option<ResearchEvidenceContext>, String> {
@@ -2164,6 +2285,35 @@ fn string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+fn factor_context_market_venue(snapshot: &MarketDataSnapshot) -> Result<(String, String), String> {
+    let venue = if let Some(provenance) = snapshot.provenance.as_ref() {
+        provenance.venue.clone()
+    } else if snapshot.src == "okx" {
+        Venue::crypto_spot("okx").map_err(string)?
+    } else {
+        return Err("factor-context-market-venue-unavailable".into());
+    };
+    let market = match venue.kind {
+        VenueKind::CryptoSpot => "crypto",
+        VenueKind::ChinaAShareEquity => "a-share",
+        VenueKind::UsEquity => "us-equity",
+    };
+    Ok((market.into(), venue.id))
+}
+
+fn factor_context_dataset_error(error: &str) -> String {
+    match error.split(':').next().unwrap_or_default() {
+        "feature-dataset-not-found" | "feature-dataset-not-authorized" => {
+            "factor-context-feature-dataset-inaccessible".into()
+        }
+        "invalid-feature-dataset-schema"
+        | "incomplete-feature-dataset-rows"
+        | "duplicate-feature-observation"
+        | "incompatible-feature-schema" => "factor-context-feature-dataset-incomplete".into(),
+        _ => "factor-context-feature-dataset-unavailable".into(),
+    }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2621,6 +2771,7 @@ mod tests {
                 complete: true,
                 fresh: true,
             }],
+            feature_dataset: None,
         };
         let context = adaq_factor_research::ResearchEvidenceContext::establish_for_stage(
             draft,

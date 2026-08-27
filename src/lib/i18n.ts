@@ -29,6 +29,43 @@ const english = {
 		market: "Market and Venue",
 		snapshot: "Snapshot",
 		universe: "PIT Universe",
+		observationRange: "Observation Range",
+		featureDataset: "Feature Dataset",
+		featurePlan: "Feature Plan",
+		selectFeatureDataset: "Accepted Feature Dataset",
+		selectFeatureDatasetPlaceholder: "Select a completed Feature Dataset",
+		featureDatasetLoading: "Loading Feature Datasets…",
+		featureDatasetEmpty:
+			"No completed Feature Datasets are available for Factor research.",
+		factorContextBlocked:
+			"Select an accepted Feature Dataset before starting Factor research.",
+		openFeatures: "Open Features",
+		handoffLoading: "Resolving the Factor Context…",
+		reasons: {
+			"factor-context-feature-dataset-required":
+				"Select an accepted Feature Dataset first.",
+			"factor-context-feature-dataset-inaccessible":
+				"This Feature Dataset is not accessible to the current User.",
+			"factor-context-feature-dataset-incomplete":
+				"This Feature Dataset is incomplete and cannot enter Factor research.",
+			"factor-context-feature-dataset-unavailable":
+				"The Feature Dataset could not be resolved.",
+			"factor-context-snapshot-inaccessible":
+				"The Market Data Snapshot is not accessible to the current User.",
+			"factor-context-universe-inaccessible":
+				"The Point-in-Time Universe is not accessible to the current User.",
+			"factor-context-user-mismatch": "The evidence belongs to a different User.",
+			"factor-context-market-venue-mismatch":
+				"Market and Venue evidence do not match.",
+			"factor-context-interval-mismatch":
+				"Snapshot and Universe intervals do not match.",
+			"factor-context-range-mismatch":
+				"The Feature Dataset range is outside its evidence coverage.",
+			"factor-context-universe-incomplete":
+				"The Point-in-Time Universe is incomplete.",
+			"factor-context-market-venue-unavailable":
+				"The Dataset market and Venue cannot be resolved.",
+		},
 	},
 	nav: {
 		dashboard: "Dashboard",
@@ -2049,6 +2086,36 @@ const simplifiedChinese = {
 		market: "Market 与 Venue",
 		snapshot: "Snapshot",
 		universe: "PIT 宇宙",
+		observationRange: "Observation Range",
+		featureDataset: "Feature Dataset",
+		featurePlan: "Feature Plan",
+		selectFeatureDataset: "已接受的 Feature Dataset",
+		selectFeatureDatasetPlaceholder: "选择已完成的 Feature Dataset",
+		featureDatasetLoading: "正在加载 Feature Dataset…",
+		featureDatasetEmpty: "当前没有可用于因子研究的已完成 Feature Dataset。",
+		factorContextBlocked: "开始因子研究前，请先选择已接受的 Feature Dataset。",
+		openFeatures: "打开特征工作区",
+		handoffLoading: "正在解析 Factor Context…",
+		reasons: {
+			"factor-context-feature-dataset-required":
+				"请先选择已接受的 Feature Dataset。",
+			"factor-context-feature-dataset-inaccessible":
+				"当前 User 无权访问此 Feature Dataset。",
+			"factor-context-feature-dataset-incomplete":
+				"此 Feature Dataset 不完整，不能进入因子研究。",
+			"factor-context-feature-dataset-unavailable": "无法解析此 Feature Dataset。",
+			"factor-context-snapshot-inaccessible":
+				"当前 User 无权访问 Market Data Snapshot。",
+			"factor-context-universe-inaccessible":
+				"当前 User 无权访问 Point-in-Time Universe。",
+			"factor-context-user-mismatch": "证据属于其他 User。",
+			"factor-context-market-venue-mismatch": "Market 与 Venue 证据不匹配。",
+			"factor-context-interval-mismatch": "Snapshot 与 Universe 周期不匹配。",
+			"factor-context-range-mismatch": "Feature Dataset 范围超出其证据覆盖范围。",
+			"factor-context-universe-incomplete": "Point-in-Time Universe 不完整。",
+			"factor-context-market-venue-unavailable":
+				"无法解析 Dataset 的 Market 与 Venue。",
+		},
 	},
 	nav: {
 		dashboard: "仪表盘",

@@ -10,6 +10,10 @@ type FrozenResearchEvidence = {
 	stage: "features" | "factors" | "models";
 	snapshotId: string;
 	universeId?: string;
+	featureDataset?: {
+		datasetId: string;
+		featurePlanHash: string;
+	};
 };
 
 export function ResearchContextEvidence({
@@ -54,6 +58,13 @@ export function ResearchContextEvidence({
 			{query.data.universeId && (
 				<span className="break-all">
 					{t("researchContext.universe")}: {query.data.universeId}
+				</span>
+			)}
+			{query.data.featureDataset && (
+				<span className="break-all">
+					{t("researchContext.featureDataset")}:{" "}
+					{query.data.featureDataset.datasetId} · {t("researchContext.featurePlan")}:{" "}
+					{query.data.featureDataset.featurePlanHash}
 				</span>
 			)}
 			<span className="break-all">{query.data.operationId}</span>

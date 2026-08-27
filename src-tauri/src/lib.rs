@@ -319,6 +319,9 @@ fn research_context_establish(
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<adaq_factor_research::ResearchEvidenceProjection, String> {
     let user_id = auth.user_id_for_window(window.label())?;
+    if stage == adaq_factor_research::ResearchStage::Factors || draft.feature_dataset.is_some() {
+        return Err("factor-context-requires-host-dataset-selection".into());
+    }
     let mut draft = draft;
     draft.user_id = user_id.clone();
     for evidence in &mut draft.evidence {
@@ -331,6 +334,22 @@ fn research_context_establish(
     )
     .map_err(|error| error.to_string())?;
     state.store_research_context(context)
+}
+
+#[tauri::command]
+async fn research_factor_context_establish(
+    feature_dataset_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<adaq_factor_research::ResearchEvidenceProjection, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .establish_factor_context(&user_id, &feature_dataset_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -4149,6 +4168,7 @@ pub fn run() {
             get_factor_schema,
             factor_metric_catalog,
             research_context_establish,
+            research_factor_context_establish,
             research_context_get,
             research_context_freeze,
             research_context_frozen_get,

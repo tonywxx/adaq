@@ -1047,6 +1047,65 @@ fn materialization_completes_a_dataset_and_reuses_completed_evidence() {
 }
 
 #[test]
+fn completed_feature_dataset_establishes_a_user_scoped_factor_context() {
+    let (root, state, snapshot_id, _other_snapshot_id, universe_id) =
+        cross_sectional_setup("factor-context");
+    let definition = FeatureDefinition::freeze(cross_sectional_rank_draft()).unwrap();
+    let plan = native_plan(vec![definition.clone()]);
+    let mut feature_request = FeatureMaterializationRequest::new(
+        "alice",
+        plan.plan_hash(),
+        &snapshot_id,
+        &universe_id,
+        ObservationRange {
+            start_time_ms: 0,
+            end_time_ms: 3 * HOUR,
+        },
+        BTreeMap::new(),
+        7,
+    )
+    .unwrap();
+    feature_request.valuation_currency = "USDT".into();
+    let request = FeatureMaterializationStartRequest {
+        user_id: "alice".into(),
+        request: feature_request,
+        plan: plan_draft(vec![definition]),
+    };
+    let started = state.features.start_materialization(request).unwrap();
+    let completed = wait_for_materialization(
+        &state,
+        "alice",
+        &started.attempt_id,
+        MaterializationAttemptStatus::Completed,
+    );
+    let dataset_id = completed.dataset_id.unwrap();
+
+    let context = state
+        .establish_factor_context("alice", &dataset_id)
+        .unwrap();
+    let feature_dataset = context.feature_dataset.unwrap();
+    assert_eq!(feature_dataset.dataset_id, dataset_id);
+    assert_eq!(context.market, "crypto");
+    assert_eq!(context.venue, "okx");
+    assert_eq!(context.snapshot_id, snapshot_id);
+    assert_eq!(context.universe_id.as_deref(), Some(universe_id.as_str()));
+    assert_eq!(context.context_revision, 1);
+
+    let frozen = state
+        .freeze_research_context(
+            "alice",
+            "factor-context:one".into(),
+            adaq_factor_research::ResearchStage::Factors,
+        )
+        .unwrap();
+    assert_eq!(frozen.feature_dataset.unwrap().dataset_id, dataset_id);
+    assert!(state.establish_factor_context("bob", &dataset_id).is_err());
+
+    drop(state);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn materialization_failure_retry_uses_a_new_identity_and_source_evidence() {
     let (root, state, snapshot) = setup("materialization-retry");
     let definition = FeatureDefinition::freeze(return_draft()).unwrap();
