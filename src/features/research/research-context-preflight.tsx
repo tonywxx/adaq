@@ -10,7 +10,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { Link } from "@tanstack/react-router";
 import { CircleAlertIcon, LoaderCircleIcon } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 import type { FeatureDatasetView } from "@/features/features/features-types";
@@ -26,7 +26,7 @@ type FrozenResearchEvidence = {
 	universeId?: string;
 };
 
-type FeatureDatasetBinding = {
+export type FeatureDatasetBinding = {
 	datasetId: string;
 	requestHash: string;
 	featurePlanHash: string;
@@ -34,7 +34,7 @@ type FeatureDatasetBinding = {
 	outputNames: string[];
 };
 
-type ResearchEvidenceProjection = {
+export type ResearchEvidenceProjection = {
 	contextRevision: number;
 	contextHash: string;
 	market: string;
@@ -46,6 +46,17 @@ type ResearchEvidenceProjection = {
 	featureDataset?: FeatureDatasetBinding;
 };
 
+export function useResearchEvidenceContext(userId: string) {
+	return useQuery({
+		queryKey: ["research-evidence-context", userId],
+		queryFn: () =>
+			invoke<ResearchEvidenceProjection | null>("research_context_get", {
+				userId,
+			}),
+		staleTime: 30_000,
+	});
+}
+
 export function ResearchContextPreflight({
 	userId,
 	stage,
@@ -54,6 +65,7 @@ export function ResearchContextPreflight({
 	stage: ResearchStage;
 }) {
 	const { t } = useTranslation();
+	const queryClient = useQueryClient();
 	const [frozen, setFrozen] = useState<FrozenResearchEvidence>();
 	const [freezing, setFreezing] = useState(false);
 	const [freezeError, setFreezeError] = useState<string>();
@@ -63,14 +75,7 @@ export function ResearchContextPreflight({
 	const [handoffError, setHandoffError] = useState<string>();
 	const [handingOff, setHandingOff] = useState(false);
 	const isFactorStage = stage === "factors";
-	const query = useQuery({
-		queryKey: ["research-evidence-context", userId],
-		queryFn: () =>
-			invoke<ResearchEvidenceProjection | null>("research_context_get", {
-				userId,
-			}),
-		staleTime: 30_000,
-	});
+	const query = useResearchEvidenceContext(userId);
 	const featureDatasetsQuery = useQuery({
 		queryKey: ["factor-feature-datasets", userId],
 		queryFn: async () =>
@@ -82,7 +87,7 @@ export function ResearchContextPreflight({
 	});
 	const context = factorContext ?? query.data;
 	const contextReady = Boolean(
-		context && (!isFactorStage || context.featureDataset),
+		!query.error && context && (!isFactorStage || context.featureDataset),
 	);
 
 	useEffect(() => {
@@ -100,6 +105,13 @@ export function ResearchContextPreflight({
 	const establishFactorContext = async (featureDatasetId: string) => {
 		setSelectedFeatureDatasetId(featureDatasetId);
 		setHandoffError(undefined);
+		setFreezeError(undefined);
+		setFrozen(undefined);
+		setFactorContext(undefined);
+		queryClient.setQueryData<ResearchEvidenceProjection | null>(
+			["research-evidence-context", userId],
+			null,
+		);
 		if (!featureDatasetId) return;
 		setHandingOff(true);
 		try {
@@ -108,7 +120,9 @@ export function ResearchContextPreflight({
 				{ featureDatasetId },
 			);
 			setFactorContext(result);
+			queryClient.setQueryData(["research-evidence-context", userId], result);
 		} catch (error) {
+			setFactorContext(undefined);
 			setHandoffError(localizedFactorContextError(error, t));
 		} finally {
 			setHandingOff(false);
@@ -128,7 +142,17 @@ export function ResearchContextPreflight({
 			);
 			setFrozen(result);
 		} catch (error) {
-			setFreezeError(String(error));
+			if (isFactorStage) {
+				setFactorContext(undefined);
+				setSelectedFeatureDatasetId("");
+				queryClient.setQueryData<ResearchEvidenceProjection | null>(
+					["research-evidence-context", userId],
+					null,
+				);
+			}
+			setFreezeError(
+				isFactorStage ? localizedFactorContextError(error, t) : String(error),
+			);
 		} finally {
 			setFreezing(false);
 		}
@@ -213,7 +237,9 @@ export function ResearchContextPreflight({
 				) : null}
 				{query.error ? (
 					<p className="text-sm text-destructive" role="alert">
-						{String(query.error)}
+						{isFactorStage
+							? localizedFactorContextError(query.error, t)
+							: String(query.error)}
 					</p>
 				) : contextReady && context ? (
 					<>
@@ -298,7 +324,7 @@ export function ResearchContextPreflight({
 	);
 }
 
-function localizedFactorContextError(
+export function localizedFactorContextError(
 	error: unknown,
 	t: (key: string, options?: { defaultValue?: string }) => string,
 ) {

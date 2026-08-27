@@ -31,7 +31,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ResearchContextPreflight } from "@/features/research/research-context-preflight";
+import {
+	ResearchContextPreflight,
+	localizedFactorContextError,
+	useResearchEvidenceContext,
+	type ResearchEvidenceProjection,
+} from "@/features/research/research-context-preflight";
 import { formatDateTime, formatNumber } from "@/lib/i18n";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { createFactorAdapter, type FactorAdapter } from "./factor-adapter";
@@ -92,6 +97,32 @@ function useFactorAdapter(providedAdapter?: FactorAdapter) {
 		() => providedAdapter ?? createFactorAdapter(invoke),
 		[providedAdapter],
 	);
+}
+
+export function applyFactorContext(
+	draft: FactorJson,
+	context?: ResearchEvidenceProjection | null,
+) {
+	if (!context?.featureDataset || !context.universeId) return draft;
+	const marketContext =
+		draft.marketContext &&
+		typeof draft.marketContext === "object" &&
+		!Array.isArray(draft.marketContext)
+			? (draft.marketContext as FactorJson)
+			: {};
+	return {
+		...draft,
+		observationRange: {
+			startTimeMs: context.rangeStartMs,
+			endTimeMs: context.rangeEndMs,
+		},
+		marketContext: {
+			...marketContext,
+			assetClass: context.market,
+			venue: context.venue,
+			pointInTimeUniverseId: context.universeId,
+		},
+	};
 }
 
 export function FactorsPage({
@@ -758,12 +789,23 @@ function MaterializationStart({
 	const [busy, setBusy] = useState(false);
 	const [feedback, setFeedback] = useState<string>();
 	const [frozenHash, setFrozenHash] = useState<string>();
+	const factorContextQuery = useResearchEvidenceContext(userId);
+	const factorContext = factorContextQuery.data;
+	const featureBinding = factorContext?.featureDataset;
+
+	useEffect(() => {
+		if (!featureBinding || !factorContext) return;
+		setFeatureDatasetId(featureBinding.datasetId);
+		setFeaturePlanHash(featureBinding.featurePlanHash);
+		setSnapshotId(factorContext.snapshotId);
+		setUniverseId(factorContext.universeId ?? "");
+	}, [factorContext, featureBinding]);
+
 	const start = async () => {
 		setBusy(true);
 		setFeedback(undefined);
 		try {
-			const frozen = await adapter.freezeMaterializationProtocol(
-				userId,
+			const factorProtocol = applyFactorContext(
 				mergeFactorFields(protocol, t("factors.datasets.materializationProtocol"), {
 					candidateHash,
 					featureDatasetId,
@@ -772,6 +814,11 @@ function MaterializationStart({
 					pointInTimeUniverseId: universeId,
 					seed: optionalNumber(seed),
 				}),
+				factorContext,
+			);
+			const frozen = await adapter.freezeMaterializationProtocol(
+				userId,
+				factorProtocol,
 			);
 			setFrozenHash(textAt(frozen, "protocolHash"));
 			await adapter.startMaterialization(
@@ -784,7 +831,7 @@ function MaterializationStart({
 			setFeedback(t("factors.datasets.materializationStarted"));
 			onStarted();
 		} catch (error) {
-			setFeedback(formatFactorError(error));
+			setFeedback(localizedFactorContextError(error, t));
 		} finally {
 			setBusy(false);
 		}
@@ -809,24 +856,28 @@ function MaterializationStart({
 						label={t("factors.datasets.featureDataset")}
 						value={featureDatasetId}
 						onChange={setFeatureDatasetId}
+						disabled={Boolean(featureBinding)}
 						mono
 					/>
 					<Field
 						label={t("factors.candidates.featurePlanHash")}
 						value={featurePlanHash}
 						onChange={setFeaturePlanHash}
+						disabled={Boolean(featureBinding)}
 						mono
 					/>
 					<Field
 						label={t("factors.datasets.snapshot")}
 						value={snapshotId}
 						onChange={setSnapshotId}
+						disabled={Boolean(featureBinding)}
 						mono
 					/>
 					<Field
 						label={t("factors.datasets.universe")}
 						value={universeId}
 						onChange={setUniverseId}
+						disabled={Boolean(featureBinding)}
 						mono
 					/>
 					<Field
@@ -1481,12 +1532,23 @@ function EvaluationStart({
 	const [busy, setBusy] = useState(false);
 	const [feedback, setFeedback] = useState<string>();
 	const [frozenHash, setFrozenHash] = useState<string>();
+	const factorContextQuery = useResearchEvidenceContext(userId);
+	const factorContext = factorContextQuery.data;
+	const featureBinding = factorContext?.featureDataset;
+
+	useEffect(() => {
+		if (!featureBinding || !factorContext) return;
+		setFeatureDatasetId(featureBinding.datasetId);
+		setFeaturePlanHash(featureBinding.featurePlanHash);
+		setSnapshotId(factorContext.snapshotId);
+		setUniverseId(factorContext.universeId ?? "");
+	}, [factorContext, featureBinding]);
+
 	const start = async () => {
 		setBusy(true);
 		setFeedback(undefined);
 		try {
-			const frozen = await adapter.freezeEvaluationProtocol(
-				userId,
+			const factorProtocol = applyFactorContext(
 				mergeFactorFields(protocol, t("factors.evaluations.protocol"), {
 					factorDatasetId,
 					featureDatasetId,
@@ -1507,6 +1569,11 @@ function EvaluationStart({
 					trialId,
 					seed: optionalNumber(seed),
 				}),
+				factorContext,
+			);
+			const frozen = await adapter.freezeEvaluationProtocol(
+				userId,
+				factorProtocol,
 			);
 			setFrozenHash(textAt(frozen, "protocolHash"));
 			await adapter.startEvaluation(
@@ -1523,7 +1590,7 @@ function EvaluationStart({
 			setFeedback(t("factors.evaluations.started"));
 			onStarted();
 		} catch (error) {
-			setFeedback(formatFactorError(error));
+			setFeedback(localizedFactorContextError(error, t));
 		} finally {
 			setBusy(false);
 		}
@@ -1548,24 +1615,28 @@ function EvaluationStart({
 						label={t("factors.datasets.featureDataset")}
 						value={featureDatasetId}
 						onChange={setFeatureDatasetId}
+						disabled={Boolean(featureBinding)}
 						mono
 					/>
 					<Field
 						label={t("factors.candidates.featurePlanHash")}
 						value={featurePlanHash}
 						onChange={setFeaturePlanHash}
+						disabled={Boolean(featureBinding)}
 						mono
 					/>
 					<Field
 						label={t("factors.datasets.snapshot")}
 						value={snapshotId}
 						onChange={setSnapshotId}
+						disabled={Boolean(featureBinding)}
 						mono
 					/>
 					<Field
 						label={t("factors.datasets.universe")}
 						value={universeId}
 						onChange={setUniverseId}
+						disabled={Boolean(featureBinding)}
 						mono
 					/>
 					<Field

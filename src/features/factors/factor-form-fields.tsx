@@ -9,6 +9,7 @@ export function Field({
 	type = "text",
 	placeholder,
 	mono = false,
+	disabled = false,
 }: {
 	label: string;
 	value: string;
@@ -16,6 +17,7 @@ export function Field({
 	type?: string;
 	placeholder?: string;
 	mono?: boolean;
+	disabled?: boolean;
 }) {
 	const id = useId();
 	return (
@@ -26,6 +28,7 @@ export function Field({
 				type={type}
 				value={value}
 				placeholder={placeholder}
+				disabled={disabled}
 				className={mono ? "font-mono text-xs" : undefined}
 				onChange={(event) => onChange(event.target.value)}
 			/>

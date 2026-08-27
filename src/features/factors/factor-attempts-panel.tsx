@@ -9,6 +9,7 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import { localizedFactorContextError } from "@/features/research/research-context-preflight";
 import { ResearchContextEvidence } from "@/features/research/research-context-evidence";
 import { formatDateTime, formatNumber } from "@/lib/i18n";
 import {
@@ -71,7 +72,11 @@ export function AttemptsPanel({
 			else await adapter.retryAttempt(userId, attempt.attemptId);
 			await attempts.load(attempts.data?.page ?? 1);
 		} catch (error) {
-			setFeedback(formatFactorError(error));
+			setFeedback(
+				type === "retry"
+					? localizedFactorContextError(error, t)
+					: formatFactorError(error),
+			);
 		} finally {
 			setActionKey(undefined);
 		}

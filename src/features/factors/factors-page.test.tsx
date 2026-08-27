@@ -8,7 +8,7 @@ import { clearSessionCache } from "@/lib/session-cache";
 import { i18n } from "@/lib/i18n";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { writeFactorCache } from "./factor-data";
-import { FactorsPage } from "./factors-page";
+import { applyFactorContext, FactorsPage } from "./factors-page";
 import type { FactorAdapter } from "./factor-adapter";
 import type { FactorFamilyView, FactorPage } from "./factor-types";
 
@@ -187,6 +187,40 @@ test("renders the Factor Lab shell and surfaces family loading errors", async ()
 	).toContain("family list failed");
 
 	await unmount(mounted.root, mounted.container);
+});
+
+test("applies the selected context to Factor protocol identity and range", () => {
+	const draft = applyFactorContext(
+		{ marketContext: { barInterval: "1h", priceBasis: "unadjusted" } },
+		{
+			contextRevision: 2,
+			contextHash: "context-hash",
+			market: "crypto",
+			venue: "okx",
+			rangeStartMs: 1,
+			rangeEndMs: 2,
+			snapshotId: "snapshot-1",
+			universeId: "universe-1",
+			featureDataset: {
+				datasetId: "feature-dataset-1",
+				requestHash: "request-hash",
+				featurePlanHash: "plan-hash",
+				contentSha256: "content-sha",
+				outputNames: ["return"],
+			},
+		},
+	);
+
+	expect(draft).toMatchObject({
+		observationRange: { startTimeMs: 1, endTimeMs: 2 },
+		marketContext: {
+			assetClass: "crypto",
+			venue: "okx",
+			pointInTimeUniverseId: "universe-1",
+			barInterval: "1h",
+			priceBasis: "unadjusted",
+		},
+	});
 });
 
 test("shows cached families before replacing them with a refresh", async () => {

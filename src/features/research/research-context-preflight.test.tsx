@@ -170,6 +170,11 @@ test("lets Factors select a Feature Dataset and shows the Host-resolved binding"
 	expect(container.textContent).toContain("plan-hash");
 	expect(container.textContent).toContain("snapshot-1");
 	expect(container.textContent).toContain("1 → 2");
+	expect(
+		queryClient.getQueryData(["research-evidence-context", "user-1"]),
+	).toMatchObject({
+		featureDataset: { datasetId: "feature-dataset-1" },
+	});
 
 	await act(async () => root.unmount());
 });

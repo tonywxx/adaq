@@ -48,6 +48,10 @@ const english = {
 				"Factor context must be resolved from a selected Feature Dataset.",
 			"factor-context-feature-dataset-required":
 				"Select an accepted Feature Dataset first.",
+			"factor-context-required":
+				"Establish a Research Evidence Context before starting Factor research.",
+			"factor-context-stale":
+				"The selected Factor research context is stale; select the Feature Dataset again.",
 			"factor-context-feature-dataset-inaccessible":
 				"This Feature Dataset is not accessible to the current User.",
 			"factor-context-feature-dataset-incomplete":
@@ -2106,6 +2110,10 @@ const simplifiedChinese = {
 				"Factor Context 必须从已选择的 Feature Dataset 解析。",
 			"factor-context-feature-dataset-required":
 				"请先选择已接受的 Feature Dataset。",
+			"factor-context-required":
+				"开始因子研究前，请先建立 Research Evidence Context。",
+			"factor-context-stale":
+				"已选择的因子研究 Context 已过期，请重新选择 Feature Dataset。",
 			"factor-context-feature-dataset-inaccessible":
 				"当前 User 无权访问此 Feature Dataset。",
 			"factor-context-feature-dataset-incomplete":

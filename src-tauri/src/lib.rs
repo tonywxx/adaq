@@ -319,7 +319,7 @@ fn research_context_establish(
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<adaq_factor_research::ResearchEvidenceProjection, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    if stage == adaq_factor_research::ResearchStage::Factors {
+    if stage == adaq_factor_research::ResearchStage::Factors || draft.feature_dataset.is_some() {
         return Err("factor-context-requires-host-dataset-selection".into());
     }
     let mut draft = draft;
@@ -812,6 +812,7 @@ async fn factor_attempt_retry(
         let (operation_id, stage) = state
             .research_attempt_binding(&user_id, &attempt_id)?
             .ok_or("research Context binding is missing for this Attempt")?;
+        state.require_frozen_research_evidence(&user_id, &operation_id, stage)?;
         let attempt = state.factor.retry(request)?;
         state.record_research_attempt_binding(
             &user_id,

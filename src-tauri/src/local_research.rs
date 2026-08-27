@@ -778,14 +778,12 @@ impl LocalResearchState {
             return Err("factor-context-interval-mismatch".into());
         }
         let range = &request.observation_range;
-        if range.start_time_ms >= range.end_time_ms
-            || range.end_time_ms <= snapshot.start_time_ms
-            || range.start_time_ms >= snapshot.end_time_ms
-            || range.end_time_ms <= universe.start_time_ms
-            || range.start_time_ms >= universe.end_time_ms
-        {
-            return Err("factor-context-range-mismatch".into());
-        }
+        Self::validate_factor_context_range(
+            range.start_time_ms,
+            range.end_time_ms,
+            &snapshot,
+            &universe,
+        )?;
         if universe.universe.evidence_state == "unknown" {
             return Err("factor-context-universe-incomplete".into());
         }
@@ -910,6 +908,39 @@ impl LocalResearchState {
         Ok(frozen)
     }
 
+    fn validate_factor_context_range(
+        start_time_ms: i64,
+        end_time_ms: i64,
+        snapshot: &MarketDataSnapshot,
+        universe: &MarketDataUniverseSnapshot,
+    ) -> Result<(), String> {
+        let snapshot_coverage_end =
+            adaq_data_core::next_bar_open_time_ms(snapshot.end_time_ms, snapshot.interval)
+                .map_err(|_| "factor-context-range-mismatch".to_owned())?;
+        let universe_coverage_start = universe
+            .universe
+            .coverage_start_ms
+            .map_or(universe.start_time_ms, |start| {
+                universe.start_time_ms.max(start)
+            });
+        let universe_coverage_end_open = universe
+            .universe
+            .coverage_end_ms
+            .map_or(universe.end_time_ms, |end| universe.end_time_ms.min(end));
+        let universe_coverage_end =
+            adaq_data_core::next_bar_open_time_ms(universe_coverage_end_open, universe.interval)
+                .map_err(|_| "factor-context-range-mismatch".to_owned())?;
+        if start_time_ms >= end_time_ms
+            || start_time_ms < snapshot.start_time_ms
+            || end_time_ms > snapshot_coverage_end
+            || start_time_ms < universe_coverage_start
+            || end_time_ms > universe_coverage_end
+        {
+            return Err("factor-context-range-mismatch".into());
+        }
+        Ok(())
+    }
+
     fn context_for_user(&self, user_id: &str) -> Result<Option<ResearchEvidenceContext>, String> {
         validate_user(user_id)?;
         if let Some(context) = self
@@ -952,9 +983,14 @@ impl LocalResearchState {
         &self,
         user_id: &str,
     ) -> Result<Option<adaq_factor_research::ResearchEvidenceProjection>, String> {
-        Ok(self
-            .context_for_user(user_id)?
-            .map(|context| context.projection()))
+        let context = self.context_for_user(user_id)?;
+        if let Some(context) = context {
+            if let Some(binding) = context.draft.feature_dataset.as_ref() {
+                self.validate_factor_dataset(user_id, &binding.dataset_id)?;
+            }
+            return Ok(Some(context.projection()));
+        }
+        Ok(None)
     }
 
     pub fn freeze_research_context(
@@ -963,9 +999,13 @@ impl LocalResearchState {
         operation_id: String,
         stage: adaq_factor_research::ResearchStage,
     ) -> Result<adaq_factor_research::FrozenResearchEvidence, String> {
-        let context = self
-            .context_for_user(user_id)?
-            .ok_or_else(|| "Research Evidence Context is not established".to_string())?;
+        let context = self.context_for_user(user_id)?.ok_or_else(|| {
+            if stage == adaq_factor_research::ResearchStage::Factors {
+                "factor-context-required".to_owned()
+            } else {
+                "Research Evidence Context is not established".to_owned()
+            }
+        })?;
         if stage == adaq_factor_research::ResearchStage::Factors {
             let dataset_id = context
                 .draft
@@ -1032,9 +1072,13 @@ impl LocalResearchState {
                 "Research Evidence Context stage is incompatible with this operation".into(),
             );
         }
-        let current = self
-            .context_for_user(user_id)?
-            .ok_or_else(|| "Research Evidence Context is not established".to_string())?;
+        let current = self.context_for_user(user_id)?.ok_or_else(|| {
+            if stage == adaq_factor_research::ResearchStage::Factors {
+                "factor-context-required".to_owned()
+            } else {
+                "Research Evidence Context is not established".to_owned()
+            }
+        })?;
         current
             .revalidate(&current, stage)
             .map_err(|error| error.to_string())?;
@@ -1043,7 +1087,20 @@ impl LocalResearchState {
             || current.draft.snapshot_id != frozen.snapshot_id
             || current.draft.universe_id != frozen.universe_id
         {
-            return Err("Research Evidence Context is stale for this operation".into());
+            return Err(if stage == adaq_factor_research::ResearchStage::Factors {
+                "factor-context-stale".into()
+            } else {
+                "Research Evidence Context is stale for this operation".into()
+            });
+        }
+        if stage == adaq_factor_research::ResearchStage::Factors {
+            let dataset_id = frozen
+                .feature_dataset
+                .as_ref()
+                .ok_or("factor-context-feature-dataset-required")?
+                .dataset_id
+                .clone();
+            self.validate_factor_dataset(user_id, &dataset_id)?;
         }
         Ok(frozen)
     }
@@ -2425,6 +2482,56 @@ mod tests {
         let state = LocalResearchState::open(&root).unwrap();
         let watchlist = WatchlistDb::open(&root.join("adaq.db")).unwrap();
         (root, state, watchlist)
+    }
+
+    #[test]
+    fn factor_context_range_uses_half_open_bar_coverage() {
+        const HOUR: i64 = 3_600_000;
+        let venue = Venue::crypto_spot("okx").unwrap();
+        let snapshot = MarketDataSnapshot {
+            snapshot_id: "snapshot".into(),
+            src: "okx".into(),
+            code: "BTC-USDT".into(),
+            interval: BarInterval::OneHour,
+            start_time_ms: 0,
+            end_time_ms: HOUR,
+            bar_count: 2,
+            gaps: vec![],
+            parquet_path: PathBuf::new(),
+            provenance: None,
+            publication_evidence_name: None,
+        };
+        let universe = MarketDataUniverseSnapshot {
+            snapshot_id: "universe".into(),
+            venue,
+            interval: BarInterval::OneHour,
+            start_time_ms: 0,
+            end_time_ms: HOUR,
+            universe: SnapshotUniverseBinding {
+                universe_id: "pit".into(),
+                as_of_ms: 0,
+                evidence_state: "observed".into(),
+                evidence_reasons: vec!["test".into()],
+                coverage_start_ms: Some(0),
+                coverage_end_ms: Some(HOUR),
+                instruments: vec![],
+            },
+            components: vec![],
+            quality_report_ids: vec![],
+            calendar_snapshot_ids: vec![],
+            provider_capability_snapshots: vec![],
+            content_sha256: "content".into(),
+        };
+
+        assert!(
+            LocalResearchState::validate_factor_context_range(0, 2 * HOUR, &snapshot, &universe,)
+                .is_ok()
+        );
+        assert_eq!(
+            LocalResearchState::validate_factor_context_range(0, 3 * HOUR, &snapshot, &universe,)
+                .unwrap_err(),
+            "factor-context-range-mismatch"
+        );
     }
 
     fn public_example_package(name: &str) -> Vec<u8> {

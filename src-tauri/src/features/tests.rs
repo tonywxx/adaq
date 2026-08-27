@@ -1141,6 +1141,7 @@ fn completed_feature_dataset_establishes_a_user_scoped_factor_context() {
             dataset_id: dataset_id.clone(),
         })
         .unwrap();
+    assert!(state.research_context_for_user("alice").is_err());
     assert!(
         state
             .require_factor_context_for_request(
