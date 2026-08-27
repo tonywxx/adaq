@@ -28,6 +28,7 @@ type PipelineDatasetSummary = {
 	source: SourceEvidenceSummary;
 	canonicalId?: string;
 	qualityReportId?: string;
+	validatedAtMs?: number;
 	revision: number;
 	state: "unassessed" | "passed" | "degraded" | "rejected";
 	sourceRecordCount: number;
@@ -962,12 +963,16 @@ export function DataFoundationPage() {
 
 	const publishSource = async (dataset: PipelineDatasetSummary) => {
 		const source = dataset.source;
+		const instrument = source.instrument;
+		const interval = source.interval;
+		const startTimeMs = source.requestedStartTimeMs;
+		const endTimeMs = source.requestedEndTimeMs;
 		if (
 			!userId ||
-			!source.instrument ||
-			!source.interval ||
-			source.requestedStartTimeMs == null ||
-			source.requestedEndTimeMs == null
+			!instrument ||
+			!interval ||
+			startTimeMs == null ||
+			endTimeMs == null
 		) {
 			setError("Source evidence is missing its canonicalization request identity");
 			return;
@@ -980,34 +985,37 @@ export function DataFoundationPage() {
 				buildPublicationEvidenceName(
 					publicationEvidenceNameInput,
 					backfillScope,
-					source.interval,
-					source.requestedStartTimeMs,
-					source.requestedEndTimeMs,
-					[source.instrument.code],
+					interval,
+					startTimeMs,
+					endTimeMs,
+					[instrument.code],
 				);
 			const onEvent = new Channel<OkxBackfillEvent>();
 			await invoke("okx_publish_sources", {
 				request: {
 					userId,
-					taskId: `crypto-gate-two-${crypto.randomUUID()}`,
+					taskId: `crypto-data-validation-${crypto.randomUUID()}`,
 					sourceIds: [dataset.sourceId],
-					startTimeMs: source.requestedStartTimeMs,
-					endTimeMs: source.requestedEndTimeMs,
-					interval: source.interval,
-					instrumentCodes: [source.instrument.code],
+					startTimeMs,
+					endTimeMs,
+					interval,
+					instrumentCodes: [instrument.code],
 					publicationEvidenceName,
 				},
 				onEvent,
 			});
 			setSelectedSourceId(dataset.sourceId);
-			setGateTwoRequest({
-				sourceIds: [dataset.sourceId],
-				startTimeMs: source.requestedStartTimeMs,
-				endTimeMs: source.requestedEndTimeMs,
-				interval: source.interval as OkxInterval,
-				instrumentCodes: [source.instrument.code],
-				publicationEvidenceName,
-			});
+			setGateTwoRequest(
+				(current) =>
+					current ?? {
+						sourceIds: [dataset.sourceId],
+						startTimeMs,
+						endTimeMs,
+						interval: interval as OkxInterval,
+						instrumentCodes: [instrument.code],
+						publicationEvidenceName,
+					},
+			);
 			await pipelineQuery.refetch();
 		} catch (cause) {
 			setError(getErrorMessage(cause));
@@ -1025,7 +1033,7 @@ export function DataFoundationPage() {
 			const result = await invoke<GateTwoPublicationView>("okx_publish_gate_two", {
 				request: {
 					userId,
-					taskId: `crypto-gate-two-${crypto.randomUUID()}`,
+					taskId: `crypto-research-publication-${crypto.randomUUID()}`,
 					...gateTwoRequest,
 				},
 				onEvent,
@@ -1151,12 +1159,25 @@ export function DataFoundationPage() {
 					onEvent,
 				},
 			);
+			const [pipelineResult] = await Promise.all([
+				pipelineQuery.refetch(),
+				acquisitionQuery.refetch(),
+				foundationHistoryQuery.refetch(),
+				instrumentMasterQuery.refetch(),
+			]);
 			if (sources?.length) {
 				setSelectedSourceId(sources[0].sourceId);
+				const datasets = sources
+					.map((source) =>
+						pipelineResult.data?.find(
+							(dataset) => dataset.sourceId === source.sourceId,
+						),
+					)
+					.filter((dataset): dataset is PipelineDatasetSummary => Boolean(dataset));
 				setGateTwoRequest({
 					sourceIds: sources.map((source) => source.sourceId),
-					startTimeMs,
-					endTimeMs,
+					startTimeMs: datasets[0]?.source.requestedStartTimeMs ?? startTimeMs,
+					endTimeMs: datasets[0]?.source.requestedEndTimeMs ?? endTimeMs,
 					interval: nextDraft.interval,
 					instrumentCodes: requestedCodes,
 					publicationEvidenceName: buildPublicationEvidenceName(
@@ -1169,12 +1190,6 @@ export function DataFoundationPage() {
 					),
 				});
 			}
-			await Promise.all([
-				pipelineQuery.refetch(),
-				acquisitionQuery.refetch(),
-				foundationHistoryQuery.refetch(),
-				instrumentMasterQuery.refetch(),
-			]);
 			completed = true;
 		} catch (cause) {
 			setError(getErrorMessage(cause));
@@ -1864,18 +1879,32 @@ export function DataFoundationPage() {
 												gaps: dataset.gapCount,
 											})}
 										</span>
+										<span className="flex flex-wrap items-center gap-2 text-xs">
+											<span>{t("dataFoundation.validationResult")}</span>
+											<Badge variant={dataset.state === "passed" ? "default" : "outline"}>
+												{dataset.qualityReportId
+													? t(`dataFoundation.states.${dataset.state}`)
+													: t("dataFoundation.notValidated")}
+											</Badge>
+											<span className="text-muted-foreground">
+												{t("dataFoundation.validationTime")}:{" "}
+												{formatTimestamp(dataset.validatedAtMs)}
+											</span>
+										</span>
 									</button>
 									<button
 										type="button"
 										className="justify-self-start rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-										disabled={Boolean(
-											dataset.qualityReportId || publishingSourceId || backfillTaskId,
-										)}
+										disabled={Boolean(publishingSourceId || backfillTaskId)}
 										onClick={() => void publishSource(dataset)}
 									>
 										{publishingSourceId === dataset.sourceId
-											? t("dataFoundation.assessingQuality")
-											: t("dataFoundation.assessQuality")}
+											? dataset.qualityReportId
+												? t("dataFoundation.forcingRevalidation")
+												: t("dataFoundation.assessingQuality")
+											: dataset.qualityReportId
+												? t("dataFoundation.forceRevalidate")
+												: t("dataFoundation.assessQuality")}
 									</button>
 									<button
 										type="button"
@@ -1914,6 +1943,10 @@ export function DataFoundationPage() {
 							</div>
 							<p className="mt-2 text-muted-foreground">
 								{t("dataFoundation.qualityCounts", qualityQuery.data)}
+							</p>
+							<p className="mt-1 text-xs text-muted-foreground">
+								{t("dataFoundation.validationTime")}:{" "}
+								{formatTimestamp(selectedDataset?.validatedAtMs)}
 							</p>
 							{qualityQuery.data.state !== "passed" ? (
 								<div className="mt-2 text-amber-700 dark:text-amber-300" role="status">

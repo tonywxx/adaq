@@ -1868,6 +1868,57 @@ async fn okx_backfill(
     .map_err(|error| error.to_string())?
 }
 
+fn auto_validate_okx_sources(
+    state: &LocalResearchState,
+    request: &adaq_data_pipeline::okx::OkxBackfillRequest,
+    sources: Vec<adaq_data_pipeline::SourceMarketDataset>,
+    cancellation: &adaq_data_pipeline::CancellationToken,
+    on_event: &Channel<adaq_data_pipeline::okx::OkxBackfillEvent>,
+) -> Result<Vec<adaq_data_pipeline::SourceMarketDataset>, String> {
+    if cancellation.is_cancelled() {
+        return Err("OKX backfill cancelled".into());
+    }
+    let (start_time_ms, end_time_ms) = sources
+        .first()
+        .map(|source| {
+            (
+                source
+                    .identity
+                    .request_parameters
+                    .get("startTimeMs")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(request.start_time_ms),
+                source
+                    .identity
+                    .request_parameters
+                    .get("endTimeMs")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(request.end_time_ms),
+            )
+        })
+        .unwrap_or((request.start_time_ms, request.end_time_ms));
+    let validation_request = adaq_data_pipeline::okx::OkxSourcePublicationRequest {
+        task_id: request.task_id.clone(),
+        user_id: request.user_id.clone(),
+        source_ids: sources
+            .iter()
+            .map(|source| source.source_id.clone())
+            .collect(),
+        start_time_ms,
+        end_time_ms,
+        interval: request.interval,
+        instrument_codes: request.instrument_codes.clone(),
+        publication_evidence_name: request.publication_evidence_name.clone(),
+    };
+    state
+        .okx
+        .publish_sources(&validation_request, cancellation.clone(), |event| {
+            let _ = on_event.send(event);
+        })
+        .map(|_| sources)
+        .map_err(string)
+}
+
 #[tauri::command]
 async fn okx_backfill_source(
     mut request: adaq_data_pipeline::okx::OkxBackfillRequest,
@@ -1895,10 +1946,7 @@ async fn okx_backfill_source(
         ))
         .map_err(string)
         .and_then(|sources| {
-            if cancellation.is_cancelled() {
-                return Err("OKX backfill cancelled".into());
-            }
-            Ok(sources)
+            auto_validate_okx_sources(&state, &request, sources, &cancellation, &on_event)
         });
         let finish = state.okx.finish_backfill(&task_id);
         let (state_name, revision, error) = match &result {
@@ -1984,13 +2032,13 @@ async fn okx_publish_gate_two(
     tauri::async_runtime::spawn_blocking(move || {
         let result = state
             .okx
-            .publish_sources(&request, cancellation.clone(), |event| {
+            .publish_validated_sources(&request, cancellation.clone(), |event| {
                 let _ = on_event.send(event);
             })
             .map_err(string)
             .and_then(|publications| {
                 if cancellation.is_cancelled() {
-                    return Err("OKX Gate 2 publication was cancelled".into());
+                    return Err("OKX research data publication was cancelled".into());
                 }
                 state
                     .publish_okx_backfill(
@@ -2068,10 +2116,7 @@ async fn okx_backfill_retry(
         ))
         .map_err(string)
         .and_then(|sources| {
-            if cancellation.is_cancelled() {
-                return Err("OKX backfill cancelled".into());
-            }
-            Ok(sources)
+            auto_validate_okx_sources(&state, &request, sources, &cancellation, &on_event)
         });
         let finish = state.okx.finish_backfill(&task_id);
         let (state_name, revision, error) = match &result {

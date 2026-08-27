@@ -243,6 +243,12 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(container.textContent).toContain(
 		i18n.t("dataFoundation.sourceProvenanceTitle"),
 	);
+	expect(container.textContent).toContain(
+		i18n.t("dataFoundation.validationResult"),
+	);
+	expect(container.textContent).toContain(
+		i18n.t("dataFoundation.validationTime"),
+	);
 	expect(container.textContent).toContain("OKX public history-candles REST");
 	expect(container.textContent).toContain(
 		"btc-usdt_okx-watchlist-1h-19700101-19700101",
@@ -360,6 +366,11 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(mockInvoke).toHaveBeenCalledWith("market_data_pipeline_quality", {
 		request: { userId: "user-1", evidenceId: "report-1" },
 	});
+	expect(
+		Array.from(container.querySelectorAll("button")).some(
+			(button) => button.textContent === i18n.t("dataFoundation.forceRevalidate"),
+		),
+	).toBe(true);
 
 	const retryButton = Array.from(container.querySelectorAll("button")).find(
 		(button) => button.textContent === i18n.t("dataFoundation.retryAcquisition"),
@@ -413,7 +424,7 @@ test("renders source provenance in Chinese", async () => {
 	await act(async () => root.unmount());
 });
 
-test("publishes Gate 2 from retained Source evidence", async () => {
+test("publishes research data from retained Source evidence", async () => {
 	mockInvoke.mockImplementation(async (command: string) => {
 		if (command === "market_data_pipeline_list") {
 			return [

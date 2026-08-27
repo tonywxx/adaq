@@ -800,6 +800,8 @@ pub struct PipelineDatasetSummary {
     pub source: SourceEvidenceSummary,
     pub canonical_id: Option<String>,
     pub quality_report_id: Option<String>,
+    #[serde(default)]
+    pub validated_at_ms: Option<i64>,
     pub revision: u64,
     pub state: PipelineDatasetState,
     pub source_record_count: usize,
@@ -1398,6 +1400,7 @@ impl DataPipeline {
                     publication_evidence_name: source.publication_evidence_name,
                     canonical_id: canonical.as_ref().map(|value| value.canonical_id.clone()),
                     quality_report_id: quality.as_ref().map(|value| value.report_id.clone()),
+                    validated_at_ms: quality.as_ref().and_then(|value| value.validated_at_ms),
                     revision: source.revision,
                     state: quality
                         .as_ref()
@@ -1602,6 +1605,41 @@ impl DataPipeline {
             ));
         }
         self.publish(user_id, acquisition, request, cancellation, on_event)
+    }
+
+    pub fn validated_publication_for_user(
+        &self,
+        user_id: &str,
+        source_id: &str,
+    ) -> Result<PipelinePublication, PipelineError> {
+        validate_user(user_id)?;
+        let canonical_id = {
+            let database = self.0.database.lock().map_err(lock_error)?;
+            database
+                .query_row(
+                    "SELECT c.canonical_id
+                     FROM pipeline_canonical_datasets c
+                     JOIN pipeline_canonical_access a USING(canonical_id)
+                     WHERE a.user_id = ?1 AND c.source_id = ?2
+                     ORDER BY c.canonical_id DESC
+                     LIMIT 1",
+                    params![user_id, source_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(storage)?
+                .ok_or_else(|| PipelineError::NotFound("Canonical Market Dataset".into()))?
+        };
+        let source = self.source_for_user(user_id, source_id)?;
+        let canonical = self.canonical_for_user(user_id, &canonical_id)?;
+        let quality = self.quality_for_user(user_id, &canonical.quality_report_id)?;
+        Ok(PipelinePublication {
+            attempt_id: None,
+            publication_evidence_name: None,
+            source,
+            canonical: Some(canonical),
+            quality,
+        })
     }
 
     pub fn canonical_for_user(
@@ -3152,8 +3190,11 @@ impl DataPipeline {
         }
         transaction
             .execute(
-                "INSERT OR IGNORE INTO pipeline_quality_reports
-                 (report_id, source_id, report_json) VALUES (?1, ?2, ?3)",
+                "INSERT INTO pipeline_quality_reports
+                 (report_id, source_id, report_json) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(report_id) DO UPDATE SET
+                    source_id = excluded.source_id,
+                    report_json = excluded.report_json",
                 params![quality.report_id, source.source_id, quality_json],
             )
             .map_err(storage)?;
@@ -3459,6 +3500,8 @@ struct QualityCatalog {
     evidence_path: PathBuf,
     evidence_sha256: String,
     #[serde(default)]
+    validated_at_ms: Option<i64>,
+    #[serde(default)]
     publication_evidence_name: Option<String>,
 }
 
@@ -3513,6 +3556,7 @@ impl QualityCatalog {
             gap_count: report.gap_count,
             evidence_path: report.evidence_path.clone(),
             evidence_sha256,
+            validated_at_ms: Some(Utc::now().timestamp_millis()),
             publication_evidence_name: None,
         }
     }

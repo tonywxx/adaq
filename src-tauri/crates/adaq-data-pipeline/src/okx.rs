@@ -715,126 +715,13 @@ impl OkxSpotDataPath {
         cancellation: CancellationToken,
         mut on_event: impl FnMut(OkxBackfillEvent),
     ) -> Result<Vec<PipelinePublication>, PipelineError> {
-        validate_user(&request.user_id)?;
-        if request.source_ids.is_empty() {
-            return Err(PipelineError::InvalidRequest(
-                "Gate 2 publication requires at least one retained Source ID".into(),
-            ));
-        }
-        if request.start_time_ms >= request.end_time_ms {
-            return Err(PipelineError::InvalidRequest(
-                "Gate 2 publication requires an increasing time range".into(),
-            ));
-        }
-        let effective_end_time_ms = request
-            .end_time_ms
-            .min(latest_closed_bar_boundary_ms(now_ms(), request.interval)?);
-        if request.start_time_ms >= effective_end_time_ms {
-            return Err(PipelineError::InvalidRequest(
-                "Gate 2 publication requires at least one fully closed OKX bar".into(),
-            ));
-        }
-
-        let mut seen = HashSet::with_capacity(request.source_ids.len());
-        let mut publications = Vec::with_capacity(request.source_ids.len());
-        for source_id in &request.source_ids {
-            if !seen.insert(source_id) {
-                return Err(PipelineError::InvalidRequest(
-                    "Gate 2 publication contains duplicate Source IDs".into(),
-                ));
-            }
+        let (effective_end_time_ms, sources) =
+            self.validate_source_request(request, &cancellation)?;
+        let mut publications = Vec::with_capacity(sources.len());
+        for (source_id, instrument) in sources {
             if cancellation.is_cancelled() {
-                return Err(PipelineError::Cancelled {
-                    source_id: source_id.clone(),
-                });
+                return Err(PipelineError::Cancelled { source_id });
             }
-            let source = self.pipeline.source_for_user(&request.user_id, source_id)?;
-            if source.identity.provider != "okx"
-                || source.identity.connector != adaq_data_core::OKX_CONNECTOR_VERSION
-            {
-                return Err(PipelineError::InvalidRequest(
-                    "Gate 2 publication requires an OKX Source identity".into(),
-                ));
-            }
-            let instrument = source
-                .records
-                .first()
-                .map(|record| record.instrument.clone())
-                .or_else(|| {
-                    source
-                        .identity
-                        .request_parameters
-                        .get("instrument")
-                        .cloned()
-                        .and_then(|value| serde_json::from_value(value).ok())
-                })
-                .ok_or_else(|| {
-                    PipelineError::InvalidRequest(
-                        "Gate 2 publication cannot identify the Source Instrument".into(),
-                    )
-                })?;
-            let source_interval = source
-                .records
-                .first()
-                .map(|record| record.interval)
-                .or_else(|| {
-                    source
-                        .identity
-                        .request_parameters
-                        .get("interval")
-                        .cloned()
-                        .and_then(|value| serde_json::from_value(value).ok())
-                })
-                .ok_or_else(|| {
-                    PipelineError::InvalidRequest(
-                        "Gate 2 publication cannot identify the Source interval".into(),
-                    )
-                })?;
-            if source_interval != request.interval
-                || source.records.iter().any(|record| {
-                    record.instrument != instrument || record.interval != source_interval
-                })
-            {
-                return Err(PipelineError::InvalidRequest(
-                    "Gate 2 publication Source identity does not match the requested interval"
-                        .into(),
-                ));
-            }
-            if !request.instrument_codes.is_empty()
-                && !request.instrument_codes.contains(&instrument.code)
-            {
-                return Err(PipelineError::InvalidRequest(
-                    "Gate 2 publication Source is outside the requested instrument set".into(),
-                ));
-            }
-            let Some(source_start_time_ms) = source
-                .identity
-                .request_parameters
-                .get("startTimeMs")
-                .and_then(serde_json::Value::as_i64)
-            else {
-                return Err(PipelineError::InvalidRequest(
-                    "Gate 2 publication Source has no requested start time".into(),
-                ));
-            };
-            let Some(source_end_time_ms) = source
-                .identity
-                .request_parameters
-                .get("endTimeMs")
-                .and_then(serde_json::Value::as_i64)
-            else {
-                return Err(PipelineError::InvalidRequest(
-                    "Gate 2 publication Source has no requested end time".into(),
-                ));
-            };
-            if source_start_time_ms != request.start_time_ms
-                || source_end_time_ms != request.end_time_ms
-            {
-                return Err(PipelineError::InvalidRequest(
-                    "Gate 2 publication Source range does not match the request".into(),
-                ));
-            }
-
             let mut canonicalization = CanonicalizationRequest::new(
                 instrument.clone(),
                 request.interval,
@@ -849,7 +736,7 @@ impl OkxSpotDataPath {
             });
             let mut publication = self.pipeline.publish_source_for_user(
                 &request.user_id,
-                source_id,
+                &source_id,
                 canonicalization,
                 cancellation.clone(),
                 |_| {},
@@ -872,6 +759,179 @@ impl OkxSpotDataPath {
             publications.push(publication);
         }
         Ok(publications)
+    }
+
+    pub fn publish_validated_sources(
+        &self,
+        request: &OkxSourcePublicationRequest,
+        cancellation: CancellationToken,
+        mut on_event: impl FnMut(OkxBackfillEvent),
+    ) -> Result<Vec<PipelinePublication>, PipelineError> {
+        let (_, sources) = self.validate_source_request(request, &cancellation)?;
+        let mut publications = Vec::with_capacity(sources.len());
+        for (source_id, instrument) in sources {
+            if cancellation.is_cancelled() {
+                return Err(PipelineError::Cancelled { source_id });
+            }
+            let mut publication = self
+                .pipeline
+                .validated_publication_for_user(&request.user_id, &source_id)?;
+            if publication.canonical.is_none()
+                || publication.quality.state != DataQualityState::Passed
+                || publication.quality.gap_count != 0
+            {
+                return Err(PipelineError::InvalidRequest(
+                    "Research data publication requires every selected dataset to pass validation without gaps".into(),
+                ));
+            }
+            publication.publication_evidence_name = self.pipeline.set_publication_evidence_name(
+                &request.user_id,
+                &publication.source.source_id,
+                request.publication_evidence_name.clone(),
+            )?;
+            on_event(OkxBackfillEvent::Published {
+                instrument,
+                source_id: publication.source.source_id.clone(),
+                canonical_id: publication
+                    .canonical
+                    .as_ref()
+                    .map(|canonical| canonical.canonical_id.clone()),
+                revision: publication.source.revision,
+                state: publication.quality.state.clone(),
+            });
+            publications.push(publication);
+        }
+        Ok(publications)
+    }
+
+    fn validate_source_request(
+        &self,
+        request: &OkxSourcePublicationRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<(i64, Vec<(String, InstrumentId)>), PipelineError> {
+        validate_user(&request.user_id)?;
+        if request.source_ids.is_empty() {
+            return Err(PipelineError::InvalidRequest(
+                "Research data publication requires at least one retained Source ID".into(),
+            ));
+        }
+        if request.start_time_ms >= request.end_time_ms {
+            return Err(PipelineError::InvalidRequest(
+                "Research data publication requires an increasing time range".into(),
+            ));
+        }
+        let effective_end_time_ms = request
+            .end_time_ms
+            .min(latest_closed_bar_boundary_ms(now_ms(), request.interval)?);
+        if request.start_time_ms >= effective_end_time_ms {
+            return Err(PipelineError::InvalidRequest(
+                "Research data publication requires at least one fully closed OKX bar".into(),
+            ));
+        }
+
+        let mut seen = HashSet::with_capacity(request.source_ids.len());
+        let mut sources = Vec::with_capacity(request.source_ids.len());
+        for source_id in &request.source_ids {
+            if !seen.insert(source_id) {
+                return Err(PipelineError::InvalidRequest(
+                    "Research data publication contains duplicate Source IDs".into(),
+                ));
+            }
+            if cancellation.is_cancelled() {
+                return Err(PipelineError::Cancelled {
+                    source_id: source_id.clone(),
+                });
+            }
+            let source = self.pipeline.source_for_user(&request.user_id, source_id)?;
+            if source.identity.provider != "okx"
+                || source.identity.connector != adaq_data_core::OKX_CONNECTOR_VERSION
+            {
+                return Err(PipelineError::InvalidRequest(
+                    "Research data publication requires an OKX Source identity".into(),
+                ));
+            }
+            let instrument = source
+                .records
+                .first()
+                .map(|record| record.instrument.clone())
+                .or_else(|| {
+                    source
+                        .identity
+                        .request_parameters
+                        .get("instrument")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                })
+                .ok_or_else(|| {
+                    PipelineError::InvalidRequest(
+                        "Research data publication cannot identify the Source Instrument".into(),
+                    )
+                })?;
+            let source_interval = source
+                .records
+                .first()
+                .map(|record| record.interval)
+                .or_else(|| {
+                    source
+                        .identity
+                        .request_parameters
+                        .get("interval")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                })
+                .ok_or_else(|| {
+                    PipelineError::InvalidRequest(
+                        "Research data publication cannot identify the Source interval".into(),
+                    )
+                })?;
+            if source_interval != request.interval
+                || source.records.iter().any(|record| {
+                    record.instrument != instrument || record.interval != source_interval
+                })
+            {
+                return Err(PipelineError::InvalidRequest(
+                    "Research data publication Source identity does not match the requested interval"
+                        .into(),
+                ));
+            }
+            if !request.instrument_codes.is_empty()
+                && !request.instrument_codes.contains(&instrument.code)
+            {
+                return Err(PipelineError::InvalidRequest(
+                    "Research data publication Source is outside the requested instrument set"
+                        .into(),
+                ));
+            }
+            let Some(source_start_time_ms) = source
+                .identity
+                .request_parameters
+                .get("startTimeMs")
+                .and_then(serde_json::Value::as_i64)
+            else {
+                return Err(PipelineError::InvalidRequest(
+                    "Research data publication Source has no requested start time".into(),
+                ));
+            };
+            let Some(source_end_time_ms) = source
+                .identity
+                .request_parameters
+                .get("endTimeMs")
+                .and_then(serde_json::Value::as_i64)
+            else {
+                return Err(PipelineError::InvalidRequest(
+                    "Research data publication Source has no requested end time".into(),
+                ));
+            };
+            if source_start_time_ms != request.start_time_ms
+                || source_end_time_ms != request.end_time_ms
+            {
+                return Err(PipelineError::InvalidRequest(
+                    "Research data publication Source range does not match the request".into(),
+                ));
+            }
+            sources.push((source_id.clone(), instrument));
+        }
+        Ok((effective_end_time_ms, sources))
     }
 
     async fn backfill_with_mode(
@@ -2930,21 +2990,18 @@ mod tests {
             .unwrap()
             .remove(0);
 
+        let request = OkxSourcePublicationRequest {
+            task_id: "publish-gate-two".into(),
+            user_id: "alice".into(),
+            source_ids: vec![source.source_id.clone()],
+            start_time_ms: 0,
+            end_time_ms: 60_000,
+            interval: BarInterval::OneMinute,
+            instrument_codes: vec!["BTC-USDT".into()],
+            publication_evidence_name: None,
+        };
         let publications = path
-            .publish_sources(
-                &OkxSourcePublicationRequest {
-                    task_id: "publish-gate-two".into(),
-                    user_id: "alice".into(),
-                    source_ids: vec![source.source_id.clone()],
-                    start_time_ms: 0,
-                    end_time_ms: 60_000,
-                    interval: BarInterval::OneMinute,
-                    instrument_codes: vec!["BTC-USDT".into()],
-                    publication_evidence_name: None,
-                },
-                CancellationToken::new(),
-                |_| {},
-            )
+            .publish_sources(&request, CancellationToken::new(), |_| {})
             .unwrap();
 
         assert_eq!(publications.len(), 1);
@@ -2953,6 +3010,18 @@ mod tests {
         assert_eq!(
             path.pipeline.list("alice").unwrap()[0].state,
             PipelineDatasetState::Passed
+        );
+        assert!(
+            path.pipeline.list("alice").unwrap()[0]
+                .validated_at_ms
+                .is_some()
+        );
+        let reused = path
+            .publish_validated_sources(&request, CancellationToken::new(), |_| {})
+            .unwrap();
+        assert_eq!(
+            reused[0].quality.report_id,
+            publications[0].quality.report_id
         );
     }
 

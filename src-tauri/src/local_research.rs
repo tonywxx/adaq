@@ -1583,7 +1583,7 @@ impl LocalResearchState {
 
         for canonical in canonical_publications {
             if cancellation.is_cancelled() {
-                return Err("OKX Gate 2 publication was cancelled".into());
+                return Err("OKX research data publication was cancelled".into());
             }
             let (snapshot, _) = self
                 .publish_pipeline_snapshot_for_user_with_policy_and_cancellation(
@@ -1660,7 +1660,7 @@ impl LocalResearchState {
             content_sha256: String::new(),
         };
         if cancellation.is_cancelled() {
-            return Err("OKX Gate 2 publication was cancelled".into());
+            return Err("OKX research data publication was cancelled".into());
         }
         self.snapshots
             .persist_universe_for_user(user_id, universe_snapshot)
