@@ -8,9 +8,18 @@ import { clearSessionCache } from "@/lib/session-cache";
 import { i18n } from "@/lib/i18n";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { writeFactorCache } from "./factor-data";
-import { applyFactorContext, FactorsPage } from "./factors-page";
+import {
+	applyFactorContext,
+	factorCandidatesForContext,
+	FactorsPage,
+} from "./factors-page";
 import type { FactorAdapter } from "./factor-adapter";
-import type { FactorFamilyView, FactorPage } from "./factor-types";
+import type {
+	FactorCandidateView,
+	FactorDatasetView,
+	FactorFamilyView,
+	FactorPage,
+} from "./factor-types";
 
 jest.mock("@/lib/market-session", () => {
 	const state = { userId: null as string | null, ready: false };
@@ -224,6 +233,49 @@ test("applies the selected context to Factor protocol identity and range", () =>
 	});
 });
 
+test("only offers Candidates with the exact handed-off Factor context", () => {
+	const context = {
+		contextRevision: 2,
+		contextHash: "c".repeat(64),
+		market: "crypto",
+		venue: "okx",
+		rangeStartMs: 1,
+		rangeEndMs: 2,
+		snapshotId: "snapshot-1",
+		universeId: "universe-1",
+		evidence: [],
+		featureDataset: {
+			datasetId: "feature-dataset-1",
+			requestHash: "r".repeat(64),
+			featurePlanHash: "p".repeat(64),
+			contentSha256: "d".repeat(64),
+			outputNames: ["return"],
+		},
+	};
+	const candidate = {
+		candidate: { candidateHash: "candidate-1", scope: "time-series" },
+		presentation: { name: "Exact candidate" },
+		lockedBy: [],
+		createdAtMs: 1,
+		predecessor: {
+			...context,
+			userId: "user-1",
+			evidence: [],
+			featureDataset: context.featureDataset,
+		},
+	} satisfies FactorCandidateView;
+	const stale = {
+		...candidate,
+		candidate: { candidateHash: "candidate-2", scope: "time-series" },
+		predecessor: { ...candidate.predecessor, contextHash: "s".repeat(64) },
+	} satisfies FactorCandidateView;
+
+	expect(factorCandidatesForContext([candidate, stale], context)).toEqual([
+		candidate,
+	]);
+	expect(factorCandidatesForContext([candidate], null)).toEqual([]);
+});
+
 test("shows cached families before replacing them with a refresh", async () => {
 	const pending: Deferred<FactorPage<FactorFamilyView>> = deferred();
 	writeFactorCache("user-1", "families", page([family("cached-family")]));
@@ -249,6 +301,85 @@ test("shows cached families before replacing them with a refresh", async () => {
 
 	expect(mounted.container.textContent).toContain("fresh-family");
 	expect(mounted.container.textContent).not.toContain("cached-family");
+
+	await unmount(mounted.root, mounted.container);
+});
+
+test("blocks raw materialization without context and inspects completed Dataset rows", async () => {
+	const dataset: FactorDatasetView = {
+		manifest: {
+			datasetId: "dataset-1",
+			candidateHash: "candidate-1",
+			featureDatasetId: "feature-1",
+			marketDataSnapshotId: "snapshot-1",
+			pointInTimeUniverseId: "universe-1",
+			observationRange: { startTimeMs: 1, endTimeMs: 2 },
+			engineIdentity: { engineId: "adaq-native-factor" },
+		},
+		byteSize: 128,
+		lockedBy: [],
+		createdAtMs: 1,
+	};
+	const adapter = {
+		...makeAdapter(),
+		listCandidates: async () => page([]),
+		listDatasets: async () => page([dataset]),
+		getDataset: async () => dataset,
+		datasetRows: async () => ({
+			rows: [
+				{
+					instrumentId: "okx:BTC-USDT",
+					observationTimeMs: 1,
+					values: { score: { state: "available", value: 1 } },
+				},
+			],
+			offset: 0,
+			limit: 50,
+			nextOffset: null,
+			total: 1,
+		}),
+	} as unknown as FactorAdapter;
+	const mounted = mount(adapter);
+
+	await act(async () => {
+		mounted.root.render(
+			<QueryClientProvider client={mounted.queryClient}>
+				<FactorsPage adapter={mounted.adapter} />
+			</QueryClientProvider>,
+		);
+	});
+	await settle();
+
+	const datasetsTab = Array.from(
+		mounted.container.querySelectorAll('[role="tab"]'),
+	).find((tab) => tab.textContent === i18n.t("factors.tabs.datasets"));
+	expect(datasetsTab).toBeTruthy();
+	await act(async () => {
+		(datasetsTab as HTMLElement).click();
+	});
+	await settle();
+
+	expect(mounted.container.textContent).toContain(
+		i18n.t("factors.datasets.materializationContextRequired"),
+	);
+	const startButton = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find(
+		(button) =>
+			button.textContent === i18n.t("factors.datasets.materializationStart"),
+	);
+	expect(startButton?.hasAttribute("disabled")).toBe(true);
+
+	const inspectButton = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find((button) => button.textContent === i18n.t("factors.datasets.inspect"));
+	expect(inspectButton).toBeTruthy();
+	await act(async () => {
+		(inspectButton as HTMLElement).click();
+	});
+	await settle();
+	expect(mounted.container.textContent).toContain("dataset-1");
+	expect(mounted.container.textContent).toContain("okx:BTC-USDT");
 
 	await unmount(mounted.root, mounted.container);
 });

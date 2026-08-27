@@ -133,6 +133,16 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 					}) as Promise<FactorAttemptView>,
 			);
 		},
+		startMaterializationFromContext: (
+			userId: string,
+			candidateHash: string,
+			seed = 0,
+		) => {
+			const operationId = `factor-materialization:${crypto.randomUUID()}`;
+			return invoke("factor_materialization_start_from_context", {
+				request: { userId, operationId, candidateHash, seed },
+			}) as Promise<FactorAttemptView>;
+		},
 		freezeMaterializationProtocol: (userId: string, draft: FactorJson) =>
 			invoke("factor_materialization_protocol_freeze", {
 				request: { userId, draft },

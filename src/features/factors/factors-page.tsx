@@ -51,6 +51,7 @@ import {
 	shortFactorHash,
 } from "./factor-data";
 import type {
+	FactorCandidateView,
 	FactorDatasetRow,
 	FactorDatasetView,
 	FactorJson,
@@ -123,6 +124,33 @@ export function applyFactorContext(
 			pointInTimeUniverseId: context.universeId,
 		},
 	};
+}
+
+export function factorCandidatesForContext(
+	candidates: FactorCandidateView[],
+	context?: ResearchEvidenceProjection | null,
+) {
+	const featureDataset = context?.featureDataset;
+	if (!context?.universeId || !featureDataset) return [];
+	return candidates.filter((candidate) => {
+		const predecessor = candidate.predecessor;
+		const predecessorDataset = predecessor?.featureDataset;
+		return Boolean(
+			predecessor &&
+				predecessor.contextRevision === context.contextRevision &&
+				predecessor.contextHash === context.contextHash &&
+				predecessor.market === context.market &&
+				predecessor.venue === context.venue &&
+				predecessor.rangeStartMs === context.rangeStartMs &&
+				predecessor.rangeEndMs === context.rangeEndMs &&
+				predecessor.snapshotId === context.snapshotId &&
+				predecessor.universeId === context.universeId &&
+				predecessorDataset?.datasetId === featureDataset.datasetId &&
+				predecessorDataset.featurePlanHash === featureDataset.featurePlanHash &&
+				predecessorDataset.requestHash === featureDataset.requestHash &&
+				predecessorDataset.contentSha256 === featureDataset.contentSha256,
+		);
+	});
 }
 
 export function FactorsPage({
@@ -216,7 +244,14 @@ export function FactorsPage({
 						/>
 					</TabsContent>
 					<TabsContent value="datasets" className="mt-4">
-						<DatasetsWorkspace key={userId} userId={userId} adapter={adapter} />
+						<DatasetsWorkspace
+							key={userId}
+							userId={userId}
+							adapter={adapter}
+							context={factorContextQuery.data}
+							contextLoading={factorContextQuery.isPending}
+							contextError={factorContextQuery.error}
+						/>
 					</TabsContent>
 					<TabsContent value="evaluations" className="mt-4">
 						<EvaluationsWorkspace key={userId} userId={userId} adapter={adapter} />
@@ -780,61 +815,62 @@ function MaterializationStart({
 	userId,
 	adapter,
 	onStarted,
+	context,
+	contextLoading = false,
+	contextError,
 }: {
 	userId: string;
 	adapter: FactorAdapter;
 	onStarted: () => void;
+	context?: ResearchEvidenceProjection | null;
+	contextLoading?: boolean;
+	contextError?: unknown;
 }) {
 	const { t } = useTranslation();
-	const [protocol, setProtocol] = useState("{}");
-	const [dataset, setDataset] = useState("");
 	const [candidateHash, setCandidateHash] = useState("");
-	const [featureDatasetId, setFeatureDatasetId] = useState("");
-	const [featurePlanHash, setFeaturePlanHash] = useState("");
-	const [snapshotId, setSnapshotId] = useState("");
-	const [universeId, setUniverseId] = useState("");
 	const [seed, setSeed] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [feedback, setFeedback] = useState<string>();
-	const [frozenHash, setFrozenHash] = useState<string>();
-	const factorContextQuery = useResearchEvidenceContext(userId);
-	const factorContext = factorContextQuery.data;
-	const featureBinding = factorContext?.featureDataset;
+	const candidates = useFactorPage(userId, "candidates", adapter.listCandidates);
+	const compatibleCandidates = useMemo(
+		() => factorCandidatesForContext(candidates.data?.items ?? [], context),
+		[candidates.data?.items, context],
+	);
+	const contextReady = Boolean(
+		!contextLoading &&
+			!contextError &&
+			context?.featureDataset &&
+			context.universeId,
+	);
 
 	useEffect(() => {
-		if (!featureBinding || !factorContext) return;
-		setFeatureDatasetId(featureBinding.datasetId);
-		setFeaturePlanHash(featureBinding.featurePlanHash);
-		setSnapshotId(factorContext.snapshotId);
-		setUniverseId(factorContext.universeId ?? "");
-	}, [factorContext, featureBinding]);
+		if (!compatibleCandidates.length) {
+			setCandidateHash("");
+			return;
+		}
+		setCandidateHash((current) =>
+			compatibleCandidates.some(
+				(candidate) => textAt(candidate.candidate, "candidateHash") === current,
+			)
+				? current
+				: textAt(compatibleCandidates[0].candidate, "candidateHash", ""),
+		);
+	}, [compatibleCandidates]);
 
 	const start = async () => {
 		setBusy(true);
 		setFeedback(undefined);
 		try {
-			const factorProtocol = applyFactorContext(
-				mergeFactorFields(protocol, t("factors.datasets.materializationProtocol"), {
-					candidateHash,
-					featureDatasetId,
-					featurePlanHash,
-					marketDataSnapshotId: snapshotId,
-					pointInTimeUniverseId: universeId,
-					seed: optionalNumber(seed),
-				}),
-				factorContext,
-			);
-			const frozen = await adapter.freezeMaterializationProtocol(
+			if (!contextReady) {
+				throw new Error(t("factors.datasets.materializationContextRequired"));
+			}
+			if (!candidateHash) {
+				throw new Error(t("factors.datasets.materializationCandidateRequired"));
+			}
+			await adapter.startMaterializationFromContext(
 				userId,
-				factorProtocol,
-			);
-			setFrozenHash(textAt(frozen, "protocolHash"));
-			await adapter.startMaterialization(
-				userId,
-				frozen,
-				dataset.trim()
-					? parseFactorJson(dataset, t("factors.datasets.materializationDataset"))
-					: undefined,
+				candidateHash,
+				optionalNumber(seed) ?? 0,
 			);
 			setFeedback(t("factors.datasets.materializationStarted"));
 			onStarted();
@@ -853,72 +889,118 @@ function MaterializationStart({
 				</CardDescription>
 			</CardHeader>
 			<CardContent className="space-y-4">
-				<div className="grid gap-3 md:grid-cols-2">
-					<Field
-						label={t("factors.common.candidateHash")}
-						value={candidateHash}
-						onChange={setCandidateHash}
-						mono
-					/>
-					<Field
-						label={t("factors.datasets.featureDataset")}
-						value={featureDatasetId}
-						onChange={setFeatureDatasetId}
-						disabled={Boolean(featureBinding)}
-						mono
-					/>
-					<Field
-						label={t("factors.candidates.featurePlanHash")}
-						value={featurePlanHash}
-						onChange={setFeaturePlanHash}
-						disabled={Boolean(featureBinding)}
-						mono
-					/>
-					<Field
-						label={t("factors.datasets.snapshot")}
-						value={snapshotId}
-						onChange={setSnapshotId}
-						disabled={Boolean(featureBinding)}
-						mono
-					/>
-					<Field
-						label={t("factors.datasets.universe")}
-						value={universeId}
-						onChange={setUniverseId}
-						disabled={Boolean(featureBinding)}
-						mono
-					/>
-					<Field
-						label={t("features.materialization.seed")}
-						value={seed}
-						onChange={setSeed}
-						type="number"
-					/>
+				<div className="rounded-lg border bg-muted/20 p-3">
+					{contextLoading ? (
+						<p role="status" className="text-sm text-muted-foreground">
+							{t("factors.datasets.materializationContextLoading")}
+						</p>
+					) : contextError ? (
+						<p role="alert" className="text-sm text-destructive">
+							{localizedFactorContextError(contextError, t)}
+						</p>
+					) : !contextReady || !context?.featureDataset ? (
+						<p role="status" className="text-sm text-muted-foreground">
+							{t("factors.datasets.materializationContextRequired")}
+						</p>
+					) : (
+						<>
+							<p className="mb-3 text-sm font-medium">
+								{t("factors.datasets.materializationContext")}
+							</p>
+							<dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+								<Detail
+									label={t("factors.candidates.contextRevision")}
+									value={String(context.contextRevision)}
+								/>
+								<Detail
+									label={t("factors.candidates.contextHash")}
+									value={context.contextHash}
+									mono
+								/>
+								<Detail
+									label={t("factors.datasets.featureDataset")}
+									value={context.featureDataset.datasetId}
+									mono
+								/>
+								<Detail
+									label={t("factors.candidates.featurePlanHash")}
+									value={context.featureDataset.featurePlanHash}
+									mono
+								/>
+								<Detail
+									label={t("factors.datasets.snapshot")}
+									value={context.snapshotId}
+									mono
+								/>
+								<Detail
+									label={t("factors.datasets.universe")}
+									value={context.universeId ?? "—"}
+									mono
+								/>
+								<Detail
+									label={t("factors.candidates.range")}
+									value={`${context.rangeStartMs} → ${context.rangeEndMs}`}
+									mono
+								/>
+							</dl>
+						</>
+					)}
 				</div>
-				<JsonEditor
-					label={t("factors.datasets.materializationProtocol")}
-					value={protocol}
-					onChange={setProtocol}
-					hint={t("factors.datasets.materializationProtocolHint")}
-				/>
-				{frozenHash ? (
-					<Detail
-						label={t("factors.datasets.frozenProtocolHash")}
-						value={frozenHash}
-						mono
-					/>
+				<fieldset disabled={!contextReady || busy} className="space-y-4">
+					<div className="grid gap-3 md:grid-cols-2">
+						<div className="grid gap-1.5">
+							<Label htmlFor="factor-materialization-candidate">
+								{t("factors.datasets.materializationCandidate")}
+							</Label>
+							<select
+								id="factor-materialization-candidate"
+								className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								value={candidateHash}
+								onChange={(event) => setCandidateHash(event.target.value)}
+							>
+								<option value="">
+									{candidates.loading
+										? t("factors.datasets.materializationCandidateLoading")
+										: t("factors.datasets.materializationCandidatePlaceholder")}
+								</option>
+								{compatibleCandidates.map((candidate) => {
+									const hash = textAt(candidate.candidate, "candidateHash", "");
+									return (
+										<option key={hash} value={hash}>
+											{candidate.presentation.name} · {shortFactorHash(hash)} ·{" "}
+											{textAt(candidate.candidate, "scope")}
+										</option>
+									);
+								})}
+							</select>
+						</div>
+						<Field
+							label={t("features.materialization.seed")}
+							value={seed}
+							onChange={setSeed}
+							type="number"
+						/>
+					</div>
+				</fieldset>
+				{contextReady && candidates.error ? (
+					<p role="alert" className="text-sm text-destructive">
+						{candidates.error}
+					</p>
 				) : null}
-				<JsonEditor
-					label={t("factors.datasets.materializationDataset")}
-					value={dataset}
-					onChange={setDataset}
-					hint={t("factors.datasets.materializationDatasetHint")}
-				/>
+				{contextReady &&
+				!candidates.loading &&
+				candidates.data &&
+				compatibleCandidates.length === 0 ? (
+					<p role="status" className="text-sm text-muted-foreground">
+						{t("factors.datasets.materializationCandidateEmpty")}
+					</p>
+				) : null}
 				<div className="flex flex-wrap items-center gap-3">
 					<Button
 						type="button"
 						loading={busy}
 						loadingText={t("factors.common.queueing")}
+						disabled={!contextReady || !candidateHash || busy}
 						onClick={() => void start()}
 					>
 						{t("factors.datasets.materializationStart")}
@@ -940,9 +1022,15 @@ function MaterializationStart({
 function DatasetsWorkspace({
 	userId,
 	adapter,
+	context,
+	contextLoading,
+	contextError,
 }: {
 	userId: string;
 	adapter: FactorAdapter;
+	context?: ResearchEvidenceProjection | null;
+	contextLoading?: boolean;
+	contextError?: unknown;
 }) {
 	const { t } = useTranslation();
 	const datasets = useFactorPage(userId, "datasets", adapter.listDatasets);
@@ -988,6 +1076,9 @@ function DatasetsWorkspace({
 			<MaterializationStart
 				userId={userId}
 				adapter={adapter}
+				context={context}
+				contextLoading={contextLoading}
+				contextError={contextError}
 				onStarted={() => setAttemptRefresh((current) => current + 1)}
 			/>
 			<Card>
@@ -1210,6 +1301,11 @@ function DatasetInspector({
 			<CardContent className="space-y-4">
 				<div className="grid gap-3 md:grid-cols-3">
 					<Detail
+						label={t("factors.datasets.candidate")}
+						value={textAt(dataset.manifest, "candidateHash")}
+						mono
+					/>
+					<Detail
 						label={t("factors.datasets.featureDataset")}
 						value={textAt(dataset.manifest, "featureDatasetId")}
 						mono
@@ -1222,6 +1318,16 @@ function DatasetInspector({
 					<Detail
 						label={t("factors.datasets.universe")}
 						value={textAt(dataset.manifest, "pointInTimeUniverseId")}
+						mono
+					/>
+					<Detail
+						label={t("factors.datasets.range")}
+						value={`${textAt(dataset.manifest, "observationRange.startTimeMs")} → ${textAt(dataset.manifest, "observationRange.endTimeMs")}`}
+						mono
+					/>
+					<Detail
+						label={t("factors.datasets.engine")}
+						value={textAt(dataset.manifest, "engineIdentity.engineId")}
 						mono
 					/>
 					<Detail

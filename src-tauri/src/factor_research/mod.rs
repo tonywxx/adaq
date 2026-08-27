@@ -102,6 +102,14 @@ pub(crate) trait FactorResearchSource: Send + Sync {
     ) -> Result<(), String> {
         Ok(())
     }
+
+    fn validate_materialization_context(
+        &self,
+        _user_id: &str,
+        _context: &FactorMaterializationContextBinding,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -406,6 +414,8 @@ struct MaterializationJob {
     user_id: String,
     protocol: FactorMaterializationProtocol,
     dataset: Option<FactorDatasetInput>,
+    #[serde(default)]
+    context: Option<FactorMaterializationContextBinding>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -434,6 +444,26 @@ pub(crate) struct FactorMaterializationStartRequest {
     pub protocol: FactorMaterializationProtocol,
     #[serde(default)]
     pub dataset: Option<FactorDatasetInput>,
+    #[serde(default)]
+    pub context: Option<FactorMaterializationContextBinding>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorMaterializationContextBinding {
+    pub operation_id: String,
+    pub context_revision: u64,
+    pub context_hash: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorMaterializationContextStartRequest {
+    pub user_id: String,
+    pub operation_id: String,
+    pub candidate_hash: String,
+    #[serde(default)]
+    pub seed: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -770,6 +800,46 @@ impl FactorResearch {
             .candidate_for_user(&request.user_id, &candidate.candidate_hash)
     }
 
+    fn validate_materialization_context_binding(
+        &self,
+        user_id: &str,
+        protocol: &FactorMaterializationProtocol,
+        context: &FactorMaterializationContextBinding,
+    ) -> Result<(), String> {
+        if context.operation_id.trim().is_empty()
+            || context.context_revision == 0
+            || !adaq_factor_research::is_sha256(&context.context_hash)
+        {
+            return Err("factor-context-mismatch".into());
+        }
+        let database = self.database()?;
+        let candidate =
+            ResearchStore::new(&database).candidate_for_user(user_id, &protocol.candidate_hash)?;
+        drop(database);
+        let predecessor = candidate
+            .predecessor
+            .as_ref()
+            .ok_or("factor-context-candidate-predecessor-missing")?;
+        if predecessor.user_id != user_id
+            || predecessor.context_revision != context.context_revision
+            || predecessor.context_hash != context.context_hash
+            || predecessor.feature_dataset.dataset_id != protocol.feature_dataset_id
+            || predecessor.feature_dataset.feature_plan_hash != protocol.feature_plan_hash
+            || predecessor.snapshot_id != protocol.market_data_snapshot_id
+            || predecessor.universe_id.as_deref()
+                != Some(protocol.point_in_time_universe_id.as_str())
+            || predecessor.market != protocol.market_context.asset_class
+            || predecessor.venue != protocol.market_context.venue
+            || predecessor.range_start_ms != protocol.observation_range.start_time_ms
+            || predecessor.range_end_ms != protocol.observation_range.end_time_ms
+        {
+            return Err("factor-context-mismatch".into());
+        }
+        self.inner
+            .source
+            .validate_materialization_context(user_id, context)
+    }
+
     pub(crate) fn start_materialization(
         &self,
         request: FactorMaterializationStartRequest,
@@ -798,10 +868,18 @@ impl FactorResearch {
                 );
             }
         }
+        if let Some(context) = request.context.as_ref() {
+            self.validate_materialization_context_binding(
+                &request.user_id,
+                &request.protocol,
+                context,
+            )?;
+        }
         let job = MaterializationJob {
             user_id: request.user_id.clone(),
             protocol: request.protocol.clone(),
             dataset: request.dataset,
+            context: request.context,
         };
         {
             let database = self.database()?;
@@ -1541,6 +1619,9 @@ impl FactorResearch {
             return Err("Materialization User identity differs from the Attempt".into());
         }
         job.protocol.validate().map_err(string)?;
+        if let Some(context) = job.context.as_ref() {
+            self.validate_materialization_context_binding(user_id, &job.protocol, context)?;
+        }
         let dataset = if let Some(input) = job.dataset {
             let dataset = input.into_dataset()?;
             if dataset.manifest.protocol_hash != job.protocol.protocol_hash {
@@ -1585,6 +1666,18 @@ impl FactorResearch {
             &dataset.manifest.feature_dataset_id,
             &feature_reference_id,
         )?;
+        if let Some(context) = job.context.as_ref() {
+            if let Err(error) =
+                self.validate_materialization_context_binding(user_id, &job.protocol, context)
+            {
+                let _ = self.inner.source.unreference_feature_dataset(
+                    user_id,
+                    &dataset.manifest.feature_dataset_id,
+                    &feature_reference_id,
+                );
+                return Err(error);
+            }
+        }
         let database = self.inner.source.database()?;
         let directory = self.inner.source.dataset_directory()?;
         let result = ResearchStore::new(&database)

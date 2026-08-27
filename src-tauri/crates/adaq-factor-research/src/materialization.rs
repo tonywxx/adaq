@@ -15,8 +15,7 @@ use uuid::Uuid;
 use crate::{
     AttemptStatus, ContractError, FactorCandidate, FactorCandidateSource, FactorDatasetManifest,
     FactorMaterializationAttempt, FactorMaterializationProtocol, FactorObservationValue,
-    FactorParameterValue, FactorScope, NamedFactorOutput, component_parameter_values, content_hash,
-    run_limits,
+    FactorParameterValue, FactorScope, NamedFactorOutput, component_parameter_values, run_limits,
 };
 
 pub const MAX_FACTOR_DATASET_ROWS: usize = 2_520_000;
@@ -507,27 +506,14 @@ impl FactorMaterializer {
             feature_plan_hash: input.feature_dataset.feature_plan_hash.clone(),
             market_data_snapshot_id: input.feature_dataset.market_data_snapshot_id.clone(),
             point_in_time_universe_id: input.feature_dataset.point_in_time_universe_id.clone(),
+            observation_range: Some(input.protocol.observation_range.clone()),
             market_context: input.protocol.market_context.clone(),
             output_names,
             observation_count: rows.len() as u64,
             payload_sha256,
             engine_identity: input.protocol.engine_identity.clone(),
         };
-        manifest.dataset_id = content_hash(&DatasetIdentity {
-            schema_version: &manifest.schema_version,
-            protocol_hash: &manifest.protocol_hash,
-            candidate_hash: &manifest.candidate_hash,
-            scope: manifest.scope,
-            feature_dataset_id: &manifest.feature_dataset_id,
-            feature_plan_hash: &manifest.feature_plan_hash,
-            market_data_snapshot_id: &manifest.market_data_snapshot_id,
-            point_in_time_universe_id: &manifest.point_in_time_universe_id,
-            market_context: &manifest.market_context,
-            output_names: &manifest.output_names,
-            observation_count: manifest.observation_count,
-            payload_sha256: &manifest.payload_sha256,
-            engine_identity: &manifest.engine_identity,
-        })?;
+        manifest.dataset_id = manifest.content_id()?;
         let dataset = FactorDataset { manifest, rows };
         dataset.validate()?;
         Ok(dataset)
@@ -1805,28 +1791,14 @@ mod tests {
             feature_plan_hash: protocol.feature_plan_hash.clone(),
             market_data_snapshot_id: protocol.market_data_snapshot_id.clone(),
             point_in_time_universe_id: protocol.point_in_time_universe_id.clone(),
+            observation_range: Some(protocol.observation_range.clone()),
             market_context: protocol.market_context.clone(),
             output_names,
             observation_count: 0,
             payload_sha256,
             engine_identity: protocol.engine_identity.clone(),
         };
-        manifest.dataset_id = content_hash(&DatasetIdentity {
-            schema_version: &manifest.schema_version,
-            protocol_hash: &manifest.protocol_hash,
-            candidate_hash: &manifest.candidate_hash,
-            scope: manifest.scope,
-            feature_dataset_id: &manifest.feature_dataset_id,
-            feature_plan_hash: &manifest.feature_plan_hash,
-            market_data_snapshot_id: &manifest.market_data_snapshot_id,
-            point_in_time_universe_id: &manifest.point_in_time_universe_id,
-            market_context: &manifest.market_context,
-            output_names: &manifest.output_names,
-            observation_count: manifest.observation_count,
-            payload_sha256: &manifest.payload_sha256,
-            engine_identity: &manifest.engine_identity,
-        })
-        .unwrap();
+        manifest.dataset_id = manifest.content_id().unwrap();
         FactorDataset {
             manifest,
             rows: vec![],

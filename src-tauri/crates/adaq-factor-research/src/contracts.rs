@@ -785,6 +785,8 @@ pub struct FactorDatasetManifest {
     pub feature_plan_hash: String,
     pub market_data_snapshot_id: String,
     pub point_in_time_universe_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_range: Option<ObservationRange>,
     pub market_context: FactorMarketContext,
     pub output_names: Vec<String>,
     pub observation_count: u64,
@@ -827,6 +829,9 @@ impl FactorDatasetManifest {
             ));
         }
         self.market_context.validate()?;
+        if let Some(observation_range) = &self.observation_range {
+            observation_range.validate()?;
+        }
         if self.market_context.point_in_time_universe_id != self.point_in_time_universe_id
             || self.market_context.bar_interval.is_empty()
         {

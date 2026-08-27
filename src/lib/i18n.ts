@@ -73,6 +73,10 @@ const english = {
 				"The Point-in-Time Universe is incomplete.",
 			"factor-context-market-venue-unavailable":
 				"The Dataset market and Venue cannot be resolved.",
+			"factor-context-candidate-predecessor-missing":
+				"This Candidate has no accepted Feature Dataset handoff.",
+			"factor-context-valuation-currency-required":
+				"The Factor market context has no valuation currency.",
 		},
 	},
 	nav: {
@@ -1624,6 +1628,8 @@ const english = {
 			featureDataset: "Feature Dataset",
 			snapshot: "Market Snapshot",
 			universe: "Point-in-time Universe",
+			range: "Observation range (ms)",
+			engine: "Engine",
 			payload: "Payload SHA-256",
 			size: "Size",
 			created: "Created",
@@ -1639,15 +1645,18 @@ const english = {
 			close: "Close inspector",
 			materializationHeading: "Start Factor Dataset Materialization",
 			materializationDescription:
-				"Select the exact Factor Dataset protocol and optional existing manifest evidence.",
-			materializationProtocol: "Materialization Protocol Draft (JSON)",
-			materializationDataset: "Existing Dataset evidence (JSON)",
-			materializationProtocolHint:
-				"The native contract validates Feature Dataset, Candidate, Snapshot, Universe, range, and provenance.",
-			materializationDatasetHint:
-				"Optional; include it only when inspecting or retrying exact manifest evidence.",
+				"Start from the accepted Factor context and one compatible immutable Candidate.",
+			materializationContext: "Handed-off Factor context",
+			materializationContextLoading: "Loading the accepted Factor context…",
+			materializationContextRequired:
+				"Select an accepted Feature Dataset in the context preflight before materializing.",
+			materializationCandidate: "Factor Candidate",
+			materializationCandidateLoading: "Loading compatible Candidates…",
+			materializationCandidatePlaceholder: "Select a compatible Candidate",
+			materializationCandidateRequired: "Select a Factor Candidate first.",
+			materializationCandidateEmpty:
+				"No published Candidate matches the current Factor context.",
 			materializationStart: "Start Materialization",
-			frozenProtocolHash: "Frozen Protocol hash",
 			materializationStarted: "Materialization queued.",
 		},
 		evaluations: {
@@ -1965,6 +1974,8 @@ const factorResearchSimplifiedChinese = {
 		featureDataset: "Feature Dataset",
 		snapshot: "Market Snapshot",
 		universe: "时点 Universe",
+		range: "观测范围（毫秒）",
+		engine: "引擎",
 		payload: "Payload SHA-256",
 		size: "大小",
 		created: "创建时间",
@@ -1980,14 +1991,18 @@ const factorResearchSimplifiedChinese = {
 		close: "关闭检查",
 		materializationHeading: "启动 Factor Dataset 物化",
 		materializationDescription:
-			"选择精确的 Factor Dataset 协议和可选的既有清单证据。",
-		materializationProtocol: "物化 Protocol Draft（JSON）",
-		materializationDataset: "既有 Dataset 证据（JSON）",
-		materializationProtocolHint:
-			"原生契约会校验 Feature Dataset、Candidate、Snapshot、Universe、范围和来源。",
-		materializationDatasetHint: "可选；仅在检查或重试精确清单证据时填写。",
+			"从已接受的 Factor Context 和一个兼容的不可变 Candidate 启动。",
+		materializationContext: "已交接的 Factor Context",
+		materializationContextLoading: "正在加载已接受的 Factor Context…",
+		materializationContextRequired:
+			"开始物化前，请先在上下文预检中选择已接受的 Feature Dataset。",
+		materializationCandidate: "Factor Candidate",
+		materializationCandidateLoading: "正在加载兼容的 Candidate…",
+		materializationCandidatePlaceholder: "选择兼容的 Candidate",
+		materializationCandidateRequired: "请先选择 Factor Candidate。",
+		materializationCandidateEmpty:
+			"没有已发布 Candidate 匹配当前 Factor Context。",
 		materializationStart: "启动物化",
-		frozenProtocolHash: "冻结 Protocol 哈希",
 		materializationStarted: "物化已排队。",
 	},
 	evaluations: {
@@ -2161,6 +2176,10 @@ const simplifiedChinese = {
 			"factor-context-universe-incomplete": "Point-in-Time Universe 不完整。",
 			"factor-context-market-venue-unavailable":
 				"无法解析 Dataset 的 Market 与 Venue。",
+			"factor-context-candidate-predecessor-missing":
+				"此 Candidate 没有已接受的 Feature Dataset 交接记录。",
+			"factor-context-valuation-currency-required":
+				"Factor 市场上下文缺少估值货币。",
 		},
 	},
 	nav: {

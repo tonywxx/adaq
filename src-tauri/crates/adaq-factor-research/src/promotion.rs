@@ -1254,6 +1254,7 @@ mod tests {
             feature_plan_hash: "a".repeat(64),
             market_data_snapshot_id: "snapshot".into(),
             point_in_time_universe_id: "universe".into(),
+            observation_range: None,
             market_context: context(),
             output_names: vec!["value".into()],
             observation_count: 100,

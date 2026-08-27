@@ -701,6 +701,21 @@ async fn factor_materialization_start(
     .await
     .map_err(|error| error.to_string())?
 }
+#[tauri::command]
+async fn factor_materialization_start_from_context(
+    mut request: factor_research::FactorMaterializationContextStartRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<factor_research::FactorAttemptView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .start_factor_materialization_from_context(request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
 factor_blocking_command!(
     factor_materialization_protocol_freeze,
     factor_research::FactorMaterializationProtocolFreezeRequest,
@@ -4365,6 +4380,7 @@ pub fn run() {
             factor_candidate_list,
             factor_candidate_get,
             factor_materialization_start,
+            factor_materialization_start_from_context,
             factor_materialization_protocol_freeze,
             factor_evaluation_start,
             factor_evaluation_protocol_freeze,

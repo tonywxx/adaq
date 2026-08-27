@@ -1770,6 +1770,7 @@ mod tests {
             feature_plan_hash: "b".repeat(64),
             market_data_snapshot_id: "snapshot".into(),
             point_in_time_universe_id: "universe".into(),
+            observation_range: None,
             market_context: context(),
             output_names,
             observation_count: rows.len() as u64,

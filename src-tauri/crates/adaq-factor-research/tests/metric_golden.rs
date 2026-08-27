@@ -184,6 +184,7 @@ fn dataset(
         feature_plan_hash: feature_plan_hash.clone(),
         market_data_snapshot_id: market_data_snapshot_id.into(),
         point_in_time_universe_id: universe_id.into(),
+        observation_range: None,
         market_context,
         output_names,
         observation_count: rows.len() as u64,

@@ -1920,6 +1920,7 @@ fn factor_dataset_input_from_output(
         feature_plan_hash: protocol.feature_plan_hash.clone(),
         market_data_snapshot_id: protocol.market_data_snapshot_id.clone(),
         point_in_time_universe_id: protocol.point_in_time_universe_id.clone(),
+        observation_range: Some(protocol.observation_range.clone()),
         market_context: protocol.market_context.clone(),
         output_names,
         observation_count: rows.len() as u64,
@@ -2445,6 +2446,7 @@ fn run_factor_evidence(
                 user_id: request.user_id.clone(),
                 protocol: protocol.clone(),
                 dataset: Some(dataset.clone()),
+                context: None,
             })
             .map_err(PythonResearchError)?;
         let dataset_id = wait_for_factor_attempt(

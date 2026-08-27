@@ -335,6 +335,44 @@ fn wait_for_materialization(
     }
 }
 
+fn wait_for_factor_materialization(
+    state: &LocalResearchState,
+    user_id: &str,
+    attempt_id: &str,
+    expected: adaq_factor_research::AttemptStatus,
+) -> crate::factor_research::FactorAttemptView {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let attempt = state
+            .factor
+            .get_attempt(crate::factor_research::FactorAttemptRequest {
+                user_id: user_id.into(),
+                attempt_id: attempt_id.into(),
+            })
+            .unwrap();
+        if attempt.status == expected {
+            return attempt;
+        }
+        assert!(
+            !matches!(
+                attempt.status,
+                adaq_factor_research::AttemptStatus::Completed
+                    | adaq_factor_research::AttemptStatus::Failed
+                    | adaq_factor_research::AttemptStatus::Cancelled
+            ),
+            "Factor Attempt {attempt_id} reached {:?} before {expected:?}: {:?}",
+            attempt.status,
+            attempt.diagnostic
+        );
+        assert!(
+            Instant::now() < deadline,
+            "Factor Attempt {attempt_id} did not reach {expected:?}: {:?}",
+            attempt.status
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn wait_for_fitting(
     state: &LocalResearchState,
     user_id: &str,
@@ -1134,12 +1172,70 @@ fn completed_feature_dataset_establishes_a_user_scoped_factor_context() {
         Some(universe_id.as_str())
     );
     assert_eq!(predecessor.feature_dataset, feature_dataset);
+    let candidate_hash = candidate.candidate.candidate_hash.clone();
     assert!(
         state
             .factor
             .get_candidate(crate::factor_research::FactorEvidenceRequest {
                 user_id: "bob".into(),
-                evidence_id: candidate.candidate.candidate_hash,
+                evidence_id: candidate_hash.clone(),
+            })
+            .is_err()
+    );
+
+    let materialization = state
+        .start_factor_materialization_from_context(
+            crate::factor_research::FactorMaterializationContextStartRequest {
+                user_id: "alice".into(),
+                operation_id: "factor-context:materialize".into(),
+                candidate_hash,
+                seed: 11,
+            },
+        )
+        .unwrap();
+    let factor_attempt = wait_for_factor_materialization(
+        &state,
+        "alice",
+        &materialization.attempt_id,
+        adaq_factor_research::AttemptStatus::Completed,
+    );
+    let factor_dataset_id = factor_attempt.result_id.clone().unwrap();
+    let factor_dataset = state
+        .factor
+        .get_dataset(crate::factor_research::FactorEvidenceRequest {
+            user_id: "alice".into(),
+            evidence_id: factor_dataset_id.clone(),
+        })
+        .unwrap();
+    assert_eq!(
+        factor_dataset
+            .manifest
+            .observation_range
+            .as_ref()
+            .map(|range| (range.start_time_ms, range.end_time_ms)),
+        Some((0, 3 * HOUR))
+    );
+    assert_eq!(
+        factor_dataset.manifest.engine_identity.input_identities[1],
+        context.context_hash
+    );
+    let rows = state
+        .factor
+        .dataset_rows(crate::factor_research::FactorDatasetRowsRequest {
+            user_id: "alice".into(),
+            dataset_id: factor_dataset_id.clone(),
+            offset: 0,
+            limit: 50,
+            instrument_id: None,
+        })
+        .unwrap();
+    assert_eq!(rows.total, 4);
+    assert!(
+        state
+            .factor
+            .get_dataset(crate::factor_research::FactorEvidenceRequest {
+                user_id: "bob".into(),
+                evidence_id: factor_dataset_id.clone(),
             })
             .is_err()
     );
@@ -1187,6 +1283,23 @@ fn completed_feature_dataset_establishes_a_user_scoped_factor_context() {
             .is_err()
     );
     assert!(state.establish_factor_context("bob", &dataset_id).is_err());
+    assert_eq!(
+        state
+            .features
+            .delete_dataset(FeatureDatasetRequest {
+                user_id: "alice".into(),
+                dataset_id: dataset_id.clone(),
+            })
+            .unwrap_err(),
+        "feature-dataset-referenced"
+    );
+    state
+        .factor
+        .delete_dataset(crate::factor_research::FactorEvidenceRequest {
+            user_id: "alice".into(),
+            evidence_id: factor_dataset_id,
+        })
+        .unwrap();
     state
         .features
         .delete_dataset(FeatureDatasetRequest {

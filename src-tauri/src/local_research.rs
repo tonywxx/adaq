@@ -12,7 +12,7 @@
 //! domains still live here).
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
@@ -50,7 +50,9 @@ use crate::{
     },
     dataset_generation::{DatasetGeneration, GenerationSource},
     factor_research::{
-        FactorCandidatePredecessor, FactorCandidatePublishRequest, FactorCandidateView,
+        FactorAttemptView, FactorCandidatePredecessor, FactorCandidatePublishRequest,
+        FactorCandidateView, FactorEvidenceRequest, FactorMaterializationContextBinding,
+        FactorMaterializationContextStartRequest, FactorMaterializationStartRequest,
         FactorResearch, FactorResearchSource, user_uuid,
     },
     features::{FeatureDatasetRequest, FeatureSource, Features},
@@ -312,6 +314,55 @@ impl FactorResearchSource for LocalFactorSource {
         self.feature_materialization
             .unreference_dataset(user_id, dataset_id, reference_id)
             .map_err(|error| error.to_string())
+    }
+
+    fn validate_materialization_context(
+        &self,
+        user_id: &str,
+        context: &FactorMaterializationContextBinding,
+    ) -> Result<(), String> {
+        let database = self.database.lock().map_err(string)?;
+        let frozen_json = database
+            .query_row(
+                "SELECT frozen_json FROM research_frozen_evidence
+                 WHERE user_id = ?1 AND operation_id = ?2",
+                params![user_id, context.operation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|_| "factor-context-stale".to_owned())?;
+        let frozen: adaq_factor_research::FrozenResearchEvidence =
+            serde_json::from_str(&frozen_json).map_err(string)?;
+        let current_json = database
+            .query_row(
+                "SELECT context_json FROM research_evidence_contexts
+                 WHERE user_id = ?1 AND revision = ?2 AND context_hash = ?3",
+                params![
+                    user_id,
+                    context.context_revision as i64,
+                    context.context_hash
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|_| "factor-context-stale".to_owned())?;
+        drop(database);
+        let current: ResearchEvidenceContext =
+            serde_json::from_str(&current_json).map_err(string)?;
+        if frozen.operation_id != context.operation_id
+            || frozen.stage != adaq_factor_research::ResearchStage::Factors
+            || frozen.context_revision != context.context_revision
+            || frozen.context_hash != context.context_hash
+            || current.revision != context.context_revision
+            || current.context_hash != context.context_hash
+        {
+            return Err("factor-context-stale".into());
+        }
+        current
+            .revalidate_with_policy(
+                &current,
+                adaq_factor_research::ResearchStage::Factors,
+                Default::default(),
+            )
+            .map_err(|_| "factor-context-stale".to_owned())
     }
 }
 
@@ -875,6 +926,118 @@ impl LocalResearchState {
         let predecessor = FactorCandidatePredecessor::from_projection(user_id, projection)?;
         self.factor
             .publish_candidate_with_predecessor(request, predecessor)
+    }
+
+    pub(crate) fn start_factor_materialization_from_context(
+        &self,
+        request: FactorMaterializationContextStartRequest,
+    ) -> Result<FactorAttemptView, String> {
+        validate_user(&request.user_id)?;
+        if request.operation_id.trim().is_empty() || request.candidate_hash.trim().is_empty() {
+            return Err("factor-context-required".into());
+        }
+        let current_context = self
+            .context_for_user(&request.user_id)?
+            .ok_or_else(|| "factor-context-required".to_owned())?;
+        let dataset_id = current_context
+            .draft
+            .feature_dataset
+            .as_ref()
+            .ok_or_else(|| "factor-context-feature-dataset-required".to_owned())?
+            .dataset_id
+            .clone();
+        let projection = self.establish_factor_context(&request.user_id, &dataset_id)?;
+        let candidate = self.factor.get_candidate(FactorEvidenceRequest {
+            user_id: request.user_id.clone(),
+            evidence_id: request.candidate_hash.clone(),
+        })?;
+        let expected_predecessor = FactorCandidatePredecessor::from_projection(
+            request.user_id.clone(),
+            projection.clone(),
+        )?;
+        if candidate.predecessor.as_ref() != Some(&expected_predecessor) {
+            return Err("factor-context-mismatch".into());
+        }
+        let feature_dataset = self.features.get_dataset(FeatureDatasetRequest {
+            user_id: request.user_id.clone(),
+            dataset_id: dataset_id.clone(),
+        })?;
+        let (snapshot, _) = self
+            .snapshots
+            .snapshot_for_user(&request.user_id, &projection.snapshot_id)?;
+        let universe_id = projection
+            .universe_id
+            .clone()
+            .ok_or_else(|| "factor-context-universe-inaccessible".to_owned())?;
+        let valuation_currency = factor_valuation_currency(
+            &projection.market,
+            &snapshot.code,
+            &feature_dataset.manifest.request.valuation_currency,
+        )?;
+        let candidate_hash = request.candidate_hash.clone();
+        let protocol = adaq_factor_research::FactorMaterializationProtocol::freeze(
+            adaq_factor_research::FactorMaterializationProtocolDraft {
+                protocol_id: user_uuid(&format!(
+                    "factor-materialization:{}:{}:{}",
+                    request.candidate_hash, projection.context_hash, request.seed
+                )),
+                user_id: user_uuid(&request.user_id),
+                candidate_hash,
+                feature_dataset_id: dataset_id,
+                feature_plan_hash: projection
+                    .feature_dataset
+                    .as_ref()
+                    .ok_or("factor-context-feature-dataset-required")?
+                    .feature_plan_hash
+                    .clone(),
+                parameters: factor_parameter_defaults(&candidate.candidate.parameters)?,
+                market_data_snapshot_id: projection.snapshot_id.clone(),
+                point_in_time_universe_id: universe_id.clone(),
+                observation_range: adaq_factor_research::ObservationRange {
+                    start_time_ms: projection.range_start_ms,
+                    end_time_ms: projection.range_end_ms,
+                },
+                market_context: adaq_factor_research::FactorMarketContext {
+                    venue: projection.venue.clone(),
+                    asset_class: projection.market.clone(),
+                    bar_interval: snapshot.interval.as_str().into(),
+                    price_basis: "unadjusted".into(),
+                    valuation_currency,
+                    point_in_time_universe_id: universe_id,
+                },
+                engine_identity: factor_native_engine_identity(
+                    &candidate.candidate,
+                    &request.candidate_hash,
+                    &projection,
+                ),
+                seed: request.seed,
+            },
+        )
+        .map_err(string)?;
+        let frozen = self.freeze_research_context(
+            &request.user_id,
+            request.operation_id.clone(),
+            adaq_factor_research::ResearchStage::Factors,
+        )?;
+        let attempt = self
+            .factor
+            .start_materialization(FactorMaterializationStartRequest {
+                user_id: request.user_id.clone(),
+                protocol,
+                dataset: None,
+                context: Some(FactorMaterializationContextBinding {
+                    operation_id: request.operation_id.clone(),
+                    context_revision: frozen.context_revision,
+                    context_hash: frozen.context_hash,
+                }),
+            })?;
+        self.record_research_attempt_binding(
+            &request.user_id,
+            &request.operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+            &attempt.attempt_id,
+        )?;
+        Ok(attempt)
     }
 
     fn validate_factor_dataset(&self, user_id: &str, dataset_id: &str) -> Result<(), String> {
@@ -2447,6 +2610,95 @@ fn factor_context_market_venue(snapshot: &MarketDataSnapshot) -> Result<(String,
         VenueKind::UsEquity => "us-equity",
     };
     Ok((market.into(), venue.id))
+}
+
+fn factor_valuation_currency(
+    market: &str,
+    instrument_code: &str,
+    explicit: &str,
+) -> Result<String, String> {
+    if !explicit.trim().is_empty() {
+        return Ok(explicit.trim().into());
+    }
+    match market {
+        "crypto" => instrument_code
+            .rsplit_once('-')
+            .map(|(_, quote)| quote.to_owned())
+            .filter(|quote| !quote.trim().is_empty())
+            .ok_or_else(|| "factor-context-valuation-currency-required".into()),
+        "a-share" => Ok("CNY".into()),
+        "us-equity" => Ok("USD".into()),
+        _ => Err("factor-context-valuation-currency-required".into()),
+    }
+}
+
+fn factor_parameter_defaults(
+    parameters: &[adaq_factor_research::FactorParameter],
+) -> Result<Vec<adaq_factor_research::FactorParameterValue>, String> {
+    parameters
+        .iter()
+        .map(|parameter| match parameter.parameter_type {
+            adaq_factor_research::FactorParameterType::Decimal => {
+                if !parameter
+                    .default_value
+                    .parse::<f64>()
+                    .ok()
+                    .is_some_and(f64::is_finite)
+                {
+                    return Err("factor-candidate-invalid".into());
+                }
+                Ok(adaq_factor_research::FactorParameterValue::Decimal(
+                    parameter.default_value.clone(),
+                ))
+            }
+            adaq_factor_research::FactorParameterType::Integer => parameter
+                .default_value
+                .parse::<i64>()
+                .map(adaq_factor_research::FactorParameterValue::Integer)
+                .map_err(|_| "factor-candidate-invalid".into()),
+            adaq_factor_research::FactorParameterType::Boolean => parameter
+                .default_value
+                .parse::<bool>()
+                .map(adaq_factor_research::FactorParameterValue::Boolean)
+                .map_err(|_| "factor-candidate-invalid".into()),
+            adaq_factor_research::FactorParameterType::Text => Ok(
+                adaq_factor_research::FactorParameterValue::Text(parameter.default_value.clone()),
+            ),
+        })
+        .collect()
+}
+
+fn factor_native_engine_identity(
+    candidate: &adaq_factor_research::FactorCandidate,
+    candidate_hash: &str,
+    context: &adaq_factor_research::ResearchEvidenceProjection,
+) -> adaq_factor_research::ResearchEngineProvenance {
+    adaq_factor_research::ResearchEngineProvenance {
+        engine_id: "adaq-native-factor".into(),
+        engine_version: env!("CARGO_PKG_VERSION").into(),
+        adapter: "native-factor-materializer".into(),
+        target_triple: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+        build_id: env!("CARGO_PKG_VERSION").into(),
+        environment: BTreeMap::new(),
+        parameters: BTreeMap::from([
+            (
+                "contextRevision".into(),
+                context.context_revision.to_string(),
+            ),
+            ("scope".into(), candidate.scope.world().into()),
+        ]),
+        input_identities: vec![
+            candidate_hash.into(),
+            context.context_hash.clone(),
+            context
+                .feature_dataset
+                .as_ref()
+                .map(|binding| binding.dataset_id.clone())
+                .unwrap_or_default(),
+            context.snapshot_id.clone(),
+            context.universe_id.clone().unwrap_or_default(),
+        ],
+    }
 }
 
 fn factor_context_dataset_error(error: &str) -> String {
