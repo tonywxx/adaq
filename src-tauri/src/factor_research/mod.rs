@@ -16,8 +16,9 @@ use std::{
 };
 
 use adaq_component_tooling::{
-    ComponentKind, ComponentManifest, ComponentPackage, FactorScope as PackageFactorScope,
-    ParameterType,
+    ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue,
+    FactorScope as PackageFactorScope, ParameterType, QualificationAttempt, QualificationEvidence,
+    QualificationGate,
 };
 use adaq_factor_research::{
     AttemptStatus, CandidateBuildRequest, CompletedFeatureDataset, ComponentEligibilityEvidence,
@@ -37,7 +38,7 @@ use adaq_factor_research::{
 use arrow_array::{Array, ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -55,6 +56,8 @@ const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_JOB_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES: usize = 16 * 1024;
 const CANCELLATION_REQUESTED_DIAGNOSTIC: &str = "Factor research Attempt cancellation requested";
+const FACTOR_COMPONENT_QUALIFICATION_SCHEMA_VERSION: &str = "adaq-factor-component-qualification@1";
+const FACTOR_COMPONENT_EQUIVALENCE_CONTRACT: &str = "bit-identical-factor-dataset-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FactorQueueItem {
@@ -122,6 +125,35 @@ pub(crate) trait FactorResearchSource: Send + Sync {
     ) -> Result<(), String> {
         Ok(())
     }
+
+    fn record_component_qualification(
+        &self,
+        _user_id: &str,
+        _attempt: &QualificationAttempt,
+        _archive_sha256: &str,
+        _evidence_json: &str,
+    ) -> Result<(), String> {
+        Err("Component qualification source is not configured".into())
+    }
+
+    fn publish_qualified_component_in_transaction(
+        &self,
+        _transaction: &Transaction<'_>,
+        _user_id: &str,
+        _package_bytes: &[u8],
+        _attempt: &QualificationAttempt,
+        _evidence_json: &str,
+    ) -> Result<(), String> {
+        Err("Component qualification publication is not configured".into())
+    }
+
+    fn component_qualification_for_user(
+        &self,
+        _user_id: &str,
+        _attempt_id: &str,
+    ) -> Result<Option<crate::component_library::ComponentQualificationRecord>, String> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
@@ -130,6 +162,7 @@ pub(crate) enum FactorFailureCode {
     Cancelled,
     CandidateBuildFailed,
     FactorComponentBuildFailed,
+    FactorComponentQualificationFailed,
     FactorMaterializationFailed,
     FactorEvaluationFailed,
     FactorFamilyGridFailed,
@@ -170,6 +203,7 @@ impl FactorFailureCode {
         match kind {
             "candidate-build" => Self::CandidateBuildFailed,
             "factor-component-build" => Self::FactorComponentBuildFailed,
+            "factor-component-qualification" => Self::FactorComponentQualificationFailed,
             "factor-materialization" => Self::FactorMaterializationFailed,
             "factor-evaluation" => Self::FactorEvaluationFailed,
             "factor-family-grid" => Self::FactorFamilyGridFailed,
@@ -622,6 +656,80 @@ pub(crate) struct FactorComponentCandidateView {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorComponentQualificationPrepareRequest {
+    pub user_id: String,
+    pub candidate_attempt_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FactorComponentQualificationJob {
+    user_id: String,
+    candidate_attempt_id: String,
+    package_sha256: String,
+    binding: FactorComponentBuildBinding,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorComponentEquivalenceCase {
+    pub parameter_values: BTreeMap<String, String>,
+    pub parameter_hash: String,
+    pub expected_output_sha256: Option<String>,
+    pub actual_output_sha256: Option<String>,
+    pub expected_row_count: Option<u64>,
+    pub actual_row_count: Option<u64>,
+    pub passed: bool,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorComponentEquivalenceReport {
+    pub schema_version: String,
+    pub comparison_contract: String,
+    pub candidate_hash: String,
+    pub package_sha256: String,
+    pub factor_dataset_id: String,
+    pub feature_dataset_id: String,
+    pub feature_plan_hash: String,
+    pub market_data_snapshot_id: String,
+    pub point_in_time_universe_id: String,
+    pub scope: adaq_factor_research::FactorScope,
+    pub output_names: Vec<String>,
+    pub input_identity_sha256: String,
+    pub frozen_output_sha256: String,
+    pub cases: Vec<FactorComponentEquivalenceCase>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FactorComponentQualificationEvidence {
+    schema_version: String,
+    candidate_attempt_id: String,
+    package_sha256: String,
+    binding: FactorComponentBuildBinding,
+    qualification: QualificationAttempt,
+    provenance: adaq_factor_research::CandidateBuildProvenance,
+    equivalence: Option<FactorComponentEquivalenceReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FactorComponentQualificationView {
+    pub attempt: FactorAttemptView,
+    pub candidate_attempt_id: Option<String>,
+    pub package_sha256: Option<String>,
+    pub binding: Option<FactorComponentBuildBinding>,
+    pub qualification: Option<QualificationAttempt>,
+    pub provenance: Option<adaq_factor_research::CandidateBuildProvenance>,
+    pub equivalence: Option<FactorComponentEquivalenceReport>,
+    pub published: bool,
+    pub evidence_created_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FactorCandidatePublishRequest {
     pub user_id: String,
     pub draft: FactorCandidateDraft,
@@ -1041,6 +1149,96 @@ impl FactorResearch {
         let database = self.database()?;
         ResearchStore::new(&database)
             .component_candidate_for_user(&request.user_id, &request.attempt_id)
+    }
+
+    pub(crate) fn prepare_component_qualification(
+        &self,
+        request: FactorComponentQualificationPrepareRequest,
+    ) -> Result<FactorAttemptView, String> {
+        self.ensure_schema_ready()?;
+        validate_user(&request.user_id)?;
+        if request.candidate_attempt_id.trim().is_empty() {
+            return Err("Factor Component Candidate Attempt identity is invalid".into());
+        }
+        let candidate = {
+            let database = self.database()?;
+            ResearchStore::new(&database)
+                .component_candidate_for_user(&request.user_id, &request.candidate_attempt_id)?
+        };
+        let provenance = candidate.binding.build_provenance.as_ref().ok_or_else(|| {
+            "Factor Component Candidate build provenance is incomplete".to_owned()
+        })?;
+        if provenance.package_sha256 != candidate.package_sha256 {
+            return Err("Factor Component Candidate Package is not bound to its build".into());
+        }
+        let job = FactorComponentQualificationJob {
+            user_id: request.user_id.clone(),
+            candidate_attempt_id: request.candidate_attempt_id,
+            package_sha256: candidate.package_sha256,
+            binding: candidate.binding,
+        };
+        self.enqueue(&request.user_id, "factor-component-qualification", &job)
+    }
+
+    pub(crate) fn get_component_qualification(
+        &self,
+        request: FactorAttemptRequest,
+    ) -> Result<FactorComponentQualificationView, String> {
+        validate_user(&request.user_id)?;
+        let attempt = {
+            let database = self.database()?;
+            let store = ResearchStore::new(&database);
+            let attempt = store.attempt_for_user(&request.user_id, &request.attempt_id)?;
+            if attempt.kind != "factor-component-qualification" {
+                return Err("Factor research Attempt is not a Component qualification".into());
+            }
+            attempt
+        };
+        let record = self
+            .inner
+            .source
+            .component_qualification_for_user(&request.user_id, &request.attempt_id)?;
+        let Some(record) = record else {
+            return Ok(FactorComponentQualificationView {
+                attempt,
+                candidate_attempt_id: None,
+                package_sha256: None,
+                binding: None,
+                qualification: None,
+                provenance: None,
+                equivalence: None,
+                published: false,
+                evidence_created_at_ms: None,
+            });
+        };
+        if record.user_id != request.user_id || record.attempt_id != request.attempt_id {
+            return Err(
+                "Factor Component qualification evidence is not available to this User".into(),
+            );
+        }
+        let evidence: FactorComponentQualificationEvidence =
+            serde_json::from_str(&record.evidence_json).map_err(string)?;
+        validate_component_qualification_evidence(
+            &evidence,
+            &request.user_id,
+            &request.attempt_id,
+        )?;
+        if evidence.package_sha256 != record.archive_sha256
+            || evidence.qualification.qualified != record.qualified
+        {
+            return Err("Factor Component qualification evidence archive identity differs".into());
+        }
+        Ok(FactorComponentQualificationView {
+            attempt,
+            candidate_attempt_id: Some(evidence.candidate_attempt_id),
+            package_sha256: Some(evidence.package_sha256),
+            binding: Some(evidence.binding),
+            qualification: Some(evidence.qualification),
+            provenance: Some(evidence.provenance),
+            equivalence: evidence.equivalence,
+            published: record.qualified,
+            evidence_created_at_ms: Some(record.created_at_ms),
+        })
     }
 
     fn resolve_component_binding(
@@ -1929,6 +2127,12 @@ impl FactorResearch {
                 "factor-component-build" => {
                     self.execute_component(&user_id, &item.attempt_id, &request_json, &cancelled)
                 }
+                "factor-component-qualification" => self.execute_component_qualification(
+                    &user_id,
+                    &item.attempt_id,
+                    &request_json,
+                    &cancelled,
+                ),
                 "factor-materialization" => self.execute_materialization(
                     &user_id,
                     &item.attempt_id,
@@ -1956,9 +2160,12 @@ impl FactorResearch {
             .unwrap_or(false);
         match result {
             Ok(result_id) => {
-                if kind == "factor-component-build" {
+                if matches!(
+                    kind.as_str(),
+                    "factor-component-build" | "factor-component-qualification"
+                ) {
                     // Component publication transitions the Attempt atomically with its
-                    // immutable Candidate Package; a later cancel cannot retract it.
+                    // immutable Package evidence; a later cancel cannot retract it.
                 } else if cancelled.load(Ordering::Relaxed) || cancellation_requested {
                     let _ = store.cancel_running(&item.attempt_id, &user_id);
                 } else {
@@ -2149,6 +2356,441 @@ impl FactorResearch {
         Ok(package.archive_sha256)
     }
 
+    fn execute_component_qualification(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+        request_json: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<String, String> {
+        let job: FactorComponentQualificationJob =
+            serde_json::from_str(request_json).map_err(string)?;
+        if job.user_id != user_id {
+            return Err(
+                "Factor Component qualification User identity differs from the Attempt".into(),
+            );
+        }
+        job.binding.validate()?;
+        let provenance = job
+            .binding
+            .build_provenance
+            .clone()
+            .ok_or_else(|| "Factor Component build provenance is incomplete".to_owned())?;
+        if provenance.package_sha256 != job.package_sha256 {
+            return Err("Factor Component qualification Package is not bound to its build".into());
+        }
+        if provenance.resource_policy != job.binding.resource_policy {
+            return Err("Factor Component qualification resource policy is not frozen".into());
+        }
+        let (frozen_protocol, factor_dataset, package_result) = {
+            let database = self.database()?;
+            let store = ResearchStore::new(&database);
+            if !store.component_binding_is_current(user_id, &job.binding)? {
+                return Err("stale: Factor Component Decision is no longer current".into());
+            }
+            let protocol = store.materialization_protocol_for_user(
+                user_id,
+                &job.binding.factor_dataset.protocol_hash,
+            )?;
+            let dataset =
+                store.factor_dataset_for_user(user_id, &job.binding.factor_dataset.dataset_id)?;
+            let package = store.candidate_package_bytes_for_user(user_id, &job.package_sha256);
+            (protocol, dataset, package)
+        };
+        let package_bytes = match package_result {
+            Ok(package_bytes) => package_bytes,
+            Err(error) => {
+                let qualification = failed_qualification_attempt(
+                    attempt_id,
+                    &job.binding.candidate,
+                    QualificationGate::Package,
+                    &error,
+                );
+                self.record_component_qualification_evidence(
+                    user_id,
+                    attempt_id,
+                    &job,
+                    qualification,
+                    None,
+                )?;
+                return Err(error);
+            }
+        };
+        if frozen_protocol.protocol_hash != factor_dataset.manifest.protocol_hash
+            || frozen_protocol.candidate_hash != job.binding.candidate.candidate_hash
+            || factor_dataset.manifest != job.binding.factor_dataset
+            || frozen_protocol.user_id != user_uuid(user_id)
+            || frozen_protocol.feature_dataset_id != job.binding.feature_dataset.binding.dataset_id
+            || frozen_protocol.feature_plan_hash
+                != job.binding.feature_dataset.binding.feature_plan_hash
+            || frozen_protocol.market_data_snapshot_id
+                != job.binding.feature_dataset.market_data_snapshot_id
+            || frozen_protocol.point_in_time_universe_id
+                != job.binding.feature_dataset.point_in_time_universe_id
+        {
+            return Err(
+                "Factor Component qualification inputs are not the frozen research evidence".into(),
+            );
+        }
+        let package = match ComponentPackage::read(&package_bytes) {
+            Ok(package) => package,
+            Err(error) => {
+                let diagnostic = error.to_string();
+                let qualification = failed_qualification_attempt(
+                    attempt_id,
+                    &job.binding.candidate,
+                    QualificationGate::Package,
+                    &diagnostic,
+                );
+                self.record_component_qualification_evidence(
+                    user_id,
+                    attempt_id,
+                    &job,
+                    qualification,
+                    None,
+                )?;
+                return Err(diagnostic);
+            }
+        };
+        if let Err(error) = validate_built_package(&package, &job.binding.candidate) {
+            let qualification = failed_qualification_attempt(
+                attempt_id,
+                &job.binding.candidate,
+                QualificationGate::Package,
+                &error,
+            );
+            self.record_component_qualification_evidence(
+                user_id,
+                attempt_id,
+                &job,
+                qualification,
+                None,
+            )?;
+            return Err(error);
+        }
+        if package.archive_sha256 != job.package_sha256 {
+            return Err("Factor Component qualification Package identity is invalid".into());
+        }
+        let feature_dataset = self
+            .inner
+            .source
+            .feature_dataset(user_id, &job.binding.feature_dataset.binding.dataset_id)?;
+        let feature_binding = &job.binding.feature_dataset;
+        if feature_dataset.user_id != user_uuid(user_id).to_string()
+            || feature_dataset.dataset_id != feature_binding.binding.dataset_id
+            || feature_dataset.feature_plan_hash != feature_binding.binding.feature_plan_hash
+            || feature_dataset.market_data_snapshot_id != feature_binding.market_data_snapshot_id
+            || feature_dataset.point_in_time_universe_id
+                != feature_binding.point_in_time_universe_id
+            || feature_dataset.plan_json != feature_binding.plan_json
+            || feature_dataset.engine_identity != feature_binding.engine_identity
+            || feature_dataset.output_names != feature_binding.output_names
+        {
+            return Err(
+                "Factor Component qualification Feature Dataset is not the frozen predecessor"
+                    .into(),
+            );
+        }
+        let universe = self
+            .inner
+            .source
+            .point_in_time_universe(user_id, &feature_binding.point_in_time_universe_id)?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        let frozen_component_parameters =
+            adaq_factor_research::component_parameter_values(&frozen_protocol.parameters);
+        let input_identity_sha256 = feature_rows_hash(&feature_dataset.rows);
+        let frozen_output_sha256 = factor_rows_hash(&factor_dataset.rows);
+        let limits =
+            adaq_factor_research::run_limits(job.binding.resource_policy).map_err(string)?;
+        let mut cases = Vec::new();
+        let mut qualification = adaq_component_tooling::qualify_package_with_limits(
+            attempt_id,
+            &package_bytes,
+            limits,
+            |runtime_package, typed_parameters| {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err("cancelled".into());
+                }
+                let parameter_values = component_parameter_map(
+                    &runtime_package.manifest.parameters,
+                    typed_parameters,
+                )?;
+                let factor_parameters =
+                    factor_parameter_values(&job.binding.candidate.parameters, typed_parameters)?;
+                let frozen_parameters = typed_parameters == frozen_component_parameters;
+                let protocol = if frozen_parameters {
+                    frozen_protocol.clone()
+                } else {
+                    freeze_qualification_protocol(&frozen_protocol, factor_parameters.clone())?
+                };
+                let expected_rows = if frozen_parameters {
+                    factor_dataset.rows.clone()
+                } else {
+                    FactorMaterializer::materialize(FactorMaterializationInput {
+                        candidate: &job.binding.candidate,
+                        protocol: &protocol,
+                        feature_dataset: &feature_dataset,
+                        point_in_time_universe: &universe,
+                        custom_package: matches!(
+                            &job.binding.candidate.source,
+                            FactorCandidateSource::Custom { .. }
+                        )
+                        .then_some(runtime_package),
+                    })
+                    .map_err(string)?
+                    .rows
+                };
+                let expected_output_sha256 = factor_rows_hash(&expected_rows);
+                let actual_rows = match FactorMaterializer::replay_component_package(
+                    FactorMaterializationInput {
+                        candidate: &job.binding.candidate,
+                        protocol: &protocol,
+                        feature_dataset: &feature_dataset,
+                        point_in_time_universe: &universe,
+                        custom_package: Some(runtime_package),
+                    },
+                    runtime_package,
+                    &provenance,
+                ) {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        let diagnostic = safe_diagnostic(&error.to_string());
+                        cases.push(FactorComponentEquivalenceCase {
+                            parameter_values,
+                            parameter_hash: String::new(),
+                            expected_output_sha256: Some(expected_output_sha256),
+                            actual_output_sha256: None,
+                            expected_row_count: Some(expected_rows.len() as u64),
+                            actual_row_count: None,
+                            passed: false,
+                            diagnostic: Some(diagnostic.clone()),
+                        });
+                        return Err(diagnostic);
+                    }
+                };
+                let actual_output_sha256 = factor_rows_hash(&actual_rows);
+                let comparison = compare_factor_rows(&expected_rows, &actual_rows);
+                let passed = comparison.is_ok();
+                let diagnostic = comparison.err().map(|error| safe_diagnostic(&error));
+                cases.push(FactorComponentEquivalenceCase {
+                    parameter_values,
+                    parameter_hash: String::new(),
+                    expected_output_sha256: Some(expected_output_sha256),
+                    actual_output_sha256: Some(actual_output_sha256),
+                    expected_row_count: Some(expected_rows.len() as u64),
+                    actual_row_count: Some(actual_rows.len() as u64),
+                    passed,
+                    diagnostic: diagnostic.clone(),
+                });
+                diagnostic.map_or(Ok(()), Err)
+            },
+        );
+        for evidence in &mut qualification.evidence {
+            evidence.diagnostic = evidence
+                .diagnostic
+                .take()
+                .map(|diagnostic| safe_diagnostic(&diagnostic));
+        }
+        let frozen_parameter_values =
+            component_parameter_map(&package.manifest.parameters, &frozen_component_parameters)?;
+        for case in &mut cases {
+            if let Some(evidence) = qualification.evidence.iter().find(|evidence| {
+                evidence.parameter_values.iter().all(|(key, value)| {
+                    case.parameter_values
+                        .get(key)
+                        .is_some_and(|case_value| case_value == value)
+                }) && evidence.parameter_values.len() == case.parameter_values.len()
+            }) {
+                case.parameter_hash = evidence.parameter_hash.clone();
+            }
+        }
+        let equivalence = FactorComponentEquivalenceReport {
+            schema_version: FACTOR_COMPONENT_QUALIFICATION_SCHEMA_VERSION.into(),
+            comparison_contract: FACTOR_COMPONENT_EQUIVALENCE_CONTRACT.into(),
+            candidate_hash: job.binding.candidate.candidate_hash.clone(),
+            package_sha256: job.package_sha256.clone(),
+            factor_dataset_id: factor_dataset.manifest.dataset_id.clone(),
+            feature_dataset_id: feature_dataset.dataset_id.clone(),
+            feature_plan_hash: feature_dataset.feature_plan_hash.clone(),
+            market_data_snapshot_id: feature_dataset.market_data_snapshot_id.clone(),
+            point_in_time_universe_id: feature_dataset.point_in_time_universe_id.clone(),
+            scope: job.binding.candidate.scope,
+            output_names: job
+                .binding
+                .candidate
+                .outputs
+                .iter()
+                .map(|output| output.name.clone())
+                .collect(),
+            input_identity_sha256,
+            frozen_output_sha256,
+            cases,
+        };
+        if !qualification.qualified {
+            let diagnostic = qualification
+                .evidence
+                .iter()
+                .filter_map(|evidence| evidence.diagnostic.as_deref())
+                .next()
+                .unwrap_or("package qualification failed");
+            let diagnostic = safe_diagnostic(diagnostic);
+            self.record_component_qualification_evidence(
+                user_id,
+                attempt_id,
+                &job,
+                qualification,
+                Some(equivalence),
+            )?;
+            if diagnostic == "cancelled" {
+                return Err("cancelled".into());
+            }
+            return Err(format!(
+                "Factor Component qualification failed: {diagnostic}"
+            ));
+        }
+        if !equivalence
+            .cases
+            .iter()
+            .any(|case| case.parameter_values == frozen_parameter_values)
+        {
+            let diagnostic = "qualification did not replay the frozen parameter combination";
+            mark_qualification_failed(
+                &mut qualification,
+                QualificationGate::Equivalence,
+                diagnostic,
+            );
+            self.record_component_qualification_evidence(
+                user_id,
+                attempt_id,
+                &job,
+                qualification,
+                Some(equivalence),
+            )?;
+            return Err(diagnostic.into());
+        }
+        let evidence_json = serde_json::to_string(&FactorComponentQualificationEvidence {
+            schema_version: FACTOR_COMPONENT_QUALIFICATION_SCHEMA_VERSION.into(),
+            candidate_attempt_id: job.candidate_attempt_id.clone(),
+            package_sha256: job.package_sha256.clone(),
+            binding: job.binding.clone(),
+            qualification: qualification.clone(),
+            provenance: provenance.clone(),
+            equivalence: Some(equivalence.clone()),
+        })
+        .map_err(string)?;
+        let publication = (|| -> Result<String, String> {
+            let database = self.database()?;
+            let transaction = database.unchecked_transaction().map_err(string)?;
+            let store = ResearchStore::new(&transaction);
+            if !store.component_binding_is_current(user_id, &job.binding)? {
+                return Err(
+                    "stale: Factor Component Decision changed before qualification publication"
+                        .into(),
+                );
+            }
+            let publishable: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM factor_research_attempts
+                      WHERE attempt_id = ?1 AND user_id = ?2
+                        AND kind = 'factor-component-qualification'
+                        AND status = 'running'
+                        AND (diagnostic IS NULL OR diagnostic != ?3)",
+                    params![attempt_id, user_id, CANCELLATION_REQUESTED_DIAGNOSTIC],
+                    |row| row.get(0),
+                )
+                .map_err(string)?;
+            if publishable != 1 || cancelled.load(Ordering::Relaxed) {
+                return Err("cancelled".into());
+            }
+            self.inner
+                .source
+                .publish_qualified_component_in_transaction(
+                    &transaction,
+                    user_id,
+                    &package_bytes,
+                    &qualification,
+                    &evidence_json,
+                )?;
+            let changed = transaction
+                .execute(
+                    "UPDATE factor_research_attempts
+                        SET status = 'completed', result_id = ?2,
+                            completed_units = 1, progress_total = 1, updated_at_ms = ?3
+                      WHERE attempt_id = ?1 AND user_id = ?4
+                        AND kind = 'factor-component-qualification'
+                        AND status = 'running'
+                        AND (diagnostic IS NULL OR diagnostic != ?5)",
+                    params![
+                        attempt_id,
+                        job.package_sha256,
+                        now_ms(),
+                        user_id,
+                        CANCELLATION_REQUESTED_DIAGNOSTIC
+                    ],
+                )
+                .map_err(string)?;
+            if changed != 1 {
+                return Err("cancelled".into());
+            }
+            transaction.commit().map_err(string)?;
+            Ok(job.package_sha256.clone())
+        })();
+        match publication {
+            Ok(package_sha256) => Ok(package_sha256),
+            Err(error) => {
+                mark_qualification_failed(
+                    &mut qualification,
+                    QualificationGate::Equivalence,
+                    &error,
+                );
+                self.record_component_qualification_evidence(
+                    user_id,
+                    attempt_id,
+                    &job,
+                    qualification,
+                    Some(equivalence),
+                )?;
+                Err(error)
+            }
+        }
+    }
+
+    fn record_component_qualification_evidence(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+        job: &FactorComponentQualificationJob,
+        qualification: QualificationAttempt,
+        equivalence: Option<FactorComponentEquivalenceReport>,
+    ) -> Result<(), String> {
+        if qualification.attempt_id != attempt_id {
+            return Err("Factor Component qualification Attempt identity differs".into());
+        }
+        let provenance = job
+            .binding
+            .build_provenance
+            .clone()
+            .ok_or_else(|| "Factor Component build provenance is incomplete".to_owned())?;
+        let evidence_json = serde_json::to_string(&FactorComponentQualificationEvidence {
+            schema_version: FACTOR_COMPONENT_QUALIFICATION_SCHEMA_VERSION.into(),
+            candidate_attempt_id: job.candidate_attempt_id.clone(),
+            package_sha256: job.package_sha256.clone(),
+            binding: job.binding.clone(),
+            qualification: qualification.clone(),
+            provenance,
+            equivalence,
+        })
+        .map_err(string)?;
+        self.inner.source.record_component_qualification(
+            user_id,
+            &qualification,
+            &job.package_sha256,
+            &evidence_json,
+        )
+    }
+
     fn execute_materialization(
         &self,
         user_id: &str,
@@ -2294,6 +2936,7 @@ fn validate_built_package(
     candidate: &FactorCandidate,
 ) -> Result<(), String> {
     if package.manifest.kind != ComponentKind::Factor
+        || package.manifest.component_id != candidate.candidate_id
         || package.manifest.factor_scope
             != Some(match candidate.scope {
                 adaq_factor_research::FactorScope::TimeSeries => PackageFactorScope::TimeSeries,
@@ -2348,6 +2991,325 @@ fn validate_built_package(
             })
     {
         return Err("built Factor parameters do not match the frozen Candidate schema".into());
+    }
+    Ok(())
+}
+
+fn component_parameter_map(
+    definitions: &[adaq_component_tooling::ParameterDefinition],
+    values: &[ComponentParameterValue],
+) -> Result<BTreeMap<String, String>, String> {
+    if definitions.len() != values.len() {
+        return Err("Factor Component parameter count differs from the Candidate".into());
+    }
+    definitions
+        .iter()
+        .zip(values)
+        .map(|(definition, value)| {
+            let value = match (&definition.parameter_type, value) {
+                (ParameterType::Decimal, ComponentParameterValue::Decimal(value)) => value.clone(),
+                (ParameterType::Integer, ComponentParameterValue::Integer(value)) => {
+                    value.to_string()
+                }
+                (ParameterType::Boolean, ComponentParameterValue::Boolean(value)) => {
+                    value.to_string()
+                }
+                (ParameterType::String, ComponentParameterValue::String(value)) => value.clone(),
+                _ => {
+                    return Err(format!(
+                        "Factor Component parameter {} has an incompatible type",
+                        definition.name
+                    ));
+                }
+            };
+            Ok((definition.name.clone(), value))
+        })
+        .collect()
+}
+
+fn factor_parameter_values(
+    parameters: &[adaq_factor_research::FactorParameter],
+    values: &[ComponentParameterValue],
+) -> Result<Vec<adaq_factor_research::FactorParameterValue>, String> {
+    if parameters.len() != values.len() {
+        return Err("Factor Component parameter count differs from the Candidate".into());
+    }
+    parameters
+        .iter()
+        .zip(values)
+        .map(
+            |(parameter, value)| match (parameter.parameter_type, value) {
+                (
+                    adaq_factor_research::FactorParameterType::Decimal,
+                    ComponentParameterValue::Decimal(value),
+                ) => Ok(adaq_factor_research::FactorParameterValue::Decimal(
+                    value.clone(),
+                )),
+                (
+                    adaq_factor_research::FactorParameterType::Integer,
+                    ComponentParameterValue::Integer(value),
+                ) => Ok(adaq_factor_research::FactorParameterValue::Integer(*value)),
+                (
+                    adaq_factor_research::FactorParameterType::Boolean,
+                    ComponentParameterValue::Boolean(value),
+                ) => Ok(adaq_factor_research::FactorParameterValue::Boolean(*value)),
+                (
+                    adaq_factor_research::FactorParameterType::Text,
+                    ComponentParameterValue::String(value),
+                ) => Ok(adaq_factor_research::FactorParameterValue::Text(
+                    value.clone(),
+                )),
+                _ => Err(format!(
+                    "Factor Component parameter {} has an incompatible type",
+                    parameter.name
+                )),
+            },
+        )
+        .collect()
+}
+
+fn freeze_qualification_protocol(
+    source: &FactorMaterializationProtocol,
+    parameters: Vec<adaq_factor_research::FactorParameterValue>,
+) -> Result<FactorMaterializationProtocol, String> {
+    FactorMaterializationProtocol::freeze(FactorMaterializationProtocolDraft {
+        protocol_id: Uuid::new_v4(),
+        user_id: source.user_id,
+        candidate_hash: source.candidate_hash.clone(),
+        feature_dataset_id: source.feature_dataset_id.clone(),
+        feature_plan_hash: source.feature_plan_hash.clone(),
+        parameters,
+        market_data_snapshot_id: source.market_data_snapshot_id.clone(),
+        point_in_time_universe_id: source.point_in_time_universe_id.clone(),
+        observation_range: source.observation_range.clone(),
+        market_context: source.market_context.clone(),
+        engine_identity: source.engine_identity.clone(),
+        seed: source.seed,
+    })
+    .map_err(string)
+}
+
+fn parameter_hash(values: &BTreeMap<String, String>) -> String {
+    let mut bytes = Vec::new();
+    for (key, value) in values {
+        bytes.extend_from_slice(key.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(value.as_bytes());
+        bytes.push(0);
+    }
+    hash_bytes(&bytes)
+}
+
+fn feature_rows_hash(rows: &[adaq_feature_engine::FeatureDatasetRow]) -> String {
+    let mut digest = Sha256::new();
+    for row in rows {
+        digest.update(row.instrument_id.as_bytes());
+        digest.update([0]);
+        digest.update(row.observation_time_ms.to_le_bytes());
+        for (name, cell) in &row.values {
+            digest.update(name.as_bytes());
+            digest.update([0]);
+            match cell {
+                adaq_feature_engine::FeatureDatasetCell::Available {
+                    value,
+                    available_at_ms,
+                } => {
+                    digest.update([1]);
+                    digest.update(value.to_bits().to_le_bytes());
+                    digest.update(available_at_ms.to_le_bytes());
+                }
+                adaq_feature_engine::FeatureDatasetCell::Unavailable { reason } => {
+                    digest.update([0]);
+                    digest.update(format!("{reason:?}").as_bytes());
+                    digest.update([0]);
+                }
+            }
+        }
+    }
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn factor_rows_hash(rows: &[FactorDatasetRow]) -> String {
+    let mut digest = Sha256::new();
+    for row in rows {
+        digest.update(row.instrument_id.as_bytes());
+        digest.update([0]);
+        digest.update(row.observation_time_ms.to_le_bytes());
+        for (name, value) in &row.values {
+            digest.update(name.as_bytes());
+            digest.update([0]);
+            match value {
+                FactorObservationValue::Available {
+                    value,
+                    available_at_ms,
+                } => {
+                    digest.update([1]);
+                    digest.update(value.to_bits().to_le_bytes());
+                    digest.update(available_at_ms.to_le_bytes());
+                }
+                FactorObservationValue::Unavailable { reason } => {
+                    digest.update([0]);
+                    digest.update(format!("{reason:?}").as_bytes());
+                    digest.update([0]);
+                }
+            }
+        }
+    }
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn compare_factor_rows(
+    expected: &[FactorDatasetRow],
+    actual: &[FactorDatasetRow],
+) -> Result<(), String> {
+    if expected.len() != actual.len() {
+        return Err(format!(
+            "Factor Equivalence row count differs: expected {}, actual {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    for (index, (expected, actual)) in expected.iter().zip(actual).enumerate() {
+        if expected.instrument_id != actual.instrument_id
+            || expected.observation_time_ms != actual.observation_time_ms
+            || expected.values.keys().ne(actual.values.keys())
+        {
+            return Err(format!(
+                "Factor Equivalence row identity or output order differs at row {index}"
+            ));
+        }
+        for (name, expected_value) in &expected.values {
+            let actual_value = &actual.values[name];
+            let equal = match (expected_value, actual_value) {
+                (
+                    FactorObservationValue::Available {
+                        value: expected,
+                        available_at_ms: expected_at,
+                    },
+                    FactorObservationValue::Available {
+                        value: actual,
+                        available_at_ms: actual_at,
+                    },
+                ) => expected.to_bits() == actual.to_bits() && expected_at == actual_at,
+                (
+                    FactorObservationValue::Unavailable { reason: expected },
+                    FactorObservationValue::Unavailable { reason: actual },
+                ) => expected == actual,
+                _ => false,
+            };
+            if !equal {
+                return Err(format!(
+                    "Factor Equivalence output {name} differs at row {index}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mark_qualification_failed(
+    attempt: &mut QualificationAttempt,
+    gate: QualificationGate,
+    diagnostic: &str,
+) {
+    attempt.qualified = false;
+    let parameter_values = HashMap::new();
+    attempt.evidence.push(QualificationEvidence {
+        combination: attempt.evidence.len(),
+        parameter_hash: parameter_hash(&BTreeMap::new()),
+        parameter_values,
+        gate,
+        diagnostic: Some(safe_diagnostic(diagnostic)),
+    });
+}
+
+fn failed_qualification_attempt(
+    attempt_id: &str,
+    candidate: &FactorCandidate,
+    gate: QualificationGate,
+    diagnostic: &str,
+) -> QualificationAttempt {
+    let mut attempt = QualificationAttempt {
+        attempt_id: attempt_id.to_owned(),
+        archive_sha256: String::new(),
+        component_id: candidate.candidate_id.to_string(),
+        version: String::new(),
+        kind: ComponentKind::Factor,
+        qualified: false,
+        evidence: Vec::new(),
+    };
+    mark_qualification_failed(&mut attempt, gate, diagnostic);
+    attempt
+}
+
+fn validate_component_qualification_evidence(
+    evidence: &FactorComponentQualificationEvidence,
+    user_id: &str,
+    attempt_id: &str,
+) -> Result<(), String> {
+    if evidence.schema_version != FACTOR_COMPONENT_QUALIFICATION_SCHEMA_VERSION
+        || evidence.candidate_attempt_id.trim().is_empty()
+        || evidence.qualification.attempt_id != attempt_id
+        || evidence.package_sha256.trim().is_empty()
+        || evidence.provenance.package_sha256 != evidence.package_sha256
+        || evidence.provenance.resource_policy != evidence.binding.resource_policy
+        || evidence.binding.decision_record.decision.user_id != user_uuid(user_id)
+    {
+        return Err("Factor Component qualification evidence identity is invalid".into());
+    }
+    evidence.binding.validate()?;
+    if evidence.qualification.attempt_id.trim().is_empty()
+        || evidence.qualification.kind != ComponentKind::Factor
+        || (evidence.qualification.qualified
+            && (evidence.qualification.archive_sha256 != evidence.package_sha256
+                || evidence.qualification.component_id
+                    != evidence.binding.candidate.candidate_id.to_string()
+                || evidence.qualification.version.trim().is_empty()
+                || evidence.equivalence.is_none()))
+    {
+        return Err("Factor Component qualification result is invalid".into());
+    }
+    if let Some(report) = &evidence.equivalence {
+        if report.schema_version != FACTOR_COMPONENT_QUALIFICATION_SCHEMA_VERSION
+            || report.comparison_contract != FACTOR_COMPONENT_EQUIVALENCE_CONTRACT
+            || report.candidate_hash != evidence.binding.candidate.candidate_hash
+            || report.package_sha256 != evidence.package_sha256
+            || report.factor_dataset_id != evidence.binding.factor_dataset.dataset_id
+            || report.feature_dataset_id != evidence.binding.feature_dataset.binding.dataset_id
+            || report.feature_plan_hash
+                != evidence.binding.feature_dataset.binding.feature_plan_hash
+            || report.market_data_snapshot_id
+                != evidence.binding.feature_dataset.market_data_snapshot_id
+            || report.point_in_time_universe_id
+                != evidence.binding.feature_dataset.point_in_time_universe_id
+            || report.scope != evidence.binding.candidate.scope
+            || report.output_names
+                != evidence
+                    .binding
+                    .candidate
+                    .outputs
+                    .iter()
+                    .map(|output| output.name.clone())
+                    .collect::<Vec<_>>()
+            || !adaq_factor_research::is_sha256(&report.input_identity_sha256)
+            || !adaq_factor_research::is_sha256(&report.frozen_output_sha256)
+            || (evidence.qualification.qualified
+                && (report.cases.is_empty() || report.cases.iter().any(|case| !case.passed)))
+            || report
+                .cases
+                .iter()
+                .any(|case| !adaq_factor_research::is_sha256(&case.parameter_hash))
+        {
+            return Err("Factor Component Equivalence Report identity is invalid".into());
+        }
     }
     Ok(())
 }
@@ -2693,7 +3655,7 @@ impl<'a> ResearchStore<'a> {
                 "UPDATE factor_research_attempts
                     SET status = CASE
                             WHEN diagnostic = ?2 THEN 'cancelled'
-                            WHEN kind = 'factor-component-build' THEN 'interrupted'
+                            WHEN kind IN ('factor-component-build', 'factor-component-qualification') THEN 'interrupted'
                             ELSE 'failed'
                         END,
                         diagnostic = CASE WHEN diagnostic = ?2 THEN ?3 ELSE ?1 END,
@@ -3170,6 +4132,29 @@ impl<'a> ResearchStore<'a> {
             "materialization",
             protocol,
         )
+    }
+
+    fn materialization_protocol_for_user(
+        &self,
+        user_id: &str,
+        protocol_hash: &str,
+    ) -> Result<FactorMaterializationProtocol, String> {
+        let json: String = self
+            .database
+            .query_row(
+                "SELECT protocol_json FROM factor_research_protocols
+                  WHERE protocol_hash = ?1 AND user_id = ?2 AND kind = 'materialization'",
+                params![protocol_hash, user_uuid(user_id).to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Factor Materialization Protocol was not found".to_owned())?;
+        let protocol: FactorMaterializationProtocol =
+            serde_json::from_str(&json).map_err(string)?;
+        protocol.validate().map_err(string)?;
+        if protocol.user_id != user_uuid(user_id) || protocol.protocol_hash != protocol_hash {
+            return Err("Factor Materialization Protocol is not owned by this User".into());
+        }
+        Ok(protocol)
     }
 
     fn save_evaluation_protocol(&self, protocol: &FactorEvaluationProtocol) -> Result<(), String> {
@@ -7504,6 +8489,10 @@ mod tests {
                 FactorFailureCode::from_code(expected)
             );
         }
+        assert_eq!(
+            FactorFailureCode::for_kind("factor-component-qualification"),
+            FactorFailureCode::FactorComponentQualificationFailed
+        );
     }
 
     #[test]
@@ -7813,6 +8802,97 @@ mod tests {
         }
 
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn component_qualification_recovery_retry_and_diagnostics_are_user_scoped() {
+        let database = Arc::new(Mutex::new(store()));
+        let directory = tempfile_dir("factor-component-qualification-recovery");
+        let attempt = {
+            let database = database.lock().unwrap();
+            let store = ResearchStore::new(&database);
+            let (attempt, _) = store
+                .start_attempt(
+                    "alice",
+                    "factor-component-qualification",
+                    "{\"candidateAttemptId\":\"candidate-1\"}",
+                )
+                .unwrap();
+            store.begin_attempt(&attempt.attempt_id).unwrap();
+            attempt
+        };
+        let source: Arc<dyn FactorResearchSource> = Arc::new(TestSource {
+            database: database.clone(),
+            directory: directory.clone(),
+        });
+        ResearchStore::recover_stale_attempts(&directory, &source).unwrap();
+
+        let retry = {
+            let database = database.lock().unwrap();
+            let store = ResearchStore::new(&database);
+            let interrupted = store
+                .attempt_for_user("alice", &attempt.attempt_id)
+                .unwrap();
+            assert_eq!(interrupted.status, AttemptStatus::Interrupted);
+            let (retry, should_start) = store.retry_attempt("alice", &attempt.attempt_id).unwrap();
+            assert!(should_start);
+            assert_eq!(
+                retry.source_attempt_id.as_deref(),
+                Some(attempt.attempt_id.as_str())
+            );
+            store.begin_attempt(&retry.attempt_id).unwrap();
+            store
+                .fail_attempt(
+                    &retry.attempt_id,
+                    "failed /Users/alice/build with Authorization: bearer secret-token",
+                )
+                .unwrap();
+            retry
+        };
+        let database = database.lock().unwrap();
+        let failed = ResearchStore::new(&database)
+            .attempt_for_user("alice", &retry.attempt_id)
+            .unwrap();
+        assert_eq!(
+            failed.failure_code,
+            Some(FactorFailureCode::FactorComponentQualificationFailed)
+        );
+        let diagnostic = failed.diagnostic.unwrap();
+        assert!(diagnostic.len() <= MAX_DIAGNOSTIC_BYTES);
+        assert!(!diagnostic.contains("/Users/") && diagnostic.contains("<private>/"));
+        assert!(
+            !ResearchStore::new(&database)
+                .attempt_for_user("bob", &retry.attempt_id)
+                .is_ok()
+        );
+        drop(database);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn component_equivalence_compares_values_and_availability_exactly() {
+        let expected = vec![row(1, 1.0)];
+        assert!(compare_factor_rows(&expected, &expected).is_ok());
+
+        let mut changed_value = expected.clone();
+        changed_value[0].values.insert(
+            "momentum".into(),
+            FactorObservationValue::Available {
+                value: f64::from_bits(1.0f64.to_bits() + 1),
+                available_at_ms: 1,
+            },
+        );
+        assert!(compare_factor_rows(&expected, &changed_value).is_err());
+
+        let mut changed_availability = expected;
+        changed_availability[0].values.insert(
+            "momentum".into(),
+            FactorObservationValue::Available {
+                value: 1.0,
+                available_at_ms: 2,
+            },
+        );
+        assert!(compare_factor_rows(&[row(1, 1.0)], &changed_availability).is_err());
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub use plan::{
 };
 pub use qualification::{
     QualificationAttempt, QualificationEvidence, QualificationGate, qualify_package,
+    qualify_package_with_limits,
 };
 pub use runtime::{
     ComponentParameterValue, FactorParameterSchema, FactorSchema, RunLimits, WasmLoader,

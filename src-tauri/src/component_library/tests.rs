@@ -375,6 +375,139 @@ fn import_is_user_scoped_and_identity_locked() {
 }
 
 #[test]
+fn qualified_factor_publication_is_atomic_idempotent_and_user_scoped() {
+    let harness = harness("qualified-publication");
+    let (factor, wasm) = fixture("factor");
+    let bytes = pack_component(factor.clone(), &wasm).unwrap();
+    let package = ComponentPackage::read(&bytes).unwrap();
+    let qualification = QualificationAttempt {
+        attempt_id: "qualification-attempt-1".into(),
+        archive_sha256: package.archive_sha256.clone(),
+        component_id: package.manifest.component_id.to_string(),
+        version: package.manifest.version.to_string(),
+        kind: ComponentKind::Factor,
+        qualified: true,
+        evidence: vec![],
+    };
+
+    {
+        let mut database = harness.source.database.lock().unwrap();
+        let transaction = database.unchecked_transaction().unwrap();
+        harness
+            .components
+            .publish_qualified_in_transaction(
+                &transaction,
+                "alice",
+                &bytes,
+                &qualification,
+                "{\"published\":true}",
+            )
+            .unwrap();
+        transaction.rollback().unwrap();
+    }
+    assert!(
+        !harness
+            .components
+            .is_imported("alice", &package.archive_sha256)
+            .unwrap()
+    );
+    assert!(
+        harness
+            .components
+            .qualification_for_user("alice", &qualification.attempt_id)
+            .unwrap()
+            .is_none()
+    );
+
+    {
+        let mut database = harness.source.database.lock().unwrap();
+        let transaction = database.unchecked_transaction().unwrap();
+        harness
+            .components
+            .publish_qualified_in_transaction(
+                &transaction,
+                "alice",
+                &bytes,
+                &qualification,
+                "{\"published\":true}",
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+    }
+    assert!(
+        harness
+            .components
+            .is_imported("alice", &package.archive_sha256)
+            .unwrap()
+    );
+    assert!(
+        !harness
+            .components
+            .is_imported("bob", &package.archive_sha256)
+            .unwrap()
+    );
+    assert_eq!(
+        harness
+            .components
+            .qualification_for_user("bob", &qualification.attempt_id)
+            .unwrap()
+            .is_none(),
+        true
+    );
+
+    // Replaying the same qualified archive is idempotent and does not create
+    // a second content or entitlement row.
+    {
+        let mut database = harness.source.database.lock().unwrap();
+        let transaction = database.unchecked_transaction().unwrap();
+        harness
+            .components
+            .publish_qualified_in_transaction(
+                &transaction,
+                "alice",
+                &bytes,
+                &qualification,
+                "{\"published\":true}",
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+    }
+    assert_eq!(harness.components.list("alice").unwrap().len(), 1);
+
+    let mut conflicting = factor;
+    conflicting.name = "Different Factor Archive".into();
+    let conflicting_bytes = pack_component(conflicting, &wasm).unwrap();
+    let conflicting_package = ComponentPackage::read(&conflicting_bytes).unwrap();
+    let conflicting_qualification = QualificationAttempt {
+        attempt_id: "qualification-attempt-2".into(),
+        archive_sha256: conflicting_package.archive_sha256.clone(),
+        component_id: conflicting_package.manifest.component_id.to_string(),
+        version: conflicting_package.manifest.version.to_string(),
+        kind: ComponentKind::Factor,
+        qualified: true,
+        evidence: vec![],
+    };
+    let mut database = harness.source.database.lock().unwrap();
+    let transaction = database.unchecked_transaction().unwrap();
+    assert_eq!(
+        harness
+            .components
+            .publish_qualified_in_transaction(
+                &transaction,
+                "alice",
+                &conflicting_bytes,
+                &conflicting_qualification,
+                "{}",
+            )
+            .unwrap_err(),
+        "A different Component already uses this identity and version"
+    );
+    transaction.rollback().unwrap();
+    drop(database);
+    finish(harness);
+}
+
+#[test]
 fn paging_returns_ten_packages_per_page() {
     let harness = harness("paging");
     let database = harness.source.database.lock().unwrap();

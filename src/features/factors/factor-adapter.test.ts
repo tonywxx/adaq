@@ -19,6 +19,8 @@ test("Factor adapter keeps User scope and immutable command payloads explicit", 
 	);
 	await adapter.prepareComponent("user-1", "decision-1", "momentum");
 	await adapter.getComponentCandidate("user-1", "attempt-1");
+	await adapter.prepareComponentQualification("user-1", "candidate-attempt-1");
+	await adapter.getComponentQualification("user-1", "qualification-attempt-1");
 	await adapter.retryComponentAttempt("user-1", "attempt-1");
 	await adapter.registerGridFamily("user-1", {
 		familyId: "family-1",
@@ -88,6 +90,24 @@ test("Factor adapter keeps User scope and immutable command payloads explicit", 
 			command: "factor_component_candidate_get",
 			args: {
 				request: { userId: "user-1", attemptId: "attempt-1" },
+			},
+		},
+		{
+			command: "factor_component_qualification_prepare",
+			args: {
+				request: {
+					userId: "user-1",
+					candidateAttemptId: "candidate-attempt-1",
+				},
+			},
+		},
+		{
+			command: "factor_component_qualification_get",
+			args: {
+				request: {
+					userId: "user-1",
+					attemptId: "qualification-attempt-1",
+				},
 			},
 		},
 		{

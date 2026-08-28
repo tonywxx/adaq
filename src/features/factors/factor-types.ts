@@ -30,6 +30,7 @@ export type FactorAttemptStatus =
 export type FactorFailureCode =
 	| "cancelled"
 	| "factor-component-build-failed"
+	| "factor-component-qualification-failed"
 	| "candidate-build-failed"
 	| "factor-compatibility-failed"
 	| "factor-corruption-detected"
@@ -86,6 +87,18 @@ export type FactorComponentCandidateView = {
 	packageSha256: string;
 	manifest: FactorJson;
 	binding: FactorJson;
+};
+
+export type FactorComponentQualificationView = {
+	attempt: FactorAttemptView;
+	candidateAttemptId?: string | null;
+	packageSha256?: string | null;
+	binding?: FactorJson | null;
+	qualification?: FactorJson | null;
+	provenance?: FactorJson | null;
+	equivalence?: FactorJson | null;
+	published: boolean;
+	evidenceCreatedAtMs?: number | null;
 };
 
 export type FactorCandidatePredecessor = ResearchEvidenceProjection & {

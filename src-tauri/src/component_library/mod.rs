@@ -72,6 +72,16 @@ pub(crate) struct ComponentSummary {
     pub component_blocking_run_count: u64,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ComponentQualificationRecord {
+    pub attempt_id: String,
+    pub user_id: String,
+    pub archive_sha256: String,
+    pub qualified: bool,
+    pub evidence_json: String,
+    pub created_at_ms: i64,
+}
+
 /// The Component Library interface: import, listing, paging,
 /// imported-check, compatibility lookups, deletion, and entitlement-scoped
 /// Package reads, plus the summary-for-user and reset hooks the
@@ -229,6 +239,161 @@ impl ComponentLibrary {
             )
             .map_err(string)?;
         Ok(attempt)
+    }
+
+    pub(crate) fn record_qualification(
+        &self,
+        user_id: &str,
+        attempt: &QualificationAttempt,
+        archive_sha256: &str,
+        evidence_json: &str,
+    ) -> Result<(), String> {
+        validate_user(user_id)?;
+        let database = self.0.database()?;
+        let transaction = database.unchecked_transaction().map_err(string)?;
+        record_qualification_in_transaction(
+            &transaction,
+            user_id,
+            attempt,
+            archive_sha256,
+            evidence_json,
+        )?;
+        transaction.commit().map_err(string)
+    }
+
+    pub(crate) fn qualification_for_user(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<Option<ComponentQualificationRecord>, String> {
+        validate_user(user_id)?;
+        self.0
+            .database()?
+            .query_row(
+                "SELECT attempt_id, user_id, archive_sha256, qualified,
+                        evidence_json, created_at_ms
+                   FROM component_qualification_attempts
+                  WHERE user_id = ?1 AND attempt_id = ?2",
+                params![user_id, attempt_id],
+                |row| {
+                    Ok(ComponentQualificationRecord {
+                        attempt_id: row.get(0)?,
+                        user_id: row.get(1)?,
+                        archive_sha256: row.get(2)?,
+                        qualified: row.get::<_, i64>(3)? != 0,
+                        evidence_json: row.get(4)?,
+                        created_at_ms: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(string)
+    }
+
+    /// Publishes the qualified Factor package and its entitlement in the
+    /// caller's transaction. No Component Library row is visible until the
+    /// caller also commits its owning research Attempt.
+    pub(crate) fn publish_qualified_in_transaction(
+        &self,
+        transaction: &Transaction<'_>,
+        user_id: &str,
+        bytes: &[u8],
+        attempt: &QualificationAttempt,
+        evidence_json: &str,
+    ) -> Result<(), String> {
+        validate_user(user_id)?;
+        if !attempt.qualified {
+            return Err("Component Package qualification is not successful".into());
+        }
+        let package = ComponentPackage::read(bytes).map_err(string)?;
+        if package.manifest.kind != ComponentKind::Factor
+            || package.archive_sha256 != attempt.archive_sha256
+            || package.manifest.component_id.to_string() != attempt.component_id
+            || package.manifest.version.to_string() != attempt.version
+        {
+            return Err("Factor qualification evidence does not match the Package".into());
+        }
+        let existing: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT archive_sha256, wasm_sha256
+                   FROM component_content
+                  WHERE component_id = ?1 AND version = ?2",
+                params![
+                    package.manifest.component_id.to_string(),
+                    package.manifest.version.to_string()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(string)?;
+        if existing.as_ref().is_some_and(|(archive, wasm)| {
+            archive != &package.archive_sha256 || wasm != &package.manifest.wasm_sha256
+        }) {
+            return Err("A different Component already uses this identity and version".into());
+        }
+        let path = self
+            .0
+            .archive_directory()?
+            .join(format!("{}.adaq", package.archive_sha256));
+        if !path.is_file() {
+            fs::write(&path, bytes).map_err(string)?;
+        }
+        let component = LibraryComponent {
+            component_id: package.manifest.component_id.to_string(),
+            version: package.manifest.version.to_string(),
+            manifest_schema_version: package.manifest.manifest_schema_version.to_string(),
+            sdk_version: package.manifest.sdk_version.to_string(),
+            abi_version: package.manifest.abi_version.to_string(),
+            architecture: strategy_architecture(&package.manifest),
+            name: package.manifest.name.clone(),
+            kind: format!("{:?}", package.manifest.kind).to_lowercase(),
+            archive_sha256: package.archive_sha256.clone(),
+            wasm_sha256: package.manifest.wasm_sha256.clone(),
+            parameters: package.manifest.parameters.clone(),
+            feature_slots: package.manifest.feature_slots.clone(),
+            output_names: package.manifest.output_names.clone(),
+            dependencies: package.manifest.dependencies.clone(),
+            warmup_bars: package.manifest.warmup_bars,
+            model_scope: package.manifest.model_scope,
+            model_outputs: package.manifest.model_outputs.clone(),
+            model_artifact: package.manifest.model_artifact.clone(),
+            compatible: true,
+            compatibility_error: None,
+            locked_by_run_ids: vec![],
+        };
+        let metadata_json = serde_json::to_string(&component).map_err(string)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO component_content
+                 (archive_sha256, component_id, version, name, kind, wasm_sha256,
+                  archive_path, metadata_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    component.archive_sha256,
+                    component.component_id,
+                    component.version,
+                    component.name,
+                    component.kind,
+                    component.wasm_sha256,
+                    path.to_string_lossy(),
+                    metadata_json,
+                ],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO component_access(user_id, archive_sha256)
+                 VALUES (?1, ?2)",
+                params![user_id, package.archive_sha256],
+            )
+            .map_err(string)?;
+        record_qualification_in_transaction(
+            transaction,
+            user_id,
+            attempt,
+            &package.archive_sha256,
+            evidence_json,
+        )
     }
 
     /// Lists every Component Package one User is entitled to, with Run
@@ -495,6 +660,12 @@ impl ComponentLibrary {
             transaction
                 .execute("DELETE FROM component_access WHERE user_id = ?1", [user_id])
                 .map_err(string)?;
+            transaction
+                .execute(
+                    "DELETE FROM component_qualification_attempts WHERE user_id = ?1",
+                    [user_id],
+                )
+                .map_err(string)?;
             self.delete_orphan_content(&transaction, None)?;
             transaction.commit().map_err(string)
         })();
@@ -513,6 +684,12 @@ impl ComponentLibrary {
     ) -> Result<(), String> {
         transaction
             .execute("DELETE FROM component_access WHERE user_id = ?1", [user_id])
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM component_qualification_attempts WHERE user_id = ?1",
+                [user_id],
+            )
             .map_err(string)?;
         Ok(())
     }
@@ -800,6 +977,66 @@ pub struct ComponentArchiveRequest {
 pub struct BacktestDependencyRequest {
     pub user_id: String,
     pub strategy_archive_sha256: String,
+}
+
+fn record_qualification_in_transaction(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    attempt: &QualificationAttempt,
+    archive_sha256: &str,
+    evidence_json: &str,
+) -> Result<(), String> {
+    if attempt.attempt_id.trim().is_empty()
+        || archive_sha256.len() > 64
+        || evidence_json.trim().is_empty()
+    {
+        return Err("Component qualification evidence identity is invalid".into());
+    }
+    let created_at_ms = crate::unix_now_ms();
+    let changed = transaction
+        .execute(
+            "INSERT OR IGNORE INTO component_qualification_attempts(
+                attempt_id, user_id, archive_sha256, qualified, evidence_json, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                attempt.attempt_id,
+                user_id,
+                archive_sha256,
+                attempt.qualified,
+                evidence_json,
+                created_at_ms,
+            ],
+        )
+        .map_err(string)?;
+    if changed == 0 {
+        let existing: (String, String, bool, String) = transaction
+            .query_row(
+                "SELECT user_id, archive_sha256, qualified, evidence_json
+                   FROM component_qualification_attempts
+                  WHERE attempt_id = ?1",
+                [attempt.attempt_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get::<_, i64>(2)? != 0,
+                        row.get(3)?,
+                    ))
+                },
+            )
+            .map_err(string)?;
+        if existing
+            != (
+                user_id.to_owned(),
+                archive_sha256.to_owned(),
+                attempt.qualified,
+                evidence_json.to_owned(),
+            )
+        {
+            return Err("Component qualification Attempt content identity collision".into());
+        }
+    }
+    Ok(())
 }
 
 fn compatible_factor_hashes(

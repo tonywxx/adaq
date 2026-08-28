@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ComponentKind, ComponentPackage, ComponentParameterValue, component_parameters,
-    conformance::verify_package_with_parameters,
+    ComponentKind, ComponentPackage, ComponentParameterValue, RunLimits, component_parameters,
+    conformance::verify_package_with_parameters_and_limits,
 };
 
 const MAX_PARAMETER_COMBINATIONS: usize = 256;
@@ -54,6 +54,20 @@ pub struct QualificationAttempt {
 pub fn qualify_package<F>(
     attempt_id: impl Into<String>,
     bytes: &[u8],
+    equivalent: F,
+) -> QualificationAttempt
+where
+    F: FnMut(&ComponentPackage, &[ComponentParameterValue]) -> Result<(), String>,
+{
+    qualify_package_with_limits(attempt_id, bytes, RunLimits::default(), equivalent)
+}
+
+/// Qualifies an immutable package with the Host resource limits frozen for
+/// the producing research Attempt.
+pub fn qualify_package_with_limits<F>(
+    attempt_id: impl Into<String>,
+    bytes: &[u8],
+    limits: RunLimits,
     mut equivalent: F,
 ) -> QualificationAttempt
 where
@@ -104,7 +118,9 @@ where
                 continue;
             }
         };
-        if let Err(error) = verify_package_with_parameters(&package, Some(&values)) {
+        if let Err(error) =
+            verify_package_with_parameters_and_limits(&package, Some(&values), limits)
+        {
             qualified = false;
             records.push(evidence(
                 index,

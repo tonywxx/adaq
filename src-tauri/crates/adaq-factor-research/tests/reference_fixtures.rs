@@ -1133,6 +1133,38 @@ fn custom_cross_sectional_equivalence() -> bool {
     if declarative_dataset.rows != custom_dataset.rows {
         return false;
     }
+    let build_provenance = match &custom.source {
+        adaq_factor_research::FactorCandidateSource::Custom { build } => build,
+        _ => return false,
+    };
+    let universe_ids = universe.iter().map(|id| (*id).into()).collect::<Vec<_>>();
+    let replayed_declarative = adaq_factor_research::FactorMaterializer::replay_component_package(
+        FactorMaterializationInput {
+            candidate: &declarative,
+            protocol: &declarative_protocol,
+            feature_dataset: &feature_dataset,
+            point_in_time_universe: &universe_ids,
+            custom_package: Some(&build.package),
+        },
+        &build.package,
+        build_provenance,
+    )
+    .unwrap();
+    let replayed_custom = adaq_factor_research::FactorMaterializer::replay_component_package(
+        FactorMaterializationInput {
+            candidate: &custom,
+            protocol: &custom_protocol,
+            feature_dataset: &feature_dataset,
+            point_in_time_universe: &universe_ids,
+            custom_package: Some(&build.package),
+        },
+        &build.package,
+        build_provenance,
+    )
+    .unwrap();
+    if replayed_declarative != declarative_dataset.rows || replayed_custom != custom_dataset.rows {
+        return false;
+    }
     let market = universe
         .iter()
         .map(|instrument| adaq_factor_research::FactorMarketSeries {

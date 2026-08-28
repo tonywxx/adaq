@@ -5,7 +5,7 @@ use rust_decimal::Decimal;
 
 use crate::{
     ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue, FactorScope,
-    FeatureSlotSource, MarketField, ParameterType, WasmLoader, native_engine_identity,
+    FeatureSlotSource, MarketField, ParameterType, RunLimits, WasmLoader, native_engine_identity,
     validate_and_freeze_feature_plan,
 };
 
@@ -14,27 +14,29 @@ pub fn verify_package(package: &ComponentPackage) -> Result<(), String> {
     // parameter-combination qualification is performed by `qualify_package`.
     let parameters = component_parameters(&package.manifest, None)?;
     match package.manifest.kind {
-        ComponentKind::Factor => verify_factor(package, &parameters),
-        ComponentKind::Strategy => verify_strategy(package, &parameters),
-        ComponentKind::Model => verify_model(package, &parameters),
+        ComponentKind::Factor => verify_factor(package, &parameters, RunLimits::default()),
+        ComponentKind::Strategy => verify_strategy(package, &parameters, RunLimits::default()),
+        ComponentKind::Model => verify_model(package, &parameters, RunLimits::default()),
     }
 }
 
-pub(crate) fn verify_package_with_parameters(
+pub(crate) fn verify_package_with_parameters_and_limits(
     package: &ComponentPackage,
     overrides: Option<&HashMap<String, String>>,
+    limits: RunLimits,
 ) -> Result<(), String> {
     let parameters = component_parameters(&package.manifest, overrides)?;
     match package.manifest.kind {
-        ComponentKind::Factor => verify_factor(package, &parameters),
-        ComponentKind::Strategy => verify_strategy(package, &parameters),
-        ComponentKind::Model => verify_model(package, &parameters),
+        ComponentKind::Factor => verify_factor(package, &parameters, limits),
+        ComponentKind::Strategy => verify_strategy(package, &parameters, limits),
+        ComponentKind::Model => verify_model(package, &parameters, limits),
     }
 }
 
 fn verify_model(
     package: &ComponentPackage,
     parameters: &[ComponentParameterValue],
+    limits: RunLimits,
 ) -> Result<(), String> {
     let slots = package
         .manifest
@@ -54,7 +56,7 @@ fn verify_model(
         )
         .collect::<Vec<_>>();
     let run = |chunks: &[usize]| -> Result<_, String> {
-        let loader = WasmLoader::default();
+        let loader = WasmLoader::with_limits(limits);
         loader.load_model_bytes(&package.wasm, slots.clone(), parameters, 7)?;
         let mut output = Vec::new();
         let mut start = 0;
@@ -153,10 +155,13 @@ pub fn component_parameters(
 fn verify_factor(
     package: &ComponentPackage,
     parameters: &[ComponentParameterValue],
+    limits: RunLimits,
 ) -> Result<(), String> {
     match package.manifest.factor_scope {
-        Some(FactorScope::TimeSeries) => verify_time_series_factor(package, parameters),
-        Some(FactorScope::CrossSectional) => verify_cross_sectional_factor(package, parameters),
+        Some(FactorScope::TimeSeries) => verify_time_series_factor(package, parameters, limits),
+        Some(FactorScope::CrossSectional) => {
+            verify_cross_sectional_factor(package, parameters, limits)
+        }
         None => Err("Factor manifest is missing factorScope".into()),
     }
 }
@@ -164,8 +169,9 @@ fn verify_factor(
 fn verify_time_series_factor(
     package: &ComponentPackage,
     parameters: &[ComponentParameterValue],
+    limits: RunLimits,
 ) -> Result<(), String> {
-    let loader = WasmLoader::default();
+    let loader = WasmLoader::with_limits(limits);
     let feature_slots = package
         .manifest
         .feature_slots
@@ -209,12 +215,12 @@ fn verify_time_series_factor(
         )
         .collect::<Vec<_>>();
     let whole = loader.process_factor(rows.clone())?;
-    let replay = WasmLoader::default();
+    let replay = WasmLoader::with_limits(limits);
     replay.load_factor_time_series_bytes(&package.wasm, feature_slots.clone(), parameters)?;
     if !factor_results_equal(&whole, &replay.process_factor(rows.clone())?) {
         return Err("Factor is not deterministic".into());
     }
-    let chunked = WasmLoader::default();
+    let chunked = WasmLoader::with_limits(limits);
     chunked.load_factor_time_series_bytes(&package.wasm, feature_slots, parameters)?;
     let mut chunks = chunked.process_factor(rows[..6].to_vec())?;
     chunks.extend(chunked.process_factor(rows[6..].to_vec())?);
@@ -227,6 +233,7 @@ fn verify_time_series_factor(
 fn verify_cross_sectional_factor(
     package: &ComponentPackage,
     parameters: &[ComponentParameterValue],
+    limits: RunLimits,
 ) -> Result<(), String> {
     let feature_slots = package
         .manifest
@@ -273,7 +280,7 @@ fn verify_cross_sectional_factor(
         .into_iter()
         .map(String::from)
         .collect::<Vec<_>>();
-    let loader = WasmLoader::default();
+    let loader = WasmLoader::with_limits(limits);
     loader.load_factor_cross_sectional_bytes(&package.wasm, feature_slots.clone(), parameters)?;
     let schema = loader.describe_factor()?;
     if schema.output_names != package.manifest.output_names
@@ -288,7 +295,7 @@ fn verify_cross_sectional_factor(
             loader.process_cross_sectional_factor(batch.clone(), &expected_instrument_ids)?,
         );
     }
-    let replay = WasmLoader::default();
+    let replay = WasmLoader::with_limits(limits);
     replay.load_factor_cross_sectional_bytes(&package.wasm, feature_slots.clone(), parameters)?;
     let mut replayed = Vec::new();
     for batch in &batches {
@@ -299,7 +306,7 @@ fn verify_cross_sectional_factor(
     if !cross_sectional_factor_results_equal(&whole, &replayed) {
         return Err("Factor is not deterministic".into());
     }
-    let chunked = WasmLoader::default();
+    let chunked = WasmLoader::with_limits(limits);
     chunked.load_factor_cross_sectional_bytes(&package.wasm, feature_slots, parameters)?;
     let mut chunks = Vec::new();
     for batch in &batches {
@@ -335,6 +342,7 @@ fn manifest_parameter_definitions(package: &ComponentPackage) -> Vec<crate::Fact
 fn verify_strategy(
     package: &ComponentPackage,
     parameters: &[ComponentParameterValue],
+    limits: RunLimits,
 ) -> Result<(), String> {
     let mut conformance_manifest = package.manifest.clone();
     for slot in &mut conformance_manifest.feature_slots {
@@ -370,15 +378,15 @@ fn verify_strategy(
             },
         )
         .collect::<Vec<_>>();
-    let loader = WasmLoader::default();
+    let loader = WasmLoader::with_limits(limits);
     loader.load_strategy_bytes(&package.wasm, slots.clone(), parameters)?;
     let targets = loader.process_strategy(frames.clone())?;
-    let replay = WasmLoader::default();
+    let replay = WasmLoader::with_limits(limits);
     replay.load_strategy_bytes(&package.wasm, slots.clone(), parameters)?;
     if targets != replay.process_strategy(frames.clone())? {
         return Err("Strategy is not deterministic".into());
     }
-    let chunked = WasmLoader::default();
+    let chunked = WasmLoader::with_limits(limits);
     chunked.load_strategy_bytes(&package.wasm, slots, parameters)?;
     let mut chunks = chunked.process_strategy(frames[..1].to_vec())?;
     chunks.extend(chunked.process_strategy(frames[1..].to_vec())?);

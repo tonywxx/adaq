@@ -2,6 +2,7 @@ import type {
 	FactorAttemptView,
 	FactorCandidateView,
 	FactorComponentCandidateView,
+	FactorComponentQualificationView,
 	FactorDatasetRowsPage,
 	FactorDatasetView,
 	FactorDecisionView,
@@ -75,6 +76,14 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			invoke("factor_component_candidate_get", {
 				request: { userId, attemptId },
 			}) as Promise<FactorComponentCandidateView>,
+		prepareComponentQualification: (userId: string, candidateAttemptId: string) =>
+			invoke("factor_component_qualification_prepare", {
+				request: { userId, candidateAttemptId },
+			}) as Promise<FactorAttemptView>,
+		getComponentQualification: (userId: string, attemptId: string) =>
+			invoke("factor_component_qualification_get", {
+				request: { userId, attemptId },
+			}) as Promise<FactorComponentQualificationView>,
 		listFamilies: (userId: string, pageNumber: number) =>
 			page<FactorFamilyView>("factor_family_list", userId, pageNumber),
 		getFamily: (userId: string, evidenceId: string) =>

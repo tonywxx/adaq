@@ -44,7 +44,7 @@ use adaq_factor_research::{
     FactorEvaluationProtocolDraft, FactorLens, FactorMarketSeries, FactorOrientation, FactorTarget,
     ResearchEvidenceContext,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
@@ -391,6 +391,42 @@ impl FactorResearchSource for LocalFactorSource {
                 Default::default(),
             )
             .map_err(|_| "factor-context-stale".to_owned())
+    }
+
+    fn record_component_qualification(
+        &self,
+        user_id: &str,
+        attempt: &adaq_component_tooling::QualificationAttempt,
+        archive_sha256: &str,
+        evidence_json: &str,
+    ) -> Result<(), String> {
+        self.components
+            .record_qualification(user_id, attempt, archive_sha256, evidence_json)
+    }
+
+    fn publish_qualified_component_in_transaction(
+        &self,
+        transaction: &Transaction<'_>,
+        user_id: &str,
+        package_bytes: &[u8],
+        attempt: &adaq_component_tooling::QualificationAttempt,
+        evidence_json: &str,
+    ) -> Result<(), String> {
+        self.components.publish_qualified_in_transaction(
+            transaction,
+            user_id,
+            package_bytes,
+            attempt,
+            evidence_json,
+        )
+    }
+
+    fn component_qualification_for_user(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<Option<crate::component_library::ComponentQualificationRecord>, String> {
+        self.components.qualification_for_user(user_id, attempt_id)
     }
 }
 

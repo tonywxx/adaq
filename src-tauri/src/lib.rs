@@ -690,6 +690,18 @@ factor_blocking_command!(
     get_component_candidate,
     factor_research::FactorComponentCandidateView
 );
+factor_blocking_command!(
+    factor_component_qualification_prepare,
+    factor_research::FactorComponentQualificationPrepareRequest,
+    prepare_component_qualification,
+    factor_research::FactorAttemptView
+);
+factor_blocking_command!(
+    factor_component_qualification_get,
+    factor_research::FactorAttemptRequest,
+    get_component_qualification,
+    factor_research::FactorComponentQualificationView
+);
 #[tauri::command]
 async fn factor_materialization_start(
     payload: serde_json::Value,
@@ -4459,6 +4471,8 @@ pub fn run() {
             factor_candidate_get,
             factor_component_prepare,
             factor_component_candidate_get,
+            factor_component_qualification_prepare,
+            factor_component_qualification_get,
             factor_materialization_start,
             factor_materialization_start_from_context,
             factor_materialization_protocol_freeze,

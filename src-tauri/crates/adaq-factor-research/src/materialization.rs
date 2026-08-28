@@ -13,9 +13,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    AttemptStatus, ContractError, FactorCandidate, FactorCandidateSource, FactorDatasetManifest,
-    FactorMaterializationAttempt, FactorMaterializationProtocol, FactorObservationValue,
-    FactorParameterValue, FactorScope, NamedFactorOutput, component_parameter_values, run_limits,
+    AttemptStatus, ContractError, FactorCandidate, FactorCandidateDraft, FactorCandidateSource,
+    FactorDatasetManifest, FactorMaterializationAttempt, FactorMaterializationProtocol,
+    FactorMaterializationProtocolDraft, FactorObservationValue, FactorParameterValue, FactorScope,
+    NamedFactorOutput, component_parameter_values, run_limits,
 };
 
 pub const MAX_FACTOR_DATASET_ROWS: usize = 2_520_000;
@@ -517,6 +518,50 @@ impl FactorMaterializer {
         let dataset = FactorDataset { manifest, rows };
         dataset.validate()?;
         Ok(dataset)
+    }
+
+    /// Replays a generated Factor package through the same checked Custom
+    /// runtime path used by research materialization. The returned rows keep
+    /// the exact frozen input identities and output semantics; the caller
+    /// supplies the package's frozen build provenance for validation.
+    pub fn replay_component_package(
+        input: FactorMaterializationInput<'_>,
+        package: &ComponentPackage,
+        build: &crate::CandidateBuildProvenance,
+    ) -> Result<Vec<FactorDatasetRow>, MaterializationError> {
+        let candidate = FactorCandidate::freeze(FactorCandidateDraft {
+            candidate_id: input.candidate.candidate_id,
+            revision: input.candidate.revision,
+            scope: input.candidate.scope,
+            feature_slots: input.candidate.feature_slots.clone(),
+            parameters: input.candidate.parameters.clone(),
+            outputs: input.candidate.outputs.clone(),
+            source: FactorCandidateSource::Custom {
+                build: build.clone(),
+            },
+        })?;
+        let protocol = FactorMaterializationProtocol::freeze(FactorMaterializationProtocolDraft {
+            protocol_id: input.protocol.protocol_id,
+            user_id: input.protocol.user_id,
+            candidate_hash: candidate.candidate_hash.clone(),
+            feature_dataset_id: input.protocol.feature_dataset_id.clone(),
+            feature_plan_hash: input.protocol.feature_plan_hash.clone(),
+            parameters: input.protocol.parameters.clone(),
+            market_data_snapshot_id: input.protocol.market_data_snapshot_id.clone(),
+            point_in_time_universe_id: input.protocol.point_in_time_universe_id.clone(),
+            observation_range: input.protocol.observation_range.clone(),
+            market_context: input.protocol.market_context.clone(),
+            engine_identity: input.protocol.engine_identity.clone(),
+            seed: input.protocol.seed,
+        })?;
+        Ok(Self::materialize(FactorMaterializationInput {
+            candidate: &candidate,
+            protocol: &protocol,
+            feature_dataset: input.feature_dataset,
+            point_in_time_universe: input.point_in_time_universe,
+            custom_package: Some(package),
+        })?
+        .rows)
     }
 }
 
