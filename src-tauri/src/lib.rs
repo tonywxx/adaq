@@ -974,6 +974,18 @@ factor_blocking_command!(
     factor_research::FactorPage<factor_research::FactorPolicyView>
 );
 factor_blocking_command!(
+    factor_promotion_protocol_freeze,
+    factor_research::FactorPromotionProtocolFreezeRequest,
+    freeze_promotion_protocol,
+    adaq_factor_research::PromotionProtocol
+);
+factor_blocking_command!(
+    factor_decision_record,
+    factor_research::FactorDecisionRecordRequest,
+    record_decision,
+    factor_research::FactorDecisionView
+);
+factor_blocking_command!(
     factor_decision_save,
     factor_research::FactorDecisionSaveRequest,
     save_decision,
@@ -4443,6 +4455,8 @@ pub fn run() {
             factor_lineage_get,
             factor_policy_save,
             factor_policy_list,
+            factor_promotion_protocol_freeze,
+            factor_decision_record,
             factor_decision_save,
             factor_decision_list,
             factor_decision_library,

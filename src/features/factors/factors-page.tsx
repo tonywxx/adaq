@@ -45,7 +45,6 @@ import {
 	factorHash,
 	factorString,
 	isGridWithinLimit,
-	parseFactorJson,
 	shortFactorHash,
 } from "./factor-data";
 import type {
@@ -62,7 +61,7 @@ import { PythonProjectsPanel } from "@/features/python-research/python-projects-
 import { PythonFactorLabPanel } from "@/features/python-research/python-factor-lab-panel";
 import { CandidatesWorkspace } from "./candidates-workspace";
 import { AttemptsPanel } from "./factor-attempts-panel";
-import { Detail, Field, JsonEditor } from "./factor-form-fields";
+import { Detail, Field } from "./factor-form-fields";
 import { useFactorPage } from "./factor-workspace-data";
 import {
 	EmptyState,
@@ -2198,6 +2197,11 @@ function MetricDefinition({
 	);
 }
 
+type FactorPromotionDecisionState =
+	| "rejected"
+	| "research-validated"
+	| "component-eligible";
+
 function DecisionsWorkspace({
 	userId,
 	adapter,
@@ -2206,6 +2210,9 @@ function DecisionsWorkspace({
 	adapter: FactorAdapter;
 }) {
 	const { t } = useTranslation();
+	const candidates = useFactorPage(userId, "decision-candidates", adapter.listCandidates);
+	const datasets = useFactorPage(userId, "decision-datasets", adapter.listDatasets);
+	const reports = useFactorPage(userId, "decision-reports", adapter.listReports);
 	const policies = useFactorPage(userId, "policies", adapter.listPolicies);
 	const decisions = useFactorPage(userId, "decisions", adapter.listDecisions);
 	const libraryPage = useFactorPage(
@@ -2213,45 +2220,159 @@ function DecisionsWorkspace({
 		"decision-library",
 		adapter.listDecisionLibrary,
 	);
-	const [policy, setPolicy] = useState("{}");
-	const [decision, setDecision] = useState("{}");
-	const [protocol, setProtocol] = useState("{}");
-	const [component, setComponent] = useState("{}");
-	const [eligibilityProtocol, setEligibilityProtocol] = useState("{}");
+	const [candidateHash, setCandidateHash] = useState("");
+	const [datasetId, setDatasetId] = useState("");
+	const [outputName, setOutputName] = useState("");
+	const [reportHash, setReportHash] = useState("");
+	const [policyHash, setPolicyHash] = useState("");
+	const [decisionState, setDecisionState] =
+		useState<FactorPromotionDecisionState>("rejected");
+	const [supersedes, setSupersedes] = useState("");
+	const [component, setComponent] = useState({
+		deterministicExecution: false,
+		completeSourceProvenance: false,
+		abiV2Expressible: false,
+		buildable: false,
+	});
+	const [frozenProtocol, setFrozenProtocol] = useState<FactorJson>();
+	const [lineage, setLineage] = useState<FactorLineageView>();
+	const [lineageLoading, setLineageLoading] = useState(false);
 	const [feedback, setFeedback] = useState<string>();
 	const [feedbackTone, setFeedbackTone] = useState<"error" | "success">("error");
 	const [eligibility, setEligibility] = useState<M12Eligibility>();
-	const [policyBusy, setPolicyBusy] = useState(false);
+	const [protocolBusy, setProtocolBusy] = useState(false);
 	const [decisionBusy, setDecisionBusy] = useState(false);
 	const [eligibilityBusy, setEligibilityBusy] = useState(false);
-	const savePolicy = async () => {
-		setPolicyBusy(true);
+	const candidateItems = candidates.data?.items ?? [];
+	const datasetItems = (datasets.data?.items ?? []).filter(
+		(item) => textAt(item.manifest, "candidateHash") === candidateHash,
+	);
+	const selectedCandidate = candidateItems.find(
+		(item) => textAt(item.candidate, "candidateHash") === candidateHash,
+	);
+	const selectedDataset = datasetItems.find(
+		(item) => textAt(item.manifest, "datasetId") === datasetId,
+	);
+	const outputNames = Array.isArray(valueAt(selectedDataset?.manifest, "outputNames"))
+		? (valueAt(selectedDataset?.manifest, "outputNames") as unknown[]).filter(
+				(value): value is string => typeof value === "string",
+			)
+		: [];
+	const reportItems = (reports.data?.items ?? []).filter(
+		(item) =>
+			textAt(item.report, "factorDatasetId") === datasetId &&
+			textAt(item.report, "outputName") === outputName &&
+			item.protocol,
+	);
+	const selectedReport = reportItems.find(
+		(item) => textAt(item.report, "reportHash") === reportHash,
+	);
+	const selectedProtocol = selectedReport?.protocol;
+	const familyId = textAt(selectedProtocol, "familyId", "");
+	const trialId = textAt(selectedProtocol, "trialId", "");
+	const selectedPolicy = (policies.data?.items ?? []).find(
+		(item) => textAt(item.policy, "policyHash") === policyHash,
+	);
+	const matchingDecisions = (decisions.data?.items ?? []).filter(
+		(item) =>
+			textAt(item.decision, "candidateHash") === candidateHash &&
+			textAt(item.decision, "outputName") === outputName,
+	);
+	const supersededDecisionIds = new Set(
+		matchingDecisions
+			.map((item) => textAt(item.decision, "supersedes", ""))
+			.filter(Boolean),
+	);
+	const currentDecision = matchingDecisions.find(
+		(item) => !supersededDecisionIds.has(textAt(item.decision, "decisionId", "")),
+	);
+	const selectClassName =
+		"h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
+	const clearFrozenSelection = () => {
+		setFrozenProtocol(undefined);
+		setEligibility(undefined);
+	};
+	useEffect(() => {
+		setSupersedes(currentDecision ? textAt(currentDecision.decision, "decisionId", "") : "");
+	}, [currentDecision, decisions.data]);
+	useEffect(() => {
+		if (!trialId) {
+			setLineage(undefined);
+			return;
+		}
+		let active = true;
+		setLineageLoading(true);
+		void adapter
+			.getLineage(userId, trialId)
+			.then((result) => {
+				if (active) setLineage(result);
+			})
+			.catch((error) => {
+				if (active) {
+					setLineage(undefined);
+					setFeedbackTone("error");
+					setFeedback(localizedFactorError(error, t));
+				}
+			})
+			.finally(() => {
+				if (active) setLineageLoading(false);
+			});
+		return () => {
+			active = false;
+		};
+	}, [adapter, t, trialId, userId]);
+	const freezeProtocol = async () => {
+		if (
+			!candidateHash ||
+			!datasetId ||
+			!outputName ||
+			!reportHash ||
+			!familyId ||
+			!trialId ||
+			!policyHash
+		) {
+			setFeedbackTone("error");
+			setFeedback(t("factors.decisions.selectionRequired"));
+			return;
+		}
+		setProtocolBusy(true);
 		setFeedbackTone("error");
 		setFeedback(undefined);
 		try {
-			await adapter.savePolicy(
-				userId,
-				parseFactorJson(policy, t("factors.decisions.policy")),
-			);
+			const result = await adapter.freezePromotionProtocol(userId, {
+				candidateHash,
+				datasetId,
+				outputName,
+				familyId,
+				trialId,
+				reportHashes: [reportHash],
+				policyHash,
+			});
+			setFrozenProtocol(result);
 			setFeedbackTone("success");
-			setFeedback(t("factors.decisions.policySaved"));
-			await policies.load();
+			setFeedback(t("factors.decisions.protocolFrozen"));
 		} catch (error) {
 			setFeedback(localizedFactorError(error, t));
 		} finally {
-			setPolicyBusy(false);
+			setProtocolBusy(false);
 		}
 	};
-	const saveDecision = async () => {
+	const recordDecision = async () => {
+		if (!frozenProtocol) {
+			setFeedbackTone("error");
+			setFeedback(t("factors.decisions.freezeRequired"));
+			return;
+		}
 		setDecisionBusy(true);
 		setFeedbackTone("error");
 		setFeedback(undefined);
 		try {
-			await adapter.saveDecision(
+			await adapter.recordDecision(
 				userId,
-				parseFactorJson(decision, t("factors.decisions.decision")),
-				parseFactorJson(protocol, t("factors.decisions.protocol")),
-				parseFactorJson(component, t("factors.decisions.component")),
+				decisionState,
+				frozenProtocol,
+				component,
+				supersedes || null,
 			);
 			setFeedbackTone("success");
 			setFeedback(t("factors.decisions.decisionSaved"));
@@ -2267,11 +2388,14 @@ function DecisionsWorkspace({
 		setEligibilityBusy(true);
 		setFeedbackTone("success");
 		setFeedback(undefined);
+		if (!frozenProtocol) {
+			setEligibilityBusy(false);
+			setFeedbackTone("error");
+			setFeedback(t("factors.decisions.freezeRequired"));
+			return;
+		}
 		try {
-			const result = await adapter.m12Eligibility(
-				userId,
-				parseFactorJson(eligibilityProtocol, t("factors.decisions.protocol")),
-			);
+			const result = await adapter.m12Eligibility(userId, frozenProtocol);
 			setEligibility(result);
 			setFeedback(
 				result.eligible
@@ -2296,54 +2420,325 @@ function DecisionsWorkspace({
 				<CardHeader>
 					<CardTitle className="flex items-center gap-2">
 						<GavelIcon className="size-4" aria-hidden="true" />
-						{t("factors.decisions.heading")}
+						{t("factors.decisions.selectionHeading")}
 					</CardTitle>
-					<CardDescription>{t("factors.decisions.description")}</CardDescription>
+					<CardDescription>
+						{t("factors.decisions.selectionDescription")}
+					</CardDescription>
 				</CardHeader>
 				<CardContent className="space-y-4">
-					<div className="grid gap-4 xl:grid-cols-2">
-						<JsonEditor
-							label={t("factors.decisions.policyEditor")}
-							value={policy}
-							onChange={setPolicy}
-							hint={t("factors.decisions.policyHint")}
-						/>
-						<JsonEditor
-							label={t("factors.decisions.decisionEditor")}
-							value={decision}
-							onChange={setDecision}
-							hint={t("factors.decisions.decisionHint")}
-						/>
-						<JsonEditor
-							label={t("factors.decisions.protocolEditor")}
-							value={protocol}
-							onChange={setProtocol}
-							hint={t("factors.decisions.protocolHint")}
-						/>
-						<JsonEditor
-							label={t("factors.decisions.componentEditor")}
-							value={component}
-							onChange={setComponent}
-							hint={t("factors.decisions.componentHint")}
-						/>
+					<div className="grid gap-3 md:grid-cols-2">
+						<div className="grid gap-1.5">
+							<Label htmlFor="factor-decision-candidate">
+								{t("factors.decisions.candidateSelection")}
+							</Label>
+							<select
+								id="factor-decision-candidate"
+								className={selectClassName}
+								value={candidateHash}
+								onChange={(event) => {
+									setCandidateHash(event.target.value);
+									setDatasetId("");
+									setOutputName("");
+									setReportHash("");
+									clearFrozenSelection();
+								}}
+							>
+								<option value="">{t("factors.decisions.selectEvidence")}</option>
+								{candidateItems.map((item) => {
+									const hash = textAt(item.candidate, "candidateHash", "");
+									return (
+										<option key={hash} value={hash}>
+											{`${textAt(item.presentation, "name", t("factors.common.candidate"))} · ${shortFactorHash(hash)}`}
+										</option>
+									);
+								})}
+							</select>
+							{!candidates.loading && candidateItems.length === 0 ? (
+								<p className="text-xs text-muted-foreground">
+									{t("factors.decisions.noCandidates")}
+								</p>
+							) : null}
+						</div>
+						<div className="grid gap-1.5">
+							<Label htmlFor="factor-decision-dataset">
+								{t("factors.decisions.datasetSelection")}
+							</Label>
+							<select
+								id="factor-decision-dataset"
+								className={`${selectClassName} font-mono text-xs`}
+								value={datasetId}
+								disabled={!candidateHash}
+								onChange={(event) => {
+									setDatasetId(event.target.value);
+									setOutputName("");
+									setReportHash("");
+									clearFrozenSelection();
+								}}
+							>
+								<option value="">{t("factors.decisions.selectEvidence")}</option>
+								{datasetItems.map((item) => {
+									const id = textAt(item.manifest, "datasetId", "");
+									return (
+										<option key={id} value={id}>
+											{id}
+										</option>
+									);
+								})}
+							</select>
+							{candidateHash && !datasets.loading && datasetItems.length === 0 ? (
+								<p className="text-xs text-muted-foreground">
+									{t("factors.decisions.noDatasets")}
+								</p>
+							) : null}
+						</div>
+						<div className="grid gap-1.5">
+							<Label htmlFor="factor-decision-output">
+								{t("factors.decisions.outputSelection")}
+							</Label>
+							<select
+								id="factor-decision-output"
+								className={`${selectClassName} font-mono text-xs`}
+								value={outputName}
+								disabled={!datasetId || outputNames.length === 0}
+								onChange={(event) => {
+									setOutputName(event.target.value);
+									setReportHash("");
+									clearFrozenSelection();
+								}}
+							>
+								<option value="">{t("factors.decisions.selectEvidence")}</option>
+								{outputNames.map((name) => (
+									<option key={name} value={name}>
+										{name}
+									</option>
+								))}
+							</select>
+						</div>
+						<div className="grid gap-1.5">
+							<Label htmlFor="factor-decision-report">
+								{t("factors.decisions.reportSelection")}
+							</Label>
+							<select
+								id="factor-decision-report"
+								className={`${selectClassName} font-mono text-xs`}
+								value={reportHash}
+								disabled={!outputName}
+								onChange={(event) => {
+									setReportHash(event.target.value);
+									clearFrozenSelection();
+								}}
+							>
+								<option value="">{t("factors.decisions.selectEvidence")}</option>
+								{reportItems.map((item) => {
+									const hash = textAt(item.report, "reportHash", "");
+									return (
+										<option key={hash} value={hash}>
+											{`${shortFactorHash(hash)} · ${localizedFactorCode(textAt(item.report, "evidenceState", "unknown"), t)}`}
+										</option>
+									);
+								})}
+							</select>
+							{outputName && !reports.loading && reportItems.length === 0 ? (
+								<p className="text-xs text-muted-foreground">
+									{t("factors.decisions.noReports")}
+								</p>
+							) : null}
+						</div>
+						<div className="grid gap-1.5">
+							<Label htmlFor="factor-decision-policy">
+								{t("factors.decisions.policySelection")}
+							</Label>
+							<select
+								id="factor-decision-policy"
+								className={`${selectClassName} font-mono text-xs`}
+								value={policyHash}
+								onChange={(event) => {
+									setPolicyHash(event.target.value);
+									clearFrozenSelection();
+								}}
+							>
+								<option value="">{t("factors.decisions.selectEvidence")}</option>
+								{(policies.data?.items ?? []).map((item) => {
+									const hash = textAt(item.policy, "policyHash", "");
+									return (
+										<option key={hash} value={hash}>
+											{`r${textAt(item.policy, "revision")} · ${shortFactorHash(hash)}`}
+										</option>
+									);
+								})}
+							</select>
+							{!policies.loading && policies.data?.items.length === 0 ? (
+								<p className="text-xs text-muted-foreground">
+									{t("factors.decisions.noPolicies")}
+								</p>
+							) : null}
+						</div>
 					</div>
+					{selectedProtocol ? (
+						<div className="rounded-md border bg-muted/20 p-3">
+							<p className="text-sm font-medium">
+								{t("factors.decisions.selectedEvidence")}
+							</p>
+							<dl className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+								<Detail label={t("factors.decisions.family")} value={familyId} mono />
+								<Detail label={t("factors.decisions.trial")} value={trialId} mono />
+								<Detail
+									label={t("factors.decisions.evidenceState")}
+									value={localizedFactorCode(textAt(selectedReport?.report, "evidenceState", "unknown"), t)}
+								/>
+								<Detail
+									label={t("factors.decisions.lineageHash")}
+									value={textAt(lineage?.lineage, "lineageHash", t("factors.loading"))}
+									mono
+								/>
+							</dl>
+							{lineageLoading ? (
+								<p className="mt-3 text-xs text-muted-foreground">
+									{t("factors.decisions.lineageLoading")}
+								</p>
+							) : lineage ? (
+								<div className="mt-3 space-y-2">
+									<p className="text-xs text-muted-foreground">
+										{t("factors.decisions.lineageTrials", {
+											count: lineage.trials.length,
+										})}
+									</p>
+									<ul className="grid gap-2 sm:grid-cols-2">
+										{lineage.trials.map((trial) => (
+											<li
+												key={textAt(trial, "trialId")}
+												className="flex items-center justify-between rounded-md border px-3 py-2 text-xs"
+											>
+												<span className="font-mono">
+													{shortFactorHash(textAt(trial, "trialId"))}
+												</span>
+												<Badge variant="outline">
+													{localizedFactorCode(textAt(trial, "status"), t)}
+												</Badge>
+											</li>
+										))}
+									</ul>
+									<EvidenceJson
+										label={t("factors.common.rawEvidence")}
+										value={{
+											candidate: selectedCandidate?.candidate,
+											dataset: selectedDataset?.manifest,
+											report: selectedReport?.report,
+											policy: selectedPolicy?.policy,
+											lineage,
+										}}
+									/>
+								</div>
+							) : null}
+						</div>
+					) : null}
+					<div className="grid gap-3 md:grid-cols-2">
+						<div className="grid gap-1.5">
+							<Label htmlFor="factor-decision-state">
+								{t("factors.decisions.stateSelection")}
+							</Label>
+							<select
+								id="factor-decision-state"
+								className={selectClassName}
+								value={decisionState}
+								onChange={(event) => {
+									setDecisionState(event.target.value as FactorPromotionDecisionState);
+									clearFrozenSelection();
+								}}
+							>
+								{[
+									"rejected",
+									"research-validated",
+									"component-eligible",
+								].map((state) => (
+									<option key={state} value={state}>
+										{localizedFactorCode(state, t)}
+									</option>
+								))}
+							</select>
+						</div>
+						<div className="grid gap-1.5">
+							<Label htmlFor="factor-decision-supersedes">
+								{t("factors.decisions.supersedePrevious")}
+							</Label>
+							<select
+								id="factor-decision-supersedes"
+								className={`${selectClassName} font-mono text-xs`}
+								value={supersedes}
+								onChange={(event) => {
+									setSupersedes(event.target.value);
+									clearFrozenSelection();
+								}}
+							>
+								<option value="">{t("factors.decisions.noPriorDecision")}</option>
+								{matchingDecisions.map((item) => {
+									const id = textAt(item.decision, "decisionId", "");
+									return (
+										<option key={id} value={id}>
+											{shortFactorHash(id)}
+										</option>
+									);
+								})}
+							</select>
+						</div>
+					</div>
+					<fieldset className="rounded-md border p-3">
+						<legend className="px-1 text-sm font-medium">
+							{t("factors.decisions.componentGates")}
+						</legend>
+						<div className="grid gap-2 sm:grid-cols-2">
+							{(
+								[
+									["completeSourceProvenance", "complete-source-provenance"],
+									["deterministicExecution", "deterministic-execution"],
+									["abiV2Expressible", "abi-v2-expressible"],
+									["buildable", "buildable"],
+								] as const
+							).map(([key, label]) => (
+								<label key={key} className="flex items-center gap-2 text-sm">
+									<input
+										type="checkbox"
+										checked={component[key]}
+										onChange={(event) =>
+											setComponent((current) => ({
+												...current,
+												[key]: event.target.checked,
+											}))
+										}
+									/>
+									{t(`factors.codes.${label}`)}
+								</label>
+							))}
+						</div>
+					</fieldset>
 					<div className="flex flex-wrap gap-3">
 						<Button
 							type="button"
-							loading={policyBusy}
-							onClick={() => void savePolicy()}
+							loading={protocolBusy}
+							disabled={!candidateHash || !datasetId || !outputName || !reportHash || !policyHash}
+							onClick={() => void freezeProtocol()}
 						>
-							{t("factors.decisions.savePolicy")}
+							{t("factors.decisions.freezeProtocol")}
 						</Button>
 						<Button
 							type="button"
 							variant="outline"
 							loading={decisionBusy}
-							onClick={() => void saveDecision()}
+							disabled={!frozenProtocol}
+							onClick={() => void recordDecision()}
 						>
 							{t("factors.decisions.recordDecision")}
 						</Button>
 					</div>
+					{frozenProtocol ? (
+						<div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm">
+							<p className="font-medium">{t("factors.decisions.protocolFrozen")}</p>
+							<p className="mt-1 break-all font-mono text-xs text-muted-foreground">
+								{t("factors.decisions.protocol")}: {textAt(frozenProtocol, "protocolHash")}
+							</p>
+						</div>
+					) : null}
 					<Feedback message={feedback} tone={feedbackTone} />
 				</CardContent>
 			</Card>
@@ -2355,16 +2750,14 @@ function DecisionsWorkspace({
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="space-y-3">
-					<JsonEditor
-						label={t("factors.decisions.protocolEditor")}
-						value={eligibilityProtocol}
-						onChange={setEligibilityProtocol}
-						hint={t("factors.decisions.eligibilityHint")}
-					/>
+					<p className="text-sm text-muted-foreground">
+						{t("factors.decisions.eligibilityHint")}
+					</p>
 					<Button
 						type="button"
 						variant="outline"
 						loading={eligibilityBusy}
+						disabled={!frozenProtocol}
 						onClick={() => void checkEligibility()}
 					>
 						{t("factors.decisions.checkEligibility")}

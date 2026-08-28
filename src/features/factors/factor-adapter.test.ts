@@ -24,6 +24,22 @@ test("Factor adapter keeps User scope and immutable command payloads explicit", 
 	});
 	await adapter.datasetRows("user-1", "dataset-1", 0, 50, "BTC");
 	await adapter.freezeEvaluationProtocol("user-1", { protocolId: "draft-1" });
+	await adapter.freezePromotionProtocol("user-1", {
+		candidateHash: "candidate-hash",
+		datasetId: "dataset-id",
+		outputName: "momentum-score",
+		familyId: "family-id",
+		trialId: "trial-id",
+		reportHashes: ["report-hash"],
+		policyHash: "policy-hash",
+	});
+	await adapter.recordDecision(
+		"user-1",
+		"rejected",
+		{ protocolHash: "protocol-hash" },
+		{ buildable: false },
+		"decision-id",
+	);
 	await adapter.startMaterializationFromContext("user-1", "candidate-hash", 7);
 	await adapter.startEvaluationFromContext(
 		"user-1",
@@ -84,6 +100,33 @@ test("Factor adapter keeps User scope and immutable command payloads explicit", 
 				request: {
 					userId: "user-1",
 					draft: { protocolId: "draft-1" },
+				},
+			},
+		},
+		{
+			command: "factor_promotion_protocol_freeze",
+			args: {
+				request: {
+					userId: "user-1",
+					candidateHash: "candidate-hash",
+					datasetId: "dataset-id",
+					outputName: "momentum-score",
+					familyId: "family-id",
+					trialId: "trial-id",
+					reportHashes: ["report-hash"],
+					policyHash: "policy-hash",
+				},
+			},
+		},
+		{
+			command: "factor_decision_record",
+			args: {
+				request: {
+					userId: "user-1",
+					state: "rejected",
+					promotionProtocol: { protocolHash: "protocol-hash" },
+					component: { buildable: false },
+					supersedes: "decision-id",
 				},
 			},
 		},

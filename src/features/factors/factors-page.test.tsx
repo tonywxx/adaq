@@ -22,6 +22,8 @@ import type {
 	FactorDatasetView,
 	FactorFamilyView,
 	FactorPage,
+	FactorPolicyView,
+	FactorReportView,
 } from "./factor-types";
 
 jest.mock("@/lib/market-session", () => {
@@ -556,6 +558,132 @@ test("starts evaluation from Host-owned Candidate and Dataset selections", async
 	);
 	expect(mounted.container.textContent).toContain(
 		i18n.t("factors.evaluations.hostOwnsEvidence"),
+	);
+
+	await unmount(mounted.root, mounted.container);
+});
+
+test("records a Decision only after structured evidence is frozen", async () => {
+	const candidateHash = "c".repeat(64);
+	const reportHash = "r".repeat(64);
+	const policyHash = "p".repeat(64);
+	const familyId = "11111111-1111-4111-8111-111111111111";
+	const trialId = "22222222-2222-4222-8222-222222222222";
+	const candidate: FactorCandidateView = {
+		candidate: { candidateHash, outputs: [{ name: "momentum" }] },
+		presentation: { name: "Momentum" },
+		lockedBy: [],
+		createdAtMs: 1,
+	};
+	const dataset: FactorDatasetView = {
+		manifest: {
+			datasetId: "dataset-1",
+			candidateHash,
+			outputNames: ["momentum"],
+		},
+		byteSize: 1,
+		lockedBy: [],
+		createdAtMs: 1,
+	};
+	const report: FactorReportView = {
+		report: {
+			reportHash,
+			factorDatasetId: "dataset-1",
+			outputName: "momentum",
+			evidenceState: "out-of-sample",
+		},
+		protocol: { familyId, trialId, factorDatasetId: "dataset-1", outputName: "momentum" },
+		lockedBy: [],
+		createdAtMs: 1,
+	};
+	const policy: FactorPolicyView = {
+		policy: { policyHash, revision: 1 },
+		createdAtMs: 1,
+	};
+	const freezePromotionProtocol = jest.fn(async () => ({
+		protocolHash: "t".repeat(64),
+	}));
+	const recordDecision = jest.fn(async () => ({}));
+	const adapter = {
+		...makeAdapter(),
+		listCandidates: async () => page([candidate]),
+		listDatasets: async () => page([dataset]),
+		listReports: async () => page([report]),
+		listPolicies: async () => page([policy]),
+		listDecisions: async () => page([]),
+		listDecisionLibrary: async () => page([]),
+		getLineage: async () =>
+			({
+				lineage: { lineageHash: "l".repeat(64) },
+				trials: [{ trialId, status: "completed" }],
+				registrations: [],
+				protocols: [],
+			} as never),
+		freezePromotionProtocol,
+		recordDecision,
+	} as unknown as FactorAdapter;
+	const mounted = mount(adapter);
+
+	await act(async () => {
+		mounted.root.render(
+			<QueryClientProvider client={mounted.queryClient}>
+				<FactorsPage adapter={mounted.adapter} />
+			</QueryClientProvider>,
+		);
+	});
+	await settle();
+
+	const decisionsTab = Array.from(
+		mounted.container.querySelectorAll('[role="tab"]'),
+	).find((tab) => tab.textContent === i18n.t("factors.tabs.decisions"));
+	await act(async () => {
+		(decisionsTab as HTMLElement).click();
+	});
+	await settle();
+
+	const select = (id: string, value: string) => {
+		const element = mounted.container.querySelector(id) as HTMLSelectElement;
+		element.value = value;
+		element.dispatchEvent(new Event("change", { bubbles: true }));
+	};
+	await act(async () => select("#factor-decision-candidate", candidateHash));
+	await act(async () => select("#factor-decision-dataset", "dataset-1"));
+	await act(async () => select("#factor-decision-output", "momentum"));
+	await act(async () => select("#factor-decision-report", reportHash));
+	await act(async () => select("#factor-decision-policy", policyHash));
+	await settle();
+
+	const freezeButton = Array.from(mounted.container.querySelectorAll("button")).find(
+		(button) => button.textContent === i18n.t("factors.decisions.freezeProtocol"),
+	);
+	await act(async () => (freezeButton as HTMLElement).click());
+	await settle();
+	const recordButton = Array.from(mounted.container.querySelectorAll("button")).find(
+		(button) => button.textContent === i18n.t("factors.decisions.recordDecision"),
+	);
+	await act(async () => (recordButton as HTMLElement).click());
+	await settle();
+
+	expect(freezePromotionProtocol).toHaveBeenCalledWith("user-1", {
+		candidateHash,
+		datasetId: "dataset-1",
+		outputName: "momentum",
+		familyId,
+		trialId,
+		reportHashes: [reportHash],
+		policyHash,
+	});
+	expect(recordDecision).toHaveBeenCalledWith(
+		"user-1",
+		"rejected",
+		{ protocolHash: "t".repeat(64) },
+		expect.objectContaining({
+			deterministicExecution: false,
+			completeSourceProvenance: false,
+			abiV2Expressible: false,
+			buildable: false,
+		}),
+		null,
 	);
 
 	await unmount(mounted.root, mounted.container);

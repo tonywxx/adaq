@@ -219,6 +219,20 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			invoke("factor_policy_save", {
 				request: { userId, policy },
 			}) as Promise<FactorPolicyView>,
+		freezePromotionProtocol: (userId: string, selection: FactorJson) =>
+			invoke("factor_promotion_protocol_freeze", {
+				request: { userId, ...selection },
+			}) as Promise<FactorJson>,
+		recordDecision: (
+			userId: string,
+			state: string,
+			promotionProtocol: FactorJson,
+			component: FactorJson = {},
+			supersedes: string | null = null,
+		) =>
+			invoke("factor_decision_record", {
+				request: { userId, state, promotionProtocol, component, supersedes },
+			}) as Promise<FactorDecisionView>,
 		listDecisions: (userId: string, pageNumber: number) =>
 			page<FactorDecisionView>("factor_decision_list", userId, pageNumber),
 		listDecisionLibrary: (userId: string, pageNumber: number) =>
