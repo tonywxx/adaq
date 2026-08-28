@@ -15,6 +15,7 @@ import type {
 	FactorReportView,
 	M12Eligibility,
 } from "./factor-types";
+import type { LibraryComponent } from "@/features/components/component-library";
 import type { TauriInvoke } from "@/lib/tauri-invoke";
 
 export type FactorInvoke = TauriInvoke;
@@ -84,6 +85,10 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			invoke("factor_component_qualification_get", {
 				request: { userId, attemptId },
 			}) as Promise<FactorComponentQualificationView>,
+		listComponents: (userId: string) =>
+			invoke("component_list", {
+				request: { userId },
+			}) as Promise<LibraryComponent[]>,
 		listFamilies: (userId: string, pageNumber: number) =>
 			page<FactorFamilyView>("factor_family_list", userId, pageNumber),
 		getFamily: (userId: string, evidenceId: string) =>

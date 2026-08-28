@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { LibraryComponent } from "@/features/components/component-library";
 import {
 	DatabaseIcon,
 	GitBranchIcon,
@@ -44,16 +45,22 @@ import {
 	finiteGridTrialCount,
 	factorHash,
 	factorString,
+	isTerminalFactorAttempt,
 	isGridWithinLimit,
 	shortFactorHash,
 } from "./factor-data";
 import type {
+	FactorComponentCandidateView,
+	FactorComponentQualificationView,
 	FactorCandidateView,
+	FactorAttemptView,
 	FactorDatasetRow,
 	FactorDatasetView,
+	FactorDecisionView,
 	FactorJson,
 	FactorLineageView,
 	FactorMetricCatalogView,
+	FactorPolicyView,
 	FactorReportView,
 	M12Eligibility,
 } from "./factor-types";
@@ -67,10 +74,12 @@ import {
 	EmptyState,
 	ErrorState,
 	EvidenceJson,
+	FactorAttemptStatusBadge,
 	Feedback,
 	jsonText,
 	lines,
 	localizedFactorCode,
+	localizedFactorAttemptCode,
 	localizedFactorError,
 	localizedFactorReason,
 	newUuid,
@@ -1658,8 +1667,10 @@ function EvaluationStart({
 		return (datasets.data?.items ?? []).filter((dataset) => {
 			return (
 				textAt(dataset.manifest, "featureDatasetId") === featureDataset.datasetId &&
-				textAt(dataset.manifest, "featurePlanHash") === featureDataset.featurePlanHash &&
-				textAt(dataset.manifest, "marketDataSnapshotId") === factorContext.snapshotId &&
+				textAt(dataset.manifest, "featurePlanHash") ===
+					featureDataset.featurePlanHash &&
+				textAt(dataset.manifest, "marketDataSnapshotId") ===
+					factorContext.snapshotId &&
 				textAt(dataset.manifest, "pointInTimeUniverseId") === universeId
 			);
 		});
@@ -1726,7 +1737,9 @@ function EvaluationStart({
 	}, [candidateDatasets]);
 
 	useEffect(() => {
-		setOutputName((current) => outputNames.includes(current) ? current : (outputNames[0] ?? ""));
+		setOutputName((current) =>
+			outputNames.includes(current) ? current : (outputNames[0] ?? ""),
+		);
 	}, [outputNames]);
 
 	const start = async () => {
@@ -1805,9 +1818,11 @@ function EvaluationStart({
 								const id = textAt(dataset.manifest, "datasetId", "");
 								return (
 									<option key={id} value={id}>
-										{shortFactorHash(id)} · {formatNumber(
+										{shortFactorHash(id)} ·{" "}
+										{formatNumber(
 											Number(valueAt(dataset.manifest, "observationCount") ?? 0),
-										)} rows
+										)}{" "}
+										rows
 									</option>
 								);
 							})}
@@ -1906,15 +1921,14 @@ function EvaluationStart({
 							value="future-close-return"
 						/>
 						<Detail label={t("factors.evaluations.horizons")} value="1" mono />
-						<Detail
-							label={t("factors.evaluations.purgeEmbargo")}
-							value="0 / 0"
-						/>
+						<Detail label={t("factors.evaluations.purgeEmbargo")} value="0 / 0" />
 						<Detail
 							label={t("factors.evaluations.lenses")}
-							value={textAt(selectedDataset?.manifest, "scope") === "cross-sectional"
-								? "cross-sectional, economic"
-								: "temporal, economic"}
+							value={
+								textAt(selectedDataset?.manifest, "scope") === "cross-sectional"
+									? "cross-sectional, economic"
+									: "temporal, economic"
+							}
 						/>
 						<Detail
 							label={t("factors.evaluations.trialIdentity")}
@@ -2205,6 +2219,869 @@ type FactorPromotionDecisionState =
 	| "research-validated"
 	| "component-eligible";
 
+type Gate6QualificationStage = "build" | "qualification";
+
+type Gate6QualificationPreflight = {
+	decision: FactorDecisionView;
+	candidate: FactorCandidateView;
+	dataset: FactorDatasetView;
+	report: FactorReportView;
+	reports: FactorReportView[];
+	policy: FactorPolicyView;
+};
+
+type Gate6QualificationOperation = {
+	stage: Gate6QualificationStage;
+	attempt: FactorAttemptView;
+	decisionId: string;
+	outputName: string;
+	preflight: Gate6QualificationPreflight;
+	candidate?: FactorComponentCandidateView;
+	qualification?: FactorComponentQualificationView;
+};
+
+function Gate6QualificationWorkspace({
+	userId,
+	adapter,
+	decisions,
+	decisionLoading,
+	decisionError,
+	candidates,
+	datasets,
+	reports,
+	policies,
+}: {
+	userId: string;
+	adapter: FactorAdapter;
+	decisions: FactorDecisionView[];
+	decisionLoading: boolean;
+	decisionError?: string;
+	candidates: FactorCandidateView[];
+	datasets: FactorDatasetView[];
+	reports: FactorReportView[];
+	policies: FactorPolicyView[];
+}) {
+	const { t } = useTranslation();
+	const eligibleDecisions = decisions.filter(
+		(item) =>
+			textAt(item.decision, "state") === "component-eligible" &&
+			Boolean(textAt(item.decision, "decisionId", "")),
+	);
+	const [selectedDecisionId, setSelectedDecisionId] = useState("");
+	const [selectedOutputName, setSelectedOutputName] = useState("");
+	const [operation, setOperation] = useState<Gate6QualificationOperation>();
+	const [operationError, setOperationError] = useState<string>();
+	const [starting, setStarting] = useState(false);
+	const [cancelling, setCancelling] = useState(false);
+	const [retrying, setRetrying] = useState(false);
+	const [libraryChecked, setLibraryChecked] = useState(false);
+	const [libraryRecord, setLibraryRecord] = useState<LibraryComponent>();
+	const operationVersion = useRef(0);
+	const hasSeenEligibleDecision = useRef(false);
+
+	useEffect(() => {
+		if (operation) return;
+		if (!eligibleDecisions.length) {
+			setSelectedDecisionId("");
+			setSelectedOutputName("");
+			return;
+		}
+		setSelectedDecisionId((current) => {
+			if (
+				current &&
+				eligibleDecisions.some(
+					(item) => textAt(item.decision, "decisionId", "") === current,
+				)
+			)
+				return current;
+			if (current || hasSeenEligibleDecision.current) return "";
+			hasSeenEligibleDecision.current = true;
+			return textAt(eligibleDecisions[0].decision, "decisionId", "");
+		});
+	}, [eligibleDecisions, operation]);
+
+	const selectedDecision = eligibleDecisions.find(
+		(item) => textAt(item.decision, "decisionId", "") === selectedDecisionId,
+	);
+	const operationPreflight = operation?.preflight;
+	const decisionForDisplay = operationPreflight?.decision ?? selectedDecision;
+	const candidateHash = textAt(
+		decisionForDisplay?.decision,
+		"candidateHash",
+		"",
+	);
+	const selectedCandidate =
+		operationPreflight?.candidate ??
+		candidates.find(
+			(item) => textAt(item.candidate, "candidateHash", "") === candidateHash,
+		);
+	const decisionOptions =
+		operationPreflight &&
+		!eligibleDecisions.some(
+			(item) =>
+				textAt(item.decision, "decisionId", "") ===
+				textAt(operationPreflight.decision.decision, "decisionId", ""),
+		)
+			? [...eligibleDecisions, operationPreflight.decision]
+			: eligibleDecisions;
+	const outputOptions = Array.from(
+		new Set(
+			[
+				...eligibleDecisions
+					.filter(
+						(item) => textAt(item.decision, "candidateHash", "") === candidateHash,
+					)
+					.map((item) => textAt(item.decision, "outputName", "")),
+				operationPreflight
+					? textAt(operationPreflight.decision.decision, "outputName", "")
+					: "",
+			].filter(Boolean),
+		),
+	);
+	const hasGate6Selection =
+		eligibleDecisions.length > 0 || Boolean(operationPreflight);
+	useEffect(() => {
+		if (operation) return;
+		setSelectedOutputName(textAt(decisionForDisplay?.decision, "outputName", ""));
+	}, [decisionForDisplay, operation]);
+
+	const reportHashes = Array.isArray(
+		valueAt(decisionForDisplay?.decision, "reportHashes"),
+	)
+		? (valueAt(decisionForDisplay?.decision, "reportHashes") as unknown[]).filter(
+				(value): value is string => typeof value === "string",
+			)
+		: [];
+	const resolvedReports = reportHashes
+		.map((hash) =>
+			reports.find((item) => textAt(item.report, "reportHash", "") === hash),
+		)
+		.filter((item): item is FactorReportView => Boolean(item));
+	const selectedReports = operationPreflight?.reports ?? resolvedReports;
+	const selectedReport = operationPreflight?.report ?? selectedReports[0];
+	const factorDatasetId = textAt(selectedReport?.report, "factorDatasetId", "");
+	const selectedDataset =
+		operationPreflight?.dataset ??
+		datasets.find(
+			(item) => textAt(item.manifest, "datasetId", "") === factorDatasetId,
+		);
+	const policyHash = textAt(decisionForDisplay?.decision, "policyHash", "");
+	const selectedPolicy =
+		operationPreflight?.policy ??
+		policies.find((item) => textAt(item.policy, "policyHash", "") === policyHash);
+	const predecessor = selectedCandidate?.predecessor;
+	const decisionOutput = textAt(decisionForDisplay?.decision, "outputName", "");
+	const candidateOutputs = Array.isArray(
+		valueAt(selectedCandidate?.candidate, "outputs"),
+	)
+		? (valueAt(selectedCandidate?.candidate, "outputs") as unknown[])
+				.map((output) =>
+					typeof output === "string" ? output : textAt(output, "name", ""),
+				)
+				.filter(Boolean)
+		: [];
+	const outputAvailable = candidateOutputs.includes(selectedOutputName);
+	const reportsMatchContext =
+		reportHashes.length > 0 &&
+		selectedReports.length === reportHashes.length &&
+		selectedReports.every(
+			(item) =>
+				textAt(item.report, "factorDatasetId", "") === factorDatasetId &&
+				textAt(item.report, "outputName", "") === selectedOutputName,
+		);
+	const evidenceMatchesContext = Boolean(
+		selectedReport &&
+			reportsMatchContext &&
+			selectedDataset &&
+			textAt(selectedReport.report, "outputName", "") === selectedOutputName &&
+			textAt(selectedDataset.manifest, "featureDatasetId", "") ===
+				textAt(predecessor?.featureDataset, "datasetId", "") &&
+			textAt(selectedDataset.manifest, "featurePlanHash", "") ===
+				textAt(predecessor?.featureDataset, "featurePlanHash", "") &&
+			textAt(selectedDataset.manifest, "marketDataSnapshotId", "") ===
+				textAt(predecessor, "snapshotId", "") &&
+			textAt(selectedDataset.manifest, "pointInTimeUniverseId", "") ===
+				textAt(predecessor, "universeId", ""),
+	);
+	const preflightReady = Boolean(
+		decisionForDisplay &&
+			selectedDecisionId &&
+			selectedOutputName &&
+			selectedOutputName === decisionOutput &&
+			outputAvailable &&
+			selectedCandidate &&
+			predecessor?.userId === userId &&
+			selectedDataset &&
+			selectedReport &&
+			selectedReports.length === reportHashes.length &&
+			selectedPolicy &&
+			predecessor.featureDataset &&
+			predecessor.universeId &&
+			evidenceMatchesContext,
+	);
+	const preflightReason = !decisionForDisplay
+		? t("factors.gate6.selectDecision")
+		: !selectedCandidate
+			? t("factors.gate6.candidateUnavailable")
+			: !selectedReport ||
+					!selectedDataset ||
+					!selectedPolicy ||
+					!evidenceMatchesContext
+				? t("factors.gate6.evidenceUnavailable")
+				: !predecessor?.featureDataset || !predecessor.universeId
+					? t("factors.gate6.contextUnavailable")
+					: !outputAvailable || !preflightReady
+						? t("factors.gate6.outputMismatch")
+						: "";
+	const selectClassName =
+		"h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
+
+	const resetOperation = () => {
+		operationVersion.current += 1;
+		setOperation(undefined);
+		setOperationError(undefined);
+		setStarting(false);
+		setCancelling(false);
+		setRetrying(false);
+		setLibraryChecked(false);
+		setLibraryRecord(undefined);
+	};
+	const selectDecision = (decisionId: string) => {
+		resetOperation();
+		setSelectedDecisionId(decisionId);
+	};
+	const selectOutput = (outputName: string) => {
+		const next = eligibleDecisions.find(
+			(item) =>
+				textAt(item.decision, "candidateHash", "") === candidateHash &&
+				textAt(item.decision, "outputName", "") === outputName,
+		);
+		if (!next) return;
+		resetOperation();
+		setSelectedOutputName(outputName);
+		setSelectedDecisionId(textAt(next.decision, "decisionId", ""));
+	};
+
+	const isCurrentOperation = (version: number) =>
+		version === operationVersion.current;
+	const waitForAttemptPoll = () =>
+		new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
+	const setAttempt = (version: number, attempt: FactorAttemptView) => {
+		if (!isCurrentOperation(version)) return;
+		setOperation((current) => (current ? { ...current, attempt } : current));
+	};
+
+	const inspectQualification = async (
+		version: number,
+		attempt: FactorAttemptView,
+		candidate?: FactorComponentCandidateView,
+	) => {
+		let details: FactorComponentQualificationView | undefined;
+		try {
+			details = await adapter.getComponentQualification(userId, attempt.attemptId);
+			if (isCurrentOperation(version)) {
+				setOperation((current) =>
+					current
+						? {
+								...current,
+								attempt: details?.attempt ?? attempt,
+								qualification: details,
+							}
+						: current,
+				);
+			}
+		} catch (error) {
+			if (isCurrentOperation(version))
+				setOperationError(localizedFactorError(error, t));
+		}
+		if (!isCurrentOperation(version)) return;
+		try {
+			const components = await adapter.listComponents(userId);
+			if (!isCurrentOperation(version)) return;
+			const packageSha256 =
+				details?.packageSha256 ?? candidate?.packageSha256 ?? "";
+			setLibraryRecord(
+				details?.published === true
+					? components.find((item) => item.archiveSha256 === packageSha256)
+					: undefined,
+			);
+			setLibraryChecked(true);
+		} catch (error) {
+			if (isCurrentOperation(version))
+				setOperationError(localizedFactorError(error, t));
+		}
+	};
+
+	const followAttempt = async (
+		version: number,
+		stage: Gate6QualificationStage,
+		initial: FactorAttemptView,
+		candidate?: FactorComponentCandidateView,
+	): Promise<void> => {
+		let attempt = initial;
+		while (!isTerminalFactorAttempt(attempt.status)) {
+			if (!isCurrentOperation(version)) return;
+			attempt = await adapter.getAttempt(userId, attempt.attemptId);
+			setAttempt(version, attempt);
+			if (isTerminalFactorAttempt(attempt.status)) break;
+			await waitForAttemptPoll();
+		}
+		if (!isCurrentOperation(version)) return;
+		if (stage === "build") {
+			if (attempt.status !== "completed") return;
+			const built = await adapter.getComponentCandidate(userId, attempt.attemptId);
+			if (!isCurrentOperation(version)) return;
+			setOperation((current) =>
+				current ? { ...current, candidate: built } : current,
+			);
+			const qualificationAttempt = await adapter.prepareComponentQualification(
+				userId,
+				attempt.attemptId,
+			);
+			if (!isCurrentOperation(version)) return;
+			setOperation((current) =>
+				current
+					? { ...current, stage: "qualification", attempt: qualificationAttempt }
+					: current,
+			);
+			return followAttempt(version, "qualification", qualificationAttempt, built);
+		}
+		await inspectQualification(version, attempt, candidate);
+	};
+
+	const start = async () => {
+		if (
+			!preflightReady ||
+			!selectedDecisionId ||
+			!selectedOutputName ||
+			!decisionForDisplay ||
+			!selectedCandidate ||
+			!selectedDataset ||
+			!selectedReport ||
+			!selectedPolicy
+		) {
+			setOperationError(preflightReason);
+			return;
+		}
+		const version = ++operationVersion.current;
+		setStarting(true);
+		setOperationError(undefined);
+		setLibraryChecked(false);
+		setLibraryRecord(undefined);
+		try {
+			const attempt = await adapter.prepareComponent(
+				userId,
+				selectedDecisionId,
+				selectedOutputName,
+			);
+			if (!isCurrentOperation(version)) return;
+			setOperation({
+				stage: "build",
+				attempt,
+				decisionId: selectedDecisionId,
+				outputName: selectedOutputName,
+				preflight: {
+					decision: decisionForDisplay,
+					candidate: selectedCandidate,
+					dataset: selectedDataset,
+					report: selectedReport,
+					reports: selectedReports,
+					policy: selectedPolicy,
+				},
+			});
+			await followAttempt(version, "build", attempt);
+		} catch (error) {
+			if (isCurrentOperation(version))
+				setOperationError(localizedFactorError(error, t));
+		} finally {
+			if (isCurrentOperation(version)) setStarting(false);
+		}
+	};
+
+	const cancel = async () => {
+		if (!operation) return;
+		setCancelling(true);
+		setOperationError(undefined);
+		try {
+			await adapter.cancelAttempt(userId, operation.attempt.attemptId);
+		} catch (error) {
+			setOperationError(localizedFactorError(error, t));
+		} finally {
+			setCancelling(false);
+		}
+	};
+
+	const retry = async () => {
+		if (!operation || operation.attempt.status === "completed") return;
+		const version = ++operationVersion.current;
+		const previous = operation;
+		setRetrying(true);
+		setOperationError(undefined);
+		setLibraryChecked(false);
+		setLibraryRecord(undefined);
+		try {
+			const attempt = await adapter.retryComponentAttempt(
+				userId,
+				previous.attempt.attemptId,
+			);
+			if (!isCurrentOperation(version)) return;
+			setOperation({ ...previous, attempt, qualification: undefined });
+			await followAttempt(version, previous.stage, attempt, previous.candidate);
+		} catch (error) {
+			if (isCurrentOperation(version))
+				setOperationError(localizedFactorError(error, t));
+		} finally {
+			if (isCurrentOperation(version)) setRetrying(false);
+		}
+	};
+
+	const attemptIsTerminal = operation
+		? isTerminalFactorAttempt(operation.attempt.status)
+		: false;
+	const operationActive = Boolean(operation && !attemptIsTerminal);
+	const source = valueAt(selectedCandidate?.candidate, "source");
+	const sourceBuild = valueAt(source, "build");
+	const sourceIdentity = source
+		? {
+				kind: textAt(source, "kind"),
+				definition: valueAt(source, "definition"),
+				build: sourceBuild,
+			}
+		: undefined;
+	const operationDiagnostic = operation?.attempt.diagnostic?.trim();
+	const operationDiagnosticLabel = operation?.attempt.failureCode
+		? localizedFactorAttemptCode(operation.attempt.failureCode, t)
+		: operationDiagnostic
+			? localizedFactorError(operationDiagnostic, t)
+			: "";
+
+	return (
+		<Card>
+			<CardHeader>
+				<CardTitle>{t("factors.gate6.heading")}</CardTitle>
+				<CardDescription>{t("factors.gate6.description")}</CardDescription>
+			</CardHeader>
+			<CardContent className="space-y-4">
+				{decisionError ? (
+					<p className="text-sm text-destructive" role="alert">
+						{localizedFactorError(decisionError, t)}
+					</p>
+				) : null}
+				{decisionLoading && !decisions.length ? (
+					<LoadingState label={t("factors.loading")} />
+				) : null}
+				{!decisionLoading &&
+				!decisionError &&
+				!eligibleDecisions.length &&
+				!operationPreflight ? (
+					<EmptyState message={t("factors.gate6.emptyDecisions")} />
+				) : null}
+				{hasGate6Selection ? (
+					<>
+						<div className="grid gap-3 md:grid-cols-2">
+							<div className="grid gap-1.5">
+								<Label htmlFor="factor-gate6-decision">
+									{t("factors.gate6.decisionSelection")}
+								</Label>
+								<select
+									id="factor-gate6-decision"
+									className={selectClassName}
+									value={selectedDecisionId}
+									disabled={operationActive || starting}
+									onChange={(event) => selectDecision(event.target.value)}
+								>
+									<option value="">{t("factors.gate6.selectDecision")}</option>
+									{decisionOptions.map((item) => {
+										const decisionId = textAt(item.decision, "decisionId", "");
+										const candidateHash = textAt(item.decision, "candidateHash", "");
+										const outputName = textAt(item.decision, "outputName", "");
+										const candidate =
+											candidates.find(
+												(candidateItem) =>
+													textAt(candidateItem.candidate, "candidateHash", "") ===
+													candidateHash,
+											) ??
+											(operationPreflight?.candidate &&
+											textAt(
+												operationPreflight.candidate.candidate,
+												"candidateHash",
+												"",
+											) === candidateHash
+												? operationPreflight.candidate
+												: undefined);
+										return (
+											<option key={decisionId} value={decisionId}>
+												{`${textAt(candidate?.presentation, "name", t("factors.common.candidate"))} · ${outputName}`}
+											</option>
+										);
+									})}
+								</select>
+							</div>
+							<div className="grid gap-1.5">
+								<Label htmlFor="factor-gate6-output">
+									{t("factors.gate6.outputSelection")}
+								</Label>
+								<select
+									id="factor-gate6-output"
+									className={`${selectClassName} font-mono text-xs`}
+									value={selectedOutputName}
+									disabled={operationActive || starting || !candidateHash}
+									onChange={(event) => selectOutput(event.target.value)}
+								>
+									<option value="">{t("factors.gate6.selectOutput")}</option>
+									{outputOptions.map((outputName) => (
+										<option key={outputName} value={outputName}>
+											{outputName}
+										</option>
+									))}
+								</select>
+							</div>
+						</div>
+						<div
+							className={`rounded-md border p-3 text-sm ${preflightReady ? "border-emerald-500/40 bg-emerald-500/5" : "border-amber-500/40 bg-amber-500/5"}`}
+							role="status"
+							aria-live="polite"
+						>
+							<p className="font-medium">
+								{preflightReady ? t("factors.gate6.ready") : t("factors.gate6.blocked")}
+							</p>
+							{!preflightReady ? (
+								<p className="mt-1 text-muted-foreground">{preflightReason}</p>
+							) : null}
+						</div>
+						{decisionForDisplay ? (
+							<div className="rounded-md border bg-muted/20 p-3">
+								<p className="text-sm font-medium">
+									{t("factors.gate6.preflightHeading")}
+								</p>
+								<dl className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+									<Detail
+										label={t("factors.gate6.decision")}
+										value={selectedDecisionId || "—"}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.output")}
+										value={selectedOutputName || "—"}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.candidate")}
+										value={candidateHash || "—"}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.policy")}
+										value={policyHash || "—"}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.reports")}
+										value={reportHashes.join(", ") || "—"}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.factorDataset")}
+										value={factorDatasetId || "—"}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.featureDataset")}
+										value={textAt(predecessor?.featureDataset, "datasetId", "—")}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.featurePlan")}
+										value={textAt(predecessor?.featureDataset, "featurePlanHash", "—")}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.marketSnapshot")}
+										value={textAt(predecessor, "snapshotId", "—")}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.universe")}
+										value={textAt(predecessor, "universeId", "—")}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.context")}
+										value={`${textAt(predecessor, "market", "—")} · ${textAt(predecessor, "venue", "—")} · ${textAt(predecessor, "contextHash", "—")}`}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.scope")}
+										value={textAt(selectedCandidate?.candidate, "scope", "—")}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.range")}
+										value={`${textAt(predecessor, "rangeStartMs", "—")} → ${textAt(predecessor, "rangeEndMs", "—")}`}
+										mono
+									/>
+									<Detail
+										label={t("factors.gate6.parameters")}
+										value={jsonText(valueAt(selectedCandidate?.candidate, "parameters"))}
+									/>
+									<Detail
+										label={t("factors.gate6.sourceBuild")}
+										value={jsonText(sourceIdentity)}
+									/>
+								</dl>
+								<EvidenceJson
+									label={t("factors.gate6.evidence")}
+									value={{
+										decision: decisionForDisplay,
+										candidate: selectedCandidate?.candidate,
+										dataset: selectedDataset?.manifest,
+										report: selectedReport?.report,
+										reports: selectedReports.map((item) => item.report),
+										policy: selectedPolicy?.policy,
+										context: predecessor,
+									}}
+								/>
+							</div>
+						) : null}
+						<div className="flex flex-wrap items-center gap-3">
+							<Button
+								type="button"
+								loading={starting}
+								disabled={!preflightReady || starting || Boolean(operation)}
+								onClick={() => void start()}
+							>
+								{t("factors.gate6.start")}
+							</Button>
+							<Link
+								to="/components"
+								className="text-sm text-primary underline-offset-4 hover:underline"
+							>
+								{t("factors.gate6.genericImport")}
+							</Link>
+						</div>
+					</>
+				) : null}
+				{!eligibleDecisions.length && !operationPreflight ? (
+					<Link
+						to="/components"
+						className="text-sm text-primary underline-offset-4 hover:underline"
+					>
+						{t("factors.gate6.genericImport")}
+					</Link>
+				) : null}
+				{operation ? (
+					<Card className="border-primary/30">
+						<CardHeader>
+							<CardTitle>{t("factors.gate6.operationHeading")}</CardTitle>
+							<CardDescription>
+								{t("factors.gate6.operationDescription")}
+							</CardDescription>
+						</CardHeader>
+						<CardContent className="space-y-3">
+							<div
+								className="flex flex-wrap items-center gap-2"
+								role="status"
+								aria-live="polite"
+							>
+								<FactorAttemptStatusBadge status={operation.attempt.status} />
+								<span className="text-sm text-muted-foreground">
+									{operation.stage === "build"
+										? t("factors.gate6.buildStage")
+										: t("factors.gate6.qualificationStage")}
+								</span>
+							</div>
+							<dl className="grid gap-3 text-xs sm:grid-cols-3">
+								<Detail
+									label={t("factors.gate6.attempt")}
+									value={operation.attempt.attemptId}
+									mono
+								/>
+								<Detail
+									label={t("factors.gate6.requestHash")}
+									value={operation.attempt.requestHash}
+									mono
+								/>
+								<Detail
+									label={t("factors.gate6.result")}
+									value={operation.attempt.resultId ?? "—"}
+									mono
+								/>
+							</dl>
+							{operation.attempt.progressTotal > 0 ? (
+								<progress
+									className="h-2 w-full"
+									value={operation.attempt.completedUnits}
+									max={operation.attempt.progressTotal}
+									aria-label={t("factors.gate6.progress")}
+								/>
+							) : null}
+							{operation.attempt.failureCode || operation.attempt.diagnostic ? (
+								<div className="space-y-1 text-sm text-destructive" role="alert">
+									<p className="break-words">
+										<span className="font-medium">
+											{operationDiagnosticLabel}
+											{operation.attempt.failureCode ? (
+												<> ({operation.attempt.failureCode})</>
+											) : null}
+										</span>
+									</p>
+									{operationDiagnostic ? (
+										<details className="text-muted-foreground">
+											<summary className="cursor-pointer">
+												{t("factors.gate6.technicalDiagnostic")}
+											</summary>
+											<code className="mt-1 block max-h-32 overflow-auto whitespace-pre-wrap break-words">
+												{operationDiagnostic}
+											</code>
+										</details>
+									) : null}
+								</div>
+							) : null}
+							{operation.candidate ? (
+								<div className="rounded-md border bg-muted/20 p-3">
+									<p className="text-sm font-medium">
+										{t("factors.gate6.candidatePackage")}
+									</p>
+									<dl className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+										<Detail
+											label={t("factors.gate6.package")}
+											value={operation.candidate.packageSha256}
+											mono
+										/>
+										<Detail
+											label={t("factors.gate6.component")}
+											value={textAt(operation.candidate.manifest, "componentId", "—")}
+											mono
+										/>
+										<Detail
+											label={t("factors.gate6.version")}
+											value={textAt(operation.candidate.manifest, "version", "—")}
+										/>
+										<Detail
+											label={t("factors.gate6.wasm")}
+											value={textAt(operation.candidate.manifest, "wasmSha256", "—")}
+											mono
+										/>
+									</dl>
+									<EvidenceJson
+										label={t("factors.gate6.candidateBinding")}
+										value={operation.candidate.binding}
+									/>
+								</div>
+							) : null}
+							{operation.qualification ? (
+								<div className="space-y-3 rounded-md border bg-muted/20 p-3">
+									<dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+										<Detail
+											label={t("factors.gate6.qualificationResult")}
+											value={
+												operation.qualification.published
+													? t("factors.gate6.published")
+													: t("factors.gate6.notPublished")
+											}
+										/>
+										<Detail
+											label={t("factors.gate6.package")}
+											value={operation.qualification.packageSha256 ?? "—"}
+											mono
+										/>
+										<Detail
+											label={t("factors.gate6.provenance")}
+											value={
+												operation.qualification.provenance
+													? t("factors.gate6.available")
+													: t("factors.gate6.unavailable")
+											}
+										/>
+										<Detail
+											label={t("factors.gate6.equivalence")}
+											value={
+												operation.qualification.equivalence
+													? t("factors.gate6.available")
+													: t("factors.gate6.unavailable")
+											}
+										/>
+									</dl>
+									<EvidenceJson
+										label={t("factors.gate6.qualificationEvidence")}
+										value={{
+											qualification: operation.qualification.qualification,
+											provenance: operation.qualification.provenance,
+											equivalence: operation.qualification.equivalence,
+										}}
+									/>
+								</div>
+							) : null}
+							{operation.stage === "qualification" && attemptIsTerminal ? (
+								<div className="rounded-md border p-3">
+									<dl className="grid gap-3 sm:grid-cols-2">
+										<Detail
+											label={t("factors.gate6.libraryRecord")}
+											value={
+												libraryRecord
+													? `${libraryRecord.name} · v${libraryRecord.version}`
+													: t("factors.gate6.notPublished")
+											}
+										/>
+										<Detail
+											label={t("factors.gate6.entitlement")}
+											value={
+												libraryRecord
+													? t("factors.gate6.entitlementGranted")
+													: t("factors.gate6.entitlementMissing")
+											}
+										/>
+									</dl>
+									{libraryRecord ? (
+										<EvidenceJson
+											label={t("factors.gate6.libraryEvidence")}
+											value={libraryRecord}
+										/>
+									) : null}
+									{libraryChecked && libraryRecord ? (
+										<Link
+											to="/components"
+											className="mt-3 inline-block text-sm text-primary underline-offset-4 hover:underline"
+										>
+											{t("factors.gate6.inspectLibrary")}
+										</Link>
+									) : null}
+								</div>
+							) : null}
+							<div className="flex flex-wrap gap-3">
+								{!attemptIsTerminal ? (
+									<Button
+										type="button"
+										variant="outline"
+										loading={cancelling}
+										onClick={() => void cancel()}
+									>
+										{t("factors.gate6.cancel")}
+									</Button>
+								) : null}
+								{attemptIsTerminal && operation.attempt.status !== "completed" ? (
+									<Button
+										type="button"
+										variant="outline"
+										loading={retrying}
+										onClick={() => void retry()}
+									>
+										{operation.attempt.status === "interrupted" ||
+										operation.attempt.status === "stale"
+											? t("factors.gate6.restart")
+											: t("factors.gate6.retry")}
+									</Button>
+								) : null}
+							</div>
+						</CardContent>
+					</Card>
+				) : null}
+				<Feedback message={operationError} />
+			</CardContent>
+		</Card>
+	);
+}
+
 function DecisionsWorkspace({
 	userId,
 	adapter,
@@ -2213,8 +3090,16 @@ function DecisionsWorkspace({
 	adapter: FactorAdapter;
 }) {
 	const { t } = useTranslation();
-	const candidates = useFactorPage(userId, "decision-candidates", adapter.listCandidates);
-	const datasets = useFactorPage(userId, "decision-datasets", adapter.listDatasets);
+	const candidates = useFactorPage(
+		userId,
+		"decision-candidates",
+		adapter.listCandidates,
+	);
+	const datasets = useFactorPage(
+		userId,
+		"decision-datasets",
+		adapter.listDatasets,
+	);
 	const reports = useFactorPage(userId, "decision-reports", adapter.listReports);
 	const policies = useFactorPage(userId, "policies", adapter.listPolicies);
 	const decisions = useFactorPage(userId, "decisions", adapter.listDecisions);
@@ -2222,6 +3107,36 @@ function DecisionsWorkspace({
 		userId,
 		"decision-library",
 		adapter.listDecisionLibrary,
+	);
+	const gate6Candidates = useFactorPage(
+		userId,
+		"gate6-candidates",
+		adapter.listCandidates,
+		{ allPages: true },
+	);
+	const gate6Datasets = useFactorPage(
+		userId,
+		"gate6-datasets",
+		adapter.listDatasets,
+		{ allPages: true },
+	);
+	const gate6Reports = useFactorPage(
+		userId,
+		"gate6-reports",
+		adapter.listReports,
+		{ allPages: true },
+	);
+	const gate6Policies = useFactorPage(
+		userId,
+		"gate6-policies",
+		adapter.listPolicies,
+		{ allPages: true },
+	);
+	const gate6Decisions = useFactorPage(
+		userId,
+		"gate6-decisions",
+		adapter.listDecisionLibrary,
+		{ allPages: true },
 	);
 	const [candidateHash, setCandidateHash] = useState("");
 	const [datasetId, setDatasetId] = useState("");
@@ -2258,7 +3173,9 @@ function DecisionsWorkspace({
 	const selectedDataset = datasetItems.find(
 		(item) => textAt(item.manifest, "datasetId") === datasetId,
 	);
-	const outputNames = Array.isArray(valueAt(selectedDataset?.manifest, "outputNames"))
+	const outputNames = Array.isArray(
+		valueAt(selectedDataset?.manifest, "outputNames"),
+	)
 		? (valueAt(selectedDataset?.manifest, "outputNames") as unknown[]).filter(
 				(value): value is string => typeof value === "string",
 			)
@@ -2298,7 +3215,9 @@ function DecisionsWorkspace({
 		setEligibility(undefined);
 	};
 	useEffect(() => {
-		setSupersedes(currentDecision ? textAt(currentDecision.decision, "decisionId", "") : "");
+		setSupersedes(
+			currentDecision ? textAt(currentDecision.decision, "decisionId", "") : "",
+		);
 	}, [currentDecision]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: lineageRetry is the explicit retry trigger for this effect.
 	useEffect(() => {
@@ -2427,8 +3346,31 @@ function DecisionsWorkspace({
 		}
 	};
 	const library = libraryPage.data?.items ?? [];
+	const gate6Error =
+		gate6Decisions.error ??
+		gate6Candidates.error ??
+		gate6Datasets.error ??
+		gate6Reports.error ??
+		gate6Policies.error;
 	return (
 		<div className="space-y-5">
+			<Gate6QualificationWorkspace
+				userId={userId}
+				adapter={adapter}
+				decisions={gate6Decisions.data?.items ?? []}
+				decisionLoading={
+					gate6Decisions.loading ||
+					gate6Candidates.loading ||
+					gate6Datasets.loading ||
+					gate6Reports.loading ||
+					gate6Policies.loading
+				}
+				decisionError={gate6Error}
+				candidates={gate6Candidates.data?.items ?? []}
+				datasets={gate6Datasets.data?.items ?? []}
+				reports={gate6Reports.data?.items ?? []}
+				policies={gate6Policies.data?.items ?? []}
+			/>
 			<Card>
 				<CardHeader>
 					<CardTitle className="flex items-center gap-2">
@@ -2660,7 +3602,10 @@ function DecisionsWorkspace({
 								<Detail label={t("factors.decisions.trial")} value={trialId} mono />
 								<Detail
 									label={t("factors.decisions.evidenceState")}
-									value={localizedFactorCode(textAt(selectedReport?.report, "evidenceState", "unknown"), t)}
+									value={localizedFactorCode(
+										textAt(selectedReport?.report, "evidenceState", "unknown"),
+										t,
+									)}
 								/>
 								<Detail
 									label={t("factors.decisions.lineageHash")}
@@ -2731,15 +3676,13 @@ function DecisionsWorkspace({
 									clearFrozenSelection();
 								}}
 							>
-								{[
-									"rejected",
-									"research-validated",
-									"component-eligible",
-								].map((state) => (
-									<option key={state} value={state}>
-										{localizedFactorCode(state, t)}
-									</option>
-								))}
+								{["rejected", "research-validated", "component-eligible"].map(
+									(state) => (
+										<option key={state} value={state}>
+											{localizedFactorCode(state, t)}
+										</option>
+									),
+								)}
 							</select>
 						</div>
 						<div className="grid gap-1.5">
@@ -2828,7 +3771,8 @@ function DecisionsWorkspace({
 						<div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm">
 							<p className="font-medium">{t("factors.decisions.protocolFrozen")}</p>
 							<p className="mt-1 break-all font-mono text-xs text-muted-foreground">
-								{t("factors.decisions.protocol")}: {textAt(frozenProtocol, "protocolHash")}
+								{t("factors.decisions.protocol")}:{" "}
+								{textAt(frozenProtocol, "protocolHash")}
 							</p>
 						</div>
 					) : null}

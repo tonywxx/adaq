@@ -17,9 +17,12 @@ import { AttemptsPanel } from "./factor-attempts-panel";
 import { localizedFactorError } from "./factor-workspace-support";
 import type { FactorAdapter } from "./factor-adapter";
 import type {
+	FactorComponentCandidateView,
+	FactorComponentQualificationView,
 	FactorCandidateView,
 	FactorAttemptView,
 	FactorDatasetView,
+	FactorDecisionView,
 	FactorFamilyView,
 	FactorLineageView,
 	FactorPage,
@@ -160,6 +163,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	jest.useRealTimers();
 	useMarketSessionStore.getState().clear();
 	document.body.replaceChildren();
 	clearSessionCache();
@@ -508,7 +512,9 @@ test("starts evaluation from Host-owned Candidate and Dataset selections", async
 		lockedBy: [],
 		createdAtMs: 1,
 	};
-	const startEvaluationFromContext = jest.fn(async () => ({}) as FactorAttemptView);
+	const startEvaluationFromContext = jest.fn(
+		async () => ({}) as FactorAttemptView,
+	);
 	const adapter = {
 		...makeAdapter(),
 		listCandidates: async () => page([candidate]),
@@ -517,7 +523,8 @@ test("starts evaluation from Host-owned Candidate and Dataset selections", async
 		metricCatalog: async () => ({ definitions: [] }),
 		startEvaluationFromContext,
 	} as unknown as FactorAdapter;
-	const invokeMock = jest.requireMock("@tauri-apps/api/core").invoke as jest.Mock;
+	const invokeMock = jest.requireMock("@tauri-apps/api/core")
+		.invoke as jest.Mock;
 	invokeMock.mockImplementation(async (command: string) =>
 		command === "research_context_get" ? context : null,
 	);
@@ -542,9 +549,9 @@ test("starts evaluation from Host-owned Candidate and Dataset selections", async
 
 	expect(mounted.container.textContent).toContain(candidateHash);
 	expect(mounted.container.textContent).toContain("dataset-1");
-	const startButton = Array.from(mounted.container.querySelectorAll("button")).find(
-		(button) => button.textContent === i18n.t("factors.evaluations.start"),
-	);
+	const startButton = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find((button) => button.textContent === i18n.t("factors.evaluations.start"));
 	expect(startButton).toBeTruthy();
 	await act(async () => {
 		(startButton as HTMLElement).click();
@@ -593,7 +600,12 @@ test("records a Decision only after structured evidence is frozen", async () => 
 			outputName: "momentum",
 			evidenceState: "out-of-sample",
 		},
-		protocol: { familyId, trialId, factorDatasetId: "dataset-1", outputName: "momentum" },
+		protocol: {
+			familyId,
+			trialId,
+			factorDatasetId: "dataset-1",
+			outputName: "momentum",
+		},
 		lockedBy: [],
 		createdAtMs: 1,
 	};
@@ -660,7 +672,9 @@ test("records a Decision only after structured evidence is frozen", async () => 
 		]),
 	);
 
-	const freezeButton = Array.from(mounted.container.querySelectorAll("button")).find(
+	const freezeButton = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find(
 		(button) => button.textContent === i18n.t("factors.decisions.freezeProtocol"),
 	);
 	expect((freezeButton as HTMLButtonElement).disabled).toBe(true);
@@ -676,7 +690,9 @@ test("records a Decision only after structured evidence is frozen", async () => 
 	expect((freezeButton as HTMLButtonElement).disabled).toBe(false);
 	await act(async () => (freezeButton as HTMLElement).click());
 	await settle();
-	const recordButton = Array.from(mounted.container.querySelectorAll("button")).find(
+	const recordButton = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find(
 		(button) => button.textContent === i18n.t("factors.decisions.recordDecision"),
 	);
 	await act(async () => (recordButton as HTMLElement).click());
@@ -703,6 +719,415 @@ test("records a Decision only after structured evidence is frozen", async () => 
 		}),
 		null,
 	);
+
+	await unmount(mounted.root, mounted.container);
+});
+
+test("runs Gate 6 from a current Component Eligible Decision to Library inspection", async () => {
+	const candidateHash = "c".repeat(64);
+	const decisionId = "11111111-1111-4111-8111-111111111111";
+	const reportHash = "r".repeat(64);
+	const secondReportHash = "s".repeat(64);
+	const policyHash = "p".repeat(64);
+	const featurePlanHash = "f".repeat(64);
+	const packageHash = "a".repeat(64);
+	const wasmHash = "w".repeat(64);
+	const candidate: FactorCandidateView = {
+		candidate: {
+			candidateHash,
+			candidateId: decisionId,
+			revision: 2,
+			scope: "time-series",
+			parameters: [{ name: "window", defaultValue: "20" }],
+			outputs: [{ name: "momentum" }],
+			source: {
+				kind: "declarative",
+				definition: { featurePlanHash },
+			},
+		},
+		presentation: { name: "Momentum" },
+		lockedBy: [],
+		createdAtMs: 1,
+		predecessor: {
+			userId: "user-1",
+			contextRevision: 3,
+			contextHash: "h".repeat(64),
+			market: "crypto",
+			venue: "okx",
+			rangeStartMs: 10,
+			rangeEndMs: 20,
+			snapshotId: "snapshot-1",
+			universeId: "universe-1",
+			evidence: [],
+			featureDataset: {
+				datasetId: "feature-1",
+				requestHash: "q".repeat(64),
+				featurePlanHash,
+				contentSha256: "d".repeat(64),
+				outputNames: ["close"],
+			},
+		},
+	};
+	const dataset: FactorDatasetView = {
+		manifest: {
+			datasetId: "factor-1",
+			protocolHash: "protocol".repeat(8),
+			candidateHash,
+			featureDatasetId: "feature-1",
+			featurePlanHash,
+			marketDataSnapshotId: "snapshot-1",
+			pointInTimeUniverseId: "universe-1",
+			observationRange: { startTimeMs: 10, endTimeMs: 20 },
+			outputNames: ["momentum"],
+		},
+		byteSize: 128,
+		lockedBy: [],
+		createdAtMs: 1,
+	};
+	const report: FactorReportView = {
+		report: {
+			reportHash,
+			factorDatasetId: "factor-1",
+			outputName: "momentum",
+			evidenceState: "out-of-sample",
+		},
+		protocol: {
+			familyId: "22222222-2222-4222-8222-222222222222",
+			trialId: "33333333-3333-4333-8333-333333333333",
+		},
+		lockedBy: [],
+		createdAtMs: 1,
+	};
+	const secondReport: FactorReportView = {
+		...report,
+		report: { ...report.report, reportHash: secondReportHash },
+	};
+	const policy: FactorPolicyView = {
+		policy: { policyHash, revision: 4 },
+		createdAtMs: 1,
+	};
+	const decision: FactorDecisionView = {
+		decision: {
+			decisionId,
+			candidateHash,
+			outputName: "momentum",
+			state: "component-eligible",
+			reportHashes: [reportHash, secondReportHash],
+			policyHash,
+			evidenceState: "out-of-sample",
+		},
+		promotionProtocolHash: "protocol".repeat(8),
+		eligibilityGates: [{ gate: "complete-lineage", passed: true }],
+		createdAtMs: 1,
+	};
+	const buildAttempt: FactorAttemptView = {
+		attemptId: "44444444-4444-4444-8444-444444444444",
+		userId: "user-1",
+		kind: "factor-component-build",
+		requestHash: "b".repeat(64),
+		status: "completed",
+		resultId: packageHash,
+		completedUnits: 1,
+		progressTotal: 1,
+		diagnostic: null,
+		failureCode: null,
+		createdAtMs: 1,
+		updatedAtMs: 1,
+	};
+	const qualificationAttempt: FactorAttemptView = {
+		...buildAttempt,
+		attemptId: "55555555-5555-4555-8555-555555555555",
+		kind: "factor-component-qualification",
+		requestHash: "q".repeat(64),
+	};
+	const failedQualificationAttempt: FactorAttemptView = {
+		...qualificationAttempt,
+		status: "failed",
+		resultId: null,
+		failureCode: "factor-component-qualification-failed",
+		diagnostic: "factor-component-qualification-failed: equivalence failed",
+	};
+	const componentCandidate: FactorComponentCandidateView = {
+		attemptId: buildAttempt.attemptId,
+		userId: "user-1",
+		packageSha256: packageHash,
+		manifest: {
+			name: "Momentum Factor",
+			componentId: decisionId,
+			version: "1.0.0",
+			kind: "factor",
+			wasmSha256: wasmHash,
+			outputNames: ["momentum"],
+		},
+		binding: { candidate: candidate.candidate },
+	};
+	const qualification: FactorComponentQualificationView = {
+		attempt: qualificationAttempt,
+		candidateAttemptId: buildAttempt.attemptId,
+		packageSha256: packageHash,
+		binding: { candidate: candidate.candidate },
+		qualification: {
+			qualified: true,
+			componentId: decisionId,
+			version: "1.0.0",
+			evidence: [],
+		},
+		provenance: {
+			sourceSha256: "s".repeat(64),
+			sdkVersion: "0.9.2",
+			abiVersion: "1.0.0",
+			toolchain: "stable",
+			compiler: "rustc",
+			target: "wasm32-unknown-unknown",
+			packageSha256: packageHash,
+		},
+		equivalence: {
+			comparisonContract: "bit-identical",
+			inputIdentitySha256: "i".repeat(64),
+			frozenOutputSha256: "o".repeat(64),
+			cases: [{ passed: true }],
+		},
+		published: true,
+		evidenceCreatedAtMs: 2,
+	};
+	const failedQualification: FactorComponentQualificationView = {
+		...qualification,
+		attempt: failedQualificationAttempt,
+		qualification: { qualified: false, reason: "equivalence failed" },
+		provenance: null,
+		equivalence: null,
+		published: false,
+	};
+	const libraryComponent = {
+		componentId: decisionId,
+		version: "1.0.0",
+		manifestSchemaVersion: "1.0.0",
+		sdkVersion: "0.9.2",
+		abiVersion: "1.0.0",
+		name: "Momentum Factor",
+		kind: "factor" as const,
+		archiveSha256: packageHash,
+		wasmSha256: wasmHash,
+		parameters: [],
+		featureSlots: [],
+		outputNames: ["momentum"],
+		dependencies: [],
+		warmupBars: 20,
+		compatible: true,
+		lockedByRunIds: [],
+	};
+	const pendingBuildAttempt: FactorAttemptView = {
+		...buildAttempt,
+		status: "running",
+		resultId: null,
+		completedUnits: 0,
+	};
+	const cancelledBuildAttempt: FactorAttemptView = {
+		...pendingBuildAttempt,
+		status: "cancelled",
+		failureCode: "cancelled",
+		diagnostic: "cancelled: user requested",
+	};
+	const prepareComponent = jest.fn(async () => pendingBuildAttempt);
+	const prepareComponentQualification = jest.fn(
+		async () => failedQualificationAttempt,
+	);
+	const buildPoll = deferred<FactorAttemptView>();
+	const getAttempt = jest.fn(() => buildPoll.promise);
+	const cancelAttempt = jest.fn(async () => undefined);
+	const getComponentQualification = jest
+		.fn()
+		.mockResolvedValueOnce(failedQualification)
+		.mockResolvedValue(qualification);
+	const retryComponentAttempt = jest
+		.fn()
+		.mockResolvedValueOnce(buildAttempt)
+		.mockResolvedValueOnce(qualificationAttempt);
+	const listComponents = jest
+		.fn()
+		.mockResolvedValueOnce([libraryComponent])
+		.mockResolvedValue([libraryComponent]);
+	const adapter = {
+		...makeAdapter(),
+		listCandidates: async () => page([candidate]),
+		listDatasets: async () => page([dataset]),
+		listReports: async () => page([report, secondReport]),
+		listPolicies: async () => page([policy]),
+		listDecisions: async () => page([decision]),
+		listDecisionLibrary: async () => page([decision]),
+		prepareComponent,
+		getAttempt,
+		cancelAttempt,
+		getComponentCandidate: async () => componentCandidate,
+		prepareComponentQualification,
+		getComponentQualification,
+		retryComponentAttempt,
+		listComponents,
+	} as unknown as FactorAdapter;
+	const mounted = mount(adapter);
+
+	await act(async () => {
+		mounted.root.render(
+			<QueryClientProvider client={mounted.queryClient}>
+				<FactorsPage adapter={mounted.adapter} />
+			</QueryClientProvider>,
+		);
+	});
+	await settle();
+	const decisionsTab = Array.from(
+		mounted.container.querySelectorAll('[role="tab"]'),
+	).find((tab) => tab.textContent === i18n.t("factors.tabs.decisions"));
+	await act(async () => (decisionsTab as HTMLElement).click());
+	await settle();
+
+	expect(mounted.container.textContent).toContain(i18n.t("factors.gate6.ready"));
+	expect(mounted.container.textContent).toContain("feature-1");
+	expect(mounted.container.textContent).toContain("snapshot-1");
+	expect(mounted.container.textContent).toContain("universe-1");
+	expect(mounted.container.textContent).toContain(secondReportHash);
+	expect(
+		mounted.container.querySelector('label[for="factor-gate6-decision"]'),
+	).not.toBeNull();
+	expect(
+		mounted.container.querySelector('label[for="factor-gate6-output"]'),
+	).not.toBeNull();
+	const startButton = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find((button) => button.textContent === i18n.t("factors.gate6.start"));
+	expect(startButton).toBeTruthy();
+	await act(async () => (startButton as HTMLElement).click());
+	await settle();
+	expect(mounted.container.querySelector("progress")).not.toBeNull();
+	const cancelButton = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find((button) => button.textContent === i18n.t("factors.gate6.cancel"));
+	expect(cancelButton).toBeTruthy();
+	await act(async () => (cancelButton as HTMLElement).click());
+	expect(cancelAttempt).toHaveBeenCalledWith("user-1", buildAttempt.attemptId);
+	await act(async () => buildPoll.resolve(cancelledBuildAttempt));
+	await settle();
+
+	expect(prepareComponent).toHaveBeenCalledWith(
+		"user-1",
+		decisionId,
+		"momentum",
+	);
+	expect(getAttempt).toHaveBeenCalledWith("user-1", buildAttempt.attemptId);
+	expect(mounted.container.textContent).toContain("cancelled");
+	expect(listComponents).not.toHaveBeenCalled();
+	const cancelledRetryButton = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find((button) => button.textContent === i18n.t("factors.gate6.retry"));
+	expect(cancelledRetryButton).toBeTruthy();
+	await act(async () => (cancelledRetryButton as HTMLElement).click());
+	await settle();
+	expect(prepareComponentQualification).toHaveBeenCalledWith(
+		"user-1",
+		buildAttempt.attemptId,
+	);
+	expect(mounted.container.textContent).toContain(
+		"factor-component-qualification-failed",
+	);
+	expect(mounted.container.textContent).toContain(
+		i18n.t("factors.gate6.notPublished"),
+	);
+	expect(mounted.container.textContent).not.toContain(
+		i18n.t("factors.gate6.entitlementGranted"),
+	);
+	const retryButton = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find((button) => button.textContent === i18n.t("factors.gate6.retry"));
+	expect(retryButton).toBeTruthy();
+	await act(async () => (retryButton as HTMLElement).click());
+	await settle();
+	expect(retryComponentAttempt).toHaveBeenCalledWith(
+		"user-1",
+		failedQualificationAttempt.attemptId,
+	);
+	expect(mounted.container.textContent).toContain(packageHash);
+	expect(mounted.container.textContent).toContain("sourceSha256");
+	expect(mounted.container.textContent).toContain("inputIdentitySha256");
+	expect(mounted.container.textContent).toContain("Momentum Factor");
+	expect(mounted.container.textContent).toContain(
+		i18n.t("factors.gate6.entitlementGranted"),
+	);
+	expect(
+		mounted.container.querySelector('a[to="/components"], a[href="/components"]'),
+	).not.toBeNull();
+	const previousLocale = i18n.language;
+	await act(async () => i18n.changeLanguage("zh-CN"));
+	expect(mounted.container.textContent).toContain(
+		"Gate 6 · 资格认定 Factor Decision",
+	);
+	expect(mounted.container.textContent).toContain(packageHash);
+	await act(async () => i18n.changeLanguage(previousLocale));
+
+	await unmount(mounted.root, mounted.container);
+});
+
+test("blocks Gate 6 when a Component Eligible Decision has no User-scoped Candidate", async () => {
+	const decision: FactorDecisionView = {
+		decision: {
+			decisionId: "66666666-6666-4666-8666-666666666666",
+			candidateHash: "c".repeat(64),
+			outputName: "momentum",
+			state: "component-eligible",
+		},
+		promotionProtocolHash: "p".repeat(64),
+		eligibilityGates: [],
+		createdAtMs: 1,
+	};
+	const secondDecision: FactorDecisionView = {
+		...decision,
+		decision: {
+			...decision.decision,
+			decisionId: "77777777-7777-4777-8777-777777777777",
+			candidateHash: "d".repeat(64),
+			outputName: "reversal",
+		},
+	};
+	const listDecisionLibrary = jest.fn(
+		async (_userId: string, pageNumber: number) =>
+			pageNumber === 1
+				? { items: [decision], page: 1, pageSize: 1, total: 2 }
+				: { items: [secondDecision], page: 2, pageSize: 1, total: 2 },
+	);
+	const adapter = {
+		...makeAdapter(),
+		listCandidates: async () => page([]),
+		listDatasets: async () => page([]),
+		listReports: async () => page([]),
+		listPolicies: async () => page([]),
+		listDecisions: async () => page([]),
+		listDecisionLibrary,
+	} as unknown as FactorAdapter;
+	const mounted = mount(adapter);
+
+	await act(async () => {
+		mounted.root.render(
+			<QueryClientProvider client={mounted.queryClient}>
+				<FactorsPage adapter={mounted.adapter} />
+			</QueryClientProvider>,
+		);
+	});
+	await settle();
+	const decisionsTab = Array.from(
+		mounted.container.querySelectorAll('[role="tab"]'),
+	).find((tab) => tab.textContent === i18n.t("factors.tabs.decisions"));
+	await act(async () => (decisionsTab as HTMLElement).click());
+	await settle();
+
+	expect(mounted.container.textContent).toContain(
+		i18n.t("factors.gate6.blocked"),
+	);
+	expect(
+		mounted.container.querySelectorAll("#factor-gate6-decision option"),
+	).toHaveLength(3);
+	const startButton = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find((button) => button.textContent === i18n.t("factors.gate6.start"));
+	expect(startButton).toBeTruthy();
+	expect((startButton as HTMLButtonElement).disabled).toBe(true);
 
 	await unmount(mounted.root, mounted.container);
 });

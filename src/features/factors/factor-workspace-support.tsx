@@ -116,7 +116,13 @@ export function localizedFactorError(
 	) {
 		return diagnostic;
 	}
-	if (prefix === "research-interrupted" || prefix === "reset-required") {
+	if (
+		prefix === "cancelled" ||
+		prefix === "factor-component-build-failed" ||
+		prefix === "factor-component-qualification-failed" ||
+		prefix === "research-interrupted" ||
+		prefix === "reset-required"
+	) {
 		return localizedFactorCode(prefix, t);
 	}
 
