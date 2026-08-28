@@ -1682,6 +1682,12 @@ fn wait_for_factor_attempt(
             }
             adaq_factor_research::AttemptStatus::Pending
             | adaq_factor_research::AttemptStatus::Running => {}
+            adaq_factor_research::AttemptStatus::Interrupted
+            | adaq_factor_research::AttemptStatus::Stale => {
+                return Err(PythonResearchError(
+                    "Factor research Attempt is no longer retryable".into(),
+                ));
+            }
         }
         if std::time::Instant::now() >= deadline {
             return Err(PythonResearchError("factor-attempt-timeout".into()));

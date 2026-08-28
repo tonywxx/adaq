@@ -16,7 +16,8 @@ use std::{
 };
 
 use adaq_component_tooling::{
-    ComponentKind, ComponentPackage, FactorScope as PackageFactorScope, ParameterType,
+    ComponentKind, ComponentManifest, ComponentPackage, FactorScope as PackageFactorScope,
+    ParameterType,
 };
 use adaq_factor_research::{
     AttemptStatus, CandidateBuildRequest, CompletedFeatureDataset, ComponentEligibilityEvidence,
@@ -26,8 +27,8 @@ use adaq_factor_research::{
     FactorEvaluationReport, FactorEvaluator, FactorMaterializationInput,
     FactorMaterializationProtocol, FactorMaterializationProtocolDraft, FactorMaterializer,
     FactorObservationValue, FactorPresentationMetadata, FactorPromotionDecision, FactorTarget,
-    FactorUnavailabilityReason, GridSearchFamilyDraft, GridSearchParameter, MetricId,
-    MetricObservation, ObservationRange, PromotionDecisionDraft, PromotionDecisionState,
+    FactorUnavailabilityReason, FeatureDatasetBinding, GridSearchFamilyDraft, GridSearchParameter,
+    MetricId, MetricObservation, ObservationRange, PromotionDecisionDraft, PromotionDecisionState,
     PromotionEligibility, PromotionPolicy, PromotionProtocol, PromotionProtocolDraft,
     PythonFactorBinding, ResearchFamily, ResearchFamilyDraft, ResearchFamilyRegistration,
     ResearchLineage, ResearchRegistry, ResearchTrial, ResearchTrialDraft,
@@ -88,6 +89,14 @@ pub(crate) trait FactorResearchSource: Send + Sync {
         Err("Component Package source is not configured".into())
     }
 
+    fn candidate_package(
+        &self,
+        _user_id: &str,
+        _archive_sha256: &str,
+    ) -> Result<ComponentPackage, String> {
+        Err("Factor Candidate Package source is not configured".into())
+    }
+
     fn reference_feature_dataset(
         &self,
         _user_id: &str,
@@ -120,6 +129,7 @@ pub(crate) trait FactorResearchSource: Send + Sync {
 pub(crate) enum FactorFailureCode {
     Cancelled,
     CandidateBuildFailed,
+    FactorComponentBuildFailed,
     FactorMaterializationFailed,
     FactorEvaluationFailed,
     FactorFamilyGridFailed,
@@ -159,6 +169,7 @@ impl FactorFailureCode {
     fn for_kind(kind: &str) -> Self {
         match kind {
             "candidate-build" => Self::CandidateBuildFailed,
+            "factor-component-build" => Self::FactorComponentBuildFailed,
             "factor-materialization" => Self::FactorMaterializationFailed,
             "factor-evaluation" => Self::FactorEvaluationFailed,
             "factor-family-grid" => Self::FactorFamilyGridFailed,
@@ -410,6 +421,203 @@ pub(crate) struct FactorCandidateBuildRequest {
     pub presentation: FactorPresentationMetadata,
     #[serde(default)]
     pub build: Option<FactorControlledBuildRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorComponentPrepareRequest {
+    pub user_id: String,
+    pub decision_id: String,
+    pub output_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FactorComponentFeatureDatasetBinding {
+    binding: FeatureDatasetBinding,
+    plan_json: Vec<u8>,
+    engine_identity: adaq_feature_engine::FeatureEngineIdentity,
+    market_data_snapshot_id: String,
+    point_in_time_universe_id: String,
+    output_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorComponentBuildBinding {
+    decision_record: adaq_factor_research::PromotionDecisionRecord,
+    component_decisions: Vec<adaq_factor_research::PromotionDecisionRecord>,
+    candidate: FactorCandidate,
+    presentation: FactorPresentationMetadata,
+    predecessor: FactorCandidatePredecessor,
+    promotion_protocol: PromotionProtocol,
+    policy: PromotionPolicy,
+    reports: Vec<FactorEvaluationReport>,
+    evaluation_protocol: FactorEvaluationProtocol,
+    trial: ResearchTrial,
+    lineage: ResearchLineage,
+    factor_dataset: FactorDatasetManifest,
+    feature_dataset: FactorComponentFeatureDatasetBinding,
+    component: ComponentEligibilityEvidence,
+    resource_policy: adaq_factor_research::FactorResourcePolicy,
+    #[serde(default)]
+    build_provenance: Option<adaq_factor_research::CandidateBuildProvenance>,
+}
+
+struct ComponentEvidence {
+    promotion_protocol: PromotionProtocol,
+    policy: PromotionPolicy,
+    reports: Vec<FactorEvaluationReport>,
+    evaluation_protocol: FactorEvaluationProtocol,
+    trial: ResearchTrial,
+    lineage: ResearchLineage,
+    factor_dataset: FactorDatasetManifest,
+}
+
+impl FactorComponentBuildBinding {
+    fn validate(&self) -> Result<(), String> {
+        self.decision_record.validate().map_err(string)?;
+        self.candidate.validate().map_err(string)?;
+        self.presentation.validate().map_err(string)?;
+        self.predecessor.validate()?;
+        self.promotion_protocol.validate().map_err(string)?;
+        self.policy.validate().map_err(string)?;
+        self.evaluation_protocol.validate().map_err(string)?;
+        self.trial.validate().map_err(string)?;
+        self.lineage.validate().map_err(string)?;
+        self.factor_dataset.validate().map_err(string)?;
+        if self.component_decisions.len() != self.candidate.outputs.len()
+            || self.resource_policy.fuel_per_call == 0
+            || self.resource_policy.memory_bytes == 0
+        {
+            return Err("Factor Component binding is incomplete".into());
+        }
+        let user_id = self.decision_record.decision.user_id;
+        let candidate_hash = &self.candidate.candidate_hash;
+        if self.decision_record.decision.state != PromotionDecisionState::ComponentEligible
+            || self.decision_record.decision.candidate_hash != *candidate_hash
+            || self.decision_record.decision.user_id != user_id
+            || self.decision_record.promotion_protocol_hash != self.promotion_protocol.protocol_hash
+            || self.promotion_protocol.user_id != user_id
+            || self.promotion_protocol.candidate_hash != *candidate_hash
+            || self.promotion_protocol.policy_hash != self.policy.policy_hash
+            || self.promotion_protocol.report_hashes != self.decision_record.decision.report_hashes
+            || self.decision_record.decision.output_name != self.promotion_protocol.output_name
+            || self.decision_record.decision.policy_hash != self.policy.policy_hash
+            || self.component != self.decision_record.component
+            || self.evaluation_protocol.user_id != user_id
+            || self.evaluation_protocol.family_id != self.promotion_protocol.family_id
+            || self.evaluation_protocol.trial_id != self.promotion_protocol.trial_id
+            || self.evaluation_protocol.output_name != self.promotion_protocol.output_name
+            || self.evaluation_protocol.scope != self.candidate.scope
+            || self.evaluation_protocol.engine_identity != self.promotion_protocol.engine_identity
+            || self.evaluation_protocol.factor_dataset_id != self.factor_dataset.dataset_id
+            || self.evaluation_protocol.feature_dataset_id
+                != self.feature_dataset.binding.dataset_id
+            || self.evaluation_protocol.feature_plan_hash
+                != self.feature_dataset.binding.feature_plan_hash
+            || self.evaluation_protocol.market_data_snapshot_id
+                != self.feature_dataset.market_data_snapshot_id
+            || self.evaluation_protocol.point_in_time_universe_id
+                != self.feature_dataset.point_in_time_universe_id
+            || self.factor_dataset.candidate_hash != *candidate_hash
+            || self.factor_dataset.scope != self.candidate.scope
+            || self.factor_dataset.feature_dataset_id != self.feature_dataset.binding.dataset_id
+            || self.factor_dataset.feature_plan_hash
+                != self.feature_dataset.binding.feature_plan_hash
+            || self.factor_dataset.market_data_snapshot_id
+                != self.feature_dataset.market_data_snapshot_id
+            || self.factor_dataset.point_in_time_universe_id
+                != self.feature_dataset.point_in_time_universe_id
+            || self.factor_dataset.engine_identity != self.evaluation_protocol.engine_identity
+            || self.lineage.root_trial_id != self.promotion_protocol.trial_id
+            || self.lineage.trial_ids != self.promotion_protocol.lineage_trial_ids
+            || self.lineage.lineage_hash != self.promotion_protocol.lineage_hash
+        {
+            return Err("Factor Component binding identities differ".into());
+        }
+        let plan = adaq_feature_engine::FeaturePlan::load_for_engine(
+            &self.feature_dataset.plan_json,
+            &self.feature_dataset.engine_identity,
+        )
+        .map_err(|error| format!("Feature Plan evidence is invalid: {error}"))?;
+        if plan.plan_hash() != self.feature_dataset.binding.feature_plan_hash
+            || self.feature_dataset.output_names != self.feature_dataset.binding.output_names
+        {
+            return Err("Factor Component Feature Plan binding is invalid".into());
+        }
+        if self.trial.trial_id != self.promotion_protocol.trial_id
+            || self.trial.family_id != self.promotion_protocol.family_id
+            || self.trial.candidate_hash != *candidate_hash
+            || self.trial.protocol_hash != self.evaluation_protocol.protocol_hash
+            || self.trial.status != ResearchTrialStatus::Completed
+            || !self.trial.report_hash.as_deref().is_some_and(|hash| {
+                self.promotion_protocol
+                    .report_hashes
+                    .iter()
+                    .any(|item| item == hash)
+            })
+        {
+            return Err("Factor Component Trial binding is incomplete".into());
+        }
+        if self.component_decisions.iter().any(|record| {
+            record.validate().is_err()
+                || record.decision.state != PromotionDecisionState::ComponentEligible
+                || record.decision.user_id != user_id
+                || record.decision.candidate_hash != *candidate_hash
+                || !self
+                    .candidate
+                    .outputs
+                    .iter()
+                    .any(|output| output.name == record.decision.output_name)
+        }) {
+            return Err("Factor Component multi-output Decision binding is incomplete".into());
+        }
+        if self.candidate.outputs.iter().any(|output| {
+            self.component_decisions
+                .iter()
+                .filter(|record| record.decision.output_name == output.name)
+                .count()
+                != 1
+        }) || !self.component_decisions.iter().any(|record| {
+            record.decision.decision_id == self.decision_record.decision.decision_id
+                && record.decision.output_name == self.decision_record.decision.output_name
+        }) {
+            return Err("Factor Component multi-output Decision binding is incomplete".into());
+        }
+        if let Some(provenance) = &self.build_provenance
+            && (provenance.source_sha256.len() != 64
+                || !adaq_factor_research::is_sha256(&provenance.source_sha256)
+                || provenance.sdk_version.is_empty()
+                || provenance.abi_version.is_empty()
+                || provenance.toolchain.is_empty()
+                || provenance.compiler.is_empty()
+                || provenance.target.is_empty()
+                || provenance.commands.is_empty()
+                || provenance.package_sha256.len() != 64
+                || !adaq_factor_research::is_sha256(&provenance.package_sha256))
+        {
+            return Err("Factor Component build provenance is invalid".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FactorComponentBuildJob {
+    user_id: String,
+    binding: FactorComponentBuildBinding,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FactorComponentCandidateView {
+    pub attempt_id: String,
+    pub user_id: String,
+    pub package_sha256: String,
+    pub manifest: ComponentManifest,
+    pub binding: FactorComponentBuildBinding,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -803,6 +1011,67 @@ impl FactorResearch {
             build: request.build,
         };
         self.enqueue(&request.user_id, "candidate-build", &job)
+    }
+
+    pub(crate) fn prepare_component(
+        &self,
+        request: FactorComponentPrepareRequest,
+    ) -> Result<FactorAttemptView, String> {
+        self.ensure_schema_ready()?;
+        validate_user(&request.user_id)?;
+        if !adaq_factor_research::is_lower_kebab(&request.output_name) {
+            return Err("Factor Component output identity is invalid".into());
+        }
+        let decision_id = Uuid::parse_str(&request.decision_id)
+            .map_err(|_| "Factor Component Decision identity is invalid".to_owned())?;
+        let binding =
+            self.resolve_component_binding(&request.user_id, decision_id, &request.output_name)?;
+        let job = FactorComponentBuildJob {
+            user_id: request.user_id.clone(),
+            binding,
+        };
+        self.enqueue(&request.user_id, "factor-component-build", &job)
+    }
+
+    pub(crate) fn get_component_candidate(
+        &self,
+        request: FactorAttemptRequest,
+    ) -> Result<FactorComponentCandidateView, String> {
+        validate_user(&request.user_id)?;
+        let database = self.database()?;
+        ResearchStore::new(&database)
+            .component_candidate_for_user(&request.user_id, &request.attempt_id)
+    }
+
+    fn resolve_component_binding(
+        &self,
+        user_id: &str,
+        decision_id: Uuid,
+        output_name: &str,
+    ) -> Result<FactorComponentBuildBinding, String> {
+        let feature_dataset_id = {
+            let database = self.database()?;
+            let store = ResearchStore::new(&database);
+            let candidate = store
+                .candidate_for_decision(user_id, decision_id, output_name)?
+                .candidate;
+            let predecessor = store
+                .candidate_for_user(user_id, &candidate.candidate_hash)?
+                .predecessor
+                .ok_or_else(|| "Factor Candidate predecessor is incomplete".to_owned())?;
+            predecessor.feature_dataset.dataset_id
+        };
+        let feature_dataset = self
+            .inner
+            .source
+            .feature_dataset(user_id, &feature_dataset_id)?;
+        let database = self.database()?;
+        ResearchStore::new(&database).component_build_binding(
+            user_id,
+            decision_id,
+            output_name,
+            &feature_dataset,
+        )
     }
 
     pub(crate) fn publish_candidate_with_predecessor(
@@ -1657,6 +1926,9 @@ impl FactorResearch {
                 "candidate-build" => {
                     self.execute_candidate(&user_id, &item.attempt_id, &request_json, &cancelled)
                 }
+                "factor-component-build" => {
+                    self.execute_component(&user_id, &item.attempt_id, &request_json, &cancelled)
+                }
                 "factor-materialization" => self.execute_materialization(
                     &user_id,
                     &item.attempt_id,
@@ -1684,7 +1956,10 @@ impl FactorResearch {
             .unwrap_or(false);
         match result {
             Ok(result_id) => {
-                if cancelled.load(Ordering::Relaxed) || cancellation_requested {
+                if kind == "factor-component-build" {
+                    // Component publication transitions the Attempt atomically with its
+                    // immutable Candidate Package; a later cancel cannot retract it.
+                } else if cancelled.load(Ordering::Relaxed) || cancellation_requested {
                     let _ = store.cancel_running(&item.attempt_id, &user_id);
                 } else {
                     if !store
@@ -1703,7 +1978,11 @@ impl FactorResearch {
                 let _ = store.cancel_running(&item.attempt_id, &user_id);
             }
             Err(error) => {
-                let _ = store.fail_attempt(&item.attempt_id, &safe_diagnostic(&error));
+                if error.starts_with("stale:") {
+                    let _ = store.stale_attempt(&item.attempt_id, &safe_diagnostic(&error));
+                } else {
+                    let _ = store.fail_attempt(&item.attempt_id, &safe_diagnostic(&error));
+                }
             }
         }
         QueueRunResult::Consumed
@@ -1787,6 +2066,7 @@ impl FactorResearch {
                 attempt_id,
                 &candidate,
                 &job.presentation,
+                Some(&build_result.package_bytes),
             );
         }
         let database = self.database()?;
@@ -1795,7 +2075,78 @@ impl FactorResearch {
             attempt_id,
             &job.candidate,
             &job.presentation,
+            None,
         )
+    }
+
+    fn execute_component(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+        request_json: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<String, String> {
+        let job: FactorComponentBuildJob = serde_json::from_str(request_json).map_err(string)?;
+        if job.user_id != user_id {
+            return Err("Factor Component User identity differs from the Attempt".into());
+        }
+        let mut binding = job.binding;
+        binding.validate()?;
+        let database = self.database()?;
+        if !ResearchStore::new(&database).component_binding_is_current(user_id, &binding)? {
+            return Err("stale: Factor Component Decision is no longer current".into());
+        }
+        drop(database);
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+
+        let (package, package_bytes) = match &binding.candidate.source {
+            FactorCandidateSource::Declarative { .. } => {
+                let attempt_uuid = Uuid::parse_str(attempt_id)
+                    .map_err(|_| "Factor Component Build Attempt identity is invalid".to_owned())?;
+                let result = adaq_factor_research::generate_declarative_candidate_package(
+                    attempt_uuid,
+                    user_uuid(user_id),
+                    &binding.candidate,
+                    &binding.presentation.name,
+                    &binding.feature_dataset.plan_json,
+                    &binding.feature_dataset.engine_identity,
+                    binding.resource_policy,
+                )?;
+                binding.build_provenance = Some(result.provenance);
+                (result.package, result.package_bytes)
+            }
+            FactorCandidateSource::Custom { build } => {
+                if build.package_sha256.trim().is_empty() {
+                    return Err("Custom Factor Candidate Package identity is missing".into());
+                }
+                let database = self.database()?;
+                let bytes = ResearchStore::new(&database)
+                    .candidate_package_bytes_for_user(user_id, &build.package_sha256)?;
+                let package = ComponentPackage::read(&bytes).map_err(string)?;
+                adaq_component_tooling::verify_package(&package)?;
+                (package, bytes)
+            }
+            FactorCandidateSource::Python { .. } => {
+                return Err("Python Factor Candidates cannot produce Component Candidates".into());
+            }
+        };
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        let database = self.database()?;
+        let store = ResearchStore::new(&database);
+        if !store.component_binding_is_current(user_id, &binding)? {
+            return Err("stale: Factor Component Decision changed during the build".into());
+        }
+        store.save_component_candidate_for_attempt(
+            user_id,
+            attempt_id,
+            &binding,
+            &package_bytes,
+        )?;
+        Ok(package.archive_sha256)
     }
 
     fn execute_materialization(
@@ -1834,11 +2185,25 @@ impl FactorResearch {
                 .source
                 .point_in_time_universe(user_id, &job.protocol.point_in_time_universe_id)?;
             let custom_package = match &candidate.source {
-                FactorCandidateSource::Custom { build } => Some(
-                    self.inner
+                FactorCandidateSource::Custom { build } => {
+                    let package = match self
+                        .inner
                         .source
-                        .component_package(user_id, &build.package_sha256)?,
-                ),
+                        .candidate_package(user_id, &build.package_sha256)
+                    {
+                        Ok(package) => package,
+                        Err(error)
+                            if error == "Factor Candidate Package was not found"
+                                || error == "Factor Candidate Package source is not configured" =>
+                        {
+                            self.inner
+                                .source
+                                .component_package(user_id, &build.package_sha256)?
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    Some(package)
+                }
                 FactorCandidateSource::Declarative { .. } => None,
                 FactorCandidateSource::Python { .. } => None,
             };
@@ -2105,6 +2470,8 @@ impl<'a> ResearchStore<'a> {
                 "SELECT user_id FROM factor_candidate_access
                  UNION SELECT user_id FROM factor_candidate_presentations
                  UNION SELECT user_id FROM factor_candidate_predecessors
+                 UNION SELECT user_id FROM factor_candidate_packages
+                 UNION SELECT user_id FROM factor_component_candidates
                  UNION SELECT user_id FROM factor_research_attempts
                  ORDER BY user_id",
             )
@@ -2181,6 +2548,21 @@ impl<'a> ResearchStore<'a> {
                     candidate_hash TEXT NOT NULL,
                     predecessor_json TEXT NOT NULL,
                     PRIMARY KEY(user_id, candidate_hash)
+                 );
+                 CREATE TABLE IF NOT EXISTS factor_candidate_packages (
+                    user_id TEXT NOT NULL,
+                    package_sha256 TEXT NOT NULL,
+                    package_bytes BLOB NOT NULL,
+                    source_attempt_id TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY(user_id, package_sha256)
+                 );
+                 CREATE TABLE IF NOT EXISTS factor_component_candidates (
+                    attempt_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    package_sha256 TEXT NOT NULL,
+                    binding_json TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL
                  );
                  CREATE TABLE IF NOT EXISTS factor_python_host_evidence (
                     candidate_hash TEXT PRIMARY KEY,
@@ -2309,7 +2691,11 @@ impl<'a> ResearchStore<'a> {
         database
             .execute(
                 "UPDATE factor_research_attempts
-                    SET status = CASE WHEN diagnostic = ?2 THEN 'cancelled' ELSE 'failed' END,
+                    SET status = CASE
+                            WHEN diagnostic = ?2 THEN 'cancelled'
+                            WHEN kind = 'factor-component-build' THEN 'interrupted'
+                            ELSE 'failed'
+                        END,
                         diagnostic = CASE WHEN diagnostic = ?2 THEN ?3 ELSE ?1 END,
                         updated_at_ms = ?4
                   WHERE status = 'running'",
@@ -2553,6 +2939,18 @@ impl<'a> ResearchStore<'a> {
             .map_err(string)
     }
 
+    fn stale_attempt(&self, attempt_id: &str, diagnostic: &str) -> Result<(), String> {
+        self.database
+            .execute(
+                "UPDATE factor_research_attempts
+                    SET status = 'stale', diagnostic = ?2, updated_at_ms = ?3
+                  WHERE attempt_id = ?1 AND status IN ('pending', 'running')",
+                params![attempt_id, safe_diagnostic(diagnostic), now_ms()],
+            )
+            .map(|_| ())
+            .map_err(string)
+    }
+
     fn cancel_attempt(&self, user_id: &str, attempt_id: &str) -> Result<AttemptStatus, String> {
         let status = self
             .database
@@ -2627,9 +3025,15 @@ impl<'a> ResearchStore<'a> {
             .map_err(|_| "Factor research Attempt cannot be retried".to_owned())?;
         if !matches!(
             parse_status(&status)?,
-            AttemptStatus::Failed | AttemptStatus::Cancelled
+            AttemptStatus::Failed
+                | AttemptStatus::Cancelled
+                | AttemptStatus::Interrupted
+                | AttemptStatus::Stale
         ) {
-            return Err("only Failed or Cancelled Factor research Attempts can be retried".into());
+            return Err(
+                "only Failed, Cancelled, Interrupted, or Stale Factor research Attempts can be retried"
+                    .into(),
+            );
         }
         if let Some(existing) = self
             .database
@@ -2946,6 +3350,7 @@ impl<'a> ResearchStore<'a> {
         attempt_id: &str,
         candidate: &FactorCandidate,
         presentation: &FactorPresentationMetadata,
+        package_bytes: Option<&[u8]>,
     ) -> Result<String, String> {
         let (candidate_json, presentation_json, predecessor_json) =
             candidate_save_payload(user_id, candidate, presentation, None)?;
@@ -2971,6 +3376,19 @@ impl<'a> ResearchStore<'a> {
             &presentation_json,
             predecessor_json.as_deref(),
         )?;
+        if let Some(package_bytes) = package_bytes {
+            save_candidate_package(
+                &transaction,
+                user_id,
+                attempt_id,
+                package_bytes,
+                match &candidate.source {
+                    FactorCandidateSource::Custom { build } => Some(build.package_sha256.as_str()),
+                    FactorCandidateSource::Declarative { .. }
+                    | FactorCandidateSource::Python { .. } => None,
+                },
+            )?;
+        }
         let changed = transaction
             .execute(
                 "UPDATE factor_research_attempts
@@ -2993,6 +3411,143 @@ impl<'a> ResearchStore<'a> {
         }
         transaction.commit().map_err(string)?;
         Ok(candidate.candidate_hash.clone())
+    }
+
+    fn save_component_candidate_for_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+        binding: &FactorComponentBuildBinding,
+        package_bytes: &[u8],
+    ) -> Result<String, String> {
+        binding.validate()?;
+        binding.presentation.validate().map_err(string)?;
+        binding.predecessor.validate()?;
+        if binding.predecessor.user_id != user_id {
+            return Err(
+                "Factor Component predecessor User identity differs from the Attempt".into(),
+            );
+        }
+        let package = ComponentPackage::read(package_bytes).map_err(string)?;
+        adaq_component_tooling::verify_package(&package)?;
+        validate_built_package(&package, &binding.candidate)?;
+        if package.manifest.component_id != binding.candidate.candidate_id {
+            return Err("Factor Component Package identity differs from the Candidate".into());
+        }
+        let provenance = binding
+            .build_provenance
+            .as_ref()
+            .ok_or_else(|| "Factor Component build provenance is incomplete".to_owned())?;
+        let component_attempt_id = Uuid::parse_str(attempt_id)
+            .map_err(|_| "Factor Component Build Attempt identity is invalid".to_owned())?;
+        let provenance_attempt_matches = match &binding.candidate.source {
+            FactorCandidateSource::Custom { build } => provenance.attempt_id == build.attempt_id,
+            FactorCandidateSource::Declarative { .. } => {
+                provenance.attempt_id == component_attempt_id
+            }
+            FactorCandidateSource::Python { .. } => false,
+        };
+        if !provenance_attempt_matches
+            || provenance.package_sha256 != package.archive_sha256
+            || provenance.resource_policy != binding.resource_policy
+        {
+            return Err("Factor Component build provenance is not bound to the Attempt".into());
+        }
+        let expected_package_sha256 = match &binding.candidate.source {
+            FactorCandidateSource::Custom { build } => Some(build.package_sha256.as_str()),
+            FactorCandidateSource::Declarative { .. } => None,
+            FactorCandidateSource::Python { .. } => {
+                return Err("Python Factor Candidates cannot produce Component Candidates".into());
+            }
+        };
+        if let FactorCandidateSource::Custom { build } = &binding.candidate.source
+            && provenance != build
+        {
+            return Err("Custom Factor build provenance differs from the Candidate".into());
+        }
+        if matches!(
+            &binding.candidate.source,
+            FactorCandidateSource::Declarative { .. }
+        ) && (provenance.sdk_version != adaq_component_sdk::SDK_VERSION
+            || provenance.abi_version != adaq_component_sdk::FACTOR_ABI_VERSION
+            || provenance.toolchain != "stable"
+            || provenance.target != "wasm32-unknown-unknown"
+            || provenance.commands
+                != adaq_factor_research::DECLARATIVE_BUILD_COMMANDS
+                    .iter()
+                    .map(|command| (*command).to_owned())
+                    .collect::<Vec<_>>()
+            || provenance.environment.get("generator").map(String::as_str)
+                != Some(adaq_factor_research::DECLARATIVE_GENERATOR_ID))
+        {
+            return Err("Declarative Factor build provenance is not Host-generated".into());
+        }
+        let binding_json = serde_json::to_string(binding).map_err(string)?;
+        let transaction = self.database.unchecked_transaction().map_err(string)?;
+        if !ResearchStore::new(&transaction).component_binding_is_current(user_id, binding)? {
+            return Err("stale: Factor Component Decision changed before publication".into());
+        }
+        let publishable: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM factor_research_attempts
+                  WHERE attempt_id = ?1 AND user_id = ?2 AND kind = 'factor-component-build'
+                    AND status = 'running'
+                    AND (diagnostic IS NULL OR diagnostic != ?3)",
+                params![attempt_id, user_id, CANCELLATION_REQUESTED_DIAGNOSTIC],
+                |row| row.get(0),
+            )
+            .map_err(string)?;
+        if publishable != 1 {
+            return Err("cancelled".into());
+        }
+        let package_sha256 = save_candidate_package(
+            &transaction,
+            user_id,
+            attempt_id,
+            package_bytes,
+            expected_package_sha256,
+        )?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO factor_component_candidates(
+                    attempt_id, user_id, package_sha256, binding_json, created_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![attempt_id, user_id, &package_sha256, binding_json, now_ms()],
+            )
+            .map_err(string)?;
+        let stored_binding: String = transaction
+            .query_row(
+                "SELECT binding_json FROM factor_component_candidates
+                 WHERE attempt_id = ?1 AND user_id = ?2",
+                params![attempt_id, user_id],
+                |row| row.get(0),
+            )
+            .map_err(string)?;
+        if stored_binding != binding_json {
+            return Err("Factor Component Candidate content identity collision".into());
+        }
+        let changed = transaction
+            .execute(
+                "UPDATE factor_research_attempts
+                    SET status = 'completed', result_id = ?2,
+                        completed_units = 1, progress_total = 1, updated_at_ms = ?3
+                  WHERE attempt_id = ?1 AND user_id = ?4 AND kind = 'factor-component-build'
+                    AND status = 'running'
+                    AND (diagnostic IS NULL OR diagnostic != ?5)",
+                params![
+                    attempt_id,
+                    package_sha256,
+                    now_ms(),
+                    user_id,
+                    CANCELLATION_REQUESTED_DIAGNOSTIC
+                ],
+            )
+            .map_err(string)?;
+        if changed != 1 {
+            return Err("cancelled".into());
+        }
+        transaction.commit().map_err(string)?;
+        Ok(package_sha256)
     }
 
     fn save_candidate_with_predecessor(
@@ -3112,6 +3667,436 @@ impl<'a> ResearchStore<'a> {
             locked_by,
             created_at_ms: created_at,
             predecessor,
+        })
+    }
+
+    fn decision_record_for_user(
+        &self,
+        user_id: &str,
+        decision_id: Uuid,
+    ) -> Result<adaq_factor_research::PromotionDecisionRecord, String> {
+        let json: String = self
+            .database
+            .query_row(
+                "SELECT record_json FROM factor_promotion_decisions
+                 WHERE user_id = ?1 AND decision_id = ?2",
+                params![user_uuid_string(user_id), decision_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Factor Promotion Decision was not found".to_owned())?;
+        let record: adaq_factor_research::PromotionDecisionRecord =
+            serde_json::from_str(&json).map_err(string)?;
+        record.validate().map_err(string)?;
+        Ok(record)
+    }
+
+    fn candidate_for_decision(
+        &self,
+        user_id: &str,
+        decision_id: Uuid,
+        output_name: &str,
+    ) -> Result<FactorCandidateView, String> {
+        let record = self.decision_record_for_user(user_id, decision_id)?;
+        let decision = &record.decision;
+        if decision.user_id != user_uuid(user_id)
+            || decision.output_name != output_name
+            || decision.state != PromotionDecisionState::ComponentEligible
+        {
+            return Err("Factor Component requires a current Component Eligible Decision".into());
+        }
+        let current =
+            self.current_decision(user_uuid(user_id), &decision.candidate_hash, output_name)?;
+        if current
+            .as_ref()
+            .is_none_or(|current| current.decision.decision_id != decision_id)
+        {
+            return Err("Factor Component Decision is superseded or stale".into());
+        }
+        let candidate = self.candidate_for_user(user_id, &decision.candidate_hash)?;
+        if candidate.predecessor.is_none()
+            || matches!(
+                &candidate.candidate.source,
+                FactorCandidateSource::Python { .. }
+            )
+            || !candidate
+                .candidate
+                .outputs
+                .iter()
+                .any(|output| output.name == output_name)
+        {
+            return Err("Factor Candidate is not Component-eligible for this output".into());
+        }
+        Ok(candidate)
+    }
+
+    fn component_evidence(
+        &self,
+        owner_id: &str,
+        candidate: &FactorCandidateView,
+        record: &adaq_factor_research::PromotionDecisionRecord,
+        feature_dataset: &CompletedFeatureDataset,
+    ) -> Result<ComponentEvidence, String> {
+        let decision = &record.decision;
+        let user_id = user_uuid(owner_id);
+        if decision.user_id != user_id
+            || decision.candidate_hash != candidate.candidate.candidate_hash
+            || decision.state != PromotionDecisionState::ComponentEligible
+        {
+            return Err("Factor Component Decision is not bound to the Candidate".into());
+        }
+        let promotion_json: String = self
+            .database
+            .query_row(
+                "SELECT protocol_json FROM factor_research_protocols
+                 WHERE protocol_hash = ?1 AND user_id = ?2 AND kind = 'promotion'",
+                params![record.promotion_protocol_hash, user_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Promotion Protocol was not found for this User".to_owned())?;
+        let promotion_protocol: PromotionProtocol =
+            serde_json::from_str(&promotion_json).map_err(string)?;
+        promotion_protocol.validate().map_err(string)?;
+        if promotion_protocol.user_id != user_id
+            || promotion_protocol.candidate_hash != decision.candidate_hash
+            || promotion_protocol.output_name != decision.output_name
+            || promotion_protocol.report_hashes != decision.report_hashes
+            || promotion_protocol.policy_hash != decision.policy_hash
+            || record.promotion_protocol_hash != promotion_protocol.protocol_hash
+        {
+            return Err("Promotion Protocol is not bound to the current Decision".into());
+        }
+
+        let policy_json: String = self
+            .database
+            .query_row(
+                "SELECT policy_json FROM factor_promotion_policies
+                 WHERE policy_hash = ?1 AND user_id = ?2",
+                params![promotion_protocol.policy_hash, user_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Promotion Policy was not found for this User".to_owned())?;
+        let policy: PromotionPolicy = serde_json::from_str(&policy_json).map_err(string)?;
+        policy.validate().map_err(string)?;
+
+        let reports = promotion_protocol
+            .report_hashes
+            .iter()
+            .map(|hash| {
+                let report = self.report_for_user(owner_id, hash)?.report;
+                report.validate().map_err(string)?;
+                Ok(report)
+            })
+            .collect::<Result<Vec<FactorEvaluationReport>, String>>()?;
+        let evaluation_protocol_hash =
+            reports
+                .first()
+                .map(|report| report.protocol_hash.clone())
+                .ok_or_else(|| "Promotion Protocol has no Reports".to_owned())?;
+        let evaluation_json: String = self
+            .database
+            .query_row(
+                "SELECT protocol_json FROM factor_research_protocols
+                 WHERE protocol_hash = ?1 AND user_id = ?2 AND kind = 'evaluation'",
+                params![evaluation_protocol_hash, user_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Evaluation Protocol was not found for this User".to_owned())?;
+        let evaluation_protocol: FactorEvaluationProtocol =
+            serde_json::from_str(&evaluation_json).map_err(string)?;
+        evaluation_protocol.validate().map_err(string)?;
+        if evaluation_protocol.user_id != user_id
+            || evaluation_protocol.family_id != promotion_protocol.family_id
+            || evaluation_protocol.trial_id != promotion_protocol.trial_id
+            || evaluation_protocol.output_name != promotion_protocol.output_name
+            || evaluation_protocol.engine_identity != promotion_protocol.engine_identity
+            || evaluation_protocol.feature_dataset_id != feature_dataset.dataset_id
+            || evaluation_protocol.feature_plan_hash != feature_dataset.feature_plan_hash
+            || evaluation_protocol.market_data_snapshot_id
+                != feature_dataset.market_data_snapshot_id
+            || evaluation_protocol.point_in_time_universe_id
+                != feature_dataset.point_in_time_universe_id
+            || reports.iter().any(|report| {
+                report.protocol_hash != evaluation_protocol.protocol_hash
+                    || report.factor_dataset_id != evaluation_protocol.factor_dataset_id
+                    || report.output_name != evaluation_protocol.output_name
+            })
+        {
+            return Err("Promotion evidence does not share the frozen Evaluation Protocol".into());
+        }
+
+        let factor_dataset = self
+            .dataset_for_user(owner_id, &evaluation_protocol.factor_dataset_id)?
+            .manifest;
+        let lineage_view =
+            self.lineage_for_user(user_id, &promotion_protocol.trial_id.to_string())?;
+        let trial = lineage_view
+            .trials
+            .iter()
+            .find(|trial| trial.trial_id == promotion_protocol.trial_id)
+            .cloned()
+            .ok_or_else(|| "Promotion Trial was not found for this User".to_owned())?;
+        if trial.status != ResearchTrialStatus::Completed
+            || trial.family_id != promotion_protocol.family_id
+            || trial.candidate_hash != candidate.candidate.candidate_hash
+            || trial.protocol_hash != evaluation_protocol.protocol_hash
+            || !trial.report_hash.as_deref().is_some_and(|hash| {
+                promotion_protocol
+                    .report_hashes
+                    .iter()
+                    .any(|item| item == hash)
+            })
+        {
+            return Err("Promotion Trial is not a completed exact Candidate binding".into());
+        }
+        let evidence_state = self.promotion_evidence_state(owner_id, &promotion_protocol)?;
+        if decision.evidence_state != evidence_state {
+            return Err("Promotion Decision evidence state is stale".into());
+        }
+        validate_evaluation_boundary(
+            &candidate.candidate,
+            candidate.predecessor.as_ref(),
+            &factor_dataset,
+            &evaluation_protocol,
+        )?;
+        feature_dataset.validate().map_err(string)?;
+        let predecessor = candidate
+            .predecessor
+            .as_ref()
+            .ok_or_else(|| "Factor Candidate predecessor is incomplete".to_owned())?;
+        if feature_dataset.user_id != user_uuid_string(owner_id)
+            || feature_dataset.dataset_id != predecessor.feature_dataset.dataset_id
+            || feature_dataset.feature_plan_hash != predecessor.feature_dataset.feature_plan_hash
+            || feature_dataset.market_data_snapshot_id != predecessor.snapshot_id
+            || feature_dataset.point_in_time_universe_id
+                != predecessor.universe_id.as_deref().unwrap_or_default()
+            || feature_dataset.output_names != predecessor.feature_dataset.output_names
+            || factor_dataset.feature_dataset_id != feature_dataset.dataset_id
+        {
+            return Err("Factor Component Feature Dataset is not the frozen predecessor".into());
+        }
+        let eligibility = PromotionEligibility::check_with_trial(
+            adaq_factor_research::PromotionEvidence {
+                candidate: &candidate.candidate,
+                dataset: &factor_dataset,
+                dataset_status: adaq_factor_research::FactorDatasetStatus::Completed,
+                evaluation_protocol: &evaluation_protocol,
+                reports: &reports,
+                policy: &policy,
+                lineage: &lineage_view.lineage,
+                promotion_protocol: &promotion_protocol,
+                component: record.component,
+            },
+            Some(&trial),
+        )
+        .map_err(string)?;
+        if !eligibility.component_eligible()
+            || record.eligibility_gates != eligibility.gates().to_vec()
+        {
+            return Err("Promotion Decision no longer satisfies Component eligibility".into());
+        }
+        Ok(ComponentEvidence {
+            promotion_protocol,
+            policy,
+            reports,
+            evaluation_protocol,
+            trial,
+            lineage: lineage_view.lineage,
+            factor_dataset,
+        })
+    }
+
+    fn component_build_binding(
+        &self,
+        owner_id: &str,
+        decision_id: Uuid,
+        output_name: &str,
+        feature_dataset: &CompletedFeatureDataset,
+    ) -> Result<FactorComponentBuildBinding, String> {
+        let candidate = self.candidate_for_decision(owner_id, decision_id, output_name)?;
+        let (resource_policy, build_provenance) = match &candidate.candidate.source {
+            FactorCandidateSource::Declarative { .. } => (
+                adaq_factor_research::FactorResourcePolicy {
+                    fuel_per_call: 1_000_000,
+                    memory_bytes: 64 * 1024 * 1024,
+                },
+                None,
+            ),
+            FactorCandidateSource::Custom { build } => (build.resource_policy, Some(build.clone())),
+            FactorCandidateSource::Python { .. } => {
+                return Err("Python Factor Candidates cannot produce Component Candidates".into());
+            }
+        };
+        let mut component_decisions = Vec::with_capacity(candidate.candidate.outputs.len());
+        let mut selected = None;
+        for output in &candidate.candidate.outputs {
+            let record = self
+                .current_decision(
+                    user_uuid(owner_id),
+                    &candidate.candidate.candidate_hash,
+                    &output.name,
+                )?
+                .ok_or_else(|| {
+                    format!(
+                        "Factor Component output {} has no current Component Eligible Decision",
+                        output.name
+                    )
+                })?;
+            if record.decision.state != PromotionDecisionState::ComponentEligible {
+                return Err(format!(
+                    "Factor Component output {} is not Component Eligible",
+                    output.name
+                ));
+            }
+            let evidence =
+                self.component_evidence(owner_id, &candidate, &record, feature_dataset)?;
+            if output.name == output_name {
+                selected = Some((record.clone(), evidence));
+            }
+            component_decisions.push(record);
+        }
+        let (decision_record, evidence) = selected
+            .ok_or_else(|| "Factor Component output is not declared by the Candidate".to_owned())?;
+        let predecessor = candidate
+            .predecessor
+            .clone()
+            .ok_or_else(|| "Factor Candidate predecessor is incomplete".to_owned())?;
+        let feature_binding = predecessor.feature_dataset.clone();
+        let component = decision_record.component;
+        Ok(FactorComponentBuildBinding {
+            decision_record,
+            component_decisions,
+            candidate: candidate.candidate,
+            presentation: candidate.presentation,
+            predecessor,
+            promotion_protocol: evidence.promotion_protocol,
+            policy: evidence.policy,
+            reports: evidence.reports,
+            evaluation_protocol: evidence.evaluation_protocol,
+            trial: evidence.trial,
+            lineage: evidence.lineage,
+            factor_dataset: evidence.factor_dataset,
+            feature_dataset: FactorComponentFeatureDatasetBinding {
+                binding: feature_binding,
+                plan_json: feature_dataset.plan_json.clone(),
+                engine_identity: feature_dataset.engine_identity.clone(),
+                market_data_snapshot_id: feature_dataset.market_data_snapshot_id.clone(),
+                point_in_time_universe_id: feature_dataset.point_in_time_universe_id.clone(),
+                output_names: feature_dataset.output_names.clone(),
+            },
+            component,
+            resource_policy,
+            build_provenance,
+        })
+    }
+
+    fn component_binding_is_current(
+        &self,
+        owner_id: &str,
+        binding: &FactorComponentBuildBinding,
+    ) -> Result<bool, String> {
+        if binding.component_decisions.len() != binding.candidate.outputs.len() {
+            return Ok(false);
+        }
+        for record in &binding.component_decisions {
+            let Some(current) = self.current_decision(
+                user_uuid(owner_id),
+                &binding.candidate.candidate_hash,
+                &record.decision.output_name,
+            )?
+            else {
+                return Ok(false);
+            };
+            if current.decision.decision_id != record.decision.decision_id
+                || current.decision.state != PromotionDecisionState::ComponentEligible
+                || current.decision.user_id != user_uuid(owner_id)
+                || current.decision.candidate_hash != binding.candidate.candidate_hash
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn candidate_package_for_user(
+        &self,
+        user_id: &str,
+        package_sha256: &str,
+    ) -> Result<ComponentPackage, String> {
+        let bytes = self.candidate_package_bytes_for_user(user_id, package_sha256)?;
+        ComponentPackage::read(&bytes).map_err(string)
+    }
+
+    fn candidate_package_bytes_for_user(
+        &self,
+        user_id: &str,
+        package_sha256: &str,
+    ) -> Result<Vec<u8>, String> {
+        let bytes: Vec<u8> = self
+            .database
+            .query_row(
+                "SELECT package_bytes FROM factor_candidate_packages
+                 WHERE user_id = ?1 AND package_sha256 = ?2",
+                params![user_id, package_sha256],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Factor Candidate Package was not found".to_owned())?;
+        let package = ComponentPackage::read(&bytes).map_err(string)?;
+        adaq_component_tooling::verify_package(&package)?;
+        if package.archive_sha256 != package_sha256 {
+            return Err("Factor Candidate Package archive hash mismatch".into());
+        }
+        Ok(bytes)
+    }
+
+    fn component_candidate_for_user(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<FactorComponentCandidateView, String> {
+        let (package_sha256, binding_json, status, result_id): (
+            String,
+            String,
+            String,
+            Option<String>,
+        ) = self
+            .database
+            .query_row(
+                "SELECT candidate.package_sha256, candidate.binding_json,
+                        attempt.status, attempt.result_id
+                   FROM factor_component_candidates candidate
+                   JOIN factor_research_attempts attempt
+                     ON attempt.attempt_id = candidate.attempt_id
+                    AND attempt.user_id = candidate.user_id
+                  WHERE candidate.user_id = ?1 AND candidate.attempt_id = ?2
+                    AND attempt.kind = 'factor-component-build'",
+                params![user_id, attempt_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(|_| "Factor Component Candidate was not found".to_owned())?;
+        if status != "completed" || result_id.as_deref() != Some(package_sha256.as_str()) {
+            return Err("Factor Component Candidate Attempt is not completed".into());
+        }
+        let package = self.candidate_package_for_user(user_id, &package_sha256)?;
+        let binding: FactorComponentBuildBinding =
+            serde_json::from_str(&binding_json).map_err(string)?;
+        binding.validate()?;
+        validate_built_package(&package, &binding.candidate)?;
+        if package.manifest.component_id != binding.candidate.candidate_id {
+            return Err("Factor Component Package identity differs from the Candidate".into());
+        }
+        if binding
+            .build_provenance
+            .as_ref()
+            .is_none_or(|provenance| provenance.package_sha256 != package_sha256)
+        {
+            return Err("Factor Component Candidate Package is not bound to its build".into());
+        }
+        Ok(FactorComponentCandidateView {
+            attempt_id: attempt_id.to_owned(),
+            user_id: user_id.to_owned(),
+            package_sha256,
+            manifest: package.manifest,
+            binding,
         })
     }
 
@@ -5236,6 +6221,8 @@ impl<'a> ResearchStore<'a> {
             "factor_research_attempts",
             "factor_research_protocols",
             "factor_python_host_evidence",
+            "factor_component_candidates",
+            "factor_candidate_packages",
             "factor_candidate_predecessors",
             "factor_candidate_presentations",
             "factor_candidate_access",
@@ -5305,6 +6292,18 @@ impl<'a> ResearchStore<'a> {
         transaction
             .execute(
                 "DELETE FROM factor_research_attempts WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM factor_component_candidates WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM factor_candidate_packages WHERE user_id = ?1",
                 [user_id],
             )
             .map_err(string)?;
@@ -5401,6 +6400,12 @@ fn factor_failure_code(
 ) -> Option<FactorFailureCode> {
     if status == AttemptStatus::Cancelled {
         return Some(FactorFailureCode::Cancelled);
+    }
+    if status == AttemptStatus::Interrupted {
+        return Some(FactorFailureCode::ResearchInterrupted);
+    }
+    if status == AttemptStatus::Stale {
+        return Some(FactorFailureCode::FactorContextStale);
     }
     if status != AttemptStatus::Failed {
         return None;
@@ -5565,6 +6570,47 @@ fn save_candidate_records(
         }
     }
     Ok(())
+}
+
+fn save_candidate_package(
+    transaction: &rusqlite::Transaction<'_>,
+    user_id: &str,
+    source_attempt_id: &str,
+    package_bytes: &[u8],
+    expected_package_sha256: Option<&str>,
+) -> Result<String, String> {
+    let package = ComponentPackage::read(package_bytes).map_err(string)?;
+    adaq_component_tooling::verify_package(&package)?;
+    let package_sha256 = package.archive_sha256.clone();
+    if expected_package_sha256.is_some_and(|expected| expected != package_sha256) {
+        return Err("Factor Candidate Package hash differs from its frozen provenance".into());
+    }
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO factor_candidate_packages(
+                user_id, package_sha256, package_bytes, source_attempt_id, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                user_id,
+                &package_sha256,
+                package_bytes,
+                source_attempt_id,
+                now_ms()
+            ],
+        )
+        .map_err(string)?;
+    let stored: Vec<u8> = transaction
+        .query_row(
+            "SELECT package_bytes FROM factor_candidate_packages
+             WHERE user_id = ?1 AND package_sha256 = ?2",
+            params![user_id, &package_sha256],
+            |row| row.get(0),
+        )
+        .map_err(string)?;
+    if stored != package_bytes {
+        return Err("Factor Candidate Package content identity collision".into());
+    }
+    Ok(package.archive_sha256)
 }
 
 fn save_family_records(
@@ -6536,6 +7582,7 @@ mod tests {
                     description: String::new(),
                     tags: Vec::new(),
                 },
+                None,
             )
             .unwrap_err();
         assert_eq!(error, "cancelled");
@@ -6683,6 +7730,92 @@ mod tests {
     }
 
     #[test]
+    fn component_attempt_recovery_retry_and_cancellation_publish_nothing() {
+        let database = Arc::new(Mutex::new(store()));
+        let directory = tempfile_dir("factor-component-recovery");
+        let attempt = {
+            let database = database.lock().unwrap();
+            let store = ResearchStore::new(&database);
+            let (attempt, _) = store
+                .start_attempt("alice", "factor-component-build", "{\"decisionId\":1}")
+                .unwrap();
+            store.begin_attempt(&attempt.attempt_id).unwrap();
+            attempt
+        };
+        let source: Arc<dyn FactorResearchSource> = Arc::new(TestSource {
+            database: database.clone(),
+            directory: directory.clone(),
+        });
+        ResearchStore::recover_stale_attempts(&directory, &source).unwrap();
+
+        let retry = {
+            let database = database.lock().unwrap();
+            let store = ResearchStore::new(&database);
+            let interrupted = store
+                .attempt_for_user("alice", &attempt.attempt_id)
+                .unwrap();
+            assert_eq!(interrupted.status, AttemptStatus::Interrupted);
+            assert_eq!(
+                interrupted.failure_code,
+                Some(FactorFailureCode::ResearchInterrupted)
+            );
+            let (retry, should_start) = store.retry_attempt("alice", &attempt.attempt_id).unwrap();
+            assert!(should_start);
+            assert_eq!(
+                retry.source_attempt_id.as_deref(),
+                Some(attempt.attempt_id.as_str())
+            );
+            store.begin_attempt(&retry.attempt_id).unwrap();
+            assert_eq!(
+                store.cancel_attempt("alice", &retry.attempt_id).unwrap(),
+                AttemptStatus::Running
+            );
+            store.cancel_running(&retry.attempt_id, "alice").unwrap();
+            assert_eq!(
+                store
+                    .attempt_for_user("alice", &retry.attempt_id)
+                    .unwrap()
+                    .status,
+                AttemptStatus::Cancelled
+            );
+            retry
+        };
+        {
+            let database = database.lock().unwrap();
+            let store = ResearchStore::new(&database);
+            let (next_retry, should_start) =
+                store.retry_attempt("alice", &retry.attempt_id).unwrap();
+            assert!(should_start);
+            assert_eq!(
+                next_retry.source_attempt_id.as_deref(),
+                Some(retry.attempt_id.as_str())
+            );
+            assert_eq!(
+                database
+                    .query_row(
+                        "SELECT COUNT(*) FROM factor_component_candidates",
+                        [],
+                        |row| { row.get::<_, i64>(0) }
+                    )
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                database
+                    .query_row(
+                        "SELECT COUNT(*) FROM factor_candidate_packages",
+                        [],
+                        |row| { row.get::<_, i64>(0) }
+                    )
+                    .unwrap(),
+                0
+            );
+        }
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn shutdown_cancellation_is_durable_before_publication() {
         let database = store();
         let store = ResearchStore::new(&database);
@@ -6710,6 +7843,7 @@ mod tests {
                         description: String::new(),
                         tags: Vec::new(),
                     },
+                    None,
                 )
                 .unwrap_err(),
             "cancelled"
@@ -6929,6 +8063,87 @@ mod tests {
                 .current_decision(user_uuid("bob"), &candidate_hash, "momentum")
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn component_decision_resolution_is_user_scoped_current_and_fail_closed() {
+        let database = store();
+        let store = ResearchStore::new(&database);
+        let candidate = test_candidate();
+        store
+            .save_candidate_with_predecessor(
+                "alice",
+                &candidate,
+                &FactorPresentationMetadata {
+                    name: "Test".into(),
+                    description: String::new(),
+                    tags: Vec::new(),
+                },
+                &test_predecessor("alice", &["close"]),
+            )
+            .unwrap();
+
+        let make_decision = |state, evidence_state, supersedes| {
+            FactorPromotionDecision::freeze(PromotionDecisionDraft {
+                decision_id: Uuid::new_v4(),
+                user_id: user_uuid("alice"),
+                candidate_hash: candidate.candidate_hash.clone(),
+                output_name: "momentum".into(),
+                state,
+                report_hashes: vec!["b".repeat(64)],
+                policy_hash: "d".repeat(64),
+                evidence_state,
+                supersedes,
+            })
+            .unwrap()
+        };
+        let rejected = make_decision(
+            PromotionDecisionState::Rejected,
+            EvaluationEvidenceState::Unknown,
+            None,
+        );
+        insert_test_decision(&database, &rejected, 1);
+        assert!(
+            store
+                .candidate_for_decision("alice", rejected.decision_id, "momentum")
+                .unwrap_err()
+                .contains("current Component Eligible Decision")
+        );
+
+        let first = make_decision(
+            PromotionDecisionState::ComponentEligible,
+            EvaluationEvidenceState::OutOfSample,
+            None,
+        );
+        insert_test_decision(&database, &first, 2);
+        assert!(
+            store
+                .candidate_for_decision("alice", first.decision_id, "momentum")
+                .is_ok()
+        );
+        assert!(
+            store
+                .candidate_for_decision("bob", first.decision_id, "momentum")
+                .is_err()
+        );
+
+        let second = make_decision(
+            PromotionDecisionState::ComponentEligible,
+            EvaluationEvidenceState::OutOfSample,
+            Some(first.decision_id),
+        );
+        insert_test_decision(&database, &second, 3);
+        assert!(
+            store
+                .candidate_for_decision("alice", first.decision_id, "momentum")
+                .unwrap_err()
+                .contains("superseded or stale")
+        );
+        assert!(
+            store
+                .candidate_for_decision("alice", second.decision_id, "momentum")
+                .is_ok()
         );
     }
 
@@ -7403,5 +8618,34 @@ mod tests {
                 output_names: output_names.iter().map(|name| (*name).into()).collect(),
             },
         }
+    }
+
+    fn insert_test_decision(
+        database: &Connection,
+        decision: &FactorPromotionDecision,
+        created_at_ms: i64,
+    ) {
+        let record = adaq_factor_research::PromotionDecisionRecord {
+            decision: decision.clone(),
+            promotion_protocol_hash: "e".repeat(64),
+            eligibility_gates: Vec::new(),
+            component: ComponentEligibilityEvidence::default(),
+        };
+        database
+            .execute(
+                "INSERT INTO factor_promotion_decisions(
+                    decision_id, user_id, decision_hash, record_json,
+                    promotion_protocol_hash, created_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    decision.decision_id.to_string(),
+                    decision.user_id.to_string(),
+                    decision.decision_hash,
+                    serde_json::to_string(&record).unwrap(),
+                    record.promotion_protocol_hash,
+                    created_at_ms,
+                ],
+            )
+            .unwrap();
     }
 }

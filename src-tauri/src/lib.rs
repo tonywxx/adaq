@@ -678,6 +678,18 @@ factor_blocking_command!(
     get_candidate,
     factor_research::FactorCandidateView
 );
+factor_blocking_command!(
+    factor_component_prepare,
+    factor_research::FactorComponentPrepareRequest,
+    prepare_component,
+    factor_research::FactorAttemptView
+);
+factor_blocking_command!(
+    factor_component_candidate_get,
+    factor_research::FactorAttemptRequest,
+    get_component_candidate,
+    factor_research::FactorComponentCandidateView
+);
 #[tauri::command]
 async fn factor_materialization_start(
     payload: serde_json::Value,
@@ -885,6 +897,20 @@ async fn factor_attempt_retry(
             &attempt.attempt_id,
         )?;
         Ok(attempt)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+#[tauri::command]
+async fn factor_component_retry(
+    mut request: factor_research::FactorAttemptRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<factor_research::FactorAttemptView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>().factor.retry(request)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -4431,6 +4457,8 @@ pub fn run() {
             factor_candidate_publish,
             factor_candidate_list,
             factor_candidate_get,
+            factor_component_prepare,
+            factor_component_candidate_get,
             factor_materialization_start,
             factor_materialization_start_from_context,
             factor_materialization_protocol_freeze,
@@ -4441,6 +4469,7 @@ pub fn run() {
             factor_attempt_get,
             factor_attempt_cancel,
             factor_attempt_retry,
+            factor_component_retry,
             factor_dataset_list,
             factor_dataset_get,
             factor_dataset_rows,

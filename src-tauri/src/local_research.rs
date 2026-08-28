@@ -24,7 +24,7 @@ use adaq_backtest_core::{
     SnapshotStore, SnapshotUniverseBinding, UniverseSnapshotComponent,
 };
 use adaq_component_tooling::{
-    ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotSource,
+    ComponentKind, ComponentManifest, ComponentPackage, FeatureSlotSource, verify_package,
 };
 #[cfg(feature = "deferred-equity")]
 use adaq_data_core::a_share::AshareClient;
@@ -298,6 +298,28 @@ impl FactorResearchSource for LocalFactorSource {
         archive_sha256: &str,
     ) -> Result<ComponentPackage, String> {
         self.components.package_for_user(user_id, archive_sha256)
+    }
+
+    fn candidate_package(
+        &self,
+        user_id: &str,
+        archive_sha256: &str,
+    ) -> Result<ComponentPackage, String> {
+        let database = self.database.lock().map_err(string)?;
+        let bytes: Vec<u8> = database
+            .query_row(
+                "SELECT package_bytes FROM factor_candidate_packages
+                 WHERE user_id = ?1 AND package_sha256 = ?2",
+                params![user_id, archive_sha256],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Factor Candidate Package was not found".to_owned())?;
+        let package = ComponentPackage::read(&bytes).map_err(string)?;
+        verify_package(&package)?;
+        if package.archive_sha256 != archive_sha256 {
+            return Err("Factor Candidate Package archive hash mismatch".into());
+        }
+        Ok(package)
     }
 
     fn reference_feature_dataset(

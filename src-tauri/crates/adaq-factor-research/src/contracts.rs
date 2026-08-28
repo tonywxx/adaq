@@ -1054,11 +1054,16 @@ pub enum AttemptStatus {
     Completed,
     Failed,
     Cancelled,
+    Interrupted,
+    Stale,
 }
 
 impl AttemptStatus {
     pub const fn terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Interrupted | Self::Stale
+        )
     }
 }
 
@@ -1101,10 +1106,18 @@ impl FactorMaterializationAttempt {
             (self.status, next),
             (
                 AttemptStatus::Pending,
-                AttemptStatus::Running | AttemptStatus::Failed | AttemptStatus::Cancelled
+                AttemptStatus::Running
+                    | AttemptStatus::Failed
+                    | AttemptStatus::Cancelled
+                    | AttemptStatus::Interrupted
+                    | AttemptStatus::Stale
             ) | (
                 AttemptStatus::Running,
-                AttemptStatus::Completed | AttemptStatus::Failed | AttemptStatus::Cancelled
+                AttemptStatus::Completed
+                    | AttemptStatus::Failed
+                    | AttemptStatus::Cancelled
+                    | AttemptStatus::Interrupted
+                    | AttemptStatus::Stale
             )
         );
         if !allowed {
@@ -1120,7 +1133,10 @@ impl FactorMaterializationAttempt {
     pub fn retry(&self, attempt_id: Uuid) -> Result<Self, ContractError> {
         if !matches!(
             self.status,
-            AttemptStatus::Failed | AttemptStatus::Cancelled
+            AttemptStatus::Failed
+                | AttemptStatus::Cancelled
+                | AttemptStatus::Interrupted
+                | AttemptStatus::Stale
         ) || attempt_id.is_nil()
         {
             return Err(ContractError::Invalid(

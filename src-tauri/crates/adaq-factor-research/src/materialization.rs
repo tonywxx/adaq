@@ -1345,7 +1345,11 @@ impl FactorDatasetPublisher {
                 .transition(AttemptStatus::Running)
                 .map_err(MaterializationError::from)?,
             AttemptStatus::Running => {}
-            AttemptStatus::Completed | AttemptStatus::Failed | AttemptStatus::Cancelled => {
+            AttemptStatus::Completed
+            | AttemptStatus::Failed
+            | AttemptStatus::Cancelled
+            | AttemptStatus::Interrupted
+            | AttemptStatus::Stale => {
                 return Err(MaterializationError::InvalidTransition);
             }
         }

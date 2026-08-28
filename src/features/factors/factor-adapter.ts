@@ -1,6 +1,7 @@
 import type {
 	FactorAttemptView,
 	FactorCandidateView,
+	FactorComponentCandidateView,
 	FactorDatasetRowsPage,
 	FactorDatasetView,
 	FactorDecisionView,
@@ -66,6 +67,14 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 				},
 			}) as Promise<FactorAttemptView>;
 		},
+		prepareComponent: (userId: string, decisionId: string, outputName: string) =>
+			invoke("factor_component_prepare", {
+				request: { userId, decisionId, outputName },
+			}) as Promise<FactorAttemptView>,
+		getComponentCandidate: (userId: string, attemptId: string) =>
+			invoke("factor_component_candidate_get", {
+				request: { userId, attemptId },
+			}) as Promise<FactorComponentCandidateView>,
 		listFamilies: (userId: string, pageNumber: number) =>
 			page<FactorFamilyView>("factor_family_list", userId, pageNumber),
 		getFamily: (userId: string, evidenceId: string) =>
@@ -102,6 +111,10 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			invoke("factor_attempt_cancel", { request: { userId, attemptId } }),
 		retryAttempt: (userId: string, attemptId: string) =>
 			invoke("factor_attempt_retry", {
+				request: { userId, attemptId },
+			}) as Promise<FactorAttemptView>,
+		retryComponentAttempt: (userId: string, attemptId: string) =>
+			invoke("factor_component_retry", {
 				request: { userId, attemptId },
 			}) as Promise<FactorAttemptView>,
 		listDatasets: (userId: string, pageNumber: number) =>

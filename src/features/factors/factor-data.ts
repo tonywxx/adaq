@@ -23,7 +23,13 @@ export function isGridWithinLimit(cardinalities: number[]) {
 }
 
 export function isTerminalFactorAttempt(status: string) {
-	return status === "completed" || status === "failed" || status === "cancelled";
+	return (
+		status === "completed" ||
+		status === "failed" ||
+		status === "cancelled" ||
+		status === "interrupted" ||
+		status === "stale"
+	);
 }
 
 export function factorHash(value: unknown) {

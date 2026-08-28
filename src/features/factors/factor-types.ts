@@ -23,10 +23,13 @@ export type FactorAttemptStatus =
 	| "running"
 	| "completed"
 	| "failed"
-	| "cancelled";
+	| "cancelled"
+	| "interrupted"
+	| "stale";
 
 export type FactorFailureCode =
 	| "cancelled"
+	| "factor-component-build-failed"
 	| "candidate-build-failed"
 	| "factor-compatibility-failed"
 	| "factor-corruption-detected"
@@ -75,6 +78,14 @@ export type FactorCandidateView = {
 	lockedBy: string[];
 	createdAtMs: number;
 	predecessor?: FactorCandidatePredecessor | null;
+};
+
+export type FactorComponentCandidateView = {
+	attemptId: string;
+	userId: string;
+	packageSha256: string;
+	manifest: FactorJson;
+	binding: FactorJson;
 };
 
 export type FactorCandidatePredecessor = ResearchEvidenceProjection & {

@@ -19,6 +19,8 @@ const FACTOR_STATUS_GLYPH: Record<FactorAttemptStatus, string> = {
 	completed: "✓",
 	failed: "✕",
 	cancelled: "⊘",
+	interrupted: "⚠",
+	stale: "⌁",
 };
 
 export function FactorAttemptStatusBadge({
@@ -30,7 +32,10 @@ export function FactorAttemptStatusBadge({
 	const variant =
 		status === "completed"
 			? "default"
-			: status === "failed" || status === "cancelled"
+			: status === "failed" ||
+					status === "cancelled" ||
+					status === "interrupted" ||
+					status === "stale"
 				? "secondary"
 				: "outline";
 	return (
