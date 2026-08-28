@@ -113,6 +113,58 @@ pub(crate) trait FactorResearchSource: Send + Sync {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum FactorFailureCode {
+    Cancelled,
+    CandidateBuildFailed,
+    FactorMaterializationFailed,
+    FactorEvaluationFailed,
+    FactorFamilyGridFailed,
+    FactorResearchFailed,
+    FactorCompatibilityFailed,
+    FactorValidationFailed,
+    FactorResourceFailed,
+    FactorMissingInput,
+    FactorPublicationFailed,
+    FactorCorruptionDetected,
+    ResearchInterrupted,
+    ResetRequired,
+    FactorContextMismatch,
+    FactorContextRequiresHostDatasetSelection,
+    FactorContextFeatureDatasetRequired,
+    FactorContextStale,
+    FactorContextFeatureDatasetInaccessible,
+    FactorContextFeatureDatasetIncomplete,
+    FactorContextFeatureDatasetUnavailable,
+    FactorContextSnapshotInaccessible,
+    FactorContextUniverseInaccessible,
+    FactorContextUserMismatch,
+    FactorContextMarketVenueMismatch,
+    FactorContextIntervalMismatch,
+    FactorContextRangeMismatch,
+    FactorContextUniverseIncomplete,
+    FactorContextMarketVenueUnavailable,
+    FactorContextCandidatePredecessorMissing,
+    FactorContextValuationCurrencyRequired,
+}
+
+impl FactorFailureCode {
+    fn from_code(value: &str) -> Option<Self> {
+        serde_json::from_value(serde_json::Value::String(value.into())).ok()
+    }
+
+    fn for_kind(kind: &str) -> Self {
+        match kind {
+            "candidate-build" => Self::CandidateBuildFailed,
+            "factor-materialization" => Self::FactorMaterializationFailed,
+            "factor-evaluation" => Self::FactorEvaluationFailed,
+            "factor-family-grid" => Self::FactorFamilyGridFailed,
+            _ => Self::FactorResearchFailed,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FactorAttemptView {
@@ -126,7 +178,7 @@ pub(crate) struct FactorAttemptView {
     pub completed_units: u64,
     pub progress_total: u64,
     pub diagnostic: Option<String>,
-    pub failure_code: Option<String>,
+    pub failure_code: Option<FactorFailureCode>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -577,6 +629,7 @@ pub(crate) struct FactorResearch {
 struct FactorResearchInner {
     source: Arc<dyn FactorResearchSource>,
     schema_blocked: AtomicBool,
+    shutdown_requested: AtomicBool,
     active: Mutex<HashMap<String, Arc<AtomicBool>>>,
     reset_blocks: Mutex<std::collections::HashSet<String>>,
     start_gate: Mutex<()>,
@@ -604,6 +657,7 @@ impl FactorResearch {
             inner: Arc::new(FactorResearchInner {
                 source,
                 schema_blocked: AtomicBool::new(schema_blocked),
+                shutdown_requested: AtomicBool::new(false),
                 active: Mutex::new(HashMap::new()),
                 reset_blocks: Mutex::new(std::collections::HashSet::new()),
                 start_gate: Mutex::new(()),
@@ -1470,6 +1524,14 @@ impl FactorResearch {
             };
             value
         };
+        if self.inner.shutdown_requested.load(Ordering::Acquire) {
+            if let Ok(database) = self.inner.source.database() {
+                let store = ResearchStore::new(&database);
+                let _ = store.request_shutdown_cancellation();
+                let _ = store.cancel_running(&item.attempt_id, &user_id);
+            }
+            return QueueRunResult::Consumed;
+        }
         let cancelled = Arc::new(AtomicBool::new(false));
         if let Ok(mut active) = self.inner.active.lock() {
             active.insert(item.attempt_id.clone(), cancelled.clone());
@@ -1844,6 +1906,12 @@ impl ResearchQueueAdapter for FactorResearch {
     }
 
     fn request_shutdown(&self) {
+        if let Ok(database) = self.inner.source.database()
+            && let Err(error) = ResearchStore::new(&database).request_shutdown_cancellation()
+        {
+            eprintln!("Factor research shutdown cancellation failed: {error}");
+        }
+        self.inner.shutdown_requested.store(true, Ordering::Release);
         if let Ok(active) = self.inner.active.lock() {
             for cancelled in active.values() {
                 cancelled.store(true, Ordering::Relaxed);
@@ -2136,10 +2204,14 @@ impl<'a> ResearchStore<'a> {
         database
             .execute(
                 "UPDATE factor_research_attempts
-                    SET status = 'failed', diagnostic = ?1, updated_at_ms = ?2
+                    SET status = CASE WHEN diagnostic = ?2 THEN 'cancelled' ELSE 'failed' END,
+                        diagnostic = CASE WHEN diagnostic = ?2 THEN ?3 ELSE ?1 END,
+                        updated_at_ms = ?4
                   WHERE status = 'running'",
                 params![
                     "research-interrupted: the previous worker stopped before publication",
+                    CANCELLATION_REQUESTED_DIAGNOSTIC,
+                    "Factor research Attempt cancelled",
                     now_ms()
                 ],
             )
@@ -2346,6 +2418,19 @@ impl<'a> ResearchStore<'a> {
                     "Factor research Attempt cancelled",
                     now_ms()
                 ],
+            )
+            .map(|_| ())
+            .map_err(string)
+    }
+
+    fn request_shutdown_cancellation(&self) -> Result<(), String> {
+        self.database
+            .execute(
+                "UPDATE factor_research_attempts
+                    SET diagnostic = ?1, updated_at_ms = ?2
+                  WHERE status = 'running'
+                    AND (diagnostic IS NULL OR diagnostic != ?1)",
+                params![CANCELLATION_REQUESTED_DIAGNOSTIC, now_ms()],
             )
             .map(|_| ())
             .map_err(string)
@@ -4753,9 +4838,9 @@ fn factor_failure_code(
     kind: &str,
     status: AttemptStatus,
     diagnostic: Option<&str>,
-) -> Option<String> {
+) -> Option<FactorFailureCode> {
     if status == AttemptStatus::Cancelled {
-        return Some("cancelled".into());
+        return Some(FactorFailureCode::Cancelled);
     }
     if status != AttemptStatus::Failed {
         return None;
@@ -4763,13 +4848,9 @@ fn factor_failure_code(
     if let Some(code) = diagnostic
         .and_then(|value| value.split(':').next())
         .map(str::trim)
-        .filter(|code| {
-            *code == "research-interrupted"
-                || *code == "reset-required"
-                || code.starts_with("factor-context-")
-        })
+        .and_then(FactorFailureCode::from_code)
     {
-        return Some(code.into());
+        return Some(code);
     }
     let normalized = diagnostic.unwrap_or_default().to_ascii_lowercase();
     let category = if [
@@ -4782,12 +4863,12 @@ fn factor_failure_code(
     .iter()
     .any(|marker| normalized.contains(marker))
     {
-        "factor-corruption-detected"
+        FactorFailureCode::FactorCorruptionDetected
     } else if normalized.contains("cannot be published")
         || normalized.contains("publication")
         || normalized.contains("staging")
     {
-        "factor-publication-failed"
+        FactorFailureCode::FactorPublicationFailed
     } else if [
         "not found",
         "not available",
@@ -4798,7 +4879,7 @@ fn factor_failure_code(
     .iter()
     .any(|marker| normalized.contains(marker))
     {
-        "factor-missing-input"
+        FactorFailureCode::FactorMissingInput
     } else if [
         "resource",
         "too large",
@@ -4811,7 +4892,7 @@ fn factor_failure_code(
     .iter()
     .any(|marker| normalized.contains(marker))
     {
-        "factor-resource-failed"
+        FactorFailureCode::FactorResourceFailed
     } else if [
         "does not match",
         "differs from",
@@ -4823,22 +4904,16 @@ fn factor_failure_code(
     .iter()
     .any(|marker| normalized.contains(marker))
     {
-        "factor-compatibility-failed"
+        FactorFailureCode::FactorCompatibilityFailed
     } else if ["invalid", "validate", "validation", "must be", "empty"]
         .iter()
         .any(|marker| normalized.contains(marker))
     {
-        "factor-validation-failed"
+        FactorFailureCode::FactorValidationFailed
     } else {
-        match kind {
-            "candidate-build" => "candidate-build-failed",
-            "factor-materialization" => "factor-materialization-failed",
-            "factor-evaluation" => "factor-evaluation-failed",
-            "factor-family-grid" => "factor-family-grid-failed",
-            _ => "factor-research-failed",
-        }
+        FactorFailureCode::for_kind(kind)
     };
-    Some(category.into())
+    Some(category)
 }
 
 fn parse_status(value: &str) -> Result<AttemptStatus, String> {
@@ -5492,9 +5567,8 @@ mod tests {
             store
                 .attempt_for_user("alice", &first.attempt_id)
                 .unwrap()
-                .failure_code
-                .as_deref(),
-            Some("factor-evaluation-failed")
+                .failure_code,
+            Some(FactorFailureCode::FactorEvaluationFailed)
         );
         let (retry, should_start) = store.retry_attempt("alice", &first.attempt_id).unwrap();
         assert!(should_start);
@@ -5543,9 +5617,8 @@ mod tests {
             ("Factor output is invalid", "factor-validation-failed"),
         ] {
             assert_eq!(
-                factor_failure_code("factor-evaluation", AttemptStatus::Failed, Some(diagnostic))
-                    .as_deref(),
-                Some(expected)
+                factor_failure_code("factor-evaluation", AttemptStatus::Failed, Some(diagnostic)),
+                FactorFailureCode::from_code(expected)
             );
         }
     }
@@ -5735,12 +5808,75 @@ mod tests {
                 .is_some_and(|diagnostic| diagnostic.contains("research-interrupted"))
         );
         assert_eq!(
-            recovered.failure_code.as_deref(),
-            Some("research-interrupted")
+            recovered.failure_code,
+            Some(FactorFailureCode::ResearchInterrupted)
         );
         assert!(!temporary.exists());
         drop(database);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stale_cancel_requested_attempts_remain_cancelled() {
+        let database = Arc::new(Mutex::new(store()));
+        let directory = tempfile_dir("factor-cancel-recovery");
+        let attempt = {
+            let database = database.lock().unwrap();
+            let store = ResearchStore::new(&database);
+            let (attempt, _) = store
+                .start_attempt("alice", "factor-materialization", "{}")
+                .unwrap();
+            store.begin_attempt(&attempt.attempt_id).unwrap();
+            store.cancel_attempt("alice", &attempt.attempt_id).unwrap();
+            attempt
+        };
+        let source: Arc<dyn FactorResearchSource> = Arc::new(TestSource {
+            database: database.clone(),
+            directory: directory.clone(),
+        });
+        ResearchStore::recover_stale_attempts(&directory, &source).unwrap();
+        let database = database.lock().unwrap();
+        let recovered = ResearchStore::new(&database)
+            .attempt_for_user("alice", &attempt.attempt_id)
+            .unwrap();
+        assert_eq!(recovered.status, AttemptStatus::Cancelled);
+        assert_eq!(recovered.failure_code, Some(FactorFailureCode::Cancelled));
+        drop(database);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn shutdown_cancellation_is_durable_before_publication() {
+        let database = store();
+        let store = ResearchStore::new(&database);
+        let (attempt, _) = store
+            .start_attempt("alice", "candidate-build", "{}")
+            .unwrap();
+        store.begin_attempt(&attempt.attempt_id).unwrap();
+        store.request_shutdown_cancellation().unwrap();
+        let requested = store
+            .attempt_for_user("alice", &attempt.attempt_id)
+            .unwrap();
+        assert_eq!(requested.status, AttemptStatus::Running);
+        assert_eq!(
+            requested.diagnostic.as_deref(),
+            Some(CANCELLATION_REQUESTED_DIAGNOSTIC)
+        );
+        assert_eq!(
+            store
+                .save_candidate_for_attempt(
+                    "alice",
+                    &attempt.attempt_id,
+                    &test_candidate(),
+                    &FactorPresentationMetadata {
+                        name: "Shutdown".into(),
+                        description: String::new(),
+                        tags: Vec::new(),
+                    },
+                )
+                .unwrap_err(),
+            "cancelled"
+        );
     }
 
     #[test]

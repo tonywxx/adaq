@@ -200,6 +200,20 @@ impl ResearchQueue {
     }
 
     pub(crate) fn shutdown(&self) {
+        let should_shutdown = if let Ok(mut state) = self.inner.state.lock() {
+            if state.shutdown {
+                false
+            } else {
+                state.shutdown = true;
+                self.inner.changed.notify_one();
+                true
+            }
+        } else {
+            false
+        };
+        if !should_shutdown {
+            return;
+        }
         let adapters = self
             .inner
             .adapters
@@ -208,13 +222,6 @@ impl ResearchQueue {
             .unwrap_or_default();
         for adapter in adapters {
             adapter.request_shutdown();
-        }
-        if let Ok(mut state) = self.inner.state.lock() {
-            if state.shutdown {
-                return;
-            }
-            state.shutdown = true;
-            self.inner.changed.notify_one();
         }
         if let Ok(mut worker) = self.inner.worker.lock()
             && let Some(worker) = worker.take()
