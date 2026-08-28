@@ -43,7 +43,6 @@ import { createFactorAdapter, type FactorAdapter } from "./factor-adapter";
 import {
 	finiteGridTrialCount,
 	factorHash,
-	factorJsonArray,
 	factorString,
 	isGridWithinLimit,
 	parseFactorJson,
@@ -63,11 +62,9 @@ import { PythonProjectsPanel } from "@/features/python-research/python-projects-
 import { PythonFactorLabPanel } from "@/features/python-research/python-factor-lab-panel";
 import { CandidatesWorkspace } from "./candidates-workspace";
 import { AttemptsPanel } from "./factor-attempts-panel";
-import { Detail, Field, JsonEditor, TextField } from "./factor-form-fields";
+import { Detail, Field, JsonEditor } from "./factor-form-fields";
 import { useFactorPage } from "./factor-workspace-data";
 import {
-	commaSeparated,
-	commaSeparatedNumbers,
 	EmptyState,
 	ErrorState,
 	EvidenceJson,
@@ -77,7 +74,6 @@ import {
 	localizedFactorCode,
 	localizedFactorError,
 	localizedFactorReason,
-	mergeFactorFields,
 	newUuid,
 	optionalNumber,
 	PageControls,
@@ -1645,84 +1641,107 @@ function EvaluationStart({
 	onStarted: () => void;
 }) {
 	const { t } = useTranslation();
-	const [protocol, setProtocol] = useState("{}");
-	const [marketSeries, setMarketSeries] = useState("[]");
-	const [featureEvidence, setFeatureEvidence] = useState("");
-	const [factorDatasetId, setFactorDatasetId] = useState("");
-	const [featureDatasetId, setFeatureDatasetId] = useState("");
-	const [featurePlanHash, setFeaturePlanHash] = useState("");
-	const [snapshotId, setSnapshotId] = useState("");
-	const [universeId, setUniverseId] = useState("");
-	const [pointInTimeUniverse, setPointInTimeUniverse] = useState("");
-	const [outputName, setOutputName] = useState("");
-	const [scope, setScope] = useState("");
-	const [target, setTarget] = useState("");
-	const [horizonBars, setHorizonBars] = useState("");
-	const [orientation, setOrientation] = useState("");
-	const [purgeBars, setPurgeBars] = useState("");
-	const [embargoBars, setEmbargoBars] = useState("");
-	const [lenses, setLenses] = useState("");
-	const [nuisanceFeatureNames, setNuisanceFeatureNames] = useState("");
-	const [familyId, setFamilyId] = useState("");
-	const [trialId, setTrialId] = useState("");
-	const [seed, setSeed] = useState("");
-	const [busy, setBusy] = useState(false);
-	const [feedback, setFeedback] = useState<string>();
-	const [frozenHash, setFrozenHash] = useState<string>();
+	const candidates = useFactorPage(userId, "candidates", adapter.listCandidates);
+	const datasets = useFactorPage(userId, "datasets", adapter.listDatasets);
 	const factorContextQuery = useResearchEvidenceContext(userId);
 	const factorContext = factorContextQuery.data;
-	const featureBinding = factorContext?.featureDataset;
+	const compatibleCandidates = useMemo(
+		() => factorCandidatesForContext(candidates.data?.items ?? [], factorContext),
+		[candidates.data?.items, factorContext],
+	);
+	const compatibleDatasets = useMemo(() => {
+		const featureDataset = factorContext?.featureDataset;
+		const universeId = factorContext?.universeId;
+		if (!featureDataset || !universeId) return [];
+		return (datasets.data?.items ?? []).filter((dataset) => {
+			return (
+				textAt(dataset.manifest, "featureDatasetId") === featureDataset.datasetId &&
+				textAt(dataset.manifest, "featurePlanHash") === featureDataset.featurePlanHash &&
+				textAt(dataset.manifest, "marketDataSnapshotId") === factorContext.snapshotId &&
+				textAt(dataset.manifest, "pointInTimeUniverseId") === universeId
+			);
+		});
+	}, [datasets.data?.items, factorContext]);
+	const [candidateHash, setCandidateHash] = useState("");
+	const [datasetId, setDatasetId] = useState("");
+	const [outputName, setOutputName] = useState("");
+	const [candidatePage, setCandidatePage] = useState(1);
+	const [datasetPage, setDatasetPage] = useState(1);
+	const [busy, setBusy] = useState(false);
+	const [feedback, setFeedback] = useState<string>();
+	const selectedCandidate = compatibleCandidates.find(
+		(candidate) => textAt(candidate.candidate, "candidateHash") === candidateHash,
+	);
+	const selectedDataset = compatibleDatasets.find(
+		(dataset) =>
+			textAt(dataset.manifest, "datasetId") === datasetId &&
+			textAt(dataset.manifest, "candidateHash") === candidateHash,
+	);
+	const candidateDatasets = useMemo(
+		() =>
+			compatibleDatasets.filter(
+				(dataset) => textAt(dataset.manifest, "candidateHash") === candidateHash,
+			),
+		[compatibleDatasets, candidateHash],
+	);
+	const outputNames = useMemo(() => {
+		const outputs = valueAt(selectedDataset?.manifest, "outputNames");
+		return Array.isArray(outputs)
+			? outputs.filter((output): output is string => typeof output === "string")
+			: [];
+	}, [selectedDataset?.manifest]);
 
 	useEffect(() => {
-		if (!featureBinding || !factorContext) return;
-		setFeatureDatasetId(featureBinding.datasetId);
-		setFeaturePlanHash(featureBinding.featurePlanHash);
-		setSnapshotId(factorContext.snapshotId);
-		setUniverseId(factorContext.universeId ?? "");
-	}, [factorContext, featureBinding]);
+		if (candidates.data && candidates.data.page !== candidatePage) {
+			void candidates.load(candidatePage);
+		}
+	}, [candidatePage, candidates.data, candidates.load]);
+
+	useEffect(() => {
+		if (datasets.data && datasets.data.page !== datasetPage) {
+			void datasets.load(datasetPage);
+		}
+	}, [datasetPage, datasets.data, datasets.load]);
+
+	useEffect(() => {
+		setCandidateHash((current) =>
+			compatibleCandidates.some(
+				(candidate) => textAt(candidate.candidate, "candidateHash") === current,
+			)
+				? current
+				: textAt(compatibleCandidates[0]?.candidate, "candidateHash", ""),
+		);
+	}, [compatibleCandidates]);
+
+	useEffect(() => {
+		setDatasetId((current) =>
+			candidateDatasets.some(
+				(dataset) => textAt(dataset.manifest, "datasetId") === current,
+			)
+				? current
+				: textAt(candidateDatasets[0]?.manifest, "datasetId", ""),
+		);
+	}, [candidateDatasets]);
+
+	useEffect(() => {
+		setOutputName((current) => outputNames.includes(current) ? current : (outputNames[0] ?? ""));
+	}, [outputNames]);
 
 	const start = async () => {
 		setBusy(true);
 		setFeedback(undefined);
 		try {
-			const factorProtocol = applyFactorContext(
-				mergeFactorFields(protocol, t("factors.evaluations.protocol"), {
-					factorDatasetId,
-					featureDatasetId,
-					featurePlanHash,
-					marketDataSnapshotId: snapshotId,
-					pointInTimeUniverseId: universeId,
-					pointInTimeUniverse: commaSeparated(pointInTimeUniverse),
-					outputName,
-					scope,
-					target,
-					horizonBars: commaSeparatedNumbers(horizonBars),
-					orientation,
-					purgeBars: optionalNumber(purgeBars),
-					embargoBars: optionalNumber(embargoBars),
-					lenses: commaSeparated(lenses),
-					nuisanceFeatureNames: commaSeparated(nuisanceFeatureNames),
-					familyId,
-					trialId,
-					seed: optionalNumber(seed),
-				}),
-				factorContext,
-			);
-			const frozen = await adapter.freezeEvaluationProtocol(
+			if (!factorContext?.featureDataset || !factorContext.universeId) {
+				throw new Error(t("factors.evaluations.contextRequired"));
+			}
+			if (!candidateHash || !datasetId || !outputName) {
+				throw new Error(t("factors.evaluations.selectionRequired"));
+			}
+			await adapter.startEvaluationFromContext(
 				userId,
-				factorProtocol,
-			);
-			setFrozenHash(textAt(frozen, "protocolHash"));
-			await adapter.startEvaluation(
-				userId,
-				frozen,
-				factorJsonArray(JSON.parse(marketSeries)),
-				featureEvidence.trim()
-					? parseFactorJson(
-							featureEvidence,
-							t("factors.evaluations.featureEvidence"),
-						)
-					: undefined,
+				candidateHash,
+				datasetId,
+				outputName,
 			);
 			setFeedback(t("factors.evaluations.started"));
 			onStarted();
@@ -1742,158 +1761,191 @@ function EvaluationStart({
 			</CardHeader>
 			<CardContent className="space-y-4">
 				<div className="grid gap-3 md:grid-cols-2">
-					<Field
-						label={t("factors.evaluations.dataset")}
-						value={factorDatasetId}
-						onChange={setFactorDatasetId}
-						mono
-					/>
-					<Field
-						label={t("factors.datasets.featureDataset")}
-						value={featureDatasetId}
-						onChange={setFeatureDatasetId}
-						disabled={Boolean(featureBinding)}
-						mono
-					/>
-					<Field
-						label={t("factors.candidates.featurePlanHash")}
-						value={featurePlanHash}
-						onChange={setFeaturePlanHash}
-						disabled={Boolean(featureBinding)}
-						mono
-					/>
-					<Field
-						label={t("factors.datasets.snapshot")}
-						value={snapshotId}
-						onChange={setSnapshotId}
-						disabled={Boolean(featureBinding)}
-						mono
-					/>
-					<Field
-						label={t("factors.datasets.universe")}
-						value={universeId}
-						onChange={setUniverseId}
-						disabled={Boolean(featureBinding)}
-						mono
-					/>
-					<Field
-						label={t("factors.evaluations.output")}
-						value={outputName}
-						onChange={setOutputName}
-						mono
-					/>
-					<Field
-						label={t("factors.evaluations.target")}
-						value={target}
-						onChange={setTarget}
-						placeholder="future-close-return"
-					/>
-					<Field
-						label={t("factors.common.scope")}
-						value={scope}
-						onChange={setScope}
-						placeholder="pooled"
-					/>
-					<Field
-						label={t("factors.evaluations.orientation")}
-						value={orientation}
-						onChange={setOrientation}
-						placeholder="positive"
-					/>
-					<Field
-						label={t("factors.evaluations.horizons")}
-						value={horizonBars}
-						onChange={setHorizonBars}
-						placeholder="1, 5, 20"
-					/>
-					<Field
-						label={t("factors.evaluations.purgeEmbargo")}
-						value={purgeBars}
-						onChange={setPurgeBars}
-						type="number"
-						placeholder="purge bars"
-					/>
-					<Field
-						label={t("factors.evaluations.embargoBars")}
-						value={embargoBars}
-						onChange={setEmbargoBars}
-						type="number"
-						placeholder="embargo bars"
-					/>
-					<Field
-						label={t("factors.evaluations.lenses")}
-						value={lenses}
-						onChange={setLenses}
-						placeholder="temporal, economic"
-					/>
-					<Field
-						label={t("factors.evaluations.pointInTimeUniverse")}
-						value={pointInTimeUniverse}
-						onChange={setPointInTimeUniverse}
-						placeholder="VENUE:SYMBOL, ..."
-						mono
-					/>
-					<Field
-						label={t("factors.evaluations.nuisance")}
-						value={nuisanceFeatureNames}
-						onChange={setNuisanceFeatureNames}
-						placeholder="feature-a, feature-b"
-					/>
-					<Field
-						label={t("factors.families.familyId")}
-						value={familyId}
-						onChange={setFamilyId}
-						mono
-					/>
-					<Field
-						label={t("factors.families.trialId")}
-						value={trialId}
-						onChange={setTrialId}
-						mono
-					/>
-					<Field
-						label={t("features.materialization.seed")}
-						value={seed}
-						onChange={setSeed}
-						type="number"
-					/>
+					<div className="grid gap-1.5">
+						<Label htmlFor="factor-evaluation-candidate">
+							{t("factors.evaluations.candidate")}
+						</Label>
+						<select
+							id="factor-evaluation-candidate"
+							className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							value={candidateHash}
+							disabled={busy}
+							onChange={(event) => setCandidateHash(event.target.value)}
+						>
+							<option value="">
+								{candidates.loading
+									? t("factors.evaluations.loadingEvidence")
+									: t("factors.evaluations.selectCandidate")}
+							</option>
+							{compatibleCandidates.map((candidate) => {
+								const hash = textAt(candidate.candidate, "candidateHash", "");
+								return (
+									<option key={hash} value={hash}>
+										{candidate.presentation.name} · {shortFactorHash(hash)}
+									</option>
+								);
+							})}
+						</select>
+					</div>
+					<div className="grid gap-1.5">
+						<Label htmlFor="factor-evaluation-dataset">
+							{t("factors.evaluations.dataset")}
+						</Label>
+						<select
+							id="factor-evaluation-dataset"
+							className="h-9 rounded-md border bg-background px-3 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							value={datasetId}
+							disabled={busy || !candidateHash}
+							onChange={(event) => setDatasetId(event.target.value)}
+						>
+							<option value="">{t("factors.evaluations.selectDataset")}</option>
+							{candidateDatasets.map((dataset) => {
+								const id = textAt(dataset.manifest, "datasetId", "");
+								return (
+									<option key={id} value={id}>
+										{shortFactorHash(id)} · {formatNumber(
+											Number(valueAt(dataset.manifest, "observationCount") ?? 0),
+										)} rows
+									</option>
+								);
+							})}
+						</select>
+					</div>
+					<div className="grid gap-1.5">
+						<Label htmlFor="factor-evaluation-output">
+							{t("factors.evaluations.output")}
+						</Label>
+						<select
+							id="factor-evaluation-output"
+							className="h-9 rounded-md border bg-background px-3 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							value={outputName}
+							disabled={busy || outputNames.length === 0}
+							onChange={(event) => setOutputName(event.target.value)}
+						>
+							<option value="">{t("factors.evaluations.selectOutput")}</option>
+							{outputNames.map((output) => (
+								<option key={output} value={output}>
+									{output}
+								</option>
+							))}
+						</select>
+					</div>
 				</div>
-				<TextField
-					label={t("factors.evaluations.protocol")}
-					value={protocol}
-					onChange={setProtocol}
-					hint={t("factors.evaluations.protocolHint")}
-				/>
-				{frozenHash ? (
-					<Detail
-						label={t("factors.evaluations.frozenProtocolHash")}
-						value={frozenHash}
-						mono
+				{candidates.data && candidates.data.total > candidates.data.pageSize ? (
+					<PageControls
+						page={candidates.data.page}
+						total={candidates.data.total}
+						pageSize={candidates.data.pageSize}
+						onPage={setCandidatePage}
 					/>
 				) : null}
-				<TextField
-					label={t("factors.evaluations.marketSeries")}
-					value={marketSeries}
-					onChange={setMarketSeries}
-					hint={t("factors.evaluations.marketSeriesHint")}
-				/>
-				<TextField
-					label={t("factors.evaluations.featureEvidence")}
-					value={featureEvidence}
-					onChange={setFeatureEvidence}
-					hint={t("factors.evaluations.featureEvidenceHint")}
-				/>
+				{datasets.data && datasets.data.total > datasets.data.pageSize ? (
+					<PageControls
+						page={datasets.data.page}
+						total={datasets.data.total}
+						pageSize={datasets.data.pageSize}
+						onPage={setDatasetPage}
+					/>
+				) : null}
+				{selectedCandidate && selectedDataset ? (
+					<div className="space-y-3 rounded-lg border bg-muted/20 p-3">
+						<p className="text-sm font-medium">
+							{t("factors.evaluations.boundaryHeading")}
+						</p>
+						<dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+							<Detail
+								label={t("factors.candidates.candidateHash")}
+								value={textAt(selectedCandidate.candidate, "candidateHash")}
+								mono
+							/>
+							<Detail
+								label={t("factors.evaluations.dataset")}
+								value={textAt(selectedDataset.manifest, "datasetId")}
+								mono
+							/>
+							<Detail
+								label={t("factors.datasets.featureDataset")}
+								value={textAt(selectedDataset.manifest, "featureDatasetId")}
+								mono
+							/>
+							<Detail
+								label={t("factors.candidates.featurePlanHash")}
+								value={textAt(selectedDataset.manifest, "featurePlanHash")}
+								mono
+							/>
+							<Detail
+								label={t("factors.datasets.snapshot")}
+								value={textAt(selectedDataset.manifest, "marketDataSnapshotId")}
+								mono
+							/>
+							<Detail
+								label={t("factors.datasets.universe")}
+								value={textAt(selectedDataset.manifest, "pointInTimeUniverseId")}
+								mono
+							/>
+						</dl>
+						<EvidenceJson
+							label={t("factors.evaluations.candidateEvidence")}
+							value={selectedCandidate.predecessor}
+						/>
+						<EvidenceJson
+							label={t("factors.evaluations.datasetManifest")}
+							value={selectedDataset.manifest}
+						/>
+					</div>
+				) : null}
+				<div className="rounded-lg border bg-muted/20 p-3">
+					<p className="mb-3 text-sm font-medium">
+						{t("factors.evaluations.protocolBoundary")}
+					</p>
+					<dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+						<Detail
+							label={t("factors.evaluations.target")}
+							value="future-close-return"
+						/>
+						<Detail label={t("factors.evaluations.horizons")} value="1" mono />
+						<Detail
+							label={t("factors.evaluations.purgeEmbargo")}
+							value="0 / 0"
+						/>
+						<Detail
+							label={t("factors.evaluations.lenses")}
+							value={textAt(selectedDataset?.manifest, "scope") === "cross-sectional"
+								? "cross-sectional, economic"
+								: "temporal, economic"}
+						/>
+						<Detail
+							label={t("factors.evaluations.trialIdentity")}
+							value={t("factors.evaluations.hostResolved")}
+						/>
+						<Detail
+							label={t("factors.evaluations.scope")}
+							value={textAt(selectedDataset?.manifest, "scope")}
+						/>
+					</dl>
+				</div>
+				{factorContextQuery.error ? (
+					<p role="alert" className="text-sm text-destructive">
+						{localizedFactorContextError(factorContextQuery.error, t)}
+					</p>
+				) : null}
+				{candidates.error || datasets.error ? (
+					<p role="alert" className="text-sm text-destructive">
+						{localizedFactorError(candidates.error ?? datasets.error, t)}
+					</p>
+				) : null}
 				<div className="flex flex-wrap items-center gap-3">
 					<Button
 						type="button"
 						loading={busy}
 						loadingText={t("factors.common.queueing")}
+						disabled={busy || !candidateHash || !datasetId || !outputName}
 						onClick={() => void start()}
 					>
 						{t("factors.evaluations.start")}
 					</Button>
 					<span className="text-xs text-muted-foreground">
-						{t("factors.evaluations.noRandomSplit")}
+						{t("factors.evaluations.hostOwnsEvidence")}
 					</span>
 				</div>
 				<Feedback

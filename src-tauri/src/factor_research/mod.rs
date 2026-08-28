@@ -26,10 +26,11 @@ use adaq_factor_research::{
     FactorEvaluator, FactorMaterializationInput, FactorMaterializationProtocol,
     FactorMaterializationProtocolDraft, FactorMaterializer, FactorObservationValue,
     FactorPresentationMetadata, FactorPromotionDecision, FactorTarget, FactorUnavailabilityReason,
-    GridSearchFamilyDraft, GridSearchParameter, ObservationRange, PromotionEligibility,
-    PromotionPolicy, PromotionProtocol, PromotionProtocolDraft, PythonFactorBinding,
-    ResearchFamily, ResearchFamilyDraft, ResearchFamilyRegistration, ResearchLineage,
-    ResearchRegistry, ResearchTrial, ResearchTrialDraft, ResearchTrialRegistration, canonical_json,
+    GridSearchFamilyDraft, GridSearchParameter, MetricId, MetricObservation, ObservationRange,
+    PromotionEligibility, PromotionPolicy, PromotionProtocol, PromotionProtocolDraft,
+    PythonFactorBinding, ResearchFamily, ResearchFamilyDraft, ResearchFamilyRegistration,
+    ResearchLineage, ResearchRegistry, ResearchTrial, ResearchTrialDraft,
+    ResearchTrialRegistration, ResearchTrialStatus, canonical_json,
 };
 use arrow_array::{Array, ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -543,6 +544,18 @@ pub(crate) struct FactorEvaluationStartRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FactorEvaluationContextStartRequest {
+    pub user_id: String,
+    pub operation_id: String,
+    pub candidate_hash: String,
+    pub dataset_id: String,
+    pub output_name: String,
+    #[serde(default)]
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FactorEvaluationProtocolFreezeRequest {
     pub user_id: String,
     pub draft: FactorEvaluationProtocolDraft,
@@ -964,21 +977,52 @@ impl FactorResearch {
         &self,
         request: FactorEvaluationStartRequest,
     ) -> Result<FactorAttemptView, String> {
+        self.start_evaluation_inner(request, false)
+    }
+
+    pub(crate) fn start_evaluation_host_owned(
+        &self,
+        request: FactorEvaluationStartRequest,
+    ) -> Result<FactorAttemptView, String> {
+        self.start_evaluation_inner(request, true)
+    }
+
+    fn start_evaluation_inner(
+        &self,
+        request: FactorEvaluationStartRequest,
+        require_exact_trial_protocol: bool,
+    ) -> Result<FactorAttemptView, String> {
         self.ensure_schema_ready()?;
         validate_user(&request.user_id)?;
         if request.protocol.user_id != user_uuid(&request.user_id) {
             return Err("Factor Evaluation Protocol User identity differs from the request".into());
         }
         request.protocol.validate().map_err(string)?;
-        if let Some(dataset) = request
-            .dataset
-            .as_ref()
-            .map(|input| input.clone().into_dataset())
         {
-            let dataset = dataset?;
-            if dataset.manifest.dataset_id != request.protocol.factor_dataset_id {
-                return Err("Factor Dataset is not bound to the exact Evaluation Protocol".into());
+            let database = self.database()?;
+            let store = ResearchStore::new(&database);
+            let stored_dataset =
+                store.dataset_for_user(&request.user_id, &request.protocol.factor_dataset_id)?;
+            let candidate = store
+                .candidate_for_user(&request.user_id, &stored_dataset.manifest.candidate_hash)?;
+            if let Some(input) = request.dataset.as_ref() {
+                let supplied = input.clone().into_dataset()?;
+                if supplied.manifest != stored_dataset.manifest {
+                    return Err("Factor Dataset input does not match the Host-owned Dataset".into());
+                }
             }
+            validate_evaluation_boundary(
+                &candidate.candidate,
+                candidate.predecessor.as_ref(),
+                &stored_dataset.manifest,
+                &request.protocol,
+            )?;
+            store.ensure_evaluation_trial(
+                &request.user_id,
+                &request.protocol,
+                &stored_dataset.manifest,
+                require_exact_trial_protocol,
+            )?;
         }
         let job = EvaluationJob {
             user_id: request.user_id.clone(),
@@ -2673,6 +2717,126 @@ impl<'a> ResearchStore<'a> {
         )
     }
 
+    fn ensure_evaluation_trial(
+        &self,
+        user_id: &str,
+        protocol: &FactorEvaluationProtocol,
+        manifest: &FactorDatasetManifest,
+        require_exact_protocol: bool,
+    ) -> Result<(), String> {
+        let user = user_uuid(user_id);
+        let range = evaluation_observation_range(protocol)?;
+        let registration_json: Option<String> = self
+            .database
+            .query_row(
+                "SELECT registration_json FROM factor_research_registrations
+                 WHERE trial_id = ?1 AND user_id = ?2",
+                params![protocol.trial_id.to_string(), user.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(string)?;
+        if let Some(registration_json) = registration_json {
+            let registration: ResearchTrialRegistration =
+                serde_json::from_str(&registration_json).map_err(string)?;
+            registration.validate().map_err(string)?;
+            if registration.family_id != protocol.family_id
+                || registration.candidate_hash != manifest.candidate_hash
+                || registration.target != protocol.target
+                || registration.market_context != protocol.market_context
+                || registration.point_in_time_universe_id != protocol.point_in_time_universe_id
+                || registration.observation_range != range
+                || (require_exact_protocol
+                    && registration.evaluation_protocol_hash != protocol.protocol_hash)
+            {
+                return Err(
+                    "Factor Evaluation Protocol is not bound to its registered Trial".into(),
+                );
+            }
+            let existing: Option<String> = self
+                .database
+                .query_row(
+                    "SELECT trial_json FROM factor_research_trials
+                     WHERE trial_id = ?1 AND user_id = ?2",
+                    params![protocol.trial_id.to_string(), user.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(string)?;
+            if let Some(existing) = existing {
+                let trial: ResearchTrial = serde_json::from_str(&existing).map_err(string)?;
+                trial.validate().map_err(string)?;
+                if trial.family_id != registration.family_id
+                    || trial.candidate_hash != registration.candidate_hash
+                    || trial.protocol_hash != registration.evaluation_protocol_hash
+                {
+                    return Err("Research Trial state is not bound to its registration".into());
+                }
+            } else {
+                let trial = initial_trial(&registration);
+                self.database
+                    .execute(
+                        "INSERT INTO factor_research_trials(
+                            trial_id, family_id, user_id, trial_json, updated_at_ms
+                         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            trial.trial_id.to_string(),
+                            trial.family_id.to_string(),
+                            user.to_string(),
+                            serde_json::to_string(&trial).map_err(string)?,
+                            now_ms()
+                        ],
+                    )
+                    .map_err(string)?;
+            }
+            return Ok(());
+        }
+
+        let family_exists: Option<String> = self
+            .database
+            .query_row(
+                "SELECT family_json FROM factor_research_families
+                 WHERE family_id = ?1 AND user_id = ?2",
+                params![protocol.family_id.to_string(), user.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(string)?;
+        if family_exists.is_some() {
+            return Err("Research Family does not contain the requested Trial".into());
+        }
+
+        let parameter_set_hash = hash_bytes(protocol.protocol_hash.as_bytes());
+        let mut registry = ResearchRegistry::default();
+        let registration = registry
+            .register_family(ResearchFamilyDraft {
+                family_id: protocol.family_id,
+                user_id: user,
+                root_candidate_hash: manifest.candidate_hash.clone(),
+                parent_family_id: None,
+                trials: vec![ResearchTrialDraft {
+                    trial_id: protocol.trial_id,
+                    candidate_hash: manifest.candidate_hash.clone(),
+                    parameter_set_hash,
+                    target: protocol.target,
+                    market_context: protocol.market_context.clone(),
+                    point_in_time_universe_id: protocol.point_in_time_universe_id.clone(),
+                    observation_range: range,
+                    evaluation_protocol_hash: protocol.protocol_hash.clone(),
+                    derivation_hash: None,
+                }],
+            })
+            .map_err(string)?;
+        let trials = registration
+            .trials
+            .iter()
+            .map(initial_trial)
+            .collect::<Vec<_>>();
+        let transaction = self.database.unchecked_transaction().map_err(string)?;
+        save_family_records(&transaction, &registration, &trials)?;
+        transaction.commit().map_err(string)
+    }
+
     fn save_protocol<T: Serialize>(
         &self,
         hash: &str,
@@ -3286,6 +3450,42 @@ impl<'a> ResearchStore<'a> {
         report.validate().map_err(string)?;
         self.assert_running_attempt(attempt_id, user_id, "factor-evaluation")?;
         self.assert_dataset_access(user_id, &report.factor_dataset_id)?;
+        let protocol_json: String = self
+            .database
+            .query_row(
+                "SELECT protocol_json FROM factor_research_protocols
+                 WHERE protocol_hash = ?1 AND user_id = ?2 AND kind = 'evaluation'",
+                params![report.protocol_hash, user_uuid_string(user_id)],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Evaluation Protocol was not found".to_owned())?;
+        let protocol: FactorEvaluationProtocol =
+            serde_json::from_str(&protocol_json).map_err(string)?;
+        let manifest_json: String = self
+            .database
+            .query_row(
+                "SELECT c.manifest_json FROM factor_dataset_access a
+                 JOIN factor_dataset_content c USING(dataset_id)
+                 WHERE a.user_id = ?1 AND a.dataset_id = ?2",
+                params![user_id, report.factor_dataset_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Factor Dataset was not found".to_owned())?;
+        let manifest: FactorDatasetManifest =
+            serde_json::from_str(&manifest_json).map_err(string)?;
+        manifest.validate().map_err(string)?;
+        if protocol.factor_dataset_id != report.factor_dataset_id
+            || protocol.output_name != report.output_name
+            || protocol.scope != report.scope
+            || protocol.target != report.target
+            || protocol.market_data_snapshot_id != report.market_data_snapshot_id
+            || protocol.point_in_time_universe_id != report.point_in_time_universe_id
+            || protocol.market_context != report.market_context
+        {
+            return Err("Factor Report is not bound to its Evaluation Protocol".into());
+        }
+        let lineage = self.lineage_for_user(user_uuid(user_id), &protocol.trial_id.to_string())?;
+        let (raw_statistic, p_value) = factor_trial_statistics(report)?;
         let report_dir = directory.join("reports");
         fs::create_dir_all(&report_dir).map_err(string)?;
         let staging = report_dir.join(format!(".factor-{attempt_id}.metrics.parquet.tmp"));
@@ -3340,6 +3540,27 @@ impl<'a> ResearchStore<'a> {
                 .map_err(string)?;
             if stored_report != report_json {
                 return Err("Factor Report content identity collision".into());
+            }
+            // Python grid trials reserve stable identities before runtime-specific protocols;
+            // that legacy path records their completed state immediately after publication.
+            if lineage
+                .registrations
+                .iter()
+                .find(|registration| registration.trial_id == protocol.trial_id)
+                .is_some_and(|registration| {
+                    registration.evaluation_protocol_hash == protocol.protocol_hash
+                })
+            {
+                complete_evaluation_trial(
+                    &transaction,
+                    user_id,
+                    &protocol,
+                    report,
+                    &lineage,
+                    &manifest.candidate_hash,
+                    raw_statistic,
+                    p_value,
+                )?;
             }
             transaction
                 .execute(
@@ -3639,12 +3860,40 @@ impl<'a> ResearchStore<'a> {
         if family_user != user_id.to_string() {
             return Err("Research Trial is owned by another User".into());
         }
+        let mut trial = trial.clone();
+        let existing: Option<String> = self
+            .database
+            .query_row(
+                "SELECT trial_json FROM factor_research_trials
+                 WHERE trial_id = ?1 AND user_id = ?2",
+                params![trial.trial_id.to_string(), user_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(string)?;
+        if let Some(existing) = existing {
+            let existing: ResearchTrial = serde_json::from_str(&existing).map_err(string)?;
+            existing.validate().map_err(string)?;
+            if existing.status == ResearchTrialStatus::Completed
+                && trial.status == ResearchTrialStatus::Completed
+                && existing.report_hash == trial.report_hash
+            {
+                trial.raw_statistic = trial.raw_statistic.or(existing.raw_statistic);
+                trial.p_value = trial.p_value.or(existing.p_value);
+                trial.holm_adjusted = trial.holm_adjusted.or(existing.holm_adjusted);
+                if trial.related_trial_ids.is_empty() {
+                    trial.related_trial_ids = existing.related_trial_ids;
+                }
+                trial.diagnostic = trial.diagnostic.or(existing.diagnostic);
+                trial.validate().map_err(string)?;
+            }
+        }
         self.database
             .execute(
                 "INSERT INTO factor_research_trials(trial_id, family_id, user_id, trial_json, updated_at_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(trial_id) DO UPDATE SET trial_json = excluded.trial_json, updated_at_ms = excluded.updated_at_ms",
-                params![trial.trial_id.to_string(), trial.family_id.to_string(), user_id.to_string(), serde_json::to_string(trial).map_err(string)?, now_ms()],
+                params![trial.trial_id.to_string(), trial.family_id.to_string(), user_id.to_string(), serde_json::to_string(&trial).map_err(string)?, now_ms()],
             )
             .map(|_| ())
             .map_err(string)
@@ -3700,22 +3949,6 @@ impl<'a> ResearchStore<'a> {
             registry.register_family(draft).map_err(string)?;
         }
         let lineage = registry.lineage(user_id, trial_id).map_err(string)?;
-        let trials = lineage
-            .trial_ids
-            .iter()
-            .filter_map(|id| {
-                self.database
-                    .query_row(
-                        "SELECT trial_json FROM factor_research_trials WHERE trial_id = ?1 AND user_id = ?2",
-                        params![id.to_string(), user_id.to_string()],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()
-                    .ok()
-                    .flatten()
-            })
-            .map(|json| serde_json::from_str::<ResearchTrial>(&json).map_err(string))
-            .collect::<Result<Vec<ResearchTrial>, String>>()?;
         let registrations = lineage
             .trial_ids
             .iter()
@@ -3731,6 +3964,27 @@ impl<'a> ResearchStore<'a> {
                     .and_then(|json| serde_json::from_str(&json).map_err(string))
             })
             .collect::<Result<Vec<ResearchTrialRegistration>, String>>()?;
+        let trials = registrations
+            .iter()
+            .map(|registration| {
+                let stored: Option<String> = self
+                    .database
+                    .query_row(
+                        "SELECT trial_json FROM factor_research_trials
+                         WHERE trial_id = ?1 AND user_id = ?2",
+                        params![registration.trial_id.to_string(), user_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(string)?;
+                let trial = stored
+                    .map(|json| serde_json::from_str::<ResearchTrial>(&json).map_err(string))
+                    .transpose()?
+                    .unwrap_or_else(|| initial_trial(registration));
+                trial.validate().map_err(string)?;
+                Ok(trial)
+            })
+            .collect::<Result<Vec<ResearchTrial>, String>>()?;
         let protocols = registrations
             .iter()
             .filter_map(|registration| {
@@ -5067,7 +5321,7 @@ fn save_family_records(
         let json = serde_json::to_string(trial).map_err(string)?;
         transaction
             .execute(
-                "INSERT INTO factor_research_trials(trial_id, family_id, user_id, trial_json, updated_at_ms)
+                "INSERT OR IGNORE INTO factor_research_trials(trial_id, family_id, user_id, trial_json, updated_at_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(trial_id) DO UPDATE SET trial_json = excluded.trial_json, updated_at_ms = excluded.updated_at_ms",
                 params![
@@ -5400,10 +5654,287 @@ fn write_report_parquet(path: &Path, report: &FactorEvaluationReport) -> Result<
     writer.close().map(|_| ()).map_err(string)
 }
 
+fn evaluation_observation_range(
+    protocol: &FactorEvaluationProtocol,
+) -> Result<ObservationRange, String> {
+    let mut start_time_ms = i64::MAX;
+    let mut end_time_ms = i64::MIN;
+    let mut include = |range: &ObservationRange| {
+        start_time_ms = start_time_ms.min(range.start_time_ms);
+        end_time_ms = end_time_ms.max(range.end_time_ms);
+    };
+    for window in &protocol.windows {
+        include(&window.selection);
+        include(&window.evaluation);
+        for range in [
+            window.training.as_ref(),
+            window.fitting.as_ref(),
+            window.normalization.as_ref(),
+            window.target_construction.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            include(range);
+        }
+    }
+    if start_time_ms == i64::MAX || end_time_ms == i64::MIN {
+        return Err("factor-context-range-mismatch".into());
+    }
+    Ok(ObservationRange {
+        start_time_ms,
+        end_time_ms,
+    })
+}
+
+fn validate_evaluation_boundary(
+    candidate: &FactorCandidate,
+    predecessor: Option<&FactorCandidatePredecessor>,
+    manifest: &FactorDatasetManifest,
+    protocol: &FactorEvaluationProtocol,
+) -> Result<(), String> {
+    if candidate.candidate_hash != manifest.candidate_hash
+        || candidate.scope != manifest.scope
+        || candidate.scope != protocol.scope
+        || manifest.market_context != protocol.market_context
+        || manifest.feature_dataset_id != protocol.feature_dataset_id
+        || manifest.feature_plan_hash != protocol.feature_plan_hash
+        || manifest.market_data_snapshot_id != protocol.market_data_snapshot_id
+        || manifest.point_in_time_universe_id != protocol.point_in_time_universe_id
+        || manifest.engine_identity != protocol.engine_identity
+        || !candidate
+            .outputs
+            .iter()
+            .any(|output| output.name == protocol.output_name)
+        || !manifest
+            .output_names
+            .iter()
+            .any(|output| output == &protocol.output_name)
+    {
+        return Err(
+            "Factor Evaluation boundary is not bound to the exact Candidate or Dataset".into(),
+        );
+    }
+    let range = evaluation_observation_range(protocol)?;
+    if manifest
+        .observation_range
+        .as_ref()
+        .is_some_and(|dataset_range| {
+            range.start_time_ms < dataset_range.start_time_ms
+                || range.end_time_ms > dataset_range.end_time_ms
+        })
+    {
+        return Err("factor-context-range-mismatch".into());
+    }
+    let Some(predecessor) = predecessor else {
+        // Python-hosted candidates predate the retained context predecessor; the
+        // context-owned entry point performs the stricter predecessor check.
+        return Ok(());
+    };
+    let feature_dataset = &predecessor.feature_dataset;
+    if feature_dataset.dataset_id != manifest.feature_dataset_id
+        || feature_dataset.feature_plan_hash != manifest.feature_plan_hash
+        || predecessor.snapshot_id != manifest.market_data_snapshot_id
+        || predecessor.universe_id.as_deref() != Some(&manifest.point_in_time_universe_id)
+        || predecessor.market != protocol.market_context.asset_class
+        || predecessor.venue != protocol.market_context.venue
+    {
+        return Err("factor-context-mismatch".into());
+    }
+    if range.start_time_ms < predecessor.range_start_ms
+        || range.end_time_ms > predecessor.range_end_ms
+    {
+        return Err("factor-context-range-mismatch".into());
+    }
+    Ok(())
+}
+
+fn initial_trial(registration: &ResearchTrialRegistration) -> ResearchTrial {
+    ResearchTrial {
+        trial_id: registration.trial_id,
+        family_id: registration.family_id,
+        candidate_hash: registration.candidate_hash.clone(),
+        protocol_hash: registration.evaluation_protocol_hash.clone(),
+        status: ResearchTrialStatus::Registered,
+        report_hash: None,
+        raw_statistic: None,
+        p_value: None,
+        holm_adjusted: None,
+        related_trial_ids: Vec::new(),
+        diagnostic: None,
+    }
+}
+
+fn complete_evaluation_trial(
+    transaction: &rusqlite::Transaction<'_>,
+    user_id: &str,
+    protocol: &FactorEvaluationProtocol,
+    report: &FactorEvaluationReport,
+    lineage: &FactorLineageView,
+    candidate_hash: &str,
+    raw_statistic: Option<MetricObservation>,
+    p_value: Option<MetricObservation>,
+) -> Result<(), String> {
+    let current_registration = lineage
+        .registrations
+        .iter()
+        .find(|registration| registration.trial_id == protocol.trial_id)
+        .ok_or_else(|| "Research Trial registration was not found".to_owned())?;
+    if current_registration.family_id != protocol.family_id
+        || current_registration.candidate_hash != candidate_hash
+        || current_registration.target != protocol.target
+        || current_registration.market_context != protocol.market_context
+        || current_registration.point_in_time_universe_id != protocol.point_in_time_universe_id
+        || current_registration.evaluation_protocol_hash != protocol.protocol_hash
+        || current_registration.observation_range != evaluation_observation_range(protocol)?
+    {
+        return Err("Factor Evaluation Report is not bound to its registered Trial".into());
+    }
+
+    let mut states = lineage
+        .lineage
+        .trial_ids
+        .iter()
+        .map(|trial_id| {
+            let registration = lineage
+                .registrations
+                .iter()
+                .find(|registration| registration.trial_id == *trial_id)
+                .ok_or_else(|| "Research Trial registration was not found".to_owned())?;
+            let stored: Option<String> = transaction
+                .query_row(
+                    "SELECT trial_json FROM factor_research_trials
+                     WHERE trial_id = ?1 AND user_id = ?2",
+                    params![trial_id.to_string(), user_uuid_string(user_id)],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(string)?;
+            let trial = stored
+                .map(|json| serde_json::from_str::<ResearchTrial>(&json).map_err(string))
+                .transpose()?
+                .unwrap_or_else(|| initial_trial(registration));
+            trial.validate().map_err(string)?;
+            if trial.family_id != registration.family_id
+                || trial.candidate_hash != registration.candidate_hash
+                || trial.protocol_hash != registration.evaluation_protocol_hash
+            {
+                return Err("Research Trial state is not bound to its registration".into());
+            }
+            Ok((*trial_id, trial))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let current = states
+        .iter_mut()
+        .find(|(trial_id, _)| *trial_id == protocol.trial_id)
+        .ok_or_else(|| "Research Trial is not part of its registered lineage".to_owned())?;
+    match current.1.status {
+        ResearchTrialStatus::Registered => {
+            current.1.status = ResearchTrialStatus::Completed;
+            current.1.report_hash = Some(report.report_hash.clone());
+            current.1.raw_statistic = raw_statistic;
+            current.1.p_value = p_value;
+            current.1.diagnostic = None;
+        }
+        ResearchTrialStatus::Completed
+            if current.1.report_hash.as_deref() == Some(report.report_hash.as_str()) => {}
+        _ => return Err("Research Trial cannot be completed from its current state".into()),
+    }
+    current.1.validate().map_err(string)?;
+
+    let correction = adaq_factor_research::holm_bonferroni(
+        &states
+            .iter()
+            .map(|(trial_id, trial)| (*trial_id, trial.p_value.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .map_err(string)?;
+    let related = lineage
+        .lineage
+        .trial_ids
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    for (trial_id, mut trial) in states {
+        trial.holm_adjusted = correction.adjusted_p_values.get(&trial_id).cloned();
+        trial.related_trial_ids = related
+            .iter()
+            .copied()
+            .filter(|related_id| *related_id != trial_id)
+            .collect();
+        trial.validate().map_err(string)?;
+        transaction
+            .execute(
+                "INSERT INTO factor_research_trials(
+                    trial_id, family_id, user_id, trial_json, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(trial_id) DO UPDATE SET
+                    trial_json = excluded.trial_json, updated_at_ms = excluded.updated_at_ms",
+                params![
+                    trial_id.to_string(),
+                    trial.family_id.to_string(),
+                    user_uuid_string(user_id),
+                    serde_json::to_string(&trial).map_err(string)?,
+                    now_ms()
+                ],
+            )
+            .map_err(string)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn factor_trial_statistics(
+    report: &FactorEvaluationReport,
+) -> Result<(Option<MetricObservation>, Option<MetricObservation>), String> {
+    let observations = report
+        .metrics
+        .iter()
+        .filter(|metric| metric.metric == MetricId::Ic)
+        .filter_map(|metric| {
+            metric.observation.value().map(|value| {
+                let sample_count = match &metric.observation {
+                    MetricObservation::Available { sample_count, .. }
+                    | MetricObservation::Unavailable { sample_count, .. } => *sample_count,
+                };
+                (value, sample_count)
+            })
+        })
+        .collect::<Vec<_>>();
+    if observations.is_empty() {
+        return Ok((None, None));
+    }
+    let sample_count = observations
+        .iter()
+        .map(|(_, sample_count)| *sample_count)
+        .sum::<u64>();
+    let raw = observations.iter().map(|(value, _)| *value).sum::<f64>() / observations.len() as f64;
+    let raw_statistic = MetricObservation::available(raw, sample_count).map_err(string)?;
+    let p_value = (sample_count > 2).then(|| {
+        let z = raw.abs() * ((sample_count - 2) as f64 / (1.0 - raw * raw).max(1e-12)).sqrt();
+        MetricObservation::available((2.0 * normal_upper_tail(z)).clamp(0.0, 1.0), sample_count)
+            .expect("normal approximation is finite")
+    });
+    Ok((Some(raw_statistic), p_value))
+}
+
+fn normal_upper_tail(value: f64) -> f64 {
+    let value = value.abs();
+    let t = 1.0 / (1.0 + 0.2316419 * value);
+    let density = (-0.5 * value * value).exp() * 0.3989422804014327;
+    density
+        * t
+        * (0.319381530
+            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::research_queue::ResearchQueue;
+    use adaq_factor_research::{
+        EconomicAssumptions, EvaluationWindow, FactorLens, FactorOrientation,
+    };
     fn store() -> Connection {
         let database = Connection::open_in_memory().unwrap();
         ResearchStore::new(&database).initialize().unwrap();
@@ -6100,6 +6631,255 @@ mod tests {
         let path = std::env::temp_dir().join(format!("adaq-{name}-{}", Uuid::new_v4()));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn report_completion_updates_trial_and_complete_holm_lineage_atomically() {
+        let database = store();
+        let user = user_uuid("alice");
+        let candidate_hash = "c".repeat(64);
+        let family_id = Uuid::new_v4();
+        let trial_id = Uuid::new_v4();
+        let sibling_id = Uuid::new_v4();
+        let context = adaq_factor_research::FactorMarketContext {
+            venue: "okx".into(),
+            asset_class: "crypto".into(),
+            bar_interval: "1h".into(),
+            price_basis: "unadjusted".into(),
+            valuation_currency: "USDT".into(),
+            point_in_time_universe_id: "universe-1".into(),
+        };
+        let protocol = FactorEvaluationProtocol::freeze(FactorEvaluationProtocolDraft {
+            protocol_id: Uuid::new_v4(),
+            user_id: user,
+            factor_dataset_id: "dataset-1".into(),
+            feature_dataset_id: "feature-1".into(),
+            feature_plan_hash: "f".repeat(64),
+            market_data_snapshot_id: "snapshot-1".into(),
+            point_in_time_universe_id: "universe-1".into(),
+            point_in_time_universe: vec!["okx:BTC-USDT".into()],
+            output_name: "momentum".into(),
+            scope: adaq_factor_research::FactorScope::TimeSeries,
+            target: FactorTarget::FutureCloseReturn,
+            horizon_bars: vec![1],
+            market_context: context.clone(),
+            engine_identity: adaq_factor_research::ResearchEngineProvenance {
+                engine_id: "adaq-native-factor".into(),
+                engine_version: "1".into(),
+                adapter: "native".into(),
+                target_triple: "test".into(),
+                build_id: "test-build".into(),
+                environment: BTreeMap::new(),
+                parameters: BTreeMap::new(),
+                input_identities: vec!["input".into()],
+            },
+            orientation: FactorOrientation::Positive,
+            windows: vec![EvaluationWindow {
+                fold_id: "fold-1".into(),
+                selection: ObservationRange {
+                    start_time_ms: 1,
+                    end_time_ms: 10,
+                },
+                evaluation: ObservationRange {
+                    start_time_ms: 10,
+                    end_time_ms: 20,
+                },
+                training: Some(ObservationRange {
+                    start_time_ms: 1,
+                    end_time_ms: 10,
+                }),
+                fitting: Some(ObservationRange {
+                    start_time_ms: 1,
+                    end_time_ms: 10,
+                }),
+                normalization: Some(ObservationRange {
+                    start_time_ms: 1,
+                    end_time_ms: 10,
+                }),
+                target_construction: Some(ObservationRange {
+                    start_time_ms: 1,
+                    end_time_ms: 10,
+                }),
+            }],
+            purge_bars: 0,
+            embargo_bars: 0,
+            lenses: vec![FactorLens::Temporal, FactorLens::Economic],
+            nuisance_feature_names: Vec::new(),
+            regime: None,
+            economic: EconomicAssumptions {
+                rebalance_every_bars: 1,
+                fee_bps: 0.0,
+                slippage_bps: 0.0,
+                long_short: true,
+            },
+            family_id,
+            trial_id,
+            seed: 0,
+        })
+        .unwrap();
+        let mut candidate = test_candidate();
+        candidate.candidate_hash = candidate_hash.clone();
+        let manifest = FactorDatasetManifest {
+            schema_version: adaq_factor_research::FACTOR_RESEARCH_SCHEMA_VERSION.into(),
+            dataset_id: "dataset-1".into(),
+            protocol_hash: protocol.protocol_hash.clone(),
+            candidate_hash: candidate_hash.clone(),
+            scope: protocol.scope,
+            feature_dataset_id: protocol.feature_dataset_id.clone(),
+            feature_plan_hash: protocol.feature_plan_hash.clone(),
+            market_data_snapshot_id: protocol.market_data_snapshot_id.clone(),
+            point_in_time_universe_id: protocol.point_in_time_universe_id.clone(),
+            observation_range: Some(ObservationRange {
+                start_time_ms: 1,
+                end_time_ms: 20,
+            }),
+            market_context: protocol.market_context.clone(),
+            output_names: vec![protocol.output_name.clone()],
+            observation_count: 1,
+            payload_sha256: "a".repeat(64),
+            engine_identity: protocol.engine_identity.clone(),
+        };
+        assert!(validate_evaluation_boundary(&candidate, None, &manifest, &protocol).is_ok());
+        let mut engine_mismatch = manifest.clone();
+        engine_mismatch.engine_identity.engine_id = "other-engine".into();
+        assert!(
+            validate_evaluation_boundary(&candidate, None, &engine_mismatch, &protocol).is_err()
+        );
+        let mut registry = ResearchRegistry::default();
+        let registration = registry
+            .register_family(ResearchFamilyDraft {
+                family_id,
+                user_id: user,
+                root_candidate_hash: candidate_hash.clone(),
+                parent_family_id: None,
+                trials: vec![
+                    ResearchTrialDraft {
+                        trial_id,
+                        candidate_hash: candidate_hash.clone(),
+                        parameter_set_hash: "b".repeat(64),
+                        target: protocol.target,
+                        market_context: context.clone(),
+                        point_in_time_universe_id: "universe-1".into(),
+                        observation_range: ObservationRange {
+                            start_time_ms: 1,
+                            end_time_ms: 20,
+                        },
+                        evaluation_protocol_hash: protocol.protocol_hash.clone(),
+                        derivation_hash: None,
+                    },
+                    ResearchTrialDraft {
+                        trial_id: sibling_id,
+                        candidate_hash: candidate_hash.clone(),
+                        parameter_set_hash: "d".repeat(64),
+                        target: protocol.target,
+                        market_context: context.clone(),
+                        point_in_time_universe_id: "universe-1".into(),
+                        observation_range: ObservationRange {
+                            start_time_ms: 1,
+                            end_time_ms: 20,
+                        },
+                        evaluation_protocol_hash: "e".repeat(64),
+                        derivation_hash: None,
+                    },
+                ],
+            })
+            .unwrap();
+        let lineage = FactorLineageView {
+            lineage: registry.lineage(user, trial_id).unwrap(),
+            trials: registration.trials.iter().map(initial_trial).collect(),
+            registrations: registration.trials.clone(),
+            protocols: vec![protocol.clone()],
+        };
+        let report = FactorEvaluationReport::freeze(FactorEvaluationReport {
+            schema_version: adaq_factor_research::FACTOR_RESEARCH_SCHEMA_VERSION.into(),
+            report_id: Uuid::new_v4(),
+            protocol_hash: protocol.protocol_hash.clone(),
+            factor_dataset_id: "dataset-1".into(),
+            output_name: "momentum".into(),
+            scope: protocol.scope,
+            target: protocol.target,
+            market_data_snapshot_id: protocol.market_data_snapshot_id.clone(),
+            point_in_time_universe_id: protocol.point_in_time_universe_id.clone(),
+            market_context: context,
+            evidence_state: protocol.evidence_state(),
+            metrics: vec![adaq_factor_research::MetricRecord {
+                fold_id: "fold-1".into(),
+                variant: "raw".into(),
+                horizon_bars: 1,
+                output_name: "momentum".into(),
+                lens: FactorLens::Temporal,
+                metric: MetricId::Ic,
+                observation: MetricObservation::available(0.5, 10).unwrap(),
+            }],
+            target_unavailable: Vec::new(),
+            regime_evidence: Vec::new(),
+            input_identities: vec!["input".into()],
+            report_hash: String::new(),
+        })
+        .unwrap();
+        let transaction = database.unchecked_transaction().unwrap();
+        complete_evaluation_trial(
+            &transaction,
+            "alice",
+            &protocol,
+            &report,
+            &lineage,
+            &candidate_hash,
+            Some(MetricObservation::available(0.5, 10).unwrap()),
+            Some(MetricObservation::available(0.01, 10).unwrap()),
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+
+        let states = database
+            .prepare(
+                "SELECT trial_id, trial_json FROM factor_research_trials
+                 WHERE family_id = ?1 ORDER BY trial_id",
+            )
+            .unwrap()
+            .query_map([family_id.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(states.len(), 2);
+        let current: ResearchTrial = states
+            .iter()
+            .find(|(id, _)| id == &trial_id.to_string())
+            .map(|(_, json)| serde_json::from_str(json).unwrap())
+            .unwrap();
+        let sibling: ResearchTrial = states
+            .iter()
+            .find(|(id, _)| id == &sibling_id.to_string())
+            .map(|(_, json)| serde_json::from_str(json).unwrap())
+            .unwrap();
+        assert_eq!(current.status, ResearchTrialStatus::Completed);
+        assert_eq!(
+            current.report_hash.as_deref(),
+            Some(report.report_hash.as_str())
+        );
+        assert_eq!(
+            current.p_value.as_ref().and_then(MetricObservation::value),
+            Some(0.01)
+        );
+        assert_eq!(
+            current
+                .holm_adjusted
+                .as_ref()
+                .and_then(MetricObservation::value),
+            Some(0.02)
+        );
+        assert_eq!(sibling.status, ResearchTrialStatus::Registered);
+        assert_eq!(
+            sibling
+                .holm_adjusted
+                .as_ref()
+                .and_then(MetricObservation::value),
+            Some(1.0)
+        );
+        assert_eq!(current.related_trial_ids, vec![sibling_id]);
+        assert_eq!(sibling.related_trial_ids, vec![trial_id]);
     }
 
     #[test]

@@ -452,3 +452,111 @@ test("blocks raw materialization without context and inspects completed Dataset 
 
 	await unmount(mounted.root, mounted.container);
 });
+
+test("starts evaluation from Host-owned Candidate and Dataset selections", async () => {
+	const candidateHash = "c".repeat(64);
+	const context = {
+		contextRevision: 2,
+		contextHash: "h".repeat(64),
+		market: "crypto",
+		venue: "okx",
+		rangeStartMs: 1,
+		rangeEndMs: 20,
+		snapshotId: "snapshot-1",
+		universeId: "universe-1",
+		evidence: [],
+		featureDataset: {
+			datasetId: "feature-1",
+			requestHash: "r".repeat(64),
+			featurePlanHash: "f".repeat(64),
+			contentSha256: "d".repeat(64),
+			outputNames: ["momentum"],
+		},
+	};
+	const candidate: FactorCandidateView = {
+		candidate: {
+			candidateHash,
+			scope: "time-series",
+			outputs: [{ name: "momentum" }],
+		},
+		presentation: { name: "Momentum" },
+		lockedBy: [],
+		createdAtMs: 1,
+		predecessor: {
+			...context,
+			userId: "user-1",
+			evidence: [],
+			featureDataset: context.featureDataset,
+		},
+	};
+	const dataset: FactorDatasetView = {
+		manifest: {
+			datasetId: "dataset-1",
+			candidateHash,
+			scope: "time-series",
+			featureDatasetId: "feature-1",
+			featurePlanHash: "f".repeat(64),
+			marketDataSnapshotId: "snapshot-1",
+			pointInTimeUniverseId: "universe-1",
+			outputNames: ["momentum"],
+			observationCount: 10,
+		},
+		byteSize: 128,
+		lockedBy: [],
+		createdAtMs: 1,
+	};
+	const startEvaluationFromContext = jest.fn(async () => ({}) as FactorAttemptView);
+	const adapter = {
+		...makeAdapter(),
+		listCandidates: async () => page([candidate]),
+		listDatasets: async () => page([dataset]),
+		listReports: async () => page([]),
+		metricCatalog: async () => ({ definitions: [] }),
+		startEvaluationFromContext,
+	} as unknown as FactorAdapter;
+	const invokeMock = jest.requireMock("@tauri-apps/api/core").invoke as jest.Mock;
+	invokeMock.mockImplementation(async (command: string) =>
+		command === "research_context_get" ? context : null,
+	);
+	const mounted = mount(adapter);
+
+	await act(async () => {
+		mounted.root.render(
+			<QueryClientProvider client={mounted.queryClient}>
+				<FactorsPage adapter={mounted.adapter} />
+			</QueryClientProvider>,
+		);
+	});
+	await settle();
+
+	const evaluationsTab = Array.from(
+		mounted.container.querySelectorAll('[role="tab"]'),
+	).find((tab) => tab.textContent === i18n.t("factors.tabs.evaluations"));
+	await act(async () => {
+		(evaluationsTab as HTMLElement).click();
+	});
+	await settle();
+
+	expect(mounted.container.textContent).toContain(candidateHash);
+	expect(mounted.container.textContent).toContain("dataset-1");
+	const startButton = Array.from(mounted.container.querySelectorAll("button")).find(
+		(button) => button.textContent === i18n.t("factors.evaluations.start"),
+	);
+	expect(startButton).toBeTruthy();
+	await act(async () => {
+		(startButton as HTMLElement).click();
+	});
+	await settle();
+
+	expect(startEvaluationFromContext).toHaveBeenCalledWith(
+		"user-1",
+		candidateHash,
+		"dataset-1",
+		"momentum",
+	);
+	expect(mounted.container.textContent).toContain(
+		i18n.t("factors.evaluations.hostOwnsEvidence"),
+	);
+
+	await unmount(mounted.root, mounted.container);
+});

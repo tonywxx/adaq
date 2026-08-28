@@ -25,6 +25,12 @@ test("Factor adapter keeps User scope and immutable command payloads explicit", 
 	await adapter.datasetRows("user-1", "dataset-1", 0, 50, "BTC");
 	await adapter.freezeEvaluationProtocol("user-1", { protocolId: "draft-1" });
 	await adapter.startMaterializationFromContext("user-1", "candidate-hash", 7);
+	await adapter.startEvaluationFromContext(
+		"user-1",
+		"candidate-hash",
+		"dataset-id",
+		"momentum-score",
+	);
 
 	expect(calls).toEqual([
 		{
@@ -89,6 +95,19 @@ test("Factor adapter keeps User scope and immutable command payloads explicit", 
 					operationId: expect.any(String),
 					candidateHash: "candidate-hash",
 					seed: 7,
+				},
+			},
+		},
+		{
+			command: "factor_evaluation_start_from_context",
+			args: {
+				request: {
+					userId: "user-1",
+					operationId: expect.stringMatching(/^factor-evaluation:/),
+					candidateHash: "candidate-hash",
+					datasetId: "dataset-id",
+					outputName: "momentum-score",
+					seed: 0,
 				},
 			},
 		},

@@ -29,8 +29,9 @@ use adaq_component_tooling::{
 #[cfg(feature = "deferred-equity")]
 use adaq_data_core::a_share::AshareClient;
 use adaq_data_core::{
-    BarInterval, OhlcvBar, OkxClient,
+    BarGap, BarInterval, OhlcvBar, OkxClient,
     market::{Venue, VenueKind},
+    next_bar_open_time_ms,
 };
 use adaq_data_pipeline::{
     CancellationToken, DataPipeline, DataQualityReport, DataQualityState,
@@ -38,7 +39,11 @@ use adaq_data_pipeline::{
 };
 #[cfg(feature = "deferred-equity")]
 use adaq_data_pipeline::{a_share::AshareDataPath, us_equity::UsEquityDataPath};
-use adaq_factor_research::ResearchEvidenceContext;
+use adaq_factor_research::{
+    CorporateActionEvidence, EconomicAssumptions, EvaluationWindow, FactorEvaluationProtocol,
+    FactorEvaluationProtocolDraft, FactorLens, FactorMarketSeries, FactorOrientation, FactorTarget,
+    ResearchEvidenceContext,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -51,7 +56,8 @@ use crate::{
     dataset_generation::{DatasetGeneration, GenerationSource},
     factor_research::{
         FactorAttemptView, FactorCandidatePredecessor, FactorCandidatePublishRequest,
-        FactorCandidateView, FactorEvidenceRequest, FactorMaterializationContextBinding,
+        FactorCandidateView, FactorEvaluationContextStartRequest, FactorEvaluationStartRequest,
+        FactorEvidenceRequest, FactorMaterializationContextBinding,
         FactorMaterializationContextStartRequest, FactorMaterializationStartRequest,
         FactorResearch, FactorResearchSource, user_uuid,
     },
@@ -1038,6 +1044,305 @@ impl LocalResearchState {
             &attempt.attempt_id,
         )?;
         Ok(attempt)
+    }
+
+    pub(crate) fn start_factor_evaluation_from_context(
+        &self,
+        request: FactorEvaluationContextStartRequest,
+    ) -> Result<FactorAttemptView, String> {
+        validate_user(&request.user_id)?;
+        if request.operation_id.trim().is_empty()
+            || request.candidate_hash.trim().is_empty()
+            || request.dataset_id.trim().is_empty()
+            || request.output_name.trim().is_empty()
+        {
+            return Err("factor-context-required".into());
+        }
+        let current_context = self
+            .context_for_user(&request.user_id)?
+            .ok_or_else(|| "factor-context-required".to_owned())?;
+        let context_feature_dataset = current_context
+            .draft
+            .feature_dataset
+            .as_ref()
+            .ok_or_else(|| "factor-context-feature-dataset-required".to_owned())?;
+        let dataset = self.factor.get_dataset(FactorEvidenceRequest {
+            user_id: request.user_id.clone(),
+            evidence_id: request.dataset_id.clone(),
+        })?;
+        let manifest = dataset.manifest.clone();
+        if manifest.feature_dataset_id != context_feature_dataset.dataset_id {
+            return Err("factor-context-mismatch".into());
+        }
+        let projection =
+            self.establish_factor_context(&request.user_id, &context_feature_dataset.dataset_id)?;
+        let candidate = self.factor.get_candidate(FactorEvidenceRequest {
+            user_id: request.user_id.clone(),
+            evidence_id: request.candidate_hash.clone(),
+        })?;
+        let expected_predecessor = FactorCandidatePredecessor::from_projection(
+            request.user_id.clone(),
+            projection.clone(),
+        )?;
+        if candidate.predecessor.as_ref() != Some(&expected_predecessor) {
+            return Err(if candidate.predecessor.is_none() {
+                "factor-context-candidate-predecessor-missing".into()
+            } else {
+                "factor-context-mismatch".into()
+            });
+        }
+        if manifest.candidate_hash != request.candidate_hash
+            || manifest.scope != candidate.candidate.scope
+            || !candidate
+                .candidate
+                .outputs
+                .iter()
+                .any(|output| output.name == request.output_name)
+            || !manifest
+                .output_names
+                .iter()
+                .any(|output| output == &request.output_name)
+            || manifest.feature_plan_hash != context_feature_dataset.feature_plan_hash
+            || manifest.market_data_snapshot_id != projection.snapshot_id
+            || manifest.point_in_time_universe_id
+                != projection.universe_id.clone().unwrap_or_default()
+            || manifest.market_context.asset_class != projection.market
+            || manifest.market_context.venue != projection.venue
+        {
+            return Err("factor-context-mismatch".into());
+        }
+        let range = manifest
+            .observation_range
+            .clone()
+            .ok_or_else(|| "factor-context-range-mismatch".to_owned())?;
+        if range.start_time_ms != projection.range_start_ms
+            || range.end_time_ms != projection.range_end_ms
+            || manifest.market_context.point_in_time_universe_id
+                != projection.universe_id.clone().unwrap_or_default()
+        {
+            return Err("factor-context-range-mismatch".into());
+        }
+        let (snapshot, _) = self
+            .snapshots
+            .snapshot_for_user(&request.user_id, &projection.snapshot_id)
+            .map_err(|_| "factor-context-snapshot-inaccessible".to_owned())?;
+        let universe_id = projection
+            .universe_id
+            .clone()
+            .ok_or_else(|| "factor-context-universe-inaccessible".to_owned())?;
+        let universe = self
+            .snapshots
+            .universe_snapshot_for_user(&request.user_id, &universe_id)
+            .map_err(|_| "factor-context-universe-inaccessible".to_owned())?;
+        let mut point_in_time_universe = universe
+            .universe
+            .instruments
+            .iter()
+            .map(|instrument| format!("{}:{}", instrument.venue.id, instrument.code))
+            .collect::<Vec<_>>();
+        point_in_time_universe.sort_unstable();
+        point_in_time_universe.dedup();
+        if point_in_time_universe.is_empty() {
+            return Err("factor-context-universe-incomplete".into());
+        }
+        if manifest.market_context.bar_interval != snapshot.interval.as_str() {
+            return Err("factor-context-interval-mismatch".into());
+        }
+        let midpoint = range
+            .end_time_ms
+            .checked_sub(range.start_time_ms)
+            .and_then(|width| range.start_time_ms.checked_add(width / 2))
+            .ok_or_else(|| "factor-context-range-mismatch".to_owned())?;
+        if midpoint <= range.start_time_ms || midpoint >= range.end_time_ms {
+            return Err("factor-context-range-mismatch".into());
+        }
+        let selection = adaq_factor_research::ObservationRange {
+            start_time_ms: range.start_time_ms,
+            end_time_ms: midpoint,
+        };
+        let evaluation = adaq_factor_research::ObservationRange {
+            start_time_ms: midpoint,
+            end_time_ms: range.end_time_ms,
+        };
+        let family_id = user_uuid(&format!(
+            "factor-evaluation-family:{}:{}:{}:{}:{}",
+            request.user_id,
+            request.candidate_hash,
+            request.dataset_id,
+            request.output_name,
+            request.seed
+        ));
+        let trial_id = user_uuid(&format!(
+            "factor-evaluation-trial:{}:{}:{}:{}:{}",
+            request.user_id,
+            request.candidate_hash,
+            request.dataset_id,
+            request.output_name,
+            request.seed
+        ));
+        let protocol = FactorEvaluationProtocol::freeze(FactorEvaluationProtocolDraft {
+            protocol_id: user_uuid(&format!(
+                "factor-evaluation-protocol:{}:{}:{}:{}:{}",
+                request.user_id,
+                request.candidate_hash,
+                request.dataset_id,
+                request.output_name,
+                request.seed
+            )),
+            user_id: user_uuid(&request.user_id),
+            factor_dataset_id: request.dataset_id.clone(),
+            feature_dataset_id: manifest.feature_dataset_id.clone(),
+            feature_plan_hash: manifest.feature_plan_hash.clone(),
+            market_data_snapshot_id: manifest.market_data_snapshot_id.clone(),
+            point_in_time_universe_id: universe_id.clone(),
+            point_in_time_universe,
+            output_name: request.output_name,
+            scope: candidate.candidate.scope,
+            target: FactorTarget::FutureCloseReturn,
+            horizon_bars: vec![1],
+            market_context: manifest.market_context.clone(),
+            engine_identity: manifest.engine_identity.clone(),
+            orientation: FactorOrientation::Positive,
+            windows: vec![EvaluationWindow {
+                fold_id: "host-selection-evaluation-1".into(),
+                selection: selection.clone(),
+                evaluation,
+                training: Some(selection.clone()),
+                fitting: Some(selection.clone()),
+                normalization: Some(selection.clone()),
+                target_construction: Some(selection),
+            }],
+            purge_bars: 0,
+            embargo_bars: 0,
+            lenses: FactorLens::required(candidate.candidate.scope).to_vec(),
+            nuisance_feature_names: Vec::new(),
+            regime: None,
+            economic: EconomicAssumptions {
+                rebalance_every_bars: 1,
+                fee_bps: 0.0,
+                slippage_bps: 0.0,
+                long_short: true,
+            },
+            family_id,
+            trial_id,
+            seed: request.seed,
+        })
+        .map_err(string)?;
+        let market_series =
+            self.factor_market_series_for_context(&request.user_id, &protocol, &universe)?;
+        let frozen = self.freeze_research_context(
+            &request.user_id,
+            request.operation_id.clone(),
+            adaq_factor_research::ResearchStage::Factors,
+        )?;
+        let attempt = self
+            .factor
+            .start_evaluation_host_owned(FactorEvaluationStartRequest {
+                user_id: request.user_id.clone(),
+                protocol,
+                dataset: None,
+                market_series,
+                feature_evidence: None,
+            })?;
+        self.record_research_attempt_binding(
+            &request.user_id,
+            &request.operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+            &attempt.attempt_id,
+        )?;
+        let _ = frozen;
+        Ok(attempt)
+    }
+
+    pub(crate) fn validate_factor_evaluation_inputs_from_host(
+        &self,
+        request: &FactorEvaluationStartRequest,
+    ) -> Result<(), String> {
+        if request.feature_evidence.is_some() {
+            return Err("factor-context-feature-evidence-unavailable".into());
+        }
+        let universe = self
+            .snapshots
+            .universe_snapshot_for_user(
+                &request.user_id,
+                &request.protocol.point_in_time_universe_id,
+            )
+            .map_err(|_| "factor-context-universe-inaccessible".to_owned())?;
+        let expected =
+            self.factor_market_series_for_context(&request.user_id, &request.protocol, &universe)?;
+        if expected != request.market_series {
+            return Err("factor-context-market-evidence-mismatch".into());
+        }
+        Ok(())
+    }
+
+    fn factor_market_series_for_context(
+        &self,
+        user_id: &str,
+        protocol: &FactorEvaluationProtocol,
+        universe: &MarketDataUniverseSnapshot,
+    ) -> Result<Vec<FactorMarketSeries>, String> {
+        if universe.universe.evidence_state == "unknown" {
+            return Err("factor-context-universe-incomplete".into());
+        }
+        universe
+            .components
+            .iter()
+            .map(|component| {
+                let instrument = &component.dataset.instrument;
+                if instrument.venue != universe.venue
+                    || !universe.universe.instruments.contains(instrument)
+                {
+                    return Err("factor-context-universe-incomplete".into());
+                }
+                let (snapshot, bars) = self
+                    .snapshots
+                    .snapshot_for_user(user_id, &component.snapshot_id)
+                    .map_err(|_| "factor-context-snapshot-inaccessible".to_owned())?;
+                if snapshot.src != instrument.venue.id
+                    || snapshot.code != instrument.code
+                    || snapshot.interval != universe.interval
+                {
+                    return Err("factor-context-market-venue-mismatch".into());
+                }
+                let bars = bars
+                    .into_iter()
+                    .map(|mut bar| {
+                        bar.open_time_ms =
+                            next_bar_open_time_ms(bar.open_time_ms, universe.interval)
+                                .map_err(string)?;
+                        Ok(bar)
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                if bars.is_empty() {
+                    return Err("factor-context-market-venue-unavailable".into());
+                }
+                let gaps = snapshot
+                    .gaps
+                    .into_iter()
+                    .map(|gap| BarGap {
+                        start_time_ms: gap.start_time_ms,
+                        end_time_ms: gap.end_time_ms,
+                    })
+                    .collect();
+                let corporate_action_evidence = match universe.venue.kind {
+                    VenueKind::CryptoSpot => CorporateActionEvidence::Verified,
+                    VenueKind::ChinaAShareEquity | VenueKind::UsEquity => {
+                        CorporateActionEvidence::Unavailable {
+                            reason: "Host corporate-action evidence is not available".into(),
+                        }
+                    }
+                };
+                Ok(FactorMarketSeries {
+                    instrument_id: format!("{}:{}", instrument.venue.id, instrument.code),
+                    snapshot_id: protocol.market_data_snapshot_id.clone(),
+                    market_context: protocol.market_context.clone(),
+                    bars,
+                    gaps,
+                    corporate_action_evidence,
+                })
+            })
+            .collect()
     }
 
     fn validate_factor_dataset(&self, user_id: &str, dataset_id: &str) -> Result<(), String> {

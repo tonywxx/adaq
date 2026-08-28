@@ -22,11 +22,10 @@ use adaq_factor_research::{
     FactorMarketContext, FactorMarketSeries, FactorObservationValue, FactorOrientation,
     FactorOutput, FactorParameter, FactorParameterType, FactorParameterValue,
     FactorPresentationMetadata, FactorPromotionDecision, FactorScope, FactorTarget,
-    GridSearchFamilyDraft, GridSearchParameter, GridSearchPlan, MetricId, MetricObservation,
-    PromotionDecisionDraft, PromotionDecisionState, PromotionPolicy, PromotionProtocol,
-    PromotionProtocolDraft, PythonFactorBinding, PythonFactorMode, PythonFactorResourcePolicy,
-    PythonRepeatabilityReport, ResearchEngineProvenance, ResearchRegistry, ResearchTrial,
-    ResearchTrialStatus,
+    GridSearchFamilyDraft, GridSearchParameter, GridSearchPlan, PromotionDecisionDraft,
+    PromotionDecisionState, PromotionPolicy, PromotionProtocol, PromotionProtocolDraft,
+    PythonFactorBinding, PythonFactorMode, PythonFactorResourcePolicy, PythonRepeatabilityReport,
+    ResearchEngineProvenance, ResearchRegistry, ResearchTrial, ResearchTrialStatus,
 };
 use adaq_feature_engine::{
     DefinitionDraft, FeatureDefinition, FeatureEngine, FeatureEngineIdentity,
@@ -80,7 +79,7 @@ use crate::auth::AuthState;
 use crate::factor_research::{
     FactorDatasetInput, FactorDecisionSaveRequest, FactorEvaluationStartRequest,
     FactorGridFamilyRegisterRequest, FactorPolicySaveRequest, FactorTrialUpdateRequest,
-    PythonHostAttemptEvidence, PythonHostEvidence,
+    PythonHostAttemptEvidence, PythonHostEvidence, factor_trial_statistics,
 };
 use crate::{
     features::{FeatureAttemptRequest, FeatureMaterializationStartRequest},
@@ -1727,52 +1726,6 @@ fn factor_market_context(universe_id: &str) -> FactorMarketContext {
     }
 }
 
-fn factor_trial_statistics(
-    report: &adaq_factor_research::FactorEvaluationReport,
-) -> Result<(Option<MetricObservation>, Option<MetricObservation>), PythonResearchError> {
-    let observations = report
-        .metrics
-        .iter()
-        .filter(|metric| metric.metric == MetricId::Ic)
-        .filter_map(|metric| {
-            metric.observation.value().map(|value| {
-                let sample_count = match &metric.observation {
-                    MetricObservation::Available { sample_count, .. }
-                    | MetricObservation::Unavailable { sample_count, .. } => *sample_count,
-                };
-                (value, sample_count)
-            })
-        })
-        .collect::<Vec<_>>();
-    if observations.is_empty() {
-        return Ok((None, None));
-    }
-    let sample_count = observations
-        .iter()
-        .map(|(_, sample_count)| *sample_count)
-        .sum::<u64>();
-    let raw = observations.iter().map(|(value, _)| *value).sum::<f64>() / observations.len() as f64;
-    let raw_statistic = MetricObservation::available(raw, sample_count)
-        .map_err(|error| PythonResearchError(error.to_string()))?;
-    let p_value = (sample_count > 2).then(|| {
-        let z = raw.abs() * ((sample_count - 2) as f64 / (1.0 - raw * raw).max(1e-12)).sqrt();
-        let tail = normal_upper_tail(z);
-        MetricObservation::available((2.0 * tail).clamp(0.0, 1.0), sample_count)
-            .expect("normal approximation is finite")
-    });
-    Ok((Some(raw_statistic), p_value))
-}
-
-fn normal_upper_tail(value: f64) -> f64 {
-    let value = value.abs();
-    let t = 1.0 / (1.0 + 0.2316419 * value);
-    let density = (-0.5 * value * value).exp() * 0.3989422804014327;
-    density
-        * t
-        * (0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
-}
-
 fn factor_repeatability_reports(
     first_outputs: &BTreeMap<u32, Vec<MomentumOutputRow>>,
     replay_outputs: &BTreeMap<u32, Vec<MomentumOutputRow>>,
@@ -2488,7 +2441,8 @@ fn run_factor_evidence(
                 evidence_id: report_hash.clone(),
             })
             .map_err(PythonResearchError)?;
-        let (raw_statistic, p_value) = factor_trial_statistics(&report.report)?;
+        let (raw_statistic, p_value) =
+            factor_trial_statistics(&report.report).map_err(PythonResearchError)?;
         datasets.insert(identity.trial_id, (dataset_id, evaluation));
         reports.insert(identity.trial_id, report_hash.clone());
         local_state

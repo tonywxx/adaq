@@ -777,6 +777,7 @@ async fn factor_evaluation_start(
             &request.protocol.market_context.venue,
             &request.protocol.market_context.point_in_time_universe_id,
         )?;
+        state.validate_factor_evaluation_inputs_from_host(&request)?;
         let attempt = state.factor.start_evaluation(request)?;
         state.record_research_attempt_binding(
             &user_id,
@@ -785,6 +786,22 @@ async fn factor_evaluation_start(
             &attempt.attempt_id,
         )?;
         Ok(attempt)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn factor_evaluation_start_from_context(
+    mut request: factor_research::FactorEvaluationContextStartRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<factor_research::FactorAttemptView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<LocalResearchState>>()
+            .start_factor_evaluation_from_context(request)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -4406,6 +4423,7 @@ pub fn run() {
             factor_materialization_start_from_context,
             factor_materialization_protocol_freeze,
             factor_evaluation_start,
+            factor_evaluation_start_from_context,
             factor_evaluation_protocol_freeze,
             factor_attempt_list,
             factor_attempt_get,

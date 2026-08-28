@@ -190,6 +190,25 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 					}) as Promise<FactorAttemptView>,
 			);
 		},
+		startEvaluationFromContext: (
+			userId: string,
+			candidateHash: string,
+			datasetId: string,
+			outputName: string,
+			seed = 0,
+		) => {
+			const operationId = `factor-evaluation:${crypto.randomUUID()}`;
+			return invoke("factor_evaluation_start_from_context", {
+				request: {
+					userId,
+					operationId,
+					candidateHash,
+					datasetId,
+					outputName,
+					seed,
+				},
+			}) as Promise<FactorAttemptView>;
+		},
 		freezeEvaluationProtocol: (userId: string, draft: FactorJson) =>
 			invoke("factor_evaluation_protocol_freeze", {
 				request: { userId, draft },
