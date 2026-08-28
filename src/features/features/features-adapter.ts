@@ -138,10 +138,7 @@ export function createFeaturesAdapter(invoke: FeatureInvoke) {
 			const operationId = `feature-materialization:${crypto.randomUUID()}`;
 			await freezeContext(userId, operationId);
 			return invoke("feature_materialization_start", {
-				userId,
-				operationId,
-				request,
-				plan,
+				payload: { userId, operationId, request, plan },
 			}) as Promise<MaterializationAttempt>;
 		},
 		async listMaterializationAttempts(userId: string) {

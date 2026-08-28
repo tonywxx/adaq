@@ -27,10 +27,12 @@ test("Feature materialization sends the native payload at the command boundary",
 	expect(calls[1]).toEqual({
 		command: "feature_materialization_start",
 		args: {
-			userId: "user-1",
-			operationId: expect.any(String),
-			request,
-			plan,
+			payload: {
+				userId: "user-1",
+				operationId: expect.any(String),
+				request,
+				plan,
+			},
 		},
 	});
 });
