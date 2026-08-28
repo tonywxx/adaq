@@ -51,6 +51,7 @@ const MAX_PAGE_SIZE: u32 = 100;
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_JOB_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES: usize = 16 * 1024;
+const CANCELLATION_REQUESTED_DIAGNOSTIC: &str = "Factor research Attempt cancellation requested";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FactorQueueItem {
@@ -125,6 +126,7 @@ pub(crate) struct FactorAttemptView {
     pub completed_units: u64,
     pub progress_total: u64,
     pub diagnostic: Option<String>,
+    pub failure_code: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -334,6 +336,8 @@ pub(crate) struct FactorPageRequest {
     pub page: u32,
     #[serde(default)]
     pub page_size: Option<u32>,
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1120,6 +1124,7 @@ impl FactorResearch {
     fn execute_grid_family(
         &self,
         user_id: &str,
+        attempt_id: &str,
         request_json: &str,
         cancelled: &AtomicBool,
     ) -> Result<String, String> {
@@ -1196,10 +1201,11 @@ impl FactorResearch {
                 diagnostic: None,
             })
             .collect::<Vec<_>>();
-        let family = store.save_family(&registration.family, &trials)?;
         if cancelled.load(Ordering::Relaxed) {
             return Err("cancelled".into());
         }
+        let family =
+            store.save_family_for_attempt(user_id, attempt_id, &registration.family, &trials)?;
         Ok(family.family.family_id.to_string())
     }
 
@@ -1494,7 +1500,7 @@ impl FactorResearch {
                     self.execute_evaluation(&user_id, &item.attempt_id, &request_json, &cancelled)
                 }
                 "factor-family-grid" => {
-                    self.execute_grid_family(&user_id, &request_json, &cancelled)
+                    self.execute_grid_family(&user_id, &item.attempt_id, &request_json, &cancelled)
                 }
                 _ => Err("unknown Factor research Attempt kind".into()),
             }
@@ -1506,15 +1512,27 @@ impl FactorResearch {
             return QueueRunResult::Retryable("Factor research database unavailable".into());
         };
         let store = ResearchStore::new(&database);
+        let cancellation_requested = store
+            .cancellation_requested(&item.attempt_id, &user_id)
+            .unwrap_or(false);
         match result {
             Ok(result_id) => {
-                if cancelled.load(Ordering::Relaxed) {
+                if cancelled.load(Ordering::Relaxed) || cancellation_requested {
                     let _ = store.cancel_running(&item.attempt_id, &user_id);
                 } else {
-                    let _ = store.complete_attempt(&item.attempt_id, &result_id);
+                    if !store
+                        .complete_attempt(&item.attempt_id, &result_id)
+                        .unwrap_or(false)
+                    {
+                        let _ = store.cancel_running(&item.attempt_id, &user_id);
+                    }
                 }
             }
-            Err(error) if error == "cancelled" || cancelled.load(Ordering::Relaxed) => {
+            Err(error)
+                if error == "cancelled"
+                    || cancelled.load(Ordering::Relaxed)
+                    || cancellation_requested =>
+            {
                 let _ = store.cancel_running(&item.attempt_id, &user_id);
             }
             Err(error) => {
@@ -1553,11 +1571,11 @@ impl FactorResearch {
                     );
                 }
             };
-            let attempt_id = Uuid::parse_str(attempt_id)
+            let component_attempt_id = Uuid::parse_str(attempt_id)
                 .map_err(|_| "Factor Candidate Build Attempt identity is invalid".to_owned())?;
             let worker =
                 adaq_factor_research::spawn_controlled_candidate_build(CandidateBuildRequest {
-                    attempt_id,
+                    attempt_id: component_attempt_id,
                     user_id: user_uuid(user_id),
                     project_root: build.project_root,
                     source_sha256: build.source_sha256,
@@ -1597,14 +1615,20 @@ impl FactorResearch {
             })
             .map_err(string)?;
             let database = self.inner.source.database()?;
-            return ResearchStore::new(&database).save_candidate(
+            return ResearchStore::new(&database).save_candidate_for_attempt(
                 user_id,
+                attempt_id,
                 &candidate,
                 &job.presentation,
             );
         }
         let database = self.database()?;
-        ResearchStore::new(&database).save_candidate(user_id, &job.candidate, &job.presentation)
+        ResearchStore::new(&database).save_candidate_for_attempt(
+            user_id,
+            attempt_id,
+            &job.candidate,
+            &job.presentation,
+        )
     }
 
     fn execute_materialization(
@@ -2199,6 +2223,7 @@ impl<'a> ResearchStore<'a> {
                 completed_units: 0,
                 progress_total: 0,
                 diagnostic: None,
+                failure_code: None,
                 created_at_ms: now,
                 updated_at_ms: now,
             },
@@ -2259,18 +2284,26 @@ impl<'a> ResearchStore<'a> {
             .execute(
                 "UPDATE factor_research_attempts
                     SET status = 'cancelled', diagnostic = ?2, updated_at_ms = ?3
-                  WHERE user_id = ?1 AND status IN ('pending', 'running')",
+                  WHERE user_id = ?1 AND status = 'pending'",
                 params![
                     user_id,
                     "Factor research Attempt cancelled by explicit User reset",
                     now_ms()
                 ],
             )
+            .map_err(string)?;
+        self.database
+            .execute(
+                "UPDATE factor_research_attempts
+                    SET diagnostic = ?2, updated_at_ms = ?3
+                  WHERE user_id = ?1 AND status = 'running'",
+                params![user_id, CANCELLATION_REQUESTED_DIAGNOSTIC, now_ms()],
+            )
             .map(|_| ())
             .map_err(string)
     }
 
-    fn complete_attempt(&self, attempt_id: &str, result_id: &str) -> Result<(), String> {
+    fn complete_attempt(&self, attempt_id: &str, result_id: &str) -> Result<bool, String> {
         self.database
             .execute(
                 "UPDATE factor_research_attempts
@@ -2278,10 +2311,26 @@ impl<'a> ResearchStore<'a> {
                         completed_units = CASE WHEN progress_total = 0 THEN 1 ELSE progress_total END,
                         progress_total = CASE WHEN progress_total = 0 THEN 1 ELSE progress_total END,
                         updated_at_ms = ?3
-                  WHERE attempt_id = ?1 AND status = 'running'",
-                params![attempt_id, result_id, now_ms()],
+                  WHERE attempt_id = ?1 AND status = 'running'
+                    AND (diagnostic IS NULL OR diagnostic != ?4)",
+                params![attempt_id, result_id, now_ms(), CANCELLATION_REQUESTED_DIAGNOSTIC],
             )
-            .map(|_| ())
+            .map(|changed| changed == 1)
+            .map_err(string)
+    }
+
+    fn cancellation_requested(&self, attempt_id: &str, user_id: &str) -> Result<bool, String> {
+        self.database
+            .query_row(
+                "SELECT diagnostic FROM factor_research_attempts
+                  WHERE attempt_id = ?1 AND user_id = ?2",
+                params![attempt_id, user_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(|diagnostic| {
+                diagnostic.flatten().as_deref() == Some(CANCELLATION_REQUESTED_DIAGNOSTIC)
+            })
             .map_err(string)
     }
 
@@ -2326,7 +2375,8 @@ impl<'a> ResearchStore<'a> {
         let status = parse_status(&status)?;
         match status {
             AttemptStatus::Pending => {
-                self.database
+                let changed = self
+                    .database
                     .execute(
                         "UPDATE factor_research_attempts
                             SET status = 'cancelled', diagnostic = ?3, updated_at_ms = ?4
@@ -2339,9 +2389,33 @@ impl<'a> ResearchStore<'a> {
                         ],
                     )
                     .map_err(string)?;
+                if changed != 1 {
+                    return Err("Factor research Attempt cannot be cancelled".into());
+                }
                 Ok(AttemptStatus::Cancelled)
             }
-            AttemptStatus::Running => Ok(AttemptStatus::Running),
+            AttemptStatus::Running => {
+                let changed = self
+                    .database
+                    .execute(
+                        "UPDATE factor_research_attempts
+                            SET diagnostic = ?3, updated_at_ms = ?4
+                          WHERE attempt_id = ?1 AND user_id = ?2 AND status = 'running'",
+                        params![
+                            attempt_id,
+                            user_id,
+                            CANCELLATION_REQUESTED_DIAGNOSTIC,
+                            now_ms()
+                        ],
+                    )
+                    .map_err(string)?;
+                if changed == 1 || self.cancellation_requested(attempt_id, user_id)? {
+                    Ok(AttemptStatus::Running)
+                } else {
+                    Err("Factor research Attempt cannot be cancelled".into())
+                }
+            }
+            AttemptStatus::Cancelled => Ok(AttemptStatus::Cancelled),
             _ => Err("Factor research Attempt cannot be cancelled".into()),
         }
     }
@@ -2425,6 +2499,7 @@ impl<'a> ResearchStore<'a> {
                 completed_units: 0,
                 progress_total: 0,
                 diagnostic: None,
+                failure_code: None,
                 created_at_ms: now,
                 updated_at_ms: now,
             },
@@ -2458,8 +2533,9 @@ impl<'a> ResearchStore<'a> {
         let total = self
             .database
             .query_row(
-                "SELECT COUNT(*) FROM factor_research_attempts WHERE user_id = ?1",
-                [&request.user_id],
+                "SELECT COUNT(*) FROM factor_research_attempts
+                  WHERE user_id = ?1 AND (?2 IS NULL OR kind = ?2)",
+                params![request.user_id, request.kind],
                 |row| row.get::<_, i64>(0),
             )
             .map_err(string)? as u64;
@@ -2470,13 +2546,13 @@ impl<'a> ResearchStore<'a> {
                         source_attempt_id, result_id, completed_units, progress_total,
                         diagnostic, created_at_ms, updated_at_ms
                    FROM factor_research_attempts
-                  WHERE user_id = ?1
-                  ORDER BY queue_order DESC LIMIT ?2 OFFSET ?3",
+                  WHERE user_id = ?1 AND (?2 IS NULL OR kind = ?2)
+                  ORDER BY queue_order DESC LIMIT ?3 OFFSET ?4",
             )
             .map_err(string)?;
         let items = statement
             .query_map(
-                params![request.user_id, limit as i64, offset as i64],
+                params![request.user_id, request.kind, limit as i64, offset as i64],
                 row_to_attempt,
             )
             .map_err(string)?
@@ -2554,6 +2630,61 @@ impl<'a> ResearchStore<'a> {
         self.save_candidate_inner(user_id, candidate, presentation, None)
     }
 
+    fn save_candidate_for_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+        candidate: &FactorCandidate,
+        presentation: &FactorPresentationMetadata,
+    ) -> Result<String, String> {
+        let (candidate_json, presentation_json, predecessor_json) =
+            candidate_save_payload(user_id, candidate, presentation, None)?;
+        let transaction = self.database.unchecked_transaction().map_err(string)?;
+        let publishable: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM factor_research_attempts
+                  WHERE attempt_id = ?1 AND user_id = ?2 AND kind = 'candidate-build'
+                    AND status = 'running'
+                    AND (diagnostic IS NULL OR diagnostic != ?3)",
+                params![attempt_id, user_id, CANCELLATION_REQUESTED_DIAGNOSTIC],
+                |row| row.get(0),
+            )
+            .map_err(string)?;
+        if publishable != 1 {
+            return Err("cancelled".into());
+        }
+        save_candidate_records(
+            &transaction,
+            user_id,
+            candidate,
+            &candidate_json,
+            &presentation_json,
+            predecessor_json.as_deref(),
+        )?;
+        let changed = transaction
+            .execute(
+                "UPDATE factor_research_attempts
+                    SET status = 'completed', result_id = ?2,
+                        completed_units = 1, progress_total = 1, updated_at_ms = ?3
+                  WHERE attempt_id = ?1 AND user_id = ?4 AND kind = 'candidate-build'
+                    AND status = 'running'
+                    AND (diagnostic IS NULL OR diagnostic != ?5)",
+                params![
+                    attempt_id,
+                    candidate.candidate_hash,
+                    now_ms(),
+                    user_id,
+                    CANCELLATION_REQUESTED_DIAGNOSTIC
+                ],
+            )
+            .map_err(string)?;
+        if changed != 1 {
+            return Err("cancelled".into());
+        }
+        transaction.commit().map_err(string)?;
+        Ok(candidate.candidate_hash.clone())
+    }
+
     fn save_candidate_with_predecessor(
         &self,
         user_id: &str,
@@ -2571,75 +2702,17 @@ impl<'a> ResearchStore<'a> {
         presentation: &FactorPresentationMetadata,
         predecessor: Option<&FactorCandidatePredecessor>,
     ) -> Result<String, String> {
-        candidate.validate().map_err(string)?;
-        presentation.validate().map_err(string)?;
-        if let Some(predecessor) = predecessor {
-            predecessor.validate()?;
-            if predecessor.user_id != user_id {
-                return Err(
-                    "Factor Candidate predecessor User identity differs from the request".into(),
-                );
-            }
-        }
-        let candidate_json =
-            String::from_utf8(candidate.to_json().map_err(string)?).map_err(string)?;
-        let presentation_json = serde_json::to_string(presentation).map_err(string)?;
-        let predecessor_json = predecessor
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(string)?;
+        let (candidate_json, presentation_json, predecessor_json) =
+            candidate_save_payload(user_id, candidate, presentation, predecessor)?;
         let transaction = self.database.unchecked_transaction().map_err(string)?;
-        transaction
-            .execute(
-                "INSERT OR IGNORE INTO factor_candidate_content(candidate_hash, candidate_json, created_at_ms)
-                 VALUES (?1, ?2, ?3)",
-                params![candidate.candidate_hash, candidate_json, now_ms()],
-            )
-            .map_err(string)?;
-        let stored: String = transaction
-            .query_row(
-                "SELECT candidate_json FROM factor_candidate_content WHERE candidate_hash = ?1",
-                [&candidate.candidate_hash],
-                |row| row.get(0),
-            )
-            .map_err(string)?;
-        if stored != candidate_json {
-            return Err("Factor Candidate content hash collision".into());
-        }
-        transaction
-            .execute(
-                "INSERT OR IGNORE INTO factor_candidate_access(user_id, candidate_hash) VALUES (?1, ?2)",
-                params![user_id, candidate.candidate_hash],
-            )
-            .map_err(string)?;
-        transaction
-            .execute(
-                "INSERT INTO factor_candidate_presentations(user_id, candidate_hash, presentation_json)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(user_id, candidate_hash) DO UPDATE SET presentation_json = excluded.presentation_json",
-                params![user_id, candidate.candidate_hash, presentation_json],
-            )
-            .map_err(string)?;
-        if let Some(predecessor_json) = predecessor_json {
-            transaction
-                .execute(
-                    "INSERT OR IGNORE INTO factor_candidate_predecessors(user_id, candidate_hash, predecessor_json)
-                     VALUES (?1, ?2, ?3)",
-                    params![user_id, candidate.candidate_hash, predecessor_json],
-                )
-                .map_err(string)?;
-            let stored: String = transaction
-                .query_row(
-                    "SELECT predecessor_json FROM factor_candidate_predecessors
-                      WHERE user_id = ?1 AND candidate_hash = ?2",
-                    params![user_id, candidate.candidate_hash],
-                    |row| row.get(0),
-                )
-                .map_err(string)?;
-            if stored != predecessor_json {
-                return Err("Factor Candidate predecessor identity collision".into());
-            }
-        }
+        save_candidate_records(
+            &transaction,
+            user_id,
+            candidate,
+            &candidate_json,
+            &presentation_json,
+            predecessor_json.as_deref(),
+        )?;
         transaction.commit().map_err(string)?;
         Ok(candidate.candidate_hash.clone())
     }
@@ -2853,13 +2926,15 @@ impl<'a> ResearchStore<'a> {
                     "UPDATE factor_research_attempts
                         SET status = 'completed', result_id = ?2,
                             completed_units = ?3, progress_total = ?3, updated_at_ms = ?4
-                      WHERE attempt_id = ?1 AND user_id = ?5 AND status = 'running'",
+                      WHERE attempt_id = ?1 AND user_id = ?5 AND status = 'running'
+                        AND (diagnostic IS NULL OR diagnostic != ?6)",
                     params![
                         attempt_id,
                         dataset.manifest.dataset_id,
                         dataset.rows.len() as i64,
                         now_ms(),
-                        user_id
+                        user_id,
+                        CANCELLATION_REQUESTED_DIAGNOSTIC
                     ],
                 )
                 .map_err(string)?;
@@ -2884,8 +2959,9 @@ impl<'a> ResearchStore<'a> {
             .database
             .query_row(
                 "SELECT COUNT(*) FROM factor_research_attempts
-                  WHERE attempt_id = ?1 AND user_id = ?2 AND kind = ?3 AND status = 'running'",
-                params![attempt_id, user_id, kind],
+                  WHERE attempt_id = ?1 AND user_id = ?2 AND kind = ?3 AND status = 'running'
+                    AND (diagnostic IS NULL OR diagnostic != ?4)",
+                params![attempt_id, user_id, kind, CANCELLATION_REQUESTED_DIAGNOSTIC],
                 |row| row.get(0),
             )
             .map_err(string)?;
@@ -3196,8 +3272,15 @@ impl<'a> ResearchStore<'a> {
                     "UPDATE factor_research_attempts
                         SET status = 'completed', result_id = ?2,
                             completed_units = 1, progress_total = 1, updated_at_ms = ?3
-                      WHERE attempt_id = ?1 AND user_id = ?4 AND status = 'running'",
-                    params![attempt_id, report.report_hash, now_ms(), user_id],
+                      WHERE attempt_id = ?1 AND user_id = ?4 AND status = 'running'
+                        AND (diagnostic IS NULL OR diagnostic != ?5)",
+                    params![
+                        attempt_id,
+                        report.report_hash,
+                        now_ms(),
+                        user_id,
+                        CANCELLATION_REQUESTED_DIAGNOSTIC
+                    ],
                 )
                 .map_err(string)?;
             if changed != 1 {
@@ -3287,63 +3370,63 @@ impl<'a> ResearchStore<'a> {
         })
     }
 
+    fn save_family_for_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+        registration: &ResearchFamilyRegistration,
+        trials: &[ResearchTrial],
+    ) -> Result<FactorFamilyView, String> {
+        let transaction = self.database.unchecked_transaction().map_err(string)?;
+        let publishable: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM factor_research_attempts
+                  WHERE attempt_id = ?1 AND user_id = ?2 AND kind = 'factor-family-grid'
+                    AND status = 'running'
+                    AND (diagnostic IS NULL OR diagnostic != ?3)",
+                params![attempt_id, user_id, CANCELLATION_REQUESTED_DIAGNOSTIC],
+                |row| row.get(0),
+            )
+            .map_err(string)?;
+        if publishable != 1 {
+            return Err("cancelled".into());
+        }
+        save_family_records(&transaction, registration, trials)?;
+        let changed = transaction
+            .execute(
+                "UPDATE factor_research_attempts
+                    SET status = 'completed', result_id = ?2,
+                        completed_units = 1, progress_total = 1, updated_at_ms = ?3
+                  WHERE attempt_id = ?1 AND user_id = ?4 AND kind = 'factor-family-grid'
+                    AND status = 'running'
+                    AND (diagnostic IS NULL OR diagnostic != ?5)",
+                params![
+                    attempt_id,
+                    registration.family.family_id.to_string(),
+                    now_ms(),
+                    user_id,
+                    CANCELLATION_REQUESTED_DIAGNOSTIC
+                ],
+            )
+            .map_err(string)?;
+        if changed != 1 {
+            return Err("cancelled".into());
+        }
+        transaction.commit().map_err(string)?;
+        Ok(FactorFamilyView {
+            family: registration.family.clone(),
+            trial_count: registration.trials.len() as u64,
+            lineage_hash: registration.family.lineage_hash.clone(),
+        })
+    }
+
     fn save_family(
         &self,
         registration: &ResearchFamilyRegistration,
         trials: &[ResearchTrial],
     ) -> Result<FactorFamilyView, String> {
-        let family_json = serde_json::to_string(&registration.family).map_err(string)?;
         let transaction = self.database.unchecked_transaction().map_err(string)?;
-        let stored_family: Option<String> = transaction
-            .query_row(
-                "SELECT family_json FROM factor_research_families WHERE family_id = ?1",
-                [registration.family.family_id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(string)?;
-        if stored_family.is_some_and(|existing| existing != family_json) {
-            return Err("Research Family content identity collision".into());
-        }
-        transaction
-            .execute(
-                "INSERT OR IGNORE INTO factor_research_families(family_id, user_id, family_json, created_at_ms)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![registration.family.family_id.to_string(), registration.family.user_id.to_string(), family_json, now_ms()],
-            )
-            .map_err(string)?;
-        for trial in &registration.trials {
-            let json = serde_json::to_string(trial).map_err(string)?;
-            let stored_trial: Option<String> = transaction
-                .query_row(
-                    "SELECT registration_json FROM factor_research_registrations WHERE trial_id = ?1",
-                    [trial.trial_id.to_string()],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(string)?;
-            if stored_trial.is_some_and(|existing| existing != json) {
-                return Err("Research Trial registration content identity collision".into());
-            }
-            transaction
-                .execute(
-                    "INSERT OR IGNORE INTO factor_research_registrations(trial_id, family_id, user_id, registration_json)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![trial.trial_id.to_string(), trial.family_id.to_string(), registration.family.user_id.to_string(), json],
-                )
-                .map_err(string)?;
-        }
-        for trial in trials {
-            let json = serde_json::to_string(trial).map_err(string)?;
-            transaction
-                .execute(
-                    "INSERT INTO factor_research_trials(trial_id, family_id, user_id, trial_json, updated_at_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5)
-                     ON CONFLICT(trial_id) DO UPDATE SET trial_json = excluded.trial_json, updated_at_ms = excluded.updated_at_ms",
-                    params![trial.trial_id.to_string(), trial.family_id.to_string(), registration.family.user_id.to_string(), json, now_ms()],
-                )
-                .map_err(string)?;
-        }
+        save_family_records(&transaction, registration, trials)?;
         transaction.commit().map_err(string)?;
         Ok(FactorFamilyView {
             family: registration.family.clone(),
@@ -4638,32 +4721,290 @@ impl<'a> ResearchStore<'a> {
 fn row_to_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<FactorAttemptView> {
     let completed = row.get::<_, i64>(7)?;
     let total = row.get::<_, i64>(8)?;
+    let kind = row.get::<_, String>(2)?;
+    let status = parse_status(&row.get::<_, String>(4)?).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::other(error)),
+        )
+    })?;
+    let diagnostic = row.get::<_, Option<String>>(9)?;
     Ok(FactorAttemptView {
         attempt_id: row.get(0)?,
         user_id: row.get(1)?,
-        kind: row.get(2)?,
+        kind: kind.clone(),
         request_hash: row.get(3)?,
-        status: parse_status(&row.get::<_, String>(4)?).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                4,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::other(error)),
-            )
-        })?,
+        status,
         source_attempt_id: row.get(5)?,
         result_id: row.get(6)?,
         completed_units: u64::try_from(completed)
             .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(7, completed))?,
         progress_total: u64::try_from(total)
             .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(8, total))?,
-        diagnostic: row.get(9)?,
+        diagnostic: diagnostic.clone(),
+        failure_code: factor_failure_code(&kind, status, diagnostic.as_deref()),
         created_at_ms: row.get(10)?,
         updated_at_ms: row.get(11)?,
     })
 }
 
+fn factor_failure_code(
+    kind: &str,
+    status: AttemptStatus,
+    diagnostic: Option<&str>,
+) -> Option<String> {
+    if status == AttemptStatus::Cancelled {
+        return Some("cancelled".into());
+    }
+    if status != AttemptStatus::Failed {
+        return None;
+    }
+    if let Some(code) = diagnostic
+        .and_then(|value| value.split(':').next())
+        .map(str::trim)
+        .filter(|code| {
+            *code == "research-interrupted"
+                || *code == "reset-required"
+                || code.starts_with("factor-context-")
+        })
+    {
+        return Some(code.into());
+    }
+    let normalized = diagnostic.unwrap_or_default().to_ascii_lowercase();
+    let category = if [
+        "hash mismatch",
+        "hash collision",
+        "identity collision",
+        "integrity",
+        "corrupt",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        "factor-corruption-detected"
+    } else if normalized.contains("cannot be published")
+        || normalized.contains("publication")
+        || normalized.contains("staging")
+    {
+        "factor-publication-failed"
+    } else if [
+        "not found",
+        "not available",
+        "not configured",
+        "missing",
+        "unavailable",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        "factor-missing-input"
+    } else if [
+        "resource",
+        "too large",
+        "timed out",
+        "timeout",
+        "memory",
+        "thread",
+        "limit",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        "factor-resource-failed"
+    } else if [
+        "does not match",
+        "differs from",
+        "not bound",
+        "incompatible",
+        "not present",
+        "requires",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        "factor-compatibility-failed"
+    } else if ["invalid", "validate", "validation", "must be", "empty"]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
+        "factor-validation-failed"
+    } else {
+        match kind {
+            "candidate-build" => "candidate-build-failed",
+            "factor-materialization" => "factor-materialization-failed",
+            "factor-evaluation" => "factor-evaluation-failed",
+            "factor-family-grid" => "factor-family-grid-failed",
+            _ => "factor-research-failed",
+        }
+    };
+    Some(category.into())
+}
+
 fn parse_status(value: &str) -> Result<AttemptStatus, String> {
     serde_json::from_value(serde_json::Value::String(value.into())).map_err(string)
+}
+
+fn candidate_save_payload(
+    user_id: &str,
+    candidate: &FactorCandidate,
+    presentation: &FactorPresentationMetadata,
+    predecessor: Option<&FactorCandidatePredecessor>,
+) -> Result<(String, String, Option<String>), String> {
+    candidate.validate().map_err(string)?;
+    presentation.validate().map_err(string)?;
+    if let Some(predecessor) = predecessor {
+        predecessor.validate()?;
+        if predecessor.user_id != user_id {
+            return Err(
+                "Factor Candidate predecessor User identity differs from the request".into(),
+            );
+        }
+    }
+    let candidate_json = String::from_utf8(candidate.to_json().map_err(string)?).map_err(string)?;
+    let presentation_json = serde_json::to_string(presentation).map_err(string)?;
+    let predecessor_json = predecessor
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(string)?;
+    Ok((candidate_json, presentation_json, predecessor_json))
+}
+
+fn save_candidate_records(
+    transaction: &rusqlite::Transaction<'_>,
+    user_id: &str,
+    candidate: &FactorCandidate,
+    candidate_json: &str,
+    presentation_json: &str,
+    predecessor_json: Option<&str>,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO factor_candidate_content(candidate_hash, candidate_json, created_at_ms)
+             VALUES (?1, ?2, ?3)",
+            params![candidate.candidate_hash, candidate_json, now_ms()],
+        )
+        .map_err(string)?;
+    let stored: String = transaction
+        .query_row(
+            "SELECT candidate_json FROM factor_candidate_content WHERE candidate_hash = ?1",
+            [&candidate.candidate_hash],
+            |row| row.get(0),
+        )
+        .map_err(string)?;
+    if stored != candidate_json {
+        return Err("Factor Candidate content hash collision".into());
+    }
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO factor_candidate_access(user_id, candidate_hash) VALUES (?1, ?2)",
+            params![user_id, candidate.candidate_hash],
+        )
+        .map_err(string)?;
+    transaction
+        .execute(
+            "INSERT INTO factor_candidate_presentations(user_id, candidate_hash, presentation_json)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(user_id, candidate_hash) DO UPDATE SET presentation_json = excluded.presentation_json",
+            params![user_id, candidate.candidate_hash, presentation_json],
+        )
+        .map_err(string)?;
+    if let Some(predecessor_json) = predecessor_json {
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO factor_candidate_predecessors(user_id, candidate_hash, predecessor_json)
+                 VALUES (?1, ?2, ?3)",
+                params![user_id, candidate.candidate_hash, predecessor_json],
+            )
+            .map_err(string)?;
+        let stored: String = transaction
+            .query_row(
+                "SELECT predecessor_json FROM factor_candidate_predecessors
+                  WHERE user_id = ?1 AND candidate_hash = ?2",
+                params![user_id, candidate.candidate_hash],
+                |row| row.get(0),
+            )
+            .map_err(string)?;
+        if stored != predecessor_json {
+            return Err("Factor Candidate predecessor identity collision".into());
+        }
+    }
+    Ok(())
+}
+
+fn save_family_records(
+    transaction: &rusqlite::Transaction<'_>,
+    registration: &ResearchFamilyRegistration,
+    trials: &[ResearchTrial],
+) -> Result<(), String> {
+    let family_json = serde_json::to_string(&registration.family).map_err(string)?;
+    let stored_family: Option<String> = transaction
+        .query_row(
+            "SELECT family_json FROM factor_research_families WHERE family_id = ?1",
+            [registration.family.family_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(string)?;
+    if stored_family.is_some_and(|existing| existing != family_json) {
+        return Err("Research Family content identity collision".into());
+    }
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO factor_research_families(family_id, user_id, family_json, created_at_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                registration.family.family_id.to_string(),
+                registration.family.user_id.to_string(),
+                family_json,
+                now_ms()
+            ],
+        )
+        .map_err(string)?;
+    for trial in &registration.trials {
+        let json = serde_json::to_string(trial).map_err(string)?;
+        let stored_trial: Option<String> = transaction
+            .query_row(
+                "SELECT registration_json FROM factor_research_registrations WHERE trial_id = ?1",
+                [trial.trial_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(string)?;
+        if stored_trial.is_some_and(|existing| existing != json) {
+            return Err("Research Trial registration content identity collision".into());
+        }
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO factor_research_registrations(trial_id, family_id, user_id, registration_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    trial.trial_id.to_string(),
+                    trial.family_id.to_string(),
+                    registration.family.user_id.to_string(),
+                    json
+                ],
+            )
+            .map_err(string)?;
+    }
+    for trial in trials {
+        let json = serde_json::to_string(trial).map_err(string)?;
+        transaction
+            .execute(
+                "INSERT INTO factor_research_trials(trial_id, family_id, user_id, trial_json, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(trial_id) DO UPDATE SET trial_json = excluded.trial_json, updated_at_ms = excluded.updated_at_ms",
+                params![
+                    trial.trial_id.to_string(),
+                    trial.family_id.to_string(),
+                    registration.family.user_id.to_string(),
+                    json,
+                    now_ms()
+                ],
+            )
+            .map_err(string)?;
+    }
+    Ok(())
 }
 
 fn page_params(request: &FactorPageRequest) -> Result<(u32, u32, u64), String> {
@@ -5096,6 +5437,7 @@ mod tests {
                 user_id: "alice".into(),
                 page: 1,
                 page_size: None,
+                kind: None,
             })
             .unwrap_err();
         assert!(error.starts_with("reset-required:"));
@@ -5106,6 +5448,7 @@ mod tests {
                     user_id: "alice".into(),
                     page: 1,
                     page_size: None,
+                    kind: None,
                 })
                 .unwrap()
                 .total,
@@ -5145,6 +5488,14 @@ mod tests {
             "factor-evaluation"
         );
         store.fail_attempt(&first.attempt_id, "failure").unwrap();
+        assert_eq!(
+            store
+                .attempt_for_user("alice", &first.attempt_id)
+                .unwrap()
+                .failure_code
+                .as_deref(),
+            Some("factor-evaluation-failed")
+        );
         let (retry, should_start) = store.retry_attempt("alice", &first.attempt_id).unwrap();
         assert!(should_start);
         assert_eq!(
@@ -5152,15 +5503,175 @@ mod tests {
             Some(first.attempt_id.as_str())
         );
         assert_eq!(store.pending_attempts().unwrap()[0].1, second.attempt_id);
+        store
+            .start_attempt("alice", "factor-materialization", "{\"n\":3}")
+            .unwrap();
         let page = store
             .list_attempts(&FactorPageRequest {
                 user_id: "alice".into(),
                 page: 1,
-                page_size: Some(1),
+                page_size: Some(10),
+                kind: Some("factor-evaluation".into()),
             })
             .unwrap();
         assert_eq!(page.total, 2);
-        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items.len(), 2);
+        assert!(
+            page.items
+                .iter()
+                .all(|item| item.kind == "factor-evaluation")
+        );
+    }
+
+    #[test]
+    fn factor_failure_codes_keep_actionable_categories() {
+        for (diagnostic, expected) in [
+            (
+                "Factor Dataset content hash mismatch",
+                "factor-corruption-detected",
+            ),
+            (
+                "Factor Evaluation Attempt cannot be published",
+                "factor-publication-failed",
+            ),
+            ("Factor Dataset was not found", "factor-missing-input"),
+            ("factor resource limit exceeded", "factor-resource-failed"),
+            (
+                "Factor Dataset is not bound to the exact protocol",
+                "factor-compatibility-failed",
+            ),
+            ("Factor output is invalid", "factor-validation-failed"),
+        ] {
+            assert_eq!(
+                factor_failure_code("factor-evaluation", AttemptStatus::Failed, Some(diagnostic))
+                    .as_deref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn running_cancellation_is_durable_before_publication() {
+        let database = store();
+        let store = ResearchStore::new(&database);
+        let (attempt, _) = store
+            .start_attempt("alice", "factor-materialization", "{\"n\":1}")
+            .unwrap();
+        store.begin_attempt(&attempt.attempt_id).unwrap();
+
+        assert_eq!(
+            store.cancel_attempt("alice", &attempt.attempt_id).unwrap(),
+            AttemptStatus::Running
+        );
+        let requested = store
+            .attempt_for_user("alice", &attempt.attempt_id)
+            .unwrap();
+        assert_eq!(requested.status, AttemptStatus::Running);
+        assert_eq!(
+            requested.diagnostic.as_deref(),
+            Some(CANCELLATION_REQUESTED_DIAGNOSTIC)
+        );
+        assert!(store.retry_attempt("alice", &attempt.attempt_id).is_err());
+        store.cancel_running(&attempt.attempt_id, "alice").unwrap();
+        let cancelled = store
+            .attempt_for_user("alice", &attempt.attempt_id)
+            .unwrap();
+        assert_eq!(cancelled.status, AttemptStatus::Cancelled);
+        assert!(store.retry_attempt("alice", &attempt.attempt_id).is_ok());
+
+        let (reset_attempt, _) = store
+            .start_attempt("alice", "factor-evaluation", "{\"n\":2}")
+            .unwrap();
+        store.begin_attempt(&reset_attempt.attempt_id).unwrap();
+        store.cancel_for_reset("alice").unwrap();
+        assert_eq!(
+            store
+                .attempt_for_user("alice", &reset_attempt.attempt_id)
+                .unwrap()
+                .status,
+            AttemptStatus::Running
+        );
+        store
+            .cancel_running(&reset_attempt.attempt_id, "alice")
+            .unwrap();
+        assert_eq!(
+            store
+                .attempt_for_user("alice", &reset_attempt.attempt_id)
+                .unwrap()
+                .status,
+            AttemptStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn cancellation_request_blocks_candidate_publication() {
+        let database = store();
+        let store = ResearchStore::new(&database);
+        let (attempt, _) = store
+            .start_attempt("alice", "candidate-build", "{}")
+            .unwrap();
+        store.begin_attempt(&attempt.attempt_id).unwrap();
+        assert_eq!(
+            store.cancel_attempt("alice", &attempt.attempt_id).unwrap(),
+            AttemptStatus::Running
+        );
+        let candidate = test_candidate();
+        let error = store
+            .save_candidate_for_attempt(
+                "alice",
+                &attempt.attempt_id,
+                &candidate,
+                &FactorPresentationMetadata {
+                    name: "Cancelled".into(),
+                    description: String::new(),
+                    tags: Vec::new(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error, "cancelled");
+        assert!(
+            store
+                .candidate_for_user("alice", &candidate.candidate_hash)
+                .is_err()
+        );
+        store.cancel_running(&attempt.attempt_id, "alice").unwrap();
+
+        let (family_attempt, _) = store
+            .start_attempt("alice", "factor-family-grid", "{}")
+            .unwrap();
+        store.begin_attempt(&family_attempt.attempt_id).unwrap();
+        store
+            .cancel_attempt("alice", &family_attempt.attempt_id)
+            .unwrap();
+        let registration = ResearchFamilyRegistration {
+            family: ResearchFamily {
+                schema_version: String::new(),
+                family_id: Uuid::new_v4(),
+                user_id: user_uuid("alice"),
+                root_candidate_hash: String::new(),
+                parent_family_id: None,
+                registered_trial_ids: Vec::new(),
+                lineage_hash: String::new(),
+            },
+            trials: Vec::new(),
+        };
+        assert_eq!(
+            store
+                .save_family_for_attempt("alice", &family_attempt.attempt_id, &registration, &[])
+                .unwrap_err(),
+            "cancelled"
+        );
+        assert_eq!(
+            database
+                .query_row("SELECT COUNT(*) FROM factor_research_families", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        store
+            .cancel_running(&family_attempt.attempt_id, "alice")
+            .unwrap();
     }
 
     #[test]
@@ -5222,6 +5733,10 @@ mod tests {
                 .diagnostic
                 .as_deref()
                 .is_some_and(|diagnostic| diagnostic.contains("research-interrupted"))
+        );
+        assert_eq!(
+            recovered.failure_code.as_deref(),
+            Some("research-interrupted")
         );
         assert!(!temporary.exists());
         drop(database);

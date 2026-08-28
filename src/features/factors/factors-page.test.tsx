@@ -13,9 +13,12 @@ import {
 	factorCandidatesForContext,
 	FactorsPage,
 } from "./factors-page";
+import { AttemptsPanel } from "./factor-attempts-panel";
+import { localizedFactorError } from "./factor-workspace-support";
 import type { FactorAdapter } from "./factor-adapter";
 import type {
 	FactorCandidateView,
+	FactorAttemptView,
 	FactorDatasetView,
 	FactorFamilyView,
 	FactorPage,
@@ -193,9 +196,75 @@ test("renders the Factor Lab shell and surfaces family loading errors", async ()
 	await settle();
 	expect(
 		mounted.container.querySelector('[role="alert"]')?.textContent,
-	).toContain("family list failed");
+	).toContain(i18n.t("factors.codes.factor-research-failed"));
 
 	await unmount(mounted.root, mounted.container);
+});
+
+test("keeps failed Attempt identity, recovery code, and retry feedback accessible", async () => {
+	const attempt: FactorAttemptView = {
+		attemptId: "attempt-1234567890",
+		userId: "user-1",
+		kind: "factor-materialization",
+		requestHash: "r".repeat(64),
+		status: "failed",
+		sourceAttemptId: "source-1234567890",
+		resultId: null,
+		completedUnits: 3,
+		progressTotal: 10,
+		failureCode: "research-interrupted",
+		diagnostic: "research-interrupted: research run stopped before publication",
+		createdAtMs: 1,
+		updatedAtMs: 2,
+	};
+	const mounted = mount(
+		makeAdapter({ listAttempts: async () => page([attempt]) }),
+	);
+
+	await act(async () => {
+		mounted.root.render(
+			<QueryClientProvider client={mounted.queryClient}>
+				<AttemptsPanel
+					userId="user-1"
+					adapter={mounted.adapter}
+					kind="factor-materialization"
+				/>
+			</QueryClientProvider>,
+		);
+	});
+	await settle();
+
+	const group = mounted.container.querySelector("fieldset");
+	expect(group).not.toBeNull();
+	expect(group?.getAttribute("aria-busy")).toBe("false");
+	expect(mounted.container.textContent).toContain(
+		i18n.t("factors.attempts.recoveredDiagnostic"),
+	);
+	expect(mounted.container.textContent).toContain("research-interrupted");
+	expect(mounted.container.textContent).toContain("source-123456789…");
+	expect(mounted.container.querySelector('[role="alert"]')).not.toBeNull();
+	expect(mounted.container.querySelector("button")?.textContent).toContain(
+		i18n.t("factors.attempts.retry"),
+	);
+
+	await unmount(mounted.root, mounted.container);
+});
+
+test("localizes transient Factor failure categories", async () => {
+	const translate = (key: string, options?: Record<string, unknown>) =>
+		i18n.t(key, options);
+	const previousLocale = i18n.language;
+	await i18n.changeLanguage("zh-CN");
+	expect(
+		localizedFactorError(
+			"Factor Candidate predecessor identity is invalid",
+			translate,
+		),
+	).toBe(i18n.t("factors.codes.factor-validation-failed"));
+	expect(
+		localizedFactorError("dataset publication cannot be published", translate),
+	).toBe(i18n.t("factors.codes.factor-publication-failed"));
+	await i18n.changeLanguage(previousLocale);
 });
 
 test("applies the selected context to Factor protocol identity and range", () => {

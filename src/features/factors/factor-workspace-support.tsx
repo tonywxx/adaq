@@ -1,5 +1,6 @@
 import { ChevronDownIcon, RefreshCwIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatNumber } from "@/lib/i18n";
 import {
@@ -7,9 +8,38 @@ import {
 	factorPageCount,
 	factorString,
 	formatFactorJson,
+	formatFactorError,
 	parseFactorJson,
 } from "./factor-data";
-import type { FactorJson } from "./factor-types";
+import type { FactorAttemptStatus, FactorJson } from "./factor-types";
+
+const FACTOR_STATUS_GLYPH: Record<FactorAttemptStatus, string> = {
+	pending: "◷",
+	running: "▸",
+	completed: "✓",
+	failed: "✕",
+	cancelled: "⊘",
+};
+
+export function FactorAttemptStatusBadge({
+	status,
+}: {
+	status: FactorAttemptStatus;
+}) {
+	const { t } = useTranslation();
+	const variant =
+		status === "completed"
+			? "default"
+			: status === "failed" || status === "cancelled"
+				? "secondary"
+				: "outline";
+	return (
+		<Badge variant={variant} className="gap-1 font-normal">
+			<span aria-hidden="true">{FACTOR_STATUS_GLYPH[status]}</span>
+			{t(`factors.status.${status}`)}
+		</Badge>
+	);
+}
 
 export function newUuid() {
 	if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -54,6 +84,77 @@ export function localizedFactorCode(
 	t: (key: string, options?: Record<string, unknown>) => string,
 ) {
 	return t(`factors.codes.${code}`, { defaultValue: code });
+}
+
+export function localizedFactorAttemptCode(
+	code: string,
+	t: (key: string, options?: Record<string, unknown>) => string,
+) {
+	return code.startsWith("factor-context-")
+		? t(`researchContext.reasons.${code}`, { defaultValue: code })
+		: localizedFactorCode(code, t);
+}
+
+export function localizedFactorError(
+	error: unknown,
+	t: (key: string, options?: Record<string, unknown>) => string,
+) {
+	const raw = formatFactorError(error);
+	const diagnostic = raw.replace(/^Error:\s*/, "");
+	const prefix = diagnostic.split(":")[0];
+	if (prefix.startsWith("factor-context-")) {
+		return t(`researchContext.reasons.${prefix}`, { defaultValue: raw });
+	}
+	if (
+		diagnostic.startsWith("Feature Slot ") ||
+		diagnostic.startsWith("Feature 槽位")
+	) {
+		return diagnostic;
+	}
+	if (prefix === "research-interrupted" || prefix === "reset-required") {
+		return localizedFactorCode(prefix, t);
+	}
+
+	// ponytail: map legacy string diagnostics until every invoke boundary returns typed errors.
+	const lower = diagnostic.toLowerCase();
+	const code =
+		lower.includes("hash mismatch") ||
+		lower.includes("collision") ||
+		lower.includes("integrity") ||
+		lower.includes("corrupt")
+			? "factor-corruption-detected"
+			: lower.includes("cannot be published") ||
+					lower.includes("publication") ||
+					lower.includes("staging")
+				? "factor-publication-failed"
+				: lower.includes("not found") ||
+						lower.includes("not available") ||
+						lower.includes("not configured") ||
+						lower.includes("missing") ||
+						lower.includes("unavailable")
+					? "factor-missing-input"
+					: lower.includes("resource") ||
+							lower.includes("too large") ||
+							lower.includes("timed out") ||
+							lower.includes("timeout") ||
+							lower.includes("memory") ||
+							lower.includes("thread") ||
+							lower.includes("limit")
+						? "factor-resource-failed"
+						: lower.includes("does not match") ||
+								lower.includes("differs from") ||
+								lower.includes("not bound") ||
+								lower.includes("incompatible") ||
+								lower.includes("not present") ||
+								lower.includes("requires")
+							? "factor-compatibility-failed"
+							: lower.includes("invalid") ||
+									lower.includes("validate") ||
+									lower.includes("must be") ||
+									lower.includes("empty")
+								? "factor-validation-failed"
+								: undefined;
+	return localizedFactorCode(code ?? "factor-research-failed", t);
 }
 
 export function localizedFactorReason(

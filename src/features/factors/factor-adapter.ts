@@ -24,9 +24,14 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			operationId,
 			stage: "factors",
 		});
-	const page = <T>(command: string, userId: string, pageNumber: number) =>
+	const page = <T>(
+		command: string,
+		userId: string,
+		pageNumber: number,
+		extra: Record<string, unknown> = {},
+	) =>
 		invoke(command, {
-			request: { userId, page: pageNumber, pageSize: 50 },
+			request: { userId, page: pageNumber, pageSize: 50, ...extra },
 		}) as Promise<FactorPage<T>>;
 
 	return {
@@ -77,8 +82,10 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			}) as Promise<FactorAttemptView>,
 		updateTrial: (userId: string, trial: FactorJson) =>
 			invoke("factor_trial_update", { request: { userId, trial } }),
-		listAttempts: (userId: string, pageNumber: number) =>
-			page<FactorAttemptView>("factor_attempt_list", userId, pageNumber),
+		listAttempts: (userId: string, pageNumber: number, kind?: string) =>
+			page<FactorAttemptView>("factor_attempt_list", userId, pageNumber, {
+				kind,
+			}),
 		getAttempt: (userId: string, attemptId: string) =>
 			invoke("factor_attempt_get", {
 				request: { userId, attemptId },

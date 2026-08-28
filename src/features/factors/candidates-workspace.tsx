@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/card";
 import type { FactorAdapter } from "./factor-adapter";
 import {
-	formatFactorError,
 	parseFactorJson,
 	parseFactorJsonArray,
 	shortFactorHash,
@@ -25,6 +24,7 @@ import {
 	EvidenceJson,
 	Feedback,
 	LoadingState,
+	localizedFactorError,
 	PageControls,
 	lines,
 	newUuid,
@@ -147,7 +147,7 @@ export function CandidatesWorkspace({
 			}));
 			await candidates.load();
 		} catch (error) {
-			setFeedback(formatFactorError(error));
+			setFeedback(localizedFactorError(error, t));
 		} finally {
 			setBusy(false);
 		}
@@ -168,7 +168,7 @@ export function CandidatesWorkspace({
 							</p>
 						) : contextError ? (
 							<p role="alert" className="text-sm text-destructive">
-								{formatFactorError(contextError)}
+								{localizedFactorError(contextError, t)}
 							</p>
 						) : !contextReady || !context || !featureBinding ? (
 							<p role="status" className="text-sm text-muted-foreground">
@@ -364,7 +364,7 @@ export function CandidatesWorkspace({
 				<CardContent className="space-y-4">
 					{candidates.error && !candidates.data ? (
 						<ErrorState
-							message={candidates.error}
+							message={localizedFactorError(candidates.error, t)}
 							onRetry={() => void candidates.load()}
 							retryLabel={t("factors.retry")}
 						/>
@@ -511,7 +511,7 @@ function CustomBuildWorkspace({
 			setFeedback(t("factors.candidates.buildQueued"));
 			onQueued();
 		} catch (error) {
-			setFeedback(formatFactorError(error));
+			setFeedback(localizedFactorError(error, t));
 		} finally {
 			setBusy(false);
 		}

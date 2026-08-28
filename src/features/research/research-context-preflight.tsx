@@ -12,7 +12,7 @@ import { Link } from "@tanstack/react-router";
 import { CircleAlertIcon, LoaderCircleIcon } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FeatureDatasetView } from "@/features/features/features-types";
 
 type ResearchStage = "features" | "factors" | "models";
@@ -93,6 +93,8 @@ export function ResearchContextPreflight({
 		useState<ResearchEvidenceProjection>();
 	const [handoffError, setHandoffError] = useState<string>();
 	const [handingOff, setHandingOff] = useState(false);
+	const handoffVersion = useRef(0);
+	const freezeVersion = useRef(0);
 	const isFactorStage = stage === "factors";
 	const query = useResearchEvidenceContext(userId);
 	const featureDatasetsQuery = useQuery({
@@ -104,16 +106,27 @@ export function ResearchContextPreflight({
 		enabled: isFactorStage,
 		staleTime: 30_000,
 	});
-	const context = factorContext ?? query.data;
+	const context =
+		factorContext ?? (isFactorStage && handingOff ? undefined : query.data);
 	const contextReady = Boolean(
 		!query.error && context && (!isFactorStage || context.featureDataset),
 	);
 
 	useEffect(() => {
 		if (!userId.trim() || !stage) return;
+		handoffVersion.current += 1;
+		freezeVersion.current += 1;
 		setFactorContext(undefined);
 		setSelectedFeatureDatasetId("");
 		setHandoffError(undefined);
+		setHandingOff(false);
+		setFrozen(undefined);
+		setFreezeError(undefined);
+		setFreezing(false);
+		return () => {
+			handoffVersion.current += 1;
+			freezeVersion.current += 1;
+		};
 	}, [userId, stage]);
 
 	useEffect(() => {
@@ -122,32 +135,44 @@ export function ResearchContextPreflight({
 	}, [query.data?.featureDataset?.datasetId]);
 
 	const establishFactorContext = async (featureDatasetId: string) => {
+		const version = ++handoffVersion.current;
+		freezeVersion.current += 1;
 		setSelectedFeatureDatasetId(featureDatasetId);
 		setHandoffError(undefined);
 		setFreezeError(undefined);
 		setFrozen(undefined);
+		setFreezing(false);
 		setFactorContext(undefined);
 		queryClient.setQueryData<ResearchEvidenceProjection | null>(
 			["research-evidence-context", userId],
 			null,
 		);
-		if (!featureDatasetId) return;
+		if (!featureDatasetId) {
+			setHandingOff(false);
+			return;
+		}
 		setHandingOff(true);
 		try {
 			const result = await invoke<ResearchEvidenceProjection>(
 				"research_factor_context_establish",
 				{ featureDatasetId },
 			);
+			if (handoffVersion.current !== version) return;
 			setFactorContext(result);
 			queryClient.setQueryData(["research-evidence-context", userId], result);
 		} catch (error) {
+			if (handoffVersion.current !== version) return;
 			setFactorContext(undefined);
 			setHandoffError(localizedFactorContextError(error, t));
 		} finally {
-			setHandingOff(false);
+			if (handoffVersion.current === version) setHandingOff(false);
 		}
 	};
 	const freeze = async () => {
+		const request = ++freezeVersion.current;
+		const handoff = handoffVersion.current;
+		const isCurrent = () =>
+			request === freezeVersion.current && handoff === handoffVersion.current;
 		setFreezing(true);
 		setFreezeError(undefined);
 		try {
@@ -159,8 +184,10 @@ export function ResearchContextPreflight({
 					stage,
 				},
 			);
+			if (!isCurrent()) return;
 			setFrozen(result);
 		} catch (error) {
+			if (!isCurrent()) return;
 			if (isFactorStage) {
 				setFactorContext(undefined);
 				setSelectedFeatureDatasetId("");
@@ -173,7 +200,7 @@ export function ResearchContextPreflight({
 				isFactorStage ? localizedFactorContextError(error, t) : String(error),
 			);
 		} finally {
-			setFreezing(false);
+			if (isCurrent()) setFreezing(false);
 		}
 	};
 
@@ -216,7 +243,7 @@ export function ResearchContextPreflight({
 								id="factor-feature-dataset"
 								className="w-full rounded-md border bg-transparent px-2 py-1.5 text-sm"
 								value={selectedFeatureDatasetId}
-								disabled={handingOff}
+								aria-busy={handingOff}
 								onChange={(event) => void establishFactorContext(event.target.value)}
 							>
 								<option value="">

@@ -41,6 +41,11 @@ const english = {
 			"Select an accepted Feature Dataset before starting Factor research.",
 		openFeatures: "Open Features",
 		handoffLoading: "Resolving the Factor Context…",
+		stages: {
+			features: "Features",
+			factors: "Factors",
+			models: "Models",
+		},
 		reasons: {
 			"factor-context-mismatch":
 				"The Factor request does not match the selected research context.",
@@ -1502,6 +1507,19 @@ const english = {
 			"deterministic-execution": "Deterministic execution",
 			"abi-v2-expressible": "ABI v2 expressible",
 			buildable: "Buildable",
+			"candidate-build-failed": "Candidate build failed",
+			"factor-materialization-failed": "Factor materialization failed",
+			"factor-evaluation-failed": "Factor evaluation failed",
+			"factor-family-grid-failed": "Factor Grid registration failed",
+			"factor-research-failed": "Factor research failed",
+			"factor-compatibility-failed": "Factor compatibility check failed",
+			"factor-validation-failed": "Factor validation failed",
+			"factor-resource-failed": "Factor resource limit reached",
+			"factor-missing-input": "Required Factor input is missing",
+			"factor-publication-failed": "Factor publication failed",
+			"factor-corruption-detected": "Factor evidence integrity check failed",
+			"research-interrupted": "Research run interrupted",
+			"reset-required": "Reset required",
 		},
 		families: {
 			heading: "Research Families",
@@ -1772,6 +1790,16 @@ const english = {
 			cancel: "Cancel",
 			retry: "Retry",
 			progress: "Attempt progress",
+			attemptLabel: "Factor attempt {{id}}",
+			requestHash: "Request hash",
+			sourceAttempt: "Source attempt",
+			result: "Result",
+			cancellationRequestedDiagnostic:
+				"Cancellation requested; the research run will finish safely before it is marked Cancelled.",
+			cancelledDiagnostic:
+				"Cancelled before publication; no new Factor evidence was published.",
+			recoveredDiagnostic:
+				"The previous research run stopped before publication. Retry is available.",
 		},
 		status: {
 			pending: "Pending",
@@ -1853,6 +1881,19 @@ const factorResearchSimplifiedChinese = {
 		"deterministic-execution": "确定性执行",
 		"abi-v2-expressible": "ABI v2 可表达",
 		buildable: "可构建",
+		"candidate-build-failed": "Candidate 构建失败",
+		"factor-materialization-failed": "Factor 物化失败",
+		"factor-evaluation-failed": "Factor 评估失败",
+		"factor-family-grid-failed": "Factor Grid 注册失败",
+		"factor-research-failed": "Factor 研究失败",
+		"factor-compatibility-failed": "Factor 兼容性检查失败",
+		"factor-validation-failed": "Factor 校验失败",
+		"factor-resource-failed": "Factor 资源限制已触发",
+		"factor-missing-input": "缺少必需的 Factor 输入",
+		"factor-publication-failed": "Factor 发布失败",
+		"factor-corruption-detected": "Factor 证据完整性检查失败",
+		"research-interrupted": "研究运行中断",
+		"reset-required": "需要 Reset",
 	},
 	families: {
 		heading: "研究 Family",
@@ -2109,6 +2150,14 @@ const factorResearchSimplifiedChinese = {
 		cancel: "取消",
 		retry: "重试",
 		progress: "Attempt 进度",
+		attemptLabel: "Factor Attempt {{id}}",
+		requestHash: "请求哈希",
+		sourceAttempt: "源 Attempt",
+		result: "结果",
+		cancellationRequestedDiagnostic:
+			"已请求取消；研究运行将在安全结束后标记为已取消。",
+		cancelledDiagnostic: "已在发布前取消；未发布新的 Factor 证据。",
+		recoveredDiagnostic: "之前的研究运行在发布前停止；可以重试。",
 	},
 	status: {
 		pending: "等待中",
@@ -2150,6 +2199,11 @@ const simplifiedChinese = {
 		factorContextBlocked: "开始因子研究前，请先选择已接受的 Feature Dataset。",
 		openFeatures: "打开特征工作区",
 		handoffLoading: "正在解析 Factor Context…",
+		stages: {
+			features: "Features",
+			factors: "Factors",
+			models: "Models",
+		},
 		reasons: {
 			"factor-context-mismatch": "Factor 请求与已选择的研究 Context 不匹配。",
 			"factor-context-requires-host-dataset-selection":

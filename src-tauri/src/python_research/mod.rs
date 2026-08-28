@@ -7196,6 +7196,7 @@ mod tests {
                     user_id: request.user_id.clone(),
                     page: 1,
                     page_size: Some(10),
+                    kind: None,
                 })
                 .unwrap()
                 .total,

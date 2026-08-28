@@ -237,7 +237,7 @@ test("renders loading while candidates load and surfaces a list error", async ()
 	await settle();
 	expect(
 		mounted.container.querySelector('[role="alert"]')?.textContent,
-	).toContain("candidate list failed");
+	).toContain(i18n.t("factors.codes.factor-research-failed"));
 
 	await unmount(mounted.root, mounted.container);
 });
@@ -326,7 +326,7 @@ test("renders publish failures through the workspace seam", async () => {
 	expect(publishCandidate).toHaveBeenCalled();
 	expect(
 		mounted.container.querySelector('[role="alert"]')?.textContent,
-	).toContain("publish failed");
+	).toContain(i18n.t("factors.codes.factor-research-failed"));
 
 	await unmount(mounted.root, mounted.container);
 });

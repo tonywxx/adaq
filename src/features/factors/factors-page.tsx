@@ -45,7 +45,6 @@ import {
 	factorHash,
 	factorJsonArray,
 	factorString,
-	formatFactorError,
 	isGridWithinLimit,
 	parseFactorJson,
 	shortFactorHash,
@@ -76,6 +75,7 @@ import {
 	jsonText,
 	lines,
 	localizedFactorCode,
+	localizedFactorError,
 	localizedFactorReason,
 	mergeFactorFields,
 	newUuid,
@@ -278,17 +278,21 @@ function FamiliesWorkspace({
 	const [lineageLoading, setLineageLoading] = useState<string>();
 	const [feedback, setFeedback] = useState<string>();
 	const [attemptRefresh, setAttemptRefresh] = useState(0);
+	const lineageRequest = useRef(0);
 
 	const inspect = async (familyId: string, trialId: string) => {
+		const request = ++lineageRequest.current;
 		setLineageLoading(familyId);
 		setFeedback(undefined);
 		try {
 			const details = await adapter.getLineage(userId, trialId);
+			if (request !== lineageRequest.current) return;
 			setLineage((current) => ({ ...current, [familyId]: details }));
 		} catch (error) {
-			setFeedback(formatFactorError(error));
+			if (request === lineageRequest.current)
+				setFeedback(localizedFactorError(error, t));
 		} finally {
-			setLineageLoading(undefined);
+			if (request === lineageRequest.current) setLineageLoading(undefined);
 		}
 	};
 
@@ -306,7 +310,7 @@ function FamiliesWorkspace({
 					{feedback && <Feedback message={feedback} />}
 					{families.error && !families.data ? (
 						<ErrorState
-							message={families.error}
+							message={localizedFactorError(families.error, t)}
 							onRetry={() => void families.load()}
 							retryLabel={t("factors.retry")}
 						/>
@@ -613,7 +617,7 @@ function GridSetup({
 			setFamilyId(newUuid());
 			onCreated();
 		} catch (error) {
-			setFeedback(formatFactorError(error));
+			setFeedback(localizedFactorError(error, t));
 		} finally {
 			setBusy(false);
 		}
@@ -984,7 +988,7 @@ function MaterializationStart({
 				</fieldset>
 				{contextReady && candidates.error ? (
 					<p role="alert" className="text-sm text-destructive">
-						{candidates.error}
+						{localizedFactorError(candidates.error, t)}
 					</p>
 				) : null}
 				{contextReady &&
@@ -1040,30 +1044,38 @@ function DatasetsWorkspace({
 	const [loadingAction, setLoadingAction] = useState<string>();
 	const [deletingId, setDeletingId] = useState<string>();
 	const lastFocus = useRef<HTMLElement | null>(null);
+	const inspectRequest = useRef(0);
 	const inspect = async (item: FactorDatasetView) => {
+		const request = ++inspectRequest.current;
 		const id = textAt(item.manifest, "datasetId");
 		lastFocus.current = document.activeElement as HTMLElement | null;
 		setLoadingAction(id);
 		setFeedback(undefined);
 		try {
-			setSelected(await adapter.getDataset(userId, id));
+			const details = await adapter.getDataset(userId, id);
+			if (request === inspectRequest.current) setSelected(details);
 		} catch (error) {
-			setFeedback(formatFactorError(error));
+			if (request === inspectRequest.current)
+				setFeedback(localizedFactorError(error, t));
 		} finally {
-			setLoadingAction(undefined);
+			if (request === inspectRequest.current) setLoadingAction(undefined);
 		}
 	};
 	const remove = async (item: FactorDatasetView) => {
+		const request = ++inspectRequest.current;
 		const id = textAt(item.manifest, "datasetId");
 		setDeletingId(id);
 		setFeedback(undefined);
 		try {
 			await adapter.deleteDataset(userId, id);
-			setSelected(undefined);
-			setFeedback(t("factors.datasets.deleted"));
+			if (request === inspectRequest.current) {
+				setSelected(undefined);
+				setFeedback(t("factors.datasets.deleted"));
+			}
 			await datasets.load();
 		} catch (error) {
-			setFeedback(formatFactorError(error));
+			if (request === inspectRequest.current)
+				setFeedback(localizedFactorError(error, t));
 		} finally {
 			setDeletingId(undefined);
 		}
@@ -1098,7 +1110,7 @@ function DatasetsWorkspace({
 					)}
 					{datasets.error && !datasets.data ? (
 						<ErrorState
-							message={datasets.error}
+							message={localizedFactorError(datasets.error, t)}
 							onRetry={() => void datasets.load()}
 							retryLabel={t("factors.retry")}
 						/>
@@ -1226,7 +1238,10 @@ function DatasetsWorkspace({
 					userId={userId}
 					adapter={adapter}
 					dataset={selected}
-					onClose={() => setSelected(undefined)}
+					onClose={() => {
+						inspectRequest.current += 1;
+						setSelected(undefined);
+					}}
 				/>
 			) : null}
 			<AttemptsPanel
@@ -1274,12 +1289,12 @@ function DatasetInspector({
 				setTotal(page.total);
 			} catch (loadError) {
 				if (version !== requestVersion.current) return;
-				setError(formatFactorError(loadError));
+				setError(localizedFactorError(loadError, t));
 			} finally {
 				if (version === requestVersion.current) setLoading(false);
 			}
 		},
-		[adapter, datasetId, userId],
+		[adapter, datasetId, t, userId],
 	);
 	useEffect(() => {
 		void loadRows();
@@ -1467,6 +1482,7 @@ function EvaluationsWorkspace({
 	const [attemptRefresh, setAttemptRefresh] = useState(0);
 	const [loadingReportId, setLoadingReportId] = useState<string>();
 	const lastFocus = useRef<HTMLElement | null>(null);
+	const inspectRequest = useRef(0);
 	useEffect(() => {
 		if (!selected) lastFocus.current?.focus();
 	}, [selected]);
@@ -1507,7 +1523,7 @@ function EvaluationsWorkspace({
 					<Feedback message={feedback} tone="success" />
 					{reports.error && !reports.data ? (
 						<ErrorState
-							message={reports.error}
+							message={localizedFactorError(reports.error, t)}
 							onRetry={() => void reports.load()}
 							retryLabel={t("factors.retry")}
 						/>
@@ -1571,15 +1587,19 @@ function EvaluationsWorkspace({
 														loading={loadingReportId === textAt(item.report, "reportHash")}
 														loadingText={t("factors.loading")}
 														onClick={async () => {
+															const request = ++inspectRequest.current;
 															const reportHash = textAt(item.report, "reportHash");
 															lastFocus.current = document.activeElement as HTMLElement | null;
 															setLoadingReportId(reportHash);
 															try {
-																setSelected(await adapter.getReport(userId, reportHash));
+																const details = await adapter.getReport(userId, reportHash);
+																if (request === inspectRequest.current) setSelected(details);
 															} catch (error) {
-																setFeedback(formatFactorError(error));
+																if (request === inspectRequest.current)
+																	setFeedback(localizedFactorError(error, t));
 															} finally {
-																setLoadingReportId(undefined);
+																if (request === inspectRequest.current)
+																	setLoadingReportId(undefined);
 															}
 														}}
 													>
@@ -1604,7 +1624,10 @@ function EvaluationsWorkspace({
 			{selected ? (
 				<ReportInspector
 					report={selected}
-					onClose={() => setSelected(undefined)}
+					onClose={() => {
+						inspectRequest.current += 1;
+						setSelected(undefined);
+					}}
 					metricDefinitions={metricDefinitions}
 				/>
 			) : null}
@@ -2162,7 +2185,7 @@ function DecisionsWorkspace({
 			setFeedback(t("factors.decisions.policySaved"));
 			await policies.load();
 		} catch (error) {
-			setFeedback(formatFactorError(error));
+			setFeedback(localizedFactorError(error, t));
 		} finally {
 			setPolicyBusy(false);
 		}
@@ -2183,7 +2206,7 @@ function DecisionsWorkspace({
 			await decisions.load();
 			await libraryPage.load();
 		} catch (error) {
-			setFeedback(formatFactorError(error));
+			setFeedback(localizedFactorError(error, t));
 		} finally {
 			setDecisionBusy(false);
 		}
@@ -2209,7 +2232,7 @@ function DecisionsWorkspace({
 			);
 		} catch (error) {
 			setFeedbackTone("error");
-			setFeedback(formatFactorError(error));
+			setFeedback(localizedFactorError(error, t));
 		} finally {
 			setEligibilityBusy(false);
 		}
@@ -2338,7 +2361,7 @@ function DecisionsWorkspace({
 					) : null}
 					{libraryPage.error && !libraryPage.data ? (
 						<ErrorState
-							message={libraryPage.error}
+							message={localizedFactorError(libraryPage.error, t)}
 							onRetry={() => void libraryPage.load()}
 							retryLabel={t("factors.retry")}
 						/>
@@ -2408,7 +2431,7 @@ function DecisionsWorkspace({
 				<CardContent className="space-y-4">
 					{decisions.error && !decisions.data ? (
 						<ErrorState
-							message={decisions.error}
+							message={localizedFactorError(decisions.error, t)}
 							onRetry={() => void decisions.load()}
 							retryLabel={t("factors.retry")}
 						/>
@@ -2519,7 +2542,7 @@ function DecisionsWorkspace({
 				<CardContent>
 					{policies.error && !policies.data ? (
 						<ErrorState
-							message={policies.error}
+							message={localizedFactorError(policies.error, t)}
 							onRetry={() => void policies.load()}
 							retryLabel={t("factors.retry")}
 						/>

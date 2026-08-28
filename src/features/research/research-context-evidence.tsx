@@ -2,6 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { invoke } from "@tauri-apps/api/core";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { localizedFactorContextError } from "./research-context-preflight";
 
 type FrozenResearchEvidence = {
 	operationId: string;
@@ -37,7 +38,9 @@ export function ResearchContextEvidence({
 	if (query.isLoading) return null;
 	if (query.error) {
 		return (
-			<span className="text-xs text-destructive">{String(query.error)}</span>
+			<span className="text-xs text-destructive" role="alert">
+				{localizedFactorContextError(query.error, t)}
+			</span>
 		);
 	}
 	if (!query.data) {
@@ -50,7 +53,7 @@ export function ResearchContextEvidence({
 			<Badge variant="secondary">{t("researchContext.evidenceBound")}</Badge>
 			<span>
 				{t("researchContext.revision")} {query.data.contextRevision} ·{" "}
-				{query.data.stage}
+				{t(`researchContext.stages.${query.data.stage}`)}
 			</span>
 			<span className="break-all">
 				{t("researchContext.snapshot")}: {query.data.snapshotId}

@@ -25,6 +25,23 @@ export type FactorAttemptStatus =
 	| "failed"
 	| "cancelled";
 
+export type FactorFailureCode =
+	| "cancelled"
+	| "candidate-build-failed"
+	| "factor-compatibility-failed"
+	| "factor-corruption-detected"
+	| "factor-evaluation-failed"
+	| "factor-family-grid-failed"
+	| "factor-materialization-failed"
+	| "factor-missing-input"
+	| "factor-publication-failed"
+	| "factor-research-failed"
+	| "factor-resource-failed"
+	| "factor-validation-failed"
+	| "research-interrupted"
+	| "reset-required"
+	| `factor-context-${string}`;
+
 export type FactorAttemptView = {
 	attemptId: string;
 	userId: string;
@@ -36,6 +53,7 @@ export type FactorAttemptView = {
 	completedUnits: number;
 	progressTotal: number;
 	diagnostic?: string | null;
+	failureCode?: FactorFailureCode | null;
 	createdAtMs: number;
 	updatedAtMs: number;
 };
