@@ -12,6 +12,11 @@ test("Factor adapter keeps User scope and immutable command payloads explicit", 
 		{ candidateId: "candidate-1" },
 		{ name: "demo" },
 	);
+	await adapter.buildCandidate(
+		"user-1",
+		{ candidateId: "candidate-1" },
+		{ name: "demo" },
+	);
 	await adapter.registerGridFamily("user-1", {
 		familyId: "family-1",
 		candidateHash: "a".repeat(64),
@@ -29,6 +34,18 @@ test("Factor adapter keeps User scope and immutable command payloads explicit", 
 					userId: "user-1",
 					draft: { candidateId: "candidate-1" },
 					presentation: { name: "demo" },
+				},
+			},
+		},
+		{
+			command: "factor_candidate_build",
+			args: {
+				request: {
+					userId: "user-1",
+					operationId: expect.stringMatching(/^factor-candidate-build:/),
+					candidate: { candidateId: "candidate-1" },
+					presentation: { name: "demo" },
+					build: null,
 				},
 			},
 		},

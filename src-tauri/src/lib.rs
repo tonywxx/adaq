@@ -622,12 +622,35 @@ macro_rules! factor_blocking_command {
     };
 }
 
-factor_blocking_command!(
-    factor_candidate_build,
-    factor_research::FactorCandidateBuildRequest,
-    build_candidate,
-    factor_research::FactorAttemptView
-);
+#[tauri::command]
+async fn factor_candidate_build(
+    mut request: factor_research::FactorCandidateBuildRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<factor_research::FactorAttemptView, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    let user_id = request.user_id.clone();
+    let operation_id = request.operation_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        state.freeze_research_context(
+            &user_id,
+            operation_id.clone(),
+            adaq_factor_research::ResearchStage::Factors,
+        )?;
+        let attempt = state.factor.build_candidate(request)?;
+        state.record_research_attempt_binding(
+            &user_id,
+            &operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+            &attempt.attempt_id,
+        )?;
+        Ok(attempt)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
 #[tauri::command]
 async fn factor_candidate_publish(
     mut request: factor_research::FactorCandidatePublishRequest,

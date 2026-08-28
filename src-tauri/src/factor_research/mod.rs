@@ -403,6 +403,7 @@ pub(crate) struct FactorAttemptRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FactorCandidateBuildRequest {
     pub user_id: String,
+    pub operation_id: String,
     pub candidate: FactorCandidate,
     pub presentation: FactorPresentationMetadata,
     #[serde(default)]
@@ -6113,6 +6114,7 @@ mod tests {
         let research = FactorResearch::open(source, queue.admitter()).unwrap();
         let request = FactorCandidateBuildRequest {
             user_id: "alice".into(),
+            operation_id: "factor-candidate-build:test".into(),
             candidate: test_candidate(),
             presentation: FactorPresentationMetadata {
                 name: "Test".into(),

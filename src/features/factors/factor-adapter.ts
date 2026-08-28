@@ -54,10 +54,18 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			candidate: FactorJson,
 			presentation: FactorJson,
 			build?: FactorJson,
-		) =>
-			invoke("factor_candidate_build", {
-				request: { userId, candidate, presentation, build: build ?? null },
-			}) as Promise<FactorAttemptView>,
+		) => {
+			const operationId = `factor-candidate-build:${crypto.randomUUID()}`;
+			return invoke("factor_candidate_build", {
+				request: {
+					userId,
+					operationId,
+					candidate,
+					presentation,
+					build: build ?? null,
+				},
+			}) as Promise<FactorAttemptView>;
+		},
 		listFamilies: (userId: string, pageNumber: number) =>
 			page<FactorFamilyView>("factor_family_list", userId, pageNumber),
 		getFamily: (userId: string, evidenceId: string) =>
