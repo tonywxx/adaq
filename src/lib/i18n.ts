@@ -35,6 +35,7 @@ const english = {
 		selectFeatureDataset: "Accepted Feature Dataset",
 		selectFeatureDatasetPlaceholder: "Select a completed Feature Dataset",
 		featureDatasetLoading: "Loading Feature Datasets…",
+		retry: "Retry",
 		featureDatasetEmpty:
 			"No completed Feature Datasets are available for Factor research.",
 		factorContextBlocked:
@@ -1769,6 +1770,8 @@ const english = {
 			evidenceState: "Evidence state",
 			lineageHash: "Lineage hash",
 			lineageLoading: "Loading complete Family lineage…",
+			lineageRequired:
+				"Resolve complete Family lineage before freezing the protocol.",
 			lineageTrials: "{{count}} Trial(s) in the complete lineage",
 			stateSelection: "Decision state",
 			supersedePrevious: "Supersede current Decision",
@@ -2181,6 +2184,7 @@ const factorResearchSimplifiedChinese = {
 		evidenceState: "证据状态",
 		lineageHash: "Lineage 哈希",
 		lineageLoading: "正在加载完整 Family Lineage…",
+		lineageRequired: "冻结协议前必须先解析完整 Family Lineage。",
 		lineageTrials: "完整 Lineage 中有 {{count}} 个 Trial",
 		stateSelection: "Decision 状态",
 		supersedePrevious: "替代当前 Decision",
@@ -2284,6 +2288,7 @@ const simplifiedChinese = {
 		selectFeatureDataset: "已接受的 Feature Dataset",
 		selectFeatureDatasetPlaceholder: "选择已完成的 Feature Dataset",
 		featureDatasetLoading: "正在加载 Feature Dataset…",
+		retry: "重试",
 		featureDatasetEmpty: "当前没有可用于因子研究的已完成 Feature Dataset。",
 		factorContextBlocked: "开始因子研究前，请先选择已接受的 Feature Dataset。",
 		openFeatures: "打开特征工作区",

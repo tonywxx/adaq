@@ -16,6 +16,7 @@ import type { FactorAttemptView } from "./factor-types";
 import { useFactorPage } from "./factor-workspace-data";
 import {
 	EmptyState,
+	ErrorState,
 	FactorAttemptStatusBadge,
 	Feedback,
 	LoadingState,
@@ -97,9 +98,19 @@ export function AttemptsPanel({
 			</CardHeader>
 			<CardContent className="space-y-3">
 				{feedback && <Feedback message={feedback} />}
-				{attempts.error && (
-					<Feedback message={localizedFactorError(attempts.error, t)} />
-				)}
+				{attempts.error ? (
+					<ErrorState
+						message={localizedFactorError(attempts.error, t)}
+						onRetry={() => void attempts.load()}
+						retryLabel={t("factors.retry")}
+						loading={attempts.loading}
+					/>
+				) : null}
+				{attempts.loading && attempts.data ? (
+					<span className="text-xs text-muted-foreground" role="status">
+						{t("factors.loading")}
+					</span>
+				) : null}
 				{attempts.loading && !attempts.data ? (
 					<LoadingState label={t("factors.loading")} />
 				) : attempts.error && !attempts.data ? null : visible.length === 0 ? (

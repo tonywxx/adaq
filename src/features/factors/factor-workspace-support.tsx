@@ -256,10 +256,12 @@ export function ErrorState({
 	message,
 	onRetry,
 	retryLabel,
+	loading = false,
 }: {
 	message: string;
 	onRetry: () => void;
 	retryLabel: string;
+	loading?: boolean;
 }) {
 	return (
 		<div
@@ -267,7 +269,13 @@ export function ErrorState({
 			role="alert"
 		>
 			<p className="text-sm text-destructive">{message}</p>
-			<Button type="button" variant="outline" size="sm" onClick={onRetry}>
+			<Button
+				type="button"
+				variant="outline"
+				size="sm"
+				loading={loading}
+				onClick={onRetry}
+			>
 				<RefreshCwIcon aria-hidden="true" />
 				{retryLabel}
 			</Button>

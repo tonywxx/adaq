@@ -235,9 +235,20 @@ export function ResearchContextPreflight({
 								{t("researchContext.featureDatasetLoading")}
 							</span>
 						) : featureDatasetsQuery.error ? (
-							<p className="text-sm text-destructive" role="alert">
-								{localizedFactorContextError(featureDatasetsQuery.error, t)}
-							</p>
+							<div className="flex flex-wrap items-center gap-3">
+								<p className="text-sm text-destructive" role="alert">
+									{localizedFactorContextError(featureDatasetsQuery.error, t)}
+								</p>
+								<Button
+									type="button"
+									size="sm"
+									variant="outline"
+									loading={featureDatasetsQuery.isFetching}
+									onClick={() => void featureDatasetsQuery.refetch()}
+								>
+									{t("researchContext.retry")}
+								</Button>
+							</div>
 						) : (
 							<select
 								id="factor-feature-dataset"
@@ -282,11 +293,22 @@ export function ResearchContextPreflight({
 					</div>
 				) : null}
 				{query.error ? (
-					<p className="text-sm text-destructive" role="alert">
-						{isFactorStage
-							? localizedFactorContextError(query.error, t)
-							: String(query.error)}
-					</p>
+					<div className="flex flex-wrap items-center gap-3">
+						<p className="text-sm text-destructive" role="alert">
+							{isFactorStage
+								? localizedFactorContextError(query.error, t)
+								: String(query.error)}
+						</p>
+						<Button
+							type="button"
+							size="sm"
+							variant="outline"
+							loading={query.isFetching}
+							onClick={() => void query.refetch()}
+						>
+							{t("researchContext.retry")}
+						</Button>
+					</div>
 				) : contextReady && context ? (
 					<>
 						<div className="grid gap-2 text-sm sm:grid-cols-3">

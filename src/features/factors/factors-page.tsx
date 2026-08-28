@@ -303,17 +303,18 @@ function FamiliesWorkspace({
 				</CardHeader>
 				<CardContent className="space-y-4">
 					{feedback && <Feedback message={feedback} />}
-					{families.error && !families.data ? (
+					{families.error ? (
 						<ErrorState
 							message={localizedFactorError(families.error, t)}
 							onRetry={() => void families.load()}
 							retryLabel={t("factors.retry")}
+							loading={families.loading}
 						/>
 					) : null}
 					{families.loading && !families.data ? (
 						<LoadingState label={t("factors.loading")} />
 					) : null}
-					{families.data && families.data.items.length === 0 ? (
+					{families.data && !families.error && families.data.items.length === 0 ? (
 						<EmptyState message={t("factors.families.empty")} />
 					) : null}
 					{families.data && families.data.items.length > 0 ? (
@@ -1103,17 +1104,18 @@ function DatasetsWorkspace({
 							tone={feedback === t("factors.datasets.deleted") ? "success" : "error"}
 						/>
 					)}
-					{datasets.error && !datasets.data ? (
+					{datasets.error ? (
 						<ErrorState
 							message={localizedFactorError(datasets.error, t)}
 							onRetry={() => void datasets.load()}
 							retryLabel={t("factors.retry")}
+							loading={datasets.loading}
 						/>
 					) : null}
 					{datasets.loading && !datasets.data ? (
 						<LoadingState label={t("factors.loading")} />
 					) : null}
-					{datasets.data && datasets.data.items.length === 0 ? (
+					{datasets.data && !datasets.error && datasets.data.items.length === 0 ? (
 						<EmptyState message={t("factors.datasets.empty")} />
 					) : null}
 					{datasets.data && datasets.data.items.length > 0 ? (
@@ -1516,17 +1518,18 @@ function EvaluationsWorkspace({
 				</CardHeader>
 				<CardContent className="space-y-4">
 					<Feedback message={feedback} tone="success" />
-					{reports.error && !reports.data ? (
+					{reports.error ? (
 						<ErrorState
 							message={localizedFactorError(reports.error, t)}
 							onRetry={() => void reports.load()}
 							retryLabel={t("factors.retry")}
+							loading={reports.loading}
 						/>
 					) : null}
 					{reports.loading && !reports.data ? (
 						<LoadingState label={t("factors.loading")} />
 					) : null}
-					{reports.data && reports.data.items.length === 0 ? (
+					{reports.data && !reports.error && reports.data.items.length === 0 ? (
 						<EmptyState message={t("factors.evaluations.empty")} />
 					) : null}
 					{reports.data && reports.data.items.length > 0 ? (
@@ -2237,6 +2240,8 @@ function DecisionsWorkspace({
 	const [frozenProtocol, setFrozenProtocol] = useState<FactorJson>();
 	const [lineage, setLineage] = useState<FactorLineageView>();
 	const [lineageLoading, setLineageLoading] = useState(false);
+	const [lineageError, setLineageError] = useState<unknown>();
+	const [lineageRetry, setLineageRetry] = useState(0);
 	const [feedback, setFeedback] = useState<string>();
 	const [feedbackTone, setFeedbackTone] = useState<"error" | "success">("error");
 	const [eligibility, setEligibility] = useState<M12Eligibility>();
@@ -2294,13 +2299,17 @@ function DecisionsWorkspace({
 	};
 	useEffect(() => {
 		setSupersedes(currentDecision ? textAt(currentDecision.decision, "decisionId", "") : "");
-	}, [currentDecision, decisions.data]);
+	}, [currentDecision]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: lineageRetry is the explicit retry trigger for this effect.
 	useEffect(() => {
 		if (!trialId) {
 			setLineage(undefined);
+			setLineageError(undefined);
 			return;
 		}
 		let active = true;
+		setLineage(undefined);
+		setLineageError(undefined);
 		setLineageLoading(true);
 		void adapter
 			.getLineage(userId, trialId)
@@ -2310,8 +2319,7 @@ function DecisionsWorkspace({
 			.catch((error) => {
 				if (active) {
 					setLineage(undefined);
-					setFeedbackTone("error");
-					setFeedback(localizedFactorError(error, t));
+					setLineageError(error);
 				}
 			})
 			.finally(() => {
@@ -2320,7 +2328,7 @@ function DecisionsWorkspace({
 		return () => {
 			active = false;
 		};
-	}, [adapter, t, trialId, userId]);
+	}, [adapter, lineageRetry, trialId, userId]);
 	const freezeProtocol = async () => {
 		if (
 			!candidateHash ||
@@ -2333,6 +2341,11 @@ function DecisionsWorkspace({
 		) {
 			setFeedbackTone("error");
 			setFeedback(t("factors.decisions.selectionRequired"));
+			return;
+		}
+		if (!lineage) {
+			setFeedbackTone("error");
+			setFeedback(t("factors.decisions.lineageRequired"));
 			return;
 		}
 		setProtocolBusy(true);
@@ -2427,6 +2440,38 @@ function DecisionsWorkspace({
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="space-y-4">
+					{candidates.error ? (
+						<ErrorState
+							message={localizedFactorError(candidates.error, t)}
+							onRetry={() => void candidates.load()}
+							retryLabel={t("factors.retry")}
+							loading={candidates.loading}
+						/>
+					) : null}
+					{datasets.error ? (
+						<ErrorState
+							message={localizedFactorError(datasets.error, t)}
+							onRetry={() => void datasets.load()}
+							retryLabel={t("factors.retry")}
+							loading={datasets.loading}
+						/>
+					) : null}
+					{reports.error ? (
+						<ErrorState
+							message={localizedFactorError(reports.error, t)}
+							onRetry={() => void reports.load()}
+							retryLabel={t("factors.retry")}
+							loading={reports.loading}
+						/>
+					) : null}
+					{policies.error ? (
+						<ErrorState
+							message={localizedFactorError(policies.error, t)}
+							onRetry={() => void policies.load()}
+							retryLabel={t("factors.retry")}
+							loading={policies.loading}
+						/>
+					) : null}
 					<div className="grid gap-3 md:grid-cols-2">
 						<div className="grid gap-1.5">
 							<Label htmlFor="factor-decision-candidate">
@@ -2454,7 +2499,9 @@ function DecisionsWorkspace({
 									);
 								})}
 							</select>
-							{!candidates.loading && candidateItems.length === 0 ? (
+							{!candidates.error &&
+							!candidates.loading &&
+							candidateItems.length === 0 ? (
 								<p className="text-xs text-muted-foreground">
 									{t("factors.decisions.noCandidates")}
 								</p>
@@ -2486,7 +2533,10 @@ function DecisionsWorkspace({
 									);
 								})}
 							</select>
-							{candidateHash && !datasets.loading && datasetItems.length === 0 ? (
+							{candidateHash &&
+							!datasets.error &&
+							!datasets.loading &&
+							datasetItems.length === 0 ? (
 								<p className="text-xs text-muted-foreground">
 									{t("factors.decisions.noDatasets")}
 								</p>
@@ -2539,7 +2589,10 @@ function DecisionsWorkspace({
 									);
 								})}
 							</select>
-							{outputName && !reports.loading && reportItems.length === 0 ? (
+							{outputName &&
+							!reports.error &&
+							!reports.loading &&
+							reportItems.length === 0 ? (
 								<p className="text-xs text-muted-foreground">
 									{t("factors.decisions.noReports")}
 								</p>
@@ -2568,7 +2621,9 @@ function DecisionsWorkspace({
 									);
 								})}
 							</select>
-							{!policies.loading && policies.data?.items.length === 0 ? (
+							{!policies.error &&
+							!policies.loading &&
+							policies.data?.items.length === 0 ? (
 								<p className="text-xs text-muted-foreground">
 									{t("factors.decisions.noPolicies")}
 								</p>
@@ -2581,6 +2636,26 @@ function DecisionsWorkspace({
 								{t("factors.decisions.selectedEvidence")}
 							</p>
 							<dl className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+								<Detail
+									label={t("factors.decisions.candidateSelection")}
+									value={candidateHash}
+									mono
+								/>
+								<Detail
+									label={t("factors.decisions.datasetSelection")}
+									value={datasetId}
+									mono
+								/>
+								<Detail
+									label={t("factors.decisions.reportSelection")}
+									value={reportHash}
+									mono
+								/>
+								<Detail
+									label={t("factors.decisions.policySelection")}
+									value={policyHash}
+									mono
+								/>
 								<Detail label={t("factors.decisions.family")} value={familyId} mono />
 								<Detail label={t("factors.decisions.trial")} value={trialId} mono />
 								<Detail
@@ -2597,6 +2672,15 @@ function DecisionsWorkspace({
 								<p className="mt-3 text-xs text-muted-foreground">
 									{t("factors.decisions.lineageLoading")}
 								</p>
+							) : lineageError ? (
+								<div className="mt-3">
+									<ErrorState
+										message={localizedFactorError(lineageError, t)}
+										onRetry={() => setLineageRetry((current) => current + 1)}
+										retryLabel={t("factors.retry")}
+										loading={lineageLoading}
+									/>
+								</div>
 							) : lineage ? (
 								<div className="mt-3 space-y-2">
 									<p className="text-xs text-muted-foreground">
@@ -2716,7 +2800,16 @@ function DecisionsWorkspace({
 						<Button
 							type="button"
 							loading={protocolBusy}
-							disabled={!candidateHash || !datasetId || !outputName || !reportHash || !policyHash}
+							disabled={
+								!candidateHash ||
+								!datasetId ||
+								!outputName ||
+								!reportHash ||
+								!policyHash ||
+								lineageLoading ||
+								!lineage ||
+								Boolean(lineageError)
+							}
 							onClick={() => void freezeProtocol()}
 						>
 							{t("factors.decisions.freezeProtocol")}
@@ -2804,16 +2897,17 @@ function DecisionsWorkspace({
 					{libraryPage.loading && !libraryPage.data ? (
 						<LoadingState label={t("factors.loading")} />
 					) : null}
-					{libraryPage.error && !libraryPage.data ? (
+					{libraryPage.error ? (
 						<ErrorState
 							message={localizedFactorError(libraryPage.error, t)}
 							onRetry={() => void libraryPage.load()}
 							retryLabel={t("factors.retry")}
+							loading={libraryPage.loading}
 						/>
 					) : null}
 					{library.length ? (
 						<div className="max-w-full overflow-x-auto">
-							<table className="w-full min-w-[720px] text-sm">
+							<table className="w-full min-w-[860px] text-sm">
 								<caption className="sr-only">
 									{t("factors.decisions.libraryHeading")}
 								</caption>
@@ -2830,6 +2924,9 @@ function DecisionsWorkspace({
 										</th>
 										<th scope="col" className="py-2">
 											{t("factors.decisions.reports")}
+										</th>
+										<th scope="col" className="py-2">
+											{t("factors.common.rawEvidence")}
 										</th>
 									</tr>
 								</thead>
@@ -2850,6 +2947,12 @@ function DecisionsWorkspace({
 													? `${(valueAt(item.decision, "reportHashes") as unknown[]).length}`
 													: "—"}
 											</td>
+											<td className="py-2">
+												<EvidenceJson
+													label={t("factors.common.rawEvidence")}
+													value={item}
+												/>
+											</td>
 										</tr>
 									))}
 								</tbody>
@@ -2861,7 +2964,7 @@ function DecisionsWorkspace({
 								onPage={(page) => void libraryPage.load(page)}
 							/>
 						</div>
-					) : (
+					) : libraryPage.error ? null : (
 						<EmptyState message={t("factors.decisions.libraryEmpty")} />
 					)}
 				</CardContent>
@@ -2874,17 +2977,20 @@ function DecisionsWorkspace({
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="space-y-4">
-					{decisions.error && !decisions.data ? (
+					{decisions.error ? (
 						<ErrorState
 							message={localizedFactorError(decisions.error, t)}
 							onRetry={() => void decisions.load()}
 							retryLabel={t("factors.retry")}
+							loading={decisions.loading}
 						/>
 					) : null}
 					{decisions.loading && !decisions.data ? (
 						<LoadingState label={t("factors.loading")} />
 					) : null}
-					{decisions.data && decisions.data.items.length === 0 ? (
+					{decisions.data &&
+					!decisions.error &&
+					decisions.data.items.length === 0 ? (
 						<EmptyState message={t("factors.decisions.empty")} />
 					) : null}
 					{decisions.data && decisions.data.items.length > 0 ? (
@@ -2985,13 +3091,6 @@ function DecisionsWorkspace({
 					<CardTitle>{t("factors.decisions.policyHistory")}</CardTitle>
 				</CardHeader>
 				<CardContent>
-					{policies.error && !policies.data ? (
-						<ErrorState
-							message={localizedFactorError(policies.error, t)}
-							onRetry={() => void policies.load()}
-							retryLabel={t("factors.retry")}
-						/>
-					) : null}
 					{policies.data?.items.length ? (
 						policies.data.items.map((item) => (
 							<div
@@ -3036,7 +3135,7 @@ function DecisionsWorkspace({
 								/>
 							</div>
 						))
-					) : policies.loading ? (
+					) : policies.error ? null : policies.loading ? (
 						<LoadingState label={t("factors.loading")} />
 					) : (
 						<EmptyState message={t("factors.decisions.noPolicies")} />

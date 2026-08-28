@@ -209,6 +209,57 @@ test("lets Factors select a Feature Dataset and shows the Host-resolved binding"
 	await act(async () => root.unmount());
 });
 
+test("retries a failed Feature Dataset query", async () => {
+	const mockInvoke = invoke as jest.Mock;
+	const originalImplementation = mockInvoke.getMockImplementation();
+	let datasetListCalls = 0;
+	mockInvoke.mockImplementation((command: string, args?: unknown) => {
+		if (command === "feature_dataset_list") {
+			datasetListCalls += 1;
+			if (datasetListCalls === 1)
+				return Promise.reject(new Error("temporary-feature-datasets"));
+		}
+		return originalImplementation?.(command, args);
+	});
+
+	const container = document.createElement("div");
+	const root = createRoot(container);
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+
+	await act(async () => {
+		root.render(
+			<QueryClientProvider client={queryClient}>
+				<ResearchContextPreflight userId="user-1" stage="factors" />
+			</QueryClientProvider>,
+		);
+	});
+	await act(async () => {
+		await Promise.resolve();
+		await Promise.resolve();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+
+	expect(container.textContent).toContain("temporary-feature-datasets");
+	const retry = Array.from(container.querySelectorAll("button")).find(
+		(button) => button.textContent === "Retry",
+	);
+	expect(retry).toBeTruthy();
+	await act(async () => {
+		retry?.click();
+		await Promise.resolve();
+		await Promise.resolve();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+
+	expect(datasetListCalls).toBe(2);
+	expect(container.querySelector("select")).toBeTruthy();
+
+	await act(async () => root.unmount());
+	mockInvoke.mockImplementation(originalImplementation);
+});
+
 test("does not let an older context handoff replace a newer selection", async () => {
 	const first = deferred<ResearchEvidenceProjection>();
 	const second = deferred<ResearchEvidenceProjection>();

@@ -362,17 +362,20 @@ export function CandidatesWorkspace({
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="space-y-4">
-					{candidates.error && !candidates.data ? (
+					{candidates.error ? (
 						<ErrorState
 							message={localizedFactorError(candidates.error, t)}
 							onRetry={() => void candidates.load()}
 							retryLabel={t("factors.retry")}
+							loading={candidates.loading}
 						/>
 					) : null}
 					{candidates.loading && !candidates.data ? (
 						<LoadingState label={t("factors.loading")} />
 					) : null}
-					{candidates.data && candidates.data.items.length === 0 ? (
+					{candidates.data &&
+					!candidates.error &&
+					candidates.data.items.length === 0 ? (
 						<EmptyState message={t("factors.candidates.empty")} />
 					) : null}
 					{candidates.data && candidates.data.items.length > 0 ? (

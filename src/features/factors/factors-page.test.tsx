@@ -21,6 +21,7 @@ import type {
 	FactorAttemptView,
 	FactorDatasetView,
 	FactorFamilyView,
+	FactorLineageView,
 	FactorPage,
 	FactorPolicyView,
 	FactorReportView,
@@ -604,6 +605,7 @@ test("records a Decision only after structured evidence is frozen", async () => 
 		protocolHash: "t".repeat(64),
 	}));
 	const recordDecision = jest.fn(async () => ({}));
+	const lineage = deferred<FactorLineageView>();
 	const adapter = {
 		...makeAdapter(),
 		listCandidates: async () => page([candidate]),
@@ -612,13 +614,7 @@ test("records a Decision only after structured evidence is frozen", async () => 
 		listPolicies: async () => page([policy]),
 		listDecisions: async () => page([]),
 		listDecisionLibrary: async () => page([]),
-		getLineage: async () =>
-			({
-				lineage: { lineageHash: "l".repeat(64) },
-				trials: [{ trialId, status: "completed" }],
-				registrations: [],
-				protocols: [],
-			} as never),
+		getLineage: () => lineage.promise,
 		freezePromotionProtocol,
 		recordDecision,
 	} as unknown as FactorAdapter;
@@ -652,10 +648,32 @@ test("records a Decision only after structured evidence is frozen", async () => 
 	await act(async () => select("#factor-decision-report", reportHash));
 	await act(async () => select("#factor-decision-policy", policyHash));
 	await settle();
+	const evidenceDetails = Array.from(
+		mounted.container.querySelectorAll("dt"),
+	).map((label) => label.parentElement?.textContent);
+	expect(evidenceDetails).toEqual(
+		expect.arrayContaining([
+			`${i18n.t("factors.decisions.candidateSelection")}${candidateHash}`,
+			`${i18n.t("factors.decisions.datasetSelection")}dataset-1`,
+			`${i18n.t("factors.decisions.reportSelection")}${reportHash}`,
+			`${i18n.t("factors.decisions.policySelection")}${policyHash}`,
+		]),
+	);
 
 	const freezeButton = Array.from(mounted.container.querySelectorAll("button")).find(
 		(button) => button.textContent === i18n.t("factors.decisions.freezeProtocol"),
 	);
+	expect((freezeButton as HTMLButtonElement).disabled).toBe(true);
+	await act(async () => {
+		lineage.resolve({
+			lineage: { lineageHash: "l".repeat(64) },
+			trials: [{ trialId, status: "completed" }],
+			registrations: [],
+			protocols: [],
+		});
+	});
+	await settle();
+	expect((freezeButton as HTMLButtonElement).disabled).toBe(false);
 	await act(async () => (freezeButton as HTMLElement).click());
 	await settle();
 	const recordButton = Array.from(mounted.container.querySelectorAll("button")).find(
