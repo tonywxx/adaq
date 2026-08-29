@@ -1995,7 +1995,10 @@ mod tests {
             WorkingCopyState::Dirty
         );
         assert!(!store.validate("alice", &first.project_id).unwrap().valid());
-        assert_eq!(store.summary("alice", &path).unwrap().state, WorkingCopyState::Dirty);
+        assert_eq!(
+            store.summary("alice", &path).unwrap().state,
+            WorkingCopyState::Dirty
+        );
         assert!(store.list("bob").unwrap().is_empty());
         assert!(
             store

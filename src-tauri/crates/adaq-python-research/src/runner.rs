@@ -2645,9 +2645,11 @@ mod tests {
     fn canonical_json_accepts_python_float_spelling_only() {
         assert!(parse_canonical_json(br#"{"value":0.0017932553174720301}"#).is_ok());
         assert!(parse_canonical_json(br#"{"value": 0.0017932553174720301}"#).is_err());
-        assert!(parse_canonical_json(
-            br#"{"value":0.0017932553174720301,"value":0.0017932553174720301}"#
-        )
-        .is_err());
+        assert!(
+            parse_canonical_json(
+                br#"{"value":0.0017932553174720301,"value":0.0017932553174720301}"#
+            )
+            .is_err()
+        );
     }
 }
