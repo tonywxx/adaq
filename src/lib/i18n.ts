@@ -1396,10 +1396,12 @@ const english = {
 			repeatabilityState: "Repeatability {{state}}",
 			trial: "Trial {{trial}}",
 			selectionBlocked:
-				"Selection requires all three alpha trials to be completed, repeatable, and non-final evidence.",
+				"Selection requires all three alpha trials to be completed, repeatable, and bound to candidate artifacts.",
 			diagnostics: "Diagnostic: {{value}}",
+			successfulAttempt: "Successful Attempt {{attempt}}",
+			candidateArtifact: "Candidate Model Artifact {{artifact}}",
 			decisionIdentity:
-				"Binding {{binding}} · Revision {{revision}} · Environment {{environment}} · Input {{input}} · Seed {{seed}}",
+				"Binding {{binding}} · Revision {{revision}} · Environment {{environment}} · Input {{input}} · Seed {{seed}} · Candidate Artifact {{artifact}}",
 			reportEvidence:
 				"Evidence {{state}} · Artifact {{artifact}} · Evaluated forecast {{forecast}} · Forecast dataset {{dataset}}",
 			repeatable: "Exact coefficient and Forecast replay within tolerance",
@@ -2706,10 +2708,12 @@ const simplifiedChinese = {
 			repeatabilityState: "Repeatability {{state}}",
 			trial: "Trial {{trial}}",
 			selectionBlocked:
-				"只有三个 alpha Trial 都已完成、可重放且不是最终 Evidence 后才能选择。",
+				"只有三个 alpha Trial 都已完成、可重放并绑定 Candidate Model Artifact 后才能选择。",
 			diagnostics: "诊断：{{value}}",
+			successfulAttempt: "Successful Attempt {{attempt}}",
+			candidateArtifact: "Candidate Model Artifact {{artifact}}",
 			decisionIdentity:
-				"绑定 {{binding}} · Revision {{revision}} · Environment {{environment}} · Input {{input}} · Seed {{seed}}",
+				"绑定 {{binding}} · Revision {{revision}} · Environment {{environment}} · Input {{input}} · Seed {{seed}} · Candidate Artifact {{artifact}}",
 			reportEvidence:
 				"Evidence {{state}} · Artifact {{artifact}} · 已评估 Forecast {{forecast}} · Forecast Dataset {{dataset}}",
 			repeatable: "系数和 Forecast 在容差内精确重放",

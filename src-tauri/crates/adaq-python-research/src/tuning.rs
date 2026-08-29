@@ -66,6 +66,10 @@ pub struct ModelTrial {
     #[serde(default)]
     pub binding_sha256: String,
     #[serde(default)]
+    pub successful_attempt_id: Option<String>,
+    #[serde(default)]
+    pub candidate_artifact_sha256: Option<String>,
+    #[serde(default)]
     pub repeatability_state: RepeatabilityState,
     #[serde(default)]
     pub diagnostics: Vec<String>,
@@ -88,6 +92,25 @@ impl ModelTrial {
                 .selection_metric
                 .is_some_and(|metric| !metric.is_finite())
             || (!self.binding_sha256.is_empty() && !is_sha256(&self.binding_sha256))
+            || self
+                .successful_attempt_id
+                .as_deref()
+                .is_some_and(|attempt_id| attempt_id.trim().is_empty())
+            || self
+                .candidate_artifact_sha256
+                .as_deref()
+                .is_some_and(|artifact| !is_sha256(artifact))
+            || self.successful_attempt_id.is_some() != self.candidate_artifact_sha256.is_some()
+            || self
+                .successful_attempt_id
+                .as_ref()
+                .is_some_and(|attempt_id| !self.attempt_ids.contains(attempt_id))
+            || self.status != TrialStatus::Completed && self.successful_attempt_id.is_some()
+            || self.status == TrialStatus::Completed
+                && self.repeatability_state == RepeatabilityState::Verified
+                && self.successful_attempt_id.is_none()
+            || self.candidate_artifact_sha256.is_some()
+                && self.repeatability_state != RepeatabilityState::Verified
             || self.diagnostics.len() > MAX_TRIAL_DIAGNOSTICS
             || self
                 .diagnostics
@@ -208,6 +231,8 @@ impl ModelExperiment {
                 selection_metric: None,
                 evidence_state: lineage_evidence_state,
                 binding_sha256: binding_sha256.clone(),
+                successful_attempt_id: None,
+                candidate_artifact_sha256: None,
                 repeatability_state: RepeatabilityState::Unverified,
                 diagnostics: Vec::new(),
             })
@@ -229,6 +254,7 @@ impl ModelExperiment {
         let mut trial_ids = BTreeMap::new();
         let mut alphas = BTreeMap::new();
         let mut attempt_ids = BTreeMap::new();
+        let mut candidate_artifacts = BTreeMap::new();
         let expected_experiment_id = sha256(
             format!(
                 "{}:{}:{}:{}:{}:{}",
@@ -266,6 +292,14 @@ impl ModelExperiment {
                     || trial.input_evidence_sha256 != self.input_evidence_sha256
                     || trial.seed != self.seed
                     || trial.binding_sha256 != self.binding_sha256
+                    || trial.successful_attempt_id.is_some()
+                        != trial.candidate_artifact_sha256.is_some()
+                    || trial
+                        .candidate_artifact_sha256
+                        .as_ref()
+                        .is_some_and(|artifact| {
+                            candidate_artifacts.insert(artifact.clone(), ()).is_some()
+                        })
                     || trial.evidence_state != self.lineage_evidence_state
                     || trial.alpha.to_bits() != RIDGE_ALPHAS[index].to_bits()
                     || trial.trial_id
@@ -298,6 +332,39 @@ impl ModelExperiment {
         )
     }
 
+    pub fn complete_trial_with_candidate(
+        &mut self,
+        trial_id: &str,
+        attempt_id: impl Into<String>,
+        selection_metric: f64,
+        candidate_artifact_sha256: impl Into<String>,
+    ) -> Result<(), PythonResearchError> {
+        let attempt_id = attempt_id.into();
+        let candidate_artifact_sha256 = candidate_artifact_sha256.into();
+        let lineage_evidence_state = self.lineage_evidence_state;
+        let trial = self
+            .trials
+            .iter_mut()
+            .find(|trial| trial.trial_id == trial_id)
+            .ok_or_else(|| invalid("model-trial-not-found"))?;
+        if !selection_metric.is_finite()
+            || attempt_id.trim().is_empty()
+            || !is_sha256(&candidate_artifact_sha256)
+            || trial.status != TrialStatus::Registered
+            || trial.attempt_ids.iter().any(|id| id == &attempt_id)
+        {
+            return Err(invalid("model-trial-completion-invalid"));
+        }
+        trial.attempt_ids.push(attempt_id.clone());
+        trial.selection_metric = Some(selection_metric);
+        trial.status = TrialStatus::Completed;
+        trial.evidence_state = lineage_evidence_state;
+        trial.repeatability_state = RepeatabilityState::Verified;
+        trial.successful_attempt_id = Some(attempt_id);
+        trial.candidate_artifact_sha256 = Some(candidate_artifact_sha256);
+        Ok(())
+    }
+
     pub fn complete_trial_with_repeatability(
         &mut self,
         trial_id: &str,
@@ -305,6 +372,9 @@ impl ModelExperiment {
         selection_metric: f64,
         repeatability_state: RepeatabilityState,
     ) -> Result<(), PythonResearchError> {
+        if repeatability_state == RepeatabilityState::Verified {
+            return Err(invalid("model-trial-candidate-required"));
+        }
         let attempt_id = attempt_id.into();
         let lineage_evidence_state = self.lineage_evidence_state;
         let trial = self
@@ -384,6 +454,7 @@ pub struct ParameterSelectionDecision {
     pub selected_trial_id: String,
     pub selected_alpha: f64,
     pub selection_metrics_sha256: String,
+    pub candidate_artifact_sha256: String,
     pub evidence_state: EvidenceState,
     #[serde(default)]
     pub binding_sha256: String,
@@ -411,6 +482,7 @@ impl ParameterSelectionDecision {
         if trial.status != TrialStatus::Completed
             || trial.evidence_state != experiment.lineage_evidence_state
             || trial.repeatability_state != RepeatabilityState::Verified
+            || trial.candidate_artifact_sha256.is_none()
         {
             return Err(invalid(
                 "model-selection-requires-completed-selection-trial",
@@ -421,6 +493,7 @@ impl ParameterSelectionDecision {
                 || trial.selection_metric.is_none()
                 || trial.evidence_state != experiment.lineage_evidence_state
                 || trial.repeatability_state != RepeatabilityState::Verified
+                || trial.candidate_artifact_sha256.is_none()
         }) {
             return Err(invalid("model-selection-requires-complete-selection-grid"));
         }
@@ -431,10 +504,14 @@ impl ParameterSelectionDecision {
             .collect::<Vec<_>>();
         let selection_metrics_sha256 =
             sha256(&serde_json::to_vec(&metrics).map_err(|error| invalid(error.to_string()))?);
+        let candidate_artifact_sha256 = trial
+            .candidate_artifact_sha256
+            .clone()
+            .ok_or_else(|| invalid("model-selection-candidate-artifact-missing"))?;
         let decision_id = sha256(
             format!(
-                "{}:{selected_trial_id}:{selection_metrics_sha256}",
-                experiment.experiment_id
+                "{}:{selected_trial_id}:{selection_metrics_sha256}:{candidate_artifact_sha256}",
+                experiment.experiment_id,
             )
             .as_bytes(),
         );
@@ -444,6 +521,7 @@ impl ParameterSelectionDecision {
             selected_trial_id: selected_trial_id.into(),
             selected_alpha: trial.alpha,
             selection_metrics_sha256,
+            candidate_artifact_sha256,
             evidence_state: experiment.lineage_evidence_state,
             binding_sha256: experiment.binding_sha256.clone(),
             project_revision_sha256: experiment.project_revision_sha256.clone(),
@@ -456,8 +534,11 @@ impl ParameterSelectionDecision {
     pub fn validate(&self) -> Result<(), PythonResearchError> {
         let expected_decision_id = sha256(
             format!(
-                "{}:{}:{}",
-                self.experiment_id, self.selected_trial_id, self.selection_metrics_sha256
+                "{}:{}:{}:{}",
+                self.experiment_id,
+                self.selected_trial_id,
+                self.selection_metrics_sha256,
+                self.candidate_artifact_sha256,
             )
             .as_bytes(),
         );
@@ -468,6 +549,7 @@ impl ParameterSelectionDecision {
             || !self.selected_alpha.is_finite()
             || self.selected_alpha <= 0.0
             || !is_sha256(&self.selection_metrics_sha256)
+            || !is_sha256(&self.candidate_artifact_sha256)
             || !matches!(
                 self.evidence_state,
                 EvidenceState::Unknown | EvidenceState::Overlapping
@@ -559,6 +641,10 @@ impl FinalEvaluationLedger {
         evidence_state: EvidenceState,
     ) -> Result<FinalEvaluationReport, PythonResearchError> {
         decision.validate()?;
+        let provided_artifact_sha256 = artifact_sha256.into();
+        if decision.candidate_artifact_sha256 != provided_artifact_sha256 {
+            return Err(invalid("model-final-artifact-binding-invalid"));
+        }
         if !matches!(
             evidence_state,
             EvidenceState::OutOfSample | EvidenceState::Overlapping
@@ -602,7 +688,7 @@ impl FinalEvaluationLedger {
             sha256(&serde_json::to_vec(forecasts).map_err(|error| invalid(error.to_string()))?);
         let target_sha256 =
             sha256(&serde_json::to_vec(labels).map_err(|error| invalid(error.to_string()))?);
-        let artifact_sha256 = artifact_sha256.into();
+        let artifact_sha256 = decision.candidate_artifact_sha256.clone();
         let forecast_dataset_sha256 = forecast_dataset_sha256.into();
         let report_id = sha256(
             format!(
@@ -687,7 +773,12 @@ mod tests {
         assert_eq!(experiment.trials.len(), 3);
         for trial in experiment.trials.clone() {
             experiment
-                .complete_trial(&trial.trial_id, hash(&trial.trial_id), trial.alpha)
+                .complete_trial_with_candidate(
+                    &trial.trial_id,
+                    hash(&format!("attempt:{}", trial.alpha)),
+                    trial.alpha,
+                    hash(&format!("artifact:{}", trial.alpha)),
+                )
                 .unwrap();
         }
         let decision =
@@ -695,6 +786,55 @@ mod tests {
                 .unwrap();
         assert_eq!(decision.selected_alpha, 1.0);
         assert!(ParameterSelectionDecision::record(&experiment, "missing").is_err());
+    }
+
+    #[test]
+    fn repeatability_verified_trial_requires_candidate_identity() {
+        let mut experiment =
+            ModelExperiment::ridge(hash("revision"), hash("environment"), hash("input"), 7)
+                .unwrap();
+        let trial_id = experiment.trials[0].trial_id.clone();
+        assert_eq!(
+            experiment
+                .complete_trial_with_repeatability(
+                    &trial_id,
+                    hash("attempt"),
+                    1.0,
+                    RepeatabilityState::Verified,
+                )
+                .unwrap_err()
+                .to_string(),
+            "model-trial-candidate-required"
+        );
+        assert_eq!(experiment.trials[0].status, TrialStatus::Registered);
+    }
+
+    #[test]
+    fn candidate_identity_is_directly_bound_to_trial_and_selection() {
+        let mut experiment =
+            ModelExperiment::ridge(hash("revision"), hash("environment"), hash("input"), 7)
+                .unwrap();
+        for trial in experiment.trials.clone() {
+            experiment
+                .complete_trial_with_candidate(
+                    &trial.trial_id,
+                    hash(&format!("attempt:{}", trial.alpha)),
+                    trial.alpha,
+                    hash(&format!("artifact:{}", trial.alpha)),
+                )
+                .unwrap();
+        }
+        let selected = &experiment.trials[1];
+        assert_eq!(
+            selected.successful_attempt_id.as_deref(),
+            selected.attempt_ids.last().map(String::as_str)
+        );
+        let decision = ParameterSelectionDecision::record(&experiment, &selected.trial_id).unwrap();
+        assert_eq!(
+            decision.candidate_artifact_sha256,
+            selected.candidate_artifact_sha256.clone().unwrap()
+        );
+        assert!(decision.validate().is_ok());
     }
 
     #[test]
@@ -718,7 +858,12 @@ mod tests {
                 .unwrap();
         for trial in experiment.trials.clone() {
             experiment
-                .complete_trial(&trial.trial_id, hash(&trial.trial_id), 1.0)
+                .complete_trial_with_candidate(
+                    &trial.trial_id,
+                    hash(&format!("attempt:{}", trial.alpha)),
+                    1.0,
+                    hash(&format!("artifact:{}", trial.alpha)),
+                )
                 .unwrap();
         }
         let decision =
@@ -731,8 +876,25 @@ mod tests {
             unavailable_reason: None,
         }];
         let labels = vec![(1, "AAA".into(), 3.0)];
+        assert_eq!(
+            FinalEvaluationLedger::default()
+                .run_with_evidence(
+                    &decision,
+                    &forecasts,
+                    &labels,
+                    hash("foreign-artifact"),
+                    hash("forecast-dataset"),
+                    EvidenceState::OutOfSample,
+                )
+                .unwrap_err()
+                .to_string(),
+            "model-final-artifact-binding-invalid"
+        );
         let mut ledger = FinalEvaluationLedger::default();
-        let artifact = hash("artifact");
+        let artifact = experiment.trials[1]
+            .candidate_artifact_sha256
+            .clone()
+            .unwrap();
         let forecast_dataset = hash("forecast-dataset");
         let report = ledger
             .run_with_evidence(
@@ -796,7 +958,12 @@ mod tests {
         }));
         for trial in experiment.trials.clone() {
             experiment
-                .complete_trial(&trial.trial_id, hash(&trial.trial_id), 1.0)
+                .complete_trial_with_candidate(
+                    &trial.trial_id,
+                    hash(&format!("attempt:{}", trial.alpha)),
+                    1.0,
+                    hash(&format!("artifact:{}", trial.alpha)),
+                )
                 .unwrap();
         }
         let decision =
@@ -848,18 +1015,25 @@ mod tests {
             ModelExperiment::ridge(hash("revision"), hash("environment"), hash("input"), 7)
                 .unwrap();
         for (index, trial) in experiment.trials.clone().into_iter().enumerate() {
-            experiment
-                .complete_trial_with_repeatability(
-                    &trial.trial_id,
-                    hash(&trial.trial_id),
-                    index as f64,
-                    if index == 0 {
-                        RepeatabilityState::Divergent
-                    } else {
-                        RepeatabilityState::Verified
-                    },
-                )
-                .unwrap();
+            if index == 0 {
+                experiment
+                    .complete_trial_with_repeatability(
+                        &trial.trial_id,
+                        hash(&trial.trial_id),
+                        index as f64,
+                        RepeatabilityState::Divergent,
+                    )
+                    .unwrap();
+            } else {
+                experiment
+                    .complete_trial_with_candidate(
+                        &trial.trial_id,
+                        hash(&format!("attempt:{}", trial.alpha)),
+                        index as f64,
+                        hash(&format!("artifact:{}", trial.alpha)),
+                    )
+                    .unwrap();
+            }
         }
         assert_eq!(
             experiment.trials[0].repeatability_state,
@@ -911,7 +1085,12 @@ mod tests {
         let mut experiment = experiment;
         for trial in experiment.trials.clone() {
             experiment
-                .complete_trial(&trial.trial_id, hash(&trial.trial_id), 1.0)
+                .complete_trial_with_candidate(
+                    &trial.trial_id,
+                    hash(&format!("attempt:{}", trial.alpha)),
+                    1.0,
+                    hash(&format!("artifact:{}", trial.alpha)),
+                )
                 .unwrap();
         }
         let decision =
@@ -933,7 +1112,7 @@ mod tests {
                 &decision,
                 &forecasts,
                 &labels,
-                hash("artifact"),
+                decision.candidate_artifact_sha256.clone(),
                 hash("forecast-dataset"),
                 EvidenceState::Overlapping,
             )

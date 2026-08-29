@@ -88,6 +88,8 @@ type Trial = {
 	alpha: number;
 	status: string;
 	attemptIds: string[];
+	successfulAttemptId?: string;
+	candidateArtifactSha256?: string;
 	selectionMetric?: number;
 	evidenceState: "out-of-sample" | "overlapping" | "unknown";
 	repeatabilityState: "unverified" | "verified" | "divergent";
@@ -115,6 +117,7 @@ type Decision = {
 	environmentSha256: string;
 	inputEvidenceSha256: string;
 	seed: number;
+	candidateArtifactSha256: string;
 	evidenceState: "out-of-sample" | "overlapping" | "unknown";
 };
 
@@ -397,6 +400,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 			(trial) =>
 				trial.status === "completed" &&
 				trial.repeatabilityState === "verified" &&
+				Boolean(trial.successfulAttemptId && trial.candidateArtifactSha256) &&
 				(trial.evidenceState === "unknown" ||
 					trial.evidenceState === "overlapping"),
 		);
@@ -792,6 +796,16 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 										state: trial.repeatabilityState,
 									})}
 								</p>
+								<p className="basis-full break-all font-mono text-xs text-muted-foreground">
+									{t("pythonResearch.modelLab.successfulAttempt", {
+										attempt: trial.successfulAttemptId ?? "—",
+									})}
+								</p>
+								<p className="basis-full break-all font-mono text-xs text-muted-foreground">
+									{t("pythonResearch.modelLab.candidateArtifact", {
+										artifact: trial.candidateArtifactSha256 ?? "—",
+									})}
+								</p>
 								{trial.attemptIds.map((attemptId) => (
 									<code key={attemptId} className="basis-full break-all text-xs">
 										Attempt {attemptId}
@@ -858,6 +872,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								environment: decision.environmentSha256,
 								input: decision.inputEvidenceSha256,
 								seed: decision.seed,
+								artifact: decision.candidateArtifactSha256,
 							})}
 						</p>
 						<p className="basis-full text-muted-foreground">
