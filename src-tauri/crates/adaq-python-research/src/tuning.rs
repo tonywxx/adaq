@@ -16,6 +16,8 @@ pub enum TrialStatus {
     Completed,
     Failed,
     Cancelled,
+    Interrupted,
+    Stale,
     Invalid,
     Unsupported,
     Superseded,
@@ -135,6 +137,8 @@ pub struct ModelExperiment {
     #[serde(default)]
     pub binding_sha256: String,
     #[serde(default)]
+    pub factor_decision_hash: String,
+    #[serde(default)]
     pub parent_decision_id: Option<String>,
     #[serde(default)]
     pub lineage_evidence_state: EvidenceState,
@@ -245,6 +249,7 @@ impl ModelExperiment {
             seed,
             trials,
             binding_sha256,
+            factor_decision_hash: String::new(),
             parent_decision_id,
             lineage_evidence_state,
         })
@@ -273,6 +278,7 @@ impl ModelExperiment {
             || !is_sha256(&self.environment_sha256)
             || !is_sha256(&self.input_evidence_sha256)
             || !is_sha256(&self.binding_sha256)
+            || (!self.factor_decision_hash.is_empty() && !is_sha256(&self.factor_decision_hash))
             || self
                 .parent_decision_id
                 .as_deref()
@@ -425,6 +431,8 @@ impl ModelExperiment {
             status,
             TrialStatus::Failed
                 | TrialStatus::Cancelled
+                | TrialStatus::Interrupted
+                | TrialStatus::Stale
                 | TrialStatus::Invalid
                 | TrialStatus::Unsupported
                 | TrialStatus::Superseded
@@ -442,6 +450,40 @@ impl ModelExperiment {
         if !diagnostic.is_empty() {
             trial.diagnostics.push(diagnostic);
         }
+        Ok(())
+    }
+
+    pub fn retry_trial(
+        &mut self,
+        trial_id: &str,
+        source_attempt_id: &str,
+    ) -> Result<(), PythonResearchError> {
+        let trial = self
+            .trials
+            .iter_mut()
+            .find(|trial| trial.trial_id == trial_id)
+            .ok_or_else(|| invalid("model-trial-not-found"))?;
+        if source_attempt_id.trim().is_empty()
+            || trial.candidate_artifact_sha256.is_some()
+            || (!matches!(
+                trial.status,
+                TrialStatus::Failed
+                    | TrialStatus::Cancelled
+                    | TrialStatus::Interrupted
+                    | TrialStatus::Stale
+            ) && !(trial.status == TrialStatus::Registered
+                && trial.attempt_ids.iter().any(|id| id == source_attempt_id)))
+        {
+            return Err(invalid("model-trial-retry-invalid"));
+        }
+        if !trial.attempt_ids.iter().any(|id| id == source_attempt_id) {
+            trial.attempt_ids.push(source_attempt_id.into());
+        }
+        trial.status = TrialStatus::Registered;
+        trial.selection_metric = None;
+        trial.successful_attempt_id = None;
+        trial.candidate_artifact_sha256 = None;
+        trial.repeatability_state = RepeatabilityState::Unverified;
         Ok(())
     }
 }
@@ -849,6 +891,32 @@ mod tests {
         assert_eq!(experiment.trials[0].status, TrialStatus::Failed);
         assert_eq!(experiment.trials[0].attempt_ids.len(), 1);
         assert!(ParameterSelectionDecision::record(&experiment, &trial_id).is_err());
+    }
+
+    #[test]
+    fn retry_reopens_one_failed_trial_without_dropping_attempt_history() {
+        let mut experiment =
+            ModelExperiment::ridge(hash("revision"), hash("environment"), hash("input"), 7)
+                .unwrap();
+        let trial_id = experiment.trials[0].trial_id.clone();
+        let source_attempt_id = hash("failed-attempt");
+        experiment
+            .fail_trial_with_diagnostic(
+                &trial_id,
+                source_attempt_id.clone(),
+                TrialStatus::Interrupted,
+                "runner stopped",
+            )
+            .unwrap();
+        experiment
+            .retry_trial(&trial_id, &source_attempt_id)
+            .unwrap();
+        let trial = &experiment.trials[0];
+        assert_eq!(trial.status, TrialStatus::Registered);
+        assert_eq!(trial.attempt_ids, vec![source_attempt_id]);
+        assert!(trial.successful_attempt_id.is_none());
+        assert!(trial.candidate_artifact_sha256.is_none());
+        assert!(trial.selection_metric.is_none());
     }
 
     #[test]

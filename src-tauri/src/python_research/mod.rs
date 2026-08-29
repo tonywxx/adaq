@@ -337,23 +337,73 @@ impl ModelLabStore {
         Ok(experiment)
     }
 
-    fn replace_experiment(
+    fn fail_trial(
         &self,
         user_id: &str,
-        experiment: ModelExperiment,
+        experiment_id: &str,
+        trial_id: &str,
+        attempt_id: String,
+        status: TrialStatus,
+        diagnostic: String,
     ) -> Result<ModelExperiment, PythonResearchError> {
-        experiment.validate()?;
         let mut database = self
             .database
             .lock()
             .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
-        let key = model_key(user_id, &experiment.experiment_id);
-        if !database.experiments.contains_key(&key) {
-            return Err(PythonResearchError("model-experiment-not-found".into()));
+        let mut next = database.clone();
+        let experiment = next
+            .experiments
+            .get_mut(&model_key(user_id, experiment_id))
+            .ok_or_else(|| PythonResearchError("model-experiment-not-found".into()))?;
+        experiment.fail_trial_with_diagnostic(trial_id, attempt_id, status, diagnostic)?;
+        experiment.validate()?;
+        let result = experiment.clone();
+        self.persist(&next)?;
+        *database = next;
+        Ok(result)
+    }
+
+    fn retry_trial_from_attempt(
+        &self,
+        user_id: &str,
+        experiment_id: &str,
+        trial_id: &str,
+        source_attempt_id: &str,
+        source_status: TrialStatus,
+        diagnostic: String,
+    ) -> Result<ModelExperiment, PythonResearchError> {
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
+        let mut next = database.clone();
+        let experiment = next
+            .experiments
+            .get_mut(&model_key(user_id, experiment_id))
+            .ok_or_else(|| PythonResearchError("model-experiment-not-found".into()))?;
+        let registered_without_source = experiment
+            .trials
+            .iter()
+            .find(|trial| trial.trial_id == trial_id)
+            .map(|trial| {
+                trial.status == TrialStatus::Registered
+                    && !trial.attempt_ids.iter().any(|id| id == source_attempt_id)
+            })
+            .ok_or_else(|| PythonResearchError("model-trial-not-found".into()))?;
+        if registered_without_source {
+            experiment.fail_trial_with_diagnostic(
+                trial_id,
+                source_attempt_id.to_owned(),
+                source_status,
+                diagnostic,
+            )?;
         }
-        database.experiments.insert(key, experiment.clone());
-        self.persist(&database)?;
-        Ok(experiment)
+        experiment.retry_trial(trial_id, source_attempt_id)?;
+        experiment.validate()?;
+        let result = experiment.clone();
+        self.persist(&next)?;
+        *database = next;
+        Ok(result)
     }
 
     fn save_demo_run(
@@ -703,6 +753,21 @@ impl ModelLabStore {
             .ok_or_else(|| PythonResearchError("model-experiment-not-found".into()))
     }
 
+    fn list_experiments(&self, user_id: &str) -> Result<Vec<ModelExperiment>, PythonResearchError> {
+        let prefix = format!("{user_id}:");
+        let mut experiments = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?
+            .experiments
+            .iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .map(|(_, experiment)| experiment.clone())
+            .collect::<Vec<_>>();
+        experiments.sort_by(|left, right| left.experiment_id.cmp(&right.experiment_id));
+        Ok(experiments)
+    }
+
     fn save_final(
         &self,
         user_id: &str,
@@ -849,6 +914,15 @@ fn validate_model_trial_run(run: &ModelRunView, trial: &ModelTrial, attempt_id: 
         && run.input_evidence_sha256 == trial.input_evidence_sha256
         && run.seed == trial.seed
         && run.binding_sha256 == trial.binding_sha256
+}
+
+fn attempt_matches_model_trial_alpha(attempt: &ResearchAttempt, trial: &ModelTrial) -> bool {
+    attempt
+        .execution
+        .parameters
+        .get("alpha")
+        .and_then(|value| value.parse::<f64>().ok())
+        .is_some_and(|alpha| alpha.to_bits() == trial.alpha.to_bits())
 }
 
 fn validate_model_trial_candidate(
@@ -2890,6 +2964,28 @@ impl PythonResearchState {
                         .transition(&attempt_id, AttemptTransition::FinishCancel);
                 }
             }
+            Ok(RunnerExecution {
+                conformance: Some(result),
+                ..
+            }) if result.attempt_id != attempt_id || result.project_id != attempt.project_id => {
+                let cancelled = self
+                    .attempt_store
+                    .get(&attempt_id)
+                    .map(|current| current.cancel_requested)
+                    .unwrap_or(false);
+                let _ = if cancelled {
+                    self.attempt_store
+                        .transition(&attempt_id, AttemptTransition::FinishCancel)
+                } else {
+                    self.attempt_store.transition(
+                        &attempt_id,
+                        AttemptTransition::MarkStale {
+                            diagnostic: "Runner returned a result for a different Attempt or Project"
+                                .into(),
+                        },
+                    )
+                };
+            }
             Err(error) if error.0 == "runner-cancelled" => {
                 let _ = self
                     .attempt_store
@@ -3225,6 +3321,52 @@ impl PythonResearchState {
         input: Option<serde_json::Value>,
         parameter_overrides: Option<&BTreeMap<String, String>>,
     ) -> Result<RunnerExecution, PythonResearchError> {
+        self.run_trusted_project_with_execution_or_retry(
+            user_id,
+            project_id,
+            revision_sha256,
+            environment_sha256,
+            seed,
+            input,
+            parameter_overrides,
+            None,
+        )
+    }
+
+    fn run_trusted_project_with_retry(
+        &self,
+        user_id: &str,
+        project_id: &str,
+        revision_sha256: &str,
+        environment_sha256: &str,
+        seed: u64,
+        input: Option<serde_json::Value>,
+        parameter_overrides: Option<&BTreeMap<String, String>>,
+        source_attempt_id: &str,
+    ) -> Result<RunnerExecution, PythonResearchError> {
+        self.run_trusted_project_with_execution_or_retry(
+            user_id,
+            project_id,
+            revision_sha256,
+            environment_sha256,
+            seed,
+            input,
+            parameter_overrides,
+            Some(source_attempt_id),
+        )
+    }
+
+    fn run_trusted_project_with_execution_or_retry(
+        &self,
+        user_id: &str,
+        project_id: &str,
+        revision_sha256: &str,
+        environment_sha256: &str,
+        seed: u64,
+        input: Option<serde_json::Value>,
+        parameter_overrides: Option<&BTreeMap<String, String>>,
+        source_attempt_id: Option<&str>,
+    ) -> Result<RunnerExecution, PythonResearchError> {
         let context = load_attempt_context(
             &self.store,
             &self.environment_store,
@@ -3241,21 +3383,47 @@ impl PythonResearchState {
         {
             return Err(PythonResearchError("research-revision-not-trusted".into()));
         }
-        let attempt = self.attempt_store.enqueue_with_execution(
-            user_id,
-            project_id,
-            revision_sha256,
-            context.environment.environment_sha256.clone(),
-            effective_resource_policy(&context.manifest, None)?,
-            build_attempt_execution(
-                &context.revision,
-                &context.manifest,
-                &context.lock,
-                seed,
-                input,
-                parameter_overrides,
-            )?,
+        let resource_policy = effective_resource_policy(&context.manifest, None)?;
+        let execution = build_attempt_execution(
+            &context.revision,
+            &context.manifest,
+            &context.lock,
+            seed,
+            input,
+            parameter_overrides,
         )?;
+        let attempt = if let Some(source_attempt_id) = source_attempt_id {
+            let previous = self.attempt_store.get(source_attempt_id)?;
+            if previous.user_id != user_id
+                || previous.project_id != project_id
+                || previous.revision_sha256 != revision_sha256
+                || previous.environment_sha256 != environment_sha256
+                || previous.resource_policy != resource_policy
+                || previous.execution != execution
+                || (!matches!(
+                    previous.status,
+                    PythonAttemptStatus::Failed
+                        | PythonAttemptStatus::Cancelled
+                        | PythonAttemptStatus::Interrupted
+                        | PythonAttemptStatus::Stale
+                ) && !(previous.status == PythonAttemptStatus::Completed
+                    && previous.failure_code.is_some()))
+            {
+                return Err(PythonResearchError(
+                    "research-attempt-retry-binding-invalid".into(),
+                ));
+            }
+            self.attempt_store.retry(source_attempt_id)?
+        } else {
+            self.attempt_store.enqueue_with_execution(
+                user_id,
+                project_id,
+                revision_sha256,
+                context.environment.environment_sha256.clone(),
+                resource_policy,
+                execution,
+            )?
+        };
         self.admit_attempt(&attempt).map_err(PythonResearchError)?;
         self.wait_for_attempt(
             &attempt.attempt_id,
@@ -3337,6 +3505,12 @@ impl PythonResearchState {
                 }
                 adaq_python_research::runner::AttemptStatus::Cancelled => {
                     return Err(PythonResearchError("runner-cancelled".into()));
+                }
+                adaq_python_research::runner::AttemptStatus::Interrupted => {
+                    return Err(PythonResearchError("research-attempt-interrupted".into()));
+                }
+                adaq_python_research::runner::AttemptStatus::Stale => {
+                    return Err(PythonResearchError("research-attempt-stale".into()));
                 }
                 adaq_python_research::runner::AttemptStatus::Pending
                 | adaq_python_research::runner::AttemptStatus::Running => {}
@@ -3623,6 +3797,8 @@ pub struct ModelRunRequest {
     pub environment_sha256: String,
     pub factor_decision_hash: String,
     pub alpha: Option<f64>,
+    #[serde(default)]
+    pub retry_attempt_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3666,6 +3842,15 @@ pub struct ModelTrialCompleteRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelTrialFailRequest {
+    pub user_id: String,
+    pub experiment_id: String,
+    pub trial_id: String,
+    pub attempt_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTrialRetryRequest {
     pub user_id: String,
     pub experiment_id: String,
     pub trial_id: String,
@@ -4948,6 +5133,7 @@ pub async fn model_demo_run(
             model_input_evidence_hash(&factor_binding).map_err(map_error)?;
         let project_revision_sha256 = request.project_revision_sha256;
         let environment_sha256 = request.environment_sha256;
+        let retry_attempt_id = request.retry_attempt_id;
         let input = ModelInputEvidence {
             decision_hash: factor_binding.decision_hash,
             promotion_protocol_hash: factor_binding.promotion_protocol.protocol_hash,
@@ -4965,17 +5151,32 @@ pub async fn model_demo_run(
         let runner_input = evidence.runner_input().map_err(map_error)?;
         let runner_input = serde_json::to_value(runner_input).map_err(|error| error.to_string())?;
         let parameters = BTreeMap::from([("alpha".into(), alpha.to_string())]);
-        let execution = research_state
-            .run_trusted_project_with_execution(
-                &request.user_id,
-                &request.project_id,
-                &project_revision_sha256,
-                &environment_sha256,
-                7,
-                Some(runner_input.clone()),
-                Some(&parameters),
-            )
-            .map_err(map_error)?;
+        let execution = if let Some(source_attempt_id) = retry_attempt_id.as_deref() {
+            research_state
+                .run_trusted_project_with_retry(
+                    &request.user_id,
+                    &request.project_id,
+                    &project_revision_sha256,
+                    &environment_sha256,
+                    7,
+                    Some(runner_input.clone()),
+                    Some(&parameters),
+                    source_attempt_id,
+                )
+                .map_err(map_error)?
+        } else {
+            research_state
+                .run_trusted_project_with_execution(
+                    &request.user_id,
+                    &request.project_id,
+                    &project_revision_sha256,
+                    &environment_sha256,
+                    7,
+                    Some(runner_input.clone()),
+                    Some(&parameters),
+                )
+                .map_err(map_error)?
+        };
         let (replay_execution, replay_resource_policy) = research_state
             .run_trusted_project_verification(
                 &request.user_id,
@@ -5095,11 +5296,23 @@ pub async fn model_demo_run(
         } else {
             RepeatabilityState::Divergent
         };
-        run.view.attempt_id = attempt_id;
-        let view = research_state
+        run.view.attempt_id = attempt_id.clone();
+        let view = match research_state
             .model_lab_store
             .save_demo_run(&request.user_id, &run, false)
-            .map_err(map_error)?;
+        {
+            Ok(view) => view,
+            Err(error) => {
+                let _ = research_state.attempt_store.transition(
+                    &attempt_id,
+                    AttemptTransition::RecordHostFailure {
+                        code: "model-host-save-failed".into(),
+                        diagnostic: error.0.clone(),
+                    },
+                );
+                return Err(error.0);
+            }
+        };
         Ok(view)
     })
     .await
@@ -5631,9 +5844,28 @@ pub async fn model_experiment_register(
             request.derived_from_decision_id,
         )
         .map_err(map_error)?;
+        let mut experiment = experiment;
+        experiment.factor_decision_hash = request.factor_decision_hash;
         store
             .register(&request.user_id, experiment)
             .map_err(map_error)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn model_experiment_list(
+    user_id: String,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
+    state: State<'_, Arc<PythonResearchState>>,
+) -> Result<Vec<ModelExperiment>, String> {
+    let _ = user_id;
+    let user_id = auth.user_id_for_window(window.label())?;
+    let store = state.model_lab_store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.list_experiments(&user_id).map_err(map_error)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -5657,6 +5889,7 @@ pub async fn model_trial_complete(
             .trials
             .iter()
             .find(|trial| trial.trial_id == request.trial_id)
+            .cloned()
             .ok_or_else(|| "model-trial-not-found".to_string())?;
         let attempt = attempt_store.get(&request.attempt_id).map_err(map_error)?;
         if attempt.user_id != request.user_id
@@ -5688,28 +5921,37 @@ pub async fn model_trial_complete(
         {
             return Err("model-selection-metric-mismatch".into());
         }
-        if run.repeatability_verified {
-            store
-                .complete_trial_with_candidate(
-                    &request.user_id,
-                    &request.experiment_id,
-                    &request.trial_id,
-                    request.attempt_id,
-                    request.selection_metric,
-                    run.artifact_sha256,
-                )
-                .map_err(map_error)
+        let result = if run.repeatability_verified {
+            store.complete_trial_with_candidate(
+                &request.user_id,
+                &request.experiment_id,
+                &request.trial_id,
+                request.attempt_id.clone(),
+                request.selection_metric,
+                run.artifact_sha256,
+            )
         } else {
-            store
-                .complete_trial_with_repeatability(
-                    &request.user_id,
-                    &request.experiment_id,
-                    &request.trial_id,
-                    request.attempt_id,
-                    request.selection_metric,
-                    run.repeatability_state,
-                )
-                .map_err(map_error)
+            store.complete_trial_with_repeatability(
+                &request.user_id,
+                &request.experiment_id,
+                &request.trial_id,
+                request.attempt_id.clone(),
+                request.selection_metric,
+                run.repeatability_state,
+            )
+        };
+        match result {
+            Ok(experiment) => Ok(experiment),
+            Err(error) => {
+                let _ = attempt_store.transition(
+                    &request.attempt_id,
+                    AttemptTransition::RecordHostFailure {
+                        code: "model-host-bind-failed".into(),
+                        diagnostic: error.0.clone(),
+                    },
+                );
+                Err(error.0)
+            }
         }
     })
     .await
@@ -5734,18 +5976,27 @@ pub async fn model_trial_fail(
             .trials
             .iter()
             .find(|trial| trial.trial_id == request.trial_id)
+            .cloned()
             .ok_or_else(|| "model-trial-not-found".to_string())?;
         let attempt = attempt_store.get(&request.attempt_id).map_err(map_error)?;
         if attempt.user_id != request.user_id
             || attempt.project_id != MODEL_PROJECT_ID
             || attempt.revision_sha256 != trial.project_revision_sha256
             || attempt.environment_sha256 != trial.environment_sha256
+            || !attempt_matches_model_trial_alpha(&attempt, &trial)
         {
             return Err("model-trial-attempt-binding-invalid".into());
         }
         let status = match attempt.status {
             adaq_python_research::runner::AttemptStatus::Cancelled => TrialStatus::Cancelled,
+            adaq_python_research::runner::AttemptStatus::Interrupted => TrialStatus::Interrupted,
+            adaq_python_research::runner::AttemptStatus::Stale => TrialStatus::Stale,
             adaq_python_research::runner::AttemptStatus::Failed => TrialStatus::Failed,
+            adaq_python_research::runner::AttemptStatus::Completed
+                if attempt.failure_code.is_some() =>
+            {
+                TrialStatus::Failed
+            }
             _ => return Err("model-trial-failure-requires-terminal-attempt".into()),
         };
         let diagnostic = attempt
@@ -5753,12 +6004,85 @@ pub async fn model_trial_fail(
             .clone()
             .or(attempt.failure_code.clone())
             .unwrap_or_default();
-        let mut experiment = experiment;
-        experiment
-            .fail_trial_with_diagnostic(&request.trial_id, request.attempt_id, status, diagnostic)
-            .map_err(map_error)?;
         store
-            .replace_experiment(&request.user_id, experiment)
+            .fail_trial(
+                &request.user_id,
+                &request.experiment_id,
+                &request.trial_id,
+                request.attempt_id,
+                status,
+                diagnostic,
+            )
+            .map_err(map_error)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn model_trial_retry(
+    mut request: ModelTrialRetryRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
+    state: State<'_, Arc<PythonResearchState>>,
+) -> Result<ModelExperiment, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    let store = state.model_lab_store.clone();
+    let attempt_store = state.attempt_store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let attempt = attempt_store.get(&request.attempt_id).map_err(map_error)?;
+        let experiment = store
+            .experiment(&request.user_id, &request.experiment_id)
+            .map_err(map_error)?;
+        let trial = experiment
+            .trials
+            .iter()
+            .find(|trial| trial.trial_id == request.trial_id)
+            .cloned()
+            .ok_or_else(|| "model-trial-not-found".to_string())?;
+        let alpha = attempt
+            .execution
+            .parameters
+            .get("alpha")
+            .and_then(|value| value.parse::<f64>().ok());
+        let retryable = matches!(
+            attempt.status,
+            PythonAttemptStatus::Failed
+                | PythonAttemptStatus::Cancelled
+                | PythonAttemptStatus::Interrupted
+                | PythonAttemptStatus::Stale
+        ) || (attempt.status == PythonAttemptStatus::Completed
+            && attempt.failure_code.is_some());
+        if attempt.user_id != request.user_id
+            || attempt.project_id != MODEL_PROJECT_ID
+            || attempt.revision_sha256 != trial.project_revision_sha256
+            || attempt.environment_sha256 != trial.environment_sha256
+            || !alpha.is_some_and(|alpha| alpha.to_bits() == trial.alpha.to_bits())
+            || !retryable
+        {
+            return Err("model-trial-retry-attempt-binding-invalid".into());
+        }
+        let source_status = match attempt.status {
+            PythonAttemptStatus::Cancelled => TrialStatus::Cancelled,
+            PythonAttemptStatus::Interrupted => TrialStatus::Interrupted,
+            PythonAttemptStatus::Stale => TrialStatus::Stale,
+            PythonAttemptStatus::Failed | PythonAttemptStatus::Completed => TrialStatus::Failed,
+            _ => return Err("model-trial-retry-attempt-binding-invalid".into()),
+        };
+        let diagnostic = attempt
+            .diagnostic
+            .clone()
+            .or(attempt.failure_code.clone())
+            .unwrap_or_default();
+        store
+            .retry_trial_from_attempt(
+                &request.user_id,
+                &request.experiment_id,
+                &request.trial_id,
+                &request.attempt_id,
+                source_status,
+                diagnostic,
+            )
             .map_err(map_error)
     })
     .await

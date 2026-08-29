@@ -722,6 +722,8 @@ pub enum AttemptStatus {
     Completed,
     Failed,
     Cancelled,
+    Interrupted,
+    Stale,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -857,6 +859,49 @@ impl ResearchAttempt {
         Ok(())
     }
 
+    pub fn interrupt(
+        &mut self,
+        code: impl Into<String>,
+        diagnostic: impl Into<String>,
+    ) -> Result<(), PythonResearchError> {
+        if self.status != AttemptStatus::Running {
+            return Err(invalid("research-attempt-transition-invalid"));
+        }
+        self.status = AttemptStatus::Interrupted;
+        self.failure_code = Some(code.into());
+        self.diagnostic = Some(bounded_diagnostic(&diagnostic.into()));
+        self.updated_at_ms = now_ms();
+        Ok(())
+    }
+
+    pub fn stale(&mut self, diagnostic: impl Into<String>) -> Result<(), PythonResearchError> {
+        if !matches!(self.status, AttemptStatus::Pending | AttemptStatus::Running) {
+            return Err(invalid("research-attempt-transition-invalid"));
+        }
+        self.status = AttemptStatus::Stale;
+        self.failure_code = Some("research-stale".into());
+        self.diagnostic = Some(bounded_diagnostic(&diagnostic.into()));
+        self.updated_at_ms = now_ms();
+        Ok(())
+    }
+
+    pub fn record_host_failure(
+        &mut self,
+        code: impl Into<String>,
+        diagnostic: impl Into<String>,
+    ) -> Result<(), PythonResearchError> {
+        if self.status != AttemptStatus::Completed
+            || self.staged_result_sha256.is_none()
+            || self.failure_code.is_some()
+        {
+            return Err(invalid("research-attempt-transition-invalid"));
+        }
+        self.failure_code = Some(code.into());
+        self.diagnostic = Some(bounded_diagnostic(&diagnostic.into()));
+        self.updated_at_ms = now_ms();
+        Ok(())
+    }
+
     pub fn record_log(&mut self, value: impl Into<String>) -> Result<(), PythonResearchError> {
         if !matches!(
             self.status,
@@ -908,8 +953,12 @@ impl ResearchAttempt {
     pub fn retry(&self, queue_sequence: u64) -> Result<Self, PythonResearchError> {
         if !matches!(
             self.status,
-            AttemptStatus::Failed | AttemptStatus::Cancelled
-        ) {
+            AttemptStatus::Failed
+                | AttemptStatus::Cancelled
+                | AttemptStatus::Interrupted
+                | AttemptStatus::Stale
+        ) && !(self.status == AttemptStatus::Completed && self.failure_code.is_some())
+        {
             return Err(invalid("research-attempt-retry-invalid"));
         }
         let mut next = Self::new(
@@ -1147,6 +1196,13 @@ impl AttemptStore {
             AttemptTransition::Begin => attempt.begin()?,
             AttemptTransition::Complete { result_sha256 } => attempt.complete(result_sha256)?,
             AttemptTransition::Fail { code, diagnostic } => attempt.fail(code, diagnostic)?,
+            AttemptTransition::Interrupt { code, diagnostic } => {
+                attempt.interrupt(code, diagnostic)?
+            }
+            AttemptTransition::MarkStale { diagnostic } => attempt.stale(diagnostic)?,
+            AttemptTransition::RecordHostFailure { code, diagnostic } => {
+                attempt.record_host_failure(code, diagnostic)?
+            }
             AttemptTransition::Cancel => attempt.cancel()?,
             AttemptTransition::FinishCancel => attempt.finish_cancel()?,
             AttemptTransition::RecordLog { value } => attempt.record_log(value)?,
@@ -1180,10 +1236,14 @@ impl AttemptStore {
         let mut changed = false;
         for attempt in database.attempts.values_mut() {
             if attempt.status == AttemptStatus::Running {
-                attempt.fail(
-                    "generation-interrupted",
-                    "Runner was not terminal at application restart",
-                )?;
+                if attempt.cancel_requested {
+                    attempt.finish_cancel()?;
+                } else {
+                    attempt.interrupt(
+                        "research-interrupted",
+                        "Runner was not terminal at application restart",
+                    )?;
+                }
                 changed = true;
             }
         }
@@ -1301,6 +1361,9 @@ pub enum AttemptTransition {
     Begin,
     Complete { result_sha256: String },
     Fail { code: String, diagnostic: String },
+    Interrupt { code: String, diagnostic: String },
+    MarkStale { diagnostic: String },
+    RecordHostFailure { code: String, diagnostic: String },
     Cancel,
     FinishCancel,
     RecordLog { value: String },
@@ -2249,7 +2312,7 @@ mod tests {
         let store = AttemptStore::open(directory.path().join("attempts.json")).unwrap();
         assert_eq!(
             store.list("alice").unwrap()[0].status,
-            AttemptStatus::Failed
+            AttemptStatus::Interrupted
         );
         let retry = store.retry(&first.attempt_id).unwrap();
         assert_eq!(
@@ -2261,6 +2324,82 @@ mod tests {
                 .active_environment_ids()
                 .unwrap()
                 .contains(&hash("environment"))
+        );
+    }
+
+    #[test]
+    fn stale_and_host_failed_attempts_remain_retryable_with_bounded_diagnostics() {
+        let directory = tempdir().unwrap();
+        let store = AttemptStore::open(directory.path().join("attempts.json")).unwrap();
+        let stale = store
+            .enqueue(
+                "alice",
+                "runner-conformance@1",
+                hash("stale-revision"),
+                hash("stale-environment"),
+                policy(),
+            )
+            .unwrap();
+        store
+            .transition(
+                &stale.attempt_id,
+                AttemptTransition::MarkStale {
+                    diagnostic: "stale response".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store.get(&stale.attempt_id).unwrap().status,
+            AttemptStatus::Stale
+        );
+
+        let host_failed = store
+            .enqueue(
+                "alice",
+                "runner-conformance@1",
+                hash("host-failure-revision"),
+                hash("host-failure-environment"),
+                policy(),
+            )
+            .unwrap();
+        store
+            .transition(&host_failed.attempt_id, AttemptTransition::Begin)
+            .unwrap();
+        store
+            .transition(
+                &host_failed.attempt_id,
+                AttemptTransition::Complete {
+                    result_sha256: hash("result"),
+                },
+            )
+            .unwrap();
+        store
+            .transition(
+                &host_failed.attempt_id,
+                AttemptTransition::RecordHostFailure {
+                    code: "model-host-save-failed".into(),
+                    diagnostic: "x".repeat(5000),
+                },
+            )
+            .unwrap();
+        let recorded = store.get(&host_failed.attempt_id).unwrap();
+        assert_eq!(recorded.status, AttemptStatus::Completed);
+        assert_eq!(
+            recorded.failure_code.as_deref(),
+            Some("model-host-save-failed")
+        );
+        assert_eq!(recorded.diagnostic.as_ref().unwrap().len(), 4096);
+
+        assert_eq!(
+            store.retry(&stale.attempt_id).unwrap().source_attempt_id,
+            Some(stale.attempt_id)
+        );
+        assert_eq!(
+            store
+                .retry(&host_failed.attempt_id)
+                .unwrap()
+                .source_attempt_id,
+            Some(host_failed.attempt_id)
         );
     }
 

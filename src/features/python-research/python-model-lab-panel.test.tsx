@@ -34,6 +34,7 @@ type ExperimentFixture = {
 	inputEvidenceSha256: string;
 	bindingSha256: string;
 	seed: number;
+	factorDecisionHash?: string;
 	lineageEvidenceState: "out-of-sample" | "overlapping" | "unknown";
 	trials: TrialFixture[];
 };
@@ -102,6 +103,7 @@ function makeExperiment(completed: boolean): ExperimentFixture {
 		inputEvidenceSha256,
 		bindingSha256,
 		seed: 7,
+		factorDecisionHash,
 		lineageEvidenceState: "unknown",
 		trials: [0.1, 1, 10].map((alpha, index) => ({
 			trialId: `trial-${index}`,
@@ -120,52 +122,103 @@ function makeExperiment(completed: boolean): ExperimentFixture {
 	};
 }
 
+function makeExperimentWithCompletedTrial(trialId: string): ExperimentFixture {
+	const experiment = makeExperiment(false);
+	const trial = experiment.trials.find((item) => item.trialId === trialId);
+	if (!trial) throw new Error(`unknown trial ${trialId}`);
+	const index = experiment.trials.indexOf(trial);
+	experiment.trials[index] = {
+		...trial,
+		status: "completed",
+		attemptIds: [`attempt-complete-${index}`],
+		successfulAttemptId: `attempt-complete-${index}`,
+		candidateArtifactSha256: `candidate-complete-${index}`,
+		selectionMetric: index + 1,
+		repeatabilityState: "verified",
+	};
+	return experiment;
+}
+
 let experimentResponse = makeExperiment(false);
+let persistedExperiments: ExperimentFixture[] = [];
+let attemptsResponse: Array<Record<string, unknown>> = [];
+let completionResponse: ExperimentFixture | undefined;
+let partialCompletionResponses = false;
+let delayedTrialCompletion:
+	| {
+			promise: Promise<ExperimentFixture>;
+			resolve: (experiment: ExperimentFixture) => void;
+	  }
+	| undefined;
 
 const invokeMock = jest.requireMock("@tauri-apps/api/core").invoke as jest.Mock;
 
-invokeMock.mockImplementation(async (command: string) => {
-	switch (command) {
-		case "project_list":
-			return [{ projectId, state: "clean", revisionSha256: revision }];
-		case "factor_decision_library":
-			return {
-				items: [
-					{
-						decision: {
-							decisionHash: factorDecisionHash,
-							candidateHash: "factor-candidate-sha",
-							state: "research-validated",
+invokeMock.mockImplementation(
+	async (
+		command: string,
+		args?: { request?: { alpha?: number; trialId?: string } },
+	) => {
+		switch (command) {
+			case "project_list":
+				return [{ projectId, state: "clean", revisionSha256: revision }];
+			case "factor_decision_library":
+				return {
+					items: [
+						{
+							decision: {
+								decisionHash: factorDecisionHash,
+								candidateHash: "factor-candidate-sha",
+								state: "research-validated",
+							},
+							promotionProtocolHash: "protocol-sha",
 						},
-						promotionProtocolHash: "protocol-sha",
-					},
-				],
-			};
-		case "environment_for_project":
-			return { environmentSha256 };
-		case "attempt_list":
-			return [];
-		case "model_demo_run":
-			return demoRun;
-		case "model_experiment_register":
-			return experimentResponse;
-		case "model_selection_record":
-			return {
-				decisionId: "decision-sha",
-				selectedTrialId: "trial-1",
-				selectedAlpha: 1,
-				bindingSha256,
-				projectRevisionSha256: revision,
-				environmentSha256,
-				inputEvidenceSha256,
-				seed: 7,
-				candidateArtifactSha256: "candidate-artifact-1",
-				evidenceState: "unknown",
-			};
-		default:
-			return null;
-	}
-});
+					],
+				};
+			case "environment_for_project":
+				return { environmentSha256 };
+			case "attempt_list":
+				return attemptsResponse;
+			case "model_experiment_list":
+				return persistedExperiments;
+			case "model_demo_run": {
+				const alpha = args?.request?.alpha ?? 1;
+				return {
+					...demoRun,
+					alpha,
+					attemptId: alpha === 1 ? demoRun.attemptId : `attempt-alpha-${alpha}`,
+				};
+			}
+			case "model_experiment_register":
+				return experimentResponse;
+			case "model_trial_retry":
+				return experimentResponse;
+			case "model_trial_complete":
+				if (args?.request?.trialId === "trial-0" && delayedTrialCompletion) {
+					return delayedTrialCompletion.promise;
+				}
+				if (completionResponse) return completionResponse;
+				if (partialCompletionResponses && args?.request?.trialId) {
+					return makeExperimentWithCompletedTrial(args.request.trialId);
+				}
+				return experimentResponse;
+			case "model_selection_record":
+				return {
+					decisionId: "decision-sha",
+					selectedTrialId: "trial-1",
+					selectedAlpha: 1,
+					bindingSha256,
+					projectRevisionSha256: revision,
+					environmentSha256,
+					inputEvidenceSha256,
+					seed: 7,
+					candidateArtifactSha256: "candidate-artifact-1",
+					evidenceState: "unknown",
+				};
+			default:
+				return null;
+		}
+	},
+);
 
 function mount() {
 	const container = document.createElement("div");
@@ -225,6 +278,11 @@ async function prepareGrid(root: Root, container: HTMLDivElement) {
 beforeEach(() => {
 	i18n.changeLanguage("en-US");
 	experimentResponse = makeExperiment(false);
+	persistedExperiments = [];
+	attemptsResponse = [];
+	completionResponse = undefined;
+	partialCompletionResponses = false;
+	delayedTrialCompletion = undefined;
 	invokeMock.mockClear();
 	Object.defineProperty(window, "__TAURI_INTERNALS__", {
 		configurable: true,
@@ -297,6 +355,247 @@ test("renders every successful attempt and candidate artifact, then binds select
 			trialId: "trial-1",
 		},
 	});
+
+	await act(async () => root.unmount());
+});
+
+test("reloads persisted trials with recovery status and source Attempt identity", async () => {
+	persistedExperiments = [makeExperiment(false)];
+	attemptsResponse = [
+		{
+			attemptId: "attempt-interrupted",
+			projectId,
+			revisionSha256: revision,
+			environmentSha256,
+			status: "interrupted",
+			sourceAttemptId: "attempt-original",
+			queueSequence: 4,
+			failureCode: "research-interrupted",
+			diagnostic: "Runner was not terminal at application restart",
+			execution: { parameters: { alpha: "0.1" } },
+		},
+	];
+	const { container, root } = mount();
+	await act(async () => {
+		root.render(<PythonModelLabPanel userId={userId} />);
+	});
+	await settle();
+
+	expect(container.textContent).toContain("Experiment experiment-sha");
+	expect(container.textContent).toContain("Interrupted");
+	expect(container.textContent).toContain("Source Attempt attempt-original");
+	expect(container.textContent).toContain(
+		"No downstream Forecast Signal Dataset is published for this Trial.",
+	);
+	expect(container.querySelector('[data-status="interrupted"]')).not.toBeNull();
+
+	await act(async () => root.unmount());
+});
+
+test("keeps retry visible after a failed Attempt is retained on the Trial", async () => {
+	const experiment = makeExperiment(false);
+	experiment.trials[0] = {
+		...experiment.trials[0],
+		status: "failed",
+		attemptIds: ["attempt-failed"],
+		diagnostics: ["model-host-save-failed"],
+	};
+	persistedExperiments = [experiment];
+	attemptsResponse = [
+		{
+			attemptId: "attempt-failed",
+			projectId,
+			revisionSha256: revision,
+			environmentSha256,
+			status: "failed",
+			failureCode: "model-host-save-failed",
+			diagnostic: "bounded host diagnostic",
+			execution: { parameters: { alpha: "0.1" } },
+		},
+	];
+	const { container, root } = mount();
+	await act(async () => {
+		root.render(<PythonModelLabPanel userId={userId} />);
+	});
+	await settle();
+
+	expect(container.textContent).toContain("Retry this Trial");
+	const retainButton = [...container.querySelectorAll("button")].find(
+		(button) => button.textContent === "Retain failure",
+	);
+	expect(retainButton?.hasAttribute("disabled")).toBe(true);
+
+	await act(async () => root.unmount());
+});
+
+test("ignores an older Trial completion after Retry starts", async () => {
+	let resolveOldCompletion: (experiment: ExperimentFixture) => void = () => {};
+	delayedTrialCompletion = {
+		promise: new Promise((resolve) => {
+			resolveOldCompletion = resolve;
+		}),
+		resolve: (experiment) => resolveOldCompletion(experiment),
+	};
+	attemptsResponse = [
+		{
+			attemptId: "attempt-failed",
+			projectId,
+			revisionSha256: revision,
+			environmentSha256,
+			status: "failed",
+			execution: { parameters: { alpha: "0.1" } },
+		},
+	];
+	completionResponse = makeExperimentWithCompletedTrial("trial-0");
+	const { container, root } = mount();
+	await prepareGrid(root, container);
+
+	const completeButton = [...container.querySelectorAll("button")].find(
+		(button) => button.textContent === "Complete trial",
+	);
+	if (!completeButton)
+		throw new Error("initial completion button did not render");
+	await act(async () => {
+		completeButton.click();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+
+	delayedTrialCompletion = undefined;
+	const retryButton = [...container.querySelectorAll("button")].find(
+		(button) => button.textContent === "Retry this Trial",
+	);
+	if (!retryButton) throw new Error("retry button did not render");
+	await act(async () => {
+		retryButton.click();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	await settle();
+
+	const oldCompletion = makeExperimentWithCompletedTrial("trial-0");
+	oldCompletion.trials[0].candidateArtifactSha256 = "candidate-old";
+	resolveOldCompletion(oldCompletion);
+	await settle();
+
+	expect(container.textContent).toContain(
+		"Candidate Model Artifact candidate-complete-0",
+	);
+	expect(container.textContent).not.toContain(
+		"Candidate Model Artifact candidate-old",
+	);
+
+	await act(async () => root.unmount());
+});
+
+test("retries the same Trial from its failed Attempt and binds the new Attempt", async () => {
+	attemptsResponse = [
+		{
+			attemptId: "attempt-interrupted",
+			projectId,
+			revisionSha256: revision,
+			environmentSha256,
+			status: "interrupted",
+			sourceAttemptId: "attempt-original",
+			queueSequence: 4,
+			failureCode: "research-interrupted",
+			diagnostic: "Runner was not terminal at application restart",
+			execution: { parameters: { alpha: "0.1" } },
+		},
+	];
+	completionResponse = makeExperiment(true);
+	const { container, root } = mount();
+	await prepareGrid(root, container);
+
+	const retryButton = [...container.querySelectorAll("button")].find(
+		(button) => button.textContent === "Retry this Trial",
+	);
+	if (!retryButton) throw new Error("same-Trial retry button did not render");
+	await act(async () => {
+		retryButton.click();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	await settle();
+
+	const retryCall = invokeMock.mock.calls.find(
+		([command]) => command === "model_trial_retry",
+	);
+	expect(retryCall?.[1]).toEqual({
+		request: {
+			userId,
+			experimentId: "experiment-sha",
+			trialId: "trial-0",
+			attemptId: "attempt-interrupted",
+		},
+	});
+	const modelRuns = invokeMock.mock.calls.filter(
+		([command]) => command === "model_demo_run",
+	);
+	expect(modelRuns.at(-1)?.[1]).toEqual({
+		request: expect.objectContaining({
+			alpha: 0.1,
+			retryAttemptId: "attempt-interrupted",
+		}),
+	});
+	expect(container.textContent).toContain(
+		"Candidate Model Artifact candidate-artifact-0",
+	);
+
+	await act(async () => root.unmount());
+});
+
+test("keeps concurrent Trial completions from overwriting each other", async () => {
+	partialCompletionResponses = true;
+	const { container, root } = mount();
+	await prepareGrid(root, container);
+
+	const completeButtons = [...container.querySelectorAll("button")].filter(
+		(button) => button.textContent === "Complete trial",
+	);
+	expect(completeButtons).toHaveLength(3);
+	await act(async () => {
+		completeButtons[0].click();
+		completeButtons[1].click();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	await settle();
+
+	expect(
+		invokeMock.mock.calls.filter(
+			([command]) => command === "model_trial_complete",
+		),
+	).toHaveLength(2);
+	expect(container.textContent).toContain(
+		"Candidate Model Artifact candidate-complete-0",
+	);
+	expect(container.textContent).toContain(
+		"Candidate Model Artifact candidate-complete-1",
+	);
+
+	await act(async () => root.unmount());
+});
+
+test("renders persisted Model Research status and controls in simplified Chinese", async () => {
+	i18n.changeLanguage("zh-CN");
+	persistedExperiments = [makeExperiment(true)];
+	const { container, root } = mount();
+	await act(async () => {
+		root.render(<PythonModelLabPanel userId={userId} />);
+	});
+	await settle();
+
+	expect(container.textContent).toContain("Host-fed Qlib Ridge 模型");
+	expect(container.textContent).toContain("已完成");
+	expect(container.textContent).toContain(
+		"此 Trial 不会发布下游 Forecast Signal Dataset。",
+	);
+	expect(
+		[...container.querySelectorAll("button")].filter(
+			(button) => button.textContent === "记录选择",
+		),
+	).toHaveLength(3);
 
 	await act(async () => root.unmount());
 });
