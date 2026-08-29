@@ -141,6 +141,10 @@ function makeExperimentWithCompletedTrial(trialId: string): ExperimentFixture {
 
 let experimentResponse = makeExperiment(false);
 let persistedExperiments: ExperimentFixture[] = [];
+let persistedDecision: Record<string, unknown> | null = null;
+let persistedReport: Record<string, unknown> | null = null;
+let finalEvaluationResponse: Record<string, unknown> | null = null;
+let finalEvaluationError: string | undefined;
 let attemptsResponse: Array<Record<string, unknown>> = [];
 let completionResponse: ExperimentFixture | undefined;
 let partialCompletionResponses = false;
@@ -156,7 +160,13 @@ const invokeMock = jest.requireMock("@tauri-apps/api/core").invoke as jest.Mock;
 invokeMock.mockImplementation(
 	async (
 		command: string,
-		args?: { request?: { alpha?: number; trialId?: string } },
+		args?: {
+			request?: {
+				alpha?: number;
+				trialId?: string;
+				factorDecisionHash?: string;
+			};
+		},
 	) => {
 		switch (command) {
 			case "project_list":
@@ -178,8 +188,24 @@ invokeMock.mockImplementation(
 				return { environmentSha256 };
 			case "attempt_list":
 				return attemptsResponse;
-			case "model_experiment_list":
-				return persistedExperiments;
+			case "model_lab_state": {
+				const requestedFactorDecisionHash =
+					args?.request?.factorDecisionHash;
+				const matchingExperiments = requestedFactorDecisionHash
+					? persistedExperiments.filter(
+							(item) =>
+								item.factorDecisionHash === requestedFactorDecisionHash,
+					  )
+					: persistedExperiments;
+				return {
+					experiments: persistedExperiments,
+					experiment:
+						matchingExperiments.length === 1 ? matchingExperiments[0] : null,
+					decision: persistedDecision,
+					report: persistedReport,
+					finalEvaluation: finalEvaluationResponse,
+				};
+			}
 			case "model_demo_run": {
 				const alpha = args?.request?.alpha ?? 1;
 				return {
@@ -201,8 +227,8 @@ invokeMock.mockImplementation(
 					return makeExperimentWithCompletedTrial(args.request.trialId);
 				}
 				return experimentResponse;
-			case "model_selection_record":
-				return {
+			case "model_selection_record": {
+				const nextDecision = {
 					decisionId: "decision-sha",
 					selectedTrialId: "trial-1",
 					selectedAlpha: 1,
@@ -211,9 +237,36 @@ invokeMock.mockImplementation(
 					environmentSha256,
 					inputEvidenceSha256,
 					seed: 7,
+					selectionMetricsSha256: "selection-metrics-sha",
 					candidateArtifactSha256: "candidate-artifact-1",
 					evidenceState: "unknown",
 				};
+				persistedDecision = nextDecision;
+				return nextDecision;
+			}
+			case "model_final_evaluate":
+				if (finalEvaluationError) throw finalEvaluationError;
+				persistedReport = {
+					reportId: "report-sha",
+					decisionId: "decision-sha",
+					forecastSha256: "forecast-final-sha",
+					targetSha256: "target-sha",
+					meanSquaredError: 0.1,
+					meanAbsoluteError: 0.2,
+					evidenceState: "out-of-sample",
+					artifactSha256: "candidate-artifact-1",
+					forecastDatasetSha256: "forecast-dataset-sha",
+				};
+				finalEvaluationResponse = {
+					decisionId: "decision-sha",
+					status: "completed",
+					attemptId: "final-attempt-retry",
+					stagedDatasetSha256: "forecast-dataset-sha",
+					reportId: "report-sha",
+					createdAtMs: 1,
+					updatedAtMs: 2,
+				};
+				return persistedReport;
 			default:
 				return null;
 		}
@@ -279,6 +332,10 @@ beforeEach(() => {
 	i18n.changeLanguage("en-US");
 	experimentResponse = makeExperiment(false);
 	persistedExperiments = [];
+	persistedDecision = null;
+	persistedReport = null;
+	finalEvaluationResponse = null;
+	finalEvaluationError = undefined;
 	attemptsResponse = [];
 	completionResponse = undefined;
 	partialCompletionResponses = false;
@@ -573,6 +630,110 @@ test("keeps concurrent Trial completions from overwriting each other", async () 
 	expect(container.textContent).toContain(
 		"Candidate Model Artifact candidate-complete-1",
 	);
+
+	await act(async () => root.unmount());
+});
+
+test("restores the persisted Decision, Report, and recoverable Final Evaluation state", async () => {
+	persistedExperiments = [makeExperiment(true)];
+	persistedDecision = {
+		decisionId: "decision-sha",
+		selectedTrialId: "trial-1",
+		selectedAlpha: 1,
+		bindingSha256,
+		projectRevisionSha256: revision,
+		environmentSha256,
+		inputEvidenceSha256,
+		seed: 7,
+		selectionMetricsSha256: "selection-metrics-sha",
+		candidateArtifactSha256: "candidate-artifact-1",
+		evidenceState: "unknown",
+	};
+	persistedReport = {
+		reportId: "report-sha",
+		decisionId: "decision-sha",
+		forecastSha256: "forecast-final-sha",
+		targetSha256: "target-sha",
+		meanSquaredError: 0.1,
+		meanAbsoluteError: 0.2,
+		evidenceState: "out-of-sample",
+		artifactSha256: "candidate-artifact-1",
+		forecastDatasetSha256: "forecast-dataset-sha",
+	};
+	finalEvaluationResponse = {
+		decisionId: "decision-sha",
+		status: "persistence-failed",
+		attemptId: "final-attempt",
+		stagedDatasetSha256: "forecast-dataset-sha",
+		failureCode: "model-final-evaluation-persistence-failed",
+		diagnostic: "report persistence failed",
+		createdAtMs: 1,
+		updatedAtMs: 2,
+	};
+	const { container, root } = mount();
+	await act(async () => {
+		root.render(<PythonModelLabPanel userId={userId} />);
+	});
+	await settle();
+
+	expect(container.textContent).toContain("User selected α=1");
+	expect(container.textContent).toContain("Final MSE 0.1 · MAE 0.2");
+	expect(container.textContent).toContain("Persistence failed");
+	expect(container.textContent).toContain("Staged Forecast Dataset forecast-dataset-sha");
+	expect(container.textContent).toContain("Retry final evaluation");
+	expect(container.querySelector('[data-status="persistence-failed"]')).not.toBeNull();
+
+	await act(async () => root.unmount());
+});
+
+test("retries Final Evaluation with the same Decision identity", async () => {
+	persistedExperiments = [makeExperiment(true)];
+	persistedDecision = {
+		decisionId: "decision-sha",
+		selectedTrialId: "trial-1",
+		selectedAlpha: 1,
+		bindingSha256,
+		projectRevisionSha256: revision,
+		environmentSha256,
+		inputEvidenceSha256,
+		seed: 7,
+		selectionMetricsSha256: "selection-metrics-sha",
+		candidateArtifactSha256: "candidate-artifact-1",
+		evidenceState: "unknown",
+	};
+	finalEvaluationResponse = {
+		decisionId: "decision-sha",
+		status: "failed",
+		failureCode: "model-final-evaluation-failed",
+		createdAtMs: 1,
+		updatedAtMs: 2,
+	};
+	const { container, root } = mount();
+	await act(async () => {
+		root.render(<PythonModelLabPanel userId={userId} />);
+	});
+	await settle();
+
+	const retryButton = [...container.querySelectorAll("button")].find(
+		(button) => button.textContent === "Retry final evaluation",
+	);
+	if (!retryButton) throw new Error("Final Evaluation retry button did not render");
+	await act(async () => {
+		retryButton.click();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	await settle();
+
+	const finalCall = invokeMock.mock.calls.find(
+		([command]) => command === "model_final_evaluate",
+	);
+	expect(finalCall?.[1]).toEqual({
+		request: { userId, decisionId: "decision-sha" },
+	});
+	expect(container.textContent).toContain("Completed");
+	expect(container.textContent).toContain("Final MSE 0.1 · MAE 0.2");
+	expect(container.querySelector('[data-status="completed"]')).not.toBeNull();
 
 	await act(async () => root.unmount());
 });

@@ -1380,6 +1380,11 @@ const english = {
 			retryTrial: "Retry this Trial",
 			select: "Record selection",
 			finalEvaluate: "Run final evaluation",
+			retryFinal: "Retry final evaluation",
+			finalEvaluationState: "Final Evaluation",
+			finalAttempt: "Final Attempt {{attempt}}",
+			stagedDataset: "Staged Forecast Dataset {{dataset}}",
+			finalFailure: "Final Evaluation diagnostic: {{value}}",
 			synthetic: "Synthetic Demonstration",
 			labelsWithheld: "Final labels withheld from the model path.",
 			labelsExposed: "Final-label contract failed.",
@@ -1413,6 +1418,16 @@ const english = {
 				interrupted: "Interrupted",
 				stale: "Stale",
 			},
+			finalStatus: {
+				pending: "Pending",
+				running: "Running",
+				completed: "Completed",
+				failed: "Failed",
+				cancelled: "Cancelled",
+				interrupted: "Interrupted",
+				stale: "Stale",
+				"persistence-failed": "Persistence failed",
+			},
 			trialStatus: {
 				registered: "Pending",
 				pending: "Pending",
@@ -1425,9 +1440,9 @@ const english = {
 				stale: "Stale",
 			},
 			decisionIdentity:
-				"Binding {{binding}} · Revision {{revision}} · Environment {{environment}} · Input {{input}} · Seed {{seed}} · Candidate Artifact {{artifact}}",
+				"Binding {{binding}} · Revision {{revision}} · Environment {{environment}} · Input {{input}} · Seed {{seed}} · Selection Metrics {{metrics}} · Candidate Artifact {{artifact}}",
 			reportEvidence:
-				"Evidence {{state}} · Artifact {{artifact}} · Evaluated forecast {{forecast}} · Forecast dataset {{dataset}}",
+				"Evidence {{state}} · Artifact {{artifact}} · Evaluated forecast {{forecast}} · Forecast dataset {{dataset}} · Target {{target}}",
 			repeatable: "Exact coefficient and Forecast replay within tolerance",
 			repeatabilityFailed: "Repeatability failed; qualification is blocked.",
 			freezeAndPrepareRequired:
@@ -2717,6 +2732,11 @@ const simplifiedChinese = {
 			retryTrial: "重试此 Trial",
 			select: "记录选择",
 			finalEvaluate: "运行最终评估",
+			retryFinal: "重试最终评估",
+			finalEvaluationState: "最终评估状态",
+			finalAttempt: "最终 Attempt {{attempt}}",
+			stagedDataset: "已暂存 Forecast Dataset {{dataset}}",
+			finalFailure: "最终评估诊断：{{value}}",
 			synthetic: "合成演示",
 			labelsWithheld: "最终标签不会进入模型路径。",
 			labelsExposed: "最终标签隔离契约失败。",
@@ -2748,6 +2768,16 @@ const simplifiedChinese = {
 				interrupted: "已中断",
 				stale: "已过期",
 			},
+			finalStatus: {
+				pending: "待处理",
+				running: "运行中",
+				completed: "已完成",
+				failed: "失败",
+				cancelled: "已取消",
+				interrupted: "已中断",
+				stale: "已过期",
+				"persistence-failed": "持久化失败",
+			},
 			trialStatus: {
 				registered: "待处理",
 				pending: "待处理",
@@ -2760,9 +2790,9 @@ const simplifiedChinese = {
 				stale: "已过期",
 			},
 			decisionIdentity:
-				"绑定 {{binding}} · Revision {{revision}} · Environment {{environment}} · Input {{input}} · Seed {{seed}} · Candidate Artifact {{artifact}}",
+				"绑定 {{binding}} · Revision {{revision}} · Environment {{environment}} · Input {{input}} · Seed {{seed}} · Selection Metrics {{metrics}} · Candidate Artifact {{artifact}}",
 			reportEvidence:
-				"Evidence {{state}} · Artifact {{artifact}} · 已评估 Forecast {{forecast}} · Forecast Dataset {{dataset}}",
+				"Evidence {{state}} · Artifact {{artifact}} · 已评估 Forecast {{forecast}} · Forecast Dataset {{dataset}} · Target {{target}}",
 			repeatable: "系数和 Forecast 在容差内精确重放",
 			repeatabilityFailed: "重放不一致；资格认定已阻止。",
 			freezeAndPrepareRequired:

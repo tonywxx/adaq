@@ -4317,6 +4317,7 @@ pub fn run() {
             python_research::model_demo_run,
             python_research::model_experiment_register,
             python_research::model_experiment_list,
+            python_research::model_lab_state,
             python_research::model_trial_complete,
             python_research::model_trial_fail,
             python_research::model_trial_retry,

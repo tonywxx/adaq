@@ -12,7 +12,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use adaq_factor_research::{
@@ -128,6 +128,57 @@ fn model_lab_schema_version() -> u32 {
     MODEL_LAB_SCHEMA_VERSION
 }
 
+fn model_lab_now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelFinalEvaluationStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Interrupted,
+    Stale,
+    PersistenceFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelFinalEvaluationState {
+    pub decision_id: String,
+    pub status: ModelFinalEvaluationStatus,
+    #[serde(default)]
+    pub attempt_id: Option<String>,
+    #[serde(default)]
+    pub staged_dataset_sha256: Option<String>,
+    #[serde(default)]
+    pub report_id: Option<String>,
+    #[serde(default)]
+    pub failure_code: Option<String>,
+    #[serde(default)]
+    pub diagnostic: Option<String>,
+    #[serde(default)]
+    pub created_at_ms: i64,
+    #[serde(default)]
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelLabState {
+    pub experiments: Vec<ModelExperiment>,
+    pub experiment: Option<ModelExperiment>,
+    pub decision: Option<ParameterSelectionDecision>,
+    pub report: Option<FinalEvaluationReport>,
+    pub final_evaluation: Option<ModelFinalEvaluationState>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelLabDatabase {
@@ -136,6 +187,8 @@ struct ModelLabDatabase {
     experiments: BTreeMap<String, ModelExperiment>,
     decisions: BTreeMap<String, ParameterSelectionDecision>,
     final_reports: BTreeMap<String, FinalEvaluationReport>,
+    #[serde(default)]
+    final_evaluations: BTreeMap<String, ModelFinalEvaluationState>,
     #[serde(default)]
     runs: BTreeMap<String, ModelRunView>,
     #[serde(default)]
@@ -153,6 +206,7 @@ impl Default for ModelLabDatabase {
             experiments: BTreeMap::new(),
             decisions: BTreeMap::new(),
             final_reports: BTreeMap::new(),
+            final_evaluations: BTreeMap::new(),
             runs: BTreeMap::new(),
             artifacts: BTreeMap::new(),
             transformations: BTreeMap::new(),
@@ -192,7 +246,7 @@ impl ModelLabStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let database = if path.is_file() {
+        let mut database = if path.is_file() {
             serde_json::from_slice(&fs::read(&path)?)
                 .map_err(|error| PythonResearchError(format!("model-lab-store-invalid:{error}")))?
         } else {
@@ -274,13 +328,83 @@ impl ModelLabStore {
                 .ok_or_else(|| {
                     PythonResearchError("model-lab-store-invalid:model-report-key".into())
                 })?;
-            if !database
+            if key != &model_key(user_id, &report.report_id) {
+                return Err(PythonResearchError(
+                    "model-lab-store-invalid:model-report-key-binding".into(),
+                ));
+            }
+            let decision = database
                 .decisions
-                .contains_key(&model_key(user_id, &report.decision_id))
+                .get(&model_key(user_id, &report.decision_id))
+                .ok_or_else(|| {
+                    PythonResearchError("model-lab-store-invalid:model-report-decision".into())
+                })?;
+            if report.artifact_sha256 != decision.candidate_artifact_sha256 {
+                return Err(PythonResearchError(
+                    "model-lab-store-invalid:model-report-binding".into(),
+                ));
+            }
+        }
+        for (key, state) in &database.final_evaluations {
+            let user_id = key
+                .split_once(':')
+                .map(|(user_id, _)| user_id)
+                .ok_or_else(|| {
+                    PythonResearchError("model-lab-store-invalid:model-final-state-key".into())
+                })?;
+            if key != &model_key(user_id, &state.decision_id)
+                || !database
+                    .decisions
+                    .contains_key(&model_key(user_id, &state.decision_id))
+                || state.attempt_id.as_deref().is_some_and(str::is_empty)
+                || state
+                    .staged_dataset_sha256
+                    .as_deref()
+                    .is_some_and(|hash| !is_sha256_text(hash))
             {
                 return Err(PythonResearchError(
-                    "model-lab-store-invalid:model-report-decision".into(),
+                    "model-lab-store-invalid:model-final-state-binding".into(),
                 ));
+            }
+            if state.status == ModelFinalEvaluationStatus::Completed {
+                let report_id = state.report_id.as_deref().ok_or_else(|| {
+                    PythonResearchError("model-lab-store-invalid:model-final-state-report".into())
+                })?;
+                let report = database
+                    .final_reports
+                    .get(&model_key(user_id, report_id))
+                    .ok_or_else(|| {
+                        PythonResearchError(
+                            "model-lab-store-invalid:model-final-state-report".into(),
+                        )
+                    })?;
+                if report.decision_id != state.decision_id
+                    || state.staged_dataset_sha256.as_deref()
+                        != Some(report.forecast_dataset_sha256.as_str())
+                {
+                    return Err(PythonResearchError(
+                        "model-lab-store-invalid:model-final-state-report-binding".into(),
+                    ));
+                }
+            } else if state.report_id.is_some() {
+                return Err(PythonResearchError(
+                    "model-lab-store-invalid:model-final-state-report".into(),
+                ));
+            }
+        }
+        let mut recovered_final_evaluations = false;
+        for state in database.final_evaluations.values_mut() {
+            if matches!(
+                state.status,
+                ModelFinalEvaluationStatus::Pending | ModelFinalEvaluationStatus::Running
+            ) {
+                state.status = ModelFinalEvaluationStatus::Interrupted;
+                state.failure_code = Some("model-final-evaluation-interrupted".into());
+                state.diagnostic = Some(
+                    "Final Evaluation was not terminal when the application restarted.".into(),
+                );
+                state.updated_at_ms = model_lab_now_ms();
+                recovered_final_evaluations = true;
             }
         }
         for run in database.runs.values() {
@@ -290,10 +414,19 @@ impl ModelLabStore {
                 ));
             }
         }
-        Ok(Self {
+        let store = Self {
             path,
             database: Arc::new(Mutex::new(database)),
-        })
+        };
+        if recovered_final_evaluations {
+            let database = store
+                .database
+                .lock()
+                .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?
+                .clone();
+            store.persist(&database)?;
+        }
+        Ok(store)
     }
 
     fn persist(&self, database: &ModelLabDatabase) -> Result<(), PythonResearchError> {
@@ -720,6 +853,15 @@ impl ModelLabStore {
                 "model-selection-after-final-evaluation".into(),
             ));
         }
+        if database.decisions.iter().any(|(decision_key, existing)| {
+            decision_key.starts_with(&user_prefix)
+                && existing.experiment_id == experiment_id
+                && existing != &decision
+        }) {
+            return Err(PythonResearchError(
+                "model-selection-decision-already-recorded".into(),
+            ));
+        }
         database.decisions.insert(key, decision.clone());
         self.persist(&database)?;
         Ok(decision)
@@ -768,29 +910,352 @@ impl ModelLabStore {
         Ok(experiments)
     }
 
-    fn save_final(
+    fn projection(
         &self,
         user_id: &str,
-        report: FinalEvaluationReport,
-    ) -> Result<FinalEvaluationReport, PythonResearchError> {
-        report.validate()?;
+        factor_decision_hash: Option<&str>,
+    ) -> Result<ModelLabState, PythonResearchError> {
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
+        let prefix = format!("{user_id}:");
+        let mut experiments = database
+            .experiments
+            .iter()
+            .filter(|(key, experiment)| {
+                key.starts_with(&prefix)
+                    && factor_decision_hash
+                        .is_none_or(|hash| experiment.factor_decision_hash == hash)
+            })
+            .map(|(_, experiment)| experiment.clone())
+            .collect::<Vec<_>>();
+        experiments.sort_by(|left, right| left.experiment_id.cmp(&right.experiment_id));
+        let experiment = (experiments.len() == 1).then(|| experiments[0].clone());
+        let decision = experiment.as_ref().and_then(|experiment| {
+            let decisions = database
+                .decisions
+                .iter()
+                .filter(|(key, decision)| {
+                    key.starts_with(&prefix) && decision.experiment_id == experiment.experiment_id
+                })
+                .map(|(_, decision)| decision.clone())
+                .collect::<Vec<_>>();
+            (decisions.len() == 1).then(|| decisions[0].clone())
+        });
+        let report = decision.as_ref().and_then(|decision| {
+            let reports = database
+                .final_reports
+                .iter()
+                .filter(|(key, report)| {
+                    key.starts_with(&prefix) && report.decision_id == decision.decision_id
+                })
+                .map(|(_, report)| report.clone())
+                .collect::<Vec<_>>();
+            (reports.len() == 1).then(|| reports[0].clone())
+        });
+        let final_evaluation = decision.as_ref().and_then(|decision| {
+            database
+                .final_evaluations
+                .get(&model_key(user_id, &decision.decision_id))
+                .cloned()
+                .or_else(|| {
+                    report.as_ref().map(|report| ModelFinalEvaluationState {
+                        decision_id: decision.decision_id.clone(),
+                        status: ModelFinalEvaluationStatus::Completed,
+                        attempt_id: None,
+                        staged_dataset_sha256: Some(report.forecast_dataset_sha256.clone()),
+                        report_id: Some(report.report_id.clone()),
+                        failure_code: None,
+                        diagnostic: None,
+                        created_at_ms: 0,
+                        updated_at_ms: 0,
+                    })
+                })
+        });
+        Ok(ModelLabState {
+            experiments,
+            experiment,
+            decision,
+            report,
+            final_evaluation,
+        })
+    }
+
+    fn begin_final(
+        &self,
+        user_id: &str,
+        decision_id: &str,
+    ) -> Result<Option<String>, PythonResearchError> {
         let mut database = self
             .database
             .lock()
             .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
-        let user_prefix = format!("{user_id}:");
-        if database.final_reports.iter().any(|(key, existing)| {
-            key.starts_with(&user_prefix) && existing.decision_id == report.decision_id
+        if database.final_reports.values().any(|report| {
+            report.decision_id == decision_id
+                && database
+                    .final_reports
+                    .get(&model_key(user_id, &report.report_id))
+                    .is_some()
         }) {
             return Err(PythonResearchError(
                 "model-final-evaluation-already-recorded".into(),
             ));
         }
         database
-            .final_reports
-            .insert(model_key(user_id, &report.report_id), report.clone());
-        self.persist(&database)?;
+            .decisions
+            .get(&model_key(user_id, decision_id))
+            .ok_or_else(|| PythonResearchError("model-selection-decision-not-found".into()))?;
+        let state_key = model_key(user_id, decision_id);
+        let previous = database.final_evaluations.get(&state_key).cloned();
+        if previous.as_ref().is_some_and(|state| {
+            matches!(
+                state.status,
+                ModelFinalEvaluationStatus::Pending | ModelFinalEvaluationStatus::Running
+            )
+        }) {
+            return Err(PythonResearchError(
+                "model-final-evaluation-in-progress".into(),
+            ));
+        }
+        let now = model_lab_now_ms();
+        let state = ModelFinalEvaluationState {
+            decision_id: decision_id.into(),
+            status: ModelFinalEvaluationStatus::Running,
+            attempt_id: previous.as_ref().and_then(|state| state.attempt_id.clone()),
+            staged_dataset_sha256: previous
+                .as_ref()
+                .and_then(|state| state.staged_dataset_sha256.clone()),
+            report_id: None,
+            failure_code: None,
+            diagnostic: None,
+            created_at_ms: previous.as_ref().map_or(now, |state| state.created_at_ms),
+            updated_at_ms: now,
+        };
+        let mut next = database.clone();
+        let retry_attempt_id = state.attempt_id.clone();
+        next.final_evaluations.insert(state_key, state);
+        self.persist(&next)?;
+        *database = next;
+        Ok(retry_attempt_id)
+    }
+
+    fn bind_final_attempt(
+        &self,
+        user_id: &str,
+        decision_id: &str,
+        attempt_id: &str,
+    ) -> Result<(), PythonResearchError> {
+        if attempt_id.trim().is_empty() {
+            return Err(PythonResearchError(
+                "model-final-evaluation-attempt-invalid".into(),
+            ));
+        }
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
+        let mut next = database.clone();
+        let state = next
+            .final_evaluations
+            .get_mut(&model_key(user_id, decision_id))
+            .ok_or_else(|| PythonResearchError("model-final-evaluation-state-not-found".into()))?;
+        if state.status != ModelFinalEvaluationStatus::Running {
+            return Err(PythonResearchError(
+                "model-final-evaluation-state-transition-invalid".into(),
+            ));
+        }
+        state.attempt_id = Some(attempt_id.into());
+        state.updated_at_ms = model_lab_now_ms();
+        self.persist(&next)?;
+        *database = next;
+        Ok(())
+    }
+
+    fn stage_final_dataset(
+        &self,
+        user_id: &str,
+        decision_id: &str,
+        dataset_sha256: &str,
+    ) -> Result<(), PythonResearchError> {
+        if !is_sha256_text(dataset_sha256) {
+            return Err(PythonResearchError(
+                "model-final-evaluation-dataset-invalid".into(),
+            ));
+        }
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
+        let mut next = database.clone();
+        let state = next
+            .final_evaluations
+            .get_mut(&model_key(user_id, decision_id))
+            .ok_or_else(|| PythonResearchError("model-final-evaluation-state-not-found".into()))?;
+        if state.status != ModelFinalEvaluationStatus::Running
+            || state
+                .staged_dataset_sha256
+                .as_deref()
+                .is_some_and(|existing| existing != dataset_sha256)
+        {
+            return Err(PythonResearchError(
+                "model-final-evaluation-state-transition-invalid".into(),
+            ));
+        }
+        state.staged_dataset_sha256 = Some(dataset_sha256.into());
+        state.updated_at_ms = model_lab_now_ms();
+        self.persist(&next)?;
+        *database = next;
+        Ok(())
+    }
+
+    fn fail_final(
+        &self,
+        user_id: &str,
+        decision_id: &str,
+        status: ModelFinalEvaluationStatus,
+        failure_code: &str,
+        diagnostic: &str,
+    ) -> Result<(), PythonResearchError> {
+        if matches!(
+            status,
+            ModelFinalEvaluationStatus::Pending
+                | ModelFinalEvaluationStatus::Running
+                | ModelFinalEvaluationStatus::Completed
+        ) {
+            return Err(PythonResearchError(
+                "model-final-evaluation-state-transition-invalid".into(),
+            ));
+        }
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
+        let mut next = database.clone();
+        let state = next
+            .final_evaluations
+            .get_mut(&model_key(user_id, decision_id))
+            .ok_or_else(|| PythonResearchError("model-final-evaluation-state-not-found".into()))?;
+        if state.report_id.is_some() {
+            return Err(PythonResearchError(
+                "model-final-evaluation-state-transition-invalid".into(),
+            ));
+        }
+        state.status = status;
+        state.failure_code = Some(failure_code.into());
+        state.diagnostic = Some(bounded_model_diagnostic(diagnostic));
+        state.updated_at_ms = model_lab_now_ms();
+        self.persist(&next)?;
+        *database = next;
+        Ok(())
+    }
+
+    fn save_final(
+        &self,
+        user_id: &str,
+        report: FinalEvaluationReport,
+    ) -> Result<FinalEvaluationReport, PythonResearchError> {
+        self.save_final_with_attempt(user_id, report, None)
+    }
+
+    fn save_final_with_attempt(
+        &self,
+        user_id: &str,
+        report: FinalEvaluationReport,
+        attempt_id: Option<&str>,
+    ) -> Result<FinalEvaluationReport, PythonResearchError> {
+        report.validate()?;
+        if attempt_id.is_some_and(|attempt_id| attempt_id.trim().is_empty()) {
+            return Err(PythonResearchError(
+                "model-final-evaluation-attempt-invalid".into(),
+            ));
+        }
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
+        let decision = database
+            .decisions
+            .get(&model_key(user_id, &report.decision_id))
+            .ok_or_else(|| PythonResearchError("model-selection-decision-not-found".into()))?;
+        if report.artifact_sha256 != decision.candidate_artifact_sha256 {
+            return Err(PythonResearchError(
+                "model-final-evaluation-decision-binding-invalid".into(),
+            ));
+        }
+        let report_key = model_key(user_id, &report.report_id);
+        if let Some(existing) = database.final_reports.get(&report_key) {
+            if existing != &report {
+                return Err(PythonResearchError(
+                    "model-final-evaluation-identity-collision".into(),
+                ));
+            }
+            return Ok(existing.clone());
+        }
+        if database.final_reports.values().any(|existing| {
+            existing.decision_id == report.decision_id
+                && database
+                    .final_reports
+                    .get(&model_key(user_id, &existing.report_id))
+                    .is_some()
+        }) {
+            return Err(PythonResearchError(
+                "model-final-evaluation-already-recorded".into(),
+            ));
+        }
+        let state_key = model_key(user_id, &report.decision_id);
+        let previous_state = database.final_evaluations.get(&state_key).cloned();
+        if previous_state
+            .as_ref()
+            .and_then(|state| state.staged_dataset_sha256.as_deref())
+            .is_some_and(|dataset| dataset != report.forecast_dataset_sha256)
+        {
+            return Err(PythonResearchError(
+                "model-final-evaluation-dataset-binding-invalid".into(),
+            ));
+        }
+        let now = model_lab_now_ms();
+        let final_state = ModelFinalEvaluationState {
+            decision_id: report.decision_id.clone(),
+            status: ModelFinalEvaluationStatus::Completed,
+            attempt_id: attempt_id.map(str::to_owned).or_else(|| {
+                previous_state
+                    .as_ref()
+                    .and_then(|state| state.attempt_id.clone())
+            }),
+            staged_dataset_sha256: Some(report.forecast_dataset_sha256.clone()),
+            report_id: Some(report.report_id.clone()),
+            failure_code: None,
+            diagnostic: None,
+            created_at_ms: previous_state
+                .as_ref()
+                .map_or(now, |state| state.created_at_ms),
+            updated_at_ms: now,
+        };
+        let mut next = database.clone();
+        next.final_reports.insert(report_key, report.clone());
+        next.final_evaluations.insert(state_key, final_state);
+        self.persist(&next)?;
+        *database = next;
         Ok(report)
+    }
+
+    fn final_report(
+        &self,
+        user_id: &str,
+        decision_id: &str,
+    ) -> Result<Option<FinalEvaluationReport>, PythonResearchError> {
+        let prefix = format!("{user_id}:");
+        let reports = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?
+            .final_reports
+            .iter()
+            .filter(|(key, report)| key.starts_with(&prefix) && report.decision_id == decision_id)
+            .map(|(_, report)| report.clone())
+            .collect::<Vec<_>>();
+        Ok((reports.len() == 1).then(|| reports[0].clone()))
     }
 
     fn has_final(&self, user_id: &str, decision_id: &str) -> Result<bool, PythonResearchError> {
@@ -818,6 +1283,9 @@ impl ModelLabStore {
             .retain(|key, _| !key.starts_with(&format!("{user_id}:")));
         database
             .final_reports
+            .retain(|key, _| !key.starts_with(&format!("{user_id}:")));
+        database
+            .final_evaluations
             .retain(|key, _| !key.starts_with(&format!("{user_id}:")));
         database
             .runs
@@ -879,6 +1347,46 @@ fn replace_model_lab_file(temporary: &Path, destination: &Path) -> Result<(), Py
 
 fn model_key(user_id: &str, identity: &str) -> String {
     format!("{user_id}:{identity}")
+}
+
+fn bounded_model_diagnostic(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|part| {
+            let upper = part.to_ascii_uppercase();
+            if ["TOKEN", "SECRET", "PASSWORD", "PRIVATE_KEY"]
+                .iter()
+                .any(|key| upper.contains(key))
+            {
+                "[redacted]"
+            } else if part.starts_with('/') || part.contains('\\') {
+                "[path]"
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(4096)
+        .collect()
+}
+
+fn model_final_evaluation_failure_status(
+    error: &str,
+    staged_dataset: bool,
+) -> ModelFinalEvaluationStatus {
+    if error.contains("runner-cancelled") {
+        ModelFinalEvaluationStatus::Cancelled
+    } else if error.contains("interrupted") {
+        ModelFinalEvaluationStatus::Interrupted
+    } else if error.contains("stale") {
+        ModelFinalEvaluationStatus::Stale
+    } else if staged_dataset {
+        ModelFinalEvaluationStatus::PersistenceFailed
+    } else {
+        ModelFinalEvaluationStatus::Failed
+    }
 }
 
 fn model_run_provenance(
@@ -3872,6 +4380,14 @@ pub struct ModelFinalEvaluationRequest {
     pub decision_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelLabStateRequest {
+    pub user_id: String,
+    #[serde(default)]
+    pub factor_decision_hash: Option<String>,
+}
+
 fn map_error(error: PythonResearchError) -> String {
     error.to_string()
 }
@@ -5872,6 +6388,24 @@ pub async fn model_experiment_list(
 }
 
 #[tauri::command]
+pub async fn model_lab_state(
+    mut request: ModelLabStateRequest,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
+    state: State<'_, Arc<PythonResearchState>>,
+) -> Result<ModelLabState, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    let store = state.model_lab_store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .projection(&request.user_id, request.factor_decision_hash.as_deref())
+            .map_err(map_error)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub async fn model_trial_complete(
     mut request: ModelTrialCompleteRequest,
     window: WebviewWindow,
@@ -6123,267 +6657,363 @@ pub async fn model_final_evaluate(
         .inner()
         .clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if store
-            .has_final(&request.user_id, &request.decision_id)
+        if let Some(report) = store
+            .final_report(&request.user_id, &request.decision_id)
             .map_err(map_error)?
         {
-            return Err("model-final-evaluation-already-recorded".into());
+            return Ok(report);
         }
-        let decision = store
-            .decision(&request.user_id, &request.decision_id)
+        let retry_attempt_id = store
+            .begin_final(&request.user_id, &request.decision_id)
             .map_err(map_error)?;
-        let experiment = store
-            .experiment(&request.user_id, &decision.experiment_id)
-            .map_err(map_error)?;
-        if decision.binding_sha256 != experiment.binding_sha256
-            || decision.project_revision_sha256 != experiment.project_revision_sha256
-            || decision.environment_sha256 != experiment.environment_sha256
-            || decision.input_evidence_sha256 != experiment.input_evidence_sha256
-            || decision.seed != experiment.seed
-        {
-            return Err("model-selection-decision-binding-invalid".into());
-        }
-        let trial = experiment
-            .trials
-            .iter()
-            .find(|trial| trial.trial_id == decision.selected_trial_id)
-            .ok_or_else(|| "model-selection-trial-not-found".to_string())?;
-        let candidate_artifact_sha256 = trial
-            .candidate_artifact_sha256
-            .clone()
-            .ok_or_else(|| "model-selection-candidate-artifact-missing".to_string())?;
-        let successful_attempt_id = trial
-            .successful_attempt_id
-            .clone()
-            .ok_or_else(|| "model-selection-successful-attempt-missing".to_string())?;
-        if trial.alpha.to_bits() != decision.selected_alpha.to_bits() {
-            return Err("model-selection-alpha-mismatch".into());
-        }
-        if decision.candidate_artifact_sha256 != candidate_artifact_sha256 {
-            return Err("model-selection-candidate-artifact-binding-invalid".into());
-        }
-        let candidate_artifact = LinearModelArtifact::reload(
-            &store
-                .artifact(&request.user_id, &candidate_artifact_sha256)
-                .map_err(map_error)?,
-        )
-        .map_err(map_error)?;
-        let prior_run = store
-            .run(&request.user_id, &successful_attempt_id)
-            .map_err(map_error)?;
-        if prior_run.attempt_id != successful_attempt_id
-            || prior_run.artifact_sha256 != candidate_artifact_sha256
-            || prior_run.seed != experiment.seed
-            || prior_run.alpha.to_bits() != trial.alpha.to_bits()
-            || (!trial.binding_sha256.is_empty()
-                && prior_run.binding_sha256 != trial.binding_sha256)
-        {
-            return Err("model-selection-binding-mismatch".into());
-        }
-        let factor_binding = local_state
-            .factor
-            .model_input_binding(&request.user_id, &prior_run.factor_decision_hash)?;
-        if prior_run.factor_promotion_protocol_hash
-            != factor_binding.promotion_protocol.protocol_hash
-            || prior_run.factor_dataset_id != factor_binding.factor_dataset_id
-            || prior_run.feature_dataset_id != factor_binding.feature_dataset_id
-            || prior_run.feature_plan_hash != factor_binding.feature_plan_hash
-            || prior_run.snapshot_id != factor_binding.snapshot_id
-            || prior_run.universe_id != factor_binding.universe_id
-        {
-            return Err("model-factor-input-binding-changed".into());
-        }
-        let input = ModelInputEvidence {
-            decision_hash: factor_binding.decision_hash,
-            promotion_protocol_hash: factor_binding.promotion_protocol.protocol_hash,
-            factor_dataset_id: factor_binding.factor_dataset_id,
-            feature_dataset_id: factor_binding.feature_dataset_id,
-            feature_plan_hash: factor_binding.feature_plan_hash,
-            snapshot_id: factor_binding.snapshot_id,
-            universe_id: factor_binding.universe_id,
-            lookback: factor_binding.lookback,
-        };
-        let factor_dataset =
-            load_bound_model_factor_dataset(&local_state, &request.user_id, &input)
+        let mut active_attempt_id = None;
+        let mut staged_dataset_sha256 = false;
+        let result = (|| -> Result<FinalEvaluationReport, String> {
+            let decision = store
+                .decision(&request.user_id, &request.decision_id)
                 .map_err(map_error)?;
-        let evidence = build_model_evidence(&input, Some(&factor_dataset)).map_err(map_error)?;
-        let runner_input = evidence.runner_input().map_err(map_error)?;
-        let runner_input = serde_json::to_value(runner_input).map_err(|error| error.to_string())?;
-        let parameters = BTreeMap::from([("alpha".into(), decision.selected_alpha.to_string())]);
-        let execution = research_state
-            .run_trusted_project_with_execution(
-                &request.user_id,
-                MODEL_PROJECT_ID,
-                &trial.project_revision_sha256,
-                &trial.environment_sha256,
-                experiment.seed,
-                Some(runner_input.clone()),
-                Some(&parameters),
+            let experiment = store
+                .experiment(&request.user_id, &decision.experiment_id)
+                .map_err(map_error)?;
+            if decision.binding_sha256 != experiment.binding_sha256
+                || decision.project_revision_sha256 != experiment.project_revision_sha256
+                || decision.environment_sha256 != experiment.environment_sha256
+                || decision.input_evidence_sha256 != experiment.input_evidence_sha256
+                || decision.seed != experiment.seed
+            {
+                return Err("model-selection-decision-binding-invalid".into());
+            }
+            let trial = experiment
+                .trials
+                .iter()
+                .find(|trial| trial.trial_id == decision.selected_trial_id)
+                .ok_or_else(|| "model-selection-trial-not-found".to_string())?;
+            let candidate_artifact_sha256 = trial
+                .candidate_artifact_sha256
+                .clone()
+                .ok_or_else(|| "model-selection-candidate-artifact-missing".to_string())?;
+            let successful_attempt_id = trial
+                .successful_attempt_id
+                .clone()
+                .ok_or_else(|| "model-selection-successful-attempt-missing".to_string())?;
+            if trial.alpha.to_bits() != decision.selected_alpha.to_bits() {
+                return Err("model-selection-alpha-mismatch".into());
+            }
+            if decision.candidate_artifact_sha256 != candidate_artifact_sha256 {
+                return Err("model-selection-candidate-artifact-binding-invalid".into());
+            }
+            let candidate_artifact = LinearModelArtifact::reload(
+                &store
+                    .artifact(&request.user_id, &candidate_artifact_sha256)
+                    .map_err(map_error)?,
             )
             .map_err(map_error)?;
-        let (replay_execution, replay_resource_policy) = research_state
-            .run_trusted_project_verification(
+            let prior_run = store
+                .run(&request.user_id, &successful_attempt_id)
+                .map_err(map_error)?;
+            if prior_run.attempt_id != successful_attempt_id
+                || prior_run.artifact_sha256 != candidate_artifact_sha256
+                || prior_run.seed != experiment.seed
+                || prior_run.alpha.to_bits() != trial.alpha.to_bits()
+                || (!trial.binding_sha256.is_empty()
+                    && prior_run.binding_sha256 != trial.binding_sha256)
+            {
+                return Err("model-selection-binding-mismatch".into());
+            }
+            let factor_binding = local_state
+                .factor
+                .model_input_binding(&request.user_id, &prior_run.factor_decision_hash)?;
+            if prior_run.factor_promotion_protocol_hash
+                != factor_binding.promotion_protocol.protocol_hash
+                || prior_run.factor_dataset_id != factor_binding.factor_dataset_id
+                || prior_run.feature_dataset_id != factor_binding.feature_dataset_id
+                || prior_run.feature_plan_hash != factor_binding.feature_plan_hash
+                || prior_run.snapshot_id != factor_binding.snapshot_id
+                || prior_run.universe_id != factor_binding.universe_id
+            {
+                return Err("model-factor-input-binding-changed".into());
+            }
+            let input = ModelInputEvidence {
+                decision_hash: factor_binding.decision_hash,
+                promotion_protocol_hash: factor_binding.promotion_protocol.protocol_hash,
+                factor_dataset_id: factor_binding.factor_dataset_id,
+                feature_dataset_id: factor_binding.feature_dataset_id,
+                feature_plan_hash: factor_binding.feature_plan_hash,
+                snapshot_id: factor_binding.snapshot_id,
+                universe_id: factor_binding.universe_id,
+                lookback: factor_binding.lookback,
+            };
+            let factor_dataset =
+                load_bound_model_factor_dataset(&local_state, &request.user_id, &input)
+                    .map_err(map_error)?;
+            let evidence =
+                build_model_evidence(&input, Some(&factor_dataset)).map_err(map_error)?;
+            let runner_input = evidence.runner_input().map_err(map_error)?;
+            let runner_input =
+                serde_json::to_value(runner_input).map_err(|error| error.to_string())?;
+            let parameters =
+                BTreeMap::from([("alpha".into(), decision.selected_alpha.to_string())]);
+            let execution = if let Some(source_attempt_id) = retry_attempt_id.as_deref() {
+                let retryable = match research_state.attempt_store.get(source_attempt_id) {
+                    Ok(attempt) => {
+                        matches!(
+                            attempt.status,
+                            PythonAttemptStatus::Failed
+                                | PythonAttemptStatus::Cancelled
+                                | PythonAttemptStatus::Interrupted
+                                | PythonAttemptStatus::Stale
+                        ) || (attempt.status == PythonAttemptStatus::Completed
+                            && attempt.failure_code.is_some())
+                    }
+                    Err(_) => false,
+                };
+                if retryable {
+                    research_state
+                        .run_trusted_project_with_retry(
+                            &request.user_id,
+                            MODEL_PROJECT_ID,
+                            &trial.project_revision_sha256,
+                            &trial.environment_sha256,
+                            experiment.seed,
+                            Some(runner_input.clone()),
+                            Some(&parameters),
+                            source_attempt_id,
+                        )
+                        .map_err(map_error)?
+                } else {
+                    research_state
+                        .run_trusted_project_with_execution(
+                            &request.user_id,
+                            MODEL_PROJECT_ID,
+                            &trial.project_revision_sha256,
+                            &trial.environment_sha256,
+                            experiment.seed,
+                            Some(runner_input.clone()),
+                            Some(&parameters),
+                        )
+                        .map_err(map_error)?
+                }
+            } else {
+                research_state
+                    .run_trusted_project_with_execution(
+                        &request.user_id,
+                        MODEL_PROJECT_ID,
+                        &trial.project_revision_sha256,
+                        &trial.environment_sha256,
+                        experiment.seed,
+                        Some(runner_input.clone()),
+                        Some(&parameters),
+                    )
+                    .map_err(map_error)?
+            };
+            let (replay_execution, replay_resource_policy) = research_state
+                .run_trusted_project_verification(
+                    &request.user_id,
+                    MODEL_PROJECT_ID,
+                    &trial.project_revision_sha256,
+                    &trial.environment_sha256,
+                    experiment.seed,
+                    Some(runner_input.clone()),
+                    Some(&parameters),
+                )
+                .map_err(map_error)?;
+            let attempt_id =
+                validate_model_process_replay(&execution, &replay_execution).map_err(map_error)?;
+            store
+                .bind_final_attempt(&request.user_id, &request.decision_id, &attempt_id)
+                .map_err(map_error)?;
+            active_attempt_id = Some(attempt_id.clone());
+            let (resource_policy, resource_policy_sha256) = model_replay_resource_policy(
+                &research_state.attempt_store,
                 &request.user_id,
-                MODEL_PROJECT_ID,
-                &trial.project_revision_sha256,
-                &trial.environment_sha256,
-                experiment.seed,
-                Some(runner_input.clone()),
-                Some(&parameters),
+                &execution,
+                &replay_resource_policy,
             )
             .map_err(map_error)?;
-        let attempt_id =
-            validate_model_process_replay(&execution, &replay_execution).map_err(map_error)?;
-        let (resource_policy, resource_policy_sha256) = model_replay_resource_policy(
-            &research_state.attempt_store,
-            &request.user_id,
-            &execution,
-            &replay_resource_policy,
-        )
-        .map_err(map_error)?;
-        let first_artifact = read_model_candidate(
-            &research_state.root,
-            &execution,
-            decision.selected_alpha,
-            &evidence.transformation,
-            &evidence.fixture.manifest.content_sha256,
-            &trial.project_revision_sha256,
-            &trial.environment_sha256,
-            &trial.input_evidence_sha256,
-            &resource_policy_sha256,
-            &input,
-        )
-        .map_err(map_error)?;
-        let replay_artifact = read_model_candidate(
-            &research_state.root,
-            &replay_execution,
-            decision.selected_alpha,
-            &evidence.transformation,
-            &evidence.fixture.manifest.content_sha256,
-            &trial.project_revision_sha256,
-            &trial.environment_sha256,
-            &trial.input_evidence_sha256,
-            &resource_policy_sha256,
-            &input,
-        )
-        .map_err(map_error)?;
-        if first_artifact.to_bytes().map_err(map_error)?
-            != candidate_artifact.to_bytes().map_err(map_error)?
-            || replay_artifact.to_bytes().map_err(map_error)?
+            let first_artifact = read_model_candidate(
+                &research_state.root,
+                &execution,
+                decision.selected_alpha,
+                &evidence.transformation,
+                &evidence.fixture.manifest.content_sha256,
+                &trial.project_revision_sha256,
+                &trial.environment_sha256,
+                &trial.input_evidence_sha256,
+                &resource_policy_sha256,
+                &input,
+            )
+            .map_err(map_error)?;
+            let replay_artifact = read_model_candidate(
+                &research_state.root,
+                &replay_execution,
+                decision.selected_alpha,
+                &evidence.transformation,
+                &evidence.fixture.manifest.content_sha256,
+                &trial.project_revision_sha256,
+                &trial.environment_sha256,
+                &trial.input_evidence_sha256,
+                &resource_policy_sha256,
+                &input,
+            )
+            .map_err(map_error)?;
+            if first_artifact.to_bytes().map_err(map_error)?
                 != candidate_artifact.to_bytes().map_err(map_error)?
-        {
-            return Err("model-selection-candidate-artifact-mismatch".into());
-        }
-        discard_verification_artifact(&research_state.root, &replay_execution)
+                || replay_artifact.to_bytes().map_err(map_error)?
+                    != candidate_artifact.to_bytes().map_err(map_error)?
+            {
+                return Err("model-selection-candidate-artifact-mismatch".into());
+            }
+            discard_verification_artifact(&research_state.root, &replay_execution)
+                .map_err(map_error)?;
+            let mut run = demo_model_run_with_evidence(
+                decision.selected_alpha,
+                trial.project_revision_sha256.clone(),
+                trial.environment_sha256.clone(),
+                trial.input_evidence_sha256.clone(),
+                input.clone(),
+                resource_policy.clone(),
+                Some(candidate_artifact.clone()),
+                Some(&factor_dataset),
+            )
             .map_err(map_error)?;
-        let mut run = demo_model_run_with_evidence(
-            decision.selected_alpha,
-            trial.project_revision_sha256.clone(),
-            trial.environment_sha256.clone(),
-            trial.input_evidence_sha256.clone(),
-            input.clone(),
-            resource_policy.clone(),
-            Some(candidate_artifact.clone()),
-            Some(&factor_dataset),
-        )
-        .map_err(map_error)?;
-        let prediction_input =
-            model_prediction_input(runner_input, &candidate_artifact).map_err(map_error)?;
-        let (prediction_execution, _) = research_state
-            .run_trusted_project_verification(
+            let prediction_input =
+                model_prediction_input(runner_input, &candidate_artifact).map_err(map_error)?;
+            let (prediction_execution, _) = research_state
+                .run_trusted_project_verification(
+                    &request.user_id,
+                    MODEL_PROJECT_ID,
+                    &trial.project_revision_sha256,
+                    &trial.environment_sha256,
+                    experiment.seed,
+                    Some(prediction_input),
+                    Some(&parameters),
+                )
+                .map_err(map_error)?;
+            run.forecasts = validate_model_python_forecast(&prediction_execution, &run.forecasts)
+                .map_err(map_error)?;
+            run.view.forecast_sha256 = model_forecast_sha256(
+                &run.artifact.artifact_sha256,
+                &run.view.input_evidence_sha256,
+                &run.view.snapshot_id,
+                &run.view.universe_id,
+                &run.forecasts,
+            )
+            .map_err(map_error)?;
+            discard_verification_artifact(&research_state.root, &prediction_execution)
+                .map_err(map_error)?;
+            let replay = demo_model_run_with_evidence(
+                decision.selected_alpha,
+                trial.project_revision_sha256.clone(),
+                trial.environment_sha256.clone(),
+                trial.input_evidence_sha256.clone(),
+                input,
+                resource_policy,
+                Some(candidate_artifact.clone()),
+                Some(&factor_dataset),
+            )
+            .map_err(map_error)?;
+            compare_repeatability(
+                &run.artifact.coefficients,
+                &replay.artifact.coefficients,
+                &run.forecasts,
+                &replay.forecasts,
+            )
+            .map_err(map_error)?;
+            run.view.repeatability_verified = true;
+            run.view.repeatability_state = RepeatabilityState::Verified;
+            run.view.attempt_id = attempt_id.clone();
+            if run.view.binding_sha256 != trial.binding_sha256
+                || run.artifact.artifact_sha256 != candidate_artifact_sha256
+            {
+                return Err("model-final-binding-mismatch".into());
+            }
+            store
+                .save_demo_run(&request.user_id, &run, true)
+                .map_err(map_error)?;
+            store
+                .stage_final_dataset(
+                    &request.user_id,
+                    &request.decision_id,
+                    &run.view.forecast_sha256,
+                )
+                .map_err(map_error)?;
+            staged_dataset_sha256 = true;
+            crate::forecast_signal_dataset::publish_python_model_signal_dataset(
+                &local_state,
                 &request.user_id,
-                MODEL_PROJECT_ID,
-                &trial.project_revision_sha256,
-                &trial.environment_sha256,
-                experiment.seed,
-                Some(prediction_input),
-                Some(&parameters),
-            )
-            .map_err(map_error)?;
-        run.forecasts = validate_model_python_forecast(&prediction_execution, &run.forecasts)
-            .map_err(map_error)?;
-        run.view.forecast_sha256 = model_forecast_sha256(
-            &run.artifact.artifact_sha256,
-            &run.view.input_evidence_sha256,
-            &run.view.snapshot_id,
-            &run.view.universe_id,
-            &run.forecasts,
-        )
-        .map_err(map_error)?;
-        discard_verification_artifact(&research_state.root, &prediction_execution)
-            .map_err(map_error)?;
-        let replay = demo_model_run_with_evidence(
-            decision.selected_alpha,
-            trial.project_revision_sha256.clone(),
-            trial.environment_sha256.clone(),
-            trial.input_evidence_sha256.clone(),
-            input,
-            resource_policy,
-            Some(candidate_artifact.clone()),
-            Some(&factor_dataset),
-        )
-        .map_err(map_error)?;
-        compare_repeatability(
-            &run.artifact.coefficients,
-            &replay.artifact.coefficients,
-            &run.forecasts,
-            &replay.forecasts,
-        )
-        .map_err(map_error)?;
-        run.view.repeatability_verified = true;
-        run.view.repeatability_state = RepeatabilityState::Verified;
-        run.view.attempt_id = attempt_id;
-        if run.view.binding_sha256 != trial.binding_sha256
-            || run.artifact.artifact_sha256 != candidate_artifact_sha256
-        {
-            return Err("model-final-binding-mismatch".into());
-        }
-        store
-            .save_demo_run(&request.user_id, &run, true)
-            .map_err(map_error)?;
-        crate::forecast_signal_dataset::publish_python_model_signal_dataset(
-            &local_state,
-            &request.user_id,
-            &run.view.forecast_sha256,
-            &run.view.snapshot_id,
-            &run.view.feature_plan_hash,
-            &run.view.factor_dataset_id,
-            &run.view.feature_dataset_id,
-            &run.view.artifact_sha256,
-            &run.artifact.provenance_hashes,
-            &run.view.adapter_id,
-            run.view.alpha,
-            run.view.seed,
-            &run.view.forecast_contract,
-            &run.forecasts,
-        )
-        .map_err(|error| PythonResearchError(error).to_string())?;
-        let final_start = run.view.windows.final_start as i64;
-        let final_end = run.view.windows.final_end - TARGET_HORIZON_BARS as u32;
-        let forecasts = run
-            .forecasts
-            .iter()
-            .filter(|row| {
-                row.datetime >= final_start
-                    && row.datetime as u32 <= final_end
-                    && row.value.is_some()
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut ledger = FinalEvaluationLedger::default();
-        let report = ledger
-            .run_with_evidence(
-                &decision,
-                &forecasts,
-                &run.final_labels,
-                &candidate_artifact_sha256,
                 &run.view.forecast_sha256,
-                EvidenceState::OutOfSample,
+                &run.view.snapshot_id,
+                &run.view.feature_plan_hash,
+                &run.view.factor_dataset_id,
+                &run.view.feature_dataset_id,
+                &run.view.artifact_sha256,
+                &run.artifact.provenance_hashes,
+                &run.view.adapter_id,
+                run.view.alpha,
+                run.view.seed,
+                &run.view.forecast_contract,
+                &run.forecasts,
             )
-            .map_err(map_error)?;
-        store
-            .save_final(&request.user_id, report)
-            .map_err(map_error)
+            .map_err(|error| PythonResearchError(error).to_string())?;
+            let final_start = run.view.windows.final_start as i64;
+            let final_end = run.view.windows.final_end - TARGET_HORIZON_BARS as u32;
+            let forecasts = run
+                .forecasts
+                .iter()
+                .filter(|row| {
+                    row.datetime >= final_start
+                        && row.datetime as u32 <= final_end
+                        && row.value.is_some()
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut ledger = FinalEvaluationLedger::default();
+            let report = ledger
+                .run_with_evidence(
+                    &decision,
+                    &forecasts,
+                    &run.final_labels,
+                    &candidate_artifact_sha256,
+                    &run.view.forecast_sha256,
+                    EvidenceState::OutOfSample,
+                )
+                .map_err(map_error)?;
+            store
+                .save_final_with_attempt(&request.user_id, report, Some(&attempt_id))
+                .map_err(map_error)
+        })();
+        if let Err(error) = &result {
+            if let Some(attempt_id) = active_attempt_id.as_deref() {
+                let _ = research_state.attempt_store.transition(
+                    attempt_id,
+                    AttemptTransition::RecordHostFailure {
+                        code: "model-final-evaluation-failed".into(),
+                        diagnostic: error.clone(),
+                    },
+                );
+            }
+            let status = model_final_evaluation_failure_status(error, staged_dataset_sha256);
+            let failure_code = match status {
+                ModelFinalEvaluationStatus::Cancelled => "model-final-evaluation-cancelled",
+                ModelFinalEvaluationStatus::Interrupted => "model-final-evaluation-interrupted",
+                ModelFinalEvaluationStatus::Stale => "model-final-evaluation-stale",
+                ModelFinalEvaluationStatus::PersistenceFailed => {
+                    "model-final-evaluation-persistence-failed"
+                }
+                ModelFinalEvaluationStatus::Failed => "model-final-evaluation-failed",
+                ModelFinalEvaluationStatus::Pending
+                | ModelFinalEvaluationStatus::Running
+                | ModelFinalEvaluationStatus::Completed => "model-final-evaluation-failed",
+            };
+            let _ = store.fail_final(
+                &request.user_id,
+                &request.decision_id,
+                status,
+                failure_code,
+                error,
+            );
+        }
+        result
     })
     .await
     .map_err(|error| error.to_string())?
@@ -7540,6 +8170,55 @@ mod tests {
             decision.candidate_artifact_sha256,
             demos[1].view.artifact_sha256
         );
+        assert_eq!(
+            reopened
+                .select("user-a", &experiment_id, &persisted.trials[2].trial_id)
+                .unwrap_err()
+                .to_string(),
+            "model-selection-decision-already-recorded"
+        );
+        let projection = reopened.projection("user-a", None).unwrap();
+        assert_eq!(projection.decision, Some(decision.clone()));
+        assert!(projection.report.is_none());
+        assert_eq!(
+            projection
+                .final_evaluation
+                .as_ref()
+                .map(|state| state.status),
+            None
+        );
+        assert!(
+            reopened
+                .begin_final("user-a", &decision.decision_id)
+                .unwrap()
+                .is_none()
+        );
+        reopened
+            .bind_final_attempt("user-a", &decision.decision_id, "final-attempt")
+            .unwrap();
+        reopened
+            .stage_final_dataset(
+                "user-a",
+                &decision.decision_id,
+                &sha256(b"forecast-dataset"),
+            )
+            .unwrap();
+        let reopened = ModelLabStore::open(&path).unwrap();
+        let recovered = reopened.projection("user-a", None).unwrap();
+        assert_eq!(
+            recovered
+                .final_evaluation
+                .as_ref()
+                .map(|state| state.status),
+            Some(ModelFinalEvaluationStatus::Interrupted)
+        );
+        assert_eq!(
+            recovered
+                .final_evaluation
+                .as_ref()
+                .and_then(|state| state.attempt_id.as_deref()),
+            Some("final-attempt")
+        );
         let forecasts = vec![adaq_python_research::model::ForecastRow {
             datetime: 1,
             instrument: "AAA".into(),
@@ -7557,7 +8236,20 @@ mod tests {
                 EvidenceState::OutOfSample,
             )
             .unwrap();
-        reopened.save_final("user-a", report).unwrap();
+        reopened.save_final("user-a", report.clone()).unwrap();
+        assert_eq!(
+            reopened.save_final("user-a", report.clone()).unwrap(),
+            report
+        );
+        let completed = reopened.projection("user-a", None).unwrap();
+        assert!(completed.report.is_some());
+        assert_eq!(
+            completed
+                .final_evaluation
+                .as_ref()
+                .map(|state| state.status),
+            Some(ModelFinalEvaluationStatus::Completed)
+        );
         assert_eq!(
             reopened
                 .select("user-a", &experiment_id, &persisted.trials[2].trial_id)

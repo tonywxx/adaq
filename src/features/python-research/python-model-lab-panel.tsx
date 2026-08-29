@@ -118,6 +118,7 @@ type Decision = {
 	environmentSha256: string;
 	inputEvidenceSha256: string;
 	seed: number;
+	selectionMetricsSha256: string;
 	candidateArtifactSha256: string;
 	evidenceState: "out-of-sample" | "overlapping" | "unknown";
 };
@@ -128,9 +129,40 @@ type Report = {
 	forecastSha256: string;
 	meanSquaredError: number;
 	meanAbsoluteError: number;
+	targetSha256: string;
 	evidenceState: "out-of-sample" | "overlapping" | "unknown";
 	artifactSha256: string;
 	forecastDatasetSha256: string;
+};
+
+type FinalEvaluationStatus =
+	| "pending"
+	| "running"
+	| "completed"
+	| "failed"
+	| "cancelled"
+	| "interrupted"
+	| "stale"
+	| "persistence-failed";
+
+type FinalEvaluationState = {
+	decisionId: string;
+	status: FinalEvaluationStatus;
+	attemptId?: string;
+	stagedDatasetSha256?: string;
+	reportId?: string;
+	failureCode?: string;
+	diagnostic?: string;
+	createdAtMs: number;
+	updatedAtMs: number;
+};
+
+type ModelLabState = {
+	experiments: Experiment[];
+	experiment?: Experiment | null;
+	decision?: Decision | null;
+	report?: Report | null;
+	finalEvaluation?: FinalEvaluationState | null;
 };
 
 type ResearchAttempt = {
@@ -169,6 +201,14 @@ const RETRYABLE_ATTEMPT_STATUSES = new Set([
 	"cancelled",
 	"interrupted",
 	"stale",
+]);
+
+const RETRYABLE_FINAL_EVALUATION_STATUSES = new Set<FinalEvaluationStatus>([
+	"failed",
+	"cancelled",
+	"interrupted",
+	"stale",
+	"persistence-failed",
 ]);
 
 const isRetryableAttempt = (attempt: ResearchAttempt) =>
@@ -217,6 +257,8 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 	const [experiment, setExperiment] = useState<Experiment>();
 	const [decision, setDecision] = useState<Decision>();
 	const [report, setReport] = useState<Report>();
+	const [finalEvaluation, setFinalEvaluation] =
+		useState<FinalEvaluationState>();
 	const [attempts, setAttempts] = useState<ResearchAttempt[]>([]);
 	const [busy, setBusy] = useState("");
 	const [error, setError] = useState("");
@@ -245,6 +287,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 		setExperiment(undefined);
 		setDecision(undefined);
 		setReport(undefined);
+		setFinalEvaluation(undefined);
 		return () => {
 			userEpoch.current += 1;
 			requestVersions.current.clear();
@@ -294,21 +337,18 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 			if (!isTauriRuntime()) return;
 			const token = beginRequest("experiments");
 			try {
-				const nextExperiments = await invoke<Experiment[]>(
-					"model_experiment_list",
-					{
+				const nextState = await invoke<ModelLabState>("model_lab_state", {
+					request: {
 						userId,
+						factorDecisionHash: selectedFactorDecisionHash || undefined,
 					},
-				);
+				});
 				if (!isCurrentRequest(token) || activeUserId.current !== userId) return;
-				const matchingExperiments = selectedFactorDecisionHash
-					? nextExperiments.filter(
-							(item) => item.factorDecisionHash === selectedFactorDecisionHash,
-						)
-					: nextExperiments;
-				const nextExperiment =
-					matchingExperiments.length === 1 ? matchingExperiments[0] : undefined;
-				setExperiment(nextExperiment);
+				setExperiment(nextState.experiment ?? undefined);
+				setDecision(nextState.decision ?? undefined);
+				setReport(nextState.report ?? undefined);
+				setFinalEvaluation(nextState.finalEvaluation ?? undefined);
+				const nextExperiment = nextState.experiment ?? undefined;
 				if (!nextExperiment) return;
 				if (nextExperiment.factorDecisionHash) {
 					setFactorDecisionHash(nextExperiment.factorDecisionHash);
@@ -373,6 +413,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 		setExperiment(undefined);
 		setDecision(undefined);
 		setReport(undefined);
+		setFinalEvaluation(undefined);
 		setRun(undefined);
 		await afterPaint();
 		if (!isCurrentRequest(version)) return;
@@ -513,7 +554,13 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 
 	const selectTrial = async (trial: Trial) => {
 		const version = beginRequest("selection");
-		if (!experiment || !selectionReady || trial.status !== "completed") return;
+		if (
+			!experiment ||
+			decision ||
+			!selectionReady ||
+			trial.status !== "completed"
+		)
+			return;
 		setBusy(`select:${trial.trialId}`);
 		setError("");
 		await afterPaint();
@@ -536,7 +583,13 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 
 	const evaluateFinal = async () => {
 		const version = beginRequest("final");
-		if (!decision) return;
+		if (
+			!decision ||
+			report ||
+			(finalEvaluation &&
+				!RETRYABLE_FINAL_EVALUATION_STATUSES.has(finalEvaluation.status))
+		)
+			return;
 		setBusy("final");
 		setError("");
 		await afterPaint();
@@ -545,9 +598,15 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 			const nextReport = await invoke<Report>("model_final_evaluate", {
 				request: { userId, decisionId: decision.decisionId },
 			});
-			if (isCurrentRequest(version)) setReport(nextReport);
+			if (isCurrentRequest(version)) {
+				setReport(nextReport);
+				await refreshExperiments(factorDecisionHash);
+			}
 		} catch (reason) {
-			if (isCurrentRequest(version)) setError(String(reason));
+			if (isCurrentRequest(version)) {
+				setError(String(reason));
+				await refreshExperiments(factorDecisionHash);
+			}
 		} finally {
 			if (isCurrentRequest(version)) setBusy("");
 		}
@@ -776,6 +835,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							setExperiment(undefined);
 							setDecision(undefined);
 							setReport(undefined);
+							setFinalEvaluation(undefined);
 						}}
 					>
 						<option value="">
@@ -1075,7 +1135,11 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 									type="button"
 									size="sm"
 									variant="outline"
-									disabled={!selectionReady || trial.status !== "completed"}
+									disabled={
+										!selectionReady ||
+										Boolean(decision) ||
+										trial.status !== "completed"
+									}
 									loading={busy === `select:${trial.trialId}`}
 									onClick={() => void selectTrial(trial)}
 								>
@@ -1098,9 +1162,10 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								binding: decision.bindingSha256,
 								revision: decision.projectRevisionSha256,
 								environment: decision.environmentSha256,
-								input: decision.inputEvidenceSha256,
-								seed: decision.seed,
-								artifact: decision.candidateArtifactSha256,
+									input: decision.inputEvidenceSha256,
+									seed: decision.seed,
+									metrics: decision.selectionMetricsSha256,
+									artifact: decision.candidateArtifactSha256,
 							})}
 						</p>
 						<p className="basis-full text-muted-foreground">
@@ -1108,14 +1173,69 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								state: decision.evidenceState,
 							})}
 						</p>
-						<Button
-							type="button"
-							size="sm"
-							onClick={() => void evaluateFinal()}
-							loading={busy === "final"}
-						>
-							{t("pythonResearch.modelLab.finalEvaluate")}
-						</Button>
+							<Button
+								type="button"
+								size="sm"
+								onClick={() => void evaluateFinal()}
+								disabled={
+									Boolean(report) ||
+									busy === "final" ||
+									Boolean(
+										finalEvaluation &&
+											!RETRYABLE_FINAL_EVALUATION_STATUSES.has(
+												finalEvaluation.status,
+											),
+									)
+								}
+								loading={busy === "final"}
+							>
+								{finalEvaluation &&
+								RETRYABLE_FINAL_EVALUATION_STATUSES.has(finalEvaluation.status)
+									? t("pythonResearch.modelLab.retryFinal")
+									: t("pythonResearch.modelLab.finalEvaluate")}
+							</Button>
+					</div>
+				) : null}
+				{finalEvaluation ? (
+					<div
+						className="grid gap-1 rounded-md border p-3"
+						data-status={finalEvaluation.status}
+						role="status"
+					>
+						<div className="flex flex-wrap items-center gap-2">
+							<span>{t("pythonResearch.modelLab.finalEvaluationState")}</span>
+							<Badge variant="outline">
+								{t(
+									`pythonResearch.modelLab.finalStatus.${finalEvaluation.status}`,
+									{ defaultValue: finalEvaluation.status },
+								)}
+							</Badge>
+							<code className="break-all text-xs">
+								{finalEvaluation.decisionId}
+							</code>
+						</div>
+						{finalEvaluation.attemptId ? (
+							<p className="break-all font-mono text-xs text-muted-foreground">
+								{t("pythonResearch.modelLab.finalAttempt", {
+									attempt: finalEvaluation.attemptId,
+								})}
+							</p>
+						) : null}
+						{finalEvaluation.stagedDatasetSha256 ? (
+							<p className="break-all font-mono text-xs text-muted-foreground">
+								{t("pythonResearch.modelLab.stagedDataset", {
+									dataset: finalEvaluation.stagedDatasetSha256,
+								})}
+							</p>
+						) : null}
+						{finalEvaluation.failureCode || finalEvaluation.diagnostic ? (
+							<p className="break-all text-destructive" role="alert">
+								{t("pythonResearch.modelLab.finalFailure", {
+									value:
+										finalEvaluation.diagnostic ?? finalEvaluation.failureCode,
+								})}
+							</p>
+						) : null}
 					</div>
 				) : null}
 				{report ? (
@@ -1130,6 +1250,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							artifact: report.artifactSha256,
 							forecast: report.forecastSha256,
 							dataset: report.forecastDatasetSha256,
+							target: report.targetSha256,
 						})}
 					</p>
 				) : null}
