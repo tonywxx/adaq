@@ -517,7 +517,7 @@ const english = {
 	},
 	workflow: {
 		eyebrow: "Research-to-paper workflow",
-		title: "Build evidence, one decision at a time",
+		title: "AdaQ - Evidence-Driven Decisions",
 		description:
 			"Follow the ten-step path from factor discovery to paper operations. Every step shows its entry, current capability, required evidence, and output.",
 		reviewFoundations: "Review foundations",
@@ -3216,7 +3216,7 @@ const simplifiedChinese = {
 	},
 	workflow: {
 		eyebrow: "从研究到模拟执行",
-		title: "用证据推动每一次决策",
+		title: "AdaQ — 以证据驱动每一次决策",
 		description:
 			"沿着十个步骤，从因子发掘走到模拟运行。每一步都明确当前入口、能力状态、所需证据与产出。",
 		reviewFoundations: "检查基础准备",
