@@ -26,8 +26,13 @@ const PROJECTS_CHANGED_EVENT = "adaq:python-projects-changed";
 
 const afterPaint = () =>
 	new Promise<void>((resolve) => {
-		if (typeof requestAnimationFrame === "undefined") return resolve();
+		if (
+			typeof requestAnimationFrame === "undefined" ||
+			document.visibilityState === "hidden"
+		)
+			return resolve();
 		requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+		window.setTimeout(resolve, 100);
 	});
 
 type FactorRun = {

@@ -60,9 +60,15 @@ const datasetEvaluationBounds = (dataset?: Dataset) => {
 };
 
 const afterPaint = () =>
-	new Promise<void>((resolve) =>
-		requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-	);
+	new Promise<void>((resolve) => {
+		if (
+			typeof requestAnimationFrame === "undefined" ||
+			document.visibilityState === "hidden"
+		)
+			return resolve();
+		requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+		window.setTimeout(resolve, 100);
+	});
 
 export function ModelsPage({
 	adapter: providedAdapter,

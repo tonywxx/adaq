@@ -474,10 +474,98 @@ fn parse_canonical_json(bytes: &[u8]) -> Result<serde_json::Value, PythonResearc
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|error| invalid(format!("runner-result-json-invalid:{error}")))?;
     let canonical = serde_json::to_vec(&value).map_err(|error| invalid(error.to_string()))?;
-    if canonical != bytes {
+    if canonical != bytes && !canonical_json_tokens_match(bytes, &canonical) {
         return Err(invalid("runner-result-json-not-canonical"));
     }
     Ok(value)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum JsonToken<'a> {
+    Structural(u8),
+    String(&'a [u8]),
+    Number(&'a [u8]),
+    Literal(&'a [u8]),
+}
+
+fn next_json_token<'a>(bytes: &'a [u8], offset: &mut usize) -> Option<Result<JsonToken<'a>, ()>> {
+    let start = *offset;
+    let byte = *bytes.get(start)?;
+    if byte.is_ascii_whitespace() {
+        return Some(Err(()));
+    }
+    match byte {
+        b'{' | b'}' | b'[' | b']' | b',' | b':' => {
+            *offset += 1;
+            Some(Ok(JsonToken::Structural(byte)))
+        }
+        b'"' => {
+            *offset += 1;
+            while let Some(&byte) = bytes.get(*offset) {
+                match byte {
+                    b'\\' => {
+                        *offset = (*offset).checked_add(2)?;
+                    }
+                    b'"' => {
+                        *offset += 1;
+                        return Some(Ok(JsonToken::String(&bytes[start..*offset])));
+                    }
+                    _ => *offset += 1,
+                }
+            }
+            Some(Err(()))
+        }
+        b'-' | b'0'..=b'9' => {
+            *offset += 1;
+            while let Some(byte) = bytes.get(*offset) {
+                if !matches!(*byte, b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-') {
+                    break;
+                }
+                *offset += 1;
+            }
+            Some(Ok(JsonToken::Number(&bytes[start..*offset])))
+        }
+        b't' | b'f' | b'n' => {
+            *offset += 1;
+            while let Some(byte) = bytes.get(*offset) {
+                if !byte.is_ascii_alphabetic() {
+                    break;
+                }
+                *offset += 1;
+            }
+            Some(Ok(JsonToken::Literal(&bytes[start..*offset])))
+        }
+        _ => Some(Err(())),
+    }
+}
+
+fn same_json_number(left: &[u8], right: &[u8]) -> bool {
+    let is_float = |value: &[u8]| value.iter().any(|byte| matches!(byte, b'.' | b'e' | b'E'));
+    if !is_float(left) || !is_float(right) {
+        return left == right;
+    }
+    let parse = |value: &[u8]| serde_json::from_slice::<serde_json::Value>(value).ok();
+    parse(left) == parse(right)
+}
+
+fn canonical_json_tokens_match(input: &[u8], canonical: &[u8]) -> bool {
+    let mut input_offset = 0;
+    let mut canonical_offset = 0;
+    loop {
+        match (
+            next_json_token(input, &mut input_offset),
+            next_json_token(canonical, &mut canonical_offset),
+        ) {
+            (None, None) => return true,
+            (Some(Ok(JsonToken::Number(left))), Some(Ok(JsonToken::Number(right)))) => {
+                if !same_json_number(left, right) {
+                    return false;
+                }
+            }
+            (Some(Ok(left)), Some(Ok(right))) if left == right => {}
+            _ => return false,
+        }
+    }
 }
 
 fn accept_runner(
@@ -2551,5 +2639,15 @@ mod tests {
         result.validate("attempt", &["score".into()]).unwrap();
         result.rows[0].cells.get_mut("score").unwrap().value = Some(f64::NAN);
         assert!(result.validate("attempt", &["score".into()]).is_err());
+    }
+
+    #[test]
+    fn canonical_json_accepts_python_float_spelling_only() {
+        assert!(parse_canonical_json(br#"{"value":0.0017932553174720301}"#).is_ok());
+        assert!(parse_canonical_json(br#"{"value": 0.0017932553174720301}"#).is_err());
+        assert!(parse_canonical_json(
+            br#"{"value":0.0017932553174720301,"value":0.0017932553174720301}"#
+        )
+        .is_err());
     }
 }

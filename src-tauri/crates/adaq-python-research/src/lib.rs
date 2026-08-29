@@ -752,7 +752,16 @@ impl ProjectStore {
             let _ = fs::remove_file(&lock_temporary);
             let _ = fs::remove_file(&manifest_temporary);
         }
-        result.map(|()| lock_hash)
+        result?;
+        let revision = freeze_revision(&path, sha256(b"unresolved-sdk-artifact"), None)?;
+        let key = format!("{user_id}:{}", path.to_string_lossy());
+        let mut baselines = self
+            .baselines
+            .lock()
+            .map_err(|_| invalid("project-baseline-store-lock-poisoned"))?;
+        baselines.insert(key, revision.revision_sha256);
+        self.persist_baselines(&baselines);
+        Ok(lock_hash)
     }
 
     pub fn freeze(
@@ -1985,6 +1994,8 @@ mod tests {
             store.summary("alice", &path).unwrap().state,
             WorkingCopyState::Dirty
         );
+        assert!(!store.validate("alice", &first.project_id).unwrap().valid());
+        assert_eq!(store.summary("alice", &path).unwrap().state, WorkingCopyState::Dirty);
         assert!(store.list("bob").unwrap().is_empty());
         assert!(
             store

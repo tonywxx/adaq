@@ -13,13 +13,18 @@ sys.path.insert(0, str(ROOT / "adaq-python-research-runner/src"))
 sys.path.insert(0, str(ROOT / "adaq-research-sdk/src"))
 sys.path.insert(0, str(ROOT.parent / "examples/python/py-factor-cross-sectional-momentum/src"))
 
-from adaq_runner.__main__ import PROTOCOL, _project_payload, run  # noqa: E402
+from adaq_runner.__main__ import PROTOCOL, _project_payload, _read_frame, run  # noqa: E402
 from project import create_project  # noqa: E402
 
 
 def frame(value: dict[str, object]) -> bytes:
     body = json.dumps(value, separators=(",", ":")).encode()
     return struct.pack(">I", len(body)) + body
+
+
+class ChunkedReader(io.BytesIO):
+    def read(self, size: int = -1) -> bytes:
+        return super().read(min(size, 3) if size >= 0 else size)
 
 
 def main() -> None:
@@ -47,6 +52,9 @@ def main() -> None:
     output = io.BytesIO()
     assert run(io.BytesIO(frame(hello) + frame({"kind": "shutdown"})), output) == 0
     assert json.loads(output.getvalue()[4:]) == {"kind": "ready"}
+    assert _read_frame(ChunkedReader(frame({"kind": "shutdown"}))) == {
+        "kind": "shutdown"
+    }
     malformed = json.loads(json.dumps(hello))
     malformed["handshake"]["unexpected"] = True
     try:
@@ -71,7 +79,7 @@ def main() -> None:
         "cross-sectional-percentile",
         "rename",
     ]
-    print("Runner contract checks: 4 passed")
+    print("Runner contract checks: 5 passed")
 
 
 if __name__ == "__main__":

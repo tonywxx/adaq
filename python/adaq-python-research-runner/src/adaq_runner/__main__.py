@@ -33,18 +33,26 @@ class _HostArrowTable:
         return [dict(row) for row in self._rows]
 
 
+def _read_exact(stream: BinaryIO, size: int) -> bytes:
+    value = bytearray()
+    while len(value) < size:
+        chunk = stream.read(size - len(value))
+        if not chunk:
+            raise ValueError("runner-control-frame-truncated")
+        value.extend(chunk)
+    return bytes(value)
+
+
 def _read_frame(stream: BinaryIO) -> dict[str, object] | None:
     header = stream.read(4)
     if not header:
         return None
     if len(header) != 4:
-        raise ValueError("runner-control-frame-truncated")
+        header += _read_exact(stream, 4 - len(header))
     length = struct.unpack(">I", header)[0]
     if length > MAX_FRAME:
         raise ValueError("runner-control-frame-too-large")
-    body = stream.read(length)
-    if len(body) != length:
-        raise ValueError("runner-control-frame-truncated")
+    body = _read_exact(stream, length)
     value = json.loads(body)
     if not isinstance(value, dict) or not isinstance(value.get("kind"), str):
         raise ValueError("runner-control-message-invalid")

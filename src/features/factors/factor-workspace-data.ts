@@ -11,11 +11,15 @@ const MAX_FACTOR_PAGE_REQUESTS = 1_000;
 
 export const afterPaint = (): Promise<void> =>
 	new Promise((resolve) => {
-		if (typeof requestAnimationFrame === "undefined") {
+		if (
+			typeof requestAnimationFrame === "undefined" ||
+			document.visibilityState === "hidden"
+		) {
 			resolve();
 			return;
 		}
 		requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+		window.setTimeout(resolve, 100);
 	});
 
 export function useFactorPage<T>(

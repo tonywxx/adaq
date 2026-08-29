@@ -130,8 +130,13 @@ const WINDOWS = [
 
 const afterPaint = () =>
 	new Promise<void>((resolve) => {
-		if (typeof requestAnimationFrame === "undefined") return resolve();
+		if (
+			typeof requestAnimationFrame === "undefined" ||
+			document.visibilityState === "hidden"
+		)
+			return resolve();
 		requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+		window.setTimeout(resolve, 100);
 	});
 
 function bytes(value?: number) {
@@ -272,6 +277,7 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 			await invoke("environment_sync_managed", {
 				request: { userId, projectId },
 			});
+			await invoke("project_validate", { request: { userId, projectId } });
 			currentProjects = await invoke<WorkingCopy[]>("project_list", { userId });
 			project = currentProjects.find((item) => item.projectId === projectId);
 			if (project?.state !== "clean") {
@@ -326,6 +332,7 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 			await invoke("runtime_prepare_managed", { request: { userId } });
 		}
 		await invoke("environment_sync_managed", { request: { userId, projectId } });
+		await invoke("project_validate", { request: { userId, projectId } });
 		const currentProjects = await invoke<WorkingCopy[]>("project_list", {
 			userId,
 		});
