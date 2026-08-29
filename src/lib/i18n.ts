@@ -1373,6 +1373,28 @@ const english = {
 			title: "Host-fed Qlib Ridge Model",
 			description:
 				"Run the synthetic default, retain the alpha grid, record your Selection decision, then evaluate once on held-out labels.",
+			deploymentTitle: "Qualify Model Deployment",
+			gate9: "Gate 9",
+			deploymentDescription:
+				"Qualify the exact selected Model Artifact and completed Final Evaluation as an inference-only WASI Model Component.",
+			qualifyDeployment: "Qualify Model Deployment",
+			qualified: "Qualified",
+			retryQualification: "Retry Qualification",
+			completeFinalEvaluation:
+				"Complete the selected model's Final Evaluation before qualification.",
+			researchOnly: "Research Only",
+			deploymentAttemptArtifact: "Attempt {{attempt}} · Artifact {{artifact}}",
+			deploymentRuntime: "{{profile}} · {{exporter}} · runtime {{runtime}}",
+			deploymentReplay:
+				"Replay {{identity}} · {{rows}} rows · tolerance {{tolerance}}",
+			deploymentQualification:
+				"Qualification {{duration}}/{{deadline}} ms",
+			deploymentEvidence:
+				"Evidence: package {{package}} · conformance {{conformance}} · equivalence {{equivalence}} · runtime {{runtime}}",
+			deploymentPackage:
+				"Package {{package}} · Component {{component}} v{{version}} · WASM {{wasm}}",
+			deploymentLibraryImported:
+				"Component Library imported {{archive}}",
 			runDefault: "Run α=1 demo",
 			registerGrid: "Register α grid",
 			completeTrial: "Complete trial",
@@ -2725,6 +2747,28 @@ const simplifiedChinese = {
 			title: "Host-fed Qlib Ridge 模型",
 			description:
 				"运行合成默认值，保留 alpha 网格，记录用户选择，然后只在保留标签上进行一次最终评估。",
+			deploymentTitle: "资格认定 Model Deployment",
+			gate9: "Gate 9",
+			deploymentDescription:
+				"将精确选中的 Model Artifact 和已完成的 Final Evaluation 资格认定为仅推理 WASI Model Component。",
+			qualifyDeployment: "资格认定 Model Deployment",
+			qualified: "已通过资格认定",
+			retryQualification: "重试资格认定",
+			completeFinalEvaluation:
+				"请先完成选中模型的 Final Evaluation，再进行资格认定。",
+			researchOnly: "仅限 Research",
+			deploymentAttemptArtifact: "Attempt {{attempt}} · Artifact {{artifact}}",
+			deploymentRuntime: "{{profile}} · {{exporter}} · Runtime {{runtime}}",
+			deploymentReplay:
+				"Replay {{identity}} · {{rows}} 行 · 容差 {{tolerance}}",
+			deploymentQualification:
+				"资格认定 {{duration}}/{{deadline}} ms",
+			deploymentEvidence:
+				"证据：package {{package}} · conformance {{conformance}} · equivalence {{equivalence}} · runtime {{runtime}}",
+			deploymentPackage:
+				"Package {{package}} · Component {{component}} v{{version}} · WASM {{wasm}}",
+			deploymentLibraryImported:
+				"Component Library 已导入 {{archive}}",
 			runDefault: "运行 α=1 演示",
 			registerGrid: "注册 α 网格",
 			completeTrial: "完成 Trial",

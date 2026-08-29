@@ -511,6 +511,7 @@ impl WasmLoader {
         &self,
         rows: Vec<model_abi::exports::adaq::model::api::PredictionRow>,
     ) -> Result<Vec<Option<model_abi::exports::adaq::model::api::ForecastRow>>, String> {
+        validate_model_batch_size(rows.len(), self.limits)?;
         let mut model = self.model.lock().map_err(string)?;
         let LoadedModel {
             store,
@@ -999,6 +1000,31 @@ fn reset_component_fuel(
     store.set_fuel(limits.fuel_per_call).map_err(string)
 }
 
+fn validate_model_batch_size(rows: usize, limits: RunLimits) -> Result<(), String> {
+    if rows > limits.max_bars {
+        return Err(format!(
+            "Model batch exceeds the configured bar limit ({})",
+            limits.max_bars
+        ));
+    }
+    Ok(())
+}
+
 fn string(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RunLimits, validate_model_batch_size};
+
+    #[test]
+    fn model_batches_are_bounded_by_run_limits() {
+        let limits = RunLimits {
+            max_bars: 2,
+            ..RunLimits::default()
+        };
+        assert!(validate_model_batch_size(2, limits).is_ok());
+        assert!(validate_model_batch_size(3, limits).is_err());
+    }
 }

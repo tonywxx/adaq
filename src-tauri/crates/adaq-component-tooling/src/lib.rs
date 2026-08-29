@@ -1,5 +1,7 @@
 mod cli;
 mod conformance;
+mod model_export;
+mod model_template;
 mod package;
 mod plan;
 mod qualification;
@@ -10,6 +12,10 @@ pub use cli::{
     ComponentBuildOutput, build_project, build_project_offline_with_diagnostics, run_cli,
 };
 pub use conformance::{component_parameters, verify_package};
+pub use model_export::{
+    MODEL_EXPORTER_ID, MODEL_HORIZON_BARS, MODEL_OUTPUT_NAME, MODEL_TARGET_ID, WASI_MODEL_PROFILE,
+    export_linear_model_component, linear_model_binding,
+};
 pub use package::{
     BuiltinForecastTarget, ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
     FactorScope, FeatureSlotDefinition, FeatureSlotSource, ForecastTarget, ForecastTargetValueType,

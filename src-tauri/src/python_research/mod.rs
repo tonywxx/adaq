@@ -12,9 +12,16 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use adaq_component_tooling::{
+    BuiltinForecastTarget, ComponentKind, ComponentPackage, ComponentParameterValue,
+    ForecastTarget, ForecastValueScale, MODEL_EXPORTER_ID, MODEL_HORIZON_BARS, MODEL_OUTPUT_NAME,
+    MODEL_TARGET_ID, ModelScope, PredictionKind, QualificationAttempt, QualificationGate,
+    RunLimits, WASI_MODEL_PROFILE, WasmLoader, export_linear_model_component, linear_model_binding,
+    qualify_package_with_limits,
+};
 use adaq_factor_research::{
     CorporateActionEvidence, EconomicAssumptions, EvaluationWindow, FactorCandidateDraft,
     FactorCandidateSource, FactorDataset, FactorDatasetManifest, FactorDatasetRow,
@@ -123,6 +130,9 @@ struct RuntimePreparationProgress {
 }
 
 const MODEL_LAB_SCHEMA_VERSION: u32 = 1;
+const MODEL_RUNTIME_IDENTITY: &str = "wasmtime@47.0.3:component-model:fuel:10m:memory:67108864";
+const UNKNOWN_MODEL_IDENTITY: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
 
 fn model_lab_schema_version() -> u32 {
     MODEL_LAB_SCHEMA_VERSION
@@ -169,6 +179,160 @@ pub struct ModelFinalEvaluationState {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelQualificationEvidence {
+    pub package: bool,
+    pub conformance: bool,
+    pub equivalence: bool,
+    pub runtime: bool,
+    pub qualified: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelRuntimeQualificationReport {
+    pub report_id: String,
+    pub attempt_id: String,
+    pub decision_id: String,
+    pub final_evaluation_report_id: String,
+    pub artifact_sha256: String,
+    pub transformation_sha256: String,
+    pub wasi_profile: String,
+    pub exporter_id: String,
+    pub sdk_version: String,
+    pub abi_version: String,
+    #[serde(default)]
+    pub package_archive_sha256: Option<String>,
+    #[serde(default)]
+    pub component_id: Option<String>,
+    #[serde(default)]
+    pub component_version: Option<String>,
+    #[serde(default)]
+    pub wasm_sha256: Option<String>,
+    pub runtime_identity: String,
+    pub resource_policy_sha256: String,
+    pub qualification_deadline_ms: u64,
+    pub qualification_duration_ms: u64,
+    pub input_slots: Vec<String>,
+    pub target_id: String,
+    pub target_horizon_bars: u32,
+    pub forecast_contract: String,
+    pub replay_identity: String,
+    pub replay_rows: usize,
+    pub numeric_tolerance: f64,
+    pub evidence: ModelQualificationEvidence,
+    pub qualified: bool,
+    #[serde(default)]
+    pub imported_component_archive_sha256: Option<String>,
+    pub diagnostics: Vec<String>,
+    pub created_at_ms: i64,
+}
+
+impl ModelRuntimeQualificationReport {
+    fn validate(&self) -> Result<(), PythonResearchError> {
+        if self.attempt_id.trim().is_empty()
+            || self.decision_id.trim().is_empty()
+            || self.qualified && self.final_evaluation_report_id.trim().is_empty()
+            || !is_sha256_text(&self.artifact_sha256)
+            || !is_sha256_text(&self.transformation_sha256)
+            || self.wasi_profile != WASI_MODEL_PROFILE
+            || self.exporter_id != MODEL_EXPORTER_ID
+            || self.sdk_version != adaq_component_sdk::SDK_VERSION
+            || self.abi_version != adaq_component_sdk::ABI_VERSION
+            || self.runtime_identity != MODEL_RUNTIME_IDENTITY
+            || !is_sha256_text(&self.resource_policy_sha256)
+            || self.qualified && self.qualification_deadline_ms == 0
+            || self.evidence.runtime
+                && self.qualification_duration_ms > self.qualification_deadline_ms
+            || self.qualified && self.input_slots.is_empty()
+            || self.input_slots.len() > 64
+            || self
+                .input_slots
+                .iter()
+                .any(|slot| !is_lower_kebab_text(slot))
+            || self.input_slots.iter().collect::<BTreeSet<_>>().len() != self.input_slots.len()
+            || self.target_id != MODEL_TARGET_ID
+            || self.target_horizon_bars != MODEL_HORIZON_BARS
+            || self.forecast_contract != adaq_python_research::model::FORECAST_CONTRACT
+            || !is_sha256_text(&self.replay_identity)
+            || self.qualified && self.replay_rows == 0
+            || !self.numeric_tolerance.is_finite()
+            || self.numeric_tolerance <= 0.0
+            || self.evidence.qualified != self.qualified
+            || self.qualified
+                && !(self.evidence.package
+                    && self.evidence.conformance
+                    && self.evidence.equivalence
+                    && self.evidence.runtime)
+            || !self.qualified && self.evidence.qualified
+            || self
+                .package_archive_sha256
+                .as_deref()
+                .is_some_and(|hash| !is_sha256_text(hash))
+            || self
+                .wasm_sha256
+                .as_deref()
+                .is_some_and(|hash| !is_sha256_text(hash))
+            || self
+                .component_id
+                .as_deref()
+                .is_some_and(|id| uuid::Uuid::parse_str(id).is_err())
+            || self.qualified
+                && (self.package_archive_sha256.is_none()
+                    || self.component_id.is_none()
+                    || self.component_version.is_none()
+                    || self.imported_component_archive_sha256 != self.package_archive_sha256)
+            || !self.qualified && self.imported_component_archive_sha256.is_some()
+            || !self.qualified && self.diagnostics.is_empty()
+        {
+            return Err(PythonResearchError(
+                "model-runtime-qualification-report-invalid".into(),
+            ));
+        }
+        let expected_id = model_qualification_report_id(
+            &self.attempt_id,
+            &self.decision_id,
+            &self.artifact_sha256,
+            self.package_archive_sha256.as_deref().unwrap_or_default(),
+            &self.replay_identity,
+            self.qualified,
+        );
+        if self.report_id != expected_id {
+            return Err(PythonResearchError(
+                "model-runtime-qualification-report-id-invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn model_qualification_report_id(
+    attempt_id: &str,
+    decision_id: &str,
+    artifact_sha256: &str,
+    package_archive_sha256: &str,
+    replay_identity: &str,
+    qualified: bool,
+) -> String {
+    sha256(
+        format!(
+            "{attempt_id}:{decision_id}:{artifact_sha256}:{package_archive_sha256}:{replay_identity}:{qualified}"
+        )
+        .as_bytes(),
+    )
+}
+
+fn is_lower_kebab_text(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !value.starts_with('-')
+        && !value.ends_with('-')
+        && !value.contains("--")
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelLabState {
@@ -177,6 +341,7 @@ pub struct ModelLabState {
     pub decision: Option<ParameterSelectionDecision>,
     pub report: Option<FinalEvaluationReport>,
     pub final_evaluation: Option<ModelFinalEvaluationState>,
+    pub deployment_reports: Vec<ModelRuntimeQualificationReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +362,8 @@ struct ModelLabDatabase {
     transformations: BTreeMap<String, Vec<u8>>,
     #[serde(default)]
     forecast_datasets: BTreeMap<String, StoredForecastDataset>,
+    #[serde(default)]
+    model_qualification_reports: BTreeMap<String, ModelRuntimeQualificationReport>,
 }
 
 impl Default for ModelLabDatabase {
@@ -211,6 +378,7 @@ impl Default for ModelLabDatabase {
             artifacts: BTreeMap::new(),
             transformations: BTreeMap::new(),
             forecast_datasets: BTreeMap::new(),
+            model_qualification_reports: BTreeMap::new(),
         }
     }
 }
@@ -342,6 +510,64 @@ impl ModelLabStore {
             if report.artifact_sha256 != decision.candidate_artifact_sha256 {
                 return Err(PythonResearchError(
                     "model-lab-store-invalid:model-report-binding".into(),
+                ));
+            }
+        }
+        for (key, report) in &database.model_qualification_reports {
+            report
+                .validate()
+                .map_err(|error| PythonResearchError(format!("model-lab-store-invalid:{error}")))?;
+            let user_id = key
+                .split_once(':')
+                .map(|(user_id, _)| user_id)
+                .ok_or_else(|| {
+                    PythonResearchError("model-lab-store-invalid:model-qualification-key".into())
+                })?;
+            crate::user::validate_user(user_id).map_err(|_| {
+                PythonResearchError("model-lab-store-invalid:model-qualification-user".into())
+            })?;
+            if key != &model_key(user_id, &report.report_id) {
+                return Err(PythonResearchError(
+                    "model-lab-store-invalid:model-qualification-key-binding".into(),
+                ));
+            }
+            let decision = database
+                .decisions
+                .get(&model_key(user_id, &report.decision_id));
+            if report.qualified && decision.is_none() {
+                return Err(PythonResearchError(
+                    "model-lab-store-invalid:model-qualification-decision".into(),
+                ));
+            }
+            if let Some(decision) = decision {
+                if report.artifact_sha256 != UNKNOWN_MODEL_IDENTITY
+                    && report.artifact_sha256 != decision.candidate_artifact_sha256
+                {
+                    return Err(PythonResearchError(
+                        "model-lab-store-invalid:model-qualification-binding".into(),
+                    ));
+                }
+            }
+            if !report.final_evaluation_report_id.is_empty() {
+                let final_report = database
+                    .final_reports
+                    .get(&model_key(user_id, &report.final_evaluation_report_id))
+                    .ok_or_else(|| {
+                        PythonResearchError(
+                            "model-lab-store-invalid:model-qualification-final-report".into(),
+                        )
+                    })?;
+                if final_report.decision_id != report.decision_id
+                    || report.artifact_sha256 != UNKNOWN_MODEL_IDENTITY
+                        && final_report.artifact_sha256 != report.artifact_sha256
+                {
+                    return Err(PythonResearchError(
+                        "model-lab-store-invalid:model-qualification-binding".into(),
+                    ));
+                }
+            } else if report.qualified {
+                return Err(PythonResearchError(
+                    "model-lab-store-invalid:model-qualification-final-report".into(),
                 ));
             }
         }
@@ -681,6 +907,159 @@ impl ModelLabStore {
             .ok_or_else(|| PythonResearchError("model-artifact-not-found".into()))
     }
 
+    fn transformation(
+        &self,
+        user_id: &str,
+        transformation_sha256: &str,
+    ) -> Result<Vec<u8>, PythonResearchError> {
+        self.database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?
+            .transformations
+            .get(&model_key(user_id, transformation_sha256))
+            .cloned()
+            .ok_or_else(|| PythonResearchError("model-transformation-not-found".into()))
+    }
+
+    fn final_evaluation(
+        &self,
+        user_id: &str,
+        decision_id: &str,
+    ) -> Result<Option<ModelFinalEvaluationState>, PythonResearchError> {
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
+        if let Some(state) = database
+            .final_evaluations
+            .get(&model_key(user_id, decision_id))
+            .cloned()
+        {
+            return Ok(Some(state));
+        }
+        let reports = database
+            .final_reports
+            .iter()
+            .filter(|(key, report)| {
+                key.starts_with(&format!("{user_id}:")) && report.decision_id == decision_id
+            })
+            .map(|(_, report)| report)
+            .collect::<Vec<_>>();
+        Ok((reports.len() == 1).then(|| ModelFinalEvaluationState {
+            decision_id: decision_id.into(),
+            status: ModelFinalEvaluationStatus::Completed,
+            attempt_id: None,
+            staged_dataset_sha256: Some(reports[0].forecast_dataset_sha256.clone()),
+            report_id: Some(reports[0].report_id.clone()),
+            failure_code: None,
+            diagnostic: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        }))
+    }
+
+    fn qualification_reports(
+        &self,
+        user_id: &str,
+        decision_id: &str,
+    ) -> Result<Vec<ModelRuntimeQualificationReport>, PythonResearchError> {
+        crate::user::validate_user(user_id).map_err(PythonResearchError)?;
+        let prefix = format!("{user_id}:");
+        let mut reports = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?
+            .model_qualification_reports
+            .iter()
+            .filter(|(key, report)| key.starts_with(&prefix) && report.decision_id == decision_id)
+            .map(|(_, report)| report.clone())
+            .collect::<Vec<_>>();
+        reports.sort_by(|left, right| {
+            left.created_at_ms
+                .cmp(&right.created_at_ms)
+                .then_with(|| left.report_id.cmp(&right.report_id))
+        });
+        Ok(reports)
+    }
+
+    fn save_qualification_report(
+        &self,
+        user_id: &str,
+        report: ModelRuntimeQualificationReport,
+    ) -> Result<ModelRuntimeQualificationReport, PythonResearchError> {
+        crate::user::validate_user(user_id).map_err(PythonResearchError)?;
+        report.validate()?;
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
+        let decision = database
+            .decisions
+            .get(&model_key(user_id, &report.decision_id));
+        if report.qualified && decision.is_none() {
+            return Err(PythonResearchError(
+                "model-selection-decision-not-found".into(),
+            ));
+        }
+        if let Some(decision) = decision
+            && report.artifact_sha256 != UNKNOWN_MODEL_IDENTITY
+            && decision.candidate_artifact_sha256 != report.artifact_sha256
+        {
+            return Err(PythonResearchError(
+                "model-runtime-qualification-binding-invalid".into(),
+            ));
+        }
+        if !report.final_evaluation_report_id.is_empty() {
+            let final_report = database
+                .final_reports
+                .get(&model_key(user_id, &report.final_evaluation_report_id))
+                .ok_or_else(|| {
+                    PythonResearchError("model-final-evaluation-report-not-found".into())
+                })?;
+            if final_report.decision_id != report.decision_id
+                || report.artifact_sha256 != UNKNOWN_MODEL_IDENTITY
+                    && final_report.artifact_sha256 != report.artifact_sha256
+            {
+                return Err(PythonResearchError(
+                    "model-runtime-qualification-binding-invalid".into(),
+                ));
+            }
+        } else if report.qualified {
+            return Err(PythonResearchError(
+                "model-final-evaluation-report-not-found".into(),
+            ));
+        }
+        if report.qualified
+            && let Some(existing) = database
+                .model_qualification_reports
+                .values()
+                .find(|existing| {
+                    existing.decision_id == report.decision_id
+                        && existing.qualified
+                        && database
+                            .model_qualification_reports
+                            .get(&model_key(user_id, &existing.report_id))
+                            .is_some()
+                })
+        {
+            return Ok(existing.clone());
+        }
+        let key = model_key(user_id, &report.report_id);
+        if let Some(existing) = database.model_qualification_reports.get(&key) {
+            if existing != &report {
+                return Err(PythonResearchError(
+                    "model-runtime-qualification-identity-collision".into(),
+                ));
+            }
+            return Ok(existing.clone());
+        }
+        let mut next = database.clone();
+        next.model_qualification_reports.insert(key, report.clone());
+        self.persist(&next)?;
+        *database = next;
+        Ok(report)
+    }
+
     fn complete_trial_with_candidate(
         &self,
         user_id: &str,
@@ -973,12 +1352,31 @@ impl ModelLabStore {
                     })
                 })
         });
+        let mut deployment_reports = decision
+            .as_ref()
+            .map(|decision| {
+                database
+                    .model_qualification_reports
+                    .iter()
+                    .filter(|(key, report)| {
+                        key.starts_with(&prefix) && report.decision_id == decision.decision_id
+                    })
+                    .map(|(_, report)| report.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        deployment_reports.sort_by(|left, right| {
+            left.created_at_ms
+                .cmp(&right.created_at_ms)
+                .then_with(|| left.report_id.cmp(&right.report_id))
+        });
         Ok(ModelLabState {
             experiments,
             experiment,
             decision,
             report,
             final_evaluation,
+            deployment_reports,
         })
     }
 
@@ -1298,6 +1696,9 @@ impl ModelLabStore {
             .retain(|key, _| !key.starts_with(&format!("{user_id}:")));
         database
             .forecast_datasets
+            .retain(|key, _| !key.starts_with(&format!("{user_id}:")));
+        database
+            .model_qualification_reports
             .retain(|key, _| !key.starts_with(&format!("{user_id}:")));
         self.persist(&database)
     }
@@ -1684,6 +2085,17 @@ fn resource_policy_identity(
     ))
 }
 
+fn model_run_limits(resource_policy: &HostResourcePolicy) -> Result<RunLimits, String> {
+    let defaults = RunLimits::default();
+    Ok(RunLimits {
+        fuel_per_call: defaults.fuel_per_call,
+        memory_bytes: usize::try_from(resource_policy.max_memory_bytes)
+            .map_err(|_| "model-runtime-memory-limit-invalid".to_owned())?,
+        max_bars: usize::try_from(resource_policy.max_input_rows)
+            .map_err(|_| "model-runtime-input-row-limit-invalid".to_owned())?,
+    })
+}
+
 fn model_binding_sha256(view: &ModelRunView) -> Result<String, PythonResearchError> {
     let value = serde_json::json!([
         &view.adapter_id,
@@ -1928,6 +2340,758 @@ fn model_forecast_sha256(
     ))
     .map_err(|error| PythonResearchError(error.to_string()))?;
     Ok(sha256(&bytes))
+}
+
+struct ModelDeploymentReplay {
+    final_report: FinalEvaluationReport,
+    run: ModelRunView,
+    artifact: LinearModelArtifact,
+    transformation: FittedTransformation,
+    rows: Vec<HostPartitionRow>,
+    expected: Vec<adaq_python_research::model::ForecastRow>,
+    replay_identity: String,
+}
+
+fn model_qualification_failure_report(
+    store: &ModelLabStore,
+    user_id: &str,
+    decision_id: &str,
+    attempt_id: String,
+    diagnostic: &str,
+) -> Result<ModelRuntimeQualificationReport, PythonResearchError> {
+    let diagnostic = bounded_model_diagnostic(diagnostic);
+    let decision = store.decision(user_id, decision_id).ok();
+    let final_report = store.final_report(user_id, decision_id).ok().flatten();
+    let final_state = store.final_evaluation(user_id, decision_id).ok().flatten();
+    let selected_attempt_id = final_state
+        .as_ref()
+        .and_then(|state| state.attempt_id.clone())
+        .or_else(|| {
+            decision.as_ref().and_then(|decision| {
+                store
+                    .experiment(user_id, &decision.experiment_id)
+                    .ok()
+                    .and_then(|experiment| {
+                        experiment
+                            .trials
+                            .iter()
+                            .find(|trial| trial.trial_id == decision.selected_trial_id)
+                            .and_then(|trial| trial.successful_attempt_id.clone())
+                    })
+            })
+        });
+    let run = selected_attempt_id
+        .as_deref()
+        .and_then(|attempt_id| store.run(user_id, attempt_id).ok());
+    let artifact_sha256 = decision
+        .as_ref()
+        .map(|decision| decision.candidate_artifact_sha256.as_str())
+        .filter(|hash| is_sha256_text(hash))
+        .unwrap_or(UNKNOWN_MODEL_IDENTITY)
+        .to_owned();
+    let transformation_sha256 = run
+        .as_ref()
+        .map(|run| run.transformation_sha256.as_str())
+        .filter(|hash| is_sha256_text(hash))
+        .unwrap_or(UNKNOWN_MODEL_IDENTITY)
+        .to_owned();
+    let resource_policy = run
+        .as_ref()
+        .map(|run| run.resource_policy.clone())
+        .unwrap_or_else(default_model_resource_policy);
+    let replay_identity =
+        sha256(format!("model-qualification-precondition:{decision_id}:{diagnostic}").as_bytes());
+    let mut report = ModelRuntimeQualificationReport {
+        report_id: String::new(),
+        attempt_id,
+        decision_id: decision_id.to_owned(),
+        final_evaluation_report_id: final_report
+            .as_ref()
+            .map(|report| report.report_id.clone())
+            .unwrap_or_default(),
+        artifact_sha256,
+        transformation_sha256,
+        wasi_profile: WASI_MODEL_PROFILE.into(),
+        exporter_id: MODEL_EXPORTER_ID.into(),
+        sdk_version: adaq_component_sdk::SDK_VERSION.into(),
+        abi_version: adaq_component_sdk::ABI_VERSION.into(),
+        package_archive_sha256: None,
+        component_id: None,
+        component_version: None,
+        wasm_sha256: None,
+        runtime_identity: MODEL_RUNTIME_IDENTITY.into(),
+        resource_policy_sha256: resource_policy_identity(&resource_policy)?,
+        qualification_deadline_ms: resource_policy.max_wall_ms,
+        qualification_duration_ms: 0,
+        input_slots: run
+            .as_ref()
+            .map(|run| run.input_slots.clone())
+            .unwrap_or_default(),
+        target_id: MODEL_TARGET_ID.into(),
+        target_horizon_bars: MODEL_HORIZON_BARS,
+        forecast_contract: adaq_python_research::model::FORECAST_CONTRACT.into(),
+        replay_identity,
+        replay_rows: run.as_ref().map_or(0, |run| run.final_rows),
+        numeric_tolerance: RIDGE_REPEATABILITY_TOLERANCE,
+        evidence: ModelQualificationEvidence {
+            package: false,
+            conformance: false,
+            equivalence: false,
+            runtime: false,
+            qualified: false,
+        },
+        qualified: false,
+        imported_component_archive_sha256: None,
+        diagnostics: vec![diagnostic],
+        created_at_ms: model_lab_now_ms(),
+    };
+    report.report_id = model_qualification_report_id(
+        &report.attempt_id,
+        &report.decision_id,
+        &report.artifact_sha256,
+        "",
+        &report.replay_identity,
+        false,
+    );
+    report.validate()?;
+    Ok(report)
+}
+
+fn accepted_model_deployment_replay(
+    store: &ModelLabStore,
+    local_state: &crate::local_research::LocalResearchState,
+    user_id: &str,
+    decision_id: &str,
+) -> Result<ModelDeploymentReplay, PythonResearchError> {
+    let final_report = store
+        .final_report(user_id, decision_id)?
+        .ok_or_else(|| PythonResearchError("model-final-evaluation-report-required".into()))?;
+    final_report.validate()?;
+    if final_report.decision_id != decision_id
+        || final_report.evidence_state != EvidenceState::OutOfSample
+    {
+        return Err(PythonResearchError(
+            "model-final-evaluation-not-out-of-sample".into(),
+        ));
+    }
+    let final_state = store
+        .final_evaluation(user_id, decision_id)?
+        .ok_or_else(|| PythonResearchError("model-final-evaluation-state-required".into()))?;
+    if final_state.status != ModelFinalEvaluationStatus::Completed
+        || final_state.report_id.as_deref() != Some(final_report.report_id.as_str())
+        || final_state.staged_dataset_sha256.as_deref()
+            != Some(final_report.forecast_dataset_sha256.as_str())
+    {
+        return Err(PythonResearchError(
+            "model-final-evaluation-state-not-completed".into(),
+        ));
+    }
+    let decision = store.decision(user_id, decision_id)?;
+    decision.validate()?;
+    let experiment = store.experiment(user_id, &decision.experiment_id)?;
+    experiment.validate()?;
+    let trial = experiment
+        .trials
+        .iter()
+        .find(|trial| trial.trial_id == decision.selected_trial_id)
+        .ok_or_else(|| PythonResearchError("model-selection-trial-not-found".into()))?;
+    let successful_attempt_id = trial
+        .successful_attempt_id
+        .as_deref()
+        .ok_or_else(|| PythonResearchError("model-selection-successful-attempt-missing".into()))?;
+    let candidate_artifact_sha256 = trial
+        .candidate_artifact_sha256
+        .as_deref()
+        .ok_or_else(|| PythonResearchError("model-selection-candidate-artifact-missing".into()))?;
+    let attempt_id = final_state
+        .attempt_id
+        .as_deref()
+        .unwrap_or(successful_attempt_id);
+    if trial.status != TrialStatus::Completed
+        || trial.repeatability_state != RepeatabilityState::Verified
+        || trial.alpha.to_bits() != decision.selected_alpha.to_bits()
+        || trial.binding_sha256 != decision.binding_sha256
+        || candidate_artifact_sha256 != decision.candidate_artifact_sha256
+        || final_report.artifact_sha256 != candidate_artifact_sha256
+    {
+        return Err(PythonResearchError(
+            "model-selection-final-evidence-binding-invalid".into(),
+        ));
+    }
+    let run = store.run(user_id, attempt_id)?;
+    if !validate_model_trial_run(&run, trial, attempt_id)
+        || run.artifact_sha256 != candidate_artifact_sha256
+        || run.seed != decision.seed
+        || run.repeatability_state != RepeatabilityState::Verified
+        || !run.repeatability_verified
+        || !run.test_labels_withheld
+        || run.forecast_sha256 != final_report.forecast_dataset_sha256
+        || run.input_slots.is_empty()
+        || run.target_id != adaq_python_research::model::TARGET_ID
+        || run.target_horizon_bars != TARGET_HORIZON_BARS as u32
+        || run.forecast_contract != adaq_python_research::model::FORECAST_CONTRACT
+        || run.artifact_schema != adaq_python_research::model::LINEAR_MODEL_ARTIFACT_SCHEMA
+        || run.numeric_representation != adaq_python_research::model::NUMERIC_REPRESENTATION
+        || run.windows != TutorialWindows::m12()
+    {
+        return Err(PythonResearchError(
+            "model-final-run-evidence-binding-invalid".into(),
+        ));
+    }
+    if model_binding_sha256(&run)? != run.binding_sha256 {
+        return Err(PythonResearchError(
+            "model-final-run-binding-invalid".into(),
+        ));
+    }
+    let artifact =
+        LinearModelArtifact::reload(&store.artifact(user_id, candidate_artifact_sha256)?)?;
+    let transformation =
+        FittedTransformation::reload(&store.transformation(user_id, &run.transformation_sha256)?)?;
+    let expected_provenance = model_run_provenance(&run)?;
+    if artifact.artifact_sha256 != candidate_artifact_sha256
+        || artifact.alpha.to_bits() != decision.selected_alpha.to_bits()
+        || artifact.input_slots != run.input_slots
+        || artifact.transformation_sha256 != run.transformation_sha256
+        || artifact.provenance_hashes != expected_provenance
+        || transformation.transformation_sha256 != run.transformation_sha256
+        || transformation.feature_names != run.input_slots
+    {
+        return Err(PythonResearchError(
+            "model-final-artifact-transformation-binding-invalid".into(),
+        ));
+    }
+    let factor_binding = local_state
+        .factor
+        .model_input_binding(user_id, &run.factor_decision_hash)
+        .map_err(PythonResearchError)?;
+    if run.factor_promotion_protocol_hash != factor_binding.promotion_protocol.protocol_hash
+        || run.factor_dataset_id != factor_binding.factor_dataset_id
+        || run.feature_dataset_id != factor_binding.feature_dataset_id
+        || run.feature_plan_hash != factor_binding.feature_plan_hash
+        || run.snapshot_id != factor_binding.snapshot_id
+        || run.universe_id != factor_binding.universe_id
+        || run.factor_lookback != factor_binding.lookback
+    {
+        return Err(PythonResearchError(
+            "model-factor-input-binding-changed".into(),
+        ));
+    }
+    let promotion_protocol = factor_binding.promotion_protocol.clone();
+    let input = ModelInputEvidence {
+        decision_hash: factor_binding.decision_hash,
+        promotion_protocol_hash: promotion_protocol.protocol_hash.clone(),
+        factor_dataset_id: factor_binding.factor_dataset_id,
+        feature_dataset_id: factor_binding.feature_dataset_id,
+        feature_plan_hash: factor_binding.feature_plan_hash,
+        snapshot_id: factor_binding.snapshot_id,
+        universe_id: factor_binding.universe_id,
+        lookback: factor_binding.lookback,
+    };
+    if model_input_evidence_hash(&crate::factor_research::FactorModelInputBinding {
+        decision_hash: input.decision_hash.clone(),
+        promotion_protocol,
+        factor_dataset_id: input.factor_dataset_id.clone(),
+        feature_dataset_id: input.feature_dataset_id.clone(),
+        feature_plan_hash: input.feature_plan_hash.clone(),
+        snapshot_id: input.snapshot_id.clone(),
+        universe_id: input.universe_id.clone(),
+        lookback: input.lookback,
+    })? != run.input_evidence_sha256
+    {
+        return Err(PythonResearchError(
+            "model-input-evidence-binding-invalid".into(),
+        ));
+    }
+    let factor_dataset = load_bound_model_factor_dataset(local_state, user_id, &input)?;
+    let evidence = build_model_evidence(&input, Some(&factor_dataset))?;
+    if evidence.fixture.manifest.content_sha256 != run.fixture_sha256
+        || evidence.transformation != transformation
+    {
+        return Err(PythonResearchError(
+            "model-final-research-evidence-changed".into(),
+        ));
+    }
+    let test = evidence.dataset.prepare("test")?;
+    if test.labels.is_some() || test.feature_names != artifact.input_slots {
+        return Err(PythonResearchError(
+            "model-final-test-labels-or-schema-invalid".into(),
+        ));
+    }
+    let mut forecasts = forecast(&artifact, &transformation, &test)?;
+    let final_end = run.windows.final_end - TARGET_HORIZON_BARS as u32;
+    for row in &mut forecasts {
+        if row.datetime as u32 > final_end {
+            row.value = None;
+            row.unavailable_reason = Some("target-window-boundary".into());
+        }
+    }
+    if model_forecast_sha256(
+        &artifact.artifact_sha256,
+        &run.input_evidence_sha256,
+        &run.snapshot_id,
+        &run.universe_id,
+        &forecasts,
+    )? != run.forecast_sha256
+    {
+        return Err(PythonResearchError(
+            "model-final-forecast-replay-hash-mismatch".into(),
+        ));
+    }
+    let mut rows = Vec::new();
+    let mut expected = Vec::new();
+    for (row, forecast) in test.rows.iter().zip(forecasts.iter()) {
+        if forecast.value.is_some() {
+            if row.label.is_some()
+                || forecast.unavailable_reason.is_some()
+                || forecast.datetime < run.windows.final_start as i64
+                || forecast.datetime as u32 > final_end
+            {
+                return Err(PythonResearchError(
+                    "model-final-replay-window-invalid".into(),
+                ));
+            }
+            rows.push(row.clone());
+            expected.push(forecast.clone());
+        }
+    }
+    if rows.is_empty() || rows.len() != expected.len() {
+        return Err(PythonResearchError("model-final-replay-empty".into()));
+    }
+    let expected_forecast_sha256 = sha256(
+        &serde_json::to_vec(&expected).map_err(|error| PythonResearchError(error.to_string()))?,
+    );
+    if expected_forecast_sha256 != final_report.forecast_sha256 {
+        return Err(PythonResearchError(
+            "model-final-forecast-report-hash-mismatch".into(),
+        ));
+    }
+    let replay_identity = sha256(
+        &serde_json::to_vec(&(
+            &run.artifact_sha256,
+            &run.transformation_sha256,
+            &run.input_evidence_sha256,
+            &rows,
+            &expected,
+        ))
+        .map_err(|error| PythonResearchError(error.to_string()))?,
+    );
+    Ok(ModelDeploymentReplay {
+        final_report,
+        run,
+        artifact,
+        transformation,
+        rows,
+        expected,
+        replay_identity,
+    })
+}
+
+fn model_qualification_evidence(
+    attempt: &QualificationAttempt,
+) -> (ModelQualificationEvidence, Vec<String>) {
+    let package = !attempt
+        .evidence
+        .iter()
+        .any(|evidence| evidence.gate == QualificationGate::Package);
+    let conformance = package
+        && !attempt
+            .evidence
+            .iter()
+            .any(|evidence| evidence.gate == QualificationGate::Conformance);
+    let equivalence = conformance
+        && !attempt
+            .evidence
+            .iter()
+            .any(|evidence| evidence.gate == QualificationGate::Equivalence);
+    let runtime = equivalence;
+    let qualified = attempt.qualified && package && conformance && equivalence;
+    let diagnostics = attempt
+        .evidence
+        .iter()
+        .filter_map(|evidence| {
+            evidence
+                .diagnostic
+                .as_deref()
+                .map(|diagnostic| format!("{:?}: {diagnostic}", evidence.gate))
+        })
+        .map(|diagnostic| bounded_model_diagnostic(&diagnostic))
+        .filter(|diagnostic| !diagnostic.is_empty())
+        .collect();
+    (
+        ModelQualificationEvidence {
+            package,
+            conformance,
+            equivalence,
+            runtime,
+            qualified,
+        },
+        diagnostics,
+    )
+}
+
+fn compare_model_component_replay(
+    package: &ComponentPackage,
+    parameters: &[ComponentParameterValue],
+    replay: &ModelDeploymentReplay,
+    limits: RunLimits,
+) -> Result<(), String> {
+    let model_artifact = package
+        .manifest
+        .model_artifact
+        .as_ref()
+        .ok_or_else(|| "model component artifact contract is missing".to_owned())?;
+    let output = package
+        .manifest
+        .model_outputs
+        .first()
+        .ok_or_else(|| "model output contract is missing".to_owned())?;
+    let binding = match parameters {
+        [ComponentParameterValue::String(binding)] => binding,
+        _ => return Err("model component binding parameter is invalid".into()),
+    };
+    let expected_binding = linear_model_binding(
+        &replay.artifact.artifact_sha256,
+        &replay.transformation.transformation_sha256,
+        &replay.run.input_slots,
+        &replay.transformation.means,
+        &replay.transformation.scales,
+        &replay.artifact.coefficients,
+        replay.artifact.intercept,
+    );
+    let provenance_matches = [
+        (
+            "sourceArtifactSha256",
+            replay.artifact.artifact_sha256.as_str(),
+        ),
+        (
+            "transformationSha256",
+            replay.transformation.transformation_sha256.as_str(),
+        ),
+        ("decision", replay.final_report.decision_id.as_str()),
+        (
+            "finalEvaluationReport",
+            replay.final_report.report_id.as_str(),
+        ),
+        ("replay", replay.replay_identity.as_str()),
+    ]
+    .into_iter()
+    .all(|(key, value)| {
+        model_artifact
+            .provenance
+            .get(key)
+            .is_some_and(|actual| actual == value)
+    });
+    if package.manifest.kind != ComponentKind::Model
+        || package.manifest.model_scope != Some(ModelScope::SingleInstrument)
+        || !provenance_matches
+        || model_artifact.sha256 != package.manifest.wasm_sha256
+        || binding != &expected_binding
+        || package.manifest.model_outputs.len() != 1
+        || output.name != MODEL_OUTPUT_NAME
+        || output.horizon_bars != MODEL_HORIZON_BARS
+        || !matches!(&output.prediction_kind, PredictionKind::ExpectedValue)
+        || !matches!(
+            &output.forecast_target,
+            ForecastTarget::Builtin {
+                target: BuiltinForecastTarget::FutureCloseReturn
+            }
+        )
+        || !matches!(&output.value_scale, ForecastValueScale::Native)
+        || package.manifest.feature_slots.len() != replay.run.input_slots.len()
+        || package
+            .manifest
+            .feature_slots
+            .iter()
+            .map(|slot| slot.name.as_str())
+            .ne(replay.run.input_slots.iter().map(String::as_str))
+    {
+        return Err("model component contract does not match the selected artifact".into());
+    }
+    let slots = package
+        .manifest
+        .feature_slots
+        .iter()
+        .map(
+            |slot| adaq_component_sdk::host::model_abi::exports::adaq::model::api::FeatureSlot {
+                name: slot.name.clone(),
+            },
+        )
+        .collect::<Vec<_>>();
+    let rows = replay
+        .rows
+        .iter()
+        .map(
+            |row| adaq_component_sdk::host::model_abi::exports::adaq::model::api::PredictionRow {
+                instrument_id: row.instrument.clone(),
+                prediction_time_ms: row.datetime,
+                values: row.features.clone(),
+            },
+        )
+        .collect::<Vec<_>>();
+    let loader = WasmLoader::with_limits(limits);
+    loader.load_model_bytes(&package.wasm, slots, parameters, replay.run.seed)?;
+    let actual = loader.process_model(rows)?;
+    if actual.len() != replay.expected.len() {
+        return Err("model component replay row count diverged".into());
+    }
+    for (actual, expected) in actual.iter().zip(&replay.expected) {
+        let actual = actual
+            .as_ref()
+            .ok_or_else(|| "model component returned an unavailable forecast".to_owned())?;
+        let expected_value = expected
+            .value
+            .ok_or_else(|| "selected model forecast is unavailable".to_owned())?;
+        if actual.instrument_id != expected.instrument
+            || actual.prediction_time_ms != expected.datetime
+            || actual.values.len() != 1
+            || !actual.values[0].is_finite()
+            || (actual.values[0] - expected_value).abs() > RIDGE_REPEATABILITY_TOLERANCE
+        {
+            return Err("model component replay is not equivalent to the selected artifact".into());
+        }
+    }
+    Ok(())
+}
+
+fn build_model_qualification_report(
+    attempt_id: String,
+    replay: &ModelDeploymentReplay,
+    package: Option<&ComponentPackage>,
+    qualification_deadline_ms: u64,
+    qualification_duration_ms: u64,
+    mut evidence: ModelQualificationEvidence,
+    imported_component_archive_sha256: Option<String>,
+    mut diagnostics: Vec<String>,
+    qualified: bool,
+) -> Result<ModelRuntimeQualificationReport, PythonResearchError> {
+    evidence.qualified = qualified;
+    if !qualified && diagnostics.is_empty() {
+        diagnostics.push("model-runtime-qualification-failed".into());
+    }
+    diagnostics = diagnostics
+        .into_iter()
+        .map(|diagnostic| bounded_model_diagnostic(&diagnostic))
+        .filter(|diagnostic| !diagnostic.is_empty())
+        .collect();
+    if !qualified && diagnostics.is_empty() {
+        diagnostics.push("model-runtime-qualification-failed".into());
+    }
+    let package_archive_sha256 = package.map(|package| package.archive_sha256.clone());
+    let component_id = package.map(|package| package.manifest.component_id.to_string());
+    let component_version = package.map(|package| package.manifest.version.to_string());
+    let wasm_sha256 = package.map(|package| package.manifest.wasm_sha256.clone());
+    let resource_policy_sha256 = resource_policy_identity(&replay.run.resource_policy)?;
+    let mut report = ModelRuntimeQualificationReport {
+        report_id: String::new(),
+        attempt_id: attempt_id.clone(),
+        decision_id: replay.final_report.decision_id.clone(),
+        final_evaluation_report_id: replay.final_report.report_id.clone(),
+        artifact_sha256: replay.artifact.artifact_sha256.clone(),
+        transformation_sha256: replay.transformation.transformation_sha256.clone(),
+        wasi_profile: WASI_MODEL_PROFILE.into(),
+        exporter_id: MODEL_EXPORTER_ID.into(),
+        sdk_version: adaq_component_sdk::SDK_VERSION.into(),
+        abi_version: adaq_component_sdk::ABI_VERSION.into(),
+        package_archive_sha256,
+        component_id,
+        component_version,
+        wasm_sha256,
+        runtime_identity: MODEL_RUNTIME_IDENTITY.into(),
+        resource_policy_sha256,
+        qualification_deadline_ms,
+        qualification_duration_ms,
+        input_slots: replay.run.input_slots.clone(),
+        target_id: replay.run.target_id.clone(),
+        target_horizon_bars: replay.run.target_horizon_bars,
+        forecast_contract: replay.run.forecast_contract.clone(),
+        replay_identity: replay.replay_identity.clone(),
+        replay_rows: replay.rows.len(),
+        numeric_tolerance: RIDGE_REPEATABILITY_TOLERANCE,
+        evidence,
+        qualified,
+        imported_component_archive_sha256,
+        diagnostics,
+        created_at_ms: model_lab_now_ms(),
+    };
+    report.report_id = model_qualification_report_id(
+        &report.attempt_id,
+        &report.decision_id,
+        &report.artifact_sha256,
+        report.package_archive_sha256.as_deref().unwrap_or_default(),
+        &report.replay_identity,
+        report.qualified,
+    );
+    report.validate()?;
+    Ok(report)
+}
+
+fn qualify_model_deployment(
+    store: &ModelLabStore,
+    local_state: &crate::local_research::LocalResearchState,
+    user_id: &str,
+    decision_id: &str,
+) -> Result<ModelRuntimeQualificationReport, PythonResearchError> {
+    if let Some(report) = store
+        .qualification_reports(user_id, decision_id)?
+        .into_iter()
+        .rev()
+        .find(|report| report.qualified)
+    {
+        return Ok(report);
+    }
+    let attempt_id = uuid::Uuid::new_v4().to_string();
+    let replay = match accepted_model_deployment_replay(store, local_state, user_id, decision_id) {
+        Ok(replay) => replay,
+        Err(error) => {
+            let report = model_qualification_failure_report(
+                store,
+                user_id,
+                decision_id,
+                attempt_id,
+                &error.to_string(),
+            )?;
+            return store.save_qualification_report(user_id, report);
+        }
+    };
+    let started = Instant::now();
+    let provenance = {
+        let mut provenance = replay.artifact.provenance_hashes.clone();
+        provenance.insert("decision".into(), replay.final_report.decision_id.clone());
+        provenance.insert(
+            "finalEvaluationReport".into(),
+            replay.final_report.report_id.clone(),
+        );
+        provenance.insert("replay".into(), replay.replay_identity.clone());
+        provenance.insert(
+            "resourcePolicy".into(),
+            resource_policy_identity(&replay.run.resource_policy)?,
+        );
+        provenance
+    };
+    let package_bytes = match export_linear_model_component(
+        &replay.artifact.artifact_sha256,
+        &replay.transformation.transformation_sha256,
+        &replay.artifact.input_slots,
+        &replay.transformation.means,
+        &replay.transformation.scales,
+        &replay.artifact.coefficients,
+        replay.artifact.intercept,
+        provenance,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let report = build_model_qualification_report(
+                attempt_id,
+                &replay,
+                None,
+                replay.run.resource_policy.max_wall_ms,
+                started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                ModelQualificationEvidence {
+                    package: false,
+                    conformance: false,
+                    equivalence: false,
+                    runtime: false,
+                    qualified: false,
+                },
+                None,
+                vec![error],
+                false,
+            )?;
+            return store.save_qualification_report(user_id, report);
+        }
+    };
+    let package = match ComponentPackage::read(&package_bytes) {
+        Ok(package) => package,
+        Err(error) => {
+            let report = build_model_qualification_report(
+                attempt_id,
+                &replay,
+                None,
+                replay.run.resource_policy.max_wall_ms,
+                started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                ModelQualificationEvidence {
+                    package: false,
+                    conformance: false,
+                    equivalence: false,
+                    runtime: false,
+                    qualified: false,
+                },
+                None,
+                vec![format!("model-export-package-invalid:{error}")],
+                false,
+            )?;
+            return store.save_qualification_report(user_id, report);
+        }
+    };
+    let limits = match model_run_limits(&replay.run.resource_policy) {
+        Ok(limits) => limits,
+        Err(error) => {
+            let report = build_model_qualification_report(
+                attempt_id,
+                &replay,
+                Some(&package),
+                replay.run.resource_policy.max_wall_ms,
+                started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                ModelQualificationEvidence {
+                    package: true,
+                    conformance: false,
+                    equivalence: false,
+                    runtime: false,
+                    qualified: false,
+                },
+                None,
+                vec![error],
+                false,
+            )?;
+            return store.save_qualification_report(user_id, report);
+        }
+    };
+    let qualification_deadline = Duration::from_millis(replay.run.resource_policy.max_wall_ms);
+    let qualification = qualify_package_with_limits(
+        attempt_id.clone(),
+        &package_bytes,
+        limits,
+        |package, parameters| {
+            if started.elapsed() > qualification_deadline {
+                return Err("model-runtime-qualification-deadline-exceeded".into());
+            }
+            compare_model_component_replay(package, parameters, &replay, limits)
+        },
+    );
+    let (mut evidence, mut diagnostics) = model_qualification_evidence(&qualification);
+    let mut qualified = evidence.qualified;
+    let mut imported_component_archive_sha256 = None;
+    let qualification_deadline_ms = replay.run.resource_policy.max_wall_ms;
+    let qualification_duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    if qualified {
+        if qualification_duration_ms > qualification_deadline_ms {
+            qualified = false;
+            evidence.runtime = false;
+            diagnostics.push("model-runtime-qualification-deadline-exceeded".into());
+        } else {
+            match local_state.components.import(user_id, &package_bytes) {
+                Ok(_) => {
+                    imported_component_archive_sha256 = Some(package.archive_sha256.clone());
+                }
+                Err(error) => {
+                    qualified = false;
+                    diagnostics.push(error);
+                }
+            }
+        }
+    }
+    let report = build_model_qualification_report(
+        attempt_id,
+        &replay,
+        Some(&package),
+        qualification_deadline_ms,
+        qualification_duration_ms,
+        evidence,
+        imported_component_archive_sha256,
+        diagnostics,
+        qualified,
+    )?;
+    store.save_qualification_report(user_id, report)
 }
 
 impl ModelEvidenceData {
@@ -4376,6 +5540,13 @@ pub struct ModelSelectionRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelFinalEvaluationRequest {
+    pub user_id: String,
+    pub decision_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDeploymentQualificationRequest {
     pub user_id: String,
     pub decision_id: String,
 }
@@ -7020,6 +8191,28 @@ pub async fn model_final_evaluate(
 }
 
 #[tauri::command]
+pub async fn model_qualify_deployment(
+    mut request: ModelDeploymentQualificationRequest,
+    state: State<'_, Arc<PythonResearchState>>,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
+    app: tauri::AppHandle,
+) -> Result<ModelRuntimeQualificationReport, String> {
+    request.user_id = auth.user_id_for_window(window.label())?;
+    let store = state.model_lab_store.clone();
+    let local_state = app
+        .state::<Arc<crate::local_research::LocalResearchState>>()
+        .inner()
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        qualify_model_deployment(&store, &local_state, &request.user_id, &request.decision_id)
+            .map_err(map_error)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub fn runtime_profile(
     mut request: RuntimeProfileRequest,
     window: WebviewWindow,
@@ -7542,6 +8735,73 @@ pub async fn cache_evict(
 mod tests {
     use super::*;
     use adaq_python_research::runner::ConformanceResult;
+
+    #[test]
+    fn failed_model_qualification_is_persisted_scoped_and_retryable() {
+        let directory = std::env::temp_dir().join(format!(
+            "adaq-model-qualification-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("model-lab.json");
+        let store = ModelLabStore::open(path.clone()).unwrap();
+        let first = model_qualification_failure_report(
+            &store,
+            "alice",
+            "decision",
+            "attempt-1".into(),
+            "unsupported schema SECRET /private/model.json",
+        )
+        .unwrap();
+        let first = store.save_qualification_report("alice", first).unwrap();
+        assert!(first.diagnostics[0].contains("[redacted]"));
+        assert!(first.diagnostics[0].contains("[path]"));
+        assert_eq!(
+            store
+                .save_qualification_report("alice", first.clone())
+                .unwrap(),
+            first
+        );
+
+        let second = model_qualification_failure_report(
+            &store,
+            "alice",
+            "decision",
+            "attempt-2".into(),
+            "retry failed",
+        )
+        .unwrap();
+        let second = store.save_qualification_report("alice", second).unwrap();
+        assert_ne!(first.report_id, second.report_id);
+        assert_eq!(
+            store
+                .qualification_reports("alice", "decision")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            store
+                .qualification_reports("bob", "decision")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .qualification_reports("alice:foreign", "decision")
+                .is_err()
+        );
+
+        let reopened = ModelLabStore::open(path).unwrap();
+        assert_eq!(
+            reopened
+                .qualification_reports("alice", "decision")
+                .unwrap()
+                .len(),
+            2
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn staged_result_publication_is_atomic_and_attempt_scoped() {

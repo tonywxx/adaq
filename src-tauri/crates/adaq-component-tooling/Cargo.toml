@@ -16,6 +16,7 @@ path = "src/bin/adaq-component.rs"
 adaq-component-sdk = { path = "../adaq-component-sdk", version = "=0.1.0", features = ["host"] }
 adaq-feature-engine = { path = "../adaq-feature-engine" }
 adaq-indicator-engine = { path = "../adaq-indicator-engine" }
+base64 = "0.23.1"
 rust_decimal = "1"
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }

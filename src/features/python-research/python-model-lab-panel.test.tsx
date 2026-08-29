@@ -144,6 +144,8 @@ let persistedExperiments: ExperimentFixture[] = [];
 let persistedDecision: Record<string, unknown> | null = null;
 let persistedReport: Record<string, unknown> | null = null;
 let finalEvaluationResponse: Record<string, unknown> | null = null;
+let persistedDeploymentReports: Array<Record<string, unknown>> = [];
+let deploymentFailureOnce = false;
 let finalEvaluationError: string | undefined;
 let attemptsResponse: Array<Record<string, unknown>> = [];
 let completionResponse: ExperimentFixture | undefined;
@@ -204,6 +206,7 @@ invokeMock.mockImplementation(
 					decision: persistedDecision,
 					report: persistedReport,
 					finalEvaluation: finalEvaluationResponse,
+					deploymentReports: persistedDeploymentReports,
 				};
 			}
 			case "model_demo_run": {
@@ -267,6 +270,88 @@ invokeMock.mockImplementation(
 					updatedAtMs: 2,
 				};
 				return persistedReport;
+			case "model_qualify_deployment": {
+				const deployment = {
+					reportId: "deployment-report-sha",
+					attemptId: "deployment-attempt",
+					decisionId: "decision-sha",
+					finalEvaluationReportId: "report-sha",
+					artifactSha256: "candidate-artifact-1",
+					transformationSha256: "transformation-sha",
+					wasiProfile: "adaq:wasi-model@1",
+					exporterId: "adaq:qlib-ridge-wasi-exporter@1",
+					sdkVersion: "0.1.0",
+					abiVersion: "1.0.0",
+					packageArchiveSha256: "package-archive-sha",
+					componentId: "component-id",
+					componentVersion: "1.0.0",
+					wasmSha256: "wasm-sha",
+					runtimeIdentity: "wasmtime@47.0.3:component-model:fuel:10m:memory:67108864",
+					resourcePolicySha256: "resource-policy-sha",
+					qualificationDeadlineMs: 1800000,
+					qualificationDurationMs: 12,
+					inputSlots: ["momentum-score"],
+					targetId: "future-close-return",
+					targetHorizonBars: 5,
+					forecastContract: "forecast:continuous-future-close-return:native@1",
+					replayIdentity: "replay-sha",
+					replayRows: 12,
+					numericTolerance: 1e-9,
+					evidence: {
+						package: true,
+						conformance: true,
+						equivalence: true,
+						runtime: true,
+						qualified: true,
+					},
+					qualified: true,
+					importedComponentArchiveSha256: "package-archive-sha",
+					diagnostics: [],
+					createdAtMs: 3,
+				};
+				if (deploymentFailureOnce) {
+					deploymentFailureOnce = false;
+					const failure = {
+						...deployment,
+						reportId: "deployment-failure-sha",
+						attemptId: "deployment-failure-attempt",
+						packageArchiveSha256: undefined,
+						componentId: undefined,
+						componentVersion: undefined,
+						wasmSha256: undefined,
+						importedComponentArchiveSha256: undefined,
+						evidence: {
+							package: false,
+							conformance: false,
+							equivalence: false,
+							runtime: false,
+							qualified: false,
+						},
+						qualified: false,
+						diagnostics: ["model-runtime-qualification-failed"],
+					};
+					persistedDeploymentReports = [
+						...persistedDeploymentReports,
+						failure,
+					];
+					return failure;
+				}
+				persistedDeploymentReports = [
+					...persistedDeploymentReports,
+					deployment,
+				];
+				return deployment;
+			}
+			case "component_list":
+				return [
+					{
+						componentId: "component-id",
+						version: "1.0.0",
+						name: "Qlib Ridge WASI Model",
+						kind: "model",
+						archiveSha256: "package-archive-sha",
+					},
+				];
 			default:
 				return null;
 		}
@@ -335,6 +420,8 @@ beforeEach(() => {
 	persistedDecision = null;
 	persistedReport = null;
 	finalEvaluationResponse = null;
+	persistedDeploymentReports = [];
+	deploymentFailureOnce = false;
 	finalEvaluationError = undefined;
 	attemptsResponse = [];
 	completionResponse = undefined;
@@ -734,6 +821,149 @@ test("retries Final Evaluation with the same Decision identity", async () => {
 	expect(container.textContent).toContain("Completed");
 	expect(container.textContent).toContain("Final MSE 0.1 · MAE 0.2");
 	expect(container.querySelector('[data-status="completed"]')).not.toBeNull();
+
+	await act(async () => root.unmount());
+});
+
+test("qualifies the selected artifact and refreshes the Component Library", async () => {
+	persistedExperiments = [makeExperiment(true)];
+	persistedDecision = {
+		decisionId: "decision-sha",
+		selectedTrialId: "trial-1",
+		selectedAlpha: 1,
+		bindingSha256: bindingSha256,
+		projectRevisionSha256: revision,
+		environmentSha256,
+		inputEvidenceSha256,
+		seed: 7,
+		selectionMetricsSha256: "selection-metrics-sha",
+		candidateArtifactSha256: "candidate-artifact-1",
+		evidenceState: "unknown",
+	};
+	persistedReport = {
+		reportId: "report-sha",
+		decisionId: "decision-sha",
+		forecastSha256: "forecast-final-sha",
+		targetSha256: "target-sha",
+		meanSquaredError: 0.1,
+		meanAbsoluteError: 0.2,
+		evidenceState: "out-of-sample",
+		artifactSha256: "candidate-artifact-1",
+		forecastDatasetSha256: "forecast-dataset-sha",
+	};
+	finalEvaluationResponse = {
+		decisionId: "decision-sha",
+		status: "completed",
+		attemptId: "final-attempt",
+		stagedDatasetSha256: "forecast-dataset-sha",
+		reportId: "report-sha",
+		createdAtMs: 1,
+		updatedAtMs: 2,
+	};
+	const { container, root } = mount();
+	await act(async () => {
+		root.render(<PythonModelLabPanel userId={userId} />);
+	});
+	await settle();
+
+	const qualifyButton = [...container.querySelectorAll("button")].find(
+		(button) => button.textContent === "Qualify Model Deployment",
+	);
+	if (!qualifyButton) throw new Error("deployment qualification button did not render");
+	expect(qualifyButton.hasAttribute("disabled")).toBe(false);
+	await act(async () => {
+		qualifyButton.click();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	await settle();
+
+	expect(
+		invokeMock.mock.calls.some(
+			([command, args]) =>
+				command === "model_qualify_deployment" &&
+				JSON.stringify(args) ===
+					JSON.stringify({ request: { userId, decisionId: "decision-sha" } }),
+		),
+	).toBe(true);
+	expect(container.textContent).toContain("Qualified");
+	expect(container.textContent).toContain("Component Library imported package-archive-sha");
+	expect(container.textContent).toContain("Qlib Ridge WASI Model v1.0.0");
+
+	await act(async () => root.unmount());
+});
+
+test("retains a failed qualification and retries the same deployment", async () => {
+	deploymentFailureOnce = true;
+	persistedExperiments = [makeExperiment(true)];
+	persistedDecision = {
+		decisionId: "decision-sha",
+		selectedTrialId: "trial-1",
+		selectedAlpha: 1,
+		bindingSha256: bindingSha256,
+		projectRevisionSha256: revision,
+		environmentSha256,
+		inputEvidenceSha256,
+		seed: 7,
+		selectionMetricsSha256: "selection-metrics-sha",
+		candidateArtifactSha256: "candidate-artifact-1",
+		evidenceState: "unknown",
+	};
+	persistedReport = {
+		reportId: "report-sha",
+		decisionId: "decision-sha",
+		forecastSha256: "forecast-final-sha",
+		targetSha256: "target-sha",
+		meanSquaredError: 0.1,
+		meanAbsoluteError: 0.2,
+		evidenceState: "out-of-sample",
+		artifactSha256: "candidate-artifact-1",
+		forecastDatasetSha256: "forecast-dataset-sha",
+	};
+	finalEvaluationResponse = {
+		decisionId: "decision-sha",
+		status: "completed",
+		attemptId: "final-attempt",
+		stagedDatasetSha256: "forecast-dataset-sha",
+		reportId: "report-sha",
+		createdAtMs: 1,
+		updatedAtMs: 2,
+	};
+	const { container, root } = mount();
+	await act(async () => {
+		root.render(<PythonModelLabPanel userId={userId} />);
+	});
+	await settle();
+
+	const qualifyButton = [...container.querySelectorAll("button")].find(
+		(button) => button.textContent === "Qualify Model Deployment",
+	);
+	if (!qualifyButton) throw new Error("deployment qualification button did not render");
+	await act(async () => {
+		qualifyButton.click();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	await settle();
+
+	expect(container.textContent).toContain("Research Only");
+	expect(container.querySelector('[data-status="research-only"]')).not.toBeNull();
+	const retryButton = [...container.querySelectorAll("button")].find(
+		(button) => button.textContent === "Retry Qualification",
+	);
+	if (!retryButton) throw new Error("qualification retry button did not render");
+	await act(async () => {
+		retryButton.click();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	await settle();
+
+	expect(container.querySelector('[data-status="qualified"]')).not.toBeNull();
+	expect(container.textContent).toContain("Qualified");
+	expect(
+		container.querySelectorAll('[data-status="research-only"]').length,
+	).toBe(1);
 
 	await act(async () => root.unmount());
 });

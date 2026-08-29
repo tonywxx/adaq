@@ -4323,6 +4323,7 @@ pub fn run() {
             python_research::model_trial_retry,
             python_research::model_selection_record,
             python_research::model_final_evaluate,
+            python_research::model_qualify_deployment,
             python_research::runtime_profile,
             python_research::runtime_prepare,
             python_research::runtime_prepare_managed,

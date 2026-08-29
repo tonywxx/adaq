@@ -7,6 +7,7 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import type { LibraryComponent } from "@/features/components/component-library";
 import { isTauriRuntime } from "@/lib/http";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -157,12 +158,54 @@ type FinalEvaluationState = {
 	updatedAtMs: number;
 };
 
+type DeploymentEvidence = {
+	package: boolean;
+	conformance: boolean;
+	equivalence: boolean;
+	runtime: boolean;
+	qualified: boolean;
+};
+
+type DeploymentReport = {
+	reportId: string;
+	attemptId: string;
+	decisionId: string;
+	finalEvaluationReportId: string;
+	artifactSha256: string;
+	transformationSha256: string;
+	wasiProfile: string;
+	exporterId: string;
+	sdkVersion: string;
+	abiVersion: string;
+	packageArchiveSha256?: string;
+	componentId?: string;
+	componentVersion?: string;
+	wasmSha256?: string;
+	runtimeIdentity: string;
+	resourcePolicySha256: string;
+	qualificationDeadlineMs: number;
+	qualificationDurationMs: number;
+	inputSlots: string[];
+	targetId: string;
+	targetHorizonBars: number;
+	forecastContract: string;
+	replayIdentity: string;
+	replayRows: number;
+	numericTolerance: number;
+	evidence: DeploymentEvidence;
+	qualified: boolean;
+	importedComponentArchiveSha256?: string;
+	diagnostics: string[];
+	createdAtMs: number;
+};
+
 type ModelLabState = {
 	experiments: Experiment[];
 	experiment?: Experiment | null;
 	decision?: Decision | null;
 	report?: Report | null;
 	finalEvaluation?: FinalEvaluationState | null;
+	deploymentReports?: DeploymentReport[];
 };
 
 type ResearchAttempt = {
@@ -259,6 +302,12 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 	const [report, setReport] = useState<Report>();
 	const [finalEvaluation, setFinalEvaluation] =
 		useState<FinalEvaluationState>();
+	const [deploymentReports, setDeploymentReports] = useState<DeploymentReport[]>(
+		[],
+	);
+	const [libraryComponents, setLibraryComponents] = useState<LibraryComponent[]>(
+		[],
+	);
 	const [attempts, setAttempts] = useState<ResearchAttempt[]>([]);
 	const [busy, setBusy] = useState("");
 	const [error, setError] = useState("");
@@ -288,6 +337,8 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 		setDecision(undefined);
 		setReport(undefined);
 		setFinalEvaluation(undefined);
+		setDeploymentReports([]);
+		setLibraryComponents([]);
 		return () => {
 			userEpoch.current += 1;
 			requestVersions.current.clear();
@@ -348,6 +399,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 				setDecision(nextState.decision ?? undefined);
 				setReport(nextState.report ?? undefined);
 				setFinalEvaluation(nextState.finalEvaluation ?? undefined);
+				setDeploymentReports(nextState.deploymentReports ?? []);
 				const nextExperiment = nextState.experiment ?? undefined;
 				if (!nextExperiment) return;
 				if (nextExperiment.factorDecisionHash) {
@@ -414,6 +466,8 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 		setDecision(undefined);
 		setReport(undefined);
 		setFinalEvaluation(undefined);
+		setDeploymentReports([]);
+		setLibraryComponents([]);
 		setRun(undefined);
 		await afterPaint();
 		if (!isCurrentRequest(version)) return;
@@ -607,6 +661,47 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 				setError(String(reason));
 				await refreshExperiments(factorDecisionHash);
 			}
+		} finally {
+			if (isCurrentRequest(version)) setBusy("");
+		}
+	};
+
+	const latestDeploymentReport = deploymentReports[deploymentReports.length - 1];
+	const deploymentReady = Boolean(
+		decision && report && finalEvaluation?.status === "completed",
+	);
+
+	const qualifyDeployment = async () => {
+		const version = beginRequest("deployment");
+		if (!deploymentReady || latestDeploymentReport?.qualified || !decision) return;
+		setBusy("deployment");
+		setError("");
+		await afterPaint();
+		if (!isCurrentRequest(version)) return;
+		try {
+			const nextReport = await invoke<DeploymentReport>(
+				"model_qualify_deployment",
+				{ request: { userId, decisionId: decision.decisionId } },
+			);
+			if (!isCurrentRequest(version)) return;
+			setDeploymentReports((current) => [...current, nextReport]);
+			if (nextReport.qualified && nextReport.importedComponentArchiveSha256) {
+				const components = await invoke<LibraryComponent[]>("component_list", {
+					request: { userId },
+				});
+				if (isCurrentRequest(version)) {
+					setLibraryComponents(
+						components.filter(
+							(component) =>
+								component.archiveSha256 ===
+									nextReport.importedComponentArchiveSha256,
+						),
+					);
+				}
+			}
+			await refreshExperiments(factorDecisionHash);
+		} catch (reason) {
+			if (isCurrentRequest(version)) setError(String(reason));
 		} finally {
 			if (isCurrentRequest(version)) setBusy("");
 		}
@@ -836,6 +931,8 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							setDecision(undefined);
 							setReport(undefined);
 							setFinalEvaluation(undefined);
+							setDeploymentReports([]);
+							setLibraryComponents([]);
 						}}
 					>
 						<option value="">
@@ -1253,6 +1350,122 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							target: report.targetSha256,
 						})}
 					</p>
+				) : null}
+				{decision && report ? (
+					<div className="grid gap-2 rounded-md border p-3" data-testid="model-deployment">
+						<div className="flex flex-wrap items-center gap-2">
+							<p className="font-medium">
+								{t("pythonResearch.modelLab.deploymentTitle")}
+							</p>
+							<Badge variant="outline">{t("pythonResearch.modelLab.gate9")}</Badge>
+						</div>
+						<p className="text-muted-foreground">
+							{t("pythonResearch.modelLab.deploymentDescription")}
+						</p>
+						<Button
+							type="button"
+							size="sm"
+							onClick={() => void qualifyDeployment()}
+							disabled={
+								!deploymentReady ||
+								latestDeploymentReport?.qualified === true
+							}
+							loading={busy === "deployment"}
+						>
+							{latestDeploymentReport
+								? latestDeploymentReport.qualified
+									? t("pythonResearch.modelLab.qualified")
+									: t("pythonResearch.modelLab.retryQualification")
+								: t("pythonResearch.modelLab.qualifyDeployment")}
+						</Button>
+						{!deploymentReady ? (
+							<p className="text-xs text-muted-foreground" role="status">
+								{t("pythonResearch.modelLab.completeFinalEvaluation")}
+							</p>
+						) : null}
+						{deploymentReports.map((deployment) => (
+							<div
+								key={deployment.reportId}
+								className="grid gap-1 border-t pt-2"
+								data-status={deployment.qualified ? "qualified" : "research-only"}
+							>
+								<div className="flex flex-wrap items-center gap-2">
+									<Badge variant={deployment.qualified ? "default" : "destructive"}>
+										{deployment.qualified
+											? t("pythonResearch.modelLab.qualified")
+											: t("pythonResearch.modelLab.researchOnly")}
+									</Badge>
+									<code className="break-all text-xs">{deployment.reportId}</code>
+								</div>
+								<p className="break-all font-mono text-xs text-muted-foreground">
+									{t("pythonResearch.modelLab.deploymentAttemptArtifact", {
+										attempt: deployment.attemptId,
+										artifact: deployment.artifactSha256,
+									})}
+								</p>
+								<p className="break-all font-mono text-xs text-muted-foreground">
+									{t("pythonResearch.modelLab.deploymentRuntime", {
+										profile: deployment.wasiProfile,
+										exporter: deployment.exporterId,
+										runtime: deployment.runtimeIdentity,
+									})}
+								</p>
+								<p className="break-all font-mono text-xs text-muted-foreground">
+									{t("pythonResearch.modelLab.deploymentReplay", {
+										identity: deployment.replayIdentity,
+										rows: deployment.replayRows,
+										tolerance: deployment.numericTolerance,
+									})}
+								</p>
+								<p className="break-all text-xs text-muted-foreground">
+									{t("pythonResearch.modelLab.deploymentQualification", {
+										duration: deployment.qualificationDurationMs,
+										deadline: deployment.qualificationDeadlineMs,
+									})}
+								</p>
+								<p className="break-all text-xs text-muted-foreground">
+									{t("pythonResearch.modelLab.deploymentEvidence", {
+										package: String(deployment.evidence.package),
+										conformance: String(deployment.evidence.conformance),
+										equivalence: String(deployment.evidence.equivalence),
+										runtime: String(deployment.evidence.runtime),
+									})}
+								</p>
+								{deployment.packageArchiveSha256 ? (
+									<p className="break-all font-mono text-xs text-muted-foreground">
+										{t("pythonResearch.modelLab.deploymentPackage", {
+											package: deployment.packageArchiveSha256,
+											component: deployment.componentId,
+											version: deployment.componentVersion,
+											wasm: deployment.wasmSha256,
+										})}
+									</p>
+								) : null}
+								{deployment.importedComponentArchiveSha256 ? (
+									<p className="break-all text-xs text-muted-foreground" role="status">
+										{t("pythonResearch.modelLab.deploymentLibraryImported", {
+											archive: deployment.importedComponentArchiveSha256,
+										})}
+									</p>
+								) : null}
+								{deployment.diagnostics.map((diagnostic) => (
+									<p key={diagnostic} className="break-all text-destructive" role="alert">
+										{diagnostic}
+									</p>
+								))}
+							</div>
+						))}
+						{libraryComponents.length ? (
+							<div className="grid gap-1 border-t pt-2" data-testid="model-component-library">
+								<p className="font-medium">{t("nav.componentLibrary")}</p>
+								{libraryComponents.map((component) => (
+									<p key={component.archiveSha256} className="break-all text-xs text-muted-foreground">
+										{component.name} v{component.version} · {component.kind} · {component.archiveSha256}
+									</p>
+								))}
+							</div>
+						) : null}
+					</div>
 				) : null}
 			</CardContent>
 		</Card>
