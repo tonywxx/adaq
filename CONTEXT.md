@@ -723,7 +723,7 @@ The relationship between evaluation observations and the recorded research, trai
 _Avoid_: Model trust state, performance grade, automatic validation
 
 **Parameter Selection Decision**:
-An immutable User choice of one exact Factor, Model, or Strategy Trial after comparing only its declared Selection Window evidence. It freezes the selected Project Revision, parameter set, inputs, lineage, and selection metrics before one disjoint Final Evaluation may expose its result; using that result to modify or choose another candidate creates derived lineage whose affected evidence is Overlapping.
+An immutable User choice of one exact Factor, Model, or Strategy Trial after comparing only its declared Selection Window evidence. It freezes the selected Project Revision, parameter set, inputs, lineage, and selection metrics; for Model selection it also binds the selected Model Artifact identity before one disjoint Final Evaluation may expose its result. Using that result to modify or choose another candidate creates derived lineage whose affected evidence is Overlapping.
 _Avoid_: Factor Promotion Decision, automatic best Trial, editable winner flag
 
 **Paper Feedback Snapshot**:
@@ -1100,6 +1100,14 @@ _Avoid_: Latest market data, mutable cache
 The immutable fitted result of one successfully validated Model Training Attempt, bound to its exact Model Training Protocol, training evidence, payload hashes, schema, and provenance. It becomes deployable only through a qualified Model Deployment Profile.
 _Avoid_: Model Component, mutable checkpoint, training project
 
+**Candidate Model Artifact**:
+An immutable Model Artifact retained for one completed, repeatability-verified Model Trial before a User Parameter Selection Decision. Gate 7 retains one exact candidate per completed Trial and exposes its successful Attempt and Artifact identity directly; a failed or cancelled Attempt never creates a candidate pointer. Gate 8 selects one candidate by binding its identity in the Decision.
+_Avoid_: Selected Model Artifact, latest Artifact, automatic winner
+
+**Selected Model Artifact**:
+The one Candidate Model Artifact named by a User Parameter Selection Decision for disjoint Final Evaluation. It is not chosen by Gate 7 completion, artifact recency, or an automatic best-Trial rule.
+_Avoid_: Candidate Model Artifact, latest model, deployable Model Component
+
 **Linear Model Artifact**:
 The canonical `adaq:linear-model@1` fitted payload containing ordered Python Input Slot identities, finite coefficients, intercept, numeric representation, exact Fitted Transformation Artifact, one Forecast Signal contract, and Qlib Ridge Adapter provenance. The Adapter must reload this data-only schema before producing published Forecasts; no Python pickle, executable object graph, Dataset, or training code belongs to the Artifact.
 _Avoid_: Qlib pickle, ONNX graph, Model Component
@@ -1117,7 +1125,7 @@ The ordered set of one through 64 Forecast Signals emitted by one Model Componen
 _Avoid_: Feature Frame, Target Decision, arbitrary prediction object
 
 **Forecast Signal Dataset**:
-An immutable collection of Forecast Signal Frames with one stable Signal contract, bound through ordered Model Producer Segments to one or more exact Model Artifacts and to an exact Market Data Snapshot, prediction, availability, and Seed configuration, and inference trust state. Its row identity is Instrument ID plus Prediction Time; Available At is a required consumption boundary rather than part of that identity. A modular Backtest may consume a time subset but must use the same Snapshot identity, Instrument, Venue, and Bar Interval; AdaQ never silently resamples, fills, or approximately joins Signal rows.
+An immutable collection of Forecast Signal Frames with one stable Signal contract, bound through ordered Model Producer Segments to one or more exact Model Artifacts and to an exact Market Data Snapshot, prediction, availability, and Seed configuration, and inference trust state. Its row identity is Instrument ID plus Prediction Time; Available At is a required consumption boundary rather than part of that identity. Trial-level forecasts used only to calculate a Selection metric remain Model Trial evidence and do not become a downstream Forecast Signal Dataset until a User Parameter Selection Decision binds one Candidate Model Artifact. A modular Backtest may consume a time subset but must use the same Snapshot identity, Instrument, Venue, and Bar Interval; AdaQ never silently resamples, fills, or approximately joins Signal rows.
 _Avoid_: Mutable prediction file, Model Component, live Signal Feed
 
 **Dataset Generation Attempt**:
