@@ -149,10 +149,39 @@ impl Backtests {
                 user_id TEXT NOT NULL,
                 request_hash TEXT NOT NULL,
                 evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, request_hash)
+             );
+             CREATE TABLE IF NOT EXISTS portfolio_backtest_run_components (
+                run_id TEXT NOT NULL,
+                archive_sha256 TEXT NOT NULL,
+                PRIMARY KEY(run_id, archive_sha256),
+                FOREIGN KEY(run_id) REFERENCES portfolio_backtest_runs(run_id) ON DELETE CASCADE,
+                FOREIGN KEY(archive_sha256) REFERENCES component_content(archive_sha256)
              );",
             )
             .map_err(string)?;
+        let database = source.database()?;
+        let has_created_at: bool = database
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('portfolio_backtest_runs')
+                    WHERE name = 'created_at'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(string)?;
+        if !has_created_at {
+            database
+                .execute(
+                    "ALTER TABLE portfolio_backtest_runs
+                     ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                    [],
+                )
+                .map_err(string)?;
+        }
+        drop(database);
         Ok(Self(source))
     }
 
@@ -193,6 +222,21 @@ impl Backtests {
         request: PortfolioBacktestRequest,
     ) -> Result<PortfolioBacktestView, String> {
         portfolio_pipeline::execute(self, request)
+    }
+
+    pub(crate) fn portfolio_run_from_request(
+        &self,
+        request: BacktestRunRequest,
+    ) -> Result<PortfolioBacktestView, String> {
+        portfolio_pipeline::execute_qualified(self, request)
+    }
+
+    pub(crate) fn load_portfolio_run(
+        &self,
+        user_id: &str,
+        run_id: &str,
+    ) -> Result<PortfolioBacktestView, String> {
+        portfolio_pipeline::load_qualified_run(self, user_id, run_id)
     }
 
     pub(crate) fn save_strategy_project(&self, project: &StrategyProject) -> Result<(), String> {
@@ -583,9 +627,17 @@ impl Backtests {
         let mut locked_by_hash = HashMap::<String, Vec<String>>::new();
         let mut lock_statement = database
             .prepare(
-                "SELECT rc.archive_sha256, rc.run_id FROM backtest_run_components rc
-                 JOIN backtest_runs r USING(run_id)
-                 WHERE r.user_id = ?1 ORDER BY r.created_at, rc.run_id",
+                "SELECT archive_sha256, run_id FROM (
+                    SELECT rc.archive_sha256, rc.run_id, r.created_at
+                    FROM backtest_run_components rc
+                    JOIN backtest_runs r USING(run_id)
+                    WHERE r.user_id = ?1
+                    UNION ALL
+                    SELECT pc.archive_sha256, pc.run_id, r.created_at
+                    FROM portfolio_backtest_run_components pc
+                    JOIN portfolio_backtest_runs r USING(run_id)
+                    WHERE r.user_id = ?1
+                 ) ORDER BY created_at, run_id, archive_sha256",
             )
             .map_err(string)?;
         for row in lock_statement
@@ -636,8 +688,12 @@ impl Backtests {
     ) -> Result<HashSet<String>, String> {
         let mut statement = database
             .prepare(
-                "SELECT DISTINCT rc.archive_sha256 FROM backtest_run_components rc
+                "SELECT archive_sha256 FROM backtest_run_components rc
                  JOIN backtest_runs r USING(run_id)
+                 WHERE ?1 IS NULL OR r.user_id <> ?1
+                 UNION
+                 SELECT archive_sha256 FROM portfolio_backtest_run_components pc
+                 JOIN portfolio_backtest_runs r USING(run_id)
                  WHERE ?1 IS NULL OR r.user_id <> ?1",
             )
             .map_err(string)?;
@@ -658,7 +714,44 @@ impl Backtests {
         transaction
             .execute("DELETE FROM backtest_runs WHERE user_id = ?1", [user_id])
             .map_err(string)?;
+        transaction
+            .execute(
+                "DELETE FROM portfolio_backtest_runs WHERE user_id = ?1",
+                [user_id],
+            )
+            .map_err(string)?;
         Ok(())
+    }
+
+    pub(super) fn save_portfolio_run(
+        &self,
+        user_id: &str,
+        run_id: &str,
+        request_hash: &str,
+        evidence_json: &str,
+        component_lock: &[ComponentLockEntry],
+    ) -> Result<(), String> {
+        let mut database = self.0.database()?;
+        let transaction = database.transaction().map_err(string)?;
+        transaction
+            .execute(
+                "INSERT INTO portfolio_backtest_runs(
+                    run_id, user_id, request_hash, evidence_json
+                 ) VALUES (?1, ?2, ?3, ?4)",
+                params![run_id, user_id, request_hash, evidence_json],
+            )
+            .map_err(string)?;
+        for component in component_lock {
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO portfolio_backtest_run_components(
+                        run_id, archive_sha256
+                     ) VALUES (?1, ?2)",
+                    params![run_id, component.archive_sha256],
+                )
+                .map_err(string)?;
+        }
+        transaction.commit().map_err(string)
     }
 
     pub(super) fn save_run(
@@ -758,6 +851,8 @@ pub struct BacktestListRequest {
 pub struct BacktestRunRequest {
     pub user_id: String,
     pub snapshot_id: String,
+    #[serde(default)]
+    pub portfolio_universe_snapshot_id: Option<String>,
     #[serde(default)]
     pub run_start_time_ms: Option<i64>,
     #[serde(default)]
@@ -882,6 +977,8 @@ pub struct BacktestRunProvenance {
 pub struct NormalizedBacktestRunRequest {
     pub snapshot_id: String,
     #[serde(default)]
+    pub portfolio_universe_snapshot_id: Option<String>,
+    #[serde(default)]
     pub run_start_time_ms: Option<i64>,
     #[serde(default)]
     pub run_end_time_ms: Option<i64>,
@@ -1004,6 +1101,49 @@ pub struct PortfolioBacktestView {
     pub run_id: String,
     pub reused_existing_run: bool,
     pub evidence: adaq_backtest_core::BacktestEvidence,
+    #[serde(default)]
+    pub metrics: Option<adaq_backtest_core::BacktestMetrics>,
+    #[serde(default)]
+    pub pauses: Vec<RunPauseRecord>,
+    #[serde(default)]
+    pub provenance: Option<PortfolioBacktestProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortfolioBacktestProvenance {
+    pub snapshot_id: String,
+    pub universe_snapshot_id: String,
+    pub universe_id: String,
+    pub run_start_time_ms: i64,
+    pub run_end_time_ms: i64,
+    pub strategy_archive_sha256: String,
+    pub strategy_wasm_sha256: String,
+    pub strategy_parameters: BTreeMap<String, String>,
+    pub factor_instances: Vec<NormalizedFactorInstance>,
+    pub signal_instances: Vec<SignalInstanceRequest>,
+    pub signal_locks: Vec<PortfolioSignalLock>,
+    pub component_lock: Vec<ComponentLockEntry>,
+    pub feature_plans: BTreeMap<String, String>,
+    pub feature_plan_hash: String,
+    #[serde(default)]
+    pub strategy_binding: Option<StrategyQualificationBinding>,
+    #[serde(default)]
+    pub risk_policy: Option<adaq_backtest_core::RiskPolicy>,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub initial_quote_allocation: rust_decimal::Decimal,
+    pub execution_profile: ExecutionProfile,
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortfolioSignalLock {
+    pub instrument_id: String,
+    pub slot: String,
+    pub dataset_id: String,
+    pub signal_name: String,
+    pub evidence_state: String,
 }
 
 #[derive(Deserialize)]

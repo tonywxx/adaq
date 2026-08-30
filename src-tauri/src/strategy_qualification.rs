@@ -19,7 +19,8 @@ use adaq_backtest_core::{
 use adaq_component_tooling::{
     ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue, ComponentTemplate,
     FeatureSlotSource, QualificationAttempt, RunLimits, WasmLoader,
-    build_project_offline_with_diagnostics, create_project, qualify_package, verify_package,
+    build_project_offline_with_diagnostics, create_project, qualify_package_with_parameter_grid,
+    verify_package,
 };
 use rusqlite::{Connection, params};
 use rust_decimal::Decimal;
@@ -30,7 +31,7 @@ use uuid::Uuid;
 use crate::{
     backtest::{
         BacktestRun, BacktestRunRequest, BacktestRunView, FactorInstanceRequest,
-        SignalInstanceRequest, StrategyQualificationBinding,
+        PortfolioBacktestView, SignalInstanceRequest, StrategyQualificationBinding,
     },
     strategy_candidate::{StrategyCandidateRevision, StrategyInputBinding, StrategyValue},
     user::validate_user,
@@ -80,6 +81,15 @@ pub(crate) trait StrategyQualificationSource: Send + Sync {
     ) -> Result<MarketDataUniverseSnapshot, String>;
     fn run_backtest(&self, request: BacktestRunRequest) -> Result<BacktestRunView, String>;
     fn load_backtest(&self, user_id: &str, run_id: &str) -> Result<BacktestRun, String>;
+    fn run_portfolio_backtest(
+        &self,
+        request: BacktestRunRequest,
+    ) -> Result<PortfolioBacktestView, String>;
+    fn load_portfolio_backtest(
+        &self,
+        user_id: &str,
+        run_id: &str,
+    ) -> Result<PortfolioBacktestView, String>;
     fn create_protocol(
         &self,
         request: ValidationProtocolCreateRequest,
@@ -154,6 +164,8 @@ pub(crate) struct StrategyPackageProvenance {
     pub package_archive_sha256: String,
     pub package_wasm_sha256: String,
     pub parameters: BTreeMap<String, String>,
+    #[serde(default)]
+    pub parameter_grid: Vec<BTreeMap<String, String>>,
     pub qualification: QualificationAttempt,
     pub diagnostic_log_sha256: String,
     pub commands: Vec<String>,
@@ -364,6 +376,13 @@ impl StrategyQualificationStore {
         if package.archive_sha256 != package_provenance.package_archive_sha256
             || package.manifest.kind != ComponentKind::Strategy
             || package.manifest.wasm_sha256 != package_provenance.package_wasm_sha256
+            || matches!(
+                revision.scope,
+                crate::strategy_candidate::StrategyScope::Portfolio
+            ) != matches!(
+                package.manifest.strategy_scope,
+                adaq_component_tooling::StrategyScope::Portfolio
+            )
             || manifest_default_parameters(&package.manifest) != package_provenance.parameters
         {
             return Err(
@@ -375,19 +394,36 @@ impl StrategyQualificationStore {
         {
             return Err("Strategy Package provenance identity is invalid".into());
         }
+        let is_portfolio = matches!(
+            revision.scope,
+            crate::strategy_candidate::StrategyScope::Portfolio
+        );
         let backtest_run_id = attempt
             .backtest_run_id
             .as_deref()
             .ok_or("Strategy Qualification Attempt has no Backtest Run")?;
-        let run = self.source.load_backtest(user_id, backtest_run_id)?;
         let expected_binding = qualification_binding(&attempt, &package_provenance);
-        validate_run_binding(
-            &run,
-            &expected_binding,
-            &attempt.context,
-            &package_provenance.package_archive_sha256,
-            &package_provenance.parameters,
-        )?;
+        if is_portfolio {
+            let run = self
+                .source
+                .load_portfolio_backtest(user_id, backtest_run_id)?;
+            validate_portfolio_run_binding(
+                &run,
+                &expected_binding,
+                &attempt.context,
+                &package_provenance.package_archive_sha256,
+                &package_provenance.parameters,
+            )?;
+        } else {
+            let run = self.source.load_backtest(user_id, backtest_run_id)?;
+            validate_run_binding(
+                &run,
+                &expected_binding,
+                &attempt.context,
+                &package_provenance.package_archive_sha256,
+                &package_provenance.parameters,
+            )?;
+        }
         let protocol_id = attempt
             .validation_protocol_id
             .as_deref()
@@ -399,6 +435,7 @@ impl StrategyQualificationStore {
             &attempt.context,
             &package_provenance.package_archive_sha256,
             &package_provenance.parameters,
+            is_portfolio,
         )?;
         let report_id = attempt
             .validation_report_id
@@ -408,28 +445,52 @@ impl StrategyQualificationStore {
         validate_report_binding(&report, &protocol, &expected_binding, &attempt.context)?;
         for window in &report.windows {
             if let Some(run_id) = &window.sample_in_run_id {
-                validate_run_binding_for_window(
-                    &self.source.load_backtest(user_id, run_id)?,
-                    &expected_binding,
-                    &attempt.context,
-                    &package_provenance.package_archive_sha256,
-                    &package_provenance.parameters,
-                    &window.sample_in_snapshot_id,
-                    window.sample_in_start_time_ms,
-                    window.sample_in_end_time_ms,
-                )?;
+                if is_portfolio {
+                    validate_portfolio_run_binding_for_window(
+                        &self.source.load_portfolio_backtest(user_id, run_id)?,
+                        &expected_binding,
+                        &attempt.context,
+                        &package_provenance.package_archive_sha256,
+                        &package_provenance.parameters,
+                        window.sample_in_start_time_ms,
+                        window.sample_in_end_time_ms,
+                    )?;
+                } else {
+                    validate_run_binding_for_window(
+                        &self.source.load_backtest(user_id, run_id)?,
+                        &expected_binding,
+                        &attempt.context,
+                        &package_provenance.package_archive_sha256,
+                        &package_provenance.parameters,
+                        &window.sample_in_snapshot_id,
+                        window.sample_in_start_time_ms,
+                        window.sample_in_end_time_ms,
+                    )?;
+                }
             }
             if let Some(run_id) = &window.sample_out_run_id {
-                validate_run_binding_for_window(
-                    &self.source.load_backtest(user_id, run_id)?,
-                    &expected_binding,
-                    &attempt.context,
-                    &package_provenance.package_archive_sha256,
-                    &package_provenance.parameters,
-                    &window.sample_out_snapshot_id,
-                    Some(window.sample_out_start_time_ms),
-                    window.sample_out_end_time_ms,
-                )?;
+                if is_portfolio {
+                    validate_portfolio_run_binding_for_window(
+                        &self.source.load_portfolio_backtest(user_id, run_id)?,
+                        &expected_binding,
+                        &attempt.context,
+                        &package_provenance.package_archive_sha256,
+                        &package_provenance.parameters,
+                        Some(window.sample_out_start_time_ms),
+                        window.sample_out_end_time_ms,
+                    )?;
+                } else {
+                    validate_run_binding_for_window(
+                        &self.source.load_backtest(user_id, run_id)?,
+                        &expected_binding,
+                        &attempt.context,
+                        &package_provenance.package_archive_sha256,
+                        &package_provenance.parameters,
+                        &window.sample_out_snapshot_id,
+                        Some(window.sample_out_start_time_ms),
+                        window.sample_out_end_time_ms,
+                    )?;
+                }
             }
         }
         let mut qualification = StrategyQualification {
@@ -662,6 +723,13 @@ impl StrategyQualificationStore {
             .map_err(|error| EvaluationFailure::new("package", error))?;
         if package.archive_sha256 != generated.provenance.package_archive_sha256
             || package.manifest.wasm_sha256 != generated.provenance.package_wasm_sha256
+            || matches!(
+                revision.scope,
+                crate::strategy_candidate::StrategyScope::Portfolio
+            ) != matches!(
+                package.manifest.strategy_scope,
+                adaq_component_tooling::StrategyScope::Portfolio
+            )
         {
             return Err(EvaluationFailure::new(
                 "package",
@@ -687,11 +755,17 @@ impl StrategyQualificationStore {
                 StrategyInputBinding::Model(_) => None,
             })
             .collect::<Vec<_>>();
-        validate_signal_instances(&revision, &request.signal_instances)?;
+        let is_portfolio = matches!(
+            revision.scope,
+            crate::strategy_candidate::StrategyScope::Portfolio
+        );
+        validate_signal_instances(&revision, &request.signal_instances, is_portfolio)?;
         let strategy_parameters = generated.parameters.into_iter().collect::<HashMap<_, _>>();
         let run_request = BacktestRunRequest {
             user_id: request.user_id.clone(),
             snapshot_id: snapshot.snapshot_id.clone(),
+            portfolio_universe_snapshot_id: is_portfolio
+                .then(|| request.universe_snapshot_id.clone()),
             run_start_time_ms: Some(request.selection_window.start_time_ms),
             run_end_time_ms: Some(request.final_window.end_time_ms),
             factor_instances,
@@ -704,22 +778,43 @@ impl StrategyQualificationStore {
             risk_policy: Some(request.risk_policy.clone()),
             seed: request.seed,
         };
-        let run = self
-            .source
-            .run_backtest(run_request.clone())
+        let backtest_run_id = if is_portfolio {
+            let run = self
+                .source
+                .run_portfolio_backtest(run_request.clone())
+                .map_err(|error| EvaluationFailure::new("backtest", error))?;
+            let stored_run = self
+                .source
+                .load_portfolio_backtest(&request.user_id, &run.run_id)
+                .map_err(|error| EvaluationFailure::new("backtest", error))?;
+            validate_portfolio_run_binding(
+                &stored_run,
+                &binding,
+                &context,
+                &generated.provenance.package_archive_sha256,
+                &generated.provenance.parameters,
+            )
             .map_err(|error| EvaluationFailure::new("backtest", error))?;
-        let stored_run = self
-            .source
-            .load_backtest(&request.user_id, &run.run_id)
+            run.run_id
+        } else {
+            let run = self
+                .source
+                .run_backtest(run_request.clone())
+                .map_err(|error| EvaluationFailure::new("backtest", error))?;
+            let stored_run = self
+                .source
+                .load_backtest(&request.user_id, &run.run_id)
+                .map_err(|error| EvaluationFailure::new("backtest", error))?;
+            validate_run_binding(
+                &stored_run,
+                &binding,
+                &context,
+                &generated.provenance.package_archive_sha256,
+                &generated.provenance.parameters,
+            )
             .map_err(|error| EvaluationFailure::new("backtest", error))?;
-        validate_run_binding(
-            &stored_run,
-            &binding,
-            &context,
-            &generated.provenance.package_archive_sha256,
-            &generated.provenance.parameters,
-        )
-        .map_err(|error| EvaluationFailure::new("backtest", error))?;
+            run.run_id
+        };
         let protocol = self
             .source
             .create_protocol(ValidationProtocolCreateRequest {
@@ -750,6 +845,7 @@ impl StrategyQualificationStore {
             &context,
             &generated.provenance.package_archive_sha256,
             &generated.provenance.parameters,
+            is_portfolio,
         )
         .map_err(|error| EvaluationFailure::new("validation-report", error))?;
         validate_report_binding(&report, &protocol, &binding, &context)
@@ -757,7 +853,7 @@ impl StrategyQualificationStore {
         Ok(EvaluationResult {
             candidate_revision_hash: revision.revision_hash,
             package: generated.provenance,
-            backtest_run_id: run.run_id,
+            backtest_run_id,
             validation_protocol_id: protocol.protocol_id,
             validation_report_id: report.report_id,
             context,
@@ -854,6 +950,7 @@ fn exact_bar_boundary(bars: &[adaq_data_core::OhlcvBar], boundary: i64) -> bool 
 fn validate_signal_instances(
     revision: &StrategyCandidateRevision,
     signals: &[SignalInstanceRequest],
+    portfolio: bool,
 ) -> Result<(), EvaluationFailure> {
     let expected = revision
         .definition
@@ -866,7 +963,7 @@ fn validate_signal_instances(
             StrategyInputBinding::Factor(_) => None,
         })
         .collect::<Vec<_>>();
-    if expected.len() != signals.len()
+    let invalid_single = expected.len() != signals.len()
         || signals.iter().any(|signal| {
             expected
                 .iter()
@@ -879,8 +976,34 @@ fn validate_signal_instances(
             .map(|signal| signal.slot.as_str())
             .collect::<HashSet<_>>()
             .len()
-            != signals.len()
-    {
+            != signals.len();
+    let invalid_portfolio = expected
+        .is_empty()
+        .then_some(!signals.is_empty())
+        .unwrap_or_else(|| {
+            signals.len() % expected.len() != 0
+                || signals.is_empty()
+                || signals.iter().any(|signal| {
+                    expected
+                        .iter()
+                        .filter(|(slot, output)| {
+                            *slot == signal.slot && *output == signal.signal_name
+                        })
+                        .count()
+                        != 1
+                })
+                || signals
+                    .iter()
+                    .map(|signal| (signal.slot.as_str(), signal.dataset_id.as_str()))
+                    .collect::<HashSet<_>>()
+                    .len()
+                    != signals.len()
+        });
+    if if portfolio {
+        invalid_portfolio
+    } else {
+        invalid_single
+    } {
         return Err(EvaluationFailure::new(
             "context",
             "Forecast Signal bindings must match every accepted Model input exactly",
@@ -918,6 +1041,122 @@ fn validate_run_binding(
         Some(context.selection_window.start_time_ms),
         Some(context.final_window.end_time_ms),
     )
+}
+
+fn validate_portfolio_run_binding(
+    run: &PortfolioBacktestView,
+    binding: &StrategyQualificationBinding,
+    context: &StrategyEvaluationContext,
+    package_archive_sha256: &str,
+    parameters: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    validate_portfolio_run_binding_for_window(
+        run,
+        binding,
+        context,
+        package_archive_sha256,
+        parameters,
+        Some(context.selection_window.start_time_ms),
+        Some(context.final_window.end_time_ms),
+    )
+}
+
+fn validate_portfolio_run_binding_for_window(
+    run: &PortfolioBacktestView,
+    binding: &StrategyQualificationBinding,
+    context: &StrategyEvaluationContext,
+    package_archive_sha256: &str,
+    parameters: &BTreeMap<String, String>,
+    start_time_ms: Option<i64>,
+    end_time_ms: Option<i64>,
+) -> Result<(), String> {
+    let start_time_ms = start_time_ms.ok_or("Portfolio Backtest window has no start time")?;
+    let end_time_ms = end_time_ms.ok_or("Portfolio Backtest window has no end time")?;
+    let provenance = run
+        .provenance
+        .as_ref()
+        .ok_or("Portfolio Backtest has no immutable provenance")?;
+    let expected_component_archives = std::iter::once(package_archive_sha256.to_owned())
+        .chain(
+            provenance
+                .factor_instances
+                .iter()
+                .map(|factor| factor.archive_sha256.clone()),
+        )
+        .collect::<Vec<_>>();
+    let actual_component_archives = provenance
+        .component_lock
+        .iter()
+        .map(|component| component.archive_sha256.clone())
+        .collect::<Vec<_>>();
+    let locked_signals = provenance
+        .signal_locks
+        .iter()
+        .map(|signal| SignalInstanceRequest {
+            slot: signal.slot.clone(),
+            dataset_id: signal.dataset_id.clone(),
+            signal_name: signal.signal_name.clone(),
+        })
+        .collect::<Vec<_>>();
+    if run.metrics.is_none()
+        || run.evidence.metrics.is_none()
+        || run.metrics != run.evidence.metrics
+        || run.evidence.initial_capital != context.initial_quote_allocation
+        || run.evidence.decisions.is_empty()
+        || provenance.strategy_binding.as_ref() != Some(binding)
+        || provenance.risk_policy.as_ref() != Some(&context.risk_policy)
+        || provenance.snapshot_id != context.snapshot_id
+        || provenance.universe_snapshot_id != context.universe_snapshot_id
+        || provenance.universe_id != context.universe_id
+        || provenance.run_start_time_ms != start_time_ms
+        || provenance.run_end_time_ms != end_time_ms
+        || provenance.strategy_archive_sha256 != package_archive_sha256
+        || provenance.strategy_parameters != *parameters
+        || !same_signal_instances(&provenance.signal_instances, &context.signal_instances)
+        || provenance.initial_quote_allocation != context.initial_quote_allocation
+        || provenance.execution_profile != context.execution_profile
+        || provenance.seed != context.seed
+        || provenance.feature_plans.is_empty()
+        || provenance.feature_plan_hash.len() != 64
+        || provenance.strategy_wasm_sha256.len() != 64
+        || actual_component_archives != expected_component_archives
+        || !same_signal_instances(&locked_signals, &provenance.signal_instances)
+    {
+        return Err(
+            "Portfolio Backtest does not match the exact Qualification identity or context".into(),
+        );
+    }
+    Ok(())
+}
+
+fn same_signal_instances(left: &[SignalInstanceRequest], right: &[SignalInstanceRequest]) -> bool {
+    let mut left = left.to_vec();
+    let mut right = right.to_vec();
+    left.sort_by(|left, right| {
+        (
+            left.slot.as_str(),
+            left.dataset_id.as_str(),
+            left.signal_name.as_str(),
+        )
+            .cmp(&(
+                right.slot.as_str(),
+                right.dataset_id.as_str(),
+                right.signal_name.as_str(),
+            ))
+    });
+    right.sort_by(|left, right| {
+        (
+            left.slot.as_str(),
+            left.dataset_id.as_str(),
+            left.signal_name.as_str(),
+        )
+            .cmp(&(
+                right.slot.as_str(),
+                right.dataset_id.as_str(),
+                right.signal_name.as_str(),
+            ))
+    });
+    left == right
 }
 
 fn validate_run_binding_for_window(
@@ -963,11 +1202,14 @@ fn validate_protocol_binding(
     context: &StrategyEvaluationContext,
     package_archive_sha256: &str,
     parameters: &BTreeMap<String, String>,
+    portfolio: bool,
 ) -> Result<(), String> {
     if protocol.strategy_binding.as_ref() != Some(binding)
         || protocol.run.strategy_binding.as_ref() != Some(binding)
         || protocol.run.risk_policy.as_ref() != Some(&context.risk_policy)
         || protocol.run.snapshot_id != context.snapshot_id
+        || protocol.run.portfolio_universe_snapshot_id.as_deref()
+            != portfolio.then_some(context.universe_snapshot_id.as_str())
         || protocol.run.strategy_archive_sha256 != package_archive_sha256
         || !strategy_parameters_match(&protocol.run.strategy_parameters, parameters)
         || protocol.run.signal_instances != context.signal_instances
@@ -1010,6 +1252,43 @@ fn manifest_default_parameters(manifest: &ComponentManifest) -> BTreeMap<String,
         .iter()
         .map(|parameter| (parameter.name.clone(), parameter.default_value.clone()))
         .collect()
+}
+
+fn strategy_parameter_grid(
+    revision: &StrategyCandidateRevision,
+) -> Result<Vec<BTreeMap<String, String>>, String> {
+    let mut combinations = vec![BTreeMap::new()];
+    for node in &revision.definition.nodes {
+        for (name, value) in &node.parameters {
+            let parameter_name = format!("{}-{}", node.node_id, name);
+            let (_, default_value, allowed_values) =
+                strategy_value_manifest(&node.operation, name, value)?;
+            let values = if allowed_values.is_empty() {
+                vec![default_value]
+            } else {
+                allowed_values
+            };
+            let next_len = combinations
+                .len()
+                .checked_mul(values.len())
+                .ok_or("Strategy parameter grid size overflowed")?;
+            if next_len > 256 {
+                return Err("Strategy parameter grid exceeds the 256-combination limit".into());
+            }
+            combinations = combinations
+                .into_iter()
+                .flat_map(|combination| {
+                    let parameter_name = parameter_name.clone();
+                    values.iter().map(move |value| {
+                        let mut next = combination.clone();
+                        next.insert(parameter_name.clone(), value.clone());
+                        next
+                    })
+                })
+                .collect();
+        }
+    }
+    Ok(combinations)
 }
 
 fn validate_report_binding(
@@ -1079,6 +1358,7 @@ fn generate_strategy_package(
     });
     let component_id = deterministic_uuid(&sha256_json(&identity_material)?).to_string();
     let package_name = format!("adaq-gate11-{}", &sha256_json(&identity_material)?[..16]);
+    let parameter_grid = strategy_parameter_grid(revision)?;
     let (manifest, parameters) = generated_manifest(revision, &component_id, &package_name)?;
     let source = render_strategy_source(revision)?;
     let generated_source_sha256 = sha256(source.as_bytes());
@@ -1109,9 +1389,10 @@ fn generate_strategy_package(
         {
             return Err("generated Strategy Package does not match its frozen contract".into());
         }
-        let qualification = qualify_package(
+        let qualification = qualify_package_with_parameter_grid(
             format!("strategy-package-{component_id}"),
-            &bytes,
+            &package,
+            &parameter_grid,
             |qualified_package, parameters| {
                 verify_strategy_equivalence(revision, qualified_package, parameters)
             },
@@ -1124,7 +1405,8 @@ fn generate_strategy_package(
                 .next()
                 .unwrap_or("unknown package qualification failure");
             return Err(format!(
-                "generated Strategy Package conformance/equivalence failed: {diagnostic}"
+                "generated Strategy Package conformance/equivalence failed ({:?}): {diagnostic}",
+                package.manifest.strategy_scope
             ));
         }
         let compiler = compiler_identity()?;
@@ -1151,6 +1433,7 @@ fn generate_strategy_package(
             package_archive_sha256: package.archive_sha256.clone(),
             package_wasm_sha256: package.manifest.wasm_sha256.clone(),
             parameters: parameters.clone(),
+            parameter_grid: parameter_grid.clone(),
             qualification,
             diagnostic_log_sha256: sha256(diagnostics.as_bytes()),
             commands: STRATEGY_BUILD_COMMANDS
@@ -1175,6 +1458,12 @@ fn verify_strategy_equivalence(
     package: &ComponentPackage,
     parameters: &[ComponentParameterValue],
 ) -> Result<(), String> {
+    if matches!(
+        revision.scope,
+        crate::strategy_candidate::StrategyScope::Portfolio
+    ) {
+        return verify_portfolio_strategy_equivalence(revision, package, parameters);
+    }
     let slots = package
         .manifest
         .feature_slots
@@ -1205,6 +1494,260 @@ fn verify_strategy_equivalence(
         ));
     }
     Ok(())
+}
+
+fn verify_portfolio_strategy_equivalence(
+    revision: &StrategyCandidateRevision,
+    package: &ComponentPackage,
+    parameters: &[ComponentParameterValue],
+) -> Result<(), String> {
+    use adaq_component_sdk::host::portfolio_strategy_abi::exports::adaq::strategy::portfolio_api as abi;
+
+    let slots = package
+        .manifest
+        .feature_slots
+        .iter()
+        .map(|slot| abi::FeatureSlot {
+            name: slot.name.clone(),
+        })
+        .collect::<Vec<_>>();
+    let rows = (0..5)
+        .map(|index| abi::FeatureRow {
+            instrument_id: format!("I{index}"),
+            values: (0..slots.len())
+                .map(|slot| 0.2 + slot as f64 * 0.17 + index as f64 * 0.11)
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    let frame = abi::PortfolioFrame {
+        decision_time_ms: 1,
+        universe_id: "qualification-universe".into(),
+        rows,
+        state: abi::PortfolioState {
+            cash: "10000".into(),
+            positions: Vec::new(),
+        },
+    };
+    let loader = WasmLoader::with_limits(RunLimits::default());
+    loader.load_portfolio_strategy_bytes(&package.wasm, slots, parameters)?;
+    let actual = loader.process_portfolio_strategy(vec![frame.clone()])?;
+    let expected = vec![reference_portfolio_strategy_output(
+        revision, parameters, &frame,
+    )?];
+    if !portfolio_targets_equal(&actual, &expected) {
+        return Err(format!(
+            "generated Portfolio Strategy output differs from the deterministic reference: expected {expected:?}, got {actual:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn reference_portfolio_strategy_output(
+    revision: &StrategyCandidateRevision,
+    parameters: &[ComponentParameterValue],
+    frame: &adaq_component_sdk::host::portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioFrame,
+) -> Result<adaq_component_sdk::host::portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioTarget, String>{
+    use adaq_component_sdk::host::portfolio_strategy_abi::exports::adaq::strategy::portfolio_api as abi;
+
+    enum Value {
+        Scores(BTreeMap<String, f64>),
+        Target {
+            weights: BTreeMap<String, f64>,
+            cash_reserve: f64,
+        },
+    }
+
+    let mut values = BTreeMap::new();
+    for (index, slot) in revision.definition.input_slots.iter().enumerate() {
+        values.insert(
+            slot.alias.clone(),
+            Value::Scores(
+                frame
+                    .rows
+                    .iter()
+                    .map(|row| (row.instrument_id.clone(), row.values[index]))
+                    .collect(),
+            ),
+        );
+    }
+
+    let mut parameter_index = 0;
+    for node in &revision.definition.nodes {
+        let inputs = node
+            .input_aliases
+            .iter()
+            .map(|alias| {
+                values
+                    .get(alias)
+                    .ok_or_else(|| "reference Portfolio Strategy input alias is missing".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let parameter = || {
+            parameters
+                .get(parameter_index)
+                .ok_or_else(|| "reference Portfolio Strategy parameter is missing".to_owned())
+                .and_then(component_parameter_f64)
+        };
+        let output = match node.operation.as_str() {
+            "weighted-sum" => {
+                let weight = parameter()?;
+                let (Value::Scores(left), Value::Scores(right)) = (&inputs[0], &inputs[1]) else {
+                    return Err("reference weighted-sum requires score inputs".into());
+                };
+                Value::Scores(
+                    left.iter()
+                        .map(|(id, left)| {
+                            (
+                                id.clone(),
+                                left * (1.0 - weight)
+                                    + right.get(id).copied().unwrap_or_default() * weight,
+                            )
+                        })
+                        .collect(),
+                )
+            }
+            "top-n" => {
+                let top_n = parameter()? as usize;
+                let Value::Scores(scores) = &inputs[0] else {
+                    return Err("reference top-n requires score input".into());
+                };
+                if !matches!(top_n, 3 | 5) || top_n > scores.len() {
+                    return Err("reference top-n does not fit the Point-in-Time Universe".into());
+                }
+                let mut ranked = scores.iter().collect::<Vec<_>>();
+                ranked.sort_by(|(left_id, left), (right_id, right)| {
+                    right
+                        .partial_cmp(left)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| left_id.cmp(right_id))
+                });
+                let weight = 1.0 / top_n as f64;
+                let selected = ranked
+                    .into_iter()
+                    .take(top_n)
+                    .map(|(id, _)| (id.clone(), weight))
+                    .collect::<BTreeMap<_, _>>();
+                Value::Target {
+                    weights: scores
+                        .keys()
+                        .map(|id| (id.clone(), selected.get(id).copied().unwrap_or(0.0)))
+                        .collect(),
+                    cash_reserve: 0.0,
+                }
+            }
+            "equal-weight" => {
+                let Value::Scores(scores) = &inputs[0] else {
+                    return Err("reference equal-weight requires score input".into());
+                };
+                if scores.is_empty() {
+                    return Err("reference equal-weight requires a non-empty Universe".into());
+                }
+                let weight = 1.0 / scores.len() as f64;
+                Value::Target {
+                    weights: scores.keys().map(|id| (id.clone(), weight)).collect(),
+                    cash_reserve: 0.0,
+                }
+            }
+            "cash-reserve" => {
+                let reserve = parameter()?;
+                let Value::Target {
+                    weights,
+                    cash_reserve: _,
+                } = &inputs[0]
+                else {
+                    return Err("reference cash-reserve requires a Portfolio Target".into());
+                };
+                Value::Target {
+                    weights: weights
+                        .iter()
+                        .map(|(id, weight)| (id.clone(), weight * (1.0 - reserve)))
+                        .collect(),
+                    cash_reserve: reserve,
+                }
+            }
+            _ => return Err("reference Portfolio Strategy operation is unsupported".into()),
+        };
+        values.insert(node.output_alias.clone(), output);
+        parameter_index += node.parameters.len();
+    }
+
+    let last_alias = revision
+        .definition
+        .nodes
+        .last()
+        .map(|node| node.output_alias.as_str())
+        .ok_or("reference Portfolio Strategy output is missing")?;
+    let Value::Target {
+        weights,
+        cash_reserve,
+    } = values
+        .remove(last_alias)
+        .ok_or("reference Portfolio Strategy output is missing")?
+    else {
+        return Err("reference Portfolio Strategy output is not a complete target".into());
+    };
+    let cash_reserve = exact_portfolio_decimal(cash_reserve)?;
+    let mut total = cash_reserve;
+    let output = frame
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let raw = weights
+                .get(&row.instrument_id)
+                .copied()
+                .ok_or("reference Portfolio Strategy output omits a Universe member")?;
+            let weight = if index + 1 == frame.rows.len() {
+                adaq_component_sdk::Decimal::ONE - total
+            } else {
+                exact_portfolio_decimal(raw)?
+            };
+            if weight < adaq_component_sdk::Decimal::ZERO {
+                return Err("reference Portfolio Strategy target weight is negative".into());
+            }
+            total += weight;
+            Ok(abi::TargetWeight {
+                instrument_id: row.instrument_id.clone(),
+                weight: weight.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if total != adaq_component_sdk::Decimal::ONE {
+        return Err("reference Portfolio Strategy target does not sum to one".into());
+    }
+    Ok(abi::PortfolioTarget {
+        decision_time_ms: frame.decision_time_ms,
+        universe_id: frame.universe_id.clone(),
+        weights: output,
+        cash_reserve: cash_reserve.to_string(),
+    })
+}
+
+fn portfolio_targets_equal(
+    left: &[adaq_component_sdk::host::portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioTarget],
+    right: &[adaq_component_sdk::host::portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioTarget],
+) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.decision_time_ms == right.decision_time_ms
+                && left.universe_id == right.universe_id
+                && left.cash_reserve == right.cash_reserve
+                && left.weights.len() == right.weights.len()
+                && left
+                    .weights
+                    .iter()
+                    .zip(&right.weights)
+                    .all(|(left, right)| {
+                        left.instrument_id == right.instrument_id && left.weight == right.weight
+                    })
+        })
+}
+
+fn exact_portfolio_decimal(value: f64) -> Result<Decimal, String> {
+    if !value.is_finite() {
+        return Err("reference Portfolio Strategy decimal is not finite".into());
+    }
+    adaq_component_sdk::parse_decimal(&format!("{value:.12}"))
 }
 
 fn reference_strategy_output(
@@ -1284,12 +1827,24 @@ fn format_exposure(value: f64) -> String {
 }
 
 fn validate_generator_shape(revision: &StrategyCandidateRevision) -> Result<(), String> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ValueKind {
+        Scores,
+        Target,
+    }
+
     let mut known = revision
         .definition
         .input_slots
         .iter()
         .map(|slot| slot.alias.clone())
         .collect::<HashSet<_>>();
+    let mut kinds = revision
+        .definition
+        .input_slots
+        .iter()
+        .map(|slot| (slot.alias.clone(), ValueKind::Scores))
+        .collect::<HashMap<_, _>>();
     for node in &revision.definition.nodes {
         let arity = match node.operation.as_str() {
             "weighted-sum" => 2,
@@ -1323,6 +1878,39 @@ fn validate_generator_shape(revision: &StrategyCandidateRevision) -> Result<(), 
                 "Strategy parameter type is unsupported by the deterministic generator".into(),
             );
         }
+        let input_kinds = node
+            .input_aliases
+            .iter()
+            .map(|alias| kinds.get(alias).copied())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "Strategy operation input kind is unavailable".to_owned())?;
+        let output_kind = match node.operation.as_str() {
+            "weighted-sum" if input_kinds == [ValueKind::Scores, ValueKind::Scores] => {
+                ValueKind::Scores
+            }
+            "top-n" | "equal-weight" if input_kinds == [ValueKind::Scores] => ValueKind::Target,
+            "cash-reserve" if input_kinds == [ValueKind::Target] => ValueKind::Target,
+            _ => {
+                return Err(format!(
+                    "Strategy operation {} has incompatible value kinds",
+                    node.node_id
+                ));
+            }
+        };
+        kinds.insert(node.output_alias.clone(), output_kind);
+    }
+    let output_kind = revision
+        .definition
+        .nodes
+        .last()
+        .and_then(|node| kinds.get(&node.output_alias))
+        .copied();
+    let valid_output_kind = match revision.scope {
+        crate::strategy_candidate::StrategyScope::SingleInstrument => Some(ValueKind::Scores),
+        crate::strategy_candidate::StrategyScope::Portfolio => Some(ValueKind::Target),
+    };
+    if output_kind != valid_output_kind {
+        return Err("Strategy output kind does not match its declared scope".into());
     }
     Ok(())
 }
@@ -1384,7 +1972,11 @@ fn generated_manifest(
                 "name": parameter_name,
                 "parameterType": parameter_type,
                 "defaultValue": default_value,
-                "allowedValues": allowed_values,
+                "allowedValues": if allowed_values.is_empty() {
+                    Vec::<String>::new()
+                } else {
+                    vec![default_value.clone()]
+                },
             }));
             values.insert(parameter_name, default_value);
         }
@@ -1395,6 +1987,10 @@ fn generated_manifest(
         "version": "0.1.0",
         "name": package_name,
         "kind": "strategy",
+        "strategyScope": match revision.scope {
+            crate::strategy_candidate::StrategyScope::SingleInstrument => "single-instrument",
+            crate::strategy_candidate::StrategyScope::Portfolio => "portfolio",
+        },
         "sdkVersion": adaq_component_sdk::SDK_VERSION,
         "abiVersion": adaq_component_sdk::ABI_VERSION,
         "parameters": parameters,
@@ -1442,6 +2038,16 @@ fn strategy_value_manifest(
 }
 
 fn render_strategy_source(revision: &StrategyCandidateRevision) -> Result<String, String> {
+    if matches!(
+        revision.scope,
+        crate::strategy_candidate::StrategyScope::Portfolio
+    ) {
+        return render_portfolio_strategy_source(revision);
+    }
+    render_single_strategy_source(revision)
+}
+
+fn render_single_strategy_source(revision: &StrategyCandidateRevision) -> Result<String, String> {
     let struct_slots = revision
         .definition
         .input_slots
@@ -1624,6 +2230,356 @@ adaq_component_sdk::strategy::bindings::export_strategy!(
             .sum::<usize>(),
         slot_bindings = slots,
         parameter_bindings = parameters,
+        node_code = node_code.join("\n"),
+        last_value = last_value,
+    ))
+}
+
+fn render_portfolio_strategy_source(
+    revision: &StrategyCandidateRevision,
+) -> Result<String, String> {
+    let struct_slots = revision
+        .definition
+        .input_slots
+        .iter()
+        .enumerate()
+        .map(|(index, _)| format!("    {}: usize,", slot_field(index)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let struct_parameters = revision
+        .definition
+        .nodes
+        .iter()
+        .flat_map(|node| node.parameters.keys())
+        .enumerate()
+        .map(|(index, _)| format!("    {}: f64,", parameter_field(index)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let slots = revision
+        .definition
+        .input_slots
+        .iter()
+        .enumerate()
+        .map(|(index, slot)| {
+            format!(
+                "            {}: slots.index({})?,",
+                slot_field(index),
+                rust_string(&slot.alias)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let parameters = revision
+        .definition
+        .nodes
+        .iter()
+        .flat_map(|node| node.parameters.keys().map(move |name| (node, name)))
+        .enumerate()
+        .map(|(index, (node, name))| {
+            let parameter_name = format!("{}-{}", node.node_id, name);
+            let matcher = match node.parameters.get(name) {
+                Some(StrategyValue::Decimal(_)) => {
+                    "Some(ParameterValue::Decimal(value)) => adaq_component_sdk::decimal_to_f64(adaq_component_sdk::parse_decimal(value.as_str())?)?"
+                }
+                Some(StrategyValue::Integer(_)) => "Some(ParameterValue::Integer(value)) => *value as f64",
+                _ => "_ => return Err(\"unsupported generated parameter\".into())",
+            };
+            format!(
+                "            {}: match parameters.get({}) {{ {} , _ => return Err({}.into()) }},",
+                parameter_field(index),
+                index,
+                matcher,
+                rust_string(&format!("invalid generated parameter {parameter_name}"))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let input_bindings = revision
+        .definition
+        .input_slots
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            format!(
+                "                let input_{index} = scores(&frame.rows, self.{})?;",
+                slot_field(index)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut values = revision
+        .definition
+        .input_slots
+        .iter()
+        .enumerate()
+        .map(|(index, slot)| (slot.alias.clone(), format!("input_{index}")))
+        .collect::<BTreeMap<_, _>>();
+    let mut node_code = Vec::new();
+    let mut parameter_index = 0;
+    for (node_index, node) in revision.definition.nodes.iter().enumerate() {
+        let inputs = node
+            .input_aliases
+            .iter()
+            .map(|alias| {
+                values
+                    .get(alias)
+                    .cloned()
+                    .ok_or_else(|| "generated input alias is missing".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let expression = match node.operation.as_str() {
+            "weighted-sum" => format!(
+                "weighted_sum(&{}, &{}, self.{})?",
+                inputs[0],
+                inputs[1],
+                parameter_field(parameter_index)
+            ),
+            "top-n" => format!(
+                "top_n(&{}, self.{} as usize)?",
+                inputs[0],
+                parameter_field(parameter_index)
+            ),
+            "equal-weight" => format!("equal_weight(&{})?", inputs[0]),
+            "cash-reserve" => format!(
+                "cash_reserve(&{}, self.{})?",
+                inputs[0],
+                parameter_field(parameter_index)
+            ),
+            _ => return Err("unsupported generated Portfolio Strategy operation".into()),
+        };
+        let output = format!("v{node_index}");
+        node_code.push(format!("                let {output} = {expression};"));
+        values.insert(node.output_alias.clone(), output);
+        parameter_index += node.parameters.len();
+    }
+    let last_value = revision
+        .definition
+        .nodes
+        .last()
+        .and_then(|node| values.get(&node.output_alias))
+        .ok_or("generated Portfolio Strategy has no output")?;
+    Ok(format!(
+        "use std::{{cmp::Ordering, collections::BTreeMap}};
+use adaq_component_sdk::portfolio_strategy::{{
+    FeatureRow, FeatureSlot, Guest, GuestInstance, Instance as StrategyInstance,
+    ParameterValue, PortfolioFrame, PortfolioTarget, SlotIndexes, TargetWeight,
+}};
+
+enum Value {{
+    Scores(BTreeMap<String, f64>),
+    Target {{
+        weights: BTreeMap<String, f64>,
+        cash_reserve: f64,
+    }},
+}}
+
+struct Component;
+
+struct Instance {{
+{slots}
+{parameters}
+}}
+
+impl Guest for Component {{
+    type Instance = Instance;
+
+    fn create(
+        feature_slots: Vec<FeatureSlot>,
+        parameters: Vec<ParameterValue>,
+    ) -> Result<StrategyInstance, String> {{
+        if feature_slots.len() != {slot_count} || parameters.len() != {parameter_count} {{
+            return Err(\"generated Portfolio Strategy contract length mismatch\".into());
+        }}
+        let slots = SlotIndexes::bind(&feature_slots)?;
+        Ok(StrategyInstance::new(Instance {{
+{slot_bindings}
+{parameter_bindings}
+        }}))
+    }}
+}}
+
+impl GuestInstance for Instance {{
+    fn process(&self, frames: Vec<PortfolioFrame>) -> Result<Vec<PortfolioTarget>, String> {{
+        frames
+            .into_iter()
+            .map(|frame| {{
+                if frame.universe_id.is_empty() || frame.rows.is_empty() {{
+                    return Err(\"generated Portfolio Strategy frame is invalid\".into());
+                }}
+                adaq_component_sdk::parse_decimal(&frame.state.cash)?;
+{input_bindings}
+{node_code}
+                target({last_value}, &frame)
+            }})
+            .collect()
+    }}
+}}
+
+fn scores(rows: &[FeatureRow], slot: usize) -> Result<Value, String> {{
+    let mut values = BTreeMap::new();
+    for row in rows {{
+        if row.instrument_id.is_empty()
+            || row.values.len() <= slot
+            || !row.values[slot].is_finite()
+            || values.insert(row.instrument_id.clone(), row.values[slot]).is_some()
+        {{
+            return Err(\"generated Portfolio Strategy feature rows are invalid\".into());
+        }}
+    }}
+    Ok(Value::Scores(values))
+}}
+
+fn weighted_sum(left: &Value, right: &Value, weight: f64) -> Result<Value, String> {{
+    if !weight.is_finite() || !(0.0..=1.0).contains(&weight) {{
+        return Err(\"generated Portfolio Strategy weight is invalid\".into());
+    }}
+    let (Value::Scores(left), Value::Scores(right)) = (left, right) else {{
+        return Err(\"weighted-sum requires score inputs\".into());
+    }};
+    if left.keys().ne(right.keys()) {{
+        return Err(\"weighted-sum input Universes do not match\".into());
+    }}
+    let values = left
+        .iter()
+        .map(|(id, left)| {{
+            let right = right.get(id).ok_or(\"weighted-sum input is incomplete\")?;
+            let value = left * (1.0 - weight) + right * weight;
+            value.is_finite()
+                .then_some((id.clone(), value))
+                .ok_or(\"weighted-sum output is not finite\")
+        }})
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    Ok(Value::Scores(values))
+}}
+
+fn top_n(value: &Value, top_n: usize) -> Result<Value, String> {{
+    let Value::Scores(scores) = value else {{
+        return Err(\"top-n requires score input\".into());
+    }};
+    if !matches!(top_n, 3 | 5) || top_n > scores.len() {{
+        return Err(\"top-n does not fit the Point-in-Time Universe\".into());
+    }}
+    let mut ranked = scores.iter().collect::<Vec<_>>();
+    ranked.sort_by(|(left_id, left), (right_id, right)| {{
+        right
+            .partial_cmp(left)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| left_id.cmp(right_id))
+    }});
+    let weight = 1.0 / top_n as f64;
+    let selected = ranked
+        .into_iter()
+        .take(top_n)
+        .map(|(id, _)| (id.clone(), weight))
+        .collect::<BTreeMap<_, _>>();
+    Ok(Value::Target {{
+        weights: scores
+            .keys()
+            .map(|id| (id.clone(), selected.get(id).copied().unwrap_or(0.0)))
+            .collect(),
+        cash_reserve: 0.0,
+    }})
+}}
+
+fn equal_weight(value: &Value) -> Result<Value, String> {{
+    let Value::Scores(scores) = value else {{
+        return Err(\"equal-weight requires score input\".into());
+    }};
+    if scores.is_empty() {{
+        return Err(\"equal-weight requires a non-empty Universe\".into());
+    }}
+    let weight = 1.0 / scores.len() as f64;
+    Ok(Value::Target {{
+        weights: scores.keys().map(|id| (id.clone(), weight)).collect(),
+        cash_reserve: 0.0,
+    }})
+}}
+
+fn cash_reserve(value: &Value, reserve: f64) -> Result<Value, String> {{
+    if !reserve.is_finite() || !(0.0..=1.0).contains(&reserve) {{
+        return Err(\"cash-reserve is invalid\".into());
+    }}
+    let Value::Target {{ weights, cash_reserve }} = value else {{
+        return Err(\"cash-reserve requires a Portfolio Target\".into());
+    }};
+    let scale = 1.0 - reserve;
+    Ok(Value::Target {{
+        weights: weights
+            .iter()
+            .map(|(id, weight)| {{
+                let value = weight * scale;
+                value.is_finite()
+                    .then_some((id.clone(), value))
+                    .ok_or(\"cash-reserve output is not finite\")
+            }})
+            .collect::<Result<BTreeMap<_, _>, _>>()?,
+        cash_reserve: reserve,
+    }})
+}}
+
+fn target(value: Value, frame: &PortfolioFrame) -> Result<PortfolioTarget, String> {{
+    let Value::Target {{ weights, cash_reserve }} = value else {{
+        return Err(\"Portfolio Strategy output is not a complete Portfolio Target\".into());
+    }};
+    let reserve = decimal(cash_reserve)?;
+    if reserve < adaq_component_sdk::Decimal::ZERO {{
+        return Err(\"Portfolio Strategy cash reserve is negative\".into());
+    }}
+    let mut total = reserve;
+    let mut output = Vec::with_capacity(frame.rows.len());
+    for (index, row) in frame.rows.iter().enumerate() {{
+        let raw = weights
+            .get(&row.instrument_id)
+            .copied()
+            .ok_or(\"Portfolio Strategy output omits a Universe member\")?;
+        let weight = if index + 1 == frame.rows.len() {{
+            adaq_component_sdk::Decimal::ONE - total
+        }} else {{
+            decimal(raw)?
+        }};
+        if weight < adaq_component_sdk::Decimal::ZERO {{
+            return Err(\"Portfolio Strategy target weight is negative\".into());
+        }}
+        total += weight;
+        output.push(TargetWeight {{
+            instrument_id: row.instrument_id.clone(),
+            weight: weight.to_string(),
+        }});
+    }}
+    if total != adaq_component_sdk::Decimal::ONE {{
+        return Err(\"Portfolio Strategy target does not sum to one\".into());
+    }}
+    Ok(PortfolioTarget {{
+        decision_time_ms: frame.decision_time_ms,
+        universe_id: frame.universe_id.clone(),
+        weights: output,
+        cash_reserve: reserve.to_string(),
+    }})
+}}
+
+fn decimal(value: f64) -> Result<adaq_component_sdk::Decimal, String> {{
+    if !value.is_finite() {{
+        return Err(\"Portfolio Strategy decimal is not finite\".into());
+    }}
+    adaq_component_sdk::parse_decimal(&format!(\"{{value:.12}}\"))
+}}
+
+adaq_component_sdk::portfolio_strategy::bindings::export_portfolio_strategy!(
+    Component with_types_in adaq_component_sdk::portfolio_strategy::bindings
+);
+",
+        slots = struct_slots,
+        parameters = struct_parameters,
+        slot_count = revision.definition.input_slots.len(),
+        parameter_count = revision
+            .definition
+            .nodes
+            .iter()
+            .map(|node| node.parameters.len())
+            .sum::<usize>(),
+        slot_bindings = slots,
+        parameter_bindings = parameters,
+        input_bindings = input_bindings,
         node_code = node_code.join("\n"),
         last_value = last_value,
     ))
@@ -1945,16 +2901,9 @@ mod tests {
                 output_alias: "selected-exposure".into(),
             },
             StrategyOperationNode {
-                node_id: "equal".into(),
-                operation: "equal-weight".into(),
-                input_aliases: vec!["selected-exposure".into()],
-                parameters: BTreeMap::new(),
-                output_alias: "equal-exposure".into(),
-            },
-            StrategyOperationNode {
                 node_id: "reserve".into(),
                 operation: "cash-reserve".into(),
-                input_aliases: vec!["equal-exposure".into()],
+                input_aliases: vec!["selected-exposure".into()],
                 parameters: cash_reserve_parameters,
                 output_alias: "portfolio-exposure".into(),
             },
@@ -1978,10 +2927,7 @@ mod tests {
         assert_eq!(left, right);
         assert_eq!(left_values, right_values);
         assert_eq!(left.parameters.len(), 1);
-        assert_eq!(
-            left.parameters[0].allowed_values,
-            vec!["0.5".to_owned(), "0.7".to_owned()]
-        );
+        assert_eq!(left.parameters[0].allowed_values, vec!["0.7".to_owned()]);
         let source = render_strategy_source(&revision).unwrap();
         assert!(source.contains("SlotIndexes::bind"));
         assert!(source.contains("parse_decimal"));
@@ -1998,6 +2944,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(output, "0.319");
+    }
+
+    #[test]
+    fn generated_portfolio_strategy_uses_the_portfolio_contract() {
+        let revision = portfolio_test_revision();
+        revision.validate().unwrap();
+        let (manifest, _) = generated_manifest(
+            &revision,
+            &Uuid::from_u128(6).to_string(),
+            "portfolio-strategy",
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.strategy_scope,
+            adaq_component_tooling::StrategyScope::Portfolio
+        );
+        let source = render_strategy_source(&revision).unwrap();
+        assert!(source.contains("export_portfolio_strategy"));
+        assert!(source.contains("PortfolioFrame"));
+        assert!(!source.contains("export_strategy!"));
     }
 
     #[test]

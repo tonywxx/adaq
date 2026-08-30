@@ -128,6 +128,7 @@ fn run_request(harness: &Harness) -> BacktestRunRequest {
     BacktestRunRequest {
         user_id: "alice".into(),
         snapshot_id: harness.snapshot.snapshot_id.clone(),
+        portfolio_universe_snapshot_id: None,
         run_start_time_ms: None,
         run_end_time_ms: None,
         factor_instances: vec![FactorInstanceRequest {
@@ -804,6 +805,7 @@ fn cross_market_evidence_preserves_order_failures_dispersion_and_report_identity
     let run = |snapshot_id: &str| BacktestRunRequest {
         user_id: "alice".into(),
         snapshot_id: snapshot_id.into(),
+        portfolio_universe_snapshot_id: None,
         run_start_time_ms: None,
         run_end_time_ms: None,
         factor_instances: vec![],

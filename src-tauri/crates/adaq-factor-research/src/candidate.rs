@@ -507,6 +507,7 @@ pub fn generate_declarative_candidate_package(
         version: Version::new(0, 1, 0),
         name: component_name.to_owned(),
         kind: ComponentKind::Factor,
+        strategy_scope: adaq_component_tooling::StrategyScope::SingleInstrument,
         factor_scope: Some(match candidate.scope {
             FactorScope::TimeSeries => PackageFactorScope::TimeSeries,
             FactorScope::CrossSectional => PackageFactorScope::CrossSectional,

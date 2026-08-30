@@ -72,11 +72,21 @@ pub(crate) fn materialize_feature_segment(
     bars: &[OhlcvBar],
     limits: RunLimits,
 ) -> Result<Vec<MaterializedFeatureRow>, RunError> {
+    materialize_feature_segment_with_signals(plan, factors, &[], bars, limits)
+}
+
+pub(crate) fn materialize_feature_segment_with_signals(
+    plan: &FrozenFeaturePlan,
+    factors: &[FactorRunRequest<'_>],
+    signals: &[SignalRunRequest<'_>],
+    bars: &[OhlcvBar],
+    limits: RunLimits,
+) -> Result<Vec<MaterializedFeatureRow>, RunError> {
     let request = RunRequest {
         strategy_path: "",
         strategy_parameters: &[],
         factors,
-        signals: &[],
+        signals,
         bars,
         gaps: &[],
         plan,

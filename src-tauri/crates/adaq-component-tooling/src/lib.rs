@@ -20,7 +20,7 @@ pub use package::{
     BuiltinForecastTarget, ComponentDependency, ComponentKind, ComponentManifest, ComponentPackage,
     FactorScope, FeatureSlotDefinition, FeatureSlotSource, ForecastTarget, ForecastTargetValueType,
     ForecastValueScale, MarketField, ModelArtifact, ModelOutput, ModelScope, PackageError,
-    ParameterDefinition, ParameterType, PredictionKind, StrategyArchitecture,
+    ParameterDefinition, ParameterType, PredictionKind, StrategyArchitecture, StrategyScope,
     check_manifest_compatibility, pack_component, strategy_architecture, validate_model_outputs,
 };
 pub use plan::{
@@ -34,7 +34,7 @@ pub use plan::{
 };
 pub use qualification::{
     QualificationAttempt, QualificationEvidence, QualificationGate, qualify_package,
-    qualify_package_with_limits,
+    qualify_package_with_limits, qualify_package_with_parameter_grid,
 };
 pub use runtime::{
     ComponentParameterValue, FactorParameterSchema, FactorSchema, RunLimits, WasmLoader,

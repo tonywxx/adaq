@@ -37,3 +37,71 @@ interface api {
 world strategy {
     export api;
 }
+
+interface portfolio-api {
+    type decimal = string;
+
+    variant parameter-value {
+        decimal(decimal),
+        integer(s64),
+        boolean(bool),
+        text(string),
+    }
+
+    record feature-slot {
+        /// Ordered, immutable host-bound Feature Slot.
+        name: string,
+    }
+
+    record feature-row {
+        /// Every Point-in-Time Universe member remains identity-preserving.
+        instrument-id: string,
+        /// Same length and order as `create(feature-slots)`.
+        values: list<f64>,
+    }
+
+    record position {
+        instrument-id: string,
+        quantity: decimal,
+        price: decimal,
+    }
+
+    record portfolio-state {
+        cash: decimal,
+        positions: list<position>,
+    }
+
+    record portfolio-frame {
+        decision-time-ms: s64,
+        universe-id: string,
+        rows: list<feature-row>,
+        /// Host-observed state at this exact decision time.
+        state: portfolio-state,
+    }
+
+    record target-weight {
+        instrument-id: string,
+        weight: decimal,
+    }
+
+    record portfolio-target {
+        decision-time-ms: s64,
+        universe-id: string,
+        /// Complete, deterministic Instrument-keyed target.
+        weights: list<target-weight>,
+        cash-reserve: decimal,
+    }
+
+    resource instance {
+        /// Input and output are chronological. State continues across calls.
+        process: func(frames: list<portfolio-frame>)
+            -> result<list<portfolio-target>, string>;
+    }
+
+    create: func(feature-slots: list<feature-slot>, parameters: list<parameter-value>)
+        -> result<instance, string>;
+}
+
+world portfolio-strategy {
+    export portfolio-api;
+}

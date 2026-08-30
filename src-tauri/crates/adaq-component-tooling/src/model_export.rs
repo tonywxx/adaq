@@ -101,6 +101,7 @@ pub fn export_linear_model_component(
         version: Version::new(1, 0, 0),
         name: "Qlib Ridge WASI Model".into(),
         kind: ComponentKind::Model,
+        strategy_scope: crate::StrategyScope::SingleInstrument,
         factor_scope: None,
         sdk_version: Version::parse(adaq_component_sdk::SDK_VERSION).map_err(string)?,
         abi_version: Version::parse(adaq_component_sdk::ABI_VERSION).map_err(string)?,

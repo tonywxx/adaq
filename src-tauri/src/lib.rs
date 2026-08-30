@@ -419,6 +419,25 @@ impl strategy_qualification::StrategyQualificationSource for LocalStrategyQualif
         self.local_research.backtests.run(request)
     }
 
+    fn run_portfolio_backtest(
+        &self,
+        request: backtest::BacktestRunRequest,
+    ) -> Result<backtest::PortfolioBacktestView, String> {
+        self.local_research
+            .backtests
+            .portfolio_run_from_request(request)
+    }
+
+    fn load_portfolio_backtest(
+        &self,
+        user_id: &str,
+        run_id: &str,
+    ) -> Result<backtest::PortfolioBacktestView, String> {
+        self.local_research
+            .backtests
+            .load_portfolio_run(user_id, run_id)
+    }
+
     fn load_backtest(&self, user_id: &str, run_id: &str) -> Result<backtest::BacktestRun, String> {
         self.local_research.backtests.load_run(user_id, run_id)
     }

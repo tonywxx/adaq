@@ -536,6 +536,22 @@ impl ValidationSource for LocalValidationSource {
             pauses: view.pauses,
         })
     }
+
+    fn run_portfolio_backtest(
+        &self,
+        request: crate::backtest::BacktestRunRequest,
+    ) -> Result<ValidationRunOutcome, String> {
+        let state = self.state()?;
+        let view = state.backtests.portfolio_run_from_request(request)?;
+        Ok(ValidationRunOutcome {
+            run_id: view.run_id,
+            metrics: view
+                .metrics
+                .or(view.evidence.metrics)
+                .ok_or("Portfolio Backtest did not produce metrics")?,
+            pauses: view.pauses,
+        })
+    }
 }
 
 impl LocalValidationSource {
@@ -3431,6 +3447,7 @@ mod tests {
         let request = || BacktestRunRequest {
             user_id: "alice".into(),
             snapshot_id: snapshot.snapshot_id.clone(),
+            portfolio_universe_snapshot_id: None,
             run_start_time_ms: None,
             run_end_time_ms: None,
             factor_instances: vec![FactorInstanceRequest {

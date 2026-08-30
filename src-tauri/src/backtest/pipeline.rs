@@ -151,6 +151,9 @@ pub(super) fn prepare(
     backtests: &Backtests,
     request: &BacktestRunRequest,
 ) -> Result<PreparedBacktest, String> {
+    if request.portfolio_universe_snapshot_id.is_some() {
+        return Err("Portfolio Strategy requests must use the Portfolio Backtest pipeline".into());
+    }
     let source = backtests.source();
     SpotSimulator::validate_execution_inputs(
         request.initial_quote_allocation,
@@ -357,6 +360,7 @@ pub(super) fn prepare(
     let provenance = BacktestRunProvenance {
         normalized_request: super::NormalizedBacktestRunRequest {
             snapshot_id: request.snapshot_id.clone(),
+            portfolio_universe_snapshot_id: request.portfolio_universe_snapshot_id.clone(),
             run_start_time_ms: Some(run_start_time_ms),
             run_end_time_ms: Some(run_end_time_ms),
             strategy_archive_sha256: strategy.archive_sha256.clone(),
@@ -639,7 +643,7 @@ pub(super) fn validate_provenance(provenance: &BacktestRunProvenance) -> Result<
     Ok(())
 }
 
-fn validate_risk_policy(policy: &adaq_backtest_core::RiskPolicy) -> Result<(), String> {
+pub(super) fn validate_risk_policy(policy: &adaq_backtest_core::RiskPolicy) -> Result<(), String> {
     if policy.policy_id.trim().is_empty()
         || policy.max_instrument_weight < rust_decimal::Decimal::ZERO
         || policy.max_instrument_weight > rust_decimal::Decimal::ONE
@@ -705,7 +709,7 @@ pub(super) fn fingerprint(
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn normalized_parameters(
+pub(super) fn normalized_parameters(
     manifest: &ComponentManifest,
     values: &[ComponentParameterValue],
 ) -> BTreeMap<String, String> {
@@ -717,7 +721,7 @@ fn normalized_parameters(
         .collect()
 }
 
-fn normalized_parameter_bindings(
+pub(super) fn normalized_parameter_bindings(
     manifest: &ComponentManifest,
     values: &[ComponentParameterValue],
 ) -> Vec<NormalizedParameter> {
@@ -742,7 +746,7 @@ fn parameter_value(value: &ComponentParameterValue) -> String {
     }
 }
 
-fn component_lock_entry(package: &ComponentPackage) -> ComponentLockEntry {
+pub(super) fn component_lock_entry(package: &ComponentPackage) -> ComponentLockEntry {
     ComponentLockEntry {
         component_id: package.manifest.component_id.to_string(),
         version: package.manifest.version.to_string(),
@@ -755,7 +759,7 @@ fn is_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn resolve_factor_parameters(
+pub(super) fn resolve_factor_parameters(
     strategy: &ComponentManifest,
     factor: &ComponentManifest,
     strategy_overrides: &HashMap<String, String>,

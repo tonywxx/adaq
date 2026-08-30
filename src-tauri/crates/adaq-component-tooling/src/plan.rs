@@ -983,6 +983,7 @@ mod tests {
             version: Version::new(1, 0, 0),
             name: "Market Strategy".into(),
             kind: ComponentKind::Strategy,
+            strategy_scope: crate::StrategyScope::SingleInstrument,
             factor_scope: None,
             sdk_version: Version::parse(adaq_component_sdk::SDK_VERSION).unwrap(),
             abi_version: Version::parse(adaq_component_sdk::ABI_VERSION).unwrap(),

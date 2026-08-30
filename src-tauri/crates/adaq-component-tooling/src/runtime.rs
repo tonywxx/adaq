@@ -1,7 +1,8 @@
 use std::{collections::HashSet, fs, path::Path, sync::Mutex};
 
 use adaq_component_sdk::host::{
-    factor_cross_sectional_abi, factor_time_series_abi, model_abi, strategy_abi,
+    factor_cross_sectional_abi, factor_time_series_abi, model_abi, portfolio_strategy_abi,
+    strategy_abi,
 };
 use wasmtime::{
     Config, Engine, Store, StoreLimits, StoreLimitsBuilder,
@@ -83,6 +84,14 @@ struct LoadedStrategy {
     instance: ResourceAny,
 }
 
+struct LoadedPortfolioStrategy {
+    store: Store<ComponentStore>,
+    bindings: portfolio_strategy_abi::PortfolioStrategy,
+    instance: ResourceAny,
+    feature_slot_count: usize,
+    last_decision_time_ms: Option<i64>,
+}
+
 struct LoadedModel {
     store: Store<ComponentStore>,
     bindings: model_abi::Model,
@@ -93,6 +102,7 @@ struct LoadedModel {
 pub struct WasmLoader {
     factor: Mutex<Option<LoadedFactor>>,
     strategy: Mutex<Option<LoadedStrategy>>,
+    portfolio_strategy: Mutex<Option<LoadedPortfolioStrategy>>,
     model: Mutex<Option<LoadedModel>>,
     limits: RunLimits,
 }
@@ -102,6 +112,7 @@ impl WasmLoader {
         Self {
             factor: Mutex::default(),
             strategy: Mutex::default(),
+            portfolio_strategy: Mutex::default(),
             model: Mutex::default(),
             limits,
         }
@@ -466,6 +477,128 @@ impl WasmLoader {
             .call_process(store, *instance, &frames)
             .map_err(string)?
             .map_err(|error| format!("Strategy process failed: {error}"))
+    }
+
+    pub fn load_portfolio_strategy(
+        &self,
+        path: &str,
+        feature_slots: Vec<
+            portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::FeatureSlot,
+        >,
+    ) -> Result<(), String> {
+        self.load_portfolio_strategy_with_parameters(path, feature_slots, &[])
+    }
+
+    pub fn load_portfolio_strategy_with_parameters(
+        &self,
+        path: &str,
+        feature_slots: Vec<
+            portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::FeatureSlot,
+        >,
+        parameters: &[ComponentParameterValue],
+    ) -> Result<(), String> {
+        if !Path::new(path).is_file() {
+            return Err(format!(
+                "Portfolio Strategy component does not exist: {path}"
+            ));
+        }
+        self.load_portfolio_strategy_bytes(
+            &fs::read(path).map_err(string)?,
+            feature_slots,
+            parameters,
+        )
+    }
+
+    pub fn load_portfolio_strategy_bytes(
+        &self,
+        wasm: &[u8],
+        feature_slots: Vec<
+            portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::FeatureSlot,
+        >,
+        parameters: &[ComponentParameterValue],
+    ) -> Result<(), String> {
+        ensure_component_size(wasm)?;
+        let engine = component_engine()?;
+        let component = Component::new(&engine, wasm).map_err(string)?;
+        let linker = Linker::new(&engine);
+        let mut store = component_store(&engine, self.limits)?;
+        let bindings =
+            portfolio_strategy_abi::PortfolioStrategy::instantiate(&mut store, &component, &linker)
+                .map_err(string)?;
+        reset_component_fuel(&mut store, self.limits)?;
+        let instance = bindings
+            .adaq_strategy_portfolio_api()
+            .call_create(
+                &mut store,
+                &feature_slots,
+                &parameters
+                    .iter()
+                    .map(portfolio_strategy_parameter)
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(string)?
+            .map_err(|error| format!("Portfolio Strategy create failed: {error}"))?;
+
+        let mut strategy = self.portfolio_strategy.lock().map_err(string)?;
+        if let Some(mut previous) = strategy.replace(LoadedPortfolioStrategy {
+            store,
+            bindings,
+            instance,
+            feature_slot_count: feature_slots.len(),
+            last_decision_time_ms: None,
+        }) {
+            reset_component_fuel(&mut previous.store, self.limits)?;
+            previous
+                .instance
+                .resource_drop(&mut previous.store)
+                .map_err(string)?;
+        }
+        Ok(())
+    }
+
+    pub fn process_portfolio_strategy(
+        &self,
+        frames: Vec<portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioFrame>,
+    ) -> Result<
+        Vec<portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioTarget>,
+        String,
+    > {
+        let mut strategy = self.portfolio_strategy.lock().map_err(string)?;
+        if frames.len() > self.limits.max_bars {
+            return Err(format!(
+                "Portfolio Strategy process exceeds the {} frame limit",
+                self.limits.max_bars
+            ));
+        }
+        let feature_slot_count = strategy
+            .as_ref()
+            .map(|loaded| loaded.feature_slot_count)
+            .ok_or_else(|| "Portfolio Strategy component is not loaded".to_owned())?;
+        let last_decision_time_ms = strategy
+            .as_ref()
+            .and_then(|loaded| loaded.last_decision_time_ms);
+        validate_portfolio_frames(&frames, feature_slot_count, last_decision_time_ms)?;
+        let LoadedPortfolioStrategy {
+            store,
+            bindings,
+            instance,
+            last_decision_time_ms,
+            ..
+        } = strategy
+            .as_mut()
+            .ok_or_else(|| "Portfolio Strategy component is not loaded".to_owned())?;
+        reset_component_fuel(store, self.limits)?;
+        let targets = bindings
+            .adaq_strategy_portfolio_api()
+            .instance()
+            .call_process(store, *instance, &frames)
+            .map_err(string)?
+            .map_err(|error| format!("Portfolio Strategy process failed: {error}"))?;
+        validate_portfolio_targets(&frames, &targets)?;
+        if let Some(last) = frames.last() {
+            *last_decision_time_ms = Some(last.decision_time_ms);
+        }
+        Ok(targets)
     }
 
     pub fn load_model_bytes(
@@ -885,6 +1018,96 @@ fn cross_sectional_parameter_type(
     }
 }
 
+fn validate_portfolio_frames(
+    frames: &[portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioFrame],
+    feature_slot_count: usize,
+    last_decision_time_ms: Option<i64>,
+) -> Result<(), String> {
+    if frames
+        .windows(2)
+        .any(|pair| pair[0].decision_time_ms >= pair[1].decision_time_ms)
+        || last_decision_time_ms.is_some_and(|last| {
+            frames
+                .first()
+                .is_some_and(|frame| frame.decision_time_ms <= last)
+        })
+    {
+        return Err("Portfolio Strategy frames must be strictly chronological".into());
+    }
+    for frame in frames {
+        if frame.universe_id.trim().is_empty() || frame.rows.is_empty() {
+            return Err("Portfolio Strategy frame identity or Universe is invalid".into());
+        }
+        let mut instruments = HashSet::with_capacity(frame.rows.len());
+        for row in &frame.rows {
+            if row.instrument_id.trim().is_empty()
+                || !instruments.insert(row.instrument_id.as_str())
+                || row.values.len() != feature_slot_count
+                || row.values.iter().any(|value| !value.is_finite())
+            {
+                return Err(
+                    "Portfolio Strategy frame violates identity, membership, or finite-value constraints"
+                        .into(),
+                );
+            }
+        }
+        let state = &frame.state;
+        adaq_component_sdk::parse_decimal(&state.cash).map_err(string)?;
+        let mut positions = HashSet::with_capacity(state.positions.len());
+        for position in &state.positions {
+            let price = adaq_component_sdk::parse_decimal(&position.price).map_err(string)?;
+            if position.instrument_id.trim().is_empty()
+                || !positions.insert(position.instrument_id.as_str())
+                || price <= rust_decimal::Decimal::ZERO
+            {
+                return Err("Portfolio Strategy state contains an invalid Position".into());
+            }
+            adaq_component_sdk::parse_decimal(&position.quantity).map_err(string)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_portfolio_targets(
+    frames: &[portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioFrame],
+    targets: &[portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioTarget],
+) -> Result<(), String> {
+    if frames.len() != targets.len() {
+        return Err("Portfolio Strategy output count does not match the input frame count".into());
+    }
+    for (frame, target) in frames.iter().zip(targets) {
+        if target.decision_time_ms != frame.decision_time_ms
+            || target.universe_id != frame.universe_id
+            || target.weights.len() != frame.rows.len()
+        {
+            return Err("Portfolio Strategy output violates decision or Universe identity".into());
+        }
+        let mut total = adaq_component_sdk::parse_decimal(&target.cash_reserve).map_err(string)?;
+        if total < rust_decimal::Decimal::ZERO {
+            return Err("Portfolio Strategy cash reserve is negative".into());
+        }
+        let expected = frame
+            .rows
+            .iter()
+            .map(|row| row.instrument_id.as_str())
+            .collect::<Vec<_>>();
+        for (weight, expected_id) in target.weights.iter().zip(expected) {
+            if weight.instrument_id != expected_id {
+                return Err("Portfolio Strategy output must preserve Universe order".into());
+            }
+            let value = adaq_component_sdk::parse_decimal(&weight.weight).map_err(string)?;
+            if value < rust_decimal::Decimal::ZERO {
+                return Err("Portfolio Strategy target weight is negative".into());
+            }
+            total += value;
+        }
+        if total != rust_decimal::Decimal::ONE {
+            return Err("Portfolio Strategy target does not sum to one".into());
+        }
+    }
+    Ok(())
+}
+
 fn ensure_component_size(wasm: &[u8]) -> Result<(), String> {
     if wasm.len() > MAX_COMPONENT_BYTES {
         Err("Factor component exceeds the 64 MiB component limit".into())
@@ -949,6 +1172,18 @@ fn strategy_parameter(
     value: &ComponentParameterValue,
 ) -> strategy_abi::exports::adaq::strategy::api::ParameterValue {
     use strategy_abi::exports::adaq::strategy::api::ParameterValue;
+    match value {
+        ComponentParameterValue::Decimal(value) => ParameterValue::Decimal(value.clone()),
+        ComponentParameterValue::Integer(value) => ParameterValue::Integer(*value),
+        ComponentParameterValue::Boolean(value) => ParameterValue::Boolean(*value),
+        ComponentParameterValue::String(value) => ParameterValue::Text(value.clone()),
+    }
+}
+
+fn portfolio_strategy_parameter(
+    value: &ComponentParameterValue,
+) -> portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::ParameterValue {
+    use portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::ParameterValue;
     match value {
         ComponentParameterValue::Decimal(value) => ParameterValue::Decimal(value.clone()),
         ComponentParameterValue::Integer(value) => ParameterValue::Integer(*value),

@@ -633,6 +633,7 @@ mod tests {
             .run(crate::backtest::BacktestRunRequest {
                 user_id: "alice".into(),
                 snapshot_id: snapshot.snapshot_id,
+                portfolio_universe_snapshot_id: None,
                 run_start_time_ms: None,
                 run_end_time_ms: None,
                 factor_instances: vec![],

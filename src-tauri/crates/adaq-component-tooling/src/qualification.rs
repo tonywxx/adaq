@@ -5,14 +5,17 @@
 //! Every attempted parameter combination is retained in the returned evidence,
 //! including failures, so callers can persist failed and superseded attempts.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
     ComponentKind, ComponentPackage, ComponentParameterValue, RunLimits, component_parameters,
-    conformance::verify_package_with_parameters_and_limits,
+    conformance::{
+        component_parameters_for_qualification, verify_package_with_parameters_and_limits,
+        verify_package_with_typed_parameters_and_limits,
+    },
 };
 
 const MAX_PARAMETER_COMBINATIONS: usize = 256;
@@ -68,7 +71,7 @@ pub fn qualify_package_with_limits<F>(
     attempt_id: impl Into<String>,
     bytes: &[u8],
     limits: RunLimits,
-    mut equivalent: F,
+    equivalent: F,
 ) -> QualificationAttempt
 where
     F: FnMut(&ComponentPackage, &[ComponentParameterValue]) -> Result<(), String>,
@@ -80,12 +83,6 @@ where
             return failed_attempt(attempt_id, QualificationGate::Package, error.to_string());
         }
     };
-    let identity = (
-        package.archive_sha256.clone(),
-        package.manifest.component_id.to_string(),
-        package.manifest.version.to_string(),
-        package.manifest.kind,
-    );
     let combinations = match parameter_combinations(&package.manifest.parameters) {
         Ok(combinations) => combinations,
         Err(error) => {
@@ -102,10 +99,62 @@ where
             );
         }
     };
+    qualify_parameter_values(
+        attempt_id,
+        &package,
+        combinations,
+        limits,
+        equivalent,
+        false,
+    )
+}
+
+/// Qualifies one package against an explicit finite grid while retaining
+/// singleton manifest values in the package itself.
+pub fn qualify_package_with_parameter_grid<F>(
+    attempt_id: impl Into<String>,
+    package: &ComponentPackage,
+    parameter_grid: &[BTreeMap<String, String>],
+    equivalent: F,
+) -> QualificationAttempt
+where
+    F: FnMut(&ComponentPackage, &[ComponentParameterValue]) -> Result<(), String>,
+{
+    qualify_parameter_values(
+        attempt_id.into(),
+        package,
+        parameter_grid.to_vec(),
+        RunLimits::default(),
+        equivalent,
+        true,
+    )
+}
+
+fn qualify_parameter_values<F>(
+    attempt_id: String,
+    package: &ComponentPackage,
+    combinations: Vec<BTreeMap<String, String>>,
+    limits: RunLimits,
+    mut equivalent: F,
+    allow_unlisted_values: bool,
+) -> QualificationAttempt
+where
+    F: FnMut(&ComponentPackage, &[ComponentParameterValue]) -> Result<(), String>,
+{
+    let combinations = if combinations.is_empty() {
+        vec![BTreeMap::new()]
+    } else {
+        combinations
+    };
     let mut records = Vec::with_capacity(combinations.len());
     let mut qualified = true;
     for (index, values) in combinations.into_iter().enumerate() {
-        let typed = match component_parameters(&package.manifest, Some(&values)) {
+        let values = values.into_iter().collect::<HashMap<_, _>>();
+        let typed = match if allow_unlisted_values {
+            component_parameters_for_qualification(&package.manifest, Some(&values))
+        } else {
+            component_parameters(&package.manifest, Some(&values))
+        } {
             Ok(typed) => typed,
             Err(error) => {
                 qualified = false;
@@ -118,9 +167,12 @@ where
                 continue;
             }
         };
-        if let Err(error) =
-            verify_package_with_parameters_and_limits(&package, Some(&values), limits)
-        {
+        let conformance = if allow_unlisted_values {
+            verify_package_with_typed_parameters_and_limits(package, &typed, limits)
+        } else {
+            verify_package_with_parameters_and_limits(package, Some(&values), limits)
+        };
+        if let Err(error) = conformance {
             qualified = false;
             records.push(evidence(
                 index,
@@ -130,7 +182,7 @@ where
             ));
             continue;
         }
-        if let Err(error) = equivalent(&package, &typed) {
+        if let Err(error) = equivalent(package, &typed) {
             qualified = false;
             records.push(evidence(
                 index,
@@ -142,7 +194,7 @@ where
         }
         records.push(evidence(index, values, QualificationGate::Qualified, None));
     }
-    let mut result = attempt(&attempt_id, &package, qualified, records);
+    let mut result = attempt(&attempt_id, package, qualified, records);
     if result.qualified {
         result.evidence.push(QualificationEvidence {
             combination: result.evidence.len(),
@@ -152,22 +204,13 @@ where
             diagnostic: Some("all portable parameter combinations qualified".into()),
         });
     }
-    debug_assert_eq!(
-        (
-            &result.archive_sha256,
-            &result.component_id,
-            &result.version,
-            result.kind
-        ),
-        (&identity.0, &identity.1, &identity.2, identity.3)
-    );
     result
 }
 
 pub(crate) fn parameter_combinations(
     parameters: &[crate::ParameterDefinition],
-) -> Result<Vec<HashMap<String, String>>, String> {
-    let mut combinations = vec![HashMap::new()];
+) -> Result<Vec<BTreeMap<String, String>>, String> {
+    let mut combinations = vec![BTreeMap::new()];
     for parameter in parameters {
         let values: Vec<String> = if parameter.allowed_values.is_empty() {
             vec![parameter.default_value.clone()]

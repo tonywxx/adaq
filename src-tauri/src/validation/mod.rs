@@ -52,6 +52,10 @@ pub(crate) trait ValidationSource: Send + Sync {
         series: &adaq_data_core::BarSeries,
     ) -> Result<MarketDataSnapshot, String>;
     fn run_backtest(&self, request: BacktestRunRequest) -> Result<ValidationRunOutcome, String>;
+    fn run_portfolio_backtest(
+        &self,
+        request: BacktestRunRequest,
+    ) -> Result<ValidationRunOutcome, String>;
 }
 
 /// The subset of one Backtest Run outcome consumed by Validation Reports.

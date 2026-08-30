@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 
-use adaq_component_sdk::host::{factor_abi, factor_cross_sectional_abi, model_abi, strategy_abi};
+use adaq_component_sdk::host::{
+    factor_abi, factor_cross_sectional_abi, model_abi, portfolio_strategy_abi, strategy_abi,
+};
 use rust_decimal::Decimal;
 
 use crate::{
     ComponentKind, ComponentManifest, ComponentPackage, ComponentParameterValue, FactorScope,
-    FeatureSlotSource, MarketField, ParameterType, RunLimits, WasmLoader, native_engine_identity,
-    validate_and_freeze_feature_plan,
+    FeatureSlotSource, MarketField, ParameterType, RunLimits, StrategyScope, WasmLoader,
+    native_engine_identity, validate_and_freeze_feature_plan,
 };
 
 pub fn verify_package(package: &ComponentPackage) -> Result<(), String> {
@@ -15,7 +17,14 @@ pub fn verify_package(package: &ComponentPackage) -> Result<(), String> {
     let parameters = component_parameters(&package.manifest, None)?;
     match package.manifest.kind {
         ComponentKind::Factor => verify_factor(package, &parameters, RunLimits::default()),
-        ComponentKind::Strategy => verify_strategy(package, &parameters, RunLimits::default()),
+        ComponentKind::Strategy => match package.manifest.strategy_scope {
+            StrategyScope::SingleInstrument => {
+                verify_strategy(package, &parameters, RunLimits::default())
+            }
+            StrategyScope::Portfolio => {
+                verify_portfolio_strategy(package, &parameters, RunLimits::default())
+            }
+        },
         ComponentKind::Model => verify_model(package, &parameters, RunLimits::default()),
     }
 }
@@ -28,7 +37,10 @@ pub(crate) fn verify_package_with_parameters_and_limits(
     let parameters = component_parameters(&package.manifest, overrides)?;
     match package.manifest.kind {
         ComponentKind::Factor => verify_factor(package, &parameters, limits),
-        ComponentKind::Strategy => verify_strategy(package, &parameters, limits),
+        ComponentKind::Strategy => match package.manifest.strategy_scope {
+            StrategyScope::SingleInstrument => verify_strategy(package, &parameters, limits),
+            StrategyScope::Portfolio => verify_portfolio_strategy(package, &parameters, limits),
+        },
         ComponentKind::Model => verify_model(package, &parameters, limits),
     }
 }
@@ -59,7 +71,7 @@ fn verify_model(
         let loader = WasmLoader::with_limits(limits);
         loader.load_model_bytes(&package.wasm, slots.clone(), parameters, 7)?;
         let mut output = Vec::new();
-        let mut start = 0;
+        let mut start = 0usize;
         for end in chunks {
             output.extend(loader.process_model(rows[start..*end].to_vec())?);
             start = *end;
@@ -120,6 +132,21 @@ pub fn component_parameters(
     manifest: &ComponentManifest,
     overrides: Option<&HashMap<String, String>>,
 ) -> Result<Vec<ComponentParameterValue>, String> {
+    component_parameters_inner(manifest, overrides, true)
+}
+
+pub(crate) fn component_parameters_for_qualification(
+    manifest: &ComponentManifest,
+    overrides: Option<&HashMap<String, String>>,
+) -> Result<Vec<ComponentParameterValue>, String> {
+    component_parameters_inner(manifest, overrides, false)
+}
+
+fn component_parameters_inner(
+    manifest: &ComponentManifest,
+    overrides: Option<&HashMap<String, String>>,
+    enforce_allowed_values: bool,
+) -> Result<Vec<ComponentParameterValue>, String> {
     manifest
         .parameters
         .iter()
@@ -127,7 +154,10 @@ pub fn component_parameters(
             let value = overrides
                 .and_then(|values| values.get(&parameter.name))
                 .unwrap_or(&parameter.default_value);
-            if !parameter.allowed_values.is_empty() && !parameter.allowed_values.contains(value) {
+            if enforce_allowed_values
+                && !parameter.allowed_values.is_empty()
+                && !parameter.allowed_values.contains(value)
+            {
                 return Err(format!(
                     "Parameter {} is not an allowed value",
                     parameter.name
@@ -150,6 +180,21 @@ pub fn component_parameters(
             }
         })
         .collect()
+}
+
+pub(crate) fn verify_package_with_typed_parameters_and_limits(
+    package: &ComponentPackage,
+    parameters: &[ComponentParameterValue],
+    limits: RunLimits,
+) -> Result<(), String> {
+    match package.manifest.kind {
+        ComponentKind::Factor => verify_factor(package, parameters, limits),
+        ComponentKind::Strategy => match package.manifest.strategy_scope {
+            StrategyScope::SingleInstrument => verify_strategy(package, parameters, limits),
+            StrategyScope::Portfolio => verify_portfolio_strategy(package, parameters, limits),
+        },
+        ComponentKind::Model => verify_model(package, parameters, limits),
+    }
 }
 
 fn verify_factor(
@@ -401,6 +446,93 @@ fn verify_strategy(
         return Err("Strategy conformance Target Exposure is invalid".into());
     }
     Ok(())
+}
+
+fn verify_portfolio_strategy(
+    package: &ComponentPackage,
+    parameters: &[ComponentParameterValue],
+    limits: RunLimits,
+) -> Result<(), String> {
+    let slots = package
+        .manifest
+        .feature_slots
+        .iter()
+        .map(
+            |slot| portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::FeatureSlot {
+                name: slot.name.clone(),
+            },
+        )
+        .collect::<Vec<_>>();
+    let rows = (0..5)
+        .map(
+            |index| portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::FeatureRow {
+                instrument_id: format!("I{index}"),
+                values: vec![0.2 + index as f64 * 0.17; slots.len()],
+            },
+        )
+        .collect::<Vec<_>>();
+    let frames = (1..=3)
+        .map(|decision_time_ms| {
+            portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioFrame {
+                decision_time_ms,
+                universe_id: "test-universe".into(),
+                rows: rows.clone(),
+                state:
+                    portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioState {
+                        cash: "10000".into(),
+                        positions: Vec::new(),
+                    },
+            }
+        })
+        .collect::<Vec<_>>();
+    let run = |chunks: &[usize]| -> Result<_, String> {
+        let loader = WasmLoader::with_limits(limits);
+        loader.load_portfolio_strategy_bytes(&package.wasm, slots.clone(), parameters)?;
+        let mut output = Vec::new();
+        let mut start = 0usize;
+        for size in chunks {
+            let end = start.saturating_add(*size);
+            if *size == 0 || end > frames.len() {
+                return Err("Portfolio Strategy conformance chunk shape is invalid".into());
+            }
+            output.extend(loader.process_portfolio_strategy(frames[start..end].to_vec())?);
+            start = end;
+        }
+        if start != frames.len() {
+            return Err("Portfolio Strategy conformance chunks are incomplete".into());
+        }
+        Ok(output)
+    };
+    let targets = run(&[3])?;
+    let replay = run(&[3])?;
+    if !portfolio_targets_equal(&targets, &replay) {
+        return Err("Portfolio Strategy is not deterministic".into());
+    }
+    let chunked = run(&[1, 2])?;
+    if !portfolio_targets_equal(&targets, &chunked) || targets.len() != frames.len() {
+        return Err("Portfolio Strategy is not chunk-boundary independent".into());
+    }
+    Ok(())
+}
+
+fn portfolio_targets_equal(
+    left: &[portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioTarget],
+    right: &[portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioTarget],
+) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.decision_time_ms == right.decision_time_ms
+                && left.universe_id == right.universe_id
+                && left.cash_reserve == right.cash_reserve
+                && left.weights.len() == right.weights.len()
+                && left
+                    .weights
+                    .iter()
+                    .zip(&right.weights)
+                    .all(|(left, right)| {
+                        left.instrument_id == right.instrument_id && left.weight == right.weight
+                    })
+        })
 }
 
 fn factor_results_equal(

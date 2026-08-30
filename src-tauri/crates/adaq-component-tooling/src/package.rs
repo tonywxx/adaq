@@ -42,6 +42,13 @@ pub enum StrategyArchitecture {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum StrategyScope {
+    SingleInstrument,
+    Portfolio,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ModelScope {
     SingleInstrument,
 }
@@ -163,6 +170,8 @@ pub struct ComponentManifest {
     pub version: Version,
     pub name: String,
     pub kind: ComponentKind,
+    #[serde(default = "default_strategy_scope")]
+    pub strategy_scope: StrategyScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub factor_scope: Option<FactorScope>,
     pub sdk_version: Version,
@@ -353,6 +362,7 @@ pub fn check_manifest_compatibility(
 
     let breaking = previous.manifest_schema_version != current.manifest_schema_version
         || previous.abi_version != current.abi_version
+        || previous.strategy_scope != current.strategy_scope
         || previous.factor_scope != current.factor_scope
         || previous.feature_slots != current.feature_slots
         || previous.dependencies != current.dependencies
@@ -434,6 +444,13 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
         "parameter",
     )?;
     match manifest.kind {
+        ComponentKind::Factor | ComponentKind::Model
+            if manifest.strategy_scope != StrategyScope::SingleInstrument =>
+        {
+            return Err(PackageError(
+                "Only Strategy manifests may declare Portfolio scope".into(),
+            ));
+        }
         ComponentKind::Factor if manifest.factor_scope.is_none() => {
             return Err(PackageError(
                 "Factor manifests must declare exactly one factorScope".into(),
@@ -594,6 +611,10 @@ fn validate_model_contract(manifest: &ComponentManifest) -> Result<(), PackageEr
         ));
     }
     validate_model_outputs(&manifest.model_outputs)
+}
+
+fn default_strategy_scope() -> StrategyScope {
+    StrategyScope::SingleInstrument
 }
 
 pub fn validate_model_outputs(outputs: &[ModelOutput]) -> Result<(), PackageError> {
@@ -782,6 +803,7 @@ mod tests {
             version: Version::new(1, 2, 3),
             name: "Fixture".into(),
             kind: ComponentKind::Factor,
+            strategy_scope: StrategyScope::SingleInstrument,
             factor_scope: Some(FactorScope::TimeSeries),
             sdk_version: Version::parse(adaq_component_sdk::SDK_VERSION).unwrap(),
             abi_version: Version::parse(adaq_component_sdk::FACTOR_ABI_VERSION).unwrap(),

@@ -5,9 +5,10 @@ mod strategy;
 
 pub use portfolio::{
     ApprovedPortfolioTarget, Attribution, BacktestDecision, BacktestError, BacktestEvidence,
-    ExecutionPlan, PortfolioBacktestRequest, PortfolioMarketDecision, PortfolioOrder,
-    PortfolioPosition, PortfolioState, PortfolioTarget, RiskDecision, RiskPolicy, StrategyTarget,
-    TopNForecastStrategy, execute_portfolio_backtest,
+    ExecutionPlan, PortfolioBacktestRequest, PortfolioExecutionStep, PortfolioMarketDecision,
+    PortfolioOrder, PortfolioPosition, PortfolioState, PortfolioTarget, RiskDecision, RiskPolicy,
+    StrategyTarget, TopNForecastStrategy, apply_portfolio_market_decision,
+    execute_portfolio_backtest, mark_portfolio_to_market,
 };
 
 pub use simulation::{

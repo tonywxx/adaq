@@ -102,6 +102,44 @@ pub mod strategy {
     }
 }
 
+#[cfg(feature = "strategy")]
+pub mod portfolio_strategy {
+    pub mod bindings {
+        wit_bindgen::generate!({
+            path: "wit/strategy",
+            world: "portfolio-strategy",
+            pub_export_macro: true,
+            export_macro_name: "export_portfolio_strategy",
+        });
+    }
+
+    pub use bindings::exports::adaq::strategy::portfolio_api::{
+        FeatureRow, FeatureSlot, Guest, GuestInstance, Instance, ParameterValue, PortfolioFrame,
+        PortfolioState, PortfolioTarget, Position, TargetWeight,
+    };
+
+    pub struct SlotIndexes(std::collections::HashMap<String, usize>);
+
+    impl SlotIndexes {
+        pub fn bind(feature_slots: &[FeatureSlot]) -> Result<Self, String> {
+            let mut indexes = std::collections::HashMap::with_capacity(feature_slots.len());
+            for (index, slot) in feature_slots.iter().enumerate() {
+                if indexes.insert(slot.name.clone(), index).is_some() {
+                    return Err(format!("duplicate Feature Slot: {}", slot.name));
+                }
+            }
+            Ok(Self(indexes))
+        }
+
+        pub fn index(&self, name: &str) -> Result<usize, String> {
+            self.0
+                .get(name)
+                .copied()
+                .ok_or_else(|| format!("missing Feature Slot: {name}"))
+        }
+    }
+}
+
 #[cfg(feature = "model")]
 pub mod model {
     pub mod bindings {
@@ -140,6 +178,13 @@ pub mod host {
         wasmtime::component::bindgen!({
             path: "wit/strategy",
             world: "strategy",
+        });
+    }
+
+    pub mod portfolio_strategy_abi {
+        wasmtime::component::bindgen!({
+            path: "wit/strategy",
+            world: "portfolio-strategy",
         });
     }
 

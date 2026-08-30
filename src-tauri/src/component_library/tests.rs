@@ -289,6 +289,7 @@ fn run_request(snapshot_id: &str, strategy_hash: &str) -> BacktestRunRequest {
     BacktestRunRequest {
         user_id: "alice".into(),
         snapshot_id: snapshot_id.into(),
+        portfolio_universe_snapshot_id: None,
         run_start_time_ms: None,
         run_end_time_ms: None,
         factor_instances: vec![],

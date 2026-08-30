@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::{BacktestMetrics, EquityPoint};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -110,6 +111,10 @@ pub struct BacktestEvidence {
     pub capacity: Decimal,
     pub decisions: Vec<BacktestDecision>,
     pub attribution: Attribution,
+    #[serde(default)]
+    pub equity: Vec<EquityPoint>,
+    #[serde(default)]
+    pub metrics: Option<BacktestMetrics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +130,14 @@ pub struct PortfolioMarketDecision {
     pub time_ms: i64,
     pub prices: BTreeMap<String, Decimal>,
     pub strategy_target: StrategyTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortfolioExecutionStep {
+    pub decision: BacktestDecision,
+    pub turnover: Decimal,
+    pub cost: Decimal,
+    pub attribution: Attribution,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,23 +282,96 @@ pub fn execute_portfolio_backtest(
     let mut total_costs = Decimal::ZERO;
     let mut total_turnover = Decimal::ZERO;
     let mut attribution = Attribution::default();
+    let mut equity = Vec::with_capacity(request.decisions.len());
+    let mut peak = request.initial_capital;
+    let mut exposed_points = 0usize;
     for market in request.decisions {
-        let universe = market
-            .strategy_target
-            .target
-            .weights
-            .keys()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let risk = request
-            .risk_policy
-            .apply(&market.strategy_target.target, &state, &universe)?;
-        let approved = risk
-            .approved_target
-            .clone()
-            .ok_or_else(|| BacktestError("risk-decision-rejected".into()));
-        if approved.is_err() {
-            decisions.push(BacktestDecision {
+        let step = apply_portfolio_market_decision(
+            &mut state,
+            market,
+            request.initial_capital,
+            &request.risk_policy,
+            request.execution_cost_rate,
+        )?;
+        total_turnover += step.turnover;
+        total_costs += step.cost;
+        for (instrument, value) in step.attribution.by_instrument {
+            *attribution.by_instrument.entry(instrument).or_default() += value;
+        }
+        decisions.push(step.decision);
+        let current_equity = portfolio_equity(&state);
+        peak = peak.max(current_equity);
+        if state
+            .positions
+            .values()
+            .any(|position| !position.quantity.is_zero())
+        {
+            exposed_points += 1;
+        }
+        equity.push(EquityPoint {
+            open_time_ms: decisions
+                .last()
+                .map(|decision| decision.execution.decision_time_ms)
+                .unwrap_or_default(),
+            equity: current_equity,
+            drawdown: if peak.is_zero() {
+                Decimal::ZERO
+            } else {
+                (current_equity - peak) / peak
+            },
+        });
+    }
+    let final_equity = portfolio_equity(&state);
+    let metrics = portfolio_metrics(
+        request.initial_capital,
+        final_equity,
+        total_costs,
+        total_turnover,
+        &equity,
+        decisions
+            .iter()
+            .map(|decision| decision.execution.orders.len())
+            .sum(),
+        exposed_points,
+    );
+    Ok(BacktestEvidence {
+        initial_capital: request.initial_capital,
+        final_equity,
+        total_costs,
+        turnover: total_turnover,
+        capacity: request.initial_capital,
+        decisions,
+        attribution,
+        equity,
+        metrics: Some(metrics),
+    })
+}
+
+pub fn apply_portfolio_market_decision(
+    state: &mut PortfolioState,
+    market: PortfolioMarketDecision,
+    initial_capital: Decimal,
+    risk_policy: &RiskPolicy,
+    execution_cost_rate: Decimal,
+) -> Result<PortfolioExecutionStep, BacktestError> {
+    if initial_capital <= Decimal::ZERO || execution_cost_rate < Decimal::ZERO {
+        return Err(BacktestError("portfolio-backtest-input-is-invalid".into()));
+    }
+    if market.strategy_target.target.decision_time_ms != market.time_ms {
+        return Err(BacktestError("portfolio-decision-time-mismatch".into()));
+    }
+    mark_portfolio_to_market(state, &market.prices)?;
+    let universe = market
+        .strategy_target
+        .target
+        .weights
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let risk = risk_policy.apply(&market.strategy_target.target, state, &universe)?;
+    let Some(approved) = risk.approved_target.clone() else {
+        return Ok(PortfolioExecutionStep {
+            decision: BacktestDecision {
                 strategy: market.strategy_target,
                 risk,
                 execution: ExecutionPlan {
@@ -299,94 +385,172 @@ pub fn execute_portfolio_backtest(
                     orders: Vec::new(),
                     expected_cost: Decimal::ZERO,
                 },
+            },
+            turnover: Decimal::ZERO,
+            cost: Decimal::ZERO,
+            attribution: Attribution::default(),
+        });
+    };
+    let portfolio_value = portfolio_equity(state);
+    if portfolio_value <= Decimal::ZERO {
+        return Err(BacktestError("portfolio-state-equity-is-invalid".into()));
+    }
+    let mut orders = Vec::new();
+    for (id, weight) in &approved.weights {
+        let price = *market
+            .prices
+            .get(id)
+            .ok_or_else(|| BacktestError("backtest-price-is-missing".into()))?;
+        if price <= Decimal::ZERO {
+            return Err(BacktestError("backtest-price-is-invalid".into()));
+        }
+        let current = state
+            .positions
+            .get(id)
+            .map(|position| position.quantity * price)
+            .unwrap_or_default();
+        let difference = portfolio_value * *weight - current;
+        if !difference.is_zero() {
+            orders.push(PortfolioOrder {
+                instrument_id: id.clone(),
+                quantity: (difference / price).abs(),
+                side: if difference.is_sign_positive() {
+                    OrderSide::Buy
+                } else {
+                    OrderSide::Sell
+                },
+                price,
             });
-            continue;
         }
-        let approved = approved.unwrap();
-        let mut orders = Vec::new();
-        for (id, weight) in &approved.weights {
-            let price = *market
-                .prices
-                .get(id)
-                .ok_or_else(|| BacktestError("backtest-price-is-missing".into()))?;
-            if price <= Decimal::ZERO {
-                return Err(BacktestError("backtest-price-is-invalid".into()));
-            }
-            let current = state
-                .positions
-                .get(id)
-                .map(|p| p.quantity * price)
-                .unwrap_or_default();
-            let desired = request.initial_capital * *weight;
-            let difference = desired - current;
-            if !difference.is_zero() {
-                orders.push(PortfolioOrder {
-                    instrument_id: id.clone(),
-                    quantity: (difference / price).abs(),
-                    side: if difference.is_sign_positive() {
-                        OrderSide::Buy
-                    } else {
-                        OrderSide::Sell
-                    },
-                    price,
-                });
-            }
-        }
-        let turnover_now =
-            orders.iter().map(|o| o.quantity * o.price).sum::<Decimal>() / request.initial_capital;
-        let cost = turnover_now * request.initial_capital * request.execution_cost_rate;
-        total_turnover += turnover_now;
-        total_costs += cost;
-        for order in &orders {
-            let signed = if order.side == OrderSide::Buy {
-                order.quantity
-            } else {
-                -order.quantity
-            };
-            state
-                .positions
-                .entry(order.instrument_id.clone())
-                .and_modify(|p| p.quantity += signed)
-                .or_insert(PortfolioPosition {
-                    quantity: signed,
-                    price: order.price,
-                });
-            state.cash -= signed * order.price;
-            *attribution
-                .by_instrument
-                .entry(order.instrument_id.clone())
-                .or_default() += signed * order.price;
-        }
-        let execution = ExecutionPlan {
-            decision_time_ms: market.time_ms,
-            approved_target: approved.clone(),
-            orders,
-            expected_cost: cost,
+    }
+    let turnover = orders
+        .iter()
+        .map(|order| order.quantity * order.price)
+        .sum::<Decimal>()
+        / portfolio_value;
+    let cost = turnover * portfolio_value * execution_cost_rate;
+    let mut attribution = Attribution::default();
+    for order in &orders {
+        let signed = if order.side == OrderSide::Buy {
+            order.quantity
+        } else {
+            -order.quantity
         };
-        decisions.push(BacktestDecision {
+        state
+            .positions
+            .entry(order.instrument_id.clone())
+            .and_modify(|position| position.quantity += signed)
+            .or_insert(PortfolioPosition {
+                quantity: signed,
+                price: order.price,
+            });
+        state.cash -= signed * order.price;
+        *attribution
+            .by_instrument
+            .entry(order.instrument_id.clone())
+            .or_default() += signed * order.price;
+    }
+    state.cash -= cost;
+    mark_portfolio_to_market(state, &market.prices)?;
+    Ok(PortfolioExecutionStep {
+        decision: BacktestDecision {
             strategy: market.strategy_target,
             risk,
-            execution,
-        });
-    }
-    Ok(BacktestEvidence {
-        initial_capital: request.initial_capital,
-        final_equity: state.cash
-            + state
-                .positions
-                .values()
-                .map(|p| p.quantity * p.price)
-                .sum::<Decimal>()
-            - total_costs,
-        total_costs,
-        turnover: total_turnover,
-        capacity: request.initial_capital,
-        decisions,
+            execution: ExecutionPlan {
+                decision_time_ms: market.time_ms,
+                approved_target: approved,
+                orders,
+                expected_cost: cost,
+            },
+        },
+        turnover,
+        cost,
         attribution,
     })
 }
 
+pub fn mark_portfolio_to_market(
+    state: &mut PortfolioState,
+    prices: &BTreeMap<String, Decimal>,
+) -> Result<(), BacktestError> {
+    for (id, position) in &mut state.positions {
+        if position.quantity.is_zero() {
+            continue;
+        }
+        let price = prices
+            .get(id)
+            .copied()
+            .ok_or_else(|| BacktestError("backtest-price-is-missing".into()))?;
+        if price <= Decimal::ZERO {
+            return Err(BacktestError("backtest-price-is-invalid".into()));
+        }
+        position.price = price;
+    }
+    Ok(())
+}
+
+fn portfolio_equity(state: &PortfolioState) -> Decimal {
+    state.cash
+        + state
+            .positions
+            .values()
+            .map(|position| position.quantity * position.price)
+            .sum::<Decimal>()
+}
+
+fn portfolio_metrics(
+    initial: Decimal,
+    final_equity: Decimal,
+    total_costs: Decimal,
+    turnover: Decimal,
+    equity: &[EquityPoint],
+    order_count: usize,
+    exposed_points: usize,
+) -> BacktestMetrics {
+    let total_return = if initial.is_zero() {
+        Decimal::ZERO
+    } else {
+        final_equity / initial - Decimal::ONE
+    };
+    BacktestMetrics {
+        initial_equity: initial,
+        final_equity,
+        total_return,
+        cagr: Decimal::ZERO,
+        annualized_volatility: Decimal::ZERO,
+        sharpe: Decimal::ZERO,
+        sortino: Decimal::ZERO,
+        max_drawdown: equity
+            .iter()
+            .map(|point| point.drawdown)
+            .min()
+            .unwrap_or_default(),
+        calmar: Decimal::ZERO,
+        realized_pnl: Decimal::ZERO,
+        unrealized_pnl: final_equity - initial + total_costs,
+        total_fees: total_costs,
+        turnover,
+        fill_count: order_count,
+        realized_trade_count: 0,
+        win_rate: Decimal::ZERO,
+        profit_factor: Decimal::ZERO,
+        average_win: Decimal::ZERO,
+        average_loss: Decimal::ZERO,
+        exposure_time: if equity.is_empty() {
+            Decimal::ZERO
+        } else {
+            Decimal::from(exposed_points) / Decimal::from(equity.len())
+        },
+        benchmark_return: Decimal::ZERO,
+        excess_return: total_return,
+    }
+}
+
 fn turnover(target: &PortfolioTarget, state: &PortfolioState) -> Decimal {
+    let equity = portfolio_equity(state);
+    if equity <= Decimal::ZERO {
+        return Decimal::ONE;
+    }
     target
         .weights
         .iter()
@@ -396,7 +560,7 @@ fn turnover(target: &PortfolioTarget, state: &PortfolioState) -> Decimal {
                 .get(id)
                 .map(|p| p.quantity * p.price)
                 .unwrap_or_default()
-                / Decimal::ONE
+                / equity
                 - *weight)
                 .abs()
         })
@@ -474,5 +638,38 @@ mod tests {
             r.approved_target.unwrap().weights["AAA"],
             Decimal::new(2, 1)
         );
+    }
+
+    #[test]
+    fn risk_turnover_uses_current_portfolio_weights() {
+        let target = TopNForecastStrategy::target(1, "u1", &forecasts(), 3).unwrap();
+        let positions = target
+            .weights
+            .iter()
+            .map(|(id, weight)| {
+                (
+                    id.clone(),
+                    PortfolioPosition {
+                        quantity: *weight * Decimal::new(10_000, 0),
+                        price: Decimal::ONE,
+                    },
+                )
+            })
+            .collect();
+        let risk = RiskPolicy {
+            policy_id: "r1".into(),
+            max_instrument_weight: Decimal::ONE,
+            max_turnover: Some(Decimal::ZERO),
+        }
+        .apply(
+            &target,
+            &PortfolioState {
+                cash: Decimal::ZERO,
+                positions,
+            },
+            &target.weights.keys().cloned().collect(),
+        )
+        .unwrap();
+        assert_eq!(risk.decision, RiskDecision::Approve);
     }
 }

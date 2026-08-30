@@ -238,6 +238,7 @@ fn run_request(harness: &Harness) -> BacktestRunRequest {
     BacktestRunRequest {
         user_id: "alice".into(),
         snapshot_id: harness.snapshot_id.clone(),
+        portfolio_universe_snapshot_id: None,
         run_start_time_ms: None,
         run_end_time_ms: None,
         factor_instances: vec![],
@@ -760,6 +761,7 @@ fn incompatible_stored_feature_plan_fails_with_reset_required_diagnostic() {
     let provenance = super::BacktestRunProvenance {
         normalized_request: super::NormalizedBacktestRunRequest {
             snapshot_id: "snapshot-1".into(),
+            portfolio_universe_snapshot_id: None,
             run_start_time_ms: None,
             run_end_time_ms: None,
             strategy_archive_sha256: "a".repeat(64),

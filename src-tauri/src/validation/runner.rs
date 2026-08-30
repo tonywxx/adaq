@@ -23,8 +23,8 @@ pub(super) fn run_report(
         let sample_in_snapshot_id = sample_in_request.snapshot_id.clone();
         let sample_out_snapshot_id = sample_out_request.snapshot_id.clone();
         match (
-            studies.source().run_backtest(sample_in_request),
-            studies.source().run_backtest(sample_out_request),
+            run_request(studies, sample_in_request),
+            run_request(studies, sample_out_request),
         ) {
             (Ok(sample_in_run), Ok(sample_out_run)) => windows.push(ValidationWindowReport {
                 sample_out_start_time_ms: window.sample_out_start_time_ms,
@@ -110,7 +110,9 @@ fn window_run_requests(
     let mut sample_in_request = protocol.run.clone();
     sample_in_request.user_id = protocol.user_id.clone();
     let mut sample_out_request = sample_in_request.clone();
-    if protocol.run.signal_instances.is_empty() {
+    if protocol.run.portfolio_universe_snapshot_id.is_none()
+        && protocol.run.signal_instances.is_empty()
+    {
         sample_in_request.snapshot_id = sample_in.snapshot_id.clone();
         sample_in_request.run_start_time_ms = None;
         sample_in_request.run_end_time_ms = None;
@@ -124,6 +126,20 @@ fn window_run_requests(
         sample_out_request.run_end_time_ms = Some(sample_out.end_time_ms);
     }
     (sample_in_request, sample_out_request)
+}
+
+fn run_request(
+    studies: &ValidationStudies,
+    request: BacktestRunRequest,
+) -> Result<super::ValidationRunOutcome, String> {
+    let package = studies
+        .source()
+        .package_for_user(&request.user_id, &request.strategy_archive_sha256)?;
+    if package.manifest.strategy_scope == adaq_component_tooling::StrategyScope::Portfolio {
+        studies.source().run_portfolio_backtest(request)
+    } else {
+        studies.source().run_backtest(request)
+    }
 }
 
 fn run_cross_market(
@@ -144,7 +160,7 @@ fn run_cross_market(
                 .unwrap_or_else(|| protocol.run.clone());
             run.user_id = protocol.user_id.clone();
             run.snapshot_id = snapshot.snapshot_id.clone();
-            match studies.source().run_backtest(run.clone()) {
+            match run_request(studies, run.clone()) {
                 Ok(result) => Ok(CrossMarketValidationReport {
                     snapshot,
                     run,

@@ -1025,10 +1025,15 @@ function QualificationPanel({
 		const number = Number(value);
 		return Number.isSafeInteger(number) ? number : undefined;
 	};
-	const datasetIds = signalDatasetIds
-		.split(",")
-		.map((value) => value.trim())
-		.filter(Boolean);
+	const datasetIds = Array.from(
+		new Set(
+			signalDatasetIds
+				.split(",")
+				.map((value) => value.trim())
+				.filter(Boolean),
+		),
+	);
+	const isPortfolio = selected?.item.revision.scope === "portfolio";
 	const canRun = Boolean(
 		userId &&
 			selected &&
@@ -1038,7 +1043,9 @@ function QualificationPanel({
 			integer(selectionEnd) !== undefined &&
 			integer(finalStart) !== undefined &&
 			integer(finalEnd) !== undefined &&
-			datasetIds.length === modelSlots.length,
+			(isPortfolio
+				? datasetIds.length > 0 && modelSlots.length > 0
+				: datasetIds.length === modelSlots.length),
 	);
 
 	const run = async () => {
@@ -1065,13 +1072,23 @@ function QualificationPanel({
 				endTimeMs: selectionEndMs,
 			},
 			finalWindow: { startTimeMs: finalStartMs, endTimeMs: finalEndMs },
-			signalInstances: modelSlots.map((slot, index) => ({
-				slot: slot.alias,
-				datasetId: datasetIds[index],
-				signalName: String(
-					(slot.binding as { outputName?: string }).outputName ?? "",
-				),
-			})),
+			signalInstances: isPortfolio
+				? datasetIds.flatMap((datasetId) =>
+						modelSlots.map((slot) => ({
+							slot: slot.alias,
+							datasetId,
+							signalName: String(
+								(slot.binding as { outputName?: string }).outputName ?? "",
+							),
+						})),
+					)
+				: modelSlots.map((slot, index) => ({
+						slot: slot.alias,
+						datasetId: datasetIds[index],
+						signalName: String(
+							(slot.binding as { outputName?: string }).outputName ?? "",
+						),
+					})),
 			initialQuoteAllocation: "10000",
 			executionProfile: {
 				makerFeeRate: "0.0008",
