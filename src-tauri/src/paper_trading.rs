@@ -334,6 +334,11 @@ impl PaperTradingStore {
         now_ms: i64,
     ) -> Result<PaperAccountView, String> {
         let (mut ledger, mut execution) = self.load(user_id)?;
+        let active_order_ids = orders
+            .iter()
+            .filter_map(|order| order.id.as_ref())
+            .map(|provider_order_id| format!("provider-order-{provider_order_id}"))
+            .collect::<Vec<_>>();
         for (index, order) in orders.iter().enumerate() {
             if let Some(provider_order_id) = &order.id {
                 if let Some(local_order) =
@@ -351,6 +356,7 @@ impl PaperTradingStore {
                 );
             }
         }
+        ledger.cancel_missing_provider_orders(&active_order_ids);
         self.save(user_id, &ledger, &execution, now_ms)?;
         self.view(user_id)
     }

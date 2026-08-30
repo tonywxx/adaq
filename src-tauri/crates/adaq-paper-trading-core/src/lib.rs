@@ -547,6 +547,33 @@ impl PaperLedger {
         Ok(())
     }
 
+    pub fn cancel_missing_provider_orders(&mut self, active_order_ids: &[String]) {
+        let stale_ids: Vec<String> = self
+            .orders
+            .keys()
+            .filter(|order_id| {
+                order_id.starts_with("provider-order-")
+                    && !active_order_ids.iter().any(|active| active == *order_id)
+            })
+            .cloned()
+            .collect();
+        for order_id in stale_ids {
+            let released = self.orders.get_mut(&order_id).map(|order| {
+                if matches!(
+                    order.status,
+                    OrderStatus::Accepted | OrderStatus::PartiallyFilled
+                ) {
+                    let released = Self::order_reserved_cash(order);
+                    order.status = OrderStatus::Cancelled;
+                    released
+                } else {
+                    Decimal::ZERO
+                }
+            });
+            self.reserved_cash -= released.unwrap_or(Decimal::ZERO);
+        }
+    }
+
     pub fn submit_order(
         &mut self,
         user_id: &str,
@@ -860,6 +887,12 @@ mod tests {
             })
             .unwrap();
         assert_eq!(ledger.reserved_cash(), Decimal::new(200, 0));
+        ledger.cancel_missing_provider_orders(&[]);
+        assert_eq!(ledger.reserved_cash(), Decimal::ZERO);
+        assert_eq!(
+            ledger.orders().next().unwrap().status,
+            OrderStatus::Cancelled
+        );
     }
     #[test]
     fn mismatch_fails_closed_until_reconciled() {
