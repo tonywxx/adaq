@@ -1,6 +1,7 @@
 /** @jest-environment jsdom */
 
 import "@/lib/i18n";
+import { AuthenticatedUserContext } from "@/authenticated-user";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { act } from "react";
@@ -26,9 +27,24 @@ const retainedView = {
 	reservedCash: "50",
 	buyingPower: "950",
 	reconciliation: "required",
+	restartRequired: true,
 	orders: [],
 	fills: [],
 	providerEvidence: [],
+	riskDecisions: [
+		{
+			approved: true,
+			reason: "approved",
+			requestedNotional: "100",
+			approvedNotional: "100",
+			decidedAtMs: 1_700_000_000_000,
+		},
+	],
+};
+
+const retainedWorkspace = {
+	account: retainedView,
+	connection: { state: "degraded", evidence: null },
 };
 
 async function settle() {
@@ -52,9 +68,11 @@ async function mount() {
 	document.body.append(container);
 	await act(async () => {
 		root.render(
-			<QueryClientProvider client={new QueryClient()}>
-				<PaperTradingPage />
-			</QueryClientProvider>,
+			<AuthenticatedUserContext.Provider value="alice">
+				<QueryClientProvider client={new QueryClient()}>
+					<PaperTradingPage />
+				</QueryClientProvider>
+			</AuthenticatedUserContext.Provider>,
 		);
 	});
 	await settle();
@@ -68,7 +86,7 @@ async function unmount(root: Root, container: HTMLDivElement) {
 
 beforeEach(() => {
 	mockInvoke.mockImplementation(async (command: string) => {
-		if (command === "paper_account_view") return retainedView;
+		if (command === "paper_account_view") return retainedWorkspace;
 		if (command === "paper_account_reconcile") return retainedView;
 		throw new Error(`unexpected command: ${command}`);
 	});
@@ -96,6 +114,8 @@ test("keeps retained evidence visible until a confirmed reconcile succeeds", asy
 
 	expect(container.textContent).toContain("Paper Trading Workspace");
 	expect(container.textContent).toContain("okx-demo-account");
+	expect(container.textContent).toContain("approved");
+	expect(container.textContent).toContain("Retained connection is degraded.");
 	expect(mockInvoke).toHaveBeenCalledWith("paper_account_view");
 	expect(mockInvoke).not.toHaveBeenCalledWith("paper_account_reconcile");
 
@@ -110,8 +130,12 @@ test("keeps retained evidence visible until a confirmed reconcile succeeds", asy
 
 test("keeps the retained view when Reconcile fails", async () => {
 	mockInvoke.mockImplementation(async (command: string) => {
-		if (command === "paper_account_view") return retainedView;
-		if (command === "paper_account_reconcile") throw new Error("OKX unavailable");
+		if (command === "paper_account_view") return retainedWorkspace;
+		if (command === "paper_account_reconcile")
+			throw JSON.stringify({
+				code: "connectionUnavailable",
+				message: "The OKX Demo connection is unavailable.",
+			});
 		throw new Error(`unexpected command: ${command}`);
 	});
 	const { container, root } = await mount();
@@ -121,6 +145,9 @@ test("keeps the retained view when Reconcile fails", async () => {
 	await settle();
 
 	expect(container.textContent).toContain("okx-demo-account");
+	expect(container.textContent).toContain(
+		"Reconcile cannot start because the OKX Demo connection is unavailable.",
+	);
 	expect(container.textContent).toContain("Retained evidence has not changed.");
 	await unmount(root, container);
 });

@@ -614,10 +614,15 @@ const english = {
 		emptyDescription:
 			"Use Reconcile after confirming your OKX Demo connection. This workspace never contacts the provider on entry.",
 		unavailable: "Retained paper evidence is temporarily unavailable.",
+		connectionDegraded: "Retained connection is degraded.",
+		connectionDisconnected: "No OKX Demo connection is configured.",
+		reconciliationRequired:
+			"Reconciliation Required: do not rely on this account state until Reconcile succeeds.",
 		restartRequired:
-			"Reconciliation Required: retain the prior evidence and reconcile after a restart or uncertain provider outcome.",
+			"Restart detected: Reconciliation Required before relying on this account state.",
 		uncertain:
 			"Uncertain provider evidence is retained. Reconcile before relying on account state.",
+		provider: "OKX Demo",
 		account: "OKX Demo account",
 		observed: "Observed",
 		cash: "Cash",
@@ -633,6 +638,16 @@ const english = {
 		noProviderEvidence: "No provider evidence retained.",
 		riskDecision: "Risk Decision evidence",
 		noRiskDecision: "No retained Risk Decision evidence is available.",
+		approved: "Approved",
+		rejected: "Rejected",
+		fee: "Fee",
+		orderSide: { buy: "Buy", sell: "Sell" },
+		orderStatus: {
+			accepted: "Accepted",
+			partially_filled: "Partially filled",
+			filled: "Filled",
+			cancelled: "Cancelled",
+		},
 		reconcile: "Reconcile",
 		reconciling: "Reconciling…",
 		confirmTitle: "Reconcile OKX Demo account?",
@@ -641,6 +656,15 @@ const english = {
 		cancel: "Cancel",
 		confirm: "Confirm Reconcile",
 		reconcileFailed: "Reconcile failed. Retained evidence has not changed.",
+		errors: {
+			connectionMissing:
+				"Reconcile cannot start because no OKX Demo connection is configured.",
+			accountIdentityInvalid:
+				"Reconcile cannot start because the OKX Demo account identity is invalid.",
+			connectionUnavailable:
+				"Reconcile cannot start because the OKX Demo connection is unavailable.",
+			providerUnavailable: "OKX Demo did not return reconciled account evidence.",
+		},
 		status: {
 			reconciled: "Reconciled",
 			required: "Reconciliation Required",
@@ -3482,9 +3506,12 @@ const simplifiedChinese = {
 		emptyDescription:
 			"确认 OKX Demo 连接后可执行对账。本工作区进入时绝不会联系 Provider。",
 		unavailable: "保留的模拟交易证据暂时不可用。",
-		restartRequired:
-			"需要对账：重启或 Provider 结果不确定后，请保留既有证据并执行对账。",
+		connectionDegraded: "保留的连接已降级。",
+		connectionDisconnected: "尚未配置 OKX Demo 连接。",
+		reconciliationRequired: "需要对账：对账成功前请勿依赖当前账户状态。",
+		restartRequired: "检测到重启：依赖当前账户状态前需要先对账。",
 		uncertain: "已保留不确定的 Provider 证据；依赖账户状态前请先对账。",
+		provider: "OKX Demo",
 		account: "OKX Demo 账户",
 		observed: "观测时间",
 		cash: "现金",
@@ -3500,6 +3527,16 @@ const simplifiedChinese = {
 		noProviderEvidence: "没有保留的 Provider 证据。",
 		riskDecision: "Risk Decision 证据",
 		noRiskDecision: "没有可用的保留 Risk Decision 证据。",
+		approved: "已批准",
+		rejected: "已拒绝",
+		fee: "费用",
+		orderSide: { buy: "买入", sell: "卖出" },
+		orderStatus: {
+			accepted: "已接受",
+			partially_filled: "部分成交",
+			filled: "已成交",
+			cancelled: "已取消",
+		},
 		reconcile: "对账",
 		reconciling: "正在对账…",
 		confirmTitle: "对账 OKX Demo 账户？",
@@ -3507,6 +3544,12 @@ const simplifiedChinese = {
 		cancel: "取消",
 		confirm: "确认对账",
 		reconcileFailed: "对账失败。保留的证据未改变。",
+		errors: {
+			connectionMissing: "无法开始对账，因为尚未配置 OKX Demo 连接。",
+			accountIdentityInvalid: "无法开始对账，因为 OKX Demo 账户标识无效。",
+			connectionUnavailable: "无法开始对账，因为 OKX Demo 连接不可用。",
+			providerUnavailable: "OKX Demo 未返回已对账的账户证据。",
+		},
 		status: {
 			reconciled: "已对账",
 			required: "需要对账",

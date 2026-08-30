@@ -1,3 +1,4 @@
+import { useAuthenticatedUserId } from "@/authenticated-user";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,6 +26,7 @@ type PaperAccountView = {
 	reservedCash: string;
 	buyingPower: string;
 	reconciliation: "reconciled" | "required" | "unknown";
+	restartRequired: boolean;
 	orders: Array<{
 		order_id: string;
 		instrument: string;
@@ -42,19 +44,34 @@ type PaperAccountView = {
 		fee: string;
 	}>;
 	providerEvidence: Record<string, unknown>[];
+	riskDecisions: Array<{
+		approved: boolean;
+		reason: string;
+		requestedNotional: string;
+		approvedNotional: string;
+		decidedAtMs: number;
+	}>;
 };
 
-const paperAccountQueryKey = ["paper-account"] as const;
+type PaperTradingWorkspaceView = {
+	account: PaperAccountView | null;
+	connection: {
+		state: "connected" | "degraded" | "disconnected";
+		evidence?: Record<string, unknown> | null;
+	};
+};
 
 export function PaperTradingPage() {
 	const { t } = useTranslation();
+	const userId = useAuthenticatedUserId();
 	const queryClient = useQueryClient();
+	const paperAccountQueryKey = ["paper-account", userId] as const;
 	const dialog = useRef<HTMLDialogElement>(null);
 	const [reconciling, setReconciling] = useState(false);
 	const [reconcileError, setReconcileError] = useState("");
 	const account = useQuery({
 		queryKey: paperAccountQueryKey,
-		queryFn: () => invoke<PaperAccountView | null>("paper_account_view"),
+		queryFn: () => invoke<PaperTradingWorkspaceView>("paper_account_view"),
 		retry: false,
 	});
 
@@ -63,19 +80,32 @@ export function PaperTradingPage() {
 		setReconcileError("");
 		try {
 			const next = await invoke<PaperAccountView>("paper_account_reconcile");
-			queryClient.setQueryData(paperAccountQueryKey, next);
+			queryClient.setQueryData<PaperTradingWorkspaceView>(
+				paperAccountQueryKey,
+				(current) =>
+					current
+						? { ...current, account: next, connection: { state: "connected" } }
+						: current,
+			);
 			dialog.current?.close();
 		} catch (reason) {
-			setReconcileError(`${t("paperTrading.reconcileFailed")} ${String(reason)}`);
+			setReconcileError(reconcileFailureMessage(t, reason));
 		} finally {
 			setReconciling(false);
 		}
 	}
 
-	const view = account.data;
+	const workspace = account.data;
+	const view = workspace?.account;
 	const uncertain = view?.providerEvidence.some(
 		(evidence) => "Uncertain" in evidence,
 	);
+	const providerEvidenceRows = [
+		...(workspace?.connection.evidence
+			? [JSON.stringify(workspace.connection.evidence)]
+			: []),
+		...(view?.providerEvidence.map((evidence) => JSON.stringify(evidence)) ?? []),
+	];
 
 	return (
 		<div className="grid gap-4 p-4 md:p-6">
@@ -117,6 +147,22 @@ export function PaperTradingPage() {
 					{reconcileError}
 				</p>
 			) : null}
+			{workspace?.connection.state === "degraded" ? (
+				<p
+					role="alert"
+					className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-3 text-sm"
+				>
+					{t("paperTrading.connectionDegraded")}
+				</p>
+			) : null}
+			{workspace?.connection.state === "disconnected" ? (
+				<p
+					role="alert"
+					className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-3 text-sm"
+				>
+					{t("paperTrading.connectionDisconnected")}
+				</p>
+			) : null}
 			{view === null ? (
 				<Card>
 					<CardHeader>
@@ -128,6 +174,14 @@ export function PaperTradingPage() {
 			{view ? (
 				<>
 					{view.reconciliation === "required" ? (
+						<p
+							role="alert"
+							className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-3 text-sm"
+						>
+							{t("paperTrading.reconciliationRequired")}
+						</p>
+					) : null}
+					{view.restartRequired ? (
 						<p
 							role="alert"
 							className="rounded-lg border border-amber-500/50 bg-amber-500/5 p-3 text-sm"
@@ -167,7 +221,7 @@ export function PaperTradingPage() {
 									<span>{formatDecimal(view.buyingPower)}</span>
 								</div>
 								<div className="flex justify-between gap-3">
-									<span>OKX Demo</span>
+									<span>{t("paperTrading.provider")}</span>
 									<Badge variant="outline">
 										{t(`paperTrading.status.${view.reconciliation}`)}
 									</Badge>
@@ -185,7 +239,10 @@ export function PaperTradingPage() {
 						<EvidenceCard
 							title={t("paperTrading.riskDecision")}
 							empty={t("paperTrading.noRiskDecision")}
-							rows={[]}
+							rows={view.riskDecisions.map(
+								(decision) =>
+									`${decision.approved ? t("paperTrading.approved") : t("paperTrading.rejected")} · ${decision.reason} · ${formatDecimal(decision.approvedNotional)} / ${formatDecimal(decision.requestedNotional)}`,
+							)}
 						/>
 					</div>
 					<div className="grid gap-4 lg:grid-cols-3">
@@ -194,7 +251,7 @@ export function PaperTradingPage() {
 							empty={t("paperTrading.noOrders")}
 							rows={view.orders.map(
 								(order) =>
-									`${order.instrument} · ${order.side} · ${formatDecimal(order.filled_quantity)} / ${formatDecimal(order.quantity)} · ${order.status}`,
+									`${order.instrument} · ${t(`paperTrading.orderSide.${order.side.toLowerCase()}`, { defaultValue: order.side })} · ${formatDecimal(order.filled_quantity)} / ${formatDecimal(order.quantity)} · ${t(`paperTrading.orderStatus.${order.status}`, { defaultValue: order.status })}`,
 							)}
 						/>
 						<EvidenceCard
@@ -202,13 +259,13 @@ export function PaperTradingPage() {
 							empty={t("paperTrading.noFills")}
 							rows={view.fills.map(
 								(fill) =>
-									`${fill.order_id} · ${formatDecimal(fill.quantity)} @ ${formatDecimal(fill.price)} · fee ${formatDecimal(fill.fee)}`,
+									`${fill.order_id} · ${formatDecimal(fill.quantity)} @ ${formatDecimal(fill.price)} · ${t("paperTrading.fee")} ${formatDecimal(fill.fee)}`,
 							)}
 						/>
 						<EvidenceCard
 							title={t("paperTrading.providerEvidence")}
 							empty={t("paperTrading.noProviderEvidence")}
-							rows={view.providerEvidence.map((evidence) => JSON.stringify(evidence))}
+							rows={providerEvidenceRows}
 						/>
 					</div>
 				</>
@@ -248,6 +305,20 @@ export function PaperTradingPage() {
 			</dialog>
 		</div>
 	);
+}
+
+function reconcileFailureMessage(t: (key: string) => string, reason: unknown) {
+	if (typeof reason === "string") {
+		try {
+			const error = JSON.parse(reason) as { code?: string };
+			if (error.code) {
+				return `${t("paperTrading.reconcileFailed")} ${t(`paperTrading.errors.${error.code}`)}`;
+			}
+		} catch {
+			// The Host always sends a typed JSON error; retain a safe fallback for old Hosts.
+		}
+	}
+	return t("paperTrading.reconcileFailed");
 }
 
 function EvidenceCard({

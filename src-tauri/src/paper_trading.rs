@@ -1,8 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
 
 use adaq_paper_trading_core::{
-    AccountSnapshot, Currency, ExecutionOutcome, Fill, FillEvidence, Market, PaperExecution,
-    PaperLedger, Position, ReconciliationState, RiskPolicy, Side,
+    AccountSnapshot, Currency, ExecutionError, ExecutionOutcome, Fill, FillEvidence, Market,
+    PaperExecution, PaperLedger, Position, ReconciliationState, RiskDecision, RiskPolicy, Side,
 };
 use adaq_trading_crypto::{Exchange, Params};
 use rusqlite::{Connection, params};
@@ -14,6 +17,7 @@ const DEFAULT_MAX_ORDER_NOTIONAL: Decimal = Decimal::from_parts(100_000, 0, 0, f
 #[derive(Clone)]
 pub(crate) struct PaperTradingStore {
     database: Arc<Mutex<Connection>>,
+    restarted_users: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,6 +30,30 @@ pub(crate) struct PaperAccountView {
     pub orders: Vec<adaq_paper_trading_core::Order>,
     pub fills: Vec<adaq_paper_trading_core::Fill>,
     pub provider_evidence: Vec<ExecutionOutcome>,
+    pub risk_decisions: Vec<RetainedRiskDecision>,
+    pub restart_required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RetainedRiskDecision {
+    pub approved: bool,
+    pub reason: String,
+    pub requested_notional: Decimal,
+    pub approved_notional: Decimal,
+    pub decided_at_ms: i64,
+}
+
+impl RetainedRiskDecision {
+    fn from_decision(decision: RiskDecision, decided_at_ms: i64) -> Self {
+        Self {
+            approved: decision.approved,
+            reason: decision.reason,
+            requested_notional: decision.requested_notional,
+            approved_notional: decision.approved_notional,
+            decided_at_ms,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,7 +93,14 @@ impl PaperTradingStore {
                     account_json TEXT NOT NULL,
                     execution_json TEXT NOT NULL,
                     updated_at_ms INTEGER NOT NULL
-                );",
+                );
+                CREATE TABLE IF NOT EXISTS paper_risk_decisions (
+                    user_id TEXT NOT NULL,
+                    decision_json TEXT NOT NULL,
+                    decided_at_ms INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS paper_risk_decisions_user_time
+                    ON paper_risk_decisions(user_id, decided_at_ms);",
             )
             .map_err(|error| error.to_string())?;
         let rows: Vec<(String, String, String)> = {
@@ -78,6 +113,7 @@ impl PaperTradingStore {
                 .collect::<Result<_, _>>()
                 .map_err(|error| error.to_string())?
         };
+        let mut restarted_users = HashSet::new();
         for (user_id, account_json, execution_json) in rows {
             let mut ledger: PaperLedger =
                 serde_json::from_str(&account_json).map_err(|error| error.to_string())?;
@@ -95,9 +131,13 @@ impl PaperTradingStore {
                     ],
                 )
                 .map_err(|error| error.to_string())?;
+            restarted_users.insert(user_id);
         }
         drop(database_guard);
-        Ok(Self { database })
+        Ok(Self {
+            database,
+            restarted_users: Arc::new(Mutex::new(restarted_users)),
+        })
     }
 
     pub(crate) fn view(&self, user_id: &str) -> Result<PaperAccountView, String> {
@@ -110,6 +150,12 @@ impl PaperTradingStore {
             orders: ledger.orders().cloned().collect(),
             fills: ledger.fills().to_vec(),
             provider_evidence: execution.evidence().cloned().collect(),
+            risk_decisions: self.risk_decisions(user_id)?,
+            restart_required: self
+                .restarted_users
+                .lock()
+                .map_err(|error| error.to_string())?
+                .contains(user_id),
         })
     }
 
@@ -156,17 +202,23 @@ impl PaperTradingStore {
             "sell" | "Sell" => Side::Sell,
             _ => return Err("side must be buy or sell".into()),
         };
-        execution
-            .begin(
-                request.operation_id.clone(),
-                &mut ledger,
-                &request.instrument,
-                side,
-                request.quantity,
-                request.limit_price,
-                now_ms,
-            )
-            .map_err(|error| error.to_string())?;
+        let decision = match execution.begin(
+            request.operation_id.clone(),
+            &mut ledger,
+            &request.instrument,
+            side,
+            request.quantity,
+            request.limit_price,
+            now_ms,
+        ) {
+            Ok((_, decision)) => decision,
+            Err(ExecutionError::RiskRejected(decision)) => {
+                self.record_risk_decision(&request.user_id, decision.clone(), now_ms)?;
+                return Err(ExecutionError::RiskRejected(decision).to_string());
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        self.record_risk_decision(&request.user_id, decision, now_ms)?;
         self.save(&request.user_id, &ledger, &execution, now_ms)?;
         self.view(&request.user_id)
     }
@@ -307,6 +359,10 @@ impl PaperTradingStore {
             .map_err(|error| error.to_string())?;
         execution.record_reconciliation(format!("reconcile-{now_ms}"), matches, now_ms);
         self.save(user_id, &ledger, &execution, now_ms)?;
+        self.restarted_users
+            .lock()
+            .map_err(|error| error.to_string())?
+            .remove(user_id);
         self.view(user_id)
     }
 
@@ -373,6 +429,47 @@ impl PaperTradingStore {
             .map_err(|error| error.to_string())
     }
 
+    fn risk_decisions(&self, user_id: &str) -> Result<Vec<RetainedRiskDecision>, String> {
+        let database = self.database.lock().map_err(|error| error.to_string())?;
+        let mut statement = database
+            .prepare(
+                "SELECT decision_json FROM paper_risk_decisions
+                 WHERE user_id = ?1 ORDER BY decided_at_ms DESC",
+            )
+            .map_err(|error| error.to_string())?;
+        statement
+            .query_map([user_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .map(|row| {
+                let json = row.map_err(|error| error.to_string())?;
+                serde_json::from_str(&json).map_err(|error| error.to_string())
+            })
+            .collect()
+    }
+
+    fn record_risk_decision(
+        &self,
+        user_id: &str,
+        decision: RiskDecision,
+        decided_at_ms: i64,
+    ) -> Result<(), String> {
+        let decision = RetainedRiskDecision::from_decision(decision, decided_at_ms);
+        self.database
+            .lock()
+            .map_err(|error| error.to_string())?
+            .execute(
+                "INSERT INTO paper_risk_decisions(user_id, decision_json, decided_at_ms)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    user_id,
+                    serde_json::to_string(&decision).map_err(|error| error.to_string())?,
+                    decided_at_ms,
+                ],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
     fn save(
         &self,
         user_id: &str,
@@ -433,17 +530,19 @@ mod tests {
                 2,
             )
             .unwrap();
+        assert_eq!(store.view("alice").unwrap().risk_decisions.len(), 1);
         drop(store);
 
         let restarted = PaperTradingStore::open(database).unwrap();
         let view = restarted.view("alice").unwrap();
         assert_eq!(view.reconciliation, ReconciliationState::Required);
         assert_eq!(view.reserved_cash, Decimal::new(100, 0));
+        assert!(view.restart_required);
+        assert_eq!(view.risk_decisions.len(), 1);
         restarted.reconcile("alice", account(), 3).unwrap();
-        assert_eq!(
-            restarted.view("alice").unwrap().reconciliation,
-            ReconciliationState::Reconciled
-        );
+        let reconciled = restarted.view("alice").unwrap();
+        assert_eq!(reconciled.reconciliation, ReconciliationState::Reconciled);
+        assert!(!reconciled.restart_required);
     }
 
     #[test]

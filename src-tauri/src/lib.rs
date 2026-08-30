@@ -4349,9 +4349,33 @@ fn paper_account_view(
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
-) -> Result<Option<paper_trading::PaperAccountView>, String> {
+) -> Result<PaperTradingWorkspaceView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    state.paper_trading.view_optional(&user_id)
+    let profile = state
+        .connections
+        .list(&user_id)?
+        .into_iter()
+        .find(|profile| profile.provider == connections::Provider::OkxDemo);
+    let connection = match profile {
+        None => PaperConnectionView {
+            state: "disconnected",
+            evidence: None,
+        },
+        Some(profile) if profile.status == connections::ProfileStatus::Usable => {
+            PaperConnectionView {
+                state: "connected",
+                evidence: profile.last_test_evidence,
+            }
+        }
+        Some(profile) => PaperConnectionView {
+            state: "degraded",
+            evidence: profile.last_test_evidence,
+        },
+    };
+    Ok(PaperTradingWorkspaceView {
+        account: state.paper_trading.view_optional(&user_id)?,
+        connection,
+    })
 }
 
 #[tauri::command]
@@ -4361,7 +4385,7 @@ async fn paper_account_reconcile(
     app: tauri::AppHandle,
 ) -> Result<paper_trading::PaperAccountView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
         let profile = state
             .connections
@@ -4379,7 +4403,35 @@ async fn paper_account_reconcile(
         })?
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| serialize_paper_account_error(error.to_string()))?;
+    result.map_err(serialize_paper_account_error)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperTradingWorkspaceView {
+    account: Option<paper_trading::PaperAccountView>,
+    connection: PaperConnectionView,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperConnectionView {
+    state: &'static str,
+    evidence: Option<connections::tester::ConnectionEvidence>,
+}
+
+fn serialize_paper_account_error(error: String) -> String {
+    let code = if error.contains("No OKX Demo connection") {
+        "connectionMissing"
+    } else if error.contains("account identity") {
+        "accountIdentityInvalid"
+    } else if error.contains("unusable") || error.contains("credential") {
+        "connectionUnavailable"
+    } else {
+        "providerUnavailable"
+    };
+    serde_json::json!({ "code": code, "message": error }).to_string()
 }
 
 #[tauri::command]
