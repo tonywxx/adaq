@@ -1330,6 +1330,10 @@ _Avoid_: Operations Dashboard, Market Data Connector, full trading terminal
 The localized GUI navigation area under `/paper-trading` for inspecting one User's OKX Demo account snapshots, reservations, positions, Orders, Fills, Risk Decisions, and reconciliation evidence. It permits only explicitly confirmed reconciliation; it is not direct order entry, Bot control, or the Operations Dashboard.
 _Avoid_: Paper Workspace, trading terminal, Bot controls, Operations Dashboard
 
+**Bot Workspace**:
+The localized Operations navigation area under `/bots` for deploying and operating a User's Trading Bots. It presents the exact Bot, Deployment Bundle, Runtime Attempt, Account, Lifecycle, Health, Decision, Target, Risk, Order, Fill, and reconciliation evidence; its controls only request bounded Host operations, with Flatten separately confirmed.
+_Avoid_: Paper Trading Workspace, order-entry terminal, Worker console, Operations Dashboard
+
 **Feature Workspace**:
 The localized GUI area at `/features` for editing Feature Definition Drafts and inspecting published Definitions, Transformation Fitting Attempts, Feature Materialization Attempts, and Feature Datasets. Its Preview is transient and never becomes authoritative Feature evidence.
 _Avoid_: Factor Lab, Model Lab, notebook editor
@@ -1351,6 +1355,10 @@ _Avoid_: display currency, Quote Asset, currency symbol
 **Paper Trading Account**:
 A Trading Account that produces simulated rather than real-money executions, either through an external Paper Provider or an ADAQ-owned simulator. Its exact Account Snapshots remain authoritative for the paper ledger it represents.
 _Avoid_: Backtest Run, Real Trading Account, local balance preference
+
+**OKX Demo Account**:
+The V1 external Paper Trading Account identified by one verified OKX Demo Paper Connection Profile. It supplies provider-authoritative Account Snapshots and accepts only Host-owned Paper Execution Adapter requests; it remains distinct from ADAQ's local Paper ledger and its credentials.
+_Avoid_: Paper Connection Profile, local Paper ledger, Live account
 
 **A-share Ordinary Securities Account**:
 The only A-share account profile simulated in V1: an ordinary securities account that buys from its own available cash and sells only eligible securities it already owns, subject to exact settlement, lot, price-limit, fee, and session evidence. It has no financing, securities lending, short sale, collateral, maintenance-margin, interest, or forced-liquidation capability.
@@ -1427,6 +1435,10 @@ _Avoid_: generated source project, mutable Bot settings, Component Package
 **Bot Runtime Attempt**:
 The append-only operational record created by one explicit Trading Bot Start or Retry. It binds the exact Deployment Bundle and Worker identity and retains every lifecycle transition, heartbeat, decision, diagnostic, order relationship, recovery action, and terminal outcome; Stopped and Faulted are terminal for the Attempt, and Retry always creates a new identity.
 _Avoid_: Trading Bot, Worker process, mutable current-state row
+
+**Bot Control Command**:
+One explicit User-requested Host operation to Start, Pause, Resume, Stop and Keep Position, or Stop and Flatten a Trading Bot. It has one idempotency identity, is serialized per Bot, and cannot itself grant Provider or order authority.
+_Avoid_: Worker message, UI click, Provider order request
 
 **Bot Lifecycle State**:
 The exact control state of one current Bot Runtime Attempt: Stopped, Starting, Reconciling, WarmingUp, Running, Pausing, Paused, Stopping, or Faulted. Only Running may authorize a new risk-increasing Strategy Target; health severity and Reconciliation Required are separate conditions rather than hidden lifecycle aliases.
