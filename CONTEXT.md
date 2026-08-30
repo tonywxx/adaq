@@ -466,6 +466,14 @@ _Avoid_: Order executor, broker plugin
 A versioned, immutable Strategy specification assembled from one exact Declarative Strategy Operation Catalog, ordered required Input Slots, Portable Parameter References, and one Strategy Scope, producing scope-correct Target Decisions or Portfolio Targets. A Python builder may construct it, but arbitrary Python execution is not part of the Definition or its generated Component.
 _Avoid_: Python Strategy Project, Strategy Component, order script
 
+**Strategy Candidate**:
+A User-owned strategy design before Backtest qualification, consisting of one Scope-bound Declarative Strategy Definition and its exact accepted Factor and Model bindings. It is not a Strategy Component, Component Package, or Backtest Run.
+_Avoid_: mutable draft, Strategy Component, Backtest Run
+
+**Strategy Candidate Revision**:
+An immutable version of a Strategy Candidate that freezes its Definition, accepted input bindings, parameters, and semantic research context. Changing any of those produces a new Revision rather than mutating the prior one.
+_Avoid_: latest strategy, mutable project, Strategy Component
+
 **Declarative Strategy Operation Catalog**:
 The versioned Host-owned operation set that V1 limits to finite `weighted-sum`, deterministic `top-n`, `equal-weight`, and `cash-reserve` nodes. `top-n` sorts by descending finite score and then ascending Instrument ID, while loops, callbacks, optimizers, stops, orders, and Execution logic are not portable operations.
 _Avoid_: Python standard library, Strategy ABI, plugin catalog
