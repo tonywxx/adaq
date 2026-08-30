@@ -71,8 +71,10 @@ jobs:
         include:
           - name: macOS ARM64
             runner: macos-14
+            target: aarch64-apple-darwin
           - name: Windows x86_64
             runner: windows-latest
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -102,6 +104,11 @@ jobs:
           "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$($linker.FullName)" >> $env:GITHUB_ENV
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
+      - name: Stage unsigned Bot Worker for acceptance compilation
+        env:
+          ADAQ_WORKER_TARGET: ${{ matrix.target }}
+          ADAQ_WORKER_ALLOW_UNSIGNED: '1'
+        run: pnpm run worker:prepare
       - name: Run M12 Python contracts and tutorial Golden
         working-directory: src-tauri
         shell: bash
@@ -183,6 +190,13 @@ jobs:
           set -euo pipefail
           : "${VITE_SUPABASE_URL:?Set repository variable VITE_SUPABASE_URL before releasing.}"
           : "${VITE_SUPABASE_PUBLISHABLE_KEY:?Set repository variable VITE_SUPABASE_PUBLISHABLE_KEY before releasing.}"
+
+      - name: Build and sign Bot Worker sidecar
+        env:
+          ADAQ_WORKER_TARGET: ${{ matrix.target }}
+          ADAQ_WORKER_PROFILE: release
+          ADAQ_WORKER_SIGNING_PRIVATE_KEY_HEX: ${{ secrets.ADAQ_WORKER_SIGNING_PRIVATE_KEY_HEX }}
+        run: pnpm worker:prepare
 
       - name: Build and upload draft release
         uses: tauri-apps/tauri-action@v0

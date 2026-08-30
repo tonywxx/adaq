@@ -38,9 +38,11 @@ jobs:
           - name: macOS ARM64
             runner: macos-14
             architecture: arm64
+            target: aarch64-apple-darwin
           - name: Windows x86_64
             runner: windows-latest
             architecture: x86_64
+            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -74,7 +76,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for fixture in strategy factor model external-strategy mixed-strategy multi-output-factor repeated-factor-strategy cross-sectional-factor; do
+          for fixture in strategy factor model external-strategy portfolio-strategy mixed-strategy multi-output-factor repeated-factor-strategy cross-sectional-factor; do
             cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
           done
       - name: Build component fixtures (Windows)
@@ -82,7 +84,7 @@ jobs:
         working-directory: src-tauri
         shell: pwsh
         run: |
-          $fixtures = @('strategy', 'factor', 'model', 'external-strategy', 'mixed-strategy', 'multi-output-factor', 'repeated-factor-strategy', 'cross-sectional-factor')
+          $fixtures = @('strategy', 'factor', 'model', 'external-strategy', 'portfolio-strategy', 'mixed-strategy', 'multi-output-factor', 'repeated-factor-strategy', 'cross-sectional-factor')
           foreach ($fixture in $fixtures) {
             cargo component build --manifest-path "fixtures/$fixture/Cargo.toml" --target wasm32-unknown-unknown
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -127,6 +129,11 @@ jobs:
         run: sh crates/adaq-factor-research/scripts/check_generated.sh
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+      - name: Stage unsigned Bot Worker for acceptance compilation
+        env:
+          ADAQ_WORKER_TARGET: ${{ matrix.target }}
+          ADAQ_WORKER_ALLOW_UNSIGNED: '1'
+        run: pnpm run worker:prepare
       - name: Run managed SDK and Runner contracts
         shell: bash
         run: |

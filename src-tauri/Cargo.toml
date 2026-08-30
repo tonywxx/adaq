@@ -8,7 +8,7 @@ keywords = ["quant-trading", "crypto", "exchange", "prediction-market", "stock-m
 license = "Apache-2.0"
 name = "adaq"
 repository = "https://github.com/tonywxx/adaq"
-version = "0.9.4"
+version = "0.9.5"
 
 [workspace]
 members = [
@@ -23,6 +23,7 @@ members = [
   "crates/adaq-python-research",
   "crates/adaq-paper-trading-core",
   "crates/adaq-bot-runtime",
+  "crates/adaq-bot-worker",
 ]
 resolver = "2"
 
@@ -44,6 +45,7 @@ tauri-build = {version = "2", features = [] }
 
 [dependencies]
 adaq-backtest-core = {path = "crates/adaq-backtest-core"}
+adaq-bot-runtime = {path = "crates/adaq-bot-runtime"}
 adaq-component-sdk = {path = "crates/adaq-component-sdk", features = ["host"] }
 adaq-component-tooling = {path = "crates/adaq-component-tooling"}
 adaq-data-core = {path = "crates/adaq-data-core", default-features = false}

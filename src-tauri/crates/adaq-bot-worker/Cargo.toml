@@ -1,0 +1,16 @@
+[package]
+name = "adaq-bot-worker"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Isolated, fail-closed ADAQ Strategy Worker"
+
+[dependencies]
+adaq-bot-runtime = { path = "../adaq-bot-runtime" }
+adaq-component-sdk = { path = "../adaq-component-sdk", features = ["host"] }
+adaq-component-tooling = { path = "../adaq-component-tooling" }
+base64 = "0.23.1"
+serde_json = "1"
+
+[dev-dependencies]
+ed25519-dalek = "2"

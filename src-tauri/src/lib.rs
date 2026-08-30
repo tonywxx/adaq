@@ -1,5 +1,6 @@
 mod auth;
 mod backtest;
+mod bot_supervisor;
 mod component_library;
 mod connections;
 mod dataset_generation;
@@ -59,6 +60,7 @@ fn database_path(app_data_dir: &Path) -> PathBuf {
 }
 
 struct WorkspaceStates {
+    bot_supervisor: std::sync::Arc<bot_supervisor::BotSupervisor>,
     local_research: Arc<LocalResearchState>,
     python_research: Arc<python_research::PythonResearchState>,
     strategy_candidates: Arc<strategy_candidate::StrategyCandidateStore>,
@@ -129,6 +131,7 @@ impl WorkspaceInitialization {
                         .take()
                         .ok_or_else(|| "workspace states were already consumed".to_owned())?;
                     app.manage(states.local_research);
+                    app.manage(states.bot_supervisor);
                     app.manage(states.python_research);
                     app.manage(states.strategy_candidates);
                     app.manage(states.strategy_qualification);
@@ -170,7 +173,12 @@ fn open_workspace_states(app_data_dir: &Path) -> Result<WorkspaceStates, String>
             strategy_qualification_source,
         )?);
     let watchlist = WatchlistDb::open(&database_path)?;
+    let bot_supervisor = Arc::new(bot_supervisor::BotSupervisor::new(
+        local_research.operations.clone(),
+    ));
+    bot_supervisor.start_monitor();
     Ok(WorkspaceStates {
+        bot_supervisor,
         local_research,
         python_research,
         strategy_candidates,
