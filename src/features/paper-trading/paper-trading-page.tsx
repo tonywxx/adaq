@@ -251,7 +251,7 @@ export function PaperTradingPage() {
 							empty={t("paperTrading.noOrders")}
 							rows={view.orders.map(
 								(order) =>
-									`${order.instrument} · ${t(`paperTrading.orderSide.${order.side.toLowerCase()}`, { defaultValue: order.side })} · ${formatDecimal(order.filled_quantity)} / ${formatDecimal(order.quantity)} · ${t(`paperTrading.orderStatus.${order.status}`, { defaultValue: order.status })}`,
+									`${order.order_id} · ${order.instrument} · ${t(`paperTrading.orderSide.${order.side.toLowerCase()}`, { defaultValue: order.side })} · ${formatDecimal(order.filled_quantity)} / ${formatDecimal(order.quantity)} · ${t(`paperTrading.orderStatus.${order.status}`, { defaultValue: order.status })}`,
 							)}
 						/>
 						<EvidenceCard
