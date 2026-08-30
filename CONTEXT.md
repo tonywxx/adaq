@@ -1334,6 +1334,10 @@ _Avoid_: Paper Workspace, trading terminal, Bot controls, Operations Dashboard
 The localized Operations navigation area under `/bots` for deploying and operating a User's Trading Bots. It presents the exact Bot, Deployment Bundle, Runtime Attempt, Account, Lifecycle, Health, Decision, Target, Risk, Order, Fill, and reconciliation evidence; its controls only request bounded Host operations, with Flatten separately confirmed.
 _Avoid_: Paper Trading Workspace, order-entry terminal, Worker console, Operations Dashboard
 
+**Paper Feedback Workspace**:
+The localized Operations navigation area under `/paper-feedback` for selecting one exact Bot Deployment Bundle and time-bounded Paper evidence, inspecting Factor, Model, Strategy, or Execution feedback, and recording an immutable Research Review Decision. It does not control Bot lifecycle, submit orders, modify deployed logic, or replace the Operations Dashboard.
+_Avoid_: feedback dashboard, live metrics, Bot Workspace, automatic retraining
+
 **Feature Workspace**:
 The localized GUI area at `/features` for editing Feature Definition Drafts and inspecting published Definitions, Transformation Fitting Attempts, Feature Materialization Attempts, and Feature Datasets. Its Preview is transient and never becomes authoritative Feature evidence.
 _Avoid_: Factor Lab, Model Lab, notebook editor

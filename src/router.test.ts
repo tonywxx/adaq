@@ -42,6 +42,9 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 		/path: "\/paper-trading"[\s\S]*?<PaperTradingPage \/>/,
 	);
 	expect(routerSource).toMatch(/path: "\/bots"[\s\S]*?<BotsPage \/>/);
+	expect(routerSource).toMatch(
+		/path: "\/paper-feedback"[\s\S]*?<PaperFeedbackPage \/>/,
+	);
 	expect(routerSource).toMatch(/const DataFoundationPage = lazy\(/);
 	expect(routerSource).toMatch(/const OperationsDashboardPage = lazy\(/);
 	expect(routerSource).toMatch(/const MarketsOverviewPage = lazy\(/);
@@ -74,6 +77,8 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 	expect(sidebarSource).toMatch(/t\("nav\.paperTrading"\)/);
 	expect(sidebarSource).toMatch(/to="\/bots"/);
 	expect(sidebarSource).toMatch(/t\("nav\.bots"\)/);
+	expect(sidebarSource).toMatch(/to="\/paper-feedback"/);
+	expect(sidebarSource).toMatch(/t\("nav\.paperFeedback"\)/);
 	expect(sidebarSource).toMatch(/startsWith\("\/markets"\)/);
 	expect(botsSource).toMatch(/invoke<BotView>\("bot_deploy"/);
 	expect(botsSource).toMatch(/confirmFlatten/);

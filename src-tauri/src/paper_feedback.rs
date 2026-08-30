@@ -6,7 +6,10 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -25,6 +28,9 @@ pub enum EvidenceState {
     InsufficientEvidence,
     Ready,
     Unknown,
+    Missing,
+    Incompatible,
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -38,12 +44,41 @@ pub enum ReviewAction {
     InvestigateOperations,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FeedbackSnapshotRequest {
+    pub bundle_id: String,
+    pub bot_id: String,
+    pub attempt_id: String,
+    pub observation_start_ms: i64,
+    pub observation_end_ms: i64,
+    pub realization_cutoff_ms: i64,
+    pub required_observations: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FeedbackReportRequest {
+    pub snapshot_id: String,
+    pub lens: FeedbackLens,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ReviewDecisionRequest {
+    pub report_ids: Vec<String>,
+    pub action: ReviewAction,
+    pub rationale: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackSnapshotInput {
     pub user_id: String,
     pub bundle_id: String,
     pub bot_id: String,
+    #[serde(default)]
+    pub attempt_id: String,
     pub observation_start_ms: i64,
     pub observation_end_ms: i64,
     pub realization_cutoff_ms: i64,
@@ -97,6 +132,14 @@ pub struct ReviewDecision {
     pub input: ReviewDecisionInput,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PaperFeedbackView {
+    pub snapshots: Vec<FeedbackSnapshot>,
+    pub reports: Vec<FeedbackReport>,
+    pub decisions: Vec<ReviewDecision>,
+}
+
 #[derive(Clone)]
 pub struct PaperFeedbackStore {
     database: Arc<Mutex<Connection>>,
@@ -128,6 +171,15 @@ impl PaperFeedbackStore {
         input: FeedbackSnapshotInput,
         created_at_ms: i64,
     ) -> Result<FeedbackSnapshot, String> {
+        self.create_snapshot_with_state(input, created_at_ms, None)
+    }
+
+    pub(crate) fn create_snapshot_with_state(
+        &self,
+        input: FeedbackSnapshotInput,
+        created_at_ms: i64,
+        host_state: Option<EvidenceState>,
+    ) -> Result<FeedbackSnapshot, String> {
         validate_user_and_range(
             &input.user_id,
             input.observation_start_ms,
@@ -135,17 +187,24 @@ impl PaperFeedbackStore {
         )?;
         if input.bundle_id.trim().is_empty()
             || input.bot_id.trim().is_empty()
-            || input.realization_cutoff_ms < input.observation_start_ms
+            || input.attempt_id.trim().is_empty()
+            || input.realization_cutoff_ms < input.observation_end_ms
+            || input.required_observations == 0
+            || input.required_observations > 1_000_000
+            || !input.evidence.is_object()
+            || created_at_ms <= 0
         {
             return Err("invalid Paper Feedback Snapshot binding".into());
         }
-        let state = if input.realized_observations == 0 {
-            EvidenceState::NotYetRealized
-        } else if input.realized_observations < input.required_observations {
-            EvidenceState::InsufficientEvidence
-        } else {
-            EvidenceState::Ready
-        };
+        let state = host_state.unwrap_or_else(|| {
+            if input.realized_observations == 0 {
+                EvidenceState::NotYetRealized
+            } else if input.realized_observations < input.required_observations {
+                EvidenceState::InsufficientEvidence
+            } else {
+                EvidenceState::Ready
+            }
+        });
         let snapshot = FeedbackSnapshot {
             snapshot_id: Uuid::new_v4().to_string(),
             input,
@@ -177,12 +236,24 @@ impl PaperFeedbackStore {
         created_at_ms: i64,
     ) -> Result<FeedbackReport, String> {
         validate_user(&input.user_id)?;
+        if created_at_ms <= 0 {
+            return Err("invalid Paper Feedback Report timestamp".into());
+        }
         let conn = self.database.lock().map_err(|e| e.to_string())?;
         let snapshot_state: Option<String> = conn.query_row(
             "SELECT evidence_state FROM paper_feedback_snapshots WHERE snapshot_id=?1 AND user_id=?2",
             params![input.snapshot_id, input.user_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
         let snapshot_state = snapshot_state
             .ok_or_else(|| "Paper Feedback Snapshot was not found for User".to_string())?;
+        if input.snapshot_id.trim().is_empty()
+            || !input.metrics.is_object()
+            || input
+                .comparable_evidence_id
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err("invalid Paper Feedback Report binding".into());
+        }
         let state: EvidenceState =
             serde_json::from_str(&format!("\"{snapshot_state}\"")).map_err(|e| e.to_string())?;
         let report = FeedbackReport {
@@ -207,13 +278,140 @@ impl PaperFeedbackStore {
         Ok(report)
     }
 
+    pub(crate) fn snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<FeedbackSnapshot, String> {
+        validate_user(user_id)?;
+        let conn = self.database.lock().map_err(|e| e.to_string())?;
+        let row: (String, String, i64) = conn
+            .query_row(
+                "SELECT payload_json, evidence_state, created_at_ms
+                 FROM paper_feedback_snapshots WHERE snapshot_id=?1 AND user_id=?2",
+                params![snapshot_id, user_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|_| "Paper Feedback Snapshot was not found for User".to_owned())?;
+        Ok(FeedbackSnapshot {
+            snapshot_id: snapshot_id.to_owned(),
+            input: serde_json::from_str(&row.0).map_err(|e| e.to_string())?,
+            evidence_state: parse_enum(&row.1)?,
+            created_at_ms: row.2,
+        })
+    }
+
+    pub fn view(&self, user_id: &str) -> Result<PaperFeedbackView, String> {
+        validate_user(user_id)?;
+        let conn = self.database.lock().map_err(|e| e.to_string())?;
+        let snapshots = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT snapshot_id, payload_json, evidence_state, created_at_ms
+                     FROM paper_feedback_snapshots WHERE user_id=?1
+                     ORDER BY created_at_ms DESC, snapshot_id DESC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = statement
+                .query_map([user_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.map(|row| {
+                let (snapshot_id, payload, state, created_at_ms) =
+                    row.map_err(|e| e.to_string())?;
+                Ok(FeedbackSnapshot {
+                    snapshot_id,
+                    input: serde_json::from_str(&payload).map_err(|e| e.to_string())?,
+                    evidence_state: parse_enum(&state)?,
+                    created_at_ms,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?
+        };
+        let reports = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT report_id, payload_json, evidence_state, created_at_ms
+                     FROM paper_feedback_reports WHERE user_id=?1
+                     ORDER BY created_at_ms DESC, report_id DESC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = statement
+                .query_map([user_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.map(|row| {
+                let (report_id, payload, state, created_at_ms) = row.map_err(|e| e.to_string())?;
+                Ok(FeedbackReport {
+                    report_id,
+                    input: serde_json::from_str(&payload).map_err(|e| e.to_string())?,
+                    evidence_state: parse_enum(&state)?,
+                    created_at_ms,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?
+        };
+        let decisions = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT decision_id, payload_json
+                     FROM research_review_decisions WHERE user_id=?1
+                     ORDER BY decided_at_ms DESC, decision_id DESC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = statement
+                .query_map([user_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.map(|row| {
+                let (decision_id, payload) = row.map_err(|e| e.to_string())?;
+                Ok(ReviewDecision {
+                    decision_id,
+                    input: serde_json::from_str(&payload).map_err(|e| e.to_string())?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?
+        };
+        Ok(PaperFeedbackView {
+            snapshots,
+            reports,
+            decisions,
+        })
+    }
+
     pub fn record_review_decision(
         &self,
         input: ReviewDecisionInput,
     ) -> Result<ReviewDecision, String> {
         validate_user(&input.user_id)?;
-        if input.report_ids.is_empty() || input.rationale.trim().is_empty() {
+        if input.report_ids.is_empty()
+            || input.rationale.trim().is_empty()
+            || input.decided_at_ms <= 0
+        {
             return Err("a review decision requires reports and rationale".into());
+        }
+        if input.rationale.chars().count() > 2_000
+            || input.report_ids.iter().any(|id| id.trim().is_empty())
+            || input.report_ids.len() > 64
+        {
+            return Err("invalid Research Review Decision".into());
+        }
+        let unique_report_ids = input.report_ids.iter().collect::<HashSet<_>>();
+        if unique_report_ids.len() != input.report_ids.len() {
+            return Err("a Research Review Decision cannot cite a Report twice".into());
         }
         let conn = self.database.lock().map_err(|e| e.to_string())?;
         for report_id in &input.report_ids {
@@ -263,6 +461,10 @@ fn enum_name<T: Serialize>(value: T) -> Result<String, String> {
         .to_owned())
 }
 
+fn parse_enum<T: for<'de> serde::Deserialize<'de>>(value: &str) -> Result<T, String> {
+    serde_json::from_str(&format!("\"{value}\"")).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +477,7 @@ mod tests {
             user_id: "user".into(),
             bundle_id: "bundle-v1".into(),
             bot_id: "bot".into(),
+            attempt_id: "attempt".into(),
             observation_start_ms: 10,
             observation_end_ms: 20,
             realization_cutoff_ms: 20,
@@ -348,5 +551,92 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn view_rehydrates_immutable_records_and_host_state() {
+        let s = store();
+        let snapshot = s
+            .create_snapshot_with_state(snapshot_input(), 1, Some(EvidenceState::Unknown))
+            .unwrap();
+        let report = s
+            .create_report(
+                FeedbackReportInput {
+                    user_id: "user".into(),
+                    snapshot_id: snapshot.snapshot_id.clone(),
+                    lens: FeedbackLens::Factor,
+                    metrics: serde_json::json!({
+                        "directionalConclusion": false,
+                        "retainedCounts": {"decisionBatches": 0}
+                    }),
+                    comparable_evidence_id: None,
+                },
+                2,
+            )
+            .unwrap();
+        let decision = s
+            .record_review_decision(ReviewDecisionInput {
+                user_id: "user".into(),
+                report_ids: vec![report.report_id.clone()],
+                action: ReviewAction::InvestigateOperations,
+                rationale: "Reconcile the retained account before drawing a conclusion".into(),
+                decided_at_ms: 3,
+            })
+            .unwrap();
+
+        let view = s.view("user").unwrap();
+        assert_eq!(view.snapshots.len(), 1);
+        assert_eq!(view.snapshots[0].evidence_state, EvidenceState::Unknown);
+        assert_eq!(view.reports[0].evidence_state, EvidenceState::Unknown);
+        assert_eq!(view.decisions[0].decision_id, decision.decision_id);
+        assert!(s.view("other").unwrap().snapshots.is_empty());
+    }
+
+    #[test]
+    fn snapshots_reject_unbounded_cutoff_and_missing_host_evidence() {
+        let s = store();
+        let mut input = snapshot_input();
+        input.realization_cutoff_ms = 19;
+        assert!(s.create_snapshot(input, 1).is_err());
+
+        let mut input = snapshot_input();
+        input.evidence = Value::Null;
+        assert!(s.create_snapshot(input, 1).is_err());
+
+        let mut input = snapshot_input();
+        input.required_observations = 1_000_001;
+        assert!(s.create_snapshot(input, 1).is_err());
+    }
+
+    #[test]
+    fn every_lens_inherits_the_snapshot_evidence_state() {
+        let s = store();
+        let snapshot = s
+            .create_snapshot_with_state(
+                snapshot_input(),
+                1,
+                Some(EvidenceState::InsufficientEvidence),
+            )
+            .unwrap();
+        for lens in [
+            FeedbackLens::Factor,
+            FeedbackLens::Model,
+            FeedbackLens::Strategy,
+            FeedbackLens::Execution,
+        ] {
+            let report = s
+                .create_report(
+                    FeedbackReportInput {
+                        user_id: "user".into(),
+                        snapshot_id: snapshot.snapshot_id.clone(),
+                        lens,
+                        metrics: serde_json::json!({"directionalConclusion": false}),
+                        comparable_evidence_id: None,
+                    },
+                    2,
+                )
+                .unwrap();
+            assert_eq!(report.evidence_state, EvidenceState::InsufficientEvidence);
+        }
     }
 }

@@ -216,20 +216,24 @@ export function OperationsDashboard() {
 					<CardDescription>{t("operations.evidenceDescription")}</CardDescription>
 				</CardHeader>
 				<CardContent className="grid gap-2 text-sm sm:grid-cols-4">
-					{(["/factors", "/markets/crypto"] as const).map((to) => (
-						<Link
-							key={to}
-							to={to}
-							className="flex items-center justify-between rounded-md border px-3 py-2 hover:bg-muted"
-						>
-							<span>
-								{to === "/factors"
-									? t("nav.factorResearch")
-									: to.replace("/markets/", "")}
-							</span>
-							<span aria-hidden="true">→</span>
-						</Link>
-					))}
+					{(["/factors", "/markets/crypto", "/paper-feedback"] as const).map(
+						(to) => (
+							<Link
+								key={to}
+								to={to}
+								className="flex items-center justify-between rounded-md border px-3 py-2 hover:bg-muted"
+							>
+								<span>
+									{to === "/factors"
+										? t("nav.factorResearch")
+										: to === "/paper-feedback"
+											? t("nav.paperFeedback")
+											: to.replace("/markets/", "")}
+								</span>
+								<span aria-hidden="true">→</span>
+							</Link>
+						),
+					)}
 				</CardContent>
 			</Card>
 			<p className="text-xs text-muted-foreground">

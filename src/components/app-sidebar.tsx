@@ -80,7 +80,8 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 	const activeModule =
 		location.pathname === "/operations" ||
 		location.pathname === "/paper-trading" ||
-		location.pathname === "/bots"
+		location.pathname === "/bots" ||
+		location.pathname === "/paper-feedback"
 			? "operations"
 			: location.pathname === "/factors"
 				? "factor"
@@ -221,6 +222,12 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 													icon={<BotIcon aria-hidden="true" />}
 													active={location.pathname === "/bots"}
 												/>
+												<SidebarLink
+													to="/paper-feedback"
+													label={t("nav.paperFeedback")}
+													icon={<FileTextIcon aria-hidden="true" />}
+													active={location.pathname === "/paper-feedback"}
+												/>
 											</>
 										) : null}
 										{module.id === "strategy" ? (
@@ -304,6 +311,7 @@ function SidebarLink({
 		| "/operations"
 		| "/paper-trading"
 		| "/bots"
+		| "/paper-feedback"
 		| "/components";
 	label: string;
 	icon: ReactNode;

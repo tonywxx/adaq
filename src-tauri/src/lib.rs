@@ -588,37 +588,311 @@ fn operations_alerts(
 
 #[tauri::command]
 fn paper_feedback_snapshot_create(
-    mut input: paper_feedback::FeedbackSnapshotInput,
-    created_at_ms: i64,
+    request: paper_feedback::FeedbackSnapshotRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
+    bots: State<'_, Arc<bot_operations::BotStore>>,
 ) -> Result<paper_feedback::FeedbackSnapshot, String> {
-    input.user_id = auth.user_id_for_window(window.label())?;
-    state.paper_feedback.create_snapshot(input, created_at_ms)
+    let user_id = auth.user_id_for_window(window.label())?;
+    let now_ms = unix_now_ms();
+    let (bot, attempt) = bots.feedback_binding(
+        &user_id,
+        &request.bot_id,
+        &request.bundle_id,
+        &request.attempt_id,
+        request.observation_start_ms,
+        request.observation_end_ms,
+        now_ms,
+    )?;
+    let account = state.paper_trading.view_optional(&user_id)?;
+    if account
+        .as_ref()
+        .is_some_and(|account| account.account.account_id != bot.bundle.account_id)
+    {
+        return Err("Paper account evidence does not match the Deployment Bundle".into());
+    }
+    let health = state.operations.health_for_user(&user_id)?;
+    let evidence = paper_feedback_evidence(&bot, &attempt, account.as_ref(), &health);
+    let host_state = paper_feedback_state(&bot, &attempt, account.as_ref(), &health);
+    state.paper_feedback.create_snapshot_with_state(
+        paper_feedback::FeedbackSnapshotInput {
+            user_id,
+            bundle_id: request.bundle_id,
+            bot_id: request.bot_id,
+            attempt_id: request.attempt_id,
+            observation_start_ms: request.observation_start_ms,
+            observation_end_ms: request.observation_end_ms,
+            realization_cutoff_ms: request.realization_cutoff_ms,
+            realized_observations: 0,
+            required_observations: request.required_observations,
+            evidence,
+        },
+        now_ms,
+        Some(host_state),
+    )
+}
+
+#[tauri::command]
+fn paper_feedback_view(
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<paper_feedback::PaperFeedbackView, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state.paper_feedback.view(&user_id)
 }
 
 #[tauri::command]
 fn paper_feedback_report_create(
-    mut input: paper_feedback::FeedbackReportInput,
-    created_at_ms: i64,
+    request: paper_feedback::FeedbackReportRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<paper_feedback::FeedbackReport, String> {
-    input.user_id = auth.user_id_for_window(window.label())?;
-    state.paper_feedback.create_report(input, created_at_ms)
+    let user_id = auth.user_id_for_window(window.label())?;
+    let snapshot = state
+        .paper_feedback
+        .snapshot_for_user(&user_id, &request.snapshot_id)?;
+    let report = state.paper_feedback.create_report(
+        paper_feedback::FeedbackReportInput {
+            user_id: user_id.clone(),
+            snapshot_id: request.snapshot_id,
+            lens: request.lens,
+            metrics: paper_feedback_metrics(&snapshot, request.lens),
+            comparable_evidence_id: None,
+        },
+        unix_now_ms(),
+    )?;
+    if matches!(
+        report.evidence_state,
+        paper_feedback::EvidenceState::Unknown
+            | paper_feedback::EvidenceState::Missing
+            | paper_feedback::EvidenceState::Incompatible
+            | paper_feedback::EvidenceState::Failed
+    ) {
+        state.operations.observe(operations::HealthObservation {
+            user_id,
+            entity_id: report.report_id.clone(),
+            dimension: operations::HealthDimension::ResearchFeedback,
+            state: operations::HealthState::Degraded,
+            condition: "Research Review Required".into(),
+            evidence: serde_json::json!({
+                "reportId": report.report_id,
+                "snapshotId": report.input.snapshot_id,
+                "lens": report.input.lens,
+                "evidenceState": report.evidence_state,
+            }),
+            required: true,
+            observed_at_ms: report.created_at_ms,
+        })?;
+    }
+    Ok(report)
 }
 
 #[tauri::command]
 fn paper_feedback_review_decide(
-    mut input: paper_feedback::ReviewDecisionInput,
+    request: paper_feedback::ReviewDecisionRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<paper_feedback::ReviewDecision, String> {
-    input.user_id = auth.user_id_for_window(window.label())?;
-    state.paper_feedback.record_review_decision(input)
+    let user_id = auth.user_id_for_window(window.label())?;
+    state
+        .paper_feedback
+        .record_review_decision(paper_feedback::ReviewDecisionInput {
+            user_id,
+            report_ids: request.report_ids,
+            action: request.action,
+            rationale: request.rationale,
+            decided_at_ms: unix_now_ms(),
+        })
+}
+
+fn paper_feedback_state(
+    bot: &bot_operations::BotView,
+    attempt: &bot_operations::BotRuntimeAttempt,
+    account: Option<&paper_trading::PaperAccountView>,
+    health: &[operations::HealthView],
+) -> paper_feedback::EvidenceState {
+    let scope_compatible = account.is_none_or(|account| {
+        account
+            .account
+            .positions
+            .keys()
+            .chain(account.orders.iter().map(|order| &order.instrument))
+            .all(|instrument| instrument_in_scope(&bot.bundle.schedule, instrument))
+    });
+    if !scope_compatible {
+        return paper_feedback::EvidenceState::Incompatible;
+    }
+    if account.is_none() {
+        return paper_feedback::EvidenceState::Missing;
+    }
+    if attempt.state == adaq_bot_runtime::LifecycleState::Faulted {
+        return paper_feedback::EvidenceState::Failed;
+    }
+    if attempt.reconciliation_required
+        || account.is_some_and(|account| {
+            account.restart_required
+                || account.reconciliation
+                    != adaq_paper_trading_core::ReconciliationState::Reconciled
+        })
+        || health.iter().any(|item| {
+            item.required
+                && matches!(
+                    item.state,
+                    operations::HealthState::Critical | operations::HealthState::Unknown
+                )
+        })
+    {
+        return paper_feedback::EvidenceState::Unknown;
+    }
+    paper_feedback::EvidenceState::NotYetRealized
+}
+
+fn paper_feedback_evidence(
+    bot: &bot_operations::BotView,
+    attempt: &bot_operations::BotRuntimeAttempt,
+    account: Option<&paper_trading::PaperAccountView>,
+    health: &[operations::HealthView],
+) -> serde_json::Value {
+    serde_json::json!({
+        "bundle": {
+            "identity": bot.bundle.identity,
+            "botId": bot.bundle.bot_id,
+            "marketDataSnapshotId": bot.bundle.market_data_snapshot_id,
+            "strategyPackageArchiveSha256": bot.bundle.strategy_package_archive_sha256,
+            "pipelinePackageArchiveSha256": bot.bundle.pipeline_package_archive_sha256,
+            "accountId": bot.bundle.account_id,
+            "connectionProfileId": bot.bundle.connection_profile_id,
+            "schedule": bot.bundle.schedule,
+            "runtimeBundleIdentity": bot.bundle.runtime_bundle.identity,
+        },
+        "runtime": {
+            "attemptId": attempt.attempt_id,
+            "state": attempt.state,
+            "reconciliationRequired": attempt.reconciliation_required,
+            "eventCount": attempt.events.len(),
+            "decisionBatchCount": attempt.decisions.len(),
+            "evidence": attempt.evidence.iter().map(|item| serde_json::json!({
+                "kind": item.kind,
+                "code": item.code,
+                "relatedId": item.related_id,
+                "observedAtMs": item.observed_at_ms,
+            })).collect::<Vec<_>>(),
+            "decisions": attempt.decisions.iter().map(|item| serde_json::json!({
+                "requestId": item.request_id,
+                "decisionId": item.decision_id,
+                "outcome": item.outcome,
+                "targetHash": item.target_hash,
+                "observedAtMs": item.observed_at_ms,
+            })).collect::<Vec<_>>(),
+            "orders": attempt.orders.iter().map(|item| serde_json::json!({
+                "operationId": item.operation_id,
+                "decisionId": item.decision_id,
+                "status": item.status,
+                "providerOrderId": item.provider_order_id,
+                "observedAtMs": item.observed_at_ms,
+            })).collect::<Vec<_>>(),
+        },
+        "paper": account.map(|account| serde_json::json!({
+            "accountId": account.account.account_id,
+            "currency": account.account.currency,
+            "observedAtMs": account.account.observed_at_ms,
+            "reconciliation": account.reconciliation,
+            "restartRequired": account.restart_required,
+            "positionInstruments": account.account.positions.keys().collect::<Vec<_>>(),
+            "orderCount": account.orders.len(),
+            "fillCount": account.fills.len(),
+            "riskDecisionCount": account.risk_decisions.len(),
+            "orders": account.orders.iter().map(|order| serde_json::json!({
+                "orderId": order.order_id,
+                "instrument": order.instrument,
+                "status": order.status,
+                "submittedAtMs": order.submitted_at_ms,
+            })).collect::<Vec<_>>(),
+            "fills": account.fills.iter().map(|fill| serde_json::json!({
+                "fillId": fill.fill_id,
+                "orderId": fill.order_id,
+                "occurredAtMs": fill.occurred_at_ms,
+                "fee": fill.fee,
+            })).collect::<Vec<_>>(),
+        })),
+        "operations": {
+            "health": health.iter().map(|item| serde_json::json!({
+                "entityId": item.entity_id,
+                "dimension": item.dimension,
+                "state": item.state,
+                "required": item.required,
+                "observedAtMs": item.observed_at_ms,
+                "eventId": item.event_id,
+            })).collect::<Vec<_>>(),
+        },
+        "retention": {
+            "providerEvidenceIncluded": false,
+            "credentialsIncluded": false,
+            "rawSecretsIncluded": false,
+        },
+    })
+}
+
+fn paper_feedback_metrics(
+    snapshot: &paper_feedback::FeedbackSnapshot,
+    lens: paper_feedback::FeedbackLens,
+) -> serde_json::Value {
+    let counts = snapshot
+        .input
+        .evidence
+        .get("paper")
+        .map(|paper| {
+            serde_json::json!({
+                "decisionBatches": snapshot.input.evidence["runtime"]["decisionBatchCount"],
+                "orders": paper["orderCount"],
+                "fills": paper["fillCount"],
+                "riskDecisions": paper["riskDecisionCount"],
+            })
+        })
+        .unwrap_or_else(|| serde_json::json!({}));
+    let lens_metrics = match lens {
+        paper_feedback::FeedbackLens::Factor => serde_json::json!({
+            "realizedFactorSamples": 0,
+            "factorOutputsAvailable": false,
+        }),
+        paper_feedback::FeedbackLens::Model => serde_json::json!({
+            "realizedPredictionSamples": 0,
+            "predictionQualityAvailable": false,
+        }),
+        paper_feedback::FeedbackLens::Strategy => serde_json::json!({
+            "returnAndDrawdownAvailable": false,
+            "riskAndExecutionCounts": counts,
+        }),
+        paper_feedback::FeedbackLens::Execution => serde_json::json!({
+            "acknowledgementAndFillEvidenceAvailable": snapshot.input.evidence["paper"].is_object(),
+            "executionCounts": counts,
+        }),
+    };
+    serde_json::json!({
+        "lens": lens,
+        "evidenceState": snapshot.evidence_state,
+        "realizedObservations": snapshot.input.realized_observations,
+        "requiredObservations": snapshot.input.required_observations,
+        "observationStartMs": snapshot.input.observation_start_ms,
+        "observationEndMs": snapshot.input.observation_end_ms,
+        "directionalConclusion": false,
+        "retainedCounts": counts,
+        "lensMetrics": lens_metrics,
+        "note": "Host-retained evidence is not sufficient for a directional conclusion.",
+    })
+}
+
+fn instrument_in_scope(schedule: &bot_operations::BotSchedule, instrument: &str) -> bool {
+    match schedule {
+        bot_operations::BotSchedule::ClosedBar { instrument_id, .. } => instrument_id == instrument,
+        bot_operations::BotSchedule::ScheduledCrossSection { instruments, .. } => {
+            instruments.iter().any(|candidate| candidate == instrument)
+        }
+    }
 }
 
 #[tauri::command]
@@ -4691,6 +4965,7 @@ pub fn run() {
             operations_alerts,
             operations_alert_transition,
             paper_feedback_snapshot_create,
+            paper_feedback_view,
             paper_feedback_report_create,
             paper_feedback_review_decide,
             paper_account_view,

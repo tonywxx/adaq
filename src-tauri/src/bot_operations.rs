@@ -523,6 +523,44 @@ impl BotStore {
         self.load_record(user_id, bot_id).map(|bot| bot.view())
     }
 
+    pub(crate) fn feedback_binding(
+        &self,
+        user_id: &str,
+        bot_id: &str,
+        bundle_id: &str,
+        attempt_id: &str,
+        observation_start_ms: i64,
+        observation_end_ms: i64,
+        now_ms: i64,
+    ) -> Result<(BotView, BotRuntimeAttempt), String> {
+        let bot = self.get(user_id, bot_id)?;
+        bot.bundle.verify()?;
+        if bot.bundle.identity != bundle_id || bot.current_attempt_id.as_deref() != Some(attempt_id)
+        {
+            return Err(
+                "Paper Feedback must reference the current exact Bot Deployment Bundle and Runtime Attempt"
+                    .into(),
+            );
+        }
+        let attempt = bot
+            .attempts
+            .iter()
+            .find(|attempt| attempt.attempt_id == attempt_id)
+            .cloned()
+            .ok_or_else(|| "Bot Runtime Attempt was not found".to_owned())?;
+        if attempt.bot_id != bot.bot_id
+            || attempt.bundle_identity != bot.bundle.identity
+            || observation_start_ms > observation_end_ms
+            || observation_start_ms < attempt.created_at_ms
+            || observation_end_ms > now_ms
+        {
+            return Err(
+                "Paper Feedback observation range is incompatible with the Runtime Attempt".into(),
+            );
+        }
+        Ok((bot, attempt))
+    }
+
     pub(crate) fn command(
         &self,
         user_id: &str,
@@ -4138,6 +4176,75 @@ mod tests {
 
     fn store(database: Arc<Mutex<Connection>>) -> BotStore {
         BotStore::open(database).unwrap()
+    }
+
+    #[test]
+    fn feedback_binding_rejects_foreign_or_stale_runtime_identity() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = store(database);
+        let deployed = store
+            .deploy("user-a", bundle("bot-a", "account-a"))
+            .unwrap();
+        let (attempt_id, bundle) = store.begin_attempt("user-a", "bot-a", false).unwrap();
+        let attempt = store
+            .get("user-a", "bot-a")
+            .unwrap()
+            .attempts
+            .into_iter()
+            .find(|attempt| attempt.attempt_id == attempt_id)
+            .unwrap();
+        let (_, bound_attempt) = store
+            .feedback_binding(
+                "user-a",
+                "bot-a",
+                &bundle.identity,
+                &attempt_id,
+                attempt.created_at_ms,
+                attempt.updated_at_ms,
+                attempt.updated_at_ms,
+            )
+            .unwrap();
+        assert_eq!(bound_attempt.attempt_id, attempt_id);
+        assert_eq!(deployed.bundle.identity, bundle.identity);
+        assert!(
+            store
+                .feedback_binding(
+                    "user-a",
+                    "bot-a",
+                    "foreign-bundle",
+                    &attempt_id,
+                    attempt.created_at_ms,
+                    attempt.updated_at_ms,
+                    attempt.updated_at_ms,
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .feedback_binding(
+                    "user-a",
+                    "bot-a",
+                    &bundle.identity,
+                    &attempt_id,
+                    attempt.created_at_ms,
+                    attempt.updated_at_ms + 1,
+                    attempt.updated_at_ms,
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .feedback_binding(
+                    "user-b",
+                    "bot-a",
+                    &bundle.identity,
+                    &attempt_id,
+                    attempt.created_at_ms,
+                    attempt.updated_at_ms,
+                    attempt.updated_at_ms,
+                )
+                .is_err()
+        );
     }
 
     #[test]
