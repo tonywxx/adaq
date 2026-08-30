@@ -1326,6 +1326,10 @@ _Avoid_: authoritative ledger, Worker state, frontend-owned trading state
 The localized GUI navigation area under `/markets` for inspecting market and data evidence through Overview, Crypto, China A-share, and United States Equity routes. It presents one asset-neutral Watchlist, Instrument search, Venue-local session state, Ticker and Bar views, provider coverage, freshness, quality, and rule summaries without becoming the Operations Dashboard or an order-entry terminal.
 _Avoid_: Operations Dashboard, Market Data Connector, full trading terminal
 
+**Paper Trading Workspace**:
+The localized GUI navigation area under `/paper-trading` for inspecting one User's OKX Demo account snapshots, reservations, positions, Orders, Fills, Risk Decisions, and reconciliation evidence. It permits only explicitly confirmed reconciliation; it is not direct order entry, Bot control, or the Operations Dashboard.
+_Avoid_: Paper Workspace, trading terminal, Bot controls, Operations Dashboard
+
 **Feature Workspace**:
 The localized GUI area at `/features` for editing Feature Definition Drafts and inspecting published Definitions, Transformation Fitting Attempts, Feature Materialization Attempts, and Feature Datasets. Its Preview is transient and never becomes authoritative Feature evidence.
 _Avoid_: Factor Lab, Model Lab, notebook editor
