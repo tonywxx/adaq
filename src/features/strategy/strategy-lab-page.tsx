@@ -135,6 +135,33 @@ type Candidate = {
 	}>;
 };
 
+type QualificationAttempt = {
+	attemptId: string;
+	candidateId: string;
+	candidateRevision: number;
+	status: "running" | "failed" | "ready-for-review";
+	candidateRevisionHash: string;
+	package?: Record<string, unknown>;
+	context: Record<string, unknown>;
+	backtestRunId?: string;
+	validationProtocolId?: string;
+	validationReportId?: string;
+	diagnostics: Array<{ stage: string; code: string; message: string }>;
+};
+
+type Qualification = {
+	qualificationId: string;
+	attemptId: string;
+	candidateId: string;
+	candidateRevision: number;
+	candidateRevisionHash: string;
+	backtestRunId: string;
+	validationProtocolId: string;
+	validationReportId: string;
+	gate12Eligible: boolean;
+	gate12ContinuationRequired: boolean;
+};
+
 const afterPaint = () =>
 	new Promise<void>((resolve) => {
 		if (
@@ -277,7 +304,13 @@ export function StrategyLabPage() {
 	const [draftDirty, setDraftDirty] = useState(false);
 	const [preflight, setPreflight] = useState<Preflight>();
 	const [busy, setBusy] = useState<
-		"loading" | "preflight" | "create" | "retry" | ""
+		| "loading"
+		| "preflight"
+		| "create"
+		| "retry"
+		| "qualification"
+		| "qualify"
+		| ""
 	>("");
 	const [message, setMessage] = useState("");
 	const [error, setError] = useState("");
@@ -428,6 +461,49 @@ export function StrategyLabPage() {
 			await refresh();
 		} catch (requestError) {
 			setError(t("strategyLab.error", { error: formatError(requestError) }));
+		} finally {
+			setBusy("");
+		}
+	};
+
+	const runQualification = async (request: Record<string, unknown>) => {
+		setBusy("qualification");
+		setError("");
+		setMessage("");
+		try {
+			const attempt = (await invoke("strategy_qualification_run", {
+				request,
+			})) as QualificationAttempt;
+			setMessage(
+				attempt.status === "ready-for-review"
+					? t("strategyLab.qualification.ready")
+					: t("strategyLab.qualification.failed"),
+			);
+			return attempt;
+		} catch (requestError) {
+			setError(
+				t("strategyLab.qualification.error", { error: formatError(requestError) }),
+			);
+			return undefined;
+		} finally {
+			setBusy("");
+		}
+	};
+
+	const qualifyAttempt = async (attemptId: string) => {
+		setBusy("qualify");
+		setError("");
+		try {
+			const qualification = (await invoke("strategy_qualification_qualify", {
+				request: { attemptId },
+			})) as Qualification;
+			setMessage(t("strategyLab.qualification.qualified"));
+			return qualification;
+		} catch (requestError) {
+			setError(
+				t("strategyLab.qualification.error", { error: formatError(requestError) }),
+			);
+			return undefined;
 		} finally {
 			setBusy("");
 		}
@@ -685,6 +761,14 @@ export function StrategyLabPage() {
 				</CardContent>
 			</Card>
 
+			<QualificationPanel
+				candidates={candidates}
+				userId={userId}
+				busy={busy}
+				onRun={runQualification}
+				onQualify={qualifyAttempt}
+			/>
+
 			<section aria-labelledby="strategy-history-heading">
 				<div className="mb-3 flex items-center justify-between gap-3">
 					<h2 id="strategy-history-heading" className="text-xl font-semibold">
@@ -866,6 +950,350 @@ function PreflightStatus({ preflight }: { preflight: Preflight }) {
 					{t("strategyLab.hostRejected")} {diagnostic.code} · {diagnostic.path}
 				</p>
 			))}
+		</div>
+	);
+}
+
+function QualificationPanel({
+	candidates,
+	userId,
+	busy,
+	onRun,
+	onQualify,
+}: {
+	candidates: Candidate[];
+	userId: string | null;
+	busy: string;
+	onRun: (
+		request: Record<string, unknown>,
+	) => Promise<QualificationAttempt | undefined>;
+	onQualify: (attemptId: string) => Promise<Qualification | undefined>;
+}) {
+	const { t } = useTranslation();
+	const [candidateKey, setCandidateKey] = useState("");
+	const [snapshotId, setSnapshotId] = useState("");
+	const [universeSnapshotId, setUniverseSnapshotId] = useState("");
+	const [selectionStart, setSelectionStart] = useState("");
+	const [selectionEnd, setSelectionEnd] = useState("");
+	const [finalStart, setFinalStart] = useState("");
+	const [finalEnd, setFinalEnd] = useState("");
+	const [signalDatasetIds, setSignalDatasetIds] = useState("");
+	const [attempt, setAttempt] = useState<QualificationAttempt>();
+	const [qualification, setQualification] = useState<Qualification>();
+	const [reviewed, setReviewed] = useState(false);
+
+	const options = useMemo(
+		() =>
+			candidates.flatMap((candidate) =>
+				candidate.revisions
+					.filter((item) => item.eligible)
+					.map((item) => ({
+						key: `${candidate.candidateId}:${item.revision.revision}`,
+						candidate,
+						item,
+					})),
+			),
+		[candidates],
+	);
+	const selected = useMemo(
+		() => options.find((option) => option.key === candidateKey),
+		[candidateKey, options],
+	);
+	const modelSlots = useMemo(
+		() =>
+			selected?.item.revision.definition.inputSlots.filter(
+				(slot) => slot.inputType === "forecast-signal",
+			) ?? [],
+		[selected],
+	);
+
+	useEffect(() => {
+		if (!selected && options[0]) setCandidateKey(options[0].key);
+	}, [options, selected]);
+
+	useEffect(() => {
+		if (!selected) return;
+		const context = selected.item.revision.semanticContext;
+		setSnapshotId(context.snapshotId);
+		setUniverseSnapshotId("");
+		setReviewed(false);
+		setAttempt(undefined);
+		setQualification(undefined);
+	}, [selected]);
+
+	const integer = (value: string) => {
+		const number = Number(value);
+		return Number.isSafeInteger(number) ? number : undefined;
+	};
+	const datasetIds = signalDatasetIds
+		.split(",")
+		.map((value) => value.trim())
+		.filter(Boolean);
+	const canRun = Boolean(
+		userId &&
+			selected &&
+			snapshotId.trim() &&
+			universeSnapshotId.trim() &&
+			integer(selectionStart) !== undefined &&
+			integer(selectionEnd) !== undefined &&
+			integer(finalStart) !== undefined &&
+			integer(finalEnd) !== undefined &&
+			datasetIds.length === modelSlots.length,
+	);
+
+	const run = async () => {
+		if (!selected || !canRun) return;
+		const selectionStartMs = integer(selectionStart);
+		const selectionEndMs = integer(selectionEnd);
+		const finalStartMs = integer(finalStart);
+		const finalEndMs = integer(finalEnd);
+		if (
+			selectionStartMs === undefined ||
+			selectionEndMs === undefined ||
+			finalStartMs === undefined ||
+			finalEndMs === undefined
+		)
+			return;
+		const nextAttempt = await onRun({
+			userId,
+			candidateId: selected.candidate.candidateId,
+			candidateRevision: selected.item.revision.revision,
+			snapshotId: snapshotId.trim(),
+			universeSnapshotId: universeSnapshotId.trim(),
+			selectionWindow: {
+				startTimeMs: selectionStartMs,
+				endTimeMs: selectionEndMs,
+			},
+			finalWindow: { startTimeMs: finalStartMs, endTimeMs: finalEndMs },
+			signalInstances: modelSlots.map((slot, index) => ({
+				slot: slot.alias,
+				datasetId: datasetIds[index],
+				signalName: String(
+					(slot.binding as { outputName?: string }).outputName ?? "",
+				),
+			})),
+			initialQuoteAllocation: "10000",
+			executionProfile: {
+				makerFeeRate: "0.0008",
+				takerFeeRate: "0.001",
+				adverseSlippageRate: "0",
+				rebalanceThreshold: "0",
+				priceIncrement: "0.0001",
+				quantityIncrement: "0.0001",
+				minimumQuantity: "0.0001",
+				riskFreeRate: "0",
+				fillPolicy: "taker",
+			},
+			riskPolicy: {
+				policyId: "gate-11-default",
+				maxInstrumentWeight: "1",
+				maxTurnover: null,
+			},
+			seed: 0,
+		});
+		setAttempt(nextAttempt);
+		setQualification(undefined);
+		setReviewed(false);
+	};
+
+	const qualify = async () => {
+		if (!attempt || !reviewed) return;
+		setQualification(await onQualify(attempt.attemptId));
+	};
+
+	return (
+		<Card>
+			<CardHeader>
+				<CardTitle>{t("strategyLab.qualification.title")}</CardTitle>
+				<CardDescription>
+					{t("strategyLab.qualification.description")}
+				</CardDescription>
+			</CardHeader>
+			<CardContent className="space-y-4">
+				<div className="grid gap-4 md:grid-cols-2">
+					<div className="space-y-2 md:col-span-2">
+						<Label htmlFor="qualification-candidate">
+							{t("strategyLab.qualification.candidateRevision")}
+						</Label>
+						<select
+							id="qualification-candidate"
+							className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+							value={candidateKey}
+							onChange={(event) => setCandidateKey(event.target.value)}
+						>
+							<option value="">{t("strategyLab.qualification.selectRevision")}</option>
+							{options.map(({ key, candidate, item }) => (
+								<option key={key} value={key}>
+									{candidate.candidateId.slice(0, 12)} · {item.revision.revision} ·{" "}
+									{candidate.scope}
+								</option>
+							))}
+						</select>
+					</div>
+					<Field
+						id="qualification-snapshot"
+						label={t("strategyLab.qualification.snapshot")}
+						value={snapshotId}
+						onChange={setSnapshotId}
+					/>
+					<Field
+						id="qualification-universe"
+						label={t("strategyLab.qualification.universeSnapshot")}
+						value={universeSnapshotId}
+						onChange={setUniverseSnapshotId}
+					/>
+				</div>
+				<div className="grid gap-4 md:grid-cols-4">
+					<Field
+						id="qualification-selection-start"
+						label={t("strategyLab.qualification.selectionStart")}
+						value={selectionStart}
+						onChange={setSelectionStart}
+						type="number"
+					/>
+					<Field
+						id="qualification-selection-end"
+						label={t("strategyLab.qualification.selectionEnd")}
+						value={selectionEnd}
+						onChange={setSelectionEnd}
+						type="number"
+					/>
+					<Field
+						id="qualification-final-start"
+						label={t("strategyLab.qualification.finalStart")}
+						value={finalStart}
+						onChange={setFinalStart}
+						type="number"
+					/>
+					<Field
+						id="qualification-final-end"
+						label={t("strategyLab.qualification.finalEnd")}
+						value={finalEnd}
+						onChange={setFinalEnd}
+						type="number"
+					/>
+				</div>
+				<Field
+					id="qualification-signals"
+					label={t("strategyLab.qualification.signalDatasets")}
+					value={signalDatasetIds}
+					onChange={setSignalDatasetIds}
+					placeholder={t("strategyLab.qualification.signalDatasetsHint")}
+				/>
+				<div className="flex flex-wrap gap-3">
+					<Button
+						type="button"
+						onClick={() => void run()}
+						disabled={!canRun || busy !== ""}
+					>
+						{busy === "qualification"
+							? t("strategyLab.qualification.running")
+							: t("strategyLab.qualification.run")}
+					</Button>
+					{attempt?.status === "ready-for-review" ? (
+						<label className="flex items-center gap-2 text-sm">
+							<input
+								type="checkbox"
+								checked={reviewed}
+								onChange={(event) => setReviewed(event.target.checked)}
+							/>
+							{t("strategyLab.qualification.reviewed")}
+						</label>
+					) : null}
+					<Button
+						type="button"
+						variant="secondary"
+						onClick={() => void qualify()}
+						disabled={
+							attempt?.status !== "ready-for-review" || !reviewed || busy !== ""
+						}
+					>
+						{busy === "qualify"
+							? t("strategyLab.qualification.qualifying")
+							: t("strategyLab.qualification.qualify")}
+					</Button>
+				</div>
+				{attempt ? (
+					<div className="rounded-md border p-3 text-sm" aria-live="polite">
+						<div className="flex flex-wrap justify-between gap-2">
+							<span>{t("strategyLab.qualification.attemptStatus")}</span>
+							<Badge
+								variant={
+									attempt.status === "ready-for-review" ? "default" : "destructive"
+								}
+							>
+								{attempt.status}
+							</Badge>
+						</div>
+						<code className="break-all text-xs">{attempt.attemptId}</code>
+						{attempt.diagnostics.map((diagnostic) => (
+							<p
+								className="mt-2 font-mono text-xs text-destructive"
+								key={`${diagnostic.stage}-${diagnostic.code}`}
+							>
+								{diagnostic.code}: {diagnostic.message}
+							</p>
+						))}
+						{attempt.status === "ready-for-review" ? (
+							<details open className="mt-3 rounded-md bg-muted/40 p-3">
+								<summary className="cursor-pointer font-medium">
+									{t("strategyLab.qualification.evidence")}
+								</summary>
+								<pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all text-xs">
+									{JSON.stringify(attempt, null, 2)}
+								</pre>
+							</details>
+						) : null}
+					</div>
+				) : null}
+				{qualification ? (
+					<div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-sm">
+						<p className="font-medium">{t("strategyLab.qualification.qualified")}</p>
+						<code className="break-all text-xs">{qualification.qualificationId}</code>
+						<p className="mt-2 text-muted-foreground">
+							{qualification.backtestRunId} · {qualification.validationReportId}
+						</p>
+						<details className="mt-3 rounded-md bg-muted/40 p-3">
+							<summary className="cursor-pointer font-medium">
+								{t("strategyLab.qualification.evidence")}
+							</summary>
+							<pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all text-xs">
+								{JSON.stringify(qualification, null, 2)}
+							</pre>
+						</details>
+					</div>
+				) : null}
+			</CardContent>
+		</Card>
+	);
+}
+
+function Field({
+	id,
+	label,
+	value,
+	onChange,
+	type = "text",
+	placeholder,
+}: {
+	id: string;
+	label: string;
+	value: string;
+	onChange: (value: string) => void;
+	type?: "text" | "number";
+	placeholder?: string;
+}) {
+	return (
+		<div className="space-y-2">
+			<Label htmlFor={id}>{label}</Label>
+			<input
+				id={id}
+				className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+				type={type}
+				value={value}
+				placeholder={placeholder}
+				onChange={(event) => onChange(event.target.value)}
+			/>
 		</div>
 	);
 }

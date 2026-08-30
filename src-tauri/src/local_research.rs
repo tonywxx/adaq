@@ -2655,6 +2655,10 @@ pub async fn local_data_reset(
     let user_id = auth.user_id_for_window(window.label())?;
     let kind = request.kind;
     tauri::async_runtime::spawn_blocking(move || {
+        if matches!(kind, LocalDataResetKind::All) {
+            app.state::<Arc<crate::strategy_qualification::StrategyQualificationStore>>()
+                .reset_user(&user_id)?;
+        }
         let state = app.state::<Arc<LocalResearchState>>();
         state.reset_local_data(&user_id, kind)?;
         if matches!(kind, LocalDataResetKind::All) {
@@ -3449,6 +3453,8 @@ mod tests {
                 risk_free_rate: rust_decimal::Decimal::ZERO,
                 fill_policy: adaq_backtest_core::FillPolicy::Taker,
             },
+            strategy_binding: None,
+            risk_policy: None,
             seed: 0,
         };
 
@@ -3522,11 +3528,15 @@ mod tests {
                 snapshot_id: snapshot.snapshot_id.clone(),
                 sample_out_start_time_ms: 25 * 3_600_000,
                 sample_out_end_time_ms: None,
+                sample_in_start_time_ms: None,
+                sample_in_end_time_ms: None,
             }],
             walk_forward: None,
             cross_market: None,
             method_version: "chronological-holdout@1".into(),
             aggregation_rule_version: "equal-window@1".into(),
+            strategy_binding: None,
+            final_evidence_sealed: false,
         };
         assert!(
             state
@@ -3536,6 +3546,8 @@ mod tests {
                         snapshot_id: snapshot.snapshot_id.clone(),
                         sample_out_start_time_ms: 0,
                         sample_out_end_time_ms: None,
+                        sample_in_start_time_ms: None,
+                        sample_in_end_time_ms: None,
                     }],
                     ..validation.clone()
                 })

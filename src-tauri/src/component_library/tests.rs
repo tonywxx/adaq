@@ -307,6 +307,8 @@ fn run_request(snapshot_id: &str, strategy_hash: &str) -> BacktestRunRequest {
             risk_free_rate: rust_decimal::Decimal::ZERO,
             fill_policy: adaq_backtest_core::FillPolicy::Taker,
         },
+        strategy_binding: None,
+        risk_policy: None,
         seed: 0,
     }
 }

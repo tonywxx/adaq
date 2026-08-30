@@ -105,7 +105,13 @@ pub(super) fn execute(
     })
     .map_err(|error| error.to_string())?;
     let bars = engine_result.bars;
-    let decisions = engine_result.decisions;
+    let mut decisions = engine_result.decisions;
+    if let Some(policy) = &request.risk_policy {
+        validate_risk_policy(policy)?;
+        for decision in &mut decisions {
+            decision.target_exposure = decision.target_exposure.min(policy.max_instrument_weight);
+        }
+    }
     let result = SpotSimulator::execute(
         &bars,
         &gaps,
@@ -359,6 +365,8 @@ pub(super) fn prepare(
             signal_instances,
             initial_quote_allocation: request.initial_quote_allocation,
             execution_profile: request.execution_profile.clone(),
+            strategy_binding: request.strategy_binding.clone(),
+            risk_policy: request.risk_policy.clone(),
             seed: request.seed,
         },
         feature_plan_json: String::from_utf8(plan.to_json()).map_err(string)?,
@@ -366,6 +374,8 @@ pub(super) fn prepare(
         component_lock: component_lock.clone(),
         dataset_lock,
         architecture: plan.architecture(),
+        strategy_binding: request.strategy_binding.clone(),
+        risk_policy: request.risk_policy.clone(),
         indicator_engine_build_identity: super::IndicatorEngineBuildIdentity {
             engine_version: engine_identity.engine_version,
             ta_lib_version: engine_identity.ta_lib_version,
@@ -582,7 +592,23 @@ pub(super) fn validate_provenance(provenance: &BacktestRunProvenance) -> Result<
             )
         })
         .collect::<BTreeMap<_, _>>();
-    if requested_hashes != locked_hashes
+    if provenance.normalized_request.strategy_binding != provenance.strategy_binding
+        || provenance.normalized_request.risk_policy != provenance.risk_policy
+        || provenance.strategy_binding.as_ref().is_some_and(|binding| {
+            binding.candidate_id.trim().is_empty()
+                || binding.candidate_revision == 0
+                || !is_sha256(&binding.candidate_revision_hash)
+                || !is_sha256(&binding.package_provenance_hash)
+        })
+        || provenance.risk_policy.as_ref().is_some_and(|policy| {
+            policy.policy_id.trim().is_empty()
+                || policy.max_instrument_weight < rust_decimal::Decimal::ZERO
+                || policy.max_instrument_weight > rust_decimal::Decimal::ONE
+                || policy
+                    .max_turnover
+                    .is_some_and(|turnover| turnover < rust_decimal::Decimal::ZERO)
+        })
+        || requested_hashes != locked_hashes
         || plan_aliases != request_aliases
         || provenance
             .normalized_request
@@ -611,6 +637,20 @@ pub(super) fn validate_provenance(provenance: &BacktestRunProvenance) -> Result<
         return Err("Backtest Run provenance has inconsistent Component Locks or bindings".into());
     }
     Ok(())
+}
+
+fn validate_risk_policy(policy: &adaq_backtest_core::RiskPolicy) -> Result<(), String> {
+    if policy.policy_id.trim().is_empty()
+        || policy.max_instrument_weight < rust_decimal::Decimal::ZERO
+        || policy.max_instrument_weight > rust_decimal::Decimal::ONE
+        || policy
+            .max_turnover
+            .is_some_and(|turnover| turnover < rust_decimal::Decimal::ZERO)
+    {
+        Err("Backtest Risk Policy is invalid".into())
+    } else {
+        Ok(())
+    }
 }
 
 pub(super) fn full_run_view(run: &BacktestRun) -> BacktestRunView {

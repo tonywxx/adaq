@@ -150,6 +150,8 @@ fn run_request(harness: &Harness) -> BacktestRunRequest {
             risk_free_rate: Decimal::ZERO,
             fill_policy: adaq_backtest_core::FillPolicy::Taker,
         },
+        strategy_binding: None,
+        risk_policy: None,
         seed: 0,
     }
 }
@@ -162,11 +164,15 @@ fn holdout_request(harness: &Harness) -> ValidationProtocolCreateRequest {
             snapshot_id: harness.snapshot.snapshot_id.clone(),
             sample_out_start_time_ms: 25 * 3_600_000,
             sample_out_end_time_ms: None,
+            sample_in_start_time_ms: None,
+            sample_in_end_time_ms: None,
         }],
         walk_forward: None,
         cross_market: None,
         method_version: "chronological-holdout@1".into(),
         aggregation_rule_version: "equal-window@1".into(),
+        strategy_binding: None,
+        final_evidence_sealed: false,
     }
 }
 
@@ -188,6 +194,8 @@ fn protocol_creation_is_validated_frozen_and_user_scoped() {
                     snapshot_id: harness.snapshot.snapshot_id.clone(),
                     sample_out_start_time_ms: 0,
                     sample_out_end_time_ms: None,
+                    sample_in_start_time_ms: None,
+                    sample_in_end_time_ms: None,
                 }],
                 ..holdout_request(&harness)
             })
@@ -814,6 +822,8 @@ fn cross_market_evidence_preserves_order_failures_dispersion_and_report_identity
             risk_free_rate: Decimal::ZERO,
             fill_policy: adaq_backtest_core::FillPolicy::Taker,
         },
+        strategy_binding: None,
+        risk_policy: None,
         seed: 0,
     };
     let metrics = |total_return| adaq_backtest_core::BacktestMetrics {
@@ -882,6 +892,8 @@ fn cross_market_evidence_preserves_order_failures_dispersion_and_report_identity
         user_id: "alice".into(),
         method_version: "cross-market@1".into(),
         aggregation_rule_version: "equal-window@1".into(),
+        strategy_binding: None,
+        final_evidence_sealed: false,
         walk_forward: None,
         cross_market: contexts.clone(),
         windows: vec![],

@@ -655,6 +655,8 @@ mod tests {
                     risk_free_rate: Decimal::ZERO,
                     fill_policy: adaq_backtest_core::FillPolicy::Taker,
                 },
+                strategy_binding: None,
+                risk_policy: None,
                 seed: 0,
             })
             .unwrap();

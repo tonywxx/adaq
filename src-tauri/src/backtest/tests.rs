@@ -256,6 +256,8 @@ fn run_request(harness: &Harness) -> BacktestRunRequest {
             risk_free_rate: rust_decimal::Decimal::ZERO,
             fill_policy: adaq_backtest_core::FillPolicy::Taker,
         },
+        strategy_binding: None,
+        risk_policy: None,
         seed: 0,
     }
 }
@@ -776,6 +778,8 @@ fn incompatible_stored_feature_plan_fails_with_reset_required_diagnostic() {
                 risk_free_rate: rust_decimal::Decimal::ZERO,
                 fill_policy: adaq_backtest_core::FillPolicy::Taker,
             },
+            strategy_binding: None,
+            risk_policy: None,
             seed: 1,
         },
         feature_plan_json: r#"{"planSchemaVersion":"1.0.0"}"#.into(),
@@ -783,6 +787,8 @@ fn incompatible_stored_feature_plan_fails_with_reset_required_diagnostic() {
         component_lock: Vec::new(),
         dataset_lock: Vec::new(),
         architecture: adaq_component_tooling::StrategyArchitecture::Composed,
+        strategy_binding: None,
+        risk_policy: None,
         indicator_engine_build_identity: super::IndicatorEngineBuildIdentity {
             engine_version: "test".into(),
             ta_lib_version: "test".into(),

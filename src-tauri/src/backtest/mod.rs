@@ -695,7 +695,7 @@ impl Backtests {
         Ok(())
     }
 
-    pub(super) fn load_run(&self, user_id: &str, run_id: &str) -> Result<BacktestRun, String> {
+    pub(crate) fn load_run(&self, user_id: &str, run_id: &str) -> Result<BacktestRun, String> {
         validate_user(user_id)?;
         let json: String = self
             .0
@@ -773,7 +773,20 @@ pub struct BacktestRunRequest {
     pub initial_quote_allocation: rust_decimal::Decimal,
     pub execution_profile: ExecutionProfile,
     #[serde(default)]
+    pub strategy_binding: Option<StrategyQualificationBinding>,
+    #[serde(default)]
+    pub risk_policy: Option<adaq_backtest_core::RiskPolicy>,
+    #[serde(default)]
     pub seed: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StrategyQualificationBinding {
+    pub candidate_id: String,
+    pub candidate_revision: u64,
+    pub candidate_revision_hash: String,
+    pub package_provenance_hash: String,
 }
 
 #[derive(Serialize)]
@@ -855,6 +868,10 @@ pub struct BacktestRunProvenance {
     pub dataset_lock: Vec<SignalDatasetLock>,
     #[serde(default = "composed_architecture")]
     pub architecture: StrategyArchitecture,
+    #[serde(default)]
+    pub strategy_binding: Option<StrategyQualificationBinding>,
+    #[serde(default)]
+    pub risk_policy: Option<adaq_backtest_core::RiskPolicy>,
     pub indicator_engine_build_identity: IndicatorEngineBuildIdentity,
     pub backtest_engine_version: String,
     pub seed: u64,
@@ -876,6 +893,10 @@ pub struct NormalizedBacktestRunRequest {
     #[serde(with = "rust_decimal::serde::str")]
     pub initial_quote_allocation: rust_decimal::Decimal,
     pub execution_profile: ExecutionProfile,
+    #[serde(default)]
+    pub strategy_binding: Option<StrategyQualificationBinding>,
+    #[serde(default)]
+    pub risk_policy: Option<adaq_backtest_core::RiskPolicy>,
     pub seed: u64,
 }
 

@@ -17,6 +17,7 @@ mod python_research;
 mod research_queue;
 mod run_engine;
 mod strategy_candidate;
+mod strategy_qualification;
 mod user;
 mod validation;
 mod watchlist;
@@ -61,6 +62,7 @@ struct WorkspaceStates {
     local_research: Arc<LocalResearchState>,
     python_research: Arc<python_research::PythonResearchState>,
     strategy_candidates: Arc<strategy_candidate::StrategyCandidateStore>,
+    strategy_qualification: Arc<strategy_qualification::StrategyQualificationStore>,
     watchlist: WatchlistDb,
 }
 
@@ -129,6 +131,7 @@ impl WorkspaceInitialization {
                     app.manage(states.local_research);
                     app.manage(states.python_research);
                     app.manage(states.strategy_candidates);
+                    app.manage(states.strategy_qualification);
                     app.manage(states.watchlist);
                     *status = WorkspaceInitStatus::Managed;
                     return Ok(());
@@ -157,11 +160,21 @@ fn open_workspace_states(app_data_dir: &Path) -> Result<WorkspaceStates, String>
         local_research.database.clone(),
         strategy_candidate_source,
     )?);
+    let strategy_qualification_source = Arc::new(LocalStrategyQualificationSource {
+        local_research: local_research.clone(),
+        strategy_candidates: strategy_candidates.clone(),
+    });
+    let strategy_qualification =
+        Arc::new(strategy_qualification::StrategyQualificationStore::open(
+            local_research.database.clone(),
+            strategy_qualification_source,
+        )?);
     let watchlist = WatchlistDb::open(&database_path)?;
     Ok(WorkspaceStates {
         local_research,
         python_research,
         strategy_candidates,
+        strategy_qualification,
         watchlist,
     })
 }
@@ -340,6 +353,111 @@ impl LocalStrategyCandidateSource {
             forecast_contract: input.forecast_contract,
             input_evidence_sha256: input.input_evidence_sha256,
         })
+    }
+}
+
+struct LocalStrategyQualificationSource {
+    local_research: Arc<LocalResearchState>,
+    strategy_candidates: Arc<strategy_candidate::StrategyCandidateStore>,
+}
+
+impl strategy_qualification::StrategyQualificationSource for LocalStrategyQualificationSource {
+    fn candidate_revision(
+        &self,
+        user_id: &str,
+        candidate_id: &str,
+        revision: u64,
+    ) -> Result<(strategy_candidate::StrategyCandidateRevision, bool), String> {
+        self.strategy_candidates
+            .revision_for_user(user_id, candidate_id, revision)
+    }
+
+    fn import_strategy_package(
+        &self,
+        user_id: &str,
+        bytes: &[u8],
+    ) -> Result<adaq_component_tooling::ComponentPackage, String> {
+        let archive_sha256 = adaq_component_tooling::ComponentPackage::read(bytes)
+            .map_err(|error| error.to_string())?
+            .archive_sha256;
+        self.local_research.components.import(user_id, bytes)?;
+        self.local_research
+            .package_for_user(user_id, &archive_sha256)
+    }
+
+    fn package_for_user(
+        &self,
+        user_id: &str,
+        archive_sha256: &str,
+    ) -> Result<adaq_component_tooling::ComponentPackage, String> {
+        self.local_research
+            .package_for_user(user_id, archive_sha256)
+    }
+
+    fn snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(MarketDataSnapshot, Vec<OhlcvBar>), String> {
+        self.local_research.snapshot_for_user(user_id, snapshot_id)
+    }
+
+    fn universe_snapshot_for_user(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<adaq_backtest_core::MarketDataUniverseSnapshot, String> {
+        self.local_research
+            .snapshots
+            .universe_snapshot_for_user(user_id, snapshot_id)
+    }
+
+    fn run_backtest(
+        &self,
+        request: backtest::BacktestRunRequest,
+    ) -> Result<backtest::BacktestRunView, String> {
+        self.local_research.backtests.run(request)
+    }
+
+    fn load_backtest(&self, user_id: &str, run_id: &str) -> Result<backtest::BacktestRun, String> {
+        self.local_research.backtests.load_run(user_id, run_id)
+    }
+
+    fn create_protocol(
+        &self,
+        request: validation::ValidationProtocolCreateRequest,
+    ) -> Result<validation::ValidationProtocol, String> {
+        self.local_research.validation.create_protocol(request)
+    }
+
+    fn protocol_for_user(
+        &self,
+        user_id: &str,
+        protocol_id: &str,
+    ) -> Result<validation::ValidationProtocol, String> {
+        self.local_research
+            .validation
+            .protocol_for_user(user_id, protocol_id)
+    }
+
+    fn run_report(
+        &self,
+        user_id: &str,
+        protocol_id: &str,
+    ) -> Result<validation::ValidationReport, String> {
+        self.local_research
+            .validation
+            .run_report(user_id, protocol_id)
+    }
+
+    fn report_for_user(
+        &self,
+        user_id: &str,
+        report_id: &str,
+    ) -> Result<validation::ValidationReport, String> {
+        self.local_research
+            .validation
+            .report_for_user(user_id, report_id)
     }
 }
 
@@ -4675,6 +4793,12 @@ pub fn run() {
             strategy_candidate::strategy_candidate_retry,
             strategy_candidate::strategy_candidate_list,
             strategy_candidate::strategy_candidate_get,
+            strategy_qualification::strategy_qualification_run,
+            strategy_qualification::strategy_qualification_qualify,
+            strategy_qualification::strategy_qualification_attempt_list,
+            strategy_qualification::strategy_qualification_attempt_get,
+            strategy_qualification::strategy_qualification_list,
+            strategy_qualification::strategy_qualification_get,
             factor_materialization_start,
             factor_materialization_start_from_context,
             factor_materialization_protocol_freeze,

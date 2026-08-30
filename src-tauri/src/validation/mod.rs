@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    backtest::{BacktestRunRequest, RunPauseRecord},
+    backtest::{BacktestRunRequest, RunPauseRecord, StrategyQualificationBinding},
     user::validate_user,
 };
 
@@ -125,6 +125,8 @@ impl ValidationStudies {
             cross_market: request.cross_market,
             method_version: request.method_version,
             aggregation_rule_version: request.aggregation_rule_version,
+            strategy_binding: request.strategy_binding,
+            final_evidence_sealed: request.final_evidence_sealed,
         };
         protocol.protocol_id = content_id(&protocol)?;
         self.save_protocol(&protocol)?;
@@ -159,6 +161,25 @@ impl ValidationStudies {
             )
             .map_err(string)?;
         json_rows(&mut statement, user_id)
+    }
+
+    pub(crate) fn protocol_for_user(
+        &self,
+        user_id: &str,
+        protocol_id: &str,
+    ) -> Result<ValidationProtocol, String> {
+        self.load_protocol(user_id, protocol_id)
+    }
+
+    pub(crate) fn report_for_user(
+        &self,
+        user_id: &str,
+        report_id: &str,
+    ) -> Result<ValidationReport, String> {
+        self.list_reports(user_id)?
+            .into_iter()
+            .find(|report| report.report_id == report_id)
+            .ok_or_else(|| "Validation Report was not found".to_owned())
     }
 
     pub(crate) fn export_report(
@@ -241,6 +262,9 @@ impl ValidationStudies {
                 .starts_with("equal-window@")
         {
             return Err("Validation Protocol is invalid".into());
+        }
+        if request.strategy_binding != request.run.strategy_binding {
+            return Err("Validation Strategy binding must match its Backtest Run".into());
         }
         self.validate_run_configuration(&request.user_id, &request.run)?;
         match request.method_version.as_str() {
@@ -355,6 +379,19 @@ impl ValidationStudies {
         if split == 0 || split >= end {
             return Err("Validation sample-out window must be non-empty and chronological".into());
         }
+        let sample_in_start = window
+            .sample_in_start_time_ms
+            .map(|start| bars.partition_point(|bar| bar.open_time_ms < start))
+            .unwrap_or(0);
+        let sample_in_end = window
+            .sample_in_end_time_ms
+            .map(|end| bars.partition_point(|bar| bar.open_time_ms < end))
+            .unwrap_or(split);
+        if sample_in_start >= sample_in_end || sample_in_end > split {
+            return Err(
+                "Validation sample-in window must be non-empty and before sample-out".into(),
+            );
+        }
         let gaps = snapshot
             .gaps
             .iter()
@@ -371,8 +408,10 @@ impl ValidationStudies {
             gaps: gaps.clone(),
         };
         Ok((
-            self.0
-                .persist_snapshot_for_user(user_id, &series(bars[..split].to_vec()))?,
+            self.0.persist_snapshot_for_user(
+                user_id,
+                &series(bars[sample_in_start..sample_in_end].to_vec()),
+            )?,
             self.0
                 .persist_snapshot_for_user(user_id, &series(bars[split..end].to_vec()))?,
         ))
@@ -405,6 +444,8 @@ impl ValidationStudies {
                 sample_out_end_time_ms: bars
                     .get(start + request.window_size_bars)
                     .map(|bar| bar.open_time_ms),
+                sample_in_start_time_ms: None,
+                sample_in_end_time_ms: None,
             })
             .collect::<Vec<_>>();
         if windows.is_empty() {
@@ -478,6 +519,10 @@ pub struct ValidationProtocolCreateRequest {
     pub cross_market: Option<CrossMarketValidationRequest>,
     pub method_version: String,
     pub aggregation_rule_version: String,
+    #[serde(default)]
+    pub strategy_binding: Option<StrategyQualificationBinding>,
+    #[serde(default)]
+    pub final_evidence_sealed: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -501,6 +546,10 @@ pub struct ValidationWindowRequest {
     pub sample_out_start_time_ms: i64,
     #[serde(default)]
     pub sample_out_end_time_ms: Option<i64>,
+    #[serde(default)]
+    pub sample_in_start_time_ms: Option<i64>,
+    #[serde(default)]
+    pub sample_in_end_time_ms: Option<i64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -525,6 +574,10 @@ pub struct ValidationProtocol {
     pub cross_market: Option<CrossMarketValidationRequest>,
     pub method_version: String,
     pub aggregation_rule_version: String,
+    #[serde(default)]
+    pub strategy_binding: Option<StrategyQualificationBinding>,
+    #[serde(default)]
+    pub final_evidence_sealed: bool,
 }
 
 #[derive(Deserialize)]
@@ -540,6 +593,10 @@ pub struct ValidationWindowReport {
     pub sample_out_start_time_ms: i64,
     #[serde(default)]
     pub sample_out_end_time_ms: Option<i64>,
+    #[serde(default)]
+    pub sample_in_start_time_ms: Option<i64>,
+    #[serde(default)]
+    pub sample_in_end_time_ms: Option<i64>,
     pub sample_in_snapshot_id: String,
     pub sample_out_snapshot_id: String,
     pub sample_in_run_id: Option<String>,
@@ -577,6 +634,10 @@ pub struct ValidationReport {
     pub user_id: String,
     pub method_version: String,
     pub aggregation_rule_version: String,
+    #[serde(default)]
+    pub strategy_binding: Option<StrategyQualificationBinding>,
+    #[serde(default)]
+    pub final_evidence_sealed: bool,
     #[serde(default)]
     pub walk_forward: Option<WalkForwardValidationRequest>,
     #[serde(default)]

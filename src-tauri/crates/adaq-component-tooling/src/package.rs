@@ -560,8 +560,18 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
             ParameterType::Boolean => parameter.default_value.parse::<bool>().is_ok(),
             ParameterType::String => true,
         };
+        let valid_allowed_values =
+            parameter
+                .allowed_values
+                .iter()
+                .all(|value| match parameter.parameter_type {
+                    ParameterType::Decimal => Decimal::from_str_exact(value).is_ok(),
+                    ParameterType::Integer => value.parse::<i64>().is_ok(),
+                    ParameterType::Boolean => value.parse::<bool>().is_ok(),
+                    ParameterType::String => true,
+                });
         if !parameter.allowed_values.is_empty()
-            && (parameter.parameter_type != ParameterType::String
+            && (!valid_allowed_values
                 || !parameter.allowed_values.contains(&parameter.default_value))
         {
             return Err(PackageError("Parameter allowed values are invalid".into()));
@@ -840,6 +850,20 @@ mod tests {
         invalid.manifest_schema_version = Version::new(2, 0, 0);
         invalid.wasm_sha256 = sha256(wasm);
         assert!(validate_manifest(&invalid, wasm).is_err());
+    }
+
+    #[test]
+    fn numeric_parameter_allowed_values_are_type_checked() {
+        let wasm = b"\0asm\x0d\0\x01\0";
+        let mut manifest = strategy_manifest();
+        manifest.output_names.clear();
+        manifest.parameters.push(ParameterDefinition {
+            name: "top-n".into(),
+            parameter_type: ParameterType::Integer,
+            default_value: "3".into(),
+            allowed_values: vec!["3".into(), "5".into()],
+        });
+        assert!(pack_component(manifest, wasm).is_ok());
     }
 
     #[test]

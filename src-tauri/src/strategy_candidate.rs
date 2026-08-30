@@ -711,6 +711,21 @@ impl StrategyCandidateStore {
         })
     }
 
+    pub(crate) fn revision_for_user(
+        &self,
+        user_id: &str,
+        candidate_id: &str,
+        revision_number: u64,
+    ) -> Result<(StrategyCandidateRevision, bool), String> {
+        let candidate = self.get(user_id, candidate_id)?;
+        let revision = candidate
+            .revisions
+            .into_iter()
+            .find(|item| item.revision.revision == revision_number)
+            .ok_or_else(|| "Strategy Candidate Revision was not found".to_owned())?;
+        Ok((revision.revision, revision.eligible))
+    }
+
     pub(crate) fn reset_user(&self, user_id: &str) -> Result<(), String> {
         validate_user(user_id)?;
         let mut database = self
@@ -1267,7 +1282,7 @@ impl StrategyDefinition {
 }
 
 impl StrategyCandidateRevision {
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if Uuid::parse_str(&self.candidate_id).is_err()
             || self.revision == 0
             || self.created_by_attempt_id.trim().is_empty()
