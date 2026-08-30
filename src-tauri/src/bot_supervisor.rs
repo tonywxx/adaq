@@ -13,11 +13,13 @@ use std::{
     time::Duration,
 };
 
+use crate::bot_operations::BotStore;
 use crate::operations::{HealthDimension, HealthObservation, HealthState, OperationsStore};
 
 pub(crate) struct BotSupervisor {
     workers: Mutex<HashMap<String, ManagedWorker>>,
     operations: OperationsStore,
+    bots: BotStore,
     monitor_started: AtomicBool,
 }
 
@@ -28,10 +30,11 @@ struct ManagedWorker {
 }
 
 impl BotSupervisor {
-    pub(crate) fn new(operations: OperationsStore) -> Self {
+    pub(crate) fn new(operations: OperationsStore, bots: BotStore) -> Self {
         Self {
             workers: Mutex::new(HashMap::new()),
             operations,
+            bots,
             monitor_started: AtomicBool::new(false),
         }
     }
@@ -51,6 +54,7 @@ impl BotSupervisor {
 
     fn poll_workers(&self) {
         let mut observations = Vec::new();
+        let mut durably_faulted_bots = Vec::new();
         if let Ok(mut workers) = self.workers.lock() {
             for (bot_id, managed) in workers.iter_mut() {
                 for event in managed.worker.poll_health() {
@@ -64,7 +68,35 @@ impl BotSupervisor {
             }
         }
         for (user_id, entity_id, bot_id, event) in observations {
+            let fault = match &event {
+                WorkerHealthEvent::Fault { code, detail } => Some((code.clone(), detail.clone())),
+                _ => None,
+            };
             let _ = self.observe_worker_event(&user_id, &entity_id, &bot_id, event);
+            if let Some((code, detail)) = fault {
+                if self
+                    .bots
+                    .record_worker_fault(&user_id, &bot_id, &code, &detail)
+                    .is_ok()
+                {
+                    durably_faulted_bots.push(bot_id);
+                } else {
+                    let _ = self.observe(
+                        &user_id,
+                        &entity_id,
+                        HealthState::Critical,
+                        "bot_state_persistence_failed",
+                        json!({ "botId": bot_id, "faultCode": code }),
+                    );
+                }
+            }
+        }
+        if !durably_faulted_bots.is_empty()
+            && let Ok(mut workers) = self.workers.lock()
+        {
+            for bot_id in durably_faulted_bots {
+                workers.remove(&bot_id);
+            }
         }
     }
 
@@ -82,18 +114,8 @@ impl BotSupervisor {
             .workers
             .lock()
             .map_err(|_| "worker registry lock failed".to_owned())?;
-        if let Some(mut previous) = workers.remove(&bot_id) {
-            previous.worker.terminate_for_fault("worker-replaced");
-            self.observe(
-                user_id,
-                entity_id,
-                HealthState::Critical,
-                "worker_replaced",
-                json!({
-                    "botId": bot_id,
-                    "reason": "replacement requires a fresh immutable worker process",
-                }),
-            )?;
+        if workers.contains_key(&bot_id) {
+            return Err("worker bot is already active".into());
         }
         let worker = WorkerSupervisor::launch(request).map_err(|error| {
             let _ = self.observe(
@@ -101,7 +123,7 @@ impl BotSupervisor {
                 entity_id,
                 HealthState::Critical,
                 "worker_start_failed",
-                json!({ "botId": bot_id, "error": error }),
+                json!({ "botId": bot_id, "error": crate::bot_operations::safe_detail(&error) }),
             );
             error
         })?;
@@ -174,49 +196,56 @@ impl BotSupervisor {
             .workers
             .lock()
             .map_err(|_| "worker registry lock failed".to_owned())?;
-        let worker = workers
-            .get_mut(bot_id)
-            .ok_or_else(|| "worker bot is not active".to_owned())?;
-        let result = worker.worker.decision(request_id.clone(), clock, input);
-        let mut health_events = worker.worker.take_health_events();
-        match &result {
-            Ok(WorkerDecisionResult::NoTarget {
-                reason: adaq_bot_runtime::NoTargetReason::DeadlineMissed,
-                ..
-            }) => {
-                worker
-                    .worker
-                    .terminate_for_fault("decision-deadline-missed");
-                let _ = self.observe(
-                    user_id,
-                    entity_id,
-                    HealthState::Critical,
-                    "worker_deadline_missed",
-                    json!({ "botId": bot_id, "requestId": request_id }),
-                );
+        let (result, health_events, worker_faulted) = {
+            let worker = workers
+                .get_mut(bot_id)
+                .ok_or_else(|| "worker bot is not active".to_owned())?;
+            let result = worker.worker.decision(request_id.clone(), clock, input);
+            let mut health_events = worker.worker.take_health_events();
+            match &result {
+                Ok(WorkerDecisionResult::NoTarget {
+                    reason: adaq_bot_runtime::NoTargetReason::DeadlineMissed,
+                    ..
+                }) => {
+                    worker
+                        .worker
+                        .terminate_for_fault("decision-deadline-missed");
+                    let _ = self.observe(
+                        user_id,
+                        entity_id,
+                        HealthState::Critical,
+                        "worker_deadline_missed",
+                        json!({ "botId": bot_id, "requestId": request_id }),
+                    );
+                }
+                Ok(_) => {
+                    self.observe(
+                        user_id,
+                        entity_id,
+                        HealthState::Healthy,
+                        "worker_decision",
+                        json!({ "botId": bot_id, "requestId": request_id }),
+                    )?;
+                }
+                Err(error) => {
+                    let _ = self.observe(
+                        user_id,
+                        entity_id,
+                        HealthState::Critical,
+                        "worker_decision_failed",
+                        json!({ "botId": bot_id, "requestId": request_id, "error": crate::bot_operations::safe_detail(error) }),
+                    );
+                }
             }
-            Ok(_) => {
-                self.observe(
-                    user_id,
-                    entity_id,
-                    HealthState::Healthy,
-                    "worker_decision",
-                    json!({ "botId": bot_id, "requestId": request_id }),
-                )?;
-            }
-            Err(error) => {
-                let _ = self.observe(
-                    user_id,
-                    entity_id,
-                    HealthState::Critical,
-                    "worker_decision_failed",
-                    json!({ "botId": bot_id, "requestId": request_id, "error": error }),
-                );
-            }
-        }
-        health_events.extend(worker.worker.take_health_events());
+            health_events.extend(worker.worker.take_health_events());
+            let worker_faulted = worker.worker.state() == LifecycleState::Faulted;
+            (result, health_events, worker_faulted)
+        };
         for event in health_events {
             self.observe_worker_event(user_id, entity_id, bot_id, event)?;
+        }
+        if worker_faulted {
+            workers.remove(bot_id);
         }
         result
     }
@@ -258,13 +287,15 @@ impl BotSupervisor {
         bot_id: &str,
         event: WorkerHealthEvent,
     ) -> Result<(), String> {
-        let (state, condition, evidence) = match event {
+        let (state, condition, code, detail, evidence) = match event {
             WorkerHealthEvent::Heartbeat {
                 observed_at_ms,
                 state,
             } => (
                 HealthState::Healthy,
                 "worker_heartbeat",
+                "worker-heartbeat",
+                format!("Worker heartbeat observed in state {state:?}."),
                 json!({
                     "botId": bot_id,
                     "state": format!("{state:?}"),
@@ -274,14 +305,24 @@ impl BotSupervisor {
             WorkerHealthEvent::Diagnostic { code, detail } => (
                 HealthState::Degraded,
                 "worker_diagnostic",
-                json!({ "botId": bot_id, "code": code, "detail": detail }),
+                "worker-diagnostic",
+                crate::bot_operations::safe_detail(&detail),
+                json!({ "botId": bot_id, "code": code, "detail": crate::bot_operations::safe_detail(&detail) }),
             ),
             WorkerHealthEvent::Fault { code, detail } => (
                 HealthState::Critical,
                 "worker_fault",
-                json!({ "botId": bot_id, "code": code, "detail": detail }),
+                "worker-fault",
+                format!(
+                    "{}: {}",
+                    crate::bot_operations::safe_detail(&code),
+                    crate::bot_operations::safe_detail(&detail)
+                ),
+                json!({ "botId": bot_id, "code": code, "detail": crate::bot_operations::safe_detail(&detail) }),
             ),
         };
+        self.bots
+            .record_evidence(user_id, bot_id, "health", code, &detail, Some(bot_id))?;
         self.observe(user_id, entity_id, state, condition, evidence)
     }
 

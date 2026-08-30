@@ -13,7 +13,7 @@ pub(crate) mod tester;
 mod tests;
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::Instant,
 };
 
@@ -217,15 +217,15 @@ impl std::fmt::Display for ConnectionError {
 /// dependent runtime (for example a running Bot) that must not be cut off
 /// mid-operation.
 pub(crate) trait RuntimeGuard: Send + Sync {
-    fn active_dependent_count(&self, user_id: &str, provider: Provider) -> usize;
+    fn active_dependent_count(&self, user_id: &str, provider: Provider) -> Result<usize, String>;
 }
 
-/// No Bot runtime exists yet in V1, so nothing can depend on a Profile.
+/// Default guard for contexts that do not attach a Bot runtime.
 pub(crate) struct EmptyRuntimeGuard;
 
 impl RuntimeGuard for EmptyRuntimeGuard {
-    fn active_dependent_count(&self, _user_id: &str, _provider: Provider) -> usize {
-        0
+    fn active_dependent_count(&self, _user_id: &str, _provider: Provider) -> Result<usize, String> {
+        Ok(0)
     }
 }
 
@@ -281,7 +281,7 @@ pub(crate) struct ConnectionManager {
     database: Arc<Mutex<Connection>>,
     secrets: Arc<dyn SecretStore>,
     tester: ConnectionTester,
-    runtime_guard: Arc<dyn RuntimeGuard>,
+    runtime_guard: Arc<RwLock<Arc<dyn RuntimeGuard>>>,
     device_id: String,
     alpaca_rate_gate: Arc<Mutex<Instant>>,
 }
@@ -357,7 +357,7 @@ impl ConnectionManager {
             database,
             secrets,
             tester: ConnectionTester::new(http),
-            runtime_guard,
+            runtime_guard: Arc::new(RwLock::new(runtime_guard)),
             device_id,
             alpaca_rate_gate: Arc::new(Mutex::new(Instant::now())),
         })
@@ -374,6 +374,17 @@ impl ConnectionManager {
         let database = self.database.lock().map_err(|error| error.to_string())?;
         let rows = query_profiles(&database, user_id, &self.device_id)?;
         rows.iter().map(ProfileRow::view).collect()
+    }
+
+    pub(crate) fn set_runtime_guard(
+        &self,
+        runtime_guard: Arc<dyn RuntimeGuard>,
+    ) -> Result<(), String> {
+        *self
+            .runtime_guard
+            .write()
+            .map_err(|error| format!("runtime guard lock: {error}"))? = runtime_guard;
+        Ok(())
     }
 
     /// Resolves one saved Alpaca Paper Profile inside the Host and keeps the
@@ -719,16 +730,22 @@ impl ConnectionManager {
     pub(crate) fn delete(&self, user_id: &str, profile_id: &str) -> Result<(), ConnectionError> {
         validate_user_id(user_id)
             .map_err(|message| ConnectionError::new("invalid_input", message))?;
-        let database = self
-            .database
-            .lock()
-            .map_err(|error| ConnectionError::new("internal", format!("database lock: {error}")))?;
-        let row: ProfileRow = query_profile_by_id(&database, user_id, &self.device_id, profile_id)?
-            .ok_or_else(|| ConnectionError::new("invalid_profile", "Profile not found."))?;
+        let row: ProfileRow = {
+            let database = self.database.lock().map_err(|error| {
+                ConnectionError::new("internal", format!("database lock: {error}"))
+            })?;
+            query_profile_by_id(&database, user_id, &self.device_id, profile_id)?
+                .ok_or_else(|| ConnectionError::new("invalid_profile", "Profile not found."))?
+        };
 
         let dependents = self
             .runtime_guard
-            .active_dependent_count(user_id, row.provider);
+            .read()
+            .map_err(|error| {
+                ConnectionError::new("internal", format!("runtime guard lock: {error}"))
+            })?
+            .active_dependent_count(user_id, row.provider)
+            .map_err(|error| ConnectionError::new("internal", error))?;
         if dependents > 0 {
             return Err(ConnectionError::new(
                 "blocked_active_runtime",
@@ -741,6 +758,10 @@ impl ConnectionManager {
         // The OS secret is removed before the row so a crashed deletion can
         // never leave a live credential behind a stale row.
         let _ = self.secrets.delete(&row.os_store_entry());
+        let database = self
+            .database
+            .lock()
+            .map_err(|error| ConnectionError::new("internal", format!("database lock: {error}")))?;
         database
             .execute(
                 "DELETE FROM connection_profiles WHERE profile_id = ?1",

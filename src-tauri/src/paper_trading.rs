@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -33,6 +33,13 @@ pub(crate) struct PaperAccountView {
     pub provider_evidence: Vec<ExecutionOutcome>,
     pub risk_decisions: Vec<RetainedRiskDecision>,
     pub restart_required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderOpenOrder {
+    pub local_order_ids: Vec<String>,
+    pub provider_order_id: Option<String>,
+    pub instrument: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +196,15 @@ impl PaperTradingStore {
         request: &PaperOrderRequest,
         now_ms: i64,
     ) -> Result<PaperAccountView, String> {
+        self.begin_order_with_policy(request, None, now_ms)
+    }
+
+    pub(crate) fn begin_order_with_policy(
+        &self,
+        request: &PaperOrderRequest,
+        expected_policy: Option<&RiskPolicy>,
+        now_ms: i64,
+    ) -> Result<PaperAccountView, String> {
         let mut ledger;
         let mut execution;
         match self.load(&request.user_id) {
@@ -197,6 +213,11 @@ impl PaperTradingStore {
                 execution = loaded_execution;
             }
             Err(_) => return Err("The OKX Demo account must be reconciled before ordering.".into()),
+        }
+        if expected_policy.is_some_and(|policy| execution.policy() != policy) {
+            return Err(
+                "The frozen Bot Paper Risk Policy does not match the account policy.".into(),
+            );
         }
         let side = match request.side.as_str() {
             "buy" | "Buy" => Side::Buy,
@@ -253,7 +274,8 @@ impl PaperTradingStore {
         operation_id: &str,
         now_ms: i64,
     ) -> Result<PaperAccountView, String> {
-        let (ledger, mut execution) = self.load(user_id)?;
+        let (mut ledger, mut execution) = self.load(user_id)?;
+        ledger.require_reconciliation();
         execution
             .mark_uncertain(operation_id, now_ms)
             .map_err(|error| error.to_string())?;
@@ -274,6 +296,116 @@ impl PaperTradingStore {
         ledger
             .cancel_order(&order_id)
             .map_err(|error| error.to_string())?;
+        self.save(user_id, &ledger, &execution, now_ms)?;
+        self.view(user_id)
+    }
+
+    pub(crate) fn provider_open_orders_for(
+        &self,
+        user_id: &str,
+        instrument_scope: &BTreeSet<String>,
+        operation_prefix: &str,
+    ) -> Result<Vec<ProviderOpenOrder>, String> {
+        let (ledger, execution) = self.load(user_id)?;
+        let mut orders: Vec<ProviderOpenOrder> = Vec::new();
+        for order in ledger.orders().filter(|order| {
+            matches!(
+                order.status,
+                OrderStatus::Accepted | OrderStatus::PartiallyFilled
+            ) && instrument_scope.contains(&order.instrument)
+                && order.order_id.starts_with(operation_prefix)
+        }) {
+            let provider_order_id = order
+                .order_id
+                .strip_prefix("provider-order-")
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    execution.evidence().find_map(|outcome| {
+                        let evidence = match outcome {
+                            ExecutionOutcome::Accepted(evidence)
+                            | ExecutionOutcome::Rejected(evidence)
+                            | ExecutionOutcome::Uncertain(evidence) => evidence,
+                        };
+                        (evidence.local_order_id.as_deref() == Some(order.order_id.as_str()))
+                            .then(|| evidence.provider_order_id.clone())
+                            .flatten()
+                    })
+                });
+            if let Some(provider_order_id) = provider_order_id {
+                if let Some(index) = orders.iter().position(|existing| {
+                    existing.provider_order_id.as_deref() == Some(provider_order_id.as_str())
+                }) {
+                    orders[index].local_order_ids.push(order.order_id.clone());
+                } else {
+                    orders.push(ProviderOpenOrder {
+                        local_order_ids: vec![order.order_id.clone()],
+                        provider_order_id: Some(provider_order_id),
+                        instrument: order.instrument.clone(),
+                    });
+                }
+            } else {
+                orders.push(ProviderOpenOrder {
+                    local_order_ids: vec![order.order_id.clone()],
+                    provider_order_id: None,
+                    instrument: order.instrument.clone(),
+                });
+            }
+        }
+        Ok(orders)
+    }
+
+    pub(crate) fn cancel_provider_order(
+        &self,
+        user_id: &str,
+        local_order_id: &str,
+        now_ms: i64,
+    ) -> Result<PaperAccountView, String> {
+        let (mut ledger, execution) = self.load(user_id)?;
+        ledger
+            .cancel_order(local_order_id)
+            .map_err(|error| error.to_string())?;
+        self.save(user_id, &ledger, &execution, now_ms)?;
+        self.view(user_id)
+    }
+
+    pub(crate) fn mark_provider_order_uncertain(
+        &self,
+        user_id: &str,
+        provider_order_id: &str,
+        now_ms: i64,
+    ) -> Result<PaperAccountView, String> {
+        let (mut ledger, mut execution) = self.load(user_id)?;
+        ledger.require_reconciliation();
+        let operation_id = format!(
+            "provider-uncertain-{now_ms}-{}",
+            provider_order_id.chars().take(96).collect::<String>()
+        );
+        execution.record_provider_observation(
+            operation_id.clone(),
+            provider_order_id.to_owned(),
+            "unknown".into(),
+            now_ms,
+        );
+        execution
+            .mark_uncertain(&operation_id, now_ms)
+            .map_err(|error| error.to_string())?;
+        self.save(user_id, &ledger, &execution, now_ms)?;
+        self.view(user_id)
+    }
+
+    pub(crate) fn require_reconciliation(
+        &self,
+        user_id: &str,
+        now_ms: i64,
+    ) -> Result<PaperAccountView, String> {
+        let (mut ledger, mut execution) = self.load(user_id)?;
+        ledger.require_reconciliation();
+        execution.record_reconciliation(
+            format!("host-reconciliation-required-{now_ms}"),
+            false,
+            now_ms,
+        );
         self.save(user_id, &ledger, &execution, now_ms)?;
         self.view(user_id)
     }

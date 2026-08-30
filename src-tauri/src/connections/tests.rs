@@ -143,8 +143,8 @@ struct Harness {
 struct TestRuntimeGuard(Mutex<usize>);
 
 impl RuntimeGuard for TestRuntimeGuard {
-    fn active_dependent_count(&self, _user_id: &str, _provider: Provider) -> usize {
-        *self.0.lock().expect("guard poisoned")
+    fn active_dependent_count(&self, _user_id: &str, _provider: Provider) -> Result<usize, String> {
+        Ok(*self.0.lock().expect("guard poisoned"))
     }
 }
 

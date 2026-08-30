@@ -19,6 +19,7 @@ import { workflowModules, workflowSteps } from "@/features/workflow/workflow";
 import { Link, useLocation } from "@tanstack/react-router";
 import {
 	CandlestickChart,
+	BotIcon,
 	ChartBarIcon,
 	DatabaseIcon,
 	ChevronDownIcon,
@@ -77,7 +78,9 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 		(step) => location.pathname === `/help/workflow/${step.id}`,
 	);
 	const activeModule =
-		location.pathname === "/operations" || location.pathname === "/paper-trading"
+		location.pathname === "/operations" ||
+		location.pathname === "/paper-trading" ||
+		location.pathname === "/bots"
 			? "operations"
 			: location.pathname === "/factors"
 				? "factor"
@@ -212,6 +215,12 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 													icon={moduleIcons[module.id]}
 													active={location.pathname === "/paper-trading"}
 												/>
+												<SidebarLink
+													to="/bots"
+													label={t("nav.bots")}
+													icon={<BotIcon aria-hidden="true" />}
+													active={location.pathname === "/bots"}
+												/>
 											</>
 										) : null}
 										{module.id === "strategy" ? (
@@ -294,6 +303,7 @@ function SidebarLink({
 		| "/strategies"
 		| "/operations"
 		| "/paper-trading"
+		| "/bots"
 		| "/components";
 	label: string;
 	icon: ReactNode;

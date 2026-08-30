@@ -29,6 +29,10 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 		new URL("./features/markets/markets-page.tsx", import.meta.url),
 		"utf8",
 	);
+	const botsSource = readFileSync(
+		new URL("./features/bots/bots-page.tsx", import.meta.url),
+		"utf8",
+	);
 
 	expect(routerSource).toMatch(/path: "\/",\s*component: WorkflowHomePage/);
 	expect(routerSource).toMatch(
@@ -37,6 +41,7 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 	expect(routerSource).toMatch(
 		/path: "\/paper-trading"[\s\S]*?<PaperTradingPage \/>/,
 	);
+	expect(routerSource).toMatch(/path: "\/bots"[\s\S]*?<BotsPage \/>/);
 	expect(routerSource).toMatch(/const DataFoundationPage = lazy\(/);
 	expect(routerSource).toMatch(/const OperationsDashboardPage = lazy\(/);
 	expect(routerSource).toMatch(/const MarketsOverviewPage = lazy\(/);
@@ -67,7 +72,12 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 	expect(sidebarSource).toMatch(/t\("nav\.factorResearch"\)/);
 	expect(sidebarSource).toMatch(/to="\/paper-trading"/);
 	expect(sidebarSource).toMatch(/t\("nav\.paperTrading"\)/);
+	expect(sidebarSource).toMatch(/to="\/bots"/);
+	expect(sidebarSource).toMatch(/t\("nav\.bots"\)/);
 	expect(sidebarSource).toMatch(/startsWith\("\/markets"\)/);
+	expect(botsSource).toMatch(/invoke<BotView>\("bot_deploy"/);
+	expect(botsSource).toMatch(/confirmFlatten/);
+	expect(botsSource).not.toMatch(/paper_order_(submit|cancel|sync)/);
 	expect(sidebarSource).toContain('url: "/help/workflow"');
 	expect(marketsSource).toMatch(/staleTime: 5 \* 60_000/);
 	expect(marketsSource).toMatch(/gcTime: 30 \* 60_000/);

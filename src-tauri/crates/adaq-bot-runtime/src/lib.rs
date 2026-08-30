@@ -1862,11 +1862,13 @@ impl WorkerSupervisor {
         self.terminate_process();
         if matches!(
             self.attempt.state(),
-            LifecycleState::Running | LifecycleState::Paused
+            LifecycleState::Running | LifecycleState::Paused | LifecycleState::Stopping
         ) {
-            self.attempt
-                .transition(LifecycleState::Stopping, "host", "worker_shutdown")
-                .map_err(|error| error.to_string())?;
+            if self.attempt.state() != LifecycleState::Stopping {
+                self.attempt
+                    .transition(LifecycleState::Stopping, "host", "worker_shutdown")
+                    .map_err(|error| error.to_string())?;
+            }
             self.attempt
                 .transition(LifecycleState::Stopped, "host", "worker_shutdown")
                 .map_err(|error| error.to_string())?;

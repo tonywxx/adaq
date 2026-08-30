@@ -1,5 +1,6 @@
 mod auth;
 mod backtest;
+mod bot_operations;
 mod bot_supervisor;
 mod component_library;
 mod connections;
@@ -60,6 +61,7 @@ fn database_path(app_data_dir: &Path) -> PathBuf {
 }
 
 struct WorkspaceStates {
+    bot_store: std::sync::Arc<bot_operations::BotStore>,
     bot_supervisor: std::sync::Arc<bot_supervisor::BotSupervisor>,
     local_research: Arc<LocalResearchState>,
     python_research: Arc<python_research::PythonResearchState>,
@@ -131,6 +133,7 @@ impl WorkspaceInitialization {
                         .take()
                         .ok_or_else(|| "workspace states were already consumed".to_owned())?;
                     app.manage(states.local_research);
+                    app.manage(states.bot_store);
                     app.manage(states.bot_supervisor);
                     app.manage(states.python_research);
                     app.manage(states.strategy_candidates);
@@ -150,6 +153,12 @@ fn open_workspace_states(app_data_dir: &Path) -> Result<WorkspaceStates, String>
     std::fs::create_dir_all(app_data_dir).map_err(|error| error.to_string())?;
     let database_path = database_path(app_data_dir);
     let local_research = LocalResearchState::open(app_data_dir)?;
+    let bot_store = Arc::new(bot_operations::BotStore::open(
+        local_research.database.clone(),
+    )?);
+    local_research
+        .connections
+        .set_runtime_guard(bot_store.clone())?;
     let python_research = Arc::new(python_research::PythonResearchState::open(app_data_dir));
     python_research.attach_queue(local_research.features.queue());
     local_research
@@ -175,9 +184,11 @@ fn open_workspace_states(app_data_dir: &Path) -> Result<WorkspaceStates, String>
     let watchlist = WatchlistDb::open(&database_path)?;
     let bot_supervisor = Arc::new(bot_supervisor::BotSupervisor::new(
         local_research.operations.clone(),
+        bot_store.as_ref().clone(),
     ));
     bot_supervisor.start_monitor();
     Ok(WorkspaceStates {
+        bot_store,
         bot_supervisor,
         local_research,
         python_research,
@@ -4687,6 +4698,15 @@ pub fn run() {
             paper_order_submit,
             paper_order_cancel,
             paper_order_sync,
+            bot_operations::bot_list,
+            bot_operations::bot_get,
+            bot_operations::bot_deploy,
+            bot_operations::bot_start,
+            bot_operations::bot_retry,
+            bot_operations::bot_pause,
+            bot_operations::bot_resume,
+            bot_operations::bot_stop,
+            bot_operations::bot_decision,
             python_research::project_list,
             python_research::project_create,
             python_research::project_import,
