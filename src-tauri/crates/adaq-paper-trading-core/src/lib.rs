@@ -729,6 +729,7 @@ impl PaperLedger {
         }
         let matches =
             snapshot.cash == self.account.cash && snapshot.positions == self.account.positions;
+        self.account = snapshot;
         self.reconciliation = if matches {
             ReconciliationState::Reconciled
         } else {
@@ -901,6 +902,7 @@ mod tests {
         changed.cash -= Decimal::ONE;
         assert!(!l.reconcile(changed).unwrap());
         assert_eq!(l.reconciliation(), ReconciliationState::Required);
+        assert_eq!(l.account().cash, Decimal::new(999_999, 0));
         assert!(matches!(
             l.submit_order("alice", "AAPL", Side::Buy, Decimal::ONE, Decimal::ONE, 1),
             Err(LedgerError::ReconciliationRequired)
