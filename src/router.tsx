@@ -27,6 +27,11 @@ const OperationsDashboardPage = lazy(() =>
 		default: module.OperationsDashboard,
 	})),
 );
+const PaperTradingPage = lazy(() =>
+	import("@/features/paper-trading/paper-trading-page").then((module) => ({
+		default: module.PaperTradingPage,
+	})),
+);
 const MarketsOverviewPage = lazy(() =>
 	import("@/features/markets/markets-page").then((module) => ({
 		default: module.MarketsOverview,
@@ -100,6 +105,16 @@ const operationsRoute = createRoute({
 	component: () => (
 		<Suspense fallback={<PageLoadingSkeleton />}>
 			<OperationsDashboardPage />
+		</Suspense>
+	),
+});
+
+const paperTradingRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/paper-trading",
+	component: () => (
+		<Suspense fallback={<PageLoadingSkeleton />}>
+			<PaperTradingPage />
 		</Suspense>
 	),
 });
@@ -298,6 +313,7 @@ function WorkflowStepGuidePage() {
 const routeTree = rootRoute.addChildren([
 	appRoute,
 	operationsRoute,
+	paperTradingRoute,
 	workflowGuideRoute,
 	workflowStepRoute,
 	dataFoundationRoute,

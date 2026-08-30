@@ -113,6 +113,13 @@ impl PaperTradingStore {
         })
     }
 
+    pub(crate) fn view_optional(&self, user_id: &str) -> Result<Option<PaperAccountView>, String> {
+        if !self.has_account(user_id)? {
+            return Ok(None);
+        }
+        self.view(user_id).map(Some)
+    }
+
     pub(crate) fn create_account(
         &self,
         user_id: &str,
@@ -411,6 +418,7 @@ mod tests {
     fn sqlite_state_survives_restart_and_fails_closed_until_reconciled() {
         let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
         let store = PaperTradingStore::open(database.clone()).unwrap();
+        assert!(store.view_optional("alice").unwrap().is_none());
         store.create_account("alice", account(), 1).unwrap();
         store
             .begin_order(

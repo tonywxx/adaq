@@ -34,6 +34,9 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 	expect(routerSource).toMatch(
 		/path: "\/operations"[\s\S]*?<OperationsDashboardPage \/>/,
 	);
+	expect(routerSource).toMatch(
+		/path: "\/paper-trading"[\s\S]*?<PaperTradingPage \/>/,
+	);
 	expect(routerSource).toMatch(/const DataFoundationPage = lazy\(/);
 	expect(routerSource).toMatch(/const OperationsDashboardPage = lazy\(/);
 	expect(routerSource).toMatch(/const MarketsOverviewPage = lazy\(/);
@@ -62,6 +65,8 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 	expect(sidebarSource).toMatch(/t\("nav\.marketsData"\)/);
 	expect(sidebarSource).toMatch(/to="\/factors"/);
 	expect(sidebarSource).toMatch(/t\("nav\.factorResearch"\)/);
+	expect(sidebarSource).toMatch(/to="\/paper-trading"/);
+	expect(sidebarSource).toMatch(/t\("nav\.paperTrading"\)/);
 	expect(sidebarSource).toMatch(/startsWith\("\/markets"\)/);
 	expect(sidebarSource).toContain('url: "/help/workflow"');
 	expect(marketsSource).toMatch(/staleTime: 5 \* 60_000/);

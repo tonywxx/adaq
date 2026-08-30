@@ -77,7 +77,7 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 		(step) => location.pathname === `/help/workflow/${step.id}`,
 	);
 	const activeModule =
-		location.pathname === "/operations"
+		location.pathname === "/operations" || location.pathname === "/paper-trading"
 			? "operations"
 			: location.pathname === "/factors"
 				? "factor"
@@ -199,12 +199,20 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 											/>
 										) : null}
 										{module.id === "operations" ? (
-											<SidebarLink
-												to="/operations"
-												label={t("nav.operationsDashboard")}
-												icon={moduleIcons[module.id]}
-												active={location.pathname === "/operations"}
-											/>
+											<>
+												<SidebarLink
+													to="/operations"
+													label={t("nav.operationsDashboard")}
+													icon={moduleIcons[module.id]}
+													active={location.pathname === "/operations"}
+												/>
+												<SidebarLink
+													to="/paper-trading"
+													label={t("nav.paperTrading")}
+													icon={moduleIcons[module.id]}
+													active={location.pathname === "/paper-trading"}
+												/>
+											</>
 										) : null}
 										{module.id === "strategy" ? (
 											<SidebarLink
@@ -285,6 +293,7 @@ function SidebarLink({
 		| "/factors"
 		| "/strategies"
 		| "/operations"
+		| "/paper-trading"
 		| "/components";
 	label: string;
 	icon: ReactNode;

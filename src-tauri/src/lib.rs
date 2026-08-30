@@ -4349,9 +4349,9 @@ fn paper_account_view(
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
-) -> Result<paper_trading::PaperAccountView, String> {
+) -> Result<Option<paper_trading::PaperAccountView>, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    state.paper_trading.view(&user_id)
+    state.paper_trading.view_optional(&user_id)
 }
 
 #[tauri::command]
