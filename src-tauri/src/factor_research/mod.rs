@@ -154,6 +154,13 @@ pub(crate) trait FactorResearchSource: Send + Sync {
     ) -> Result<Option<crate::component_library::ComponentQualificationRecord>, String> {
         Ok(None)
     }
+
+    fn component_qualifications_for_user(
+        &self,
+        _user_id: &str,
+    ) -> Result<Vec<crate::component_library::ComponentQualificationRecord>, String> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
@@ -417,6 +424,25 @@ pub(crate) struct FactorModelInputBinding {
     pub snapshot_id: String,
     pub universe_id: String,
     pub lookback: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AcceptedFactorInput {
+    pub decision_id: String,
+    pub decision_hash: String,
+    pub candidate_hash: String,
+    pub output_name: String,
+    pub package_archive_sha256: String,
+    pub package_wasm_sha256: String,
+    pub component_id: String,
+    pub component_version: String,
+    pub feature_plan_hash: String,
+    pub context_hash: String,
+    pub snapshot_id: String,
+    pub universe_id: String,
+    pub market: String,
+    pub venue: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1916,6 +1942,157 @@ impl FactorResearch {
         validate_user(user_id)?;
         let database = self.database()?;
         ResearchStore::new(&database).model_input_binding(user_id, decision_hash)
+    }
+
+    pub(crate) fn accepted_component_inputs(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<AcceptedFactorInput>, String> {
+        self.ensure_schema_ready()?;
+        validate_user(user_id)?;
+        let records = self
+            .inner
+            .source
+            .component_qualifications_for_user(user_id)?;
+        let mut inputs = Vec::new();
+        for record in records.into_iter().filter(|record| record.qualified) {
+            let evidence: FactorComponentQualificationEvidence =
+                serde_json::from_str(&record.evidence_json).map_err(string)?;
+            validate_component_qualification_evidence(&evidence, user_id, &record.attempt_id)?;
+            if evidence.package_sha256 != record.archive_sha256 || !evidence.qualification.qualified
+            {
+                return Err(
+                    "Factor Component qualification evidence archive identity differs".into(),
+                );
+            }
+            for decision in &evidence.binding.component_decisions {
+                inputs.push(self.accepted_component_input_from_evidence(
+                    user_id,
+                    &record,
+                    &evidence,
+                    decision.decision.decision_id,
+                    &decision.decision.output_name,
+                )?);
+            }
+        }
+        inputs.sort_by(|left, right| {
+            left.decision_id
+                .cmp(&right.decision_id)
+                .then_with(|| left.output_name.cmp(&right.output_name))
+        });
+        inputs.dedup_by(|left, right| {
+            left.decision_id == right.decision_id && left.output_name == right.output_name
+        });
+        Ok(inputs)
+    }
+
+    pub(crate) fn accepted_component_input(
+        &self,
+        user_id: &str,
+        decision_id: &str,
+        output_name: &str,
+    ) -> Result<AcceptedFactorInput, String> {
+        self.ensure_schema_ready()?;
+        validate_user(user_id)?;
+        let decision_id = Uuid::parse_str(decision_id)
+            .map_err(|_| "Factor Component Decision identity is invalid".to_owned())?;
+        let records = self
+            .inner
+            .source
+            .component_qualifications_for_user(user_id)?;
+        for record in records.into_iter().filter(|record| record.qualified) {
+            let evidence: FactorComponentQualificationEvidence =
+                serde_json::from_str(&record.evidence_json).map_err(string)?;
+            validate_component_qualification_evidence(&evidence, user_id, &record.attempt_id)?;
+            if evidence.package_sha256 != record.archive_sha256 || !evidence.qualification.qualified
+            {
+                return Err(
+                    "Factor Component qualification evidence archive identity differs".into(),
+                );
+            }
+            if evidence.binding.component_decisions.iter().any(|record| {
+                record.decision.decision_id == decision_id
+                    && record.decision.output_name == output_name
+            }) {
+                return self.accepted_component_input_from_evidence(
+                    user_id,
+                    &record,
+                    &evidence,
+                    decision_id,
+                    output_name,
+                );
+            }
+        }
+        Err("Factor Component input is not an accepted current qualification".into())
+    }
+
+    fn accepted_component_input_from_evidence(
+        &self,
+        user_id: &str,
+        record: &crate::component_library::ComponentQualificationRecord,
+        evidence: &FactorComponentQualificationEvidence,
+        decision_id: Uuid,
+        output_name: &str,
+    ) -> Result<AcceptedFactorInput, String> {
+        let candidate = {
+            let database = self.database()?;
+            ResearchStore::new(&database).candidate_for_decision(
+                user_id,
+                decision_id,
+                output_name,
+            )?
+        };
+        let selected = evidence
+            .binding
+            .component_decisions
+            .iter()
+            .find(|record| {
+                record.decision.decision_id == decision_id
+                    && record.decision.output_name == output_name
+            })
+            .ok_or_else(|| {
+                "Factor Component Decision is not bound to its qualification".to_owned()
+            })?;
+        let package = self
+            .inner
+            .source
+            .component_package(user_id, &record.archive_sha256)?;
+        adaq_component_tooling::verify_package(&package)?;
+        if package.archive_sha256 != record.archive_sha256
+            || package.manifest.kind != ComponentKind::Factor
+            || package.manifest.component_id != candidate.candidate.candidate_id
+            || !package
+                .manifest
+                .output_names
+                .iter()
+                .any(|name| name == output_name)
+            || evidence.qualification.archive_sha256 != package.archive_sha256
+            || evidence.qualification.component_id != package.manifest.component_id.to_string()
+            || evidence.qualification.version != package.manifest.version.to_string()
+        {
+            return Err("Factor Component qualification package identity is invalid".into());
+        }
+        let predecessor = candidate
+            .predecessor
+            .ok_or_else(|| "Factor Candidate predecessor is missing".to_owned())?;
+        Ok(AcceptedFactorInput {
+            decision_id: decision_id.to_string(),
+            decision_hash: selected.decision.decision_hash.clone(),
+            candidate_hash: candidate.candidate.candidate_hash,
+            output_name: output_name.into(),
+            package_archive_sha256: package.archive_sha256,
+            package_wasm_sha256: package.manifest.wasm_sha256,
+            component_id: package.manifest.component_id.to_string(),
+            component_version: package.manifest.version.to_string(),
+            feature_plan_hash: predecessor.feature_dataset.feature_plan_hash,
+            context_hash: predecessor.context_hash,
+            snapshot_id: predecessor.snapshot_id,
+            universe_id: predecessor
+                .universe_id
+                .ok_or_else(|| "Factor Candidate Universe identity is missing".to_owned())?,
+            market: predecessor.market,
+            venue: predecessor.venue,
+        })
     }
 
     pub(crate) fn save_decision(

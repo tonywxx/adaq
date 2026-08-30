@@ -16,6 +16,7 @@ mod paper_trading;
 mod python_research;
 mod research_queue;
 mod run_engine;
+mod strategy_candidate;
 mod user;
 mod validation;
 mod watchlist;
@@ -23,7 +24,10 @@ mod watchlist;
 use adaq_backtest_core::MarketDataSnapshot;
 #[cfg(test)]
 use adaq_component_sdk::host::{factor_abi, strategy_abi};
-use adaq_component_tooling::{FactorSchema, WasmLoader};
+use adaq_component_tooling::{
+    BuiltinForecastTarget, ComponentKind, FactorSchema, ForecastTarget, ForecastValueScale,
+    ModelScope, PredictionKind, WasmLoader,
+};
 use adaq_data_core::{
     BarGap, BarInterval, BarSeries, BarStreamEvent, BarSubscription, DataError, HistoricalBarRange,
     InstrumentStatus, Level2StreamEvent, OhlcvBar, OkxClient, SpotInstrument, TickerSnapshot,
@@ -56,6 +60,7 @@ fn database_path(app_data_dir: &Path) -> PathBuf {
 struct WorkspaceStates {
     local_research: Arc<LocalResearchState>,
     python_research: Arc<python_research::PythonResearchState>,
+    strategy_candidates: Arc<strategy_candidate::StrategyCandidateStore>,
     watchlist: WatchlistDb,
 }
 
@@ -123,6 +128,7 @@ impl WorkspaceInitialization {
                         .ok_or_else(|| "workspace states were already consumed".to_owned())?;
                     app.manage(states.local_research);
                     app.manage(states.python_research);
+                    app.manage(states.strategy_candidates);
                     app.manage(states.watchlist);
                     *status = WorkspaceInitStatus::Managed;
                     return Ok(());
@@ -143,12 +149,198 @@ fn open_workspace_states(app_data_dir: &Path) -> Result<WorkspaceStates, String>
     local_research
         .features
         .attach_python(python_research.clone())?;
+    let strategy_candidate_source = Arc::new(LocalStrategyCandidateSource {
+        local_research: local_research.clone(),
+        python_research: python_research.clone(),
+    });
+    let strategy_candidates = Arc::new(strategy_candidate::StrategyCandidateStore::open(
+        local_research.database.clone(),
+        strategy_candidate_source,
+    )?);
     let watchlist = WatchlistDb::open(&database_path)?;
     Ok(WorkspaceStates {
         local_research,
         python_research,
+        strategy_candidates,
         watchlist,
     })
+}
+
+struct LocalStrategyCandidateSource {
+    local_research: Arc<LocalResearchState>,
+    python_research: Arc<python_research::PythonResearchState>,
+}
+
+impl strategy_candidate::StrategyCandidateSource for LocalStrategyCandidateSource {
+    fn factor_inputs(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<strategy_candidate::ResolvedFactorInput>, String> {
+        self.local_research
+            .factor
+            .accepted_component_inputs(user_id)
+            .map(|inputs| {
+                inputs
+                    .into_iter()
+                    .map(|input| strategy_candidate::ResolvedFactorInput {
+                        decision_id: input.decision_id,
+                        decision_hash: input.decision_hash,
+                        candidate_hash: input.candidate_hash,
+                        output_name: input.output_name,
+                        package_archive_sha256: input.package_archive_sha256,
+                        package_wasm_sha256: input.package_wasm_sha256,
+                        component_id: input.component_id,
+                        component_version: input.component_version,
+                        feature_plan_hash: input.feature_plan_hash,
+                        context_hash: input.context_hash,
+                        snapshot_id: input.snapshot_id,
+                        universe_id: input.universe_id,
+                        market: input.market,
+                        venue: input.venue,
+                    })
+                    .collect()
+            })
+    }
+
+    fn model_inputs(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<strategy_candidate::ResolvedModelInput>, String> {
+        self.python_research
+            .accepted_model_inputs(user_id)
+            .and_then(|inputs| {
+                inputs
+                    .into_iter()
+                    .map(|input| self.resolve_model_input(user_id, input))
+                    .collect()
+            })
+    }
+
+    fn resolve_factor(
+        &self,
+        user_id: &str,
+        binding: &strategy_candidate::FactorInputBinding,
+    ) -> Result<strategy_candidate::ResolvedFactorInput, String> {
+        let input = self.local_research.factor.accepted_component_input(
+            user_id,
+            &binding.decision_id,
+            &binding.output_name,
+        )?;
+        Ok(strategy_candidate::ResolvedFactorInput {
+            decision_id: input.decision_id,
+            decision_hash: input.decision_hash,
+            candidate_hash: input.candidate_hash,
+            output_name: input.output_name,
+            package_archive_sha256: input.package_archive_sha256,
+            package_wasm_sha256: input.package_wasm_sha256,
+            component_id: input.component_id,
+            component_version: input.component_version,
+            feature_plan_hash: input.feature_plan_hash,
+            context_hash: input.context_hash,
+            snapshot_id: input.snapshot_id,
+            universe_id: input.universe_id,
+            market: input.market,
+            venue: input.venue,
+        })
+    }
+
+    fn resolve_model(
+        &self,
+        user_id: &str,
+        binding: &strategy_candidate::ModelInputBinding,
+    ) -> Result<strategy_candidate::ResolvedModelInput, String> {
+        let input = self
+            .python_research
+            .accepted_model_input(user_id, &binding.qualification_report_id)?;
+        if input.decision_id != binding.decision_id
+            || input.final_evaluation_report_id != binding.final_evaluation_report_id
+            || input.artifact_sha256 != binding.artifact_sha256
+            || input.transformation_sha256 != binding.transformation_sha256
+            || input.package_archive_sha256 != binding.package_archive_sha256
+            || input.package_wasm_sha256 != binding.package_wasm_sha256
+            || input.component_id != binding.component_id
+            || input.component_version != binding.component_version
+            || input.model_profile != binding.model_profile
+            || input.exporter_id != binding.exporter_id
+            || input.sdk_version != binding.sdk_version
+            || input.abi_version != binding.abi_version
+            || input.runtime_identity != binding.runtime_identity
+            || input.input_slots != binding.input_slots
+            || input.output_name != binding.output_name
+            || input.target_id != binding.target_id
+            || input.target_horizon_bars != binding.target_horizon_bars
+            || input.forecast_contract != binding.forecast_contract
+        {
+            return Err("Model qualification identity does not match the request".into());
+        }
+        self.resolve_model_input(user_id, input)
+    }
+}
+
+impl LocalStrategyCandidateSource {
+    fn resolve_model_input(
+        &self,
+        user_id: &str,
+        input: python_research::AcceptedModelInput,
+    ) -> Result<strategy_candidate::ResolvedModelInput, String> {
+        let package = self
+            .local_research
+            .package_for_user(user_id, &input.package_archive_sha256)?;
+        if package.archive_sha256 != input.package_archive_sha256
+            || package.manifest.kind != ComponentKind::Model
+            || package.manifest.wasm_sha256 != input.package_wasm_sha256
+            || package.manifest.component_id.to_string() != input.component_id
+            || package.manifest.version.to_string() != input.component_version
+            || package.manifest.model_scope != Some(ModelScope::SingleInstrument)
+            || package.manifest.model_outputs.len() != 1
+            || package
+                .manifest
+                .feature_slots
+                .iter()
+                .map(|slot| slot.name.as_str())
+                .ne(input.input_slots.iter().map(String::as_str))
+            || package.manifest.model_outputs[0].name != input.output_name
+            || package.manifest.model_outputs[0].horizon_bars != input.target_horizon_bars
+            || !matches!(
+                &package.manifest.model_outputs[0].prediction_kind,
+                PredictionKind::ExpectedValue
+            )
+            || !matches!(
+                &package.manifest.model_outputs[0].forecast_target,
+                ForecastTarget::Builtin {
+                    target: BuiltinForecastTarget::FutureCloseReturn
+                }
+            )
+            || !matches!(
+                &package.manifest.model_outputs[0].value_scale,
+                ForecastValueScale::Native
+            )
+        {
+            return Err("Model Component Package does not match qualified evidence".into());
+        }
+        Ok(strategy_candidate::ResolvedModelInput {
+            qualification_report_id: input.qualification_report_id,
+            decision_id: input.decision_id,
+            final_evaluation_report_id: input.final_evaluation_report_id,
+            artifact_sha256: input.artifact_sha256,
+            transformation_sha256: input.transformation_sha256,
+            package_archive_sha256: input.package_archive_sha256,
+            package_wasm_sha256: input.package_wasm_sha256,
+            component_id: input.component_id,
+            component_version: input.component_version,
+            model_profile: input.model_profile,
+            exporter_id: input.exporter_id,
+            sdk_version: input.sdk_version,
+            abi_version: input.abi_version,
+            runtime_identity: input.runtime_identity,
+            input_slots: input.input_slots,
+            output_name: input.output_name,
+            target_id: input.target_id,
+            target_horizon_bars: input.target_horizon_bars,
+            forecast_contract: input.forecast_contract,
+            input_evidence_sha256: input.input_evidence_sha256,
+        })
+    }
 }
 
 fn unix_now_ms() -> i64 {
@@ -4477,6 +4669,12 @@ pub fn run() {
             factor_component_candidate_get,
             factor_component_qualification_prepare,
             factor_component_qualification_get,
+            strategy_candidate::strategy_candidate_catalog,
+            strategy_candidate::strategy_candidate_preflight,
+            strategy_candidate::strategy_candidate_create,
+            strategy_candidate::strategy_candidate_retry,
+            strategy_candidate::strategy_candidate_list,
+            strategy_candidate::strategy_candidate_get,
             factor_materialization_start,
             factor_materialization_start_from_context,
             factor_materialization_protocol_freeze,

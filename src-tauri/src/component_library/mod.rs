@@ -290,6 +290,37 @@ impl ComponentLibrary {
             .map_err(string)
     }
 
+    pub(crate) fn qualifications_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<ComponentQualificationRecord>, String> {
+        validate_user(user_id)?;
+        let database = self.0.database()?;
+        let mut statement = database
+            .prepare(
+                "SELECT attempt_id, user_id, archive_sha256, qualified,
+                        evidence_json, created_at_ms
+                   FROM component_qualification_attempts
+                  WHERE user_id = ?1
+                  ORDER BY created_at_ms ASC, attempt_id ASC",
+            )
+            .map_err(string)?;
+        statement
+            .query_map([user_id], |row| {
+                Ok(ComponentQualificationRecord {
+                    attempt_id: row.get(0)?,
+                    user_id: row.get(1)?,
+                    archive_sha256: row.get(2)?,
+                    qualified: row.get::<_, i64>(3)? != 0,
+                    evidence_json: row.get(4)?,
+                    created_at_ms: row.get(5)?,
+                })
+            })
+            .map_err(string)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(string)
+    }
+
     /// Publishes the qualified Factor package and its entitlement in the
     /// caller's transaction. No Component Library row is visible until the
     /// caller also commits its owning research Attempt.

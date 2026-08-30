@@ -428,6 +428,13 @@ impl FactorResearchSource for LocalFactorSource {
     ) -> Result<Option<crate::component_library::ComponentQualificationRecord>, String> {
         self.components.qualification_for_user(user_id, attempt_id)
     }
+
+    fn component_qualifications_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<crate::component_library::ComponentQualificationRecord>, String> {
+        self.components.qualifications_for_user(user_id)
+    }
 }
 
 /// The concrete local dependencies composed into the Component Library
@@ -2649,7 +2656,12 @@ pub async fn local_data_reset(
     let kind = request.kind;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
-        state.reset_local_data(&user_id, kind)
+        state.reset_local_data(&user_id, kind)?;
+        if matches!(kind, LocalDataResetKind::All) {
+            app.state::<Arc<crate::strategy_candidate::StrategyCandidateStore>>()
+                .reset_user(&user_id)?;
+        }
+        Ok(())
     })
     .await
     .map_err(string)?

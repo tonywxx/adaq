@@ -307,6 +307,31 @@ impl ModelRuntimeQualificationReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AcceptedModelInput {
+    pub qualification_report_id: String,
+    pub decision_id: String,
+    pub final_evaluation_report_id: String,
+    pub artifact_sha256: String,
+    pub transformation_sha256: String,
+    pub package_archive_sha256: String,
+    pub package_wasm_sha256: String,
+    pub component_id: String,
+    pub component_version: String,
+    pub model_profile: String,
+    pub exporter_id: String,
+    pub sdk_version: String,
+    pub abi_version: String,
+    pub runtime_identity: String,
+    pub input_slots: Vec<String>,
+    pub output_name: String,
+    pub target_id: String,
+    pub target_horizon_bars: u32,
+    pub forecast_contract: String,
+    pub input_evidence_sha256: String,
+}
+
 fn model_qualification_report_id(
     attempt_id: &str,
     decision_id: &str,
@@ -980,6 +1005,121 @@ impl ModelLabStore {
                 .then_with(|| left.report_id.cmp(&right.report_id))
         });
         Ok(reports)
+    }
+
+    fn accepted_model_inputs(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<AcceptedModelInput>, PythonResearchError> {
+        crate::user::validate_user(user_id).map_err(PythonResearchError)?;
+        let prefix = format!("{user_id}:");
+        let report_ids = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?
+            .model_qualification_reports
+            .iter()
+            .filter(|(key, report)| key.starts_with(&prefix) && report.qualified)
+            .map(|(_, report)| report.report_id.clone())
+            .collect::<Vec<_>>();
+        let mut inputs = report_ids
+            .into_iter()
+            .map(|report_id| self.accepted_model_input(user_id, &report_id))
+            .collect::<Result<Vec<_>, _>>()?;
+        inputs.sort_by(|left, right| {
+            left.qualification_report_id
+                .cmp(&right.qualification_report_id)
+        });
+        Ok(inputs)
+    }
+
+    fn accepted_model_input(
+        &self,
+        user_id: &str,
+        report_id: &str,
+    ) -> Result<AcceptedModelInput, PythonResearchError> {
+        crate::user::validate_user(user_id).map_err(PythonResearchError)?;
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
+        let report = database
+            .model_qualification_reports
+            .get(&model_key(user_id, report_id))
+            .cloned()
+            .ok_or_else(|| PythonResearchError("model-qualification-report-not-found".into()))?;
+        report.validate()?;
+        if !report.qualified {
+            return Err(PythonResearchError(
+                "model-qualification-report-not-accepted".into(),
+            ));
+        }
+        let decision = database
+            .decisions
+            .get(&model_key(user_id, &report.decision_id))
+            .cloned()
+            .ok_or_else(|| PythonResearchError("model-selection-decision-not-found".into()))?;
+        decision.validate()?;
+        let final_report = database
+            .final_reports
+            .get(&model_key(user_id, &report.final_evaluation_report_id))
+            .cloned()
+            .ok_or_else(|| PythonResearchError("model-final-evaluation-report-not-found".into()))?;
+        final_report.validate()?;
+        let final_state = database
+            .final_evaluations
+            .get(&model_key(user_id, &decision.decision_id));
+        if report.report_id != report_id
+            || report.decision_id != decision.decision_id
+            || report.final_evaluation_report_id != final_report.report_id
+            || final_report.decision_id != decision.decision_id
+            || final_report.artifact_sha256 != report.artifact_sha256
+            || report.artifact_sha256 == UNKNOWN_MODEL_IDENTITY
+            || report.package_archive_sha256.is_none()
+            || report.wasm_sha256.is_none()
+            || report.component_id.is_none()
+            || report.component_version.is_none()
+            || report.imported_component_archive_sha256 != report.package_archive_sha256
+            || final_state.is_some_and(|state| {
+                state.status != ModelFinalEvaluationStatus::Completed
+                    || state.report_id.as_deref()
+                        != Some(report.final_evaluation_report_id.as_str())
+            })
+        {
+            return Err(PythonResearchError(
+                "model-qualification-input-binding-invalid".into(),
+            ));
+        }
+        Ok(AcceptedModelInput {
+            qualification_report_id: report.report_id,
+            decision_id: report.decision_id,
+            final_evaluation_report_id: report.final_evaluation_report_id,
+            artifact_sha256: report.artifact_sha256,
+            transformation_sha256: report.transformation_sha256,
+            package_archive_sha256: report
+                .package_archive_sha256
+                .ok_or_else(|| PythonResearchError("model-qualification-package-missing".into()))?,
+            package_wasm_sha256: report
+                .wasm_sha256
+                .ok_or_else(|| PythonResearchError("model-qualification-wasm-missing".into()))?,
+            component_id: report.component_id.ok_or_else(|| {
+                PythonResearchError("model-qualification-component-missing".into())
+            })?,
+            component_version: report
+                .component_version
+                .ok_or_else(|| PythonResearchError("model-qualification-version-missing".into()))?,
+            model_profile: report.wasi_profile,
+            exporter_id: report.exporter_id,
+            sdk_version: report.sdk_version,
+            abi_version: report.abi_version,
+            runtime_identity: report.runtime_identity,
+            input_slots: report.input_slots,
+            output_name: MODEL_OUTPUT_NAME.into(),
+            target_id: report.target_id,
+            target_horizon_bars: report.target_horizon_bars,
+            forecast_contract: report.forecast_contract,
+            input_evidence_sha256: decision.input_evidence_sha256,
+        })
     }
 
     fn save_qualification_report(
@@ -4539,6 +4679,25 @@ impl PythonResearchState {
             runtime_progress: Arc::new(Mutex::new(BTreeMap::new())),
             shutdown: AtomicBool::new(false),
         }
+    }
+
+    pub(crate) fn accepted_model_inputs(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<AcceptedModelInput>, String> {
+        self.model_lab_store
+            .accepted_model_inputs(user_id)
+            .map_err(map_error)
+    }
+
+    pub(crate) fn accepted_model_input(
+        &self,
+        user_id: &str,
+        report_id: &str,
+    ) -> Result<AcceptedModelInput, String> {
+        self.model_lab_store
+            .accepted_model_input(user_id, report_id)
+            .map_err(map_error)
     }
 
     pub(crate) fn attach_queue(&self, queue: ResearchQueue) {

@@ -81,7 +81,9 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 			? "operations"
 			: location.pathname === "/factors"
 				? "factor"
-				: activeStep?.module;
+				: location.pathname === "/strategies"
+					? "strategy"
+					: activeStep?.module;
 	const [openModules, setOpenModules] = useState<Set<string>>(
 		() => new Set([activeModule ?? "factor"]),
 	);
@@ -204,6 +206,14 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 												active={location.pathname === "/operations"}
 											/>
 										) : null}
+										{module.id === "strategy" ? (
+											<SidebarLink
+												to="/strategies"
+												label={t("nav.strategyLab")}
+												icon={<FileTextIcon aria-hidden="true" />}
+												active={location.pathname === "/strategies"}
+											/>
+										) : null}
 										<SidebarMenuItem>
 											<div className="flex h-8 items-center gap-2 rounded-md px-2 text-sm text-sidebar-foreground/80 [&>svg]:size-4">
 												{moduleIcons[module.id]}
@@ -273,6 +283,7 @@ function SidebarLink({
 		| "/data-foundation"
 		| "/features"
 		| "/factors"
+		| "/strategies"
 		| "/operations"
 		| "/components";
 	label: string;

@@ -14,7 +14,7 @@ export const workflowSteps: readonly {
 	module: WorkflowModuleId;
 	capability: WorkflowCapability;
 	milestone?: string;
-	target?: "/factors" | "/components" | "/models" | "/backtest";
+	target?: "/factors" | "/components" | "/models" | "/strategies" | "/backtest";
 }[] = [
 	{ id: 1, module: "factor", capability: "available", target: "/factors" },
 	{ id: 2, module: "factor", capability: "available", target: "/factors" },
@@ -22,7 +22,7 @@ export const workflowSteps: readonly {
 	{ id: 4, module: "model", capability: "available", target: "/models" },
 	{ id: 5, module: "model", capability: "partial", target: "/models" },
 	{ id: 6, module: "model", capability: "partial", target: "/models" },
-	{ id: 7, module: "strategy", capability: "planned", milestone: "M13" },
+	{ id: 7, module: "strategy", capability: "available", target: "/strategies" },
 	{ id: 8, module: "strategy", capability: "partial", target: "/backtest" },
 	{
 		id: 9,

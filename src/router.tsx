@@ -73,6 +73,11 @@ const FactorsPage = lazy(() =>
 		default: module.FactorsPage,
 	})),
 );
+const StrategyLabPage = lazy(() =>
+	import("@/features/strategy/strategy-lab-page").then((module) => ({
+		default: module.StrategyLabPage,
+	})),
+);
 const SettingsPage = lazy(() =>
 	import("@/features/settings/settings-page").then((module) => ({
 		default: module.SettingsPage,
@@ -199,6 +204,19 @@ const factorsRoute = createRoute({
 		</Suspense>
 	),
 });
+const strategiesRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/strategies",
+	staticData: {
+		titleKey: "strategyLab.title",
+		breadcrumbKey: "strategyLab.breadcrumb",
+	},
+	component: () => (
+		<Suspense fallback={<PageLoadingSkeleton />}>
+			<StrategyLabPage />
+		</Suspense>
+	),
+});
 const settingsIndexRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/settings",
@@ -226,6 +244,7 @@ const MARKET_SESSION_PATHS = [
 	"/features",
 	"/models",
 	"/factors",
+	"/strategies",
 ] as const;
 
 function usesMarketSession(pathname: string) {
@@ -290,6 +309,7 @@ const routeTree = rootRoute.addChildren([
 	featuresRoute,
 	modelsRoute,
 	factorsRoute,
+	strategiesRoute,
 	settingsIndexRoute,
 	settingsRoute,
 ]);

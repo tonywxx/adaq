@@ -49,6 +49,9 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 	expect(routerSource).toContain('path: "/help/workflow/$step"');
 	expect(routerSource).toMatch(/const FactorsPage = lazy\(/);
 	expect(routerSource).toMatch(
+		/path: "\/strategies"[\s\S]*?<StrategyLabPage \/>/,
+	);
+	expect(routerSource).toMatch(
 		/path: "\/factors"[\s\S]*?component: \(\) => \([\s\S]*?<FactorsPage \/>/,
 	);
 	expect(routerSource).toContain('titleKey: "factors.title"');
@@ -92,7 +95,7 @@ test("keeps the ten-step workflow ordered and mapped to four modules", () => {
 		"available",
 		"partial",
 		"partial",
-		"planned",
+		"available",
 		"partial",
 		"planned",
 		"planned",
@@ -106,6 +109,12 @@ test("keeps the ten-step workflow ordered and mapped to four modules", () => {
 		module: "model",
 		capability: "available",
 		target: "/models",
+	});
+	expect(workflowSteps[6]).toEqual({
+		id: 7,
+		module: "strategy",
+		capability: "available",
+		target: "/strategies",
 	});
 });
 
