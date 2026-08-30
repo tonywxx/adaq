@@ -520,6 +520,33 @@ impl PaperLedger {
         &self.fills
     }
 
+    /// Imports a provider-owned open order while preserving local reservation
+    /// accounting. Reconciliation may update an existing provider order as
+    /// its filled quantity changes.
+    pub fn upsert_provider_order(&mut self, order: Order) -> Result<(), LedgerError> {
+        if order.account_id != self.account.account_id {
+            return Err(LedgerError::AccountMismatch);
+        }
+        if order.order_id.trim().is_empty()
+            || order.instrument.trim().is_empty()
+            || order.quantity <= Decimal::ZERO
+            || order.limit_price <= Decimal::ZERO
+            || order.filled_quantity < Decimal::ZERO
+            || order.filled_quantity > order.quantity
+        {
+            return Err(LedgerError::InvalidInput("invalid provider order"));
+        }
+        let next_reserved = Self::order_reserved_cash(&order);
+        let previous_reserved = self
+            .orders
+            .get(&order.order_id)
+            .map(Self::order_reserved_cash)
+            .unwrap_or(Decimal::ZERO);
+        self.reserved_cash = self.reserved_cash - previous_reserved + next_reserved;
+        self.orders.insert(order.order_id.clone(), order);
+        Ok(())
+    }
+
     pub fn submit_order(
         &mut self,
         user_id: &str,
@@ -698,6 +725,19 @@ impl PaperLedger {
         self.next_id += 1;
         id
     }
+
+    fn order_reserved_cash(order: &Order) -> Decimal {
+        if order.side == Side::Buy
+            && matches!(
+                order.status,
+                OrderStatus::Accepted | OrderStatus::PartiallyFilled
+            )
+        {
+            (order.quantity - order.filled_quantity) * order.limit_price
+        } else {
+            Decimal::ZERO
+        }
+    }
 }
 
 #[cfg(test)]
@@ -786,6 +826,40 @@ mod tests {
             Decimal::ZERO
         );
         assert_eq!(id, "order-1");
+    }
+
+    #[test]
+    fn provider_order_updates_reserved_cash_without_synthesizing_a_fill() {
+        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        ledger
+            .upsert_provider_order(Order {
+                order_id: "provider-order-1".into(),
+                account_id: "acct".into(),
+                instrument: "BTC-USDT".into(),
+                side: Side::Buy,
+                quantity: Decimal::new(10, 0),
+                filled_quantity: Decimal::new(2, 0),
+                limit_price: Decimal::new(100, 0),
+                status: OrderStatus::PartiallyFilled,
+                submitted_at_ms: 1,
+            })
+            .unwrap();
+        assert_eq!(ledger.reserved_cash(), Decimal::new(800, 0));
+        assert!(ledger.fills().is_empty());
+        ledger
+            .upsert_provider_order(Order {
+                order_id: "provider-order-1".into(),
+                account_id: "acct".into(),
+                instrument: "BTC-USDT".into(),
+                side: Side::Buy,
+                quantity: Decimal::new(10, 0),
+                filled_quantity: Decimal::new(8, 0),
+                limit_price: Decimal::new(100, 0),
+                status: OrderStatus::PartiallyFilled,
+                submitted_at_ms: 1,
+            })
+            .unwrap();
+        assert_eq!(ledger.reserved_cash(), Decimal::new(200, 0));
     }
     #[test]
     fn mismatch_fails_closed_until_reconciled() {

@@ -97,9 +97,9 @@ export function PaperTradingPage() {
 
 	const workspace = account.data;
 	const view = workspace?.account;
-	const uncertain = view?.providerEvidence.some(
-		(evidence) => "Uncertain" in evidence,
-	);
+	const uncertain =
+		view?.reconciliation === "unknown" ||
+		view?.providerEvidence.some((evidence) => "Uncertain" in evidence);
 	const providerEvidenceRows = [
 		...(workspace?.connection.evidence
 			? [JSON.stringify(workspace.connection.evidence)]
