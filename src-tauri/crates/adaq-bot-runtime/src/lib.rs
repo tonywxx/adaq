@@ -1322,14 +1322,16 @@ pub struct WorkerSupervisor {
 
 #[cfg(windows)]
 struct WindowsWorkerJob {
-    handle: windows_sys::Win32::Foundation::HANDLE,
+    handle: usize,
 }
 
 #[cfg(windows)]
 impl Drop for WindowsWorkerJob {
     fn drop(&mut self) {
         unsafe {
-            windows_sys::Win32::Foundation::CloseHandle(self.handle);
+            windows_sys::Win32::Foundation::CloseHandle(
+                self.handle as windows_sys::Win32::Foundation::HANDLE,
+            );
         }
     }
 }
@@ -1408,7 +1410,9 @@ fn configure_windows_worker_job(
     if handle.is_null() {
         return Err("worker-process-job-create-failed".into());
     }
-    let job = WindowsWorkerJob { handle };
+    let job = WindowsWorkerJob {
+        handle: handle as usize,
+    };
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_ACTIVE_PROCESS
         | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -1417,7 +1421,7 @@ fn configure_windows_worker_job(
     limits.ProcessMemoryLimit = process_memory_limit;
     let configured = unsafe {
         SetInformationJobObject(
-            job.handle,
+            job.handle as windows_sys::Win32::Foundation::HANDLE,
             JobObjectExtendedLimitInformation,
             (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
             size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
@@ -1426,7 +1430,13 @@ fn configure_windows_worker_job(
     if configured == 0 {
         return Err("worker-process-job-configure-failed".into());
     }
-    if unsafe { AssignProcessToJobObject(job.handle, child.as_raw_handle()) } == 0 {
+    if unsafe {
+        AssignProcessToJobObject(
+            job.handle as windows_sys::Win32::Foundation::HANDLE,
+            child.as_raw_handle(),
+        )
+    } == 0
+    {
         return Err("worker-process-job-assign-failed".into());
     }
     Ok(job)
