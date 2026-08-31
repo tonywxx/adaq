@@ -280,6 +280,51 @@ impl BotSupervisor {
         Ok(())
     }
 
+    pub(crate) fn freeze_all(&self, user_id: &str, reason: &str) -> Result<Vec<String>, String> {
+        crate::user::validate_user(user_id)?;
+        let mut detached = Vec::new();
+        {
+            let mut workers = self
+                .workers
+                .lock()
+                .map_err(|_| "worker registry lock failed".to_owned())?;
+            let bot_ids = workers
+                .iter()
+                .filter(|(_, managed)| managed.user_id == user_id)
+                .map(|(bot_id, _)| bot_id.clone())
+                .collect::<Vec<_>>();
+            for bot_id in bot_ids {
+                if let Some(mut managed) = workers.remove(&bot_id) {
+                    managed.worker.terminate_for_fault("operations-freeze-all");
+                    detached.push((
+                        bot_id,
+                        managed.user_id,
+                        managed.entity_id,
+                        managed.worker.take_health_events(),
+                    ));
+                }
+            }
+        }
+        let mut frozen = Vec::with_capacity(detached.len());
+        for (bot_id, managed_user_id, entity_id, events) in detached {
+            for event in events {
+                self.observe_worker_event(&managed_user_id, &entity_id, &bot_id, event)?;
+            }
+            self.observe(
+                &managed_user_id,
+                &entity_id,
+                HealthState::Critical,
+                "worker_freeze_all",
+                json!({
+                    "botId": bot_id,
+                    "reason": crate::bot_operations::safe_detail(reason),
+                }),
+            )?;
+            frozen.push(bot_id);
+        }
+        Ok(frozen)
+    }
+
     fn observe_worker_event(
         &self,
         user_id: &str,
@@ -332,8 +377,22 @@ impl BotSupervisor {
         entity_id: &str,
         state: HealthState,
         condition: &str,
-        evidence: serde_json::Value,
+        mut evidence: serde_json::Value,
     ) -> Result<(), String> {
+        let (attempt_id, bundle_id) = self
+            .bots
+            .get(user_id, entity_id)
+            .ok()
+            .map(|bot| (bot.current_attempt_id, Some(bot.bundle.identity)))
+            .unwrap_or((None, None));
+        if let Some(object) = evidence.as_object_mut() {
+            if let Some(attempt_id) = &attempt_id {
+                object.insert("attemptId".into(), json!(attempt_id));
+            }
+            if let Some(bundle_id) = &bundle_id {
+                object.insert("bundleId".into(), json!(bundle_id));
+            }
+        }
         self.operations
             .observe(HealthObservation {
                 user_id: user_id.into(),
@@ -344,6 +403,12 @@ impl BotSupervisor {
                 evidence,
                 required: true,
                 observed_at_ms: adaq_bot_runtime::unix_now_ms(),
+                event_kind: Some(format!("worker.{}", condition.replace('_', "-"))),
+                evidence_id: attempt_id,
+                correlation_id: bundle_id,
+                causation_id: None,
+                diagnostic: None,
+                metrics: std::collections::BTreeMap::new(),
             })
             .map(|_| ())
     }

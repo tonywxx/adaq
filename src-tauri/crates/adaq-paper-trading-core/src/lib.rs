@@ -307,6 +307,11 @@ impl PaperExecution {
     pub fn block_for_recovery(&mut self) {
         self.blocked = true;
     }
+
+    pub fn freeze_new_risk(&mut self) {
+        self.policy.freeze_new_risk = true;
+        self.blocked = true;
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1014,5 +1019,20 @@ mod tests {
             ),
             Err(ExecutionError::RiskRejected(_))
         ));
+    }
+
+    #[test]
+    fn freeze_new_risk_is_persistent_and_blocks_approval() {
+        let ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        let mut execution = PaperExecution::okx_demo(RiskPolicy {
+            max_order_notional: Decimal::new(10_000, 0),
+            reserve_cash: Decimal::ZERO,
+            freeze_new_risk: false,
+        })
+        .unwrap();
+        execution.freeze_new_risk();
+        assert!(execution.is_blocked());
+        assert!(execution.policy().freeze_new_risk);
+        assert!(!execution.approve(&ledger, Decimal::ONE).approved);
     }
 }

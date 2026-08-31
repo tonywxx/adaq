@@ -781,6 +781,23 @@ impl BotStore {
         Ok(())
     }
 
+    pub(crate) fn freeze_all(&self, user_id: &str, detail: &str) -> Result<Vec<String>, String> {
+        validate_user(user_id)?;
+        let _control = self
+            .control
+            .lock()
+            .map_err(|error| format!("Bot control lock failed: {error}"))?;
+        let bots = self.list(user_id)?;
+        let mut frozen = Vec::new();
+        for bot in bots {
+            if bot.state != LifecycleState::Stopped {
+                self.fault(user_id, &bot.bot_id, "operations-freeze-all", detail)?;
+                frozen.push(bot.bot_id);
+            }
+        }
+        Ok(frozen)
+    }
+
     pub(crate) fn record_evidence(
         &self,
         user_id: &str,
@@ -1610,6 +1627,17 @@ pub(crate) async fn bot_decision(
                 if view.state != LifecycleState::Running {
                     return Err("Bot must be Running before it can accept a Decision Batch.".into());
                 }
+                if local.operations.blocks_new_risk(&user_id)? {
+                    bots.record_evidence(
+                        &user_id,
+                        &request.bot_id,
+                        "decision",
+                        "decision-skipped-by-operations",
+                        "An unresolved Host safety action blocked this Decision Batch; no Worker Target or order was authorized.",
+                        Some(&request.request_id),
+                    )?;
+                    return bots.get(&user_id, &request.bot_id);
+                }
                 let validation: Result<(), String> = if !bounded(&request.request_id, 128)
                     || !bounded(&request.dataset_id, 128)
                 {
@@ -1638,6 +1666,52 @@ pub(crate) async fn bot_decision(
                     &view.bundle,
                     &request.dataset_id,
                 );
+                if let Err(error) = &host_batch {
+                    local.operations.observe(crate::operations::HealthObservation {
+                        user_id: user_id.clone(),
+                        entity_id: view.bundle.market_data_snapshot_id.clone(),
+                        dimension: crate::operations::HealthDimension::MarketData,
+                        state: crate::operations::HealthState::Unknown,
+                        condition: "market_data_context".into(),
+                        evidence: serde_json::json!({
+                            "botId": request.bot_id,
+                            "bundleId": view.bundle.identity,
+                            "datasetId": request.dataset_id,
+                            "snapshotId": view.bundle.market_data_snapshot_id,
+                            "error": safe_detail(error),
+                        }),
+                        required: true,
+                        observed_at_ms: adaq_bot_runtime::unix_now_ms(),
+                        event_kind: Some("market.data-health".into()),
+                        evidence_id: Some(request.dataset_id.clone()),
+                        correlation_id: Some(request.request_id.clone()),
+                        causation_id: Some(view.bundle.identity.clone()),
+                        diagnostic: Some(safe_detail(error)),
+                        metrics: BTreeMap::new(),
+                    })?;
+                } else {
+                    local.operations.observe(crate::operations::HealthObservation {
+                        user_id: user_id.clone(),
+                        entity_id: view.bundle.market_data_snapshot_id.clone(),
+                        dimension: crate::operations::HealthDimension::MarketData,
+                        state: crate::operations::HealthState::Healthy,
+                        condition: "market_data_context".into(),
+                        evidence: serde_json::json!({
+                            "botId": request.bot_id,
+                            "bundleId": view.bundle.identity,
+                            "datasetId": request.dataset_id,
+                            "snapshotId": view.bundle.market_data_snapshot_id,
+                        }),
+                        required: true,
+                        observed_at_ms: adaq_bot_runtime::unix_now_ms(),
+                        event_kind: Some("market.data-health".into()),
+                        evidence_id: Some(request.dataset_id.clone()),
+                        correlation_id: Some(request.request_id.clone()),
+                        causation_id: Some(view.bundle.identity.clone()),
+                        diagnostic: Some("Host assembled the exact frozen Market Data context.".into()),
+                        metrics: BTreeMap::new(),
+                    })?;
+                }
                 let decision_id = match &host_batch {
                     Ok(batch) => batch.clock.decision_id().to_owned(),
                     Err(error) => unavailable_decision_id(&view.bundle, &request.request_id, error)?,
@@ -2434,6 +2508,9 @@ fn execute_target(
     decision_id: &str,
     target: &WorkerTarget,
 ) -> Result<(), String> {
+    if local.operations.blocks_new_risk(user_id)? {
+        return Err("A Host operational safety action is active; new Bot risk is blocked.".into());
+    }
     let next_execution_ms = match clock {
         DecisionClock::ClosedBar {
             next_execution_ms, ..
@@ -3429,6 +3506,9 @@ fn start_bot(
         &request.command_id,
         if retry { "retry" } else { "start" },
         |bots| {
+            if local.operations.is_user_frozen(user_id)? {
+                return Err("Freeze All is active; new Bot risk is blocked.".into());
+            }
             let (attempt_id, bundle) = bots.begin_attempt(user_id, &request.bot_id, retry)?;
             let launch = match worker_launch_request(app, &local, user_id, &bundle) {
                 Ok(launch) => launch,
@@ -3492,6 +3572,43 @@ fn start_bot(
                 "OKX Demo account evidence was refreshed before risk became available.",
                 Some(&bundle.account_id),
             )?;
+            if let Err(error) = local.operations.observe(crate::operations::HealthObservation {
+                user_id: user_id.to_owned(),
+                entity_id: request.bot_id.clone(),
+                dimension: crate::operations::HealthDimension::FeatureModelStrategy,
+                state: crate::operations::HealthState::Healthy,
+                condition: "deployment_bundle_compatible".into(),
+                evidence: serde_json::json!({
+                    "botId": bundle.bot_id,
+                    "bundleId": bundle.identity,
+                    "qualificationId": bundle.qualification_id,
+                    "candidateRevisionHash": bundle.candidate_revision_hash,
+                    "marketDataSnapshotId": bundle.market_data_snapshot_id,
+                    "strategyPackageArchiveSha256": bundle.strategy_package_archive_sha256,
+                    "runtimeBundleId": bundle.runtime_bundle.identity,
+                }),
+                required: true,
+                observed_at_ms: adaq_bot_runtime::unix_now_ms(),
+                event_kind: Some("strategy.bundle-health".into()),
+                evidence_id: Some(bundle.identity.clone()),
+                correlation_id: Some(attempt_id.clone()),
+                causation_id: Some(bundle.market_data_snapshot_id.clone()),
+                diagnostic: Some(
+                    "The immutable Deployment Bundle passed Host identity checks before risk enablement."
+                        .into(),
+                ),
+                metrics: BTreeMap::new(),
+            }) {
+                return fail_active(
+                    &supervisor,
+                    bots,
+                    user_id,
+                    &request.bot_id,
+                    &attempt_id,
+                    "bundle-health-evidence-failed",
+                    &error,
+                );
+            }
             if let Err(error) = transition_pair(
                 &supervisor,
                 bots,
@@ -3622,6 +3739,9 @@ fn resume_bot(
     let supervisor = app.state::<Arc<crate::bot_supervisor::BotSupervisor>>();
     let local = app.state::<Arc<LocalResearchState>>();
     bots.command(user_id, &request.bot_id, &request.command_id, "resume", |bots| {
+        if local.operations.is_user_frozen(user_id)? {
+            return Err("Freeze All is active; Bot Resume is blocked.".into());
+        }
         let view = bots.get(user_id, &request.bot_id)?;
         if view.state != LifecycleState::Paused {
             return Err("Resume is available only for a Paused Bot.".into());

@@ -410,6 +410,22 @@ impl PaperTradingStore {
         self.view(user_id)
     }
 
+    pub(crate) fn freeze_all(
+        &self,
+        user_id: &str,
+        now_ms: i64,
+    ) -> Result<Option<PaperAccountView>, String> {
+        crate::user::validate_user(user_id)?;
+        if !self.has_account(user_id)? {
+            return Ok(None);
+        }
+        let (mut ledger, mut execution) = self.load(user_id)?;
+        ledger.require_reconciliation();
+        execution.freeze_new_risk();
+        self.save(user_id, &ledger, &execution, now_ms)?;
+        self.view(user_id).map(Some)
+    }
+
     pub(crate) fn provider_order_id(
         &self,
         user_id: &str,

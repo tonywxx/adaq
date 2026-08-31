@@ -39,6 +39,7 @@ use adaq_data_core::{
 };
 use adaq_trading_crypto::{Exchange, Params};
 use rust_decimal::Decimal;
+use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
@@ -545,45 +546,393 @@ fn auth_clear_session(window: WebviewWindow, state: State<'_, auth::AuthState>) 
 }
 
 #[tauri::command]
-fn operations_observe(
-    mut observation: operations::HealthObservation,
-    window: WebviewWindow,
-    auth: State<'_, auth::AuthState>,
-    state: State<'_, Arc<LocalResearchState>>,
-) -> Result<
-    (
-        operations::OperationalEvent,
-        Option<operations::AlertView>,
-        operations::SafetyAction,
-    ),
-    String,
-> {
-    observation.user_id = auth.user_id_for_window(window.label())?;
-    state.operations.observe(observation)
-}
-
-#[tauri::command]
 fn operations_health(
-    user_id: String,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<operations::HealthView>, String> {
-    let _ = user_id;
     let user_id = auth.user_id_for_window(window.label())?;
     state.operations.health_for_user(&user_id)
 }
 
 #[tauri::command]
 fn operations_alerts(
-    user_id: String,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<operations::AlertView>, String> {
-    let _ = user_id;
     let user_id = auth.user_id_for_window(window.label())?;
     state.operations.alerts_for_user(&user_id)
+}
+
+#[tauri::command]
+fn operations_events(
+    limit: Option<usize>,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<Vec<operations::OperationalEvent>, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state
+        .operations
+        .events_for_user(&user_id, limit.unwrap_or(64))
+}
+
+#[tauri::command]
+fn operations_alert_history(
+    alert_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<Vec<operations::AlertLifecycleView>, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state.operations.alert_history_for_user(&user_id, &alert_id)
+}
+
+#[tauri::command]
+fn operations_alert_acknowledge(
+    alert_id: String,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<(), String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    state
+        .operations
+        .acknowledge(&user_id, &alert_id, unix_now_ms())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationsFreezeAllView {
+    event_id: String,
+    alert_id: String,
+    frozen_bot_ids: Vec<String>,
+    terminated_worker_ids: Vec<String>,
+    paper_account_frozen: bool,
+}
+
+#[tauri::command]
+async fn operations_freeze_all(
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: AppHandle,
+) -> Result<OperationsFreezeAllView, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || freeze_all_for_user(&app, &user_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn freeze_all_for_user(app: &AppHandle, user_id: &str) -> Result<OperationsFreezeAllView, String> {
+    let local = app.state::<Arc<LocalResearchState>>();
+    let existing = local
+        .operations
+        .alerts_for_user(user_id)?
+        .into_iter()
+        .find(|alert| {
+            alert.safety_action == operations::SafetyAction::FreezeAll
+                && alert.state != operations::AlertState::Resolved
+        });
+    let (event_id, alert_id) = match existing {
+        Some(alert) => (alert.last_event_id, alert.alert_id),
+        None => {
+            let now_ms = unix_now_ms();
+            let (event, alert, action) =
+                local.operations.observe(operations::HealthObservation {
+                    user_id: user_id.to_owned(),
+                    entity_id: "host".into(),
+                    dimension: operations::HealthDimension::LocalSystem,
+                    state: operations::HealthState::Critical,
+                    condition: "freeze_all_requested".into(),
+                    evidence: serde_json::json!({
+                        "scope": "user",
+                        "reason": "user_requested",
+                    }),
+                    required: true,
+                    observed_at_ms: now_ms,
+                    event_kind: Some("safety.freeze-all".into()),
+                    evidence_id: Some(format!("freeze-all-request-{now_ms}")),
+                    correlation_id: Some(format!("freeze-all-{user_id}-{now_ms}")),
+                    causation_id: None,
+                    diagnostic: Some("Host Freeze All was requested for this User.".into()),
+                    metrics: std::collections::BTreeMap::new(),
+                })?;
+            if action != operations::SafetyAction::FreezeAll {
+                return Err("Host Freeze All policy was not retained".into());
+            }
+            let alert = alert.ok_or_else(|| "Host Freeze All alert was not retained".to_owned())?;
+            (event.event_id, alert.alert_id)
+        }
+    };
+    apply_freeze_all_for_event(app, user_id, event_id, alert_id)
+}
+
+fn apply_freeze_all_for_event(
+    app: &AppHandle,
+    user_id: &str,
+    event_id: String,
+    alert_id: String,
+) -> Result<OperationsFreezeAllView, String> {
+    let local = app.state::<Arc<LocalResearchState>>();
+    let bots = app.state::<Arc<bot_operations::BotStore>>();
+    let supervisor = app.state::<Arc<bot_supervisor::BotSupervisor>>();
+    let frozen_bot_ids = bots.freeze_all(
+        user_id,
+        "Host Freeze All blocked new Bot risk and requires reconciliation.",
+    )?;
+    let terminated_worker_ids = supervisor.freeze_all(
+        user_id,
+        "Host Freeze All terminated the active Worker before risk could continue.",
+    )?;
+    let paper_account_frozen = local
+        .paper_trading
+        .freeze_all(user_id, unix_now_ms())?
+        .is_some();
+    local.operations.complete_safety_action(
+        user_id,
+        &event_id,
+        "completed",
+        "Host Freeze All applied to Bot workers and the Paper Account risk gate.",
+    )?;
+    Ok(OperationsFreezeAllView {
+        event_id,
+        alert_id,
+        frozen_bot_ids,
+        terminated_worker_ids,
+        paper_account_frozen,
+    })
+}
+
+#[tauri::command]
+async fn operations_probe(
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || observe_operational_inputs(&app, &user_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn observe_operational_inputs(app: &AppHandle, user_id: &str) -> Result<(), String> {
+    let local = app.state::<Arc<LocalResearchState>>();
+    let account = local.paper_trading.view_optional(user_id)?;
+    let profile = local
+        .connections
+        .list(user_id)?
+        .into_iter()
+        .find(|profile| profile.provider == connections::Provider::OkxDemo);
+    let now_ms = unix_now_ms();
+    let account_ready = account.as_ref().is_some_and(|account| {
+        account.reconciliation == adaq_paper_trading_core::ReconciliationState::Reconciled
+            && !account.restart_required
+    });
+    let account_id = account
+        .as_ref()
+        .map(|account| account.account.account_id.clone());
+    let (account_event, _, account_action) = local.operations.observe(operations::HealthObservation {
+        user_id: user_id.to_owned(),
+        entity_id: account_id
+            .clone()
+            .unwrap_or_else(|| "paper-account".into()),
+        dimension: operations::HealthDimension::PaperAccount,
+        state: if account_ready {
+            operations::HealthState::Healthy
+        } else {
+            operations::HealthState::Unknown
+        },
+        condition: "paper_account_reconciliation".into(),
+        evidence: serde_json::json!({
+            "accountId": account_id,
+            "reconciliation": account.as_ref().map(|account| format!("{:?}", account.reconciliation)),
+            "restartRequired": account.as_ref().map(|account| account.restart_required),
+        }),
+        required: account.is_some(),
+        observed_at_ms: now_ms,
+        event_kind: Some("paper.account-health".into()),
+        evidence_id: account.as_ref().map(|account| account.account.account_id.clone()),
+        correlation_id: account
+            .as_ref()
+            .map(|account| account.account.observed_at_ms.to_string()),
+        causation_id: None,
+        diagnostic: Some(if account_ready {
+            "Paper Account reconciliation is current.".into()
+        } else {
+            "Paper Account evidence is missing or requires reconciliation.".into()
+        }),
+        metrics: std::collections::BTreeMap::new(),
+    })?;
+    let (risk_event, _, risk_action) = local.operations.observe(operations::HealthObservation {
+        user_id: user_id.to_owned(),
+        entity_id: "paper-risk".into(),
+        dimension: operations::HealthDimension::RiskOms,
+        state: if account_ready {
+            operations::HealthState::Healthy
+        } else {
+            operations::HealthState::Unknown
+        },
+        condition: "paper_risk_gate".into(),
+        evidence: serde_json::json!({
+            "accountId": account_id,
+            "riskDecisions": account.as_ref().map(|account| account.risk_decisions.len()),
+        }),
+        required: account.is_some(),
+        observed_at_ms: now_ms,
+        event_kind: Some("paper.risk-health".into()),
+        evidence_id: account_id.clone(),
+        correlation_id: None,
+        causation_id: None,
+        diagnostic: Some(if account_ready {
+            "Host Paper Risk gate is available.".into()
+        } else {
+            "Host Paper Risk gate is blocked pending account evidence.".into()
+        }),
+        metrics: std::collections::BTreeMap::new(),
+    })?;
+    let adapter_ready = profile
+        .as_ref()
+        .is_some_and(|profile| profile.status == connections::ProfileStatus::Usable);
+    let adapter_required = profile.is_some();
+    let (execution_event, _, execution_action) =
+        local.operations.observe(operations::HealthObservation {
+            user_id: user_id.to_owned(),
+            entity_id: "okx-demo".into(),
+            dimension: operations::HealthDimension::ExecutionAdapter,
+            state: if adapter_ready {
+                operations::HealthState::Healthy
+            } else {
+                operations::HealthState::Unknown
+            },
+            condition: "execution_adapter_available".into(),
+            evidence: serde_json::json!({
+                "provider": "okxDemo",
+                "profileId": profile.as_ref().map(|profile| profile.profile_id.clone()),
+                "status": profile.as_ref().map(|profile| format!("{:?}", profile.status)),
+            }),
+            required: adapter_required,
+            observed_at_ms: now_ms,
+            event_kind: Some("execution.adapter-health".into()),
+            evidence_id: profile.as_ref().map(|profile| profile.profile_id.clone()),
+            correlation_id: profile
+                .as_ref()
+                .and_then(|profile| profile.last_test_at_ms.map(|value| value.to_string())),
+            causation_id: None,
+            diagnostic: Some(if adapter_ready {
+                "OKX Demo Execution Adapter is available.".into()
+            } else {
+                "OKX Demo Execution Adapter is missing or unavailable.".into()
+            }),
+            metrics: std::collections::BTreeMap::new(),
+        })?;
+    if [account_action, risk_action, execution_action]
+        .into_iter()
+        .any(|action| action == operations::SafetyAction::Pause)
+    {
+        pause_bots_for_user(
+            app,
+            user_id,
+            "A required Paper, Risk, or Execution condition is uncertain.",
+        )?;
+        for (event, action) in [
+            (account_event, account_action),
+            (risk_event, risk_action),
+            (execution_event, execution_action),
+        ] {
+            if action == operations::SafetyAction::Pause {
+                local.operations.complete_safety_action(
+                    user_id,
+                    &event.event_id,
+                    "completed",
+                    "Host Pausing blocked new Bot risk while the required condition is uncertain.",
+                )?;
+            }
+        }
+    }
+    let integrity = local
+        .database
+        .lock()
+        .map_err(|error| error.to_string())?
+        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let (event, alert, action) = local.operations.observe(operations::HealthObservation {
+        user_id: user_id.to_owned(),
+        entity_id: "workspace".into(),
+        dimension: operations::HealthDimension::LocalSystem,
+        state: if integrity == "ok" {
+            operations::HealthState::Healthy
+        } else {
+            operations::HealthState::Critical
+        },
+        condition: "local_system_integrity".into(),
+        evidence: serde_json::json!({ "sqliteIntegrity": integrity }),
+        required: true,
+        observed_at_ms: now_ms,
+        event_kind: Some("local.system-health".into()),
+        evidence_id: Some(format!("sqlite-check-{now_ms}")),
+        correlation_id: None,
+        causation_id: None,
+        diagnostic: Some("Host SQLite integrity check completed.".into()),
+        metrics: std::collections::BTreeMap::new(),
+    })?;
+    if action == operations::SafetyAction::FreezeAll {
+        let alert_id = alert
+            .map(|alert| alert.alert_id)
+            .ok_or_else(|| "Local System Freeze All alert was not retained".to_owned())?;
+        let _ = apply_freeze_all_for_event(app, user_id, event.event_id, alert_id)?;
+    }
+    Ok(())
+}
+
+fn pause_bots_for_user(app: &AppHandle, user_id: &str, reason: &str) -> Result<(), String> {
+    let bots = app.state::<Arc<bot_operations::BotStore>>();
+    let supervisor = app.state::<Arc<bot_supervisor::BotSupervisor>>();
+    for bot in bots.list(user_id)? {
+        if bot.state != adaq_bot_runtime::LifecycleState::Running {
+            continue;
+        }
+        if let Err(error) = supervisor.transition(
+            user_id,
+            &bot.bot_id,
+            &bot.bot_id,
+            adaq_bot_runtime::LifecycleState::Pausing,
+            "host",
+            "operations-pause-required",
+        ) {
+            let _ = bots.fault(
+                user_id,
+                &bot.bot_id,
+                "operations-pause-worker-failed",
+                &error,
+            );
+            return Err("Host could not pause the active Worker; the Bot was Faulted.".into());
+        }
+        if let Err(error) = bots.transition(
+            user_id,
+            &bot.bot_id,
+            adaq_bot_runtime::LifecycleState::Pausing,
+            "host",
+            "operations-pause-required",
+        ) {
+            let _ = bots.fault(
+                user_id,
+                &bot.bot_id,
+                "operations-pause-persistence-failed",
+                &error,
+            );
+            return Err("Host could not persist the paused Bot state; the Bot was Faulted.".into());
+        }
+        bots.record_evidence(
+            user_id,
+            &bot.bot_id,
+            "safety",
+            "pause-required",
+            reason,
+            None,
+        )?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -696,6 +1045,12 @@ fn paper_feedback_report_create(
             }),
             required: true,
             observed_at_ms: report.created_at_ms,
+            event_kind: Some("research.feedback".into()),
+            evidence_id: Some(report.report_id.clone()),
+            correlation_id: Some(report.input.snapshot_id.clone()),
+            causation_id: Some(report.input.snapshot_id.clone()),
+            diagnostic: Some("Research Review Required".into()),
+            metrics: std::collections::BTreeMap::new(),
         })?;
     }
     Ok(report)
@@ -973,24 +1328,6 @@ fn instrument_in_scope(schedule: &bot_operations::BotSchedule, instrument: &str)
             instruments.iter().any(|candidate| candidate == instrument)
         }
     }
-}
-
-#[tauri::command]
-fn operations_alert_transition(
-    user_id: String,
-    alert_id: String,
-    state: operations::AlertState,
-    event_id: String,
-    occurred_at_ms: i64,
-    window: WebviewWindow,
-    auth: State<'_, auth::AuthState>,
-    store: State<'_, Arc<LocalResearchState>>,
-) -> Result<(), String> {
-    let _ = user_id;
-    let user_id = auth.user_id_for_window(window.label())?;
-    store
-        .operations
-        .transition_alert(&user_id, &alert_id, state, &event_id, occurred_at_ms)
 }
 
 #[tauri::command]
@@ -4817,6 +5154,11 @@ async fn paper_order_submit(
     request.user_id = auth.user_id_for_window(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
+        if state.operations.blocks_new_risk(&request.user_id)? {
+            return Err(
+                "A Host operational safety action is active; new Paper risk is blocked.".into(),
+            );
+        }
         state.paper_trading.begin_order(&request, unix_now_ms())?;
         let side = request.side.to_lowercase();
         let result = state
@@ -5040,10 +5382,13 @@ pub fn run() {
             auth_bind_session,
             auth_clear_session,
             workspace_ready,
-            operations_observe,
             operations_health,
             operations_alerts,
-            operations_alert_transition,
+            operations_events,
+            operations_alert_history,
+            operations_alert_acknowledge,
+            operations_freeze_all,
+            operations_probe,
             paper_feedback_snapshot_create,
             paper_feedback_view,
             paper_feedback_report_create,

@@ -7,6 +7,7 @@ import {
 	useRouterState,
 } from "@tanstack/react-router";
 import { useAuthenticatedUserId } from "@/authenticated-user";
+import { CriticalOperationalBanner } from "@/components/critical-operational-banner";
 import { PageLoadingSkeleton } from "@/components/page-loading-skeleton";
 import { WorkspaceReadyBoundary } from "@/components/workspace-ready-boundary";
 import {
@@ -329,7 +330,10 @@ function AppShell() {
 			{isHelp ? (
 				content
 			) : (
-				<WorkspaceReadyBoundary>{content}</WorkspaceReadyBoundary>
+				<WorkspaceReadyBoundary>
+					<CriticalOperationalBanner />
+					{content}
+				</WorkspaceReadyBoundary>
 			)}
 		</Home>
 	);
