@@ -16,6 +16,7 @@ jest.mock("@tanstack/react-router", () => ({
 	),
 }));
 const mockInvoke = invoke as jest.MockedFunction<typeof invoke>;
+let historyCalls = 0;
 
 (
 	globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -75,6 +76,7 @@ async function mount() {
 }
 
 beforeEach(() => {
+	historyCalls = 0;
 	mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
 		if (command === "operations_health")
 			return [
@@ -91,7 +93,24 @@ beforeEach(() => {
 		if (command === "operations_alerts") return [criticalAlert, warningAlert];
 		if (command === "operations_events") return [];
 		if (command === "operations_probe") return null;
-		if (command === "operations_alert_history") return [];
+		if (command === "operations_alert_history") {
+			historyCalls += 1;
+			const active = {
+				lifecycleId: "lifecycle-active",
+				state: "active",
+				eventId: "event-first",
+				occurredAtMs: 1,
+				actor: "host",
+			};
+			const acknowledged = {
+				lifecycleId: "lifecycle-acknowledged",
+				state: "acknowledged",
+				eventId: "event-acknowledged",
+				occurredAtMs: 2,
+				actor: "alice",
+			};
+			return historyCalls === 1 ? [active] : [active, acknowledged];
+		}
 		if (command === "operations_alert_acknowledge") return undefined;
 		if (command === "operations_freeze_all") return { alertId: "alert-critical" };
 		throw new Error(`unexpected command ${command} ${JSON.stringify(args)}`);
@@ -137,6 +156,30 @@ test("filters retained alerts and routes controls through authenticated Host com
 	expect(confirm).toHaveBeenCalled();
 	expect(mockInvoke).toHaveBeenCalledWith("operations_freeze_all");
 	confirm.mockRestore();
+
+	await act(async () => root.unmount());
+	container.remove();
+});
+
+test("refreshes expanded lifecycle history after acknowledgement", async () => {
+	const { container, root } = await mount();
+	const details = container.querySelector("details") as HTMLDetailsElement;
+	details.open = true;
+	await act(async () => {
+		details.dispatchEvent(new Event("toggle", { bubbles: true }));
+	});
+	await settle();
+	expect(container.textContent).toContain("Active · host · event-first");
+
+	await act(async () => {
+		Array.from(container.querySelectorAll("button"))
+			.find((button) => button.textContent === "Acknowledge")
+			?.click();
+	});
+	await settle();
+
+	expect(historyCalls).toBeGreaterThan(1);
+	expect(container.textContent).toContain("Acknowledged · alice · event-acknowledged");
 
 	await act(async () => root.unmount());
 	container.remove();

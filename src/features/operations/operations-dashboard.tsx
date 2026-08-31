@@ -139,6 +139,9 @@ export function OperationsDashboard() {
 			void queryClient.invalidateQueries({
 				queryKey: ["operations-events", userId],
 			});
+			void queryClient.invalidateQueries({
+				queryKey: ["operations-alert-history", userId],
+			});
 		},
 	});
 	const freezeAll = useMutation({
@@ -153,6 +156,9 @@ export function OperationsDashboard() {
 			void queryClient.invalidateQueries({
 				queryKey: ["operations-events", userId],
 			});
+			void queryClient.invalidateQueries({
+				queryKey: ["operations-alert-history", userId],
+			});
 		},
 	});
 	useEffect(() => {
@@ -165,6 +171,9 @@ export function OperationsDashboard() {
 		});
 		void queryClient.invalidateQueries({
 			queryKey: ["operations-events", userId],
+		});
+		void queryClient.invalidateQueries({
+			queryKey: ["operations-alert-history", userId],
 		});
 	}, [probe.dataUpdatedAt, queryClient, userId]);
 	const values = alerts.data ?? [];
