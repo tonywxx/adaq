@@ -593,6 +593,8 @@ fn paper_feedback_snapshot_create(
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
     bots: State<'_, Arc<bot_operations::BotStore>>,
+    qualifications: State<'_, Arc<strategy_qualification::StrategyQualificationStore>>,
+    candidates: State<'_, Arc<strategy_candidate::StrategyCandidateStore>>,
 ) -> Result<paper_feedback::FeedbackSnapshot, String> {
     let user_id = auth.user_id_for_window(window.label())?;
     let now_ms = unix_now_ms();
@@ -605,6 +607,14 @@ fn paper_feedback_snapshot_create(
         request.observation_end_ms,
         now_ms,
     )?;
+    let qualification =
+        qualifications.qualification_for_user(&user_id, &bot.bundle.qualification_id)?;
+    let (revision, _) = candidates.revision_for_user(
+        &user_id,
+        &bot.bundle.candidate_id,
+        bot.bundle.candidate_revision,
+    )?;
+    let research_evidence = paper_feedback_research_evidence(&bot, &qualification, &revision)?;
     let account = state.paper_trading.view_optional(&user_id)?;
     if account
         .as_ref()
@@ -613,7 +623,8 @@ fn paper_feedback_snapshot_create(
         return Err("Paper account evidence does not match the Deployment Bundle".into());
     }
     let health = state.operations.health_for_user(&user_id)?;
-    let evidence = paper_feedback_evidence(&bot, &attempt, account.as_ref(), &health);
+    let evidence =
+        paper_feedback_evidence(&bot, &attempt, account.as_ref(), &health, research_evidence);
     let host_state = paper_feedback_state(&bot, &attempt, account.as_ref(), &health);
     state.paper_feedback.create_snapshot_with_state(
         paper_feedback::FeedbackSnapshotInput {
@@ -756,6 +767,7 @@ fn paper_feedback_evidence(
     attempt: &bot_operations::BotRuntimeAttempt,
     account: Option<&paper_trading::PaperAccountView>,
     health: &[operations::HealthView],
+    research: serde_json::Value,
 ) -> serde_json::Value {
     serde_json::json!({
         "bundle": {
@@ -829,12 +841,80 @@ fn paper_feedback_evidence(
                 "eventId": item.event_id,
             })).collect::<Vec<_>>(),
         },
+        "research": research,
         "retention": {
             "providerEvidenceIncluded": false,
             "credentialsIncluded": false,
             "rawSecretsIncluded": false,
         },
     })
+}
+
+fn paper_feedback_research_evidence(
+    bot: &bot_operations::BotView,
+    qualification: &strategy_qualification::StrategyQualification,
+    revision: &strategy_candidate::StrategyCandidateRevision,
+) -> Result<serde_json::Value, String> {
+    let bundle = &bot.bundle;
+    if qualification.user_id != bot.user_id
+        || qualification.qualification_id != bundle.qualification_id
+        || qualification.candidate_id != bundle.candidate_id
+        || qualification.candidate_revision != bundle.candidate_revision
+        || qualification.candidate_revision_hash != bundle.candidate_revision_hash
+        || qualification.context.snapshot_id != bundle.market_data_snapshot_id
+        || qualification.context.universe_id != bundle.universe_id
+        || qualification.package.package_archive_sha256 != bundle.strategy_package_archive_sha256
+        || qualification.package.package_wasm_sha256
+            != bundle.runtime_bundle.input.strategy.component_sha256
+        || qualification.evidence_hash != bundle.runtime_bundle.input.qualification_evidence_hash
+        || qualification.context.risk_policy != bundle.research_risk_policy
+        || qualification.context.execution_profile != bundle.execution_profile
+        || revision.candidate_id != bundle.candidate_id
+        || revision.revision != bundle.candidate_revision
+        || revision.revision_hash != bundle.candidate_revision_hash
+        || revision.semantic_context.feature_plan_hash
+            != bundle.runtime_bundle.input.feature_plan_hash
+        || revision.semantic_context.snapshot_id != qualification.context.snapshot_id
+        || revision.semantic_context.universe_id != qualification.context.universe_id
+    {
+        return Err(
+            "Paper Feedback research evidence does not match the exact Deployment Bundle".into(),
+        );
+    }
+
+    Ok(serde_json::json!({
+        "qualification": {
+            "qualificationId": qualification.qualification_id,
+            "attemptId": qualification.attempt_id,
+            "candidateId": qualification.candidate_id,
+            "candidateRevision": qualification.candidate_revision,
+            "candidateRevisionHash": qualification.candidate_revision_hash,
+            "evidenceHash": qualification.evidence_hash,
+            "backtestRunId": qualification.backtest_run_id,
+            "validationProtocolId": qualification.validation_protocol_id,
+            "validationReportId": qualification.validation_report_id,
+            "packageProvenanceHash": qualification.package.package_provenance_hash,
+            "marketDataSnapshotId": qualification.context.snapshot_id,
+            "universeSnapshotId": qualification.context.universe_snapshot_id,
+            "universeId": qualification.context.universe_id,
+            "selectionWindow": qualification.context.selection_window,
+            "finalWindow": qualification.context.final_window,
+            "validationMethodVersion": qualification.context.validation_method_version,
+            "aggregationRuleVersion": qualification.context.aggregation_rule_version,
+            "forecastInputs": qualification.context.signal_instances,
+        },
+        "strategyRevision": {
+            "candidateId": revision.candidate_id,
+            "revision": revision.revision,
+            "revisionHash": revision.revision_hash,
+            "featurePlanHash": revision.semantic_context.feature_plan_hash,
+            "researchContextHash": revision.semantic_context.research_context_hash,
+            "inputEvidenceHashes": revision.semantic_context.input_evidence_hashes,
+            "market": revision.semantic_context.market,
+            "venue": revision.semantic_context.venue,
+            "definition": revision.definition,
+        },
+    }))
 }
 
 fn paper_feedback_metrics(
