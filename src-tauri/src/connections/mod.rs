@@ -435,6 +435,53 @@ impl ConnectionManager {
         user_id: &str,
         operation: impl FnOnce(Okx) -> T,
     ) -> Result<T, String> {
+        let credential = self.okx_demo_credential(user_id)?;
+        let client = self.okx_demo_client(&credential)?;
+        Ok(operation(client))
+    }
+
+    pub(crate) fn fetch_okx_demo_open_orders(
+        &self,
+        user_id: &str,
+        now_ms: i64,
+    ) -> Result<Vec<adaq_trading_crypto::Order>, String> {
+        let credential = self.okx_demo_credential(user_id)?;
+        self.fetch_okx_demo_open_orders_with_credential(&credential, now_ms)
+    }
+
+    pub(crate) fn with_okx_demo_reconciliation<T>(
+        &self,
+        user_id: &str,
+        now_ms: i64,
+        operation: impl FnOnce(&[adaq_trading_crypto::Order], &adaq_trading_crypto::Balances) -> T,
+    ) -> Result<T, String> {
+        let credential = self.okx_demo_credential(user_id)?;
+        let open_orders = self.fetch_okx_demo_open_orders_with_credential(&credential, now_ms)?;
+        let balances = self
+            .tester
+            .fetch_okx_demo_balance(&credential, now_ms)
+            .map_err(|failure| failure.redacted_message)?;
+        Ok(operation(&open_orders, &balances))
+    }
+
+    fn fetch_okx_demo_open_orders_with_credential(
+        &self,
+        credential: &TestCredential,
+        now_ms: i64,
+    ) -> Result<Vec<adaq_trading_crypto::Order>, String> {
+        let raw_orders = self
+            .tester
+            .fetch_okx_demo_open_orders(&credential, now_ms)
+            .map_err(|failure| failure.redacted_message)?;
+        let client = self.okx_demo_client(credential)?;
+        Ok(raw_orders
+            .iter()
+            .map(|raw| client.parse_order(raw))
+            .filter(|order| order.status.as_deref() == Some("open"))
+            .collect())
+    }
+
+    fn okx_demo_credential(&self, user_id: &str) -> Result<TestCredential, String> {
         validate_user_id(user_id)?;
         let row = {
             let database = self.database.lock().map_err(|error| error.to_string())?;
@@ -466,16 +513,37 @@ impl ConnectionManager {
         else {
             return Err("The saved credential does not match the OKX Demo provider.".to_owned());
         };
-        let client = Okx::new(TradingConfig {
-            api_key: Some(api_key),
-            secret: Some(secret_key),
-            password: Some(passphrase),
-            sandbox: true,
-            enable_rate_limit: true,
-            ..TradingConfig::new()
+        Ok(TestCredential::OkxDemo {
+            api_key,
+            secret_key,
+            passphrase,
         })
+    }
+
+    fn okx_demo_client(&self, credential: &TestCredential) -> Result<Okx, String> {
+        let TestCredential::OkxDemo {
+            api_key,
+            secret_key,
+            passphrase,
+        } = credential
+        else {
+            return Err("The saved credential does not match the OKX Demo provider.".to_owned());
+        };
+        let client = Okx::with_endpoints(
+            TradingConfig {
+                api_key: Some(api_key.clone()),
+                secret: Some(secret_key.clone()),
+                password: Some(passphrase.clone()),
+                sandbox: true,
+                enable_rate_limit: true,
+                ..TradingConfig::new()
+            },
+            "okx",
+            &format!("{OKX_DEMO_ENDPOINT}/api/v5"),
+            110,
+        )
         .map_err(|error| format!("failed to initialize OKX Demo client: {error}"))?;
-        Ok(operation(client))
+        Ok(client)
     }
 
     /// Saves (or rotates) a Profile: writes the secret to the OS store

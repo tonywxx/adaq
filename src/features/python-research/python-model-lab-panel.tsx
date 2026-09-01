@@ -194,6 +194,7 @@ type DeploymentReport = {
 	numericTolerance: number;
 	evidence: DeploymentEvidence;
 	qualified: boolean;
+	evidenceWindowsComplete: boolean;
 	importedComponentArchiveSha256?: string;
 	diagnostics: string[];
 	createdAtMs: number;
@@ -667,13 +668,16 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 	};
 
 	const latestDeploymentReport = deploymentReports[deploymentReports.length - 1];
+	const deploymentAlreadyQualified =
+		latestDeploymentReport?.qualified === true &&
+		latestDeploymentReport.evidenceWindowsComplete === true;
 	const deploymentReady = Boolean(
 		decision && report && finalEvaluation?.status === "completed",
 	);
 
 	const qualifyDeployment = async () => {
 		const version = beginRequest("deployment");
-		if (!deploymentReady || latestDeploymentReport?.qualified || !decision) return;
+		if (!deploymentReady || deploymentAlreadyQualified || !decision) return;
 		setBusy("deployment");
 		setError("");
 		await afterPaint();
@@ -1365,15 +1369,15 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 						<Button
 							type="button"
 							size="sm"
-							onClick={() => void qualifyDeployment()}
-							disabled={
-								!deploymentReady ||
-								latestDeploymentReport?.qualified === true
-							}
+						onClick={() => void qualifyDeployment()}
+						disabled={
+							!deploymentReady ||
+							deploymentAlreadyQualified
+						}
 							loading={busy === "deployment"}
 						>
 							{latestDeploymentReport
-								? latestDeploymentReport.qualified
+								? deploymentAlreadyQualified
 									? t("pythonResearch.modelLab.qualified")
 									: t("pythonResearch.modelLab.retryQualification")
 								: t("pythonResearch.modelLab.qualifyDeployment")}

@@ -580,6 +580,121 @@ fn okx_real_environment_key_fails_closed() {
 }
 
 #[test]
+fn okx_error_without_data_is_reported_as_provider_error() {
+    let harness = harness(okx_ok_routes());
+    harness.http.set_routes(vec![
+        (
+            "/api/v5/public/time".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: format!(
+                    r#"{{"code":"0","msg":"","data":[{{"ts":"{}"}}]}}"#,
+                    NOW_MS + 5_000
+                ),
+            },
+        ),
+        (
+            "/api/v5/account/config".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: r#"{"code":"50011","msg":"request rejected"}"#.to_owned(),
+            },
+        ),
+    ]);
+    let error = harness
+        .manager
+        .save("user-a", okx_credentials(), NOW_MS)
+        .unwrap_err();
+    assert_eq!(error.code, "request_failed");
+    assert!(error.message.contains("OKX error 50011: request rejected."));
+}
+
+#[test]
+fn okx_demo_open_orders_request_spot_type_and_parse_orders() {
+    let harness = harness(okx_ok_routes());
+    harness
+        .manager
+        .save("user-a", okx_credentials(), NOW_MS)
+        .unwrap();
+    harness.http.set_routes(vec![
+        (
+            "/api/v5/public/time".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: format!(r#"{{"code":"0","msg":"","data":[{{"ts":"{}"}}]}}"#, NOW_MS + 5_000),
+            },
+        ),
+        (
+            "/api/v5/trade/orders-pending".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: r#"{"code":"0","msg":"","data":[{"ordId":"123","instId":"BTC-USDT","side":"buy","ordType":"limit","sz":"0.01","accFillSz":"0.002","px":"100.5","state":"partially_filled","cTime":"1752000000000"}]}"#.to_owned(),
+            },
+        ),
+    ]);
+
+    let orders = harness
+        .manager
+        .fetch_okx_demo_open_orders("user-a", NOW_MS)
+        .unwrap();
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].id.as_deref(), Some("123"));
+    assert_eq!(orders[0].symbol.as_deref(), Some("BTC/USDT"));
+    assert_eq!(orders[0].status.as_deref(), Some("open"));
+    assert_eq!(orders[0].amount.unwrap().to_string(), "0.01");
+    assert_eq!(orders[0].filled.unwrap().to_string(), "0.002");
+    assert_eq!(
+        harness.http.requested_paths().last().map(String::as_str),
+        Some("https://www.okx.com/api/v5/trade/orders-pending?instType=SPOT")
+    );
+}
+
+#[test]
+fn okx_demo_reconciliation_fetches_balance_through_the_signed_host_boundary() {
+    let harness = harness(okx_ok_routes());
+    harness
+        .manager
+        .save("user-a", okx_credentials(), NOW_MS)
+        .unwrap();
+    harness.http.set_routes(vec![
+        (
+            "/api/v5/public/time".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: format!(r#"{{"code":"0","msg":"","data":[{{"ts":"{}"}}]}}"#, NOW_MS + 5_000),
+            },
+        ),
+        (
+            "/api/v5/trade/orders-pending".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: r#"{"code":"0","msg":"","data":[]}"#.to_owned(),
+            },
+        ),
+        (
+            "/api/v5/account/balance".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: r#"{"code":"0","msg":"","data":[{"details":[{"ccy":"USDT","cashBal":"1000.5","availBal":"900.25"}]}]}"#.to_owned(),
+            },
+        ),
+    ]);
+
+    let total = harness
+        .manager
+        .with_okx_demo_reconciliation("user-a", NOW_MS, |_, balances| {
+            balances.accounts["USDT"].total
+        })
+        .unwrap();
+
+    assert_eq!(total.unwrap().to_string(), "1000.5");
+    assert_eq!(
+        harness.http.requested_paths().last().map(String::as_str),
+        Some("https://www.okx.com/api/v5/account/balance")
+    );
+}
+
+#[test]
 fn okx_currency_mismatch_fails_closed() {
     let harness = harness(okx_ok_routes());
     harness.http.set_routes(vec![

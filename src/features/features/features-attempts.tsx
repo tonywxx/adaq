@@ -43,6 +43,12 @@ type EvidenceSelection = {
 	universeId: string;
 };
 
+function toDateTimeLocal(epochMs: number): string {
+	const date = new Date(epochMs);
+	const pad = (value: number) => String(value).padStart(2, "0");
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 function useEvidenceOptions(userId: string, adapter: FeaturesAdapter) {
 	const [definitions, setDefinitions] = useState<DefinitionView[]>();
 	const [snapshots, setSnapshots] = useState<MarketDataSnapshotSummary[]>([]);
@@ -612,6 +618,23 @@ export function MaterializationView({
 
 	const stored = storedFor(options.definitions, form.definitionHash);
 
+	const selectEvidence = (selection: Partial<EvidenceSelection>) => {
+		const next = { ...form, ...selection };
+		if (selection.snapshotId && selection.snapshotId !== form.snapshotId) {
+			const snapshot = options.snapshots.find(
+				(item) => item.snapshotId === selection.snapshotId,
+			);
+			if (
+				snapshot?.startTimeMs !== undefined &&
+				snapshot.endTimeMs !== undefined
+			) {
+				next.rangeStart = toDateTimeLocal(snapshot.startTimeMs);
+				next.rangeEnd = toDateTimeLocal(snapshot.endTimeMs);
+			}
+		}
+		setForm(next);
+	};
+
 	const start = async () => {
 		setStarting(true);
 		setActionFeedback(undefined);
@@ -831,7 +854,7 @@ export function MaterializationView({
 								snapshotId: form.snapshotId,
 								universeId: form.universeId,
 							}}
-							onChange={(selection) => setForm({ ...form, ...selection })}
+							onChange={selectEvidence}
 						/>
 						<div>
 							<Label htmlFor="materialization-valuation-currency">

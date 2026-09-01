@@ -21,6 +21,8 @@ use crate::{
 
 pub const MAX_FACTOR_DATASET_ROWS: usize = 2_520_000;
 const MAX_DIAGNOSTIC_BYTES: usize = 16 * 1024;
+// ponytail: cap at the largest known-safe guest return; raise after an ABI allocation test.
+const TIME_SERIES_PROCESS_BATCH_SIZE: usize = 28;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -945,9 +947,15 @@ fn flush_time_series_segment(
             "Custom Factor ABI schema does not match the Candidate".into(),
         ));
     }
-    let results = loader
-        .process_factor(rows.to_vec())
-        .map_err(MaterializationError::Execution)?;
+    // ponytail: bound one guest allocation while preserving state across batches.
+    let mut results = Vec::with_capacity(rows.len());
+    for batch in rows.chunks(TIME_SERIES_PROCESS_BATCH_SIZE) {
+        results.extend(
+            loader
+                .process_factor(batch.to_vec())
+                .map_err(MaterializationError::Execution)?,
+        );
+    }
     if results.len() != identities.len() {
         return Err(MaterializationError::Execution(
             "Custom Factor returned an incomplete Time-Series result".into(),

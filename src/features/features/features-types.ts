@@ -301,6 +301,8 @@ export type MarketDataSnapshotSummary = {
 	code: string;
 	interval: string;
 	barCount: number;
+	startTimeMs?: number;
+	endTimeMs?: number;
 };
 
 export type UniverseSnapshotSummary = {

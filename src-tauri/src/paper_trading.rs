@@ -8,7 +8,6 @@ use adaq_paper_trading_core::{
     OrderStatus, PaperExecution, PaperLedger, Position, ReconciliationState, RiskDecision,
     RiskPolicy, Side,
 };
-use adaq_trading_crypto::{Exchange, Params};
 use rusqlite::{Connection, params};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -424,6 +423,22 @@ impl PaperTradingStore {
         execution.freeze_new_risk();
         self.save(user_id, &ledger, &execution, now_ms)?;
         self.view(user_id).map(Some)
+    }
+
+    pub(crate) fn recover_after_host_freeze(
+        &self,
+        user_id: &str,
+        now_ms: i64,
+    ) -> Result<PaperAccountView, String> {
+        let (ledger, mut execution) = self.load(user_id)?;
+        if ledger.reconciliation() != ReconciliationState::Reconciled {
+            return Err("The OKX Demo account must be reconciled before Host recovery.".into());
+        }
+        execution
+            .recover_after_reconciliation()
+            .map_err(|error| error.to_string())?;
+        self.save(user_id, &ledger, &execution, now_ms)?;
+        self.view(user_id)
     }
 
     pub(crate) fn provider_order_id(
@@ -864,19 +879,11 @@ impl PaperTradingStore {
         &self,
         user_id: &str,
         account_id: String,
-        client: &adaq_trading_crypto::adapters::okx::Okx,
+        open_orders: &[adaq_trading_crypto::Order],
+        balances: &adaq_trading_crypto::Balances,
         now_ms: i64,
     ) -> Result<PaperAccountView, String> {
-        let balances = tauri::async_runtime::block_on(client.fetch_balance(Params::new()))
-            .map_err(|error| error.to_string())?;
-        let open_orders = tauri::async_runtime::block_on(client.fetch_open_orders(
-            None,
-            None,
-            None,
-            Params::new(),
-        ))
-        .map_err(|error| format!("OKX Demo open-order reconciliation failed: {error}"))?;
-        let snapshot = Self::snapshot_from_balance(user_id, account_id, &balances, now_ms)?;
+        let snapshot = Self::snapshot_from_balance(user_id, account_id, balances, now_ms)?;
         if self.has_account(user_id)? {
             self.reconcile(user_id, snapshot, now_ms)?;
             self.record_open_orders(user_id, &open_orders, now_ms)

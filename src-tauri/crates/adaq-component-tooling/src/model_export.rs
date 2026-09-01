@@ -98,7 +98,9 @@ pub fn export_linear_model_component(
     let manifest = ComponentManifest {
         manifest_schema_version: Version::new(1, 0, 0),
         component_id: Uuid::from_bytes(component_id),
-        version: Version::new(1, 0, 0),
+        // Package provenance is part of the immutable archive, so adding
+        // evidence fields requires the patch release mandated by ADR-0019.
+        version: Version::new(1, 0, 1),
         name: "Qlib Ridge WASI Model".into(),
         kind: ComponentKind::Model,
         strategy_scope: crate::StrategyScope::SingleInstrument,
@@ -214,6 +216,7 @@ mod tests {
         let package = ComponentPackage::read(&first).unwrap();
         verify_package(&package).unwrap();
         assert_eq!(package.manifest.name, "Qlib Ridge WASI Model");
+        assert_eq!(package.manifest.version, Version::new(1, 0, 1));
         assert_eq!(
             package.manifest.model_artifact.as_ref().unwrap().provenance["sourceArtifactSha256"],
             artifact

@@ -177,6 +177,28 @@ fn holdout_request(harness: &Harness) -> ValidationProtocolCreateRequest {
     }
 }
 
+#[test]
+fn portfolio_holdout_split_keeps_inclusive_end_bar() {
+    let harness = harness("portfolio-holdout-split");
+    let window = ValidationWindowRequest {
+        snapshot_id: harness.snapshot.snapshot_id.clone(),
+        sample_out_start_time_ms: 25 * 3_600_000,
+        sample_out_end_time_ms: Some(harness.snapshot.end_time_ms),
+        sample_in_start_time_ms: None,
+        sample_in_end_time_ms: Some(24 * 3_600_000),
+    };
+
+    let (sample_in, sample_out) = harness
+        .state
+        .validation
+        .split_snapshot("alice", &window, true)
+        .unwrap();
+
+    assert_eq!(sample_in.end_time_ms, 24 * 3_600_000);
+    assert_eq!(sample_out.end_time_ms, harness.snapshot.end_time_ms);
+    finish(harness);
+}
+
 fn backtest_run_count(state: &LocalResearchState, user_id: &str) -> i64 {
     state.backtests.summary_for_user(user_id).unwrap().run_count as i64
 }

@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { LibraryComponent } from "@/features/components/component-library";
+import {
+	archiveSha256,
+	type LibraryComponent,
+} from "@/features/components/component-library";
 import {
 	DatabaseIcon,
 	GitBranchIcon,
@@ -3163,6 +3166,7 @@ function DecisionsWorkspace({
 	const [protocolBusy, setProtocolBusy] = useState(false);
 	const [decisionBusy, setDecisionBusy] = useState(false);
 	const [eligibilityBusy, setEligibilityBusy] = useState(false);
+	const [policyBusy, setPolicyBusy] = useState(false);
 	const candidateItems = candidates.data?.items ?? [];
 	const datasetItems = (datasets.data?.items ?? []).filter(
 		(item) => textAt(item.manifest, "candidateHash") === candidateHash,
@@ -3343,6 +3347,45 @@ function DecisionsWorkspace({
 			setFeedback(localizedFactorError(error, t));
 		} finally {
 			setEligibilityBusy(false);
+		}
+	};
+	const saveTimeSeriesPolicy = async () => {
+		setPolicyBusy(true);
+		setFeedbackTone("error");
+		setFeedback(undefined);
+		try {
+			const content = {
+				schemaVersion: "1.1.0",
+				policyId: newUuid(),
+				revision: 1,
+				requiredLenses: ["temporal", "economic"],
+				minimumCoverage: 0.8,
+				minimumSamples: 30,
+				// ponytail: one-window EMA demo policy; tighten after multi-window evidence.
+				maximumHolmPValue: 0.6,
+				requireSubperiodSignConsistency: false,
+				requireCostAwareEconomic: true,
+			};
+			const canonicalContent = Object.fromEntries(
+				Object.entries(content).sort(([left], [right]) =>
+					left < right ? -1 : left > right ? 1 : 0,
+				),
+			);
+			const policy = {
+				...content,
+				policyHash: await archiveSha256(
+					new TextEncoder().encode(JSON.stringify(canonicalContent)),
+				),
+			};
+			const saved = await adapter.savePolicy(userId, policy);
+			setPolicyHash(textAt(saved.policy, "policyHash", policy.policyHash));
+			setFeedbackTone("success");
+			setFeedback(t("factors.decisions.policySaved"));
+			await Promise.all([policies.load(), gate6Policies.load()]);
+		} catch (error) {
+			setFeedback(localizedFactorError(error, t));
+		} finally {
+			setPolicyBusy(false);
 		}
 	};
 	const library = libraryPage.data?.items ?? [];
@@ -3570,6 +3613,15 @@ function DecisionsWorkspace({
 									{t("factors.decisions.noPolicies")}
 								</p>
 							) : null}
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								loading={policyBusy}
+								onClick={() => void saveTimeSeriesPolicy()}
+							>
+								{t("factors.decisions.savePolicy")}
+							</Button>
 						</div>
 					</div>
 					{selectedProtocol ? (

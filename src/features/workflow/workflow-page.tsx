@@ -1,4 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router";
+import { useAuthenticatedUserId } from "@/authenticated-user";
 import type { Infographic as InfographicInstance } from "@antv/infographic";
 import {
 	ArrowDownLeftIcon,
@@ -11,6 +12,8 @@ import {
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useQuery } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -33,10 +36,27 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { markStartup } from "@/lib/startup-timing";
 import { workflowModules, workflowSteps } from "./workflow";
+import {
+	SystemDashboard,
+	SystemDashboardLoading,
+	SystemDashboardUnavailable,
+	type SystemDashboardProjection,
+} from "@/features/operations/operations-dashboard";
 
 export function WorkflowHomePage() {
-	// M15 introduces the first authoritative Bot Runtime records. No current
-	// source can establish Operational Responsibility, so home resolves to Help.
+	const userId = useAuthenticatedUserId();
+	const dashboard = useQuery({
+		queryKey: ["system-dashboard", userId],
+		queryFn: () => invoke<SystemDashboardProjection>("system_dashboard"),
+		enabled: Boolean(userId),
+		retry: false,
+	});
+
+	if (!userId || dashboard.isPending) return <SystemDashboardLoading />;
+	if (dashboard.isError) return <SystemDashboardUnavailable />;
+	if (dashboard.data.operationalResponsibility) {
+		return <SystemDashboard projection={dashboard.data} />;
+	}
 	return <WorkflowGuidePage />;
 }
 

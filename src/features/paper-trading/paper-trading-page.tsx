@@ -310,9 +310,10 @@ export function PaperTradingPage() {
 function reconcileFailureMessage(t: (key: string) => string, reason: unknown) {
 	if (typeof reason === "string") {
 		try {
-			const error = JSON.parse(reason) as { code?: string };
+			const error = JSON.parse(reason) as { code?: string; message?: string };
 			if (error.code) {
-				return `${t("paperTrading.reconcileFailed")} ${t(`paperTrading.errors.${error.code}`)}`;
+				const message = error.message?.trim();
+				return `${t("paperTrading.reconcileFailed")} ${t(`paperTrading.errors.${error.code}`)}${message ? ` ${message}` : ""}`;
 			}
 		} catch {
 			// The Host always sends a typed JSON error; retain a safe fallback for old Hosts.

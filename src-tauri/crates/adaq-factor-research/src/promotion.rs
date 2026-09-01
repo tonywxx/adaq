@@ -550,7 +550,9 @@ fn has_cost_aware_outcome(report: &FactorEvaluationReport) -> bool {
     report.metrics.iter().any(|record| {
         record.metric == MetricId::Economic
             && record.lens == FactorLens::Economic
-            && matches!(record.variant.as_str(), "top-only" | "top-minus-bottom")
+            && (matches!(record.variant.as_str(), "top-only" | "top-minus-bottom")
+                || record.variant.ends_with("-top-only")
+                || record.variant.ends_with("-top-minus-bottom"))
             && record.observation.value().is_some()
     })
 }
@@ -1180,6 +1182,24 @@ mod tests {
             report_hash: String::new(),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn venue_prefixed_economic_variants_count_as_cost_aware() {
+        let user = Uuid::new_v4();
+        let family_id = Uuid::new_v4();
+        let trial_id = Uuid::new_v4();
+        let candidate = candidate();
+        let protocol = evaluation_protocol(user, family_id, trial_id, &candidate);
+        let mut report = report(&protocol);
+        report
+            .metrics
+            .iter_mut()
+            .find(|metric| metric.metric == MetricId::Economic)
+            .unwrap()
+            .variant = "okx:BTC-USDT-top-only".into();
+
+        assert!(has_cost_aware_outcome(&report));
     }
 
     #[test]

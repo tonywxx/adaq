@@ -275,8 +275,9 @@ impl ValidationStudies {
             "chronological-holdout@1"
                 if request.walk_forward.is_none() && !request.windows.is_empty() =>
             {
+                let inclusive_end = request.run.portfolio_universe_snapshot_id.is_some();
                 for window in &request.windows {
-                    self.split_snapshot(&request.user_id, window)?;
+                    self.split_snapshot(&request.user_id, window, inclusive_end)?;
                 }
             }
             "walk-forward@1" if request.windows.is_empty() => {
@@ -373,12 +374,20 @@ impl ValidationStudies {
         &self,
         user_id: &str,
         window: &ValidationWindowRequest,
+        inclusive_end: bool,
     ) -> Result<(MarketDataSnapshot, MarketDataSnapshot), String> {
         let (snapshot, bars) = self.0.snapshot_for_user(user_id, &window.snapshot_id)?;
         let split = bars.partition_point(|bar| bar.open_time_ms < window.sample_out_start_time_ms);
+        let end_index = |end: i64| {
+            if inclusive_end {
+                bars.partition_point(|bar| bar.open_time_ms <= end)
+            } else {
+                bars.partition_point(|bar| bar.open_time_ms < end)
+            }
+        };
         let end = window
             .sample_out_end_time_ms
-            .map(|end| bars.partition_point(|bar| bar.open_time_ms < end))
+            .map(end_index)
             .unwrap_or(bars.len());
         if split == 0 || split >= end {
             return Err("Validation sample-out window must be non-empty and chronological".into());
@@ -387,10 +396,7 @@ impl ValidationStudies {
             .sample_in_start_time_ms
             .map(|start| bars.partition_point(|bar| bar.open_time_ms < start))
             .unwrap_or(0);
-        let sample_in_end = window
-            .sample_in_end_time_ms
-            .map(|end| bars.partition_point(|bar| bar.open_time_ms < end))
-            .unwrap_or(split);
+        let sample_in_end = window.sample_in_end_time_ms.map(end_index).unwrap_or(split);
         if sample_in_start >= sample_in_end || sample_in_end > split {
             return Err(
                 "Validation sample-in window must be non-empty and before sample-out".into(),

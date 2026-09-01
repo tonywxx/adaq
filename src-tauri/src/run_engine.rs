@@ -4,7 +4,8 @@ use adaq_backtest_core::TargetDecision;
 use adaq_component_sdk::host::factor_abi;
 use adaq_component_sdk::host::strategy_abi;
 use adaq_component_tooling::{
-    ComponentParameterValue, FrozenFeaturePlan, FrozenSourceView, RunLimits, WasmLoader,
+    ComponentParameterValue, FeatureSlotDefinition, FeatureSlotSource, FrozenFeaturePlan,
+    FrozenSourceView, RunLimits, WasmLoader,
 };
 use adaq_data_core::{BarGap, BarInterval, OhlcvBar, next_bar_open_time_ms};
 use adaq_feature_engine::{
@@ -57,6 +58,7 @@ pub(crate) struct SignalRunRow {
 pub(crate) struct FactorRunRequest<'a> {
     pub alias: &'a str,
     pub path: &'a str,
+    pub manifest_feature_slots: &'a [FeatureSlotDefinition],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -536,6 +538,13 @@ fn evaluate_factors(
         );
     let mut evaluated = HashMap::new();
     for factor in request.plan.factors() {
+        let factor_request = request
+            .factors
+            .iter()
+            .find(|candidate| candidate.alias == factor.alias)
+            .ok_or_else(|| {
+                "Factor Run bindings must match Frozen Plan aliases exactly".to_owned()
+            })?;
         let loader = WasmLoader::with_limits(request.limits);
         loader.load_factor_time_series_bytes(
             &std::fs::read(paths[factor.alias]).map_err(|error| error.to_string())?,
@@ -554,7 +563,13 @@ fn evaluate_factors(
         for chunk in bars.chunks(4096) {
             let input = chunk
                 .iter()
-                .map(|bar| factor_row(factor.feature_slots, bar))
+                .map(|bar| {
+                    factor_row(
+                        factor.feature_slots,
+                        factor_request.manifest_feature_slots,
+                        bar,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let output = loader.process_factor(input).map_err(|error| {
                 let (cause, _) = bounded_context(&error);
@@ -608,19 +623,44 @@ fn bounded_context(value: &str) -> (String, bool) {
 
 fn factor_row(
     feature_slots: &[String],
+    manifest_feature_slots: &[FeatureSlotDefinition],
     bar: &OhlcvBar,
 ) -> Result<factor_abi::exports::adaq::factor::time_series_api::TimeSeriesRow, String> {
     let slots = feature_slots
         .iter()
-        .map(|slot| {
-            let value = match slot.as_str() {
-                "open" => bar.open,
-                "high" => bar.high,
-                "low" => bar.low,
-                "close" => bar.close,
-                "base-volume" => bar.base_volume,
-                "quote-volume" => bar.quote_volume,
-                other => return Err(format!("Factor Feature Slot has no host binding: {other}")),
+        .enumerate()
+        .map(|(index, slot)| {
+            let field = match manifest_feature_slots.get(index) {
+                Some(definition) if definition.name == *slot => match &definition.source {
+                    FeatureSlotSource::Market { field } => *field,
+                    _ => {
+                        return Err(format!("Factor Feature Slot has no host binding: {slot}"));
+                    }
+                },
+                Some(_) => {
+                    return Err(format!(
+                        "Factor Feature Slot manifest order differs from the frozen plan: {slot}"
+                    ));
+                }
+                None => match slot.as_str() {
+                    "open" => adaq_component_tooling::MarketField::Open,
+                    "high" => adaq_component_tooling::MarketField::High,
+                    "low" => adaq_component_tooling::MarketField::Low,
+                    "close" => adaq_component_tooling::MarketField::Close,
+                    "base-volume" => adaq_component_tooling::MarketField::BaseVolume,
+                    "quote-volume" => adaq_component_tooling::MarketField::QuoteVolume,
+                    other => {
+                        return Err(format!("Factor Feature Slot has no host binding: {other}"));
+                    }
+                },
+            };
+            let value = match field {
+                adaq_component_tooling::MarketField::Open => bar.open,
+                adaq_component_tooling::MarketField::High => bar.high,
+                adaq_component_tooling::MarketField::Low => bar.low,
+                adaq_component_tooling::MarketField::Close => bar.close,
+                adaq_component_tooling::MarketField::BaseVolume => bar.base_volume,
+                adaq_component_tooling::MarketField::QuoteVolume => bar.quote_volume,
             };
             let value = value
                 .to_f64()
@@ -848,6 +888,30 @@ mod tests {
             base_volume: Decimal::ONE,
             quote_volume: Decimal::from_str(quote_volume).unwrap(),
         }
+    }
+
+    #[test]
+    fn named_factor_slots_use_manifest_market_bindings() {
+        let manifest_slots = vec![
+            FeatureSlotDefinition {
+                name: "ema-5".into(),
+                source: FeatureSlotSource::Market {
+                    field: adaq_component_tooling::MarketField::Close,
+                },
+            },
+            FeatureSlotDefinition {
+                name: "ema-10".into(),
+                source: FeatureSlotSource::Market {
+                    field: adaq_component_tooling::MarketField::Close,
+                },
+            },
+        ];
+        let frozen_slots = vec!["ema-5".into(), "ema-10".into()];
+        let row = factor_row(&frozen_slots, &manifest_slots, &bar(1, "11", "1")).unwrap();
+        assert_eq!(
+            row.slots.iter().map(|slot| slot.value).collect::<Vec<_>>(),
+            [11.0, 11.0]
+        );
     }
 
     fn plan() -> FrozenFeaturePlan {
@@ -1271,6 +1335,7 @@ mod tests {
         let factors = [FactorRunRequest {
             alias: "change",
             path: &factor,
+            manifest_feature_slots: &factor_manifest.feature_slots,
         }];
         let bars = vec![bar(1, "10", "1"), bar(2, "11", "1"), bar(3, "9", "1")];
         let features =
@@ -1338,6 +1403,7 @@ mod tests {
         let factors = [FactorRunRequest {
             alias: "change",
             path: &factor,
+            manifest_feature_slots: &factor_manifest.feature_slots,
         }];
         let bars = vec![
             bar(1, "10", "1"),
@@ -1409,6 +1475,7 @@ mod tests {
         let factors = [FactorRunRequest {
             alias: "change",
             path: &factor,
+            manifest_feature_slots: &factor_manifest.feature_slots,
         }];
         let mut fatal = bar(2, "11", "1");
         fatal.base_volume = Decimal::ZERO;
@@ -1459,6 +1526,7 @@ mod tests {
         let factors = [FactorRunRequest {
             alias: "change",
             path: &factor,
+            manifest_feature_slots: &factor_manifest.feature_slots,
         }];
         let bars = vec![
             bar(1, "10", "1"),
@@ -1557,6 +1625,7 @@ mod tests {
         let factors = [FactorRunRequest {
             alias: "change",
             path: &factor,
+            manifest_feature_slots: &factor_manifest.feature_slots,
         }];
         let error = RunEngine::execute(&RunRequest {
             strategy_path: &strategy,
@@ -1600,6 +1669,7 @@ mod tests {
         let factors = [FactorRunRequest {
             alias: "change",
             path: &factor,
+            manifest_feature_slots: &factor_manifest.feature_slots,
         }];
         let bars = (0..4098)
             .map(|time| bar(time, &(time + 1).to_string(), "1"))

@@ -437,10 +437,12 @@ fn generate(
         .collect::<Result<Vec<_>, String>>()?;
     let factor_runs = factor_paths
         .iter()
-        .map(|(alias, path)| {
+        .zip(&factor_packages)
+        .map(|((alias, path), (_, package, _))| {
             Ok(FactorRunRequest {
                 alias,
                 path: path.to_str().ok_or("Factor runtime path is invalid")?,
+                manifest_feature_slots: &package.manifest.feature_slots,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

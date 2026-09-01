@@ -312,6 +312,19 @@ impl PaperExecution {
         self.policy.freeze_new_risk = true;
         self.blocked = true;
     }
+
+    pub fn recover_after_reconciliation(&mut self) -> Result<(), ExecutionError> {
+        if self
+            .operations
+            .values()
+            .any(|outcome| matches!(outcome, ExecutionOutcome::Uncertain(_)))
+        {
+            return Err(ExecutionError::ReconciliationRequired);
+        }
+        self.policy.freeze_new_risk = false;
+        self.blocked = false;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1034,5 +1047,9 @@ mod tests {
         assert!(execution.is_blocked());
         assert!(execution.policy().freeze_new_risk);
         assert!(!execution.approve(&ledger, Decimal::ONE).approved);
+        execution.recover_after_reconciliation().unwrap();
+        assert!(!execution.is_blocked());
+        assert!(!execution.policy().freeze_new_risk);
+        assert!(execution.approve(&ledger, Decimal::ONE).approved);
     }
 }

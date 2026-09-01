@@ -224,6 +224,8 @@ pub struct ModelRuntimeQualificationReport {
     pub evidence: ModelQualificationEvidence,
     pub qualified: bool,
     #[serde(default)]
+    pub evidence_windows_complete: bool,
+    #[serde(default)]
     pub imported_component_archive_sha256: Option<String>,
     pub diagnostics: Vec<String>,
     pub created_at_ms: i64,
@@ -346,6 +348,16 @@ fn model_qualification_report_id(
         )
         .as_bytes(),
     )
+}
+
+fn same_qualified_model_report(
+    existing: &ModelRuntimeQualificationReport,
+    incoming: &ModelRuntimeQualificationReport,
+) -> bool {
+    existing.decision_id == incoming.decision_id
+        && existing.qualified
+        && existing.package_archive_sha256 == incoming.package_archive_sha256
+        && existing.evidence_windows_complete == incoming.evidence_windows_complete
 }
 
 fn is_lower_kebab_text(value: &str) -> bool {
@@ -1174,8 +1186,7 @@ impl ModelLabStore {
                 .model_qualification_reports
                 .values()
                 .find(|existing| {
-                    existing.decision_id == report.decision_id
-                        && existing.qualified
+                    same_qualified_model_report(existing, &report)
                         && database
                             .model_qualification_reports
                             .get(&model_key(user_id, &existing.report_id))
@@ -2581,6 +2592,7 @@ fn model_qualification_failure_report(
             qualified: false,
         },
         qualified: false,
+        evidence_windows_complete: false,
         imported_component_archive_sha256: None,
         diagnostics: vec![diagnostic],
         created_at_ms: model_lab_now_ms(),
@@ -3020,6 +3032,9 @@ fn build_model_qualification_report(
     let component_id = package.map(|package| package.manifest.component_id.to_string());
     let component_version = package.map(|package| package.manifest.version.to_string());
     let wasm_sha256 = package.map(|package| package.manifest.wasm_sha256.clone());
+    let evidence_windows_complete = package
+        .and_then(|package| package.manifest.model_artifact.as_ref())
+        .is_some_and(|artifact| has_model_evidence_windows(&artifact.provenance));
     let resource_policy_sha256 = resource_policy_identity(&replay.run.resource_policy)?;
     let mut report = ModelRuntimeQualificationReport {
         report_id: String::new(),
@@ -3049,6 +3064,7 @@ fn build_model_qualification_report(
         numeric_tolerance: RIDGE_REPEATABILITY_TOLERANCE,
         evidence,
         qualified,
+        evidence_windows_complete,
         imported_component_archive_sha256,
         diagnostics,
         created_at_ms: model_lab_now_ms(),
@@ -3065,6 +3081,22 @@ fn build_model_qualification_report(
     Ok(report)
 }
 
+fn has_model_evidence_windows(provenance: &BTreeMap<String, String>) -> bool {
+    ["trainingWindow", "fittingWindow", "normalizationWindow"]
+        .iter()
+        .all(|field| {
+            provenance.get(*field).is_some_and(|value| {
+                let Some((start, end)) = value.split_once("..") else {
+                    return false;
+                };
+                match (start.parse::<i64>(), end.parse::<i64>()) {
+                    (Ok(start), Ok(end)) => start <= end,
+                    _ => false,
+                }
+            })
+        })
+}
+
 fn qualify_model_deployment(
     store: &ModelLabStore,
     local_state: &crate::local_research::LocalResearchState,
@@ -3077,7 +3109,20 @@ fn qualify_model_deployment(
         .rev()
         .find(|report| report.qualified)
     {
-        return Ok(report);
+        let has_windows = report
+            .package_archive_sha256
+            .as_deref()
+            .and_then(|archive| {
+                local_state
+                    .components
+                    .package_for_user(user_id, archive)
+                    .ok()
+            })
+            .and_then(|package| package.manifest.model_artifact)
+            .is_some_and(|artifact| has_model_evidence_windows(&artifact.provenance));
+        if has_windows {
+            return Ok(report);
+        }
     }
     let attempt_id = uuid::Uuid::new_v4().to_string();
     let replay = match accepted_model_deployment_replay(store, local_state, user_id, decision_id) {
@@ -3106,6 +3151,16 @@ fn qualify_model_deployment(
             "resourcePolicy".into(),
             resource_policy_identity(&replay.run.resource_policy)?,
         );
+        // The embedded Linear Model Artifact keeps hash-only provenance; its
+        // package manifest carries the native research windows for downstream
+        // evidence classification.
+        let training_window = format!(
+            "{}..{}",
+            replay.run.windows.train_start, replay.run.windows.train_end
+        );
+        for field in ["trainingWindow", "fittingWindow", "normalizationWindow"] {
+            provenance.insert(field.into(), training_window.clone());
+        }
         provenance
     };
     let package_bytes = match export_linear_model_component(
@@ -8894,6 +8949,42 @@ pub async fn cache_evict(
 mod tests {
     use super::*;
     use adaq_python_research::runner::ConformanceResult;
+
+    #[test]
+    fn native_model_evidence_windows_require_ordered_ranges() {
+        let mut provenance = BTreeMap::new();
+        assert!(!has_model_evidence_windows(&provenance));
+        for field in ["trainingWindow", "fittingWindow", "normalizationWindow"] {
+            provenance.insert(field.into(), "1..100".into());
+        }
+        assert!(has_model_evidence_windows(&provenance));
+        provenance.insert("fittingWindow".into(), "100..1".into());
+        assert!(!has_model_evidence_windows(&provenance));
+    }
+
+    #[test]
+    fn qualified_model_report_reuse_includes_package_evidence_identity() {
+        let directory =
+            std::env::temp_dir().join(format!("adaq-model-report-reuse-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let store = ModelLabStore::open(directory.clone()).unwrap();
+        let mut existing = model_qualification_failure_report(
+            &store,
+            "alice",
+            "decision",
+            "attempt-1".into(),
+            "diagnostic",
+        )
+        .unwrap();
+        existing.qualified = true;
+        existing.package_archive_sha256 = Some("a".repeat(64));
+        let mut incoming = existing.clone();
+        incoming.attempt_id = "attempt-2".into();
+        assert!(same_qualified_model_report(&existing, &incoming));
+        incoming.evidence_windows_complete = true;
+        assert!(!same_qualified_model_report(&existing, &incoming));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn failed_model_qualification_is_persisted_scoped_and_retryable() {

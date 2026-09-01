@@ -542,6 +542,7 @@ pub(super) fn execute_qualified(
             .map(|(factor, path)| FactorRunRequest {
                 alias: &factor.request.alias,
                 path,
+                manifest_feature_slots: &factor.package.manifest.feature_slots,
             })
             .collect::<Vec<_>>();
         let signal_runs = instrument_signals

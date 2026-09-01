@@ -836,6 +836,7 @@ struct CandidateBuildJob {
     candidate: FactorCandidate,
     presentation: FactorPresentationMetadata,
     build: Option<FactorControlledBuildRequest>,
+    predecessor: Option<FactorCandidatePredecessor>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1134,15 +1135,25 @@ impl FactorResearch {
     pub(crate) fn build_candidate(
         &self,
         request: FactorCandidateBuildRequest,
+        predecessor: Option<FactorCandidatePredecessor>,
     ) -> Result<FactorAttemptView, String> {
         validate_user(&request.user_id)?;
         request.candidate.validate().map_err(string)?;
         request.presentation.validate().map_err(string)?;
+        if let Some(predecessor) = &predecessor {
+            predecessor.validate()?;
+            if predecessor.user_id != request.user_id {
+                return Err(
+                    "Factor Candidate predecessor User identity differs from the request".into(),
+                );
+            }
+        }
         let job = CandidateBuildJob {
             user_id: request.user_id.clone(),
             candidate: request.candidate,
             presentation: request.presentation,
             build: request.build,
+            predecessor,
         };
         self.enqueue(&request.user_id, "candidate-build", &job)
     }
@@ -1956,8 +1967,9 @@ impl FactorResearch {
             .component_qualifications_for_user(user_id)?;
         let mut inputs = Vec::new();
         for record in records.into_iter().filter(|record| record.qualified) {
-            let evidence: FactorComponentQualificationEvidence =
-                serde_json::from_str(&record.evidence_json).map_err(string)?;
+            let Some(evidence) = factor_component_qualification_evidence(&record)? else {
+                continue;
+            };
             validate_component_qualification_evidence(&evidence, user_id, &record.attempt_id)?;
             if evidence.package_sha256 != record.archive_sha256 || !evidence.qualification.qualified
             {
@@ -2001,8 +2013,9 @@ impl FactorResearch {
             .source
             .component_qualifications_for_user(user_id)?;
         for record in records.into_iter().filter(|record| record.qualified) {
-            let evidence: FactorComponentQualificationEvidence =
-                serde_json::from_str(&record.evidence_json).map_err(string)?;
+            let Some(evidence) = factor_component_qualification_evidence(&record)? else {
+                continue;
+            };
             validate_component_qualification_evidence(&evidence, user_id, &record.attempt_id)?;
             if evidence.package_sha256 != record.archive_sha256 || !evidence.qualification.qualified
             {
@@ -2451,6 +2464,7 @@ impl FactorResearch {
                 &candidate,
                 &job.presentation,
                 Some(&build_result.package_bytes),
+                job.predecessor.as_ref(),
             );
         }
         let database = self.database()?;
@@ -2460,6 +2474,7 @@ impl FactorResearch {
             &job.candidate,
             &job.presentation,
             None,
+            job.predecessor.as_ref(),
         )
     }
 
@@ -3425,6 +3440,16 @@ fn failed_qualification_attempt(
     };
     mark_qualification_failed(&mut attempt, gate, diagnostic);
     attempt
+}
+
+fn factor_component_qualification_evidence(
+    record: &crate::component_library::ComponentQualificationRecord,
+) -> Result<Option<FactorComponentQualificationEvidence>, String> {
+    let value: serde_json::Value = serde_json::from_str(&record.evidence_json).map_err(string)?;
+    if value.is_array() {
+        return Ok(None);
+    }
+    serde_json::from_value(value).map(Some).map_err(string)
 }
 
 fn validate_component_qualification_evidence(
@@ -4513,9 +4538,10 @@ impl<'a> ResearchStore<'a> {
         candidate: &FactorCandidate,
         presentation: &FactorPresentationMetadata,
         package_bytes: Option<&[u8]>,
+        predecessor: Option<&FactorCandidatePredecessor>,
     ) -> Result<String, String> {
         let (candidate_json, presentation_json, predecessor_json) =
-            candidate_save_payload(user_id, candidate, presentation, None)?;
+            candidate_save_payload(user_id, candidate, presentation, predecessor)?;
         let transaction = self.database.unchecked_transaction().map_err(string)?;
         let publishable: i64 = transaction
             .query_row(
@@ -7299,20 +7325,26 @@ impl<'a> ResearchStore<'a> {
                 serde_json::from_str::<FactorEvaluationReport>(&json).map_err(string)
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let lineage = self
-            .lineage_for_user(user_id, &protocol.trial_id.to_string())?
-            .lineage;
-        let eligibility = PromotionEligibility::check(adaq_factor_research::PromotionEvidence {
-            candidate: &candidate,
-            dataset: &manifest,
-            dataset_status: adaq_factor_research::FactorDatasetStatus::Completed,
-            evaluation_protocol: &evaluation,
-            reports: &reports,
-            policy: &policy,
-            lineage: &lineage,
-            promotion_protocol: protocol,
-            component: record.component,
-        })
+        let lineage_view = self.lineage_for_user(user_id, &protocol.trial_id.to_string())?;
+        let trial = lineage_view
+            .trials
+            .iter()
+            .find(|trial| trial.trial_id == protocol.trial_id)
+            .ok_or_else(|| "Promotion Research Trial was not found".to_owned())?;
+        let eligibility = PromotionEligibility::check_with_trial(
+            adaq_factor_research::PromotionEvidence {
+                candidate: &candidate,
+                dataset: &manifest,
+                dataset_status: adaq_factor_research::FactorDatasetStatus::Completed,
+                evaluation_protocol: &evaluation,
+                reports: &reports,
+                policy: &policy,
+                lineage: &lineage_view.lineage,
+                promotion_protocol: protocol,
+                component: record.component,
+            },
+            Some(trial),
+        )
         .map_err(string)?;
         let eligible = matches!(
             record.decision.state,
@@ -8749,6 +8781,7 @@ mod tests {
                     tags: Vec::new(),
                 },
                 None,
+                None,
             )
             .unwrap_err();
         assert_eq!(error, "cancelled");
@@ -9100,6 +9133,7 @@ mod tests {
                         description: String::new(),
                         tags: Vec::new(),
                     },
+                    None,
                     None,
                 )
                 .unwrap_err(),
@@ -9779,8 +9813,8 @@ mod tests {
             },
             build: None,
         };
-        research.build_candidate(request.clone()).unwrap();
-        research.build_candidate(request).unwrap();
+        research.build_candidate(request.clone(), None).unwrap();
+        research.build_candidate(request, None).unwrap();
         assert_eq!(
             database
                 .lock()
@@ -9794,6 +9828,27 @@ mod tests {
             1
         );
         queue.shutdown();
+    }
+
+    #[test]
+    fn candidate_build_job_carries_factor_context_predecessor() {
+        let predecessor = test_predecessor("alice", &["close"]);
+        let job = CandidateBuildJob {
+            user_id: "alice".into(),
+            candidate: test_candidate(),
+            presentation: FactorPresentationMetadata {
+                name: "Test".into(),
+                description: String::new(),
+                tags: Vec::new(),
+            },
+            build: None,
+            predecessor: Some(predecessor.clone()),
+        };
+
+        let encoded = serde_json::to_string(&job).unwrap();
+        let decoded: CandidateBuildJob = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded.predecessor, Some(predecessor));
     }
 
     #[derive(Clone)]
@@ -9904,5 +9959,22 @@ mod tests {
                 ],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn generic_component_qualification_evidence_is_not_factor_evidence() {
+        let record = crate::component_library::ComponentQualificationRecord {
+            attempt_id: "component-attempt".into(),
+            user_id: "alice".into(),
+            archive_sha256: "a".repeat(64),
+            qualified: true,
+            evidence_json: "[]".into(),
+            created_at_ms: 0,
+        };
+        assert!(
+            factor_component_qualification_evidence(&record)
+                .unwrap()
+                .is_none()
+        );
     }
 }

@@ -45,7 +45,8 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 use tauri::{
-    AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
     ipc::Channel,
     menu::{AboutMetadata, MenuBuilder, SubmenuBuilder},
 };
@@ -508,6 +509,242 @@ fn unix_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemDashboardBotSummary {
+    bot_id: String,
+    state: adaq_bot_runtime::LifecycleState,
+    current_attempt_id: Option<String>,
+    current_attempt_state: Option<adaq_bot_runtime::LifecycleState>,
+    attempt_count: u64,
+    decision_count: u64,
+    order_count: u64,
+    unmanaged_position_count: u64,
+    reconciliation_required: bool,
+    last_decision_time_ms: Option<i64>,
+    updated_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemDashboardPaperSummary {
+    account_id: String,
+    market: adaq_paper_trading_core::Market,
+    currency: adaq_paper_trading_core::Currency,
+    cash: Decimal,
+    reserved_cash: Decimal,
+    buying_power: Decimal,
+    position_count: u64,
+    order_count: u64,
+    fill_count: u64,
+    reconciliation: adaq_paper_trading_core::ReconciliationState,
+    restart_required: bool,
+    observed_at_ms: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemDashboardResearchSummary {
+    watchlist_count: u64,
+    snapshot_count: u64,
+    component_count: u64,
+    model_artifact_count: u64,
+    signal_dataset_count: u64,
+    generation_attempt_count: u64,
+    backtest_run_count: u64,
+    validation_protocol_count: u64,
+    validation_report_count: u64,
+    feedback_snapshot_count: u64,
+    feedback_report_count: u64,
+    review_decision_count: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemDashboardView {
+    operational_responsibility: bool,
+    updated_at_ms: i64,
+    unavailable: Vec<String>,
+    health: Vec<operations::HealthView>,
+    alerts: Vec<operations::AlertView>,
+    events: Vec<operations::OperationalEvent>,
+    bots: Vec<SystemDashboardBotSummary>,
+    paper_account: Option<SystemDashboardPaperSummary>,
+    research: SystemDashboardResearchSummary,
+}
+
+fn system_dashboard_for_user(
+    app: &AppHandle,
+    user_id: &str,
+) -> Result<SystemDashboardView, String> {
+    let local = app.state::<Arc<LocalResearchState>>();
+    let bots_store = app.state::<Arc<bot_operations::BotStore>>();
+    let mut unavailable = Vec::new();
+
+    let health = match local.operations.health_for_user(user_id) {
+        Ok(value) => value,
+        Err(_) => {
+            unavailable.push("health".to_owned());
+            Vec::new()
+        }
+    };
+    let alerts = match local.operations.alerts_for_user(user_id) {
+        Ok(value) => value,
+        Err(_) => {
+            unavailable.push("alerts".to_owned());
+            Vec::new()
+        }
+    };
+    let events = match local.operations.events_for_user(user_id, 12) {
+        Ok(value) => value,
+        Err(_) => {
+            unavailable.push("events".to_owned());
+            Vec::new()
+        }
+    };
+    let bots = match bots_store.list(user_id) {
+        Ok(value) => value
+            .into_iter()
+            .map(|bot| {
+                let current_attempt = bot.current_attempt_id.as_ref().and_then(|attempt_id| {
+                    bot.attempts
+                        .iter()
+                        .find(|attempt| &attempt.attempt_id == attempt_id)
+                });
+                SystemDashboardBotSummary {
+                    bot_id: bot.bot_id,
+                    state: bot.state,
+                    current_attempt_id: bot.current_attempt_id,
+                    current_attempt_state: current_attempt.map(|attempt| attempt.state),
+                    attempt_count: bot.attempts.len() as u64,
+                    decision_count: current_attempt
+                        .map(|attempt| attempt.decisions.len() as u64)
+                        .unwrap_or(0),
+                    order_count: current_attempt
+                        .map(|attempt| attempt.orders.len() as u64)
+                        .unwrap_or(0),
+                    unmanaged_position_count: current_attempt
+                        .map(|attempt| attempt.unmanaged_positions.len() as u64)
+                        .unwrap_or(0),
+                    reconciliation_required: current_attempt
+                        .is_some_and(|attempt| attempt.reconciliation_required),
+                    last_decision_time_ms: current_attempt
+                        .and_then(|attempt| attempt.last_decision_time_ms),
+                    updated_at_ms: bot
+                        .attempts
+                        .iter()
+                        .map(|attempt| attempt.updated_at_ms)
+                        .max(),
+                }
+            })
+            .collect(),
+        Err(_) => {
+            unavailable.push("bots".to_owned());
+            Vec::new()
+        }
+    };
+    let paper_account = match local.paper_trading.view_optional(user_id) {
+        Ok(value) => value.map(|account| SystemDashboardPaperSummary {
+            account_id: account.account.account_id,
+            market: account.account.market,
+            currency: account.account.currency,
+            cash: account.account.cash,
+            reserved_cash: account.reserved_cash,
+            buying_power: account.buying_power,
+            position_count: account.account.positions.len() as u64,
+            order_count: account.orders.len() as u64,
+            fill_count: account.fills.len() as u64,
+            reconciliation: account.reconciliation,
+            restart_required: account.restart_required,
+            observed_at_ms: account.account.observed_at_ms,
+        }),
+        Err(_) => {
+            unavailable.push("paperAccount".to_owned());
+            None
+        }
+    };
+    let feedback = match local.paper_feedback.view(user_id) {
+        Ok(value) => value,
+        Err(_) => {
+            unavailable.push("paperFeedback".to_owned());
+            paper_feedback::PaperFeedbackView {
+                snapshots: Vec::new(),
+                reports: Vec::new(),
+                decisions: Vec::new(),
+            }
+        }
+    };
+    let research = match local.local_data_summary(user_id) {
+        Ok(summary) => SystemDashboardResearchSummary {
+            watchlist_count: summary.watchlist_count,
+            snapshot_count: summary.snapshot_count,
+            component_count: summary.component_count,
+            model_artifact_count: summary.model_artifact_count,
+            signal_dataset_count: summary.signal_dataset_count,
+            generation_attempt_count: summary.generation_attempt_count,
+            backtest_run_count: summary.run_count,
+            validation_protocol_count: summary.protocol_count,
+            validation_report_count: summary.report_count,
+            feedback_snapshot_count: feedback.snapshots.len() as u64,
+            feedback_report_count: feedback.reports.len() as u64,
+            review_decision_count: feedback.decisions.len() as u64,
+        },
+        Err(_) => {
+            unavailable.push("research".to_owned());
+            SystemDashboardResearchSummary {
+                watchlist_count: 0,
+                snapshot_count: 0,
+                component_count: 0,
+                model_artifact_count: 0,
+                signal_dataset_count: 0,
+                generation_attempt_count: 0,
+                backtest_run_count: 0,
+                validation_protocol_count: 0,
+                validation_report_count: 0,
+                feedback_snapshot_count: feedback.snapshots.len() as u64,
+                feedback_report_count: feedback.reports.len() as u64,
+                review_decision_count: feedback.decisions.len() as u64,
+            }
+        }
+    };
+    let unresolved_alert = alerts
+        .iter()
+        .any(|alert| alert.state != operations::AlertState::Resolved);
+    let operational_responsibility = !bots.is_empty()
+        || paper_account.is_some()
+        || unresolved_alert
+        || unavailable.iter().any(|section| {
+            matches!(
+                section.as_str(),
+                "alerts" | "events" | "bots" | "paperAccount"
+            )
+        });
+
+    Ok(SystemDashboardView {
+        operational_responsibility,
+        updated_at_ms: unix_now_ms(),
+        unavailable,
+        health,
+        alerts,
+        events,
+        bots,
+        paper_account,
+        research,
+    })
+}
+
+#[tauri::command]
+async fn system_dashboard(
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: AppHandle,
+) -> Result<SystemDashboardView, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || system_dashboard_for_user(&app, &user_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -716,6 +953,47 @@ async fn operations_probe(
         .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+async fn operations_recover_host(
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || recover_host_freeze_for_user(&app, &user_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn recover_host_freeze_for_user(app: &AppHandle, user_id: &str) -> Result<(), String> {
+    let local = app.state::<Arc<LocalResearchState>>();
+    let profile = local
+        .connections
+        .list(user_id)?
+        .into_iter()
+        .find(|profile| profile.provider == connections::Provider::OkxDemo)
+        .ok_or_else(|| "A usable OKX Demo connection is required for Host recovery.".to_owned())?;
+    if profile.status != connections::ProfileStatus::Usable || profile.account_id.is_none() {
+        return Err("A usable OKX Demo connection is required for Host recovery.".into());
+    }
+    let account = local.paper_trading.view_optional(user_id)?.ok_or_else(|| {
+        "The OKX Demo Paper Account must be reconciled before Host recovery.".to_owned()
+    })?;
+    if account.reconciliation != adaq_paper_trading_core::ReconciliationState::Reconciled
+        || account.restart_required
+        || profile.account_id.as_deref() != Some(account.account.account_id.as_str())
+    {
+        return Err(
+            "The OKX Demo Paper Account must be exactly reconciled before Host recovery.".into(),
+        );
+    }
+    let now_ms = unix_now_ms();
+    local
+        .paper_trading
+        .recover_after_host_freeze(user_id, now_ms)?;
+    local.operations.recover_host_freeze(user_id, now_ms)
+}
+
 fn observe_operational_inputs(app: &AppHandle, user_id: &str) -> Result<(), String> {
     let local = app.state::<Arc<LocalResearchState>>();
     let account = local.paper_trading.view_optional(user_id)?;
@@ -734,9 +1012,7 @@ fn observe_operational_inputs(app: &AppHandle, user_id: &str) -> Result<(), Stri
         .map(|account| account.account.account_id.clone());
     let (account_event, _, account_action) = local.operations.observe(operations::HealthObservation {
         user_id: user_id.to_owned(),
-        entity_id: account_id
-            .clone()
-            .unwrap_or_else(|| "paper-account".into()),
+        entity_id: "paper-account".into(),
         dimension: operations::HealthDimension::PaperAccount,
         state: if account_ready {
             operations::HealthState::Healthy
@@ -1678,7 +1954,14 @@ async fn factor_candidate_build(
             operation_id.clone(),
             adaq_factor_research::ResearchStage::Factors,
         )?;
-        let attempt = state.factor.build_candidate(request)?;
+        let projection = state
+            .research_context_for_user(&user_id)?
+            .ok_or_else(|| "factor-context-required".to_owned())?;
+        let predecessor = factor_research::FactorCandidatePredecessor::from_projection(
+            user_id.clone(),
+            projection,
+        )?;
+        let attempt = state.factor.build_candidate(request, Some(predecessor))?;
         state.record_research_attempt_binding(
             &user_id,
             &operation_id,
@@ -5106,11 +5389,20 @@ async fn paper_account_reconcile(
         let account_id = profile.account_id.ok_or_else(|| {
             "The OKX Demo connection has no validated account identity.".to_owned()
         })?;
-        state.connections.with_okx_demo_client(&user_id, |client| {
-            state
-                .paper_trading
-                .provider_balance(&user_id, account_id, &client, unix_now_ms())
-        })?
+        let now_ms = unix_now_ms();
+        state.connections.with_okx_demo_reconciliation(
+            &user_id,
+            now_ms,
+            |open_orders, balances| {
+                state.paper_trading.provider_balance(
+                    &user_id,
+                    account_id,
+                    open_orders,
+                    balances,
+                    now_ms,
+                )
+            },
+        )?
     })
     .await
     .map_err(|error| serialize_paper_account_error(error.to_string()))?;
@@ -5363,6 +5655,19 @@ pub fn run() {
                 .build()?;
 
             app.set_menu(menu)?;
+            let main_window = app.get_webview_window("main").or_else(|| {
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .title("AdaQ")
+                    .inner_size(1280.0, 860.0)
+                    .min_inner_size(800.0, 600.0)
+                    .center()
+                    .build()
+                    .ok()
+            });
+            if let Some(window) = main_window {
+                window.show()?;
+                window.set_focus()?;
+            }
             app.on_menu_event(|app, event| {
                 if event.id() == CHECK_FOR_UPDATES_MENU_ID {
                     if let Err(error) = app.emit_to("main", CHECK_FOR_UPDATES_EVENT, ()) {
@@ -5382,6 +5687,7 @@ pub fn run() {
             auth_bind_session,
             auth_clear_session,
             workspace_ready,
+            system_dashboard,
             operations_health,
             operations_alerts,
             operations_events,
@@ -5389,6 +5695,7 @@ pub fn run() {
             operations_alert_acknowledge,
             operations_freeze_all,
             operations_probe,
+            operations_recover_host,
             paper_feedback_snapshot_create,
             paper_feedback_view,
             paper_feedback_report_create,
@@ -5668,8 +5975,16 @@ pub fn run() {
             connection_profile_test,
             connection_profile_delete
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Ready) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }
 
 fn string(error: impl std::fmt::Display) -> String {

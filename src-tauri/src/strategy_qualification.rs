@@ -294,7 +294,9 @@ impl StrategyQualificationStore {
                     ON strategy_qualifications(user_id, created_at_ms DESC);",
             )
             .map_err(string)?;
-        Ok(Self { database, source })
+        let store = Self { database, source };
+        store.recover_interrupted_attempts()?;
+        Ok(store)
     }
 
     pub(crate) fn run(
@@ -506,7 +508,10 @@ impl StrategyQualificationStore {
             validation_protocol_id: protocol.protocol_id,
             validation_report_id: report.report_id,
             gate12_eligible: true,
-            gate12_continuation_required: true,
+            // This explicit reviewed action is the continuation approval for
+            // the immutable qualification evidence; deployment still checks
+            // the persisted flag and every exact upstream identity.
+            gate12_continuation_required: false,
             evidence_hash: String::new(),
             reviewed_at_ms: unix_now_ms(),
         };
@@ -642,6 +647,30 @@ impl StrategyQualificationStore {
                 ],
             )
             .map_err(string)?;
+        Ok(())
+    }
+
+    fn recover_interrupted_attempts(&self) -> Result<(), String> {
+        let attempts = {
+            let database = self.database.lock().map_err(string)?;
+            let mut statement = database
+                .prepare(
+                    "SELECT attempt_json FROM strategy_qualification_attempts
+                     WHERE json_extract(attempt_json, '$.status') = 'running'",
+                )
+                .map_err(string)?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(string)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(string)?
+        };
+        for json in attempts {
+            let mut attempt: StrategyQualificationAttempt =
+                serde_json::from_str(&json).map_err(string)?;
+            mark_interrupted_attempt(&mut attempt, unix_now_ms());
+            self.save_attempt(&attempt)?;
+        }
         Ok(())
     }
 
@@ -922,7 +951,7 @@ fn validate_context(
     bars: &[adaq_data_core::OhlcvBar],
 ) -> Result<(), EvaluationFailure> {
     if revision.semantic_context.snapshot_id != snapshot.snapshot_id
-        || revision.semantic_context.universe_id != universe.universe.universe_id
+        || revision.semantic_context.universe_id != universe.snapshot_id
         || universe.universe.evidence_state == "unknown"
         || universe.universe.evidence_reasons.is_empty()
         || snapshot.interval != universe.interval
@@ -1364,12 +1393,19 @@ fn generate_strategy_package(
     let generated_source_sha256 = sha256(source.as_bytes());
     let local_sdk_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/adaq-component-sdk");
     let sdk_path = local_sdk_path.is_dir().then_some(local_sdk_path.as_path());
-    let project = create_project(
+    let project_parent = strategy_project_parent()?;
+    let project = match create_project(
         ComponentTemplate::Strategy,
         &package_name,
-        &std::env::temp_dir(),
+        &project_parent,
         sdk_path,
-    )?;
+    ) {
+        Ok(project) => project,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&project_parent);
+            return Err(error);
+        }
+    };
     let result = (|| {
         fs::write(project.join("src/lib.rs"), &source).map_err(string)?;
         fs::write(
@@ -1449,8 +1485,14 @@ fn generate_strategy_package(
             parameters,
         })
     })();
-    let _ = fs::remove_dir_all(&project);
+    let _ = fs::remove_dir_all(&project_parent);
     result
+}
+
+fn strategy_project_parent() -> Result<std::path::PathBuf, String> {
+    let parent = std::env::temp_dir().join(format!("adaq-gate11-{}", Uuid::new_v4()));
+    fs::create_dir(&parent).map_err(string)?;
+    Ok(parent)
 }
 
 fn verify_strategy_equivalence(
@@ -2699,6 +2741,19 @@ fn unix_now_ms() -> i64 {
         .unwrap_or_default()
 }
 
+fn mark_interrupted_attempt(attempt: &mut StrategyQualificationAttempt, now_ms: i64) {
+    if attempt.status != StrategyQualificationAttemptStatus::Running {
+        return;
+    }
+    attempt.status = StrategyQualificationAttemptStatus::Failed;
+    attempt.diagnostics.push(StrategyQualificationDiagnostic {
+        stage: "lifecycle".into(),
+        code: "strategy-qualification-interrupted".into(),
+        message: "The previous Desktop session ended while this Attempt was running; rerun it to create new evidence.".into(),
+    });
+    attempt.updated_at_ms = now_ms;
+}
+
 fn string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -2985,5 +3040,157 @@ mod tests {
         assert_eq!(uuid.get_version_num(), 5);
         assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
         assert_eq!(uuid, deterministic_uuid(&hash('a')));
+    }
+
+    #[test]
+    fn strategy_project_parents_are_unique() {
+        let first = strategy_project_parent().unwrap();
+        let second = strategy_project_parent().unwrap();
+        assert_ne!(first, second);
+        assert!(first.is_dir());
+        assert!(second.is_dir());
+        fs::remove_dir_all(first).unwrap();
+        fs::remove_dir_all(second).unwrap();
+    }
+
+    #[test]
+    fn interrupted_attempt_is_failed_once_with_recovery_diagnostic() {
+        let context: StrategyEvaluationContext = serde_json::from_value(serde_json::json!({
+            "snapshotId": "snapshot-1",
+            "universeSnapshotId": "universe-1",
+            "universeId": "universe",
+            "selectionWindow": {"startTimeMs": 0, "endTimeMs": 60_000},
+            "finalWindow": {"startTimeMs": 120_000, "endTimeMs": 180_000},
+            "riskPolicy": {
+                "policyId": "gate-11-default",
+                "maxInstrumentWeight": "1",
+                "maxTurnover": null
+            },
+            "executionProfile": {
+                "makerFeeRate": "0.0008",
+                "takerFeeRate": "0.001",
+                "adverseSlippageRate": "0",
+                "rebalanceThreshold": "0",
+                "priceIncrement": "0.0001",
+                "quantityIncrement": "0.0001",
+                "minimumQuantity": "0.0001",
+                "riskFreeRate": "0",
+                "fillPolicy": "taker"
+            },
+            "signalInstances": [],
+            "initialQuoteAllocation": "10000",
+            "seed": 0,
+            "validationMethodVersion": "chronological-holdout@1",
+            "aggregationRuleVersion": "equal-window@1"
+        }))
+        .unwrap();
+        let mut attempt = StrategyQualificationAttempt {
+            attempt_id: "attempt".into(),
+            user_id: "user".into(),
+            candidate_id: "candidate".into(),
+            candidate_revision: 1,
+            candidate_revision_hash: String::new(),
+            status: StrategyQualificationAttemptStatus::Running,
+            package: None,
+            context,
+            backtest_run_id: None,
+            validation_protocol_id: None,
+            validation_report_id: None,
+            diagnostics: Vec::new(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
+
+        mark_interrupted_attempt(&mut attempt, 2);
+        mark_interrupted_attempt(&mut attempt, 3);
+
+        assert_eq!(attempt.status, StrategyQualificationAttemptStatus::Failed);
+        assert_eq!(attempt.updated_at_ms, 2);
+        assert_eq!(attempt.diagnostics.len(), 1);
+        assert_eq!(
+            attempt.diagnostics[0].code,
+            "strategy-qualification-interrupted"
+        );
+    }
+
+    #[test]
+    fn context_matches_the_published_universe_snapshot_identity() {
+        let revision = test_revision();
+        let request: StrategyQualificationRunRequest = serde_json::from_value(serde_json::json!({
+            "userId": "user",
+            "candidateId": revision.candidate_id.clone(),
+            "candidateRevision": 1,
+            "snapshotId": "snapshot-1",
+            "universeSnapshotId": "universe-1",
+            "selectionWindow": {"startTimeMs": 0, "endTimeMs": 60_000},
+            "finalWindow": {"startTimeMs": 120_000, "endTimeMs": 180_000},
+            "signalInstances": [],
+            "initialQuoteAllocation": "10000",
+            "executionProfile": {
+                "makerFeeRate": "0.0008",
+                "takerFeeRate": "0.001",
+                "adverseSlippageRate": "0",
+                "rebalanceThreshold": "0",
+                "priceIncrement": "0.0001",
+                "quantityIncrement": "0.0001",
+                "minimumQuantity": "0.0001",
+                "riskFreeRate": "0",
+                "fillPolicy": "taker"
+            },
+            "riskPolicy": {
+                "policyId": "gate-11-default",
+                "maxInstrumentWeight": "1",
+                "maxTurnover": null
+            },
+            "seed": 0
+        }))
+        .unwrap();
+        let snapshot: MarketDataSnapshot = serde_json::from_value(serde_json::json!({
+            "snapshotId": "snapshot-1",
+            "src": "okx",
+            "code": "BTC-USDT",
+            "interval": "1m",
+            "startTimeMs": 0,
+            "endTimeMs": 180_000,
+            "barCount": 4,
+            "gaps": [],
+            "parquetPath": "/tmp/fixture.parquet"
+        }))
+        .unwrap();
+        let universe: MarketDataUniverseSnapshot = serde_json::from_value(serde_json::json!({
+            "snapshotId": "universe-1",
+            "venue": {"id": "okx", "kind": "cryptoSpot", "timeZone": "UTC"},
+            "interval": "1m",
+            "startTimeMs": 0,
+            "endTimeMs": 180_000,
+            "universe": {
+                "universeId": "content-universe-1",
+                "asOfMs": 0,
+                "evidenceState": "reconstructed",
+                "evidenceReasons": ["fixture"],
+                "coverageStartMs": 0,
+                "coverageEndMs": 180_000,
+                "instruments": []
+            },
+            "components": [],
+            "qualityReportIds": [],
+            "calendarSnapshotIds": [],
+            "providerCapabilitySnapshots": [],
+            "contentSha256": ""
+        }))
+        .unwrap();
+        let bars = (0..4)
+            .map(|index| adaq_data_core::OhlcvBar {
+                open_time_ms: index * 60_000,
+                open: Decimal::ONE,
+                high: Decimal::ONE,
+                low: Decimal::ONE,
+                close: Decimal::ONE,
+                base_volume: Decimal::ONE,
+                quote_volume: Decimal::ONE,
+            })
+            .collect::<Vec<_>>();
+
+        validate_context(&revision, &request, &snapshot, &universe, &bars).unwrap();
     }
 }

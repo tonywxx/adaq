@@ -410,7 +410,6 @@ export function StrategyLabPage() {
 					? t("strategyLab.ready")
 					: t("strategyLab.rejected"),
 			);
-			await refresh();
 		} catch (requestError) {
 			setError(t("strategyLab.error", { error: formatError(requestError) }));
 		} finally {

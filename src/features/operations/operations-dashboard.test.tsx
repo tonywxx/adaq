@@ -7,7 +7,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { ReactNode } from "react";
-import { OperationsDashboard } from "./operations-dashboard";
+import {
+	OperationsDashboard,
+	SystemDashboard,
+	type SystemDashboardProjection,
+} from "./operations-dashboard";
 
 jest.mock("@tauri-apps/api/core", () => ({ invoke: jest.fn() }));
 jest.mock("@tanstack/react-router", () => ({
@@ -179,7 +183,97 @@ test("refreshes expanded lifecycle history after acknowledgement", async () => {
 	await settle();
 
 	expect(historyCalls).toBeGreaterThan(1);
-	expect(container.textContent).toContain("Acknowledged · alice · event-acknowledged");
+	expect(container.textContent).toContain(
+		"Acknowledged · alice · event-acknowledged",
+	);
+
+	await act(async () => root.unmount());
+	container.remove();
+});
+
+test("renders the authorized global projection without cross-currency totals", async () => {
+	const container = document.createElement("div");
+	const root = createRoot(container);
+	document.body.append(container);
+	const projection: SystemDashboardProjection = {
+		operationalResponsibility: true,
+		updatedAtMs: Date.now(),
+		unavailable: [],
+		health: [
+			{
+				entityId: "bot-a",
+				dimension: "worker",
+				state: "healthy",
+				required: true,
+				observedAtMs: Date.now(),
+				eventId: "event-1",
+				condition: "heartbeat_ok",
+			},
+		],
+		alerts: [],
+		events: [],
+		bots: [
+			{
+				botId: "bot-a",
+				state: "running",
+				currentAttemptId: "attempt-a",
+				currentAttemptState: "running",
+				attemptCount: 1,
+				decisionCount: 2,
+				orderCount: 1,
+				unmanagedPositionCount: 0,
+				reconciliationRequired: false,
+			},
+		],
+		paperAccount: {
+			accountId: "okx-demo",
+			market: "okx_spot",
+			currency: "usdt",
+			cash: "1000",
+			reservedCash: "10",
+			buyingPower: "990",
+			positionCount: 1,
+			orderCount: 1,
+			fillCount: 1,
+			reconciliation: "reconciled",
+			restartRequired: false,
+			observedAtMs: Date.now(),
+		},
+		research: {
+			watchlistCount: 1,
+			snapshotCount: 1,
+			componentCount: 1,
+			modelArtifactCount: 1,
+			signalDatasetCount: 1,
+			generationAttemptCount: 1,
+			backtestRunCount: 1,
+			validationProtocolCount: 1,
+			validationReportCount: 1,
+			feedbackSnapshotCount: 1,
+			feedbackReportCount: 1,
+			reviewDecisionCount: 1,
+		},
+	};
+	await act(async () =>
+		root.render(<SystemDashboard projection={projection} />),
+	);
+	await settle();
+
+	expect(container.textContent).toContain("System Dashboard");
+	expect(container.textContent).toContain("USDT");
+	expect(container.textContent).toContain("Orders / Fills");
+	expect(container.textContent).not.toContain("USD 1990");
+	for (const path of [
+		"/operations",
+		"/bots",
+		"/paper-trading",
+		"/markets",
+		"/factors",
+		"/validation",
+		"/components",
+	]) {
+		expect(container.querySelector(`a[href="${path}"]`)).not.toBeNull();
+	}
 
 	await act(async () => root.unmount());
 	container.remove();

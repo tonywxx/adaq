@@ -3440,14 +3440,18 @@ fn reconcile_account(
     {
         return Err("The bound OKX Demo profile is not usable for this account.".into());
     }
-    local.connections.with_okx_demo_client(user_id, |client| {
-        local.paper_trading.provider_balance(
-            user_id,
-            bundle.account_id.clone(),
-            &client,
-            adaq_bot_runtime::unix_now_ms(),
-        )
-    })?
+    let now_ms = adaq_bot_runtime::unix_now_ms();
+    local
+        .connections
+        .with_okx_demo_reconciliation(user_id, now_ms, |open_orders, client| {
+            local.paper_trading.provider_balance(
+                user_id,
+                bundle.account_id.clone(),
+                open_orders,
+                client,
+                now_ms,
+            )
+        })?
 }
 
 fn require_reconciled_account(

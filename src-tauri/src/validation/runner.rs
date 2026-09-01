@@ -17,7 +17,11 @@ pub(super) fn run_report(
     }
     let mut windows = Vec::with_capacity(protocol.windows.len());
     for window in &protocol.windows {
-        let (sample_in, sample_out) = studies.split_snapshot(&protocol.user_id, window)?;
+        let (sample_in, sample_out) = studies.split_snapshot(
+            &protocol.user_id,
+            window,
+            protocol.run.portfolio_universe_snapshot_id.is_some(),
+        )?;
         let (sample_in_request, sample_out_request) =
             window_run_requests(&protocol, &sample_in, &sample_out);
         let sample_in_snapshot_id = sample_in_request.snapshot_id.clone();

@@ -553,6 +553,58 @@ impl OperationsStore {
         )
     }
 
+    pub fn recover_host_freeze(&self, user_id: &str, occurred_at_ms: i64) -> Result<(), String> {
+        validate_user(user_id)?;
+        if occurred_at_ms <= 0 {
+            return Err("Host recovery timestamp is invalid".into());
+        }
+        let alerts = self.alerts_for_user(user_id)?;
+        let freeze = alerts
+            .iter()
+            .find(|alert| {
+                alert.entity_id == "host"
+                    && alert.dimension == HealthDimension::LocalSystem
+                    && alert.condition == "freeze_all_requested"
+                    && alert.safety_action == SafetyAction::FreezeAll
+                    && alert.state != AlertState::Resolved
+            })
+            .ok_or_else(|| "No active Host Freeze All alert requires recovery.".to_owned())?;
+        if freeze.state != AlertState::Acknowledged {
+            return Err("A Host Freeze All alert must be acknowledged before recovery.".into());
+        }
+        if alerts.iter().any(|alert| {
+            alert.state != AlertState::Resolved
+                && alert.alert_id != freeze.alert_id
+                && alert.safety_action != SafetyAction::None
+        }) {
+            return Err("Other operational safety actions must be recovered first.".into());
+        }
+        let (_, alert, action) = self.observe(HealthObservation {
+            user_id: user_id.to_owned(),
+            entity_id: "host".into(),
+            dimension: HealthDimension::LocalSystem,
+            state: HealthState::Healthy,
+            condition: "freeze_all_requested".into(),
+            evidence: serde_json::json!({
+                "scope": "user",
+                "recovery": "validated",
+                "recoveredAlertId": freeze.alert_id.clone(),
+            }),
+            required: true,
+            observed_at_ms: occurred_at_ms,
+            event_kind: Some("safety.freeze-all.recovered".into()),
+            evidence_id: Some(format!("freeze-all-recovery-{occurred_at_ms}")),
+            correlation_id: Some(format!("freeze-all-recovery-{user_id}-{occurred_at_ms}")),
+            causation_id: Some(freeze.last_event_id.clone()),
+            diagnostic: Some("Host recovery validated the Freeze All condition.".into()),
+            metrics: BTreeMap::new(),
+        })?;
+        if alert.is_some() || action != SafetyAction::None {
+            return Err("Host Freeze All recovery evidence was not accepted.".into());
+        }
+        Ok(())
+    }
+
     pub fn alerts_for_user(&self, user_id: &str) -> Result<Vec<AlertView>, String> {
         validate_user(user_id)?;
         let connection = self.database.lock().map_err(|e| e.to_string())?;
@@ -1756,6 +1808,28 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn acknowledged_host_freeze_requires_validated_recovery() {
+        let s = store();
+        let mut freeze = obs(HealthState::Critical, true);
+        freeze.entity_id = "host".into();
+        freeze.dimension = HealthDimension::LocalSystem;
+        freeze.condition = "freeze_all_requested".into();
+        freeze.observed_at_ms = 1;
+        let (event, alert, _) = s.observe(freeze).unwrap();
+        let alert = alert.unwrap();
+        s.acknowledge("u", &alert.alert_id, 2).unwrap();
+        s.recover_host_freeze("u", 3).unwrap();
+        assert_eq!(
+            s.alerts_for_user("u").unwrap()[0].state,
+            AlertState::Resolved
+        );
+        let history = s.alert_history_for_user("u", &alert.alert_id).unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[1].event_id, event.event_id);
+        assert_eq!(history[2].state, AlertState::Resolved);
     }
 
     #[test]

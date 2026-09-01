@@ -1,0 +1,16 @@
+{
+  "manifestSchemaVersion": "1.0.0",
+  "componentId": "b0b5b98f-7e79-4c83-b5f7-7e654f3fbec8",
+  "version": "0.1.1",
+  "name": "Factor EMA 5/10 Crossover",
+  "kind": "factor",
+  "sdkVersion": "0.1.0",
+  "abiVersion": "2.0.0",
+  "factorScope": "time-series",
+  "featureSlots": [
+    { "name": "ema-5", "source": { "kind": "market", "field": "close" } },
+    { "name": "ema-10", "source": { "kind": "market", "field": "close" } }
+  ],
+  "outputNames": ["buy-signal"],
+  "warmupBars": 1
+}

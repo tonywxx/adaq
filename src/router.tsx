@@ -306,7 +306,7 @@ function AppShell() {
 		select: (state) => state.location.pathname,
 	});
 	const isSettings = pathname.startsWith("/settings");
-	const isHelp = pathname === "/" || pathname.startsWith("/help/workflow");
+	const isHelp = pathname.startsWith("/help/workflow");
 	const needsMarketSession = usesMarketSession(pathname);
 	const isCryptoMarket =
 		pathname === "/markets/crypto" || pathname.startsWith("/markets/crypto/");

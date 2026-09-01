@@ -76,10 +76,12 @@ pub(super) fn execute(
     let factors = request
         .factor_instances
         .iter()
+        .zip(factor_packages.iter())
         .zip(&factor_paths)
-        .map(|(factor, path)| FactorRunRequest {
+        .map(|((factor, package), path)| FactorRunRequest {
             alias: &factor.alias,
             path,
+            manifest_feature_slots: &package.manifest.feature_slots,
         })
         .collect::<Vec<_>>();
     let signal_runs = signals

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use base64::Engine;
 use chrono::DateTime;
 use hmac::{Hmac, KeyInit, Mac};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
@@ -27,6 +28,7 @@ const ALPACA_CLOCK_PATH: &str = "/v2/clock";
 const OKX_PUBLIC_TIME_PATH: &str = "/api/v5/public/time";
 const OKX_ACCOUNT_CONFIG_PATH: &str = "/api/v5/account/config";
 const OKX_ACCOUNT_BALANCE_PATH: &str = "/api/v5/account/balance";
+const OKX_OPEN_ORDERS_PATH: &str = "/api/v5/trade/orders-pending?instType=SPOT";
 
 /// Maximum tolerated absolute difference between provider time and the
 /// local clock. OKX already rejects signed requests more than 30 seconds
@@ -211,6 +213,87 @@ impl ConnectionTester {
                 passphrase,
             } => self.test_okx_demo(api_key, secret_key, passphrase, now_ms),
         }
+    }
+
+    /// Reads the OKX Demo pending-order list for reconciliation on the Host
+    /// HTTP boundary, keeping the credential out of Workers and Components.
+    pub(crate) fn fetch_okx_demo_open_orders(
+        &self,
+        credential: &TestCredential,
+        now_ms: i64,
+    ) -> Result<Vec<serde_json::Value>, TestFailure> {
+        Ok(self
+            .fetch_okx_demo_private(credential, now_ms, OKX_OPEN_ORDERS_PATH)?
+            .data)
+    }
+
+    pub(crate) fn fetch_okx_demo_balance(
+        &self,
+        credential: &TestCredential,
+        now_ms: i64,
+    ) -> Result<adaq_trading_crypto::Balances, TestFailure> {
+        let parsed: OkxResponse<OkxBalance> =
+            self.fetch_okx_demo_private(credential, now_ms, OKX_ACCOUNT_BALANCE_PATH)?;
+        let balance = parsed.first().ok_or_else(|| {
+            TestFailure::new(
+                "request_failed",
+                "OKX returned no account balance.".to_owned(),
+            )
+        })?;
+        let mut balances = adaq_trading_crypto::Balances::default();
+        for detail in &balance.details {
+            balances.accounts.insert(
+                detail.ccy.clone(),
+                adaq_trading_crypto::Balance {
+                    free: parse_okx_decimal(detail.avail_bal.as_deref())?,
+                    total: parse_okx_decimal(detail.cash_bal.as_deref())?,
+                    ..Default::default()
+                },
+            );
+        }
+        Ok(balances)
+    }
+
+    fn fetch_okx_demo_private<T: serde::de::DeserializeOwned>(
+        &self,
+        credential: &TestCredential,
+        now_ms: i64,
+        path: &str,
+    ) -> Result<OkxResponse<T>, TestFailure> {
+        let TestCredential::OkxDemo {
+            api_key,
+            secret_key,
+            passphrase,
+        } = credential
+        else {
+            return Err(TestFailure::new(
+                "environment_mismatch",
+                "The saved credential does not match the OKX Demo provider.".to_owned(),
+            ));
+        };
+        let sensitive = [api_key.as_str(), secret_key.as_str(), passphrase.as_str()];
+        let time_response = self
+            .get(format!("{OKX_DEMO_ENDPOINT}{OKX_PUBLIC_TIME_PATH}"), vec![])
+            .map_err(|message| TestFailure::new("request_failed", redact(&message, &sensitive)))?;
+        let timestamp_ms = if time_response.status == 200 {
+            parse_okx_time(&time_response.body).map_err(|message| {
+                TestFailure::new("request_failed", redact(&message, &sensitive))
+            })?
+        } else {
+            now_ms
+        };
+        let timestamp = format_rfc3339_ms(timestamp_ms);
+        let response = self
+            .get(
+                format!("{OKX_DEMO_ENDPOINT}{path}"),
+                okx_headers(api_key, secret_key, passphrase, &timestamp, "GET", path),
+            )
+            .map_err(|message| TestFailure::new("request_failed", redact(&message, &sensitive)))?;
+        let parsed = parse_okx_response(&response.body, &sensitive)?;
+        if let Some(error) = okx_error(&response, &parsed, &sensitive) {
+            return Err(error);
+        }
+        Ok(parsed)
     }
 
     fn test_alpaca_paper(
@@ -542,6 +625,7 @@ fn okx_headers(
         ("OK-ACCESS-SIGN".to_owned(), signature),
         ("OK-ACCESS-TIMESTAMP".to_owned(), timestamp.to_owned()),
         ("OK-ACCESS-PASSPHRASE".to_owned(), passphrase.to_owned()),
+        ("Content-Type".to_owned(), "application/json".to_owned()),
         ("x-simulated-trading".to_owned(), "1".to_owned()),
     ]
 }
@@ -648,7 +732,12 @@ struct OkxResponse<T> {
     code: String,
     #[serde(rename = "msg")]
     message: String,
+    #[serde(default = "empty_vec")]
     data: Vec<T>,
+}
+
+fn empty_vec<T>() -> Vec<T> {
+    Vec::new()
 }
 
 impl<T> OkxResponse<T> {
@@ -674,4 +763,21 @@ struct OkxBalance {
 #[derive(Deserialize)]
 struct OkxBalanceDetail {
     ccy: String,
+    #[serde(rename = "cashBal")]
+    cash_bal: Option<String>,
+    #[serde(rename = "availBal")]
+    avail_bal: Option<String>,
+}
+
+fn parse_okx_decimal(value: Option<&str>) -> Result<Option<Decimal>, TestFailure> {
+    value
+        .map(|value| {
+            value.parse().map_err(|error| {
+                TestFailure::new(
+                    "request_failed",
+                    format!("OKX returned an invalid balance: {error}."),
+                )
+            })
+        })
+        .transpose()
 }
