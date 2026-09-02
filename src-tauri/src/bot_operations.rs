@@ -42,7 +42,8 @@ use crate::{
     user::validate_user,
 };
 
-const BOT_SCHEMA_VERSION: &str = "adaq:bot@1";
+const BOT_SCHEMA_VERSION: &str = "adaq:bot@2";
+const LEGACY_BOT_SCHEMA_VERSION: &str = "adaq:bot@1";
 const MAX_ATTEMPTS: usize = 64;
 const MAX_EVIDENCE: usize = 256;
 const MAX_DECISIONS: usize = 512;
@@ -120,6 +121,8 @@ pub(crate) struct BotDeploymentBundle {
     pub candidate_revision: u64,
     pub candidate_revision_hash: String,
     pub universe_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub universe_snapshot_id: String,
     pub market_data_snapshot_id: String,
     pub strategy_package_archive_sha256: String,
     pub pipeline_package_archive_sha256: Vec<String>,
@@ -160,12 +163,15 @@ impl BotDeploymentBundle {
     fn verify_contents(&self) -> Result<(), String> {
         let research_risk_policy_hash = hash_json(&self.research_risk_policy)?;
         let execution_profile_hash = hash_json(&self.execution_profile)?;
-        if self.schema_version != BOT_SCHEMA_VERSION
+        let legacy = self.schema_version == LEGACY_BOT_SCHEMA_VERSION
+            && self.universe_snapshot_id.is_empty();
+        if (self.schema_version != BOT_SCHEMA_VERSION && !legacy)
             || !bounded(&self.bot_id, 256)
             || !bounded(&self.qualification_id, 256)
             || !bounded(&self.candidate_id, 256)
             || !bounded(&self.candidate_revision_hash, 128)
             || !bounded(&self.universe_id, 256)
+            || (!legacy && !bounded(&self.universe_snapshot_id, 256))
             || !bounded(&self.market_data_snapshot_id, 256)
             || !is_sha256(&self.strategy_package_archive_sha256)
             || self.pipeline_package_archive_sha256.len() > 64
@@ -961,7 +967,7 @@ impl BotStore {
         self.mutate(user_id, bot_id, |bot| {
             let attempt = current_attempt_mut(bot)?;
             let now = adaq_bot_runtime::unix_now_ms();
-            if is_active_state(attempt.state) {
+            if is_active_state(attempt.state) && attempt.state != LifecycleState::Stopping {
                 let from = attempt.state;
                 if !valid_transition(from, LifecycleState::Stopping) {
                     return Err("Bot cannot enter Stopping from its current state".into());
@@ -1627,17 +1633,6 @@ pub(crate) async fn bot_decision(
                 if view.state != LifecycleState::Running {
                     return Err("Bot must be Running before it can accept a Decision Batch.".into());
                 }
-                if local.operations.blocks_new_risk(&user_id)? {
-                    bots.record_evidence(
-                        &user_id,
-                        &request.bot_id,
-                        "decision",
-                        "decision-skipped-by-operations",
-                        "An unresolved Host safety action blocked this Decision Batch; no Worker Target or order was authorized.",
-                        Some(&request.request_id),
-                    )?;
-                    return bots.get(&user_id, &request.bot_id);
-                }
                 let validation: Result<(), String> = if !bounded(&request.request_id, 128)
                     || !bounded(&request.dataset_id, 128)
                 {
@@ -1711,6 +1706,17 @@ pub(crate) async fn bot_decision(
                         diagnostic: Some("Host assembled the exact frozen Market Data context.".into()),
                         metrics: BTreeMap::new(),
                     })?;
+                }
+                if host_batch.is_ok() && local.operations.blocks_new_risk(&user_id)? {
+                    bots.record_evidence(
+                        &user_id,
+                        &request.bot_id,
+                        "decision",
+                        "decision-skipped-by-operations",
+                        "An unresolved Host safety action blocked this Decision Batch; no Worker Target or order was authorized.",
+                        Some(&request.request_id),
+                    )?;
+                    return bots.get(&user_id, &request.bot_id);
                 }
                 let decision_id = match &host_batch {
                     Ok(batch) => batch.clock.decision_id().to_owned(),
@@ -1952,6 +1958,17 @@ fn host_decision_batch(
     Ok(HostDecisionBatch { clock, input })
 }
 
+fn is_exact_feature_context(
+    bundle: &BotDeploymentBundle,
+    feature_plan_hash: &str,
+    market_data_snapshot_id: &str,
+    point_in_time_universe_id: &str,
+) -> bool {
+    feature_plan_hash == bundle.runtime_bundle.input.feature_plan_hash
+        && market_data_snapshot_id == bundle.market_data_snapshot_id
+        && point_in_time_universe_id == bundle.universe_snapshot_id
+}
+
 fn host_schedule_clock(
     local: &LocalResearchState,
     user_id: &str,
@@ -1961,10 +1978,12 @@ fn host_schedule_clock(
     let store = local.features.materialization_store();
     let dataset =
         crate::features::Features::completed_dataset_from_store(&store, user_id, dataset_id)?;
-    if dataset.feature_plan_hash != bundle.runtime_bundle.input.feature_plan_hash
-        || dataset.market_data_snapshot_id != bundle.market_data_snapshot_id
-        || dataset.point_in_time_universe_id != bundle.universe_id
-    {
+    if !is_exact_feature_context(
+        bundle,
+        &dataset.feature_plan_hash,
+        &dataset.market_data_snapshot_id,
+        &dataset.point_in_time_universe_id,
+    ) {
         return Err("Feature Dataset is not the exact frozen Bot Feature context.".into());
     }
     let now = adaq_bot_runtime::unix_now_ms();
@@ -2091,10 +2110,12 @@ fn host_decision_input(
     let store = local.features.materialization_store();
     let dataset =
         crate::features::Features::completed_dataset_from_store(&store, user_id, dataset_id)?;
-    if dataset.feature_plan_hash != bundle.runtime_bundle.input.feature_plan_hash
-        || dataset.market_data_snapshot_id != bundle.market_data_snapshot_id
-        || dataset.point_in_time_universe_id != bundle.universe_id
-    {
+    if !is_exact_feature_context(
+        bundle,
+        &dataset.feature_plan_hash,
+        &dataset.market_data_snapshot_id,
+        &dataset.point_in_time_universe_id,
+    ) {
         return Err("Feature Dataset is not the exact frozen Bot Feature context.".into());
     }
     let slots = if bundle.runtime_bundle.input.pipeline.factors.is_empty()
@@ -3019,18 +3040,17 @@ fn submit_target_order(
     }
     let quantity = order.quantity.to_string();
     let price = order.limit_price.to_string();
-    let remote = local.connections.with_okx_demo_client(user_id, |client| {
-        tauri::async_runtime::block_on(client.create_order(
-            &order.instrument,
-            "limit",
-            order.side,
-            &quantity,
-            Some(&price),
-            adaq_trading_crypto::Params::new(),
-        ))
-    });
+    let remote = local.connections.create_okx_demo_order(
+        user_id,
+        &order.instrument,
+        "limit",
+        order.side,
+        &quantity,
+        Some(&price),
+        adaq_bot_runtime::unix_now_ms(),
+    );
     match remote {
-        Ok(Ok(provider_order)) => {
+        Ok(provider_order) => {
             let Some(provider_order_id) = provider_order.id.clone() else {
                 retain_uncertain_order(
                     local,
@@ -3063,7 +3083,7 @@ fn submit_target_order(
             )?;
             Ok(())
         }
-        Ok(Err(_)) | Err(_) => {
+        Err(_) => {
             retain_uncertain_order(
                 local,
                 bots,
@@ -3252,6 +3272,7 @@ fn build_bundle(
         candidate_revision: qualification.candidate_revision,
         candidate_revision_hash: qualification.candidate_revision_hash.clone(),
         universe_id: qualification.context.universe_id.clone(),
+        universe_snapshot_id: qualification.context.universe_snapshot_id.clone(),
         market_data_snapshot_id: qualification.context.snapshot_id.clone(),
         strategy_package_archive_sha256: qualification.package.package_archive_sha256.clone(),
         pipeline_package_archive_sha256: pipeline_archives,
@@ -3898,7 +3919,7 @@ fn stop_bot(app: &AppHandle, user_id: &str, request: BotStopRequest) -> Result<B
                     &local,
                     user_id,
                     &view.bundle,
-                    view.current_attempt_id.as_deref().unwrap_or(&request.command_id),
+                    &request.command_id,
                     bots,
                     &request.bot_id,
                 ) {
@@ -4008,15 +4029,14 @@ fn cancel_open_orders(
             .provider_order_id
             .as_deref()
             .ok_or_else(|| "flatten-open-order-identity-missing".to_owned())?;
-        let remote = local.connections.with_okx_demo_client(user_id, |client| {
-            tauri::async_runtime::block_on(client.cancel_order(
-                provider_order_id,
-                &order.instrument,
-                adaq_trading_crypto::Params::new(),
-            ))
-        });
+        let remote = local.connections.cancel_okx_demo_order(
+            user_id,
+            &order.instrument,
+            provider_order_id,
+            adaq_bot_runtime::unix_now_ms(),
+        );
         match remote {
-            Ok(Ok(cancelled)) => {
+            Ok(cancelled) => {
                 if cancelled.id.as_deref() != Some(provider_order_id) {
                     retain_provider_order_uncertainty(
                         local,
@@ -4075,7 +4095,7 @@ fn cancel_open_orders(
                     }
                 }
             }
-            Ok(Err(_)) | Err(_) => {
+            Err(_) => {
                 retain_provider_order_uncertainty(
                     local,
                     bots,
@@ -4145,18 +4165,17 @@ fn flatten_account(
             adaq_bot_runtime::unix_now_ms(),
         )?;
         let amount = quantity.to_string();
-        let remote = local.connections.with_okx_demo_client(user_id, |client| {
-            tauri::async_runtime::block_on(client.create_order(
-                instrument,
-                "market",
-                "sell",
-                &amount,
-                None,
-                adaq_trading_crypto::Params::new(),
-            ))
-        });
+        let remote = local.connections.create_okx_demo_order(
+            user_id,
+            instrument,
+            "market",
+            "sell",
+            &amount,
+            None,
+            adaq_bot_runtime::unix_now_ms(),
+        );
         match remote {
-            Ok(Ok(order)) => {
+            Ok(order) => {
                 let Some(provider_order_id) = order.id.clone() else {
                     let _ = local.paper_trading.mark_uncertain(
                         user_id,
@@ -4184,14 +4203,17 @@ fn flatten_account(
                     Some(&provider_order_id),
                 )?;
             }
-            Ok(Err(_)) | Err(_) => {
+            Err(error) => {
                 let _ = local.paper_trading.mark_uncertain(
                     user_id,
                     &operation_id,
                     adaq_bot_runtime::unix_now_ms(),
                 );
                 let _ = bots.record_order(user_id, bot_id, &operation_id, None, "uncertain", None);
-                return Err("flatten-provider-outcome-uncertain".into());
+                return Err(format!(
+                    "flatten-provider-outcome-uncertain: {}",
+                    bounded_text(&error, 512)
+                ));
             }
         }
     }
@@ -4274,6 +4296,7 @@ mod tests {
             candidate_revision: 1,
             candidate_revision_hash: hash('r'),
             universe_id: "universe".into(),
+            universe_snapshot_id: "universe-snapshot".into(),
             market_data_snapshot_id: "snapshot".into(),
             strategy_package_archive_sha256: hash('1'),
             pipeline_package_archive_sha256: vec![],
@@ -4403,6 +4426,32 @@ mod tests {
             .unwrap();
         assert_eq!(first.current_attempt_id, second.current_attempt_id);
         assert_eq!(second.state, LifecycleState::Running);
+    }
+
+    #[test]
+    fn complete_stop_accepts_an_attempt_already_in_stopping() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = store(database);
+        store
+            .deploy("user-a", bundle("bot-a", "account-a"))
+            .unwrap();
+        store.begin_attempt("user-a", "bot-a", false).unwrap();
+        for state in [
+            LifecycleState::Reconciling,
+            LifecycleState::WarmingUp,
+            LifecycleState::Running,
+            LifecycleState::Stopping,
+        ] {
+            store
+                .transition("user-a", "bot-a", state, "host", "test")
+                .unwrap();
+        }
+
+        let stopped = store
+            .complete_stop("user-a", "bot-a", BotStopPolicy::KeepPosition, vec![], true)
+            .unwrap();
+
+        assert_eq!(stopped.state, LifecycleState::Stopped);
     }
 
     #[test]
@@ -4571,6 +4620,45 @@ mod tests {
         .unwrap();
         assert_eq!(sell.side, "sell");
         assert_eq!(sell.quantity, Decimal::from(10));
+    }
+
+    #[test]
+    fn bot_bundle_binds_the_exact_universe_snapshot() {
+        let mut bot = bundle("bot-a", "account-a");
+        assert_eq!(bot.universe_id, "universe");
+        assert_eq!(bot.universe_snapshot_id, "universe-snapshot");
+
+        bot.universe_snapshot_id = "other-snapshot".into();
+        assert!(bot.verify().is_err());
+    }
+
+    #[test]
+    fn feature_context_binds_the_exact_universe_snapshot() {
+        let bot = bundle("bot-a", "account-a");
+        assert!(is_exact_feature_context(
+            &bot,
+            &bot.runtime_bundle.input.feature_plan_hash,
+            "snapshot",
+            "universe-snapshot",
+        ));
+        assert!(!is_exact_feature_context(
+            &bot,
+            &bot.runtime_bundle.input.feature_plan_hash,
+            "snapshot",
+            "universe",
+        ));
+    }
+
+    #[test]
+    fn legacy_bundle_remains_readable_for_stop_and_redeploy() {
+        let mut bot = bundle("bot-a", "account-a");
+        bot.schema_version = LEGACY_BOT_SCHEMA_VERSION.into();
+        bot.universe_snapshot_id.clear();
+
+        let legacy = bot.freeze().unwrap();
+
+        assert!(legacy.verify().is_ok());
+        assert!(legacy.universe_snapshot_id.is_empty());
     }
 
     #[test]

@@ -37,7 +37,7 @@ enum MockResponse {
 
 struct MockHttp {
     routes: Mutex<Vec<(String, MockResponse)>>,
-    requests: Mutex<Vec<String>>,
+    requests: Mutex<Vec<HttpRequest>>,
 }
 
 impl MockHttp {
@@ -53,7 +53,21 @@ impl MockHttp {
     }
 
     fn requested_paths(&self) -> Vec<String> {
-        self.requests.lock().expect("mock poisoned").clone()
+        self.requests
+            .lock()
+            .expect("mock poisoned")
+            .iter()
+            .map(|request| request.url.clone())
+            .collect()
+    }
+
+    fn last_request(&self) -> HttpRequest {
+        self.requests
+            .lock()
+            .expect("mock poisoned")
+            .last()
+            .cloned()
+            .expect("expected a request")
     }
 }
 
@@ -62,7 +76,7 @@ impl HttpExecutor for MockHttp {
         self.requests
             .lock()
             .expect("mock poisoned")
-            .push(request.url.clone());
+            .push(request.clone());
         let routes = self.routes.lock().expect("mock poisoned");
         for (prefix, response) in routes.iter() {
             if request.url.contains(prefix.as_str()) {
@@ -646,6 +660,51 @@ fn okx_demo_open_orders_request_spot_type_and_parse_orders() {
     assert_eq!(
         harness.http.requested_paths().last().map(String::as_str),
         Some("https://www.okx.com/api/v5/trade/orders-pending?instType=SPOT")
+    );
+}
+
+#[test]
+fn okx_demo_order_uses_the_full_signed_path_and_exact_body() {
+    let harness = harness(okx_ok_routes());
+    harness
+        .manager
+        .save("user-a", okx_credentials(), NOW_MS)
+        .unwrap();
+    harness.http.set_routes(vec![
+        (
+            "/api/v5/public/time".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: format!(r#"{{"code":"0","msg":"","data":[{{"ts":"{}"}}]}}"#, NOW_MS),
+            },
+        ),
+        (
+            "/api/v5/trade/order".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: r#"{"code":"0","msg":"","data":[{"ordId":"456","instId":"BTC-USDT","state":"live"}]}"#.to_owned(),
+            },
+        ),
+    ]);
+
+    let order = harness
+        .manager
+        .create_okx_demo_order("user-a", "BTC-USDT", "market", "sell", "1", None, NOW_MS)
+        .unwrap();
+
+    assert_eq!(order.id.as_deref(), Some("456"));
+    let request = harness.http.last_request();
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.url, "https://www.okx.com/api/v5/trade/order");
+    assert_eq!(
+        request.body,
+        r#"{"instId":"BTC-USDT","ordType":"market","side":"sell","sz":"1","tdMode":"cash"}"#
+    );
+    assert!(
+        request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "OK-ACCESS-SIGN" && !value.is_empty())
     );
 }
 

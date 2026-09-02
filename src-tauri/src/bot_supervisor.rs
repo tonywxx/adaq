@@ -273,7 +273,7 @@ impl BotSupervisor {
         self.observe(
             user_id,
             entity_id,
-            HealthState::Unknown,
+            HealthState::Healthy,
             "worker_stopped",
             json!({ "botId": bot_id, "lifecycle": "stopped" }),
         )?;

@@ -693,13 +693,20 @@ export function SystemDashboard({
 							<ProjectionNotice message={t("operations.noHealth")} />
 						)}
 						<div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-sm">
-							<span>
-								{t("operations.unresolvedCritical", {
-									count: unresolvedAlerts.filter(
-										(alert) => alert.severity === "critical",
-									).length,
-								})}
-							</span>
+							{unavailable("alerts") ? (
+								<ProjectionNotice
+									message={t("operations.unavailableSection")}
+									role="alert"
+								/>
+							) : (
+								<span>
+									{t("operations.unresolvedCritical", {
+										count: unresolvedAlerts.filter(
+											(alert) => alert.severity === "critical",
+										).length,
+									})}
+								</span>
+							)}
 							<Link
 								to="/operations"
 								className="font-medium text-primary hover:underline"
@@ -707,6 +714,45 @@ export function SystemDashboard({
 								{t("operations.openEvidence")}
 							</Link>
 						</div>
+					</CardContent>
+				</Card>
+
+				<Card>
+					<CardHeader>
+						<h2 className="text-base font-medium">{t("operations.alertsTitle")}</h2>
+						<CardDescription>{t("operations.alertsDescription")}</CardDescription>
+					</CardHeader>
+					<CardContent className="space-y-2">
+						{unavailable("alerts") ? (
+							<ProjectionNotice
+								message={t("operations.unavailableSection")}
+								role="alert"
+							/>
+						) : projection.alerts.length ? (
+							projection.alerts.slice(0, 6).map((alert) => (
+								<div className="rounded-md border p-3" key={alert.alertId}>
+									<div className="flex flex-wrap items-center justify-between gap-2">
+										<span className="font-medium">{alert.condition}</span>
+										<Badge
+											variant={alert.severity === "critical" ? "destructive" : "outline"}
+										>
+											{stateLabel("severities", alert.severity)}
+										</Badge>
+									</div>
+									<p className="mt-1 text-xs text-muted-foreground">
+										{alert.entityId} · {stateLabel("alertStates", alert.state)}
+									</p>
+								</div>
+							))
+						) : (
+							<ProjectionNotice message={t("operations.noSystemAlerts")} />
+						)}
+						<Link
+							to="/operations"
+							className="inline-flex rounded-md border px-2 py-1 text-sm font-medium hover:bg-muted"
+						>
+							{t("operations.openOperations")}
+						</Link>
 					</CardContent>
 				</Card>
 

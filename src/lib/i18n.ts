@@ -563,6 +563,7 @@ const english = {
 			"Recent Host evidence is summarized here; detailed records remain in the owning workspace.",
 		unresolvedCritical: "{{count}} unresolved Critical condition(s)",
 		unavailableSection: "This summary is temporarily unavailable.",
+		noSystemAlerts: "No operational Alerts are retained.",
 		noBots: "No Bot Runtime records are retained.",
 		openBots: "Open Bots",
 		botSummaryTitle: "Bot Runtime",
@@ -586,6 +587,7 @@ const english = {
 			"The latest owning evidence is stale; inspect the owning workspace.",
 		noEvents: "No recent operational events are retained.",
 		openResearch: "Open Strategy Research",
+		openBacktest: "Open Backtest",
 		workspaceLinksTitle: "Owning workspaces",
 		workspaceLinksDescription:
 			"Use the owning workspace for detailed evidence and authorized actions.",
@@ -630,6 +632,7 @@ const english = {
 		allDimensions: "All dimensions",
 		entityFilter: "Bot or account",
 		openDashboard: "Open operations",
+		dismissBanner: "Dismiss",
 		freezeAll: "Freeze all",
 		freezeConfirm:
 			"Freeze all new risk for this User? Active Bot workers will be terminated and reconciliation will be required.",
@@ -697,6 +700,11 @@ const english = {
 		},
 		currencies: { usdt: "USDT", usd: "USD", cny: "CNY" },
 		severities: { info: "Info", warning: "Warning", critical: "Critical" },
+		alertStates: {
+			active: "Active",
+			acknowledged: "Acknowledged",
+			resolved: "Resolved",
+		},
 		actions: {
 			none: "No automatic action",
 			skipDecision: "Skip decision",
@@ -3707,6 +3715,7 @@ const simplifiedChinese = {
 			"此处汇总最新 Host 证据；详细记录仍保留在所属工作区。",
 		unresolvedCritical: "{{count}} 个未解决的关键条件",
 		unavailableSection: "此摘要暂时不可用。",
+		noSystemAlerts: "没有保留的运行告警。",
 		noBots: "没有保留 Bot Runtime 记录。",
 		openBots: "打开 Bot",
 		botSummaryTitle: "Bot Runtime",
@@ -3728,6 +3737,7 @@ const simplifiedChinese = {
 		staleProjection: "最新所属证据已过期；请打开所属工作区。",
 		noEvents: "没有保留最新运行事件。",
 		openResearch: "打开策略研究",
+		openBacktest: "打开回测",
 		workspaceLinksTitle: "所属工作区",
 		workspaceLinksDescription: "打开所属工作区查看详细证据并执行授权操作。",
 		researchSummaryTitle: "研究证据",
@@ -3766,6 +3776,7 @@ const simplifiedChinese = {
 		allDimensions: "全部维度",
 		entityFilter: "Bot 或账户",
 		openDashboard: "打开运行面板",
+		dismissBanner: "关闭",
 		freezeAll: "全部冻结",
 		freezeConfirm:
 			"冻结该用户的全部新增风险？活动 Bot Worker 将被终止，并需要重新对账。",
@@ -3775,7 +3786,8 @@ const simplifiedChinese = {
 		recoverHost: "恢复 Host 全部冻结",
 		recoverStarted: "正在恢复…",
 		recoverCompleted: "Host 恢复已验证；全部冻结条件已解决。",
-		recoverFailed: "Host 恢复未被接受。请先完成 OKX Demo 对账并清除其他安全条件。",
+		recoverFailed:
+			"Host 恢复未被接受。请先完成 OKX Demo 对账并清除其他安全条件。",
 		probeUnavailable: "Host 实时探针暂时不可用。",
 		loading: "加载中…",
 		loadError: "此卡片暂时不可用。",
@@ -3829,6 +3841,7 @@ const simplifiedChinese = {
 		},
 		currencies: { usdt: "USDT", usd: "USD", cny: "CNY" },
 		severities: { info: "信息", warning: "警告", critical: "关键" },
+		alertStates: { active: "活跃", acknowledged: "已确认", resolved: "已解决" },
 		actions: {
 			none: "无自动动作",
 			skipDecision: "跳过决策",

@@ -132,14 +132,15 @@ impl PaperExecution {
             })
     }
 
-    pub fn approve(&self, account: &PaperLedger, notional: Decimal) -> RiskDecision {
+    pub fn approve(&self, account: &PaperLedger, side: Side, notional: Decimal) -> RiskDecision {
         let reason = if self.blocked || self.policy.freeze_new_risk {
             "new risk is frozen"
         } else if notional <= Decimal::ZERO {
             "order notional must be positive"
         } else if notional > self.policy.max_order_notional {
             "order exceeds the Host Risk limit"
-        } else if account.buying_power() - self.policy.reserve_cash < notional {
+        } else if side == Side::Buy && account.buying_power() - self.policy.reserve_cash < notional
+        {
             "order exceeds available reserved buying power"
         } else {
             "approved"
@@ -173,7 +174,7 @@ impl PaperExecution {
         if self.adapter != AdapterKind::OkxDemo || !instrument.contains('-') {
             return Err(ExecutionError::VenueMismatch);
         }
-        let decision = self.approve(account, quantity * limit_price);
+        let decision = self.approve(account, side, quantity * limit_price);
         if !decision.approved {
             return Err(ExecutionError::RiskRejected(decision));
         }
@@ -569,10 +570,7 @@ impl PaperLedger {
         let stale_ids: Vec<String> = self
             .orders
             .keys()
-            .filter(|order_id| {
-                order_id.starts_with("provider-order-")
-                    && !active_order_ids.iter().any(|active| active == *order_id)
-            })
+            .filter(|order_id| !active_order_ids.iter().any(|active| active == *order_id))
             .cloned()
             .collect();
         for order_id in stale_ids {
@@ -1046,10 +1044,84 @@ mod tests {
         execution.freeze_new_risk();
         assert!(execution.is_blocked());
         assert!(execution.policy().freeze_new_risk);
-        assert!(!execution.approve(&ledger, Decimal::ONE).approved);
+        assert!(!execution.approve(&ledger, Side::Buy, Decimal::ONE).approved);
         execution.recover_after_reconciliation().unwrap();
         assert!(!execution.is_blocked());
         assert!(!execution.policy().freeze_new_risk);
-        assert!(execution.approve(&ledger, Decimal::ONE).approved);
+        assert!(execution.approve(&ledger, Side::Buy, Decimal::ONE).approved);
+    }
+
+    #[test]
+    fn sell_approval_does_not_consume_buying_power() {
+        let mut snapshot = account(Market::OkxSpot);
+        snapshot.cash = Decimal::ZERO;
+        snapshot.positions.insert(
+            "BTC-USDT".into(),
+            Position {
+                quantity: Decimal::ONE,
+                sellable_quantity: Decimal::ONE,
+            },
+        );
+        let mut ledger = PaperLedger::new(snapshot).unwrap();
+        let mut execution = PaperExecution::okx_demo(RiskPolicy {
+            max_order_notional: Decimal::new(100_000, 0),
+            reserve_cash: Decimal::new(100, 0),
+            freeze_new_risk: false,
+        })
+        .unwrap();
+
+        let (_, decision) = execution
+            .begin(
+                "flatten",
+                &mut ledger,
+                "BTC-USDT",
+                Side::Sell,
+                Decimal::ONE,
+                Decimal::new(77_500, 0),
+                1,
+            )
+            .unwrap();
+
+        assert!(decision.approved);
+    }
+
+    #[test]
+    fn provider_reconciliation_cancels_superseded_local_intent() {
+        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        ledger
+            .submit_order(
+                "alice",
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::ONE,
+                Decimal::new(100, 0),
+                1,
+            )
+            .unwrap();
+        ledger
+            .upsert_provider_order(Order {
+                order_id: "provider-order-remote".into(),
+                account_id: "acct".into(),
+                instrument: "BTC-USDT".into(),
+                side: Side::Buy,
+                quantity: Decimal::ONE,
+                filled_quantity: Decimal::ZERO,
+                limit_price: Decimal::new(100, 0),
+                status: OrderStatus::Accepted,
+                submitted_at_ms: 2,
+            })
+            .unwrap();
+
+        ledger.cancel_missing_provider_orders(&["provider-order-remote".into()]);
+
+        assert_eq!(ledger.reserved_cash(), Decimal::new(100, 0));
+        assert_eq!(
+            ledger
+                .orders()
+                .find(|order| order.order_id == "order-1")
+                .unwrap()
+                .status,
+            OrderStatus::Cancelled
+        );
     }
 }

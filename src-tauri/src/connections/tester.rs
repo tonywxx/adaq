@@ -254,11 +254,102 @@ impl ConnectionTester {
         Ok(balances)
     }
 
+    pub(crate) fn create_okx_demo_order(
+        &self,
+        credential: &TestCredential,
+        instrument: &str,
+        order_type: &str,
+        side: &str,
+        amount: &str,
+        price: Option<&str>,
+        now_ms: i64,
+    ) -> Result<serde_json::Value, TestFailure> {
+        if !matches!(order_type, "limit" | "market") || !matches!(side, "buy" | "sell") {
+            return Err(TestFailure::new(
+                "request_failed",
+                "Unsupported OKX Demo order type or side.".to_owned(),
+            ));
+        }
+        let mut body = serde_json::json!({
+            "instId": instrument,
+            "tdMode": "cash",
+            "side": side,
+            "ordType": order_type,
+            "sz": amount,
+        });
+        if let Some(price) = price {
+            body["px"] = serde_json::Value::String(price.to_owned());
+        }
+        self.request_okx_demo_private(credential, now_ms, "POST", "/api/v5/trade/order", &body)
+    }
+
+    pub(crate) fn cancel_okx_demo_order(
+        &self,
+        credential: &TestCredential,
+        instrument: &str,
+        provider_order_id: &str,
+        now_ms: i64,
+    ) -> Result<serde_json::Value, TestFailure> {
+        self.request_okx_demo_private(
+            credential,
+            now_ms,
+            "POST",
+            "/api/v5/trade/cancel-order",
+            &serde_json::json!({"instId": instrument, "ordId": provider_order_id}),
+        )
+    }
+
+    pub(crate) fn fetch_okx_demo_order(
+        &self,
+        credential: &TestCredential,
+        instrument: &str,
+        provider_order_id: &str,
+        now_ms: i64,
+    ) -> Result<serde_json::Value, TestFailure> {
+        let path = format!("/api/v5/trade/order?instId={instrument}&ordId={provider_order_id}");
+        self.request_okx_demo_private(credential, now_ms, "GET", &path, &serde_json::Value::Null)
+    }
+
     fn fetch_okx_demo_private<T: serde::de::DeserializeOwned>(
         &self,
         credential: &TestCredential,
         now_ms: i64,
         path: &str,
+    ) -> Result<OkxResponse<T>, TestFailure> {
+        self.request_okx_demo_private_response(
+            credential,
+            now_ms,
+            "GET",
+            path,
+            &serde_json::Value::Null,
+        )
+    }
+
+    fn request_okx_demo_private(
+        &self,
+        credential: &TestCredential,
+        now_ms: i64,
+        method: &str,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, TestFailure> {
+        let parsed: OkxResponse<serde_json::Value> =
+            self.request_okx_demo_private_response(credential, now_ms, method, path, body)?;
+        parsed.first().cloned().ok_or_else(|| {
+            TestFailure::new(
+                "request_failed",
+                "OKX returned no order evidence.".to_owned(),
+            )
+        })
+    }
+
+    fn request_okx_demo_private_response<T: serde::de::DeserializeOwned>(
+        &self,
+        credential: &TestCredential,
+        now_ms: i64,
+        method: &str,
+        path: &str,
+        body: &serde_json::Value,
     ) -> Result<OkxResponse<T>, TestFailure> {
         let TestCredential::OkxDemo {
             api_key,
@@ -283,11 +374,23 @@ impl ConnectionTester {
             now_ms
         };
         let timestamp = format_rfc3339_ms(timestamp_ms);
+        let body = if method == "GET" {
+            String::new()
+        } else {
+            serde_json::to_string(body).map_err(|error| {
+                TestFailure::new("request_failed", redact(&error.to_string(), &sensitive))
+            })?
+        };
         let response = self
-            .get(
-                format!("{OKX_DEMO_ENDPOINT}{path}"),
-                okx_headers(api_key, secret_key, passphrase, &timestamp, "GET", path),
-            )
+            .http
+            .execute(&HttpRequest {
+                method: method.to_owned(),
+                url: format!("{OKX_DEMO_ENDPOINT}{path}"),
+                headers: okx_headers(
+                    api_key, secret_key, passphrase, &timestamp, method, path, &body,
+                ),
+                body,
+            })
             .map_err(|message| TestFailure::new("request_failed", redact(&message, &sensitive)))?;
         let parsed = parse_okx_response(&response.body, &sensitive)?;
         if let Some(error) = okx_error(&response, &parsed, &sensitive) {
@@ -479,6 +582,7 @@ impl ConnectionTester {
                     &timestamp,
                     "GET",
                     OKX_ACCOUNT_CONFIG_PATH,
+                    "",
                 ),
             )
             .map_err(|message| TestFailure::new("request_failed", redact(&message, &sensitive)))?;
@@ -520,6 +624,7 @@ impl ConnectionTester {
                     &timestamp,
                     "GET",
                     OKX_ACCOUNT_BALANCE_PATH,
+                    "",
                 ),
             )
             .map_err(|message| TestFailure::new("request_failed", redact(&message, &sensitive)))?;
@@ -618,8 +723,9 @@ fn okx_headers(
     timestamp: &str,
     method: &str,
     path: &str,
+    body: &str,
 ) -> Vec<(String, String)> {
-    let signature = okx_signature(secret_key, timestamp, method, path, "");
+    let signature = okx_signature(secret_key, timestamp, method, path, body);
     vec![
         ("OK-ACCESS-KEY".to_owned(), api_key.to_owned()),
         ("OK-ACCESS-SIGN".to_owned(), signature),

@@ -37,7 +37,6 @@ use adaq_data_core::{
     TickerStreamEvent, TradeStreamEvent,
     market::{InstrumentId, PriceBasis, VenueKind},
 };
-use adaq_trading_crypto::{Exchange, Params};
 use rust_decimal::Decimal;
 use serde::Serialize;
 use std::{
@@ -710,15 +709,11 @@ fn system_dashboard_for_user(
     let unresolved_alert = alerts
         .iter()
         .any(|alert| alert.state != operations::AlertState::Resolved);
-    let operational_responsibility = !bots.is_empty()
-        || paper_account.is_some()
-        || unresolved_alert
-        || unavailable.iter().any(|section| {
-            matches!(
-                section.as_str(),
-                "alerts" | "events" | "bots" | "paperAccount"
-            )
-        });
+    let operational_responsibility = has_operational_responsibility(
+        bots.len(),
+        paper_account.is_some(),
+        unresolved_alert,
+    );
 
     Ok(SystemDashboardView {
         operational_responsibility,
@@ -731,6 +726,14 @@ fn system_dashboard_for_user(
         paper_account,
         research,
     })
+}
+
+fn has_operational_responsibility(
+    bot_count: usize,
+    has_paper_account: bool,
+    has_unresolved_alert: bool,
+) -> bool {
+    bot_count > 0 || has_paper_account || has_unresolved_alert
 }
 
 #[tauri::command]
@@ -5453,20 +5456,17 @@ async fn paper_order_submit(
         }
         state.paper_trading.begin_order(&request, unix_now_ms())?;
         let side = request.side.to_lowercase();
-        let result = state
-            .connections
-            .with_okx_demo_client(&request.user_id, |client| {
-                tauri::async_runtime::block_on(client.create_order(
-                    &request.instrument,
-                    "limit",
-                    &side,
-                    &request.quantity.to_string(),
-                    Some(&request.limit_price.to_string()),
-                    Params::new(),
-                ))
-            });
+        let result = state.connections.create_okx_demo_order(
+            &request.user_id,
+            &request.instrument,
+            "limit",
+            &side,
+            &request.quantity.to_string(),
+            Some(&request.limit_price.to_string()),
+            unix_now_ms(),
+        );
         match result {
-            Ok(Ok(order)) => state.paper_trading.record_order_result(
+            Ok(order) => state.paper_trading.record_order_result(
                 &request.user_id,
                 &request.operation_id,
                 order.id,
@@ -5474,7 +5474,7 @@ async fn paper_order_submit(
                 None,
                 unix_now_ms(),
             ),
-            Ok(Err(_)) | Err(_) => state.paper_trading.mark_uncertain(
+            Err(_) => state.paper_trading.mark_uncertain(
                 &request.user_id,
                 &request.operation_id,
                 unix_now_ms(),
@@ -5498,17 +5498,14 @@ async fn paper_order_cancel(
         let provider_order_id = state
             .paper_trading
             .provider_order_id(&request.user_id, &request.operation_id)?;
-        let result = state
-            .connections
-            .with_okx_demo_client(&request.user_id, |client| {
-                tauri::async_runtime::block_on(client.cancel_order(
-                    &provider_order_id,
-                    &request.instrument,
-                    Params::new(),
-                ))
-            });
+        let result = state.connections.cancel_okx_demo_order(
+            &request.user_id,
+            &request.instrument,
+            &provider_order_id,
+            unix_now_ms(),
+        );
         match result {
-            Ok(Ok(order)) => {
+            Ok(order) => {
                 state.paper_trading.record_order_result(
                     &request.user_id,
                     &request.operation_id,
@@ -5523,7 +5520,7 @@ async fn paper_order_cancel(
                     unix_now_ms(),
                 )
             }
-            Ok(Err(_)) | Err(_) => state.paper_trading.mark_uncertain(
+            Err(_) => state.paper_trading.mark_uncertain(
                 &request.user_id,
                 &request.operation_id,
                 unix_now_ms(),
@@ -5547,21 +5544,12 @@ async fn paper_order_sync(
         let provider_order_id = state
             .paper_trading
             .provider_order_id(&request.user_id, &request.operation_id)?;
-        let result = state
-            .connections
-            .with_okx_demo_client(&request.user_id, |client| {
-                tauri::async_runtime::block_on(client.fetch_orders(
-                    Some(&request.instrument),
-                    None,
-                    None,
-                    Params::new(),
-                ))
-            })?;
-        let remote = result
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .find(|order| order.id.as_deref() == Some(provider_order_id.as_str()))
-            .ok_or_else(|| "OKX did not return the requested order.".to_owned())?;
+        let remote = state.connections.fetch_okx_demo_order(
+            &request.user_id,
+            &request.instrument,
+            &provider_order_id,
+            unix_now_ms(),
+        )?;
         state.paper_trading.sync_provider_order(
             &request.user_id,
             &request.operation_id,
@@ -5993,7 +5981,7 @@ fn string(error: impl std::fmt::Display) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{WasmLoader, factor_abi, strategy_abi};
+    use super::{WasmLoader, factor_abi, has_operational_responsibility, strategy_abi};
     use std::path::PathBuf;
 
     fn fixture(name: &str) -> String {
@@ -6033,6 +6021,14 @@ mod tests {
     fn factor_loader_starts_empty() {
         let error = WasmLoader::default().describe_factor().err().unwrap();
         assert_eq!(error, "Factor component is not loaded");
+    }
+
+    #[test]
+    fn dashboard_route_requires_actual_operational_responsibility() {
+        assert!(!has_operational_responsibility(0, false, false));
+        assert!(has_operational_responsibility(1, false, false));
+        assert!(has_operational_responsibility(0, true, false));
+        assert!(has_operational_responsibility(0, false, true));
     }
 
     #[test]

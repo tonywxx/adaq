@@ -50,6 +50,8 @@ export function WorkflowHomePage() {
 		queryFn: () => invoke<SystemDashboardProjection>("system_dashboard"),
 		enabled: Boolean(userId),
 		retry: false,
+		staleTime: 0,
+		refetchInterval: 15_000,
 	});
 
 	if (!userId || dashboard.isPending) return <SystemDashboardLoading />;

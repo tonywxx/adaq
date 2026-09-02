@@ -449,6 +449,62 @@ impl ConnectionManager {
         self.fetch_okx_demo_open_orders_with_credential(&credential, now_ms)
     }
 
+    pub(crate) fn create_okx_demo_order(
+        &self,
+        user_id: &str,
+        instrument: &str,
+        order_type: &str,
+        side: &str,
+        amount: &str,
+        price: Option<&str>,
+        now_ms: i64,
+    ) -> Result<adaq_trading_crypto::Order, String> {
+        let credential = self.okx_demo_credential(user_id)?;
+        let raw = self
+            .tester
+            .create_okx_demo_order(
+                &credential,
+                instrument,
+                order_type,
+                side,
+                amount,
+                price,
+                now_ms,
+            )
+            .map_err(|failure| failure.redacted_message)?;
+        Ok(self.okx_demo_client(&credential)?.parse_order(&raw))
+    }
+
+    pub(crate) fn cancel_okx_demo_order(
+        &self,
+        user_id: &str,
+        instrument: &str,
+        provider_order_id: &str,
+        now_ms: i64,
+    ) -> Result<adaq_trading_crypto::Order, String> {
+        let credential = self.okx_demo_credential(user_id)?;
+        let raw = self
+            .tester
+            .cancel_okx_demo_order(&credential, instrument, provider_order_id, now_ms)
+            .map_err(|failure| failure.redacted_message)?;
+        Ok(self.okx_demo_client(&credential)?.parse_order(&raw))
+    }
+
+    pub(crate) fn fetch_okx_demo_order(
+        &self,
+        user_id: &str,
+        instrument: &str,
+        provider_order_id: &str,
+        now_ms: i64,
+    ) -> Result<adaq_trading_crypto::Order, String> {
+        let credential = self.okx_demo_credential(user_id)?;
+        let raw = self
+            .tester
+            .fetch_okx_demo_order(&credential, instrument, provider_order_id, now_ms)
+            .map_err(|failure| failure.redacted_message)?;
+        Ok(self.okx_demo_client(&credential)?.parse_order(&raw))
+    }
+
     pub(crate) fn with_okx_demo_reconciliation<T>(
         &self,
         user_id: &str,

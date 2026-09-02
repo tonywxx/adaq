@@ -193,64 +193,91 @@ test("refreshes expanded lifecycle history after acknowledgement", async () => {
 });
 
 const responsibleProjection: SystemDashboardProjection = {
-		operationalResponsibility: true,
-		updatedAtMs: Date.now(),
-		unavailable: [],
-		health: [
-			{
-				entityId: "bot-a",
-				dimension: "worker",
-				state: "healthy",
-				required: true,
-				observedAtMs: Date.now(),
-				eventId: "event-1",
-				condition: "heartbeat_ok",
-			},
-		],
-		alerts: [],
-		events: [],
-		bots: [
-			{
-				botId: "bot-a",
-				state: "running",
-				currentAttemptId: "attempt-a",
-				currentAttemptState: "running",
-				attemptCount: 1,
-				decisionCount: 2,
-				orderCount: 1,
-				unmanagedPositionCount: 0,
-				reconciliationRequired: false,
-			},
-		],
-		paperAccount: {
-			accountId: "okx-demo",
-			market: "okx_spot",
-			currency: "usdt",
-			cash: "1000",
-			reservedCash: "10",
-			buyingPower: "990",
-			positionCount: 1,
-			orderCount: 1,
-			fillCount: 1,
-			reconciliation: "reconciled",
-			restartRequired: false,
+	operationalResponsibility: true,
+	updatedAtMs: Date.now(),
+	unavailable: [],
+	health: [
+		{
+			entityId: "bot-a",
+			dimension: "worker",
+			state: "healthy",
+			required: true,
 			observedAtMs: Date.now(),
+			eventId: "event-1",
+			condition: "heartbeat_ok",
 		},
-		research: {
-			watchlistCount: 1,
-			snapshotCount: 1,
-			componentCount: 1,
-			modelArtifactCount: 1,
-			signalDatasetCount: 1,
-			generationAttemptCount: 1,
-			backtestRunCount: 1,
-			validationProtocolCount: 1,
-			validationReportCount: 1,
-			feedbackSnapshotCount: 1,
-			feedbackReportCount: 1,
-			reviewDecisionCount: 1,
+	],
+	alerts: [],
+	events: [],
+	bots: [
+		{
+			botId: "bot-a",
+			state: "running",
+			currentAttemptId: "attempt-a",
+			currentAttemptState: "running",
+			attemptCount: 1,
+			decisionCount: 2,
+			orderCount: 1,
+			unmanagedPositionCount: 0,
+			reconciliationRequired: false,
 		},
-	};
+	],
+	paperAccount: {
+		accountId: "okx-demo",
+		market: "okx_spot",
+		currency: "usdt",
+		cash: "1000",
+		reservedCash: "10",
+		buyingPower: "990",
+		positionCount: 1,
+		orderCount: 1,
+		fillCount: 1,
+		reconciliation: "reconciled",
+		restartRequired: false,
+		observedAtMs: Date.now(),
+	},
+	research: {
+		watchlistCount: 1,
+		snapshotCount: 1,
+		componentCount: 1,
+		modelArtifactCount: 1,
+		signalDatasetCount: 1,
+		generationAttemptCount: 1,
+		backtestRunCount: 1,
+		validationProtocolCount: 1,
+		validationReportCount: 1,
+		feedbackSnapshotCount: 1,
+		feedbackReportCount: 1,
+		reviewDecisionCount: 1,
+	},
+};
+
+test("keeps unavailable Alerts explicit instead of reporting zero unresolved Critical conditions", async () => {
+	const container = document.createElement("div");
+	const root = createRoot(container);
+	document.body.append(container);
+	await act(async () =>
+		root.render(
+			<SystemDashboard
+				projection={{
+					...responsibleProjection,
+					alerts: [],
+					unavailable: ["alerts"],
+				}}
+			/>,
+		),
+	);
+	await settle();
+
+	expect(container.textContent).toContain("Notification center");
+	expect(container.textContent).toContain(
+		"This summary is temporarily unavailable.",
+	);
+	expect(container.textContent).not.toContain("0 unresolved Critical condition");
+
+	await act(async () => root.unmount());
+	container.remove();
+});
 
 test("uses the System Dashboard at the root for an operationally responsible User", async () => {
 	mockInvoke.mockImplementation(async (command: string) => {
