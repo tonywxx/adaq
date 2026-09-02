@@ -12,6 +12,7 @@ import {
 	SystemDashboard,
 	type SystemDashboardProjection,
 } from "./operations-dashboard";
+import { WorkflowHomePage } from "@/features/workflow/workflow-page";
 
 jest.mock("@tauri-apps/api/core", () => ({ invoke: jest.fn() }));
 jest.mock("@tanstack/react-router", () => ({
@@ -191,11 +192,7 @@ test("refreshes expanded lifecycle history after acknowledgement", async () => {
 	container.remove();
 });
 
-test("renders the authorized global projection without cross-currency totals", async () => {
-	const container = document.createElement("div");
-	const root = createRoot(container);
-	document.body.append(container);
-	const projection: SystemDashboardProjection = {
+const responsibleProjection: SystemDashboardProjection = {
 		operationalResponsibility: true,
 		updatedAtMs: Date.now(),
 		unavailable: [],
@@ -254,8 +251,39 @@ test("renders the authorized global projection without cross-currency totals", a
 			reviewDecisionCount: 1,
 		},
 	};
+
+test("uses the System Dashboard at the root for an operationally responsible User", async () => {
+	mockInvoke.mockImplementation(async (command: string) => {
+		if (command === "system_dashboard") return responsibleProjection;
+		throw new Error(`unexpected command ${command}`);
+	});
+	const container = document.createElement("div");
+	const root = createRoot(container);
+	document.body.append(container);
+	await act(async () => {
+		root.render(
+			<AuthenticatedUserContext.Provider value="alice">
+				<QueryClientProvider client={new QueryClient()}>
+					<WorkflowHomePage />
+				</QueryClientProvider>
+			</AuthenticatedUserContext.Provider>,
+		);
+	});
+	await settle();
+
+	expect(container.textContent).toContain("System Dashboard");
+	expect(container.textContent).not.toContain("Workflow Guide");
+
+	await act(async () => root.unmount());
+	container.remove();
+});
+
+test("renders the authorized global projection without cross-currency totals", async () => {
+	const container = document.createElement("div");
+	const root = createRoot(container);
+	document.body.append(container);
 	await act(async () =>
-		root.render(<SystemDashboard projection={projection} />),
+		root.render(<SystemDashboard projection={responsibleProjection} />),
 	);
 	await settle();
 
