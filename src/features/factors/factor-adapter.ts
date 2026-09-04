@@ -21,6 +21,12 @@ import type { TauriInvoke } from "@/lib/tauri-invoke";
 export type FactorInvoke = TauriInvoke;
 
 export function createFactorAdapter(invoke: FactorInvoke) {
+	const freezeContext = (userId: string, operationId: string) =>
+		invoke("research_context_freeze", {
+			userId,
+			operationId,
+			stage: "factors",
+		});
 	const page = <T>(
 		command: string,
 		userId: string,
@@ -151,6 +157,24 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			invoke("factor_dataset_delete", {
 				request: { userId, evidenceId },
 			}),
+		startMaterialization: (
+			userId: string,
+			protocol: FactorJson,
+			dataset?: FactorJson,
+		) => {
+			const operationId = `factor-materialization:${crypto.randomUUID()}`;
+			return freezeContext(userId, operationId).then(
+				() =>
+					invoke("factor_materialization_start", {
+						request: {
+							userId,
+							operationId,
+							protocol,
+							dataset: dataset ?? null,
+						},
+					}) as Promise<FactorAttemptView>,
+			);
+		},
 		startMaterializationFromContext: (
 			userId: string,
 			candidateHash: string,
@@ -171,6 +195,28 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			invoke("factor_report_get", {
 				request: { userId, evidenceId },
 			}) as Promise<FactorReportView>,
+		startEvaluation: (
+			userId: string,
+			protocol: FactorJson,
+			marketSeries: FactorJson[],
+			featureEvidence?: FactorJson,
+			dataset?: FactorJson,
+		) => {
+			const operationId = `factor-evaluation:${crypto.randomUUID()}`;
+			return freezeContext(userId, operationId).then(
+				() =>
+					invoke("factor_evaluation_start", {
+						request: {
+							userId,
+							operationId,
+							protocol,
+							dataset: dataset ?? null,
+							marketSeries,
+							featureEvidence: featureEvidence ?? null,
+						},
+					}) as Promise<FactorAttemptView>,
+			);
+		},
 		startEvaluationFromContext: (
 			userId: string,
 			candidateHash: string,

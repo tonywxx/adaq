@@ -1945,9 +1945,30 @@ async fn factor_candidate_build(
     app: tauri::AppHandle,
 ) -> Result<factor_research::FactorAttemptView, String> {
     request.user_id = auth.user_id_for_window(window.label())?;
+    let user_id = request.user_id.clone();
+    let operation_id = request.operation_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<Arc<LocalResearchState>>()
-            .start_factor_candidate_from_context(request)
+        let state = app.state::<Arc<LocalResearchState>>();
+        state.freeze_research_context(
+            &user_id,
+            operation_id.clone(),
+            adaq_factor_research::ResearchStage::Factors,
+        )?;
+        let projection = state
+            .research_context_for_user(&user_id)?
+            .ok_or_else(|| "factor-context-required".to_owned())?;
+        let predecessor = factor_research::FactorCandidatePredecessor::from_projection(
+            user_id.clone(),
+            projection,
+        )?;
+        let attempt = state.factor.build_candidate(request, Some(predecessor))?;
+        state.record_research_attempt_binding(
+            &user_id,
+            &operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+            &attempt.attempt_id,
+        )?;
+        Ok(attempt)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -2004,6 +2025,52 @@ factor_blocking_command!(
     factor_research::FactorComponentQualificationView
 );
 #[tauri::command]
+async fn factor_materialization_start(
+    payload: serde_json::Value,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<factor_research::FactorAttemptView, String> {
+    let operation_id = payload
+        .get("operationId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("factor materialization operation ID is required")?
+        .to_owned();
+    let mut request: factor_research::FactorMaterializationStartRequest =
+        serde_json::from_value(payload).map_err(|error| error.to_string())?;
+    request.user_id = auth.user_id_for_window(window.label())?;
+    let user_id = request.user_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        state.require_factor_context_for_request(
+            &user_id,
+            &operation_id,
+            &request.protocol.feature_dataset_id,
+            &request.protocol.feature_plan_hash,
+            &request.protocol.market_data_snapshot_id,
+            &request.protocol.point_in_time_universe_id,
+            Some((
+                request.protocol.observation_range.start_time_ms,
+                request.protocol.observation_range.end_time_ms,
+            )),
+            true,
+            &request.protocol.market_context.asset_class,
+            &request.protocol.market_context.venue,
+            &request.protocol.market_context.point_in_time_universe_id,
+        )?;
+        let attempt = state.factor.start_materialization(request)?;
+        state.record_research_attempt_binding(
+            &user_id,
+            &operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+            &attempt.attempt_id,
+        )?;
+        Ok(attempt)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+#[tauri::command]
 async fn factor_materialization_start_from_context(
     mut request: factor_research::FactorMaterializationContextStartRequest,
     window: WebviewWindow,
@@ -2025,6 +2092,52 @@ factor_blocking_command!(
     adaq_factor_research::FactorMaterializationProtocol
 );
 #[tauri::command]
+async fn factor_evaluation_start(
+    payload: serde_json::Value,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    app: tauri::AppHandle,
+) -> Result<factor_research::FactorAttemptView, String> {
+    let operation_id = payload
+        .get("operationId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("factor evaluation operation ID is required")?
+        .to_owned();
+    let mut request: factor_research::FactorEvaluationStartRequest =
+        serde_json::from_value(payload).map_err(|error| error.to_string())?;
+    request.user_id = auth.user_id_for_window(window.label())?;
+    let user_id = request.user_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Arc<LocalResearchState>>();
+        let (range_start_ms, range_end_ms) = factor_evaluation_context_range(&request.protocol)?;
+        state.require_factor_context_for_request(
+            &user_id,
+            &operation_id,
+            &request.protocol.feature_dataset_id,
+            &request.protocol.feature_plan_hash,
+            &request.protocol.market_data_snapshot_id,
+            &request.protocol.point_in_time_universe_id,
+            Some((range_start_ms, range_end_ms)),
+            false,
+            &request.protocol.market_context.asset_class,
+            &request.protocol.market_context.venue,
+            &request.protocol.market_context.point_in_time_universe_id,
+        )?;
+        state.validate_factor_evaluation_inputs_from_host(&request)?;
+        let attempt = state.factor.start_evaluation(request)?;
+        state.record_research_attempt_binding(
+            &user_id,
+            &operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+            &attempt.attempt_id,
+        )?;
+        Ok(attempt)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn factor_evaluation_start_from_context(
     mut request: factor_research::FactorEvaluationContextStartRequest,
     window: WebviewWindow,
@@ -2038,6 +2151,36 @@ async fn factor_evaluation_start_from_context(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+fn factor_evaluation_context_range(
+    protocol: &adaq_factor_research::FactorEvaluationProtocol,
+) -> Result<(i64, i64), String> {
+    let mut start_time_ms = i64::MAX;
+    let mut end_time_ms = i64::MIN;
+    let mut include = |range: &adaq_factor_research::ObservationRange| {
+        start_time_ms = start_time_ms.min(range.start_time_ms);
+        end_time_ms = end_time_ms.max(range.end_time_ms);
+    };
+    for window in &protocol.windows {
+        include(&window.selection);
+        include(&window.evaluation);
+        for range in [
+            window.training.as_ref(),
+            window.fitting.as_ref(),
+            window.normalization.as_ref(),
+            window.target_construction.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            include(range);
+        }
+    }
+    if start_time_ms == i64::MAX || end_time_ms == i64::MIN {
+        return Err("factor-context-range-mismatch".into());
+    }
+    Ok((start_time_ms, end_time_ms))
 }
 
 factor_blocking_command!(
@@ -2072,9 +2215,22 @@ async fn factor_attempt_retry(
     app: tauri::AppHandle,
 ) -> Result<factor_research::FactorAttemptView, String> {
     request.user_id = auth.user_id_for_window(window.label())?;
+    let user_id = request.user_id.clone();
+    let attempt_id = request.attempt_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<Arc<LocalResearchState>>()
-            .retry_factor_attempt(request)
+        let state = app.state::<Arc<LocalResearchState>>();
+        let (operation_id, stage) = state
+            .research_attempt_binding(&user_id, &attempt_id)?
+            .ok_or("research Context binding is missing for this Attempt")?;
+        state.require_frozen_research_evidence(&user_id, &operation_id, stage)?;
+        let attempt = state.factor.retry(request)?;
+        state.record_research_attempt_binding(
+            &user_id,
+            &operation_id,
+            stage,
+            &attempt.attempt_id,
+        )?;
+        Ok(attempt)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -5734,8 +5890,10 @@ pub fn run() {
             strategy_qualification::strategy_qualification_attempt_get,
             strategy_qualification::strategy_qualification_list,
             strategy_qualification::strategy_qualification_get,
+            factor_materialization_start,
             factor_materialization_start_from_context,
             factor_materialization_protocol_freeze,
+            factor_evaluation_start,
             factor_evaluation_start_from_context,
             factor_evaluation_protocol_freeze,
             factor_attempt_list,
