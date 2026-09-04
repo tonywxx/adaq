@@ -1,12 +1,12 @@
 use adaq_bot_runtime::{
-    DecisionClock, DeploymentBundle, DeploymentBundleInput, LifecycleState, NoTargetReason,
-    StrategyWorld, WORKER_ARTIFACT_NAME, WORKER_PROTOCOL_VERSION, WORKER_RUNTIME_VERSION,
-    WORKER_SIGNING_KEY_ID, WorkerArtifactBinding, WorkerArtifactSignature, WorkerArtifactVerifier,
-    WorkerComponentLaunch, WorkerDecisionInput, WorkerDecisionResult, WorkerFactorBinding,
-    WorkerFactorScope, WorkerFeatureFrame, WorkerFeatureRow, WorkerLaunchRequest,
-    WorkerModelBinding, WorkerParameterValue, WorkerPipelineBinding, WorkerPortfolioState,
-    WorkerRuntimePolicy, WorkerStrategyBinding, WorkerSupervisor, WorkerTarget, WorkerTrustRoot,
-    current_platform_tag, sha256_hex, unix_now_ms,
+    current_platform_tag, sha256_hex, unix_now_ms, DecisionClock, DeploymentBundle,
+    DeploymentBundleInput, LifecycleState, NoTargetReason, StrategyWorld, WorkerArtifactBinding,
+    WorkerArtifactSignature, WorkerArtifactVerifier, WorkerComponentLaunch, WorkerDecisionInput,
+    WorkerDecisionResult, WorkerFactorBinding, WorkerFactorScope, WorkerFeatureFrame,
+    WorkerFeatureRow, WorkerLaunchRequest, WorkerModelBinding, WorkerParameterValue,
+    WorkerPipelineBinding, WorkerPortfolioState, WorkerRuntimePolicy, WorkerStrategyBinding,
+    WorkerSupervisor, WorkerTarget, WorkerTrustRoot, WORKER_ARTIFACT_NAME, WORKER_PROTOCOL_VERSION,
+    WORKER_RUNTIME_VERSION, WORKER_SIGNING_KEY_ID,
 };
 use ed25519_dalek::SigningKey;
 use std::{
@@ -18,6 +18,7 @@ const TEST_PRIVATE_KEY: [u8; 32] = [
     0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4f, 0xa4, 0x92, 0xec, 0x2c, 0xc4,
     0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60,
 ];
+const PROCESS_SMOKE_HANDSHAKE_TIMEOUT_MS: u64 = 20_000;
 
 struct FactorFixture {
     fixture: &'static str,
@@ -192,6 +193,7 @@ fn launch_worker(
         worker,
         worker_policy: WorkerRuntimePolicy {
             warmup_decisions,
+            handshake_timeout_ms: PROCESS_SMOKE_HANDSHAKE_TIMEOUT_MS,
             ..WorkerRuntimePolicy::default()
         },
     })
