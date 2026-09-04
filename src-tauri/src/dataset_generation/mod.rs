@@ -414,6 +414,24 @@ pub(super) mod tests {
                 .find(|attempt| attempt.attempt_id == attempt_id)
                 .unwrap();
             if attempt.status == expected {
+                if matches!(
+                    expected,
+                    AttemptStatus::Completed | AttemptStatus::Failed | AttemptStatus::Cancelled
+                ) && state
+                    .generation
+                    .0
+                    .attempts
+                    .lock()
+                    .unwrap()
+                    .contains_key(attempt_id)
+                {
+                    assert!(
+                        Instant::now() < deadline,
+                        "Attempt {attempt_id} reached {expected:?} but did not exit"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
                 return attempt;
             }
             assert!(
