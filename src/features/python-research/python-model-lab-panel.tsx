@@ -301,8 +301,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 	const [experiment, setExperiment] = useState<Experiment>();
 	const [decision, setDecision] = useState<Decision>();
 	const [report, setReport] = useState<Report>();
-	const [finalEvaluation, setFinalEvaluation] =
-		useState<FinalEvaluationState>();
+	const [finalEvaluation, setFinalEvaluation] = useState<FinalEvaluationState>();
 	const [deploymentReports, setDeploymentReports] = useState<DeploymentReport[]>(
 		[],
 	);
@@ -697,8 +696,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 					setLibraryComponents(
 						components.filter(
 							(component) =>
-								component.archiveSha256 ===
-									nextReport.importedComponentArchiveSha256,
+								component.archiveSha256 === nextReport.importedComponentArchiveSha256,
 						),
 					);
 				}
@@ -1237,9 +1235,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 									size="sm"
 									variant="outline"
 									disabled={
-										!selectionReady ||
-										Boolean(decision) ||
-										trial.status !== "completed"
+										!selectionReady || Boolean(decision) || trial.status !== "completed"
 									}
 									loading={busy === `select:${trial.trialId}`}
 									onClick={() => void selectTrial(trial)}
@@ -1263,10 +1259,10 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								binding: decision.bindingSha256,
 								revision: decision.projectRevisionSha256,
 								environment: decision.environmentSha256,
-									input: decision.inputEvidenceSha256,
-									seed: decision.seed,
-									metrics: decision.selectionMetricsSha256,
-									artifact: decision.candidateArtifactSha256,
+								input: decision.inputEvidenceSha256,
+								seed: decision.seed,
+								metrics: decision.selectionMetricsSha256,
+								artifact: decision.candidateArtifactSha256,
 							})}
 						</p>
 						<p className="basis-full text-muted-foreground">
@@ -1274,27 +1270,25 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								state: decision.evidenceState,
 							})}
 						</p>
-							<Button
-								type="button"
-								size="sm"
-								onClick={() => void evaluateFinal()}
-								disabled={
-									Boolean(report) ||
-									busy === "final" ||
-									Boolean(
-										finalEvaluation &&
-											!RETRYABLE_FINAL_EVALUATION_STATUSES.has(
-												finalEvaluation.status,
-											),
-									)
-								}
-								loading={busy === "final"}
-							>
-								{finalEvaluation &&
-								RETRYABLE_FINAL_EVALUATION_STATUSES.has(finalEvaluation.status)
-									? t("pythonResearch.modelLab.retryFinal")
-									: t("pythonResearch.modelLab.finalEvaluate")}
-							</Button>
+						<Button
+							type="button"
+							size="sm"
+							onClick={() => void evaluateFinal()}
+							disabled={
+								Boolean(report) ||
+								busy === "final" ||
+								Boolean(
+									finalEvaluation &&
+										!RETRYABLE_FINAL_EVALUATION_STATUSES.has(finalEvaluation.status),
+								)
+							}
+							loading={busy === "final"}
+						>
+							{finalEvaluation &&
+							RETRYABLE_FINAL_EVALUATION_STATUSES.has(finalEvaluation.status)
+								? t("pythonResearch.modelLab.retryFinal")
+								: t("pythonResearch.modelLab.finalEvaluate")}
+						</Button>
 					</div>
 				) : null}
 				{finalEvaluation ? (
@@ -1306,14 +1300,11 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 						<div className="flex flex-wrap items-center gap-2">
 							<span>{t("pythonResearch.modelLab.finalEvaluationState")}</span>
 							<Badge variant="outline">
-								{t(
-									`pythonResearch.modelLab.finalStatus.${finalEvaluation.status}`,
-									{ defaultValue: finalEvaluation.status },
-								)}
+								{t(`pythonResearch.modelLab.finalStatus.${finalEvaluation.status}`, {
+									defaultValue: finalEvaluation.status,
+								})}
 							</Badge>
-							<code className="break-all text-xs">
-								{finalEvaluation.decisionId}
-							</code>
+							<code className="break-all text-xs">{finalEvaluation.decisionId}</code>
 						</div>
 						{finalEvaluation.attemptId ? (
 							<p className="break-all font-mono text-xs text-muted-foreground">
@@ -1332,8 +1323,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 						{finalEvaluation.failureCode || finalEvaluation.diagnostic ? (
 							<p className="break-all text-destructive" role="alert">
 								{t("pythonResearch.modelLab.finalFailure", {
-									value:
-										finalEvaluation.diagnostic ?? finalEvaluation.failureCode,
+									value: finalEvaluation.diagnostic ?? finalEvaluation.failureCode,
 								})}
 							</p>
 						) : null}
@@ -1356,7 +1346,10 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 					</p>
 				) : null}
 				{decision && report ? (
-					<div className="grid gap-2 rounded-md border p-3" data-testid="model-deployment">
+					<div
+						className="grid gap-2 rounded-md border p-3"
+						data-testid="model-deployment"
+					>
 						<div className="flex flex-wrap items-center gap-2">
 							<p className="font-medium">
 								{t("pythonResearch.modelLab.deploymentTitle")}
@@ -1369,11 +1362,8 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 						<Button
 							type="button"
 							size="sm"
-						onClick={() => void qualifyDeployment()}
-						disabled={
-							!deploymentReady ||
-							deploymentAlreadyQualified
-						}
+							onClick={() => void qualifyDeployment()}
+							disabled={!deploymentReady || deploymentAlreadyQualified}
 							loading={busy === "deployment"}
 						>
 							{latestDeploymentReport
@@ -1453,18 +1443,29 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 									</p>
 								) : null}
 								{deployment.diagnostics.map((diagnostic) => (
-									<p key={diagnostic} className="break-all text-destructive" role="alert">
+									<p
+										key={diagnostic}
+										className="break-all text-destructive"
+										role="alert"
+									>
 										{diagnostic}
 									</p>
 								))}
 							</div>
 						))}
 						{libraryComponents.length ? (
-							<div className="grid gap-1 border-t pt-2" data-testid="model-component-library">
+							<div
+								className="grid gap-1 border-t pt-2"
+								data-testid="model-component-library"
+							>
 								<p className="font-medium">{t("nav.componentLibrary")}</p>
 								{libraryComponents.map((component) => (
-									<p key={component.archiveSha256} className="break-all text-xs text-muted-foreground">
-										{component.name} v{component.version} · {component.kind} · {component.archiveSha256}
+									<p
+										key={component.archiveSha256}
+										className="break-all text-xs text-muted-foreground"
+									>
+										{component.name} v{component.version} · {component.kind} ·{" "}
+										{component.archiveSha256}
 									</p>
 								))}
 							</div>

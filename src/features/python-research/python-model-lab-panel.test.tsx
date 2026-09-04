@@ -191,13 +191,11 @@ invokeMock.mockImplementation(
 			case "attempt_list":
 				return attemptsResponse;
 			case "model_lab_state": {
-				const requestedFactorDecisionHash =
-					args?.request?.factorDecisionHash;
+				const requestedFactorDecisionHash = args?.request?.factorDecisionHash;
 				const matchingExperiments = requestedFactorDecisionHash
 					? persistedExperiments.filter(
-							(item) =>
-								item.factorDecisionHash === requestedFactorDecisionHash,
-					  )
+							(item) => item.factorDecisionHash === requestedFactorDecisionHash,
+						)
 					: persistedExperiments;
 				return {
 					experiments: persistedExperiments,
@@ -286,7 +284,8 @@ invokeMock.mockImplementation(
 					componentId: "component-id",
 					componentVersion: "1.0.0",
 					wasmSha256: "wasm-sha",
-					runtimeIdentity: "wasmtime@47.0.3:component-model:fuel:10m:memory:67108864",
+					runtimeIdentity:
+						"wasmtime@47.0.3:component-model:fuel:10m:memory:67108864",
 					resourcePolicySha256: "resource-policy-sha",
 					qualificationDeadlineMs: 1800000,
 					qualificationDurationMs: 12,
@@ -330,16 +329,10 @@ invokeMock.mockImplementation(
 						qualified: false,
 						diagnostics: ["model-runtime-qualification-failed"],
 					};
-					persistedDeploymentReports = [
-						...persistedDeploymentReports,
-						failure,
-					];
+					persistedDeploymentReports = [...persistedDeploymentReports, failure];
 					return failure;
 				}
-				persistedDeploymentReports = [
-					...persistedDeploymentReports,
-					deployment,
-				];
+				persistedDeploymentReports = [...persistedDeploymentReports, deployment];
 				return deployment;
 			}
 			case "component_list":
@@ -766,9 +759,13 @@ test("restores the persisted Decision, Report, and recoverable Final Evaluation 
 	expect(container.textContent).toContain("User selected α=1");
 	expect(container.textContent).toContain("Final MSE 0.1 · MAE 0.2");
 	expect(container.textContent).toContain("Persistence failed");
-	expect(container.textContent).toContain("Staged Forecast Dataset forecast-dataset-sha");
+	expect(container.textContent).toContain(
+		"Staged Forecast Dataset forecast-dataset-sha",
+	);
 	expect(container.textContent).toContain("Retry final evaluation");
-	expect(container.querySelector('[data-status="persistence-failed"]')).not.toBeNull();
+	expect(
+		container.querySelector('[data-status="persistence-failed"]'),
+	).not.toBeNull();
 
 	await act(async () => root.unmount());
 });
@@ -804,7 +801,8 @@ test("retries Final Evaluation with the same Decision identity", async () => {
 	const retryButton = [...container.querySelectorAll("button")].find(
 		(button) => button.textContent === "Retry final evaluation",
 	);
-	if (!retryButton) throw new Error("Final Evaluation retry button did not render");
+	if (!retryButton)
+		throw new Error("Final Evaluation retry button did not render");
 	await act(async () => {
 		retryButton.click();
 		await Promise.resolve();
@@ -869,7 +867,8 @@ test("qualifies the selected artifact and refreshes the Component Library", asyn
 	const qualifyButton = [...container.querySelectorAll("button")].find(
 		(button) => button.textContent === "Qualify Model Deployment",
 	);
-	if (!qualifyButton) throw new Error("deployment qualification button did not render");
+	if (!qualifyButton)
+		throw new Error("deployment qualification button did not render");
 	expect(qualifyButton.hasAttribute("disabled")).toBe(false);
 	await act(async () => {
 		qualifyButton.click();
@@ -887,7 +886,9 @@ test("qualifies the selected artifact and refreshes the Component Library", asyn
 		),
 	).toBe(true);
 	expect(container.textContent).toContain("Qualified");
-	expect(container.textContent).toContain("Component Library imported package-archive-sha");
+	expect(container.textContent).toContain(
+		"Component Library imported package-archive-sha",
+	);
 	expect(container.textContent).toContain("Qlib Ridge WASI Model v1.0.0");
 
 	await act(async () => root.unmount());
@@ -938,7 +939,8 @@ test("retains a failed qualification and retries the same deployment", async () 
 	const qualifyButton = [...container.querySelectorAll("button")].find(
 		(button) => button.textContent === "Qualify Model Deployment",
 	);
-	if (!qualifyButton) throw new Error("deployment qualification button did not render");
+	if (!qualifyButton)
+		throw new Error("deployment qualification button did not render");
 	await act(async () => {
 		qualifyButton.click();
 		await Promise.resolve();
@@ -947,7 +949,9 @@ test("retains a failed qualification and retries the same deployment", async () 
 	await settle();
 
 	expect(container.textContent).toContain("Research Only");
-	expect(container.querySelector('[data-status="research-only"]')).not.toBeNull();
+	expect(
+		container.querySelector('[data-status="research-only"]'),
+	).not.toBeNull();
 	const retryButton = [...container.querySelectorAll("button")].find(
 		(button) => button.textContent === "Retry Qualification",
 	);
