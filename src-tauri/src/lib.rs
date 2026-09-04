@@ -709,11 +709,8 @@ fn system_dashboard_for_user(
     let unresolved_alert = alerts
         .iter()
         .any(|alert| alert.state != operations::AlertState::Resolved);
-    let operational_responsibility = has_operational_responsibility(
-        bots.len(),
-        paper_account.is_some(),
-        unresolved_alert,
-    );
+    let operational_responsibility =
+        has_operational_responsibility(bots.len(), paper_account.is_some(), unresolved_alert);
 
     Ok(SystemDashboardView {
         operational_responsibility,

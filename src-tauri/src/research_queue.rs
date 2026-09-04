@@ -427,12 +427,16 @@ fn unix_now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{
+        Barrier,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     struct TestAdapter {
         pending: Mutex<Vec<QueueAdmission>>,
         executed: Arc<Mutex<Vec<String>>>,
         calls: AtomicUsize,
+        first_execution: Arc<Barrier>,
     }
 
     impl ResearchQueueAdapter for TestAdapter {
@@ -441,7 +445,9 @@ mod tests {
         }
 
         fn execute(&self, ticket: QueueTicket) -> QueueRunResult {
-            self.calls.fetch_add(1, Ordering::Relaxed);
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                self.first_execution.wait();
+            }
             self.executed.lock().unwrap().push(ticket.attempt_id);
             QueueRunResult::Consumed
         }
@@ -457,10 +463,12 @@ mod tests {
     fn admission_is_idempotent_and_global_fifo() {
         let queue = ResearchQueue::open(database()).unwrap();
         let executed = Arc::new(Mutex::new(Vec::new()));
+        let first_execution = Arc::new(Barrier::new(2));
         let adapter = Arc::new(TestAdapter {
             pending: Mutex::new(Vec::new()),
             executed: executed.clone(),
             calls: AtomicUsize::new(0),
+            first_execution: first_execution.clone(),
         });
         queue
             .attach(WorkKind::FeatureFitting, adapter.clone())
@@ -473,6 +481,7 @@ mod tests {
         queue
             .admit(WorkKind::FeatureFitting, "alice", "first")
             .unwrap();
+        first_execution.wait();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         while executed.lock().unwrap().len() < 2 && std::time::Instant::now() < deadline {
