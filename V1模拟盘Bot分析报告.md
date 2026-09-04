@@ -1,126 +1,89 @@
 # V1 模拟盘 Bot 分析报告
 
-报告日期：2026-09-01
-范围：ADAQ V1 / Issue #159 / OKX Demo simulated account
-结论：当前头已完成 EMA 因子和 Strategy Qualification，但 OKX Demo 正式对账返回 HTTP 401 / `50113 Invalid Sign`；因此没有创建账户或 Bot，也没有伪造收益、订单或成交结果。
+报告日期：2026-09-04  
+范围：ADAQ V1 / OKX Spot 研究链路 / OKX Demo Paper / Bot / Operations  
+数据来源：打包 Desktop `bid.adaq.desktop` 的 Host 持久化证据与本轮界面实测
 
-## 1. 当前头结果
+## 结论
 
-| 项目 | 实际结果 |
+OKX Demo 的 `50113 Invalid Sign` 已由用户修复。本轮正式对账成功，Paper Account 已恢复为 `reconciled`；Bot 已通过 Retry 创建新的 Runtime Attempt，并持续处于 `running`、Worker 心跳正常。
+
+本轮没有成交或收益：当前 Attempt 尚无 Decision Batch；此前两个实际 Decision Batch 均为 `no-target`，对应 Host 已保留的 `market_data_context` 条件——当时没有完整的 Feature Dataset cross-section。Host 因输入不完整跳过决策，没有伪造 Target、没有绕过 Risk/OMS、没有重复提交订单。账户中保留的 4 个 Demo 订单均已取消，成交为 0。因此本报告的结论是“运行和安全门禁有效，但没有可归因的交易收益样本”，不是盈利或策略有效性结论。
+
+## 1. 精确身份
+
+| 项目 | 身份 / 状态 |
 |---|---|
-| EMA Factor | 当前 Component eligible；输出 `buy-signal` |
-| Strategy Candidate Revision | `e3977b3b-af04-4ab1-8a62-c8981f5c60b9` |
-| Strategy Qualification | `11529b4837415a230f19fd57c7633d5ff38ef1adf4940dfa8bf6db0b02041a01`，`gate12Eligible=1`，`gate12ContinuationRequired=0` |
-| Paper Account | 未创建；没有保留的 OKX Demo 对账账户证据 |
-| Bot deployment / runtime | 未创建 / 未运行 |
-| Orders / Fills / Positions / PnL | 无记录 |
-| Provider side effect | 未提交订单；没有写入 env，也没有改变认证逻辑 |
+| Paper Account | `723843360829982304`，OKX Spot / USDT，`reconciled` |
+| Bot | `33927f58-1783-4724-b8cf-830dcd185545` |
+| 当前 Runtime Attempt | `5618cc5a-e86b-463b-8cce-db35d210c20b`，`running` |
+| Strategy Qualification | `11529b4837415a230f19fd57c7633d5ff38ef1adf4940dfa8bf6db0b02041a01` |
+| Strategy Candidate | `e3977b3b-af04-4ab1-8a62-c8981f5c60b9` revision 1 |
+| Strategy package | archive `5495794adc23a564d37ad41d893e83d09d68ce7702df74a9ff3f9855d7c9810c`；WASM `eb7907c8052d7c4ce063afc06672e4419b8e202afcb4d9f2233cb840bb62650e` |
+| Factor Component | Factor EMA 5/10 Crossover v0.1.1；WASM `380da335aefdbe4d7c7ff08cd0fa00a54619fbf571b4ba8cdadfcd2e63d1da8f` |
+| Model Component | Qlib Ridge WASI Model v1.0.1；WASM `046148053122cee6848f7938dd7374e4fe25ce5aff1948d5c4be741b12c7f05e` |
+| Market snapshot | `98a4621101b0019a65eb84aa9509ef0c75c199ce3b35c58767c43c33967b3c80` |
+| Universe | `73c10943dd82e35d12f54151b3eb102492c89d6d542e4f1aebc43c33967b3c80`，BTC-USDT / ETH-USDT / SOL-USDT |
 
-## 2. Desktop 实测过程
+## 2. 策略与研究结果
 
-使用精确打包 App `/Users/tony/github/adaq/src-tauri/target/debug/bundle/macos/adaq.app`（`bid.adaq.desktop`），复用本次已授权的同一个进程。没有增加 Keychain 缓存或密钥文件；重启后的本次测试没有再次弹出授权提示。
+因子输入为 `ema-5`、`ema-10`，输出为 `buy-signal`：第一次 EMA5 从不高于 EMA10 变为高于 EMA10 时记录交叉值；下一次再次上穿且当前 EMA5 高于前次记录值时输出买入信号，其余完整输入输出 0。当前冻结数据没有单独的 market `high` slot，所以“前期上穿高点”按交叉时 EMA5 值实现，不冒充不存在的 K 线最高价。
 
-在中文 `模拟交易` 页面点击“对账”并确认后，Host 正式 reconciliation 返回：
+Factor Promotion Decision `d356cdaa-e795-4184-b8c2-219c9008bc4b` 已达到 Component Eligible，13/13 eligibility gates 通过。Strategy Qualification 为 `gate12Eligible=1`，并绑定精确 Backtest 与 Validation 证据。
 
-`HTTP 401: {"msg":"Invalid Sign","code":"50113"}`
+采用的组合 Backtest Run 为 `portfolio-7fc86a3eb1525207e92d3b9e132f0f94a888948e8de3487f7a3bb4097c8c2a61`：
 
-页面保留 fail-closed 结果：“对账失败。保留的证据未改变。OKX Demo 未返回已对账的账户证据。”没有账户证据就没有继续创建 Paper Account 或 Bot。
+| 指标 | 结果 |
+|---|---:|
+| 初始资金 | 10,000 USDT |
+| 最终权益 | 9,698.958479285032885672834661 USDT |
+| 总收益率 | -3.01041520714967114327153389% |
+| 最大回撤 | -5.56900653519571700946493329% |
+| 总成本 | 18.699160620926320100857426853 USDT |
+| 换手 | 1.8952064147777642084604159318 |
+| 决策帧 | 5,759 |
 
-## 3. EMA 证据链
+Validation Report `e2bd87a88b73f519d887fa20535f6262369ec5457f877cc4ab2124530de511a3` 已封存；1 个窗口完成、0 个窗口失败。聚合结果：样本内平均收益约 -2.4983%，样本外平均收益约 -0.5521%，最差样本外回撤约 -4.1422%，样本外平均 Sharpe 为 0。该结果只证明流程与证据可复现，不证明策略有正向收益。
 
-- 因子：`b0b5b98f-7e79-4c83-b5f7-7e654f3fbec8`，第一次 EMA5 上穿 EMA10 记录 EMA5，第二次上穿且超过前次记录值才输出 `buy-signal`。
-- Candidate Revision：`e3977b3b-af04-4ab1-8a62-c8981f5c60b9`。
-- Qualification Attempt：`6689b5e8-449c-408d-8ef0-ee1bdd214431`，完成 9 个参数网格 portfolio backtest 后进入 `ready-for-review`。
-- Qualification 已通过 UI 的明确证据复核创建；这不等于 Paper Account 或 Bot 已创建。
+## 3. OKX Demo 账户结果
 
-## 4. 阻塞与安全边界
+本轮 Desktop 在 Paper Trading 页面执行正式 Reconcile 并成功：
 
-连接测试曾能读到 Demo 配置/余额，但正式 pending-order reconciliation 仍得到 `50113`，所以不能把连接测试成功当成可对账账户证据。对 pending endpoint 加 `instType=SPOT` 的 Host 请求和订单解析已有本地 mock 覆盖；同凭据的 history 诊断也返回同样的 401，正式代码已恢复 pending 路径。
+- 账户现金：`85006.29173147364` USDT。
+- 持仓：OKB-USDT `100`，可卖 `100`。
+- 订单：4，全部 `cancelled`，全部成交量 0。
+- 成交：0。
+- 保留订单分别为 3 笔 BTC-USDT Sell（限价 77560.3 / 77508.7 / 77567.7）与 1 笔 ETH-USDT Sell（限价 2435.25），数量均为 1。
+- 没有把账户既有 OKB 持仓自动认领为 Bot 持仓。
 
-没有通过本地假数据、历史无关 Strategy、Raw Candidate、env 密钥或认证绕过来启动 Bot。下一步前提是用户重新验证有效的 OKX Demo 私有接口凭据/环境；对账成功后，才可继续创建 Paper Account、部署 Bot，并分析 runtime、decision、order、fill、position、risk 和 PnL。
+本轮未再出现 HTTP 401 或 `50113 Invalid Sign`。
 
-以下保留 2026-08-31 的历史研究记录，不能作为当前 Bot 已运行的证据。
+## 4. Bot 运行结果
 
-## 历史记录：2026-08-31 运行结果
+当前 Attempt `5618cc5a-e86b-463b-8cce-db35d210c20b` 的启动证据顺序为：
 
-| 项目 | 实际结果 |
-|---|---|
-| Bot deployment | 未创建，`bots = 0` |
-| Bot runtime attempt | 无可运行 Attempt |
-| Paper Account | 未创建，`paper_accounts = 0` |
-| Strategy Candidate | 未创建，`strategy_candidates = 0` |
-| Strategy Qualification | 未创建，`strategy_qualifications = 0` |
-| Orders / Fills / Positions / PnL | 没有 Bot 或账户，因此没有可分析记录 |
-| Provider side effect | 未提交订单，未改变凭据或账户 |
+1. `start-requested`：Host 从不可变 Bundle 创建 Runtime Attempt。
+2. `account-reconciled`：启动风险前完成 OKX Demo 对账。
+3. `warmup-started`：冻结管线进入 warmup。
+4. `worker-heartbeat`：Worker Ready，Bot 进入并保持 `running`。
 
-Desktop Bot 页面实际显示：
+当前 Attempt：0 decisions、0 orders、0 unmanaged positions、`reconciliationRequired=false`。Bot 在验收结束时保持运行，没有为了制造结果执行 Stop 或 Flatten。
 
-- Strategy Qualification：`Select an eligible Qualification` / `选择可用的 Qualification`。
-- OKX Demo connection selector 未形成可部署的精确绑定。
-- `Deploy` / `部署` 按钮 disabled。
-- `No Bots have been deployed.` / `尚未部署 Bot。`
+历史同一 Bot 的两个 Decision Batch：
 
-## 2. 为什么没有运行
-
-用户要求的 EMA 因子真实走完了 Factor 链路，但最终 Promotion Decision 是 `Rejected`，没有当前 Component Eligible Decision。Strategy Lab 同时要求：
-
-1. 一个已接受的 Factor Component output；
-2. 一个已接受的 Model qualification；
-3. 绑定到这两类证据的 Strategy Candidate；
-4. 后续 Gate 11 Strategy Qualification；
-5. 精确验证过身份和账户状态的 OKX Demo Paper Account。
-
-本次记录中第一项不成立，Strategy Candidate 和 Qualification 也都是 0。用 Raw Candidate、历史 unrelated Strategy 或伪造的账户证据绕过这个门禁会破坏 ADAQ 的 Host authority、可复现性和资金安全边界，因此没有这样做。
-
-## 3. EMA 因子研究结果
-
-### 3.1 定义
-
-- 输入：冻结的 `ema-5`、`ema-10` Feature Slots。
-- 事件：EMA5 从不高于 EMA10 变为高于 EMA10 的 bullish crossover。
-- 第一次事件：记录当时 EMA5 值。
-- 下一次事件：若当前 EMA5 高于已记录值，输出 `buy-signal = 1`。
-- 其他行：输出 `0`；第一条交付行因 warmup 无输出。
-- 边界：当前数据没有单独的 market `high`，所以记录值是 EMA5 crossover value，不是未提供的 high。
-
-### 3.2 证据链
-
-| 阶段 | Attempt / 结果 | 状态 |
+| Attempt | Request | 结果 |
 |---|---|---|
-| Candidate build | `52d32782-8000-42ee-83a8-1f8918f070f2` → `ca1c448b5c59cd55ba25ae61798df37bec58a60b3fc98a8d6e8aae913e8df829` | completed 1/1 |
-| Factor Dataset materialization | `417daa2a-32fc-43d4-bbf4-c5d499d10791` → `748e01682169a69e6a9df2dc9b65664a0f335c5c134ff08a06f0ab514b1ce9d1` | completed 18/18 |
-| Factor Evaluation | `5835d9cf-3a15-471a-bd6f-332c8655fc7b` → Report `553113b5d23b26ace299fbe3cc8a740bdbabd5b2685a0a0e9701589bdee389b9` | completed 1/1 |
-| Promotion Decision | `17c1d3a8-2767-4df6-a54a-e94574a629ff` / hash `7aa2ead700a0243bdc12aee126acd1f7c1be74941a0a1e29185b7c9df7d893c9` | Rejected |
+| `052d6544-3f12-4261-bca1-ac9f1fe6001f` | `accept-final-warmup-001` | `no-target` |
+| `e4ce4fe5-fef9-40d5-8e3e-4cfd9ad8796d` | `accept-final-warmup-003` | `no-target` |
 
-冻结 Context：Revision `3`，市场 `crypto`、场所 `okx`，观察范围 `1787881320000 → 1787882400000`，Snapshot `c4e2fe2e4eaaa5758ff7934cd479716668bb349ac4050cc48c9d050e5ea0eb53`，Feature Dataset `24987d6e7385a83800ddbf79248cf54aeee6d0c427f1ede7aa1d3b836c614310`，Feature Plan `f38b6a57d9e4ff1ee88225ce06a29afd68aaf70fa47810478e498b56b8770afe`，PIT Universe `universe-42a3cb9e36e30c96ee58ca13f2b17ce67551229e65d19d65af848fe057f5cc2e`。
+Operations 保留的对应关键条件为 `market_data_context`：`No complete Feature Dataset cross-section is available.`，安全动作为 `skipDecision`。这解释了没有订单的直接原因。
 
-### 3.3 Evaluation 解读
+Gate 12 明确把 autonomous execution 排除在 V1 范围外；Start/Retry 负责监督 Worker 和生命周期，Host Decision Batch 由 Host 拥有并按调度输入触发。因此“Bot Running 但不会自行凭空生成 Decision”是当前 V1 合同，不是缺少前端定时器的 Bug。
 
-Evaluation 报告为 `out-of-sample`，但有效统计条件不足：
+## 5. 风险与结论
 
-- coverage 的 available sample count 为 9，值为 0；
-- missingness sample count 为 9，值为 1；
-- sample-count 为 0；
-- IC、rank-IC、stability：`insufficient-samples`；
-- economic、turnover、decay：`no-eligible-observations`。
-
-Promotion policy 要求最低样本数 30，并要求 `cross-sectional` 与 `economic` lenses。Eligibility 结果为：
-
-- 通过：complete lineage、out-of-sample report、complete provenance；
-- 失败：required lenses、minimum coverage、minimum samples、Holm-adjusted significance、subperiod sign consistency、cost-aware outcome、complete source provenance、deterministic execution、ABI v2 expressible、buildable。
-
-因此 `Rejected / Not eligible` 是由证据不足和 Component eligibility 门控共同得出的真实结果，不是 UI 误报，也不是运行时故障。
-
-## 4. 后续可运行条件
-
-要在新的、用户明确批准的运行中安全启动模拟盘 Bot，需要先补齐：
-
-1. 足够的真实冻结研究覆盖，至少满足当前 policy 的 30 个样本和 required lenses；
-2. 完整 source provenance、deterministic execution、ABI v2 expressibility 和 buildable 证据；
-3. 重新 Evaluation 并得到 Component Eligible Decision；
-4. 用 accepted Factor Component 与 accepted Model qualification 创建 Strategy Candidate；
-5. 完成 Gate 11 Strategy Qualification、Backtest 和按时间顺序的留出证据；
-6. 重新验证 OKX Demo 账户身份、原生 USDT 账户证据和 reconciliation 状态；
-7. 再由 Host 创建 Bot Deployment Bundle，并单独记录 runtime、decision、order、fill、position、risk 和 PnL 分析。
-
-在这些条件满足前，保持没有 Bot、没有 Paper Account、没有订单的状态是正确的安全结果。
+- 模拟盘累计成交样本为 0，不能计算真实 Bot realized PnL、滑点、胜率或成交延迟分布。
+- 已验证的正向结论是：账户身份和对账有效；Bundle/Attempt/Worker 身份有效；生命周期和心跳有效；输入不完整时能够 `no-target` / `skipDecision`；没有重复订单或不明成交。
+- 研究回测和 Validation 为负，不应把“流程通过”解释为“策略值得投入资金”。
+- 当前适合继续收集新的、完整的 cross-section Decision Batch 和 Demo Fill，再在 Paper Feedback 中形成具有方向性的 Factor / Model / Strategy / Execution 报告。
+- ADAQ V1 仍严格限于 OKX Demo；本报告不授予 Live Trading 或真钱交易权限。
