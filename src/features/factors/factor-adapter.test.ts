@@ -205,4 +205,7 @@ test("Factor adapter keeps User scope and immutable command payloads explicit", 
 			},
 		},
 	]);
+	expect(calls.map(({ command }) => command)).not.toContain("research_context_freeze");
+	expect(adapter).not.toHaveProperty("startMaterialization");
+	expect(adapter).not.toHaveProperty("startEvaluation");
 });

@@ -55,7 +55,8 @@ use crate::{
     },
     dataset_generation::{DatasetGeneration, GenerationSource},
     factor_research::{
-        FactorAttemptView, FactorCandidatePredecessor, FactorCandidatePublishRequest,
+        FactorAttemptRequest, FactorAttemptView, FactorCandidateBuildRequest,
+        FactorCandidatePredecessor, FactorCandidatePublishRequest,
         FactorCandidateView, FactorEvaluationContextStartRequest, FactorEvaluationStartRequest,
         FactorEvidenceRequest, FactorMaterializationContextBinding,
         FactorMaterializationContextStartRequest, FactorMaterializationStartRequest,
@@ -1015,6 +1016,61 @@ impl LocalResearchState {
             .publish_candidate_with_predecessor(request, predecessor)
     }
 
+    pub(crate) fn start_factor_candidate_from_context(
+        &self,
+        request: FactorCandidateBuildRequest,
+    ) -> Result<FactorAttemptView, String> {
+        let frozen = self.freeze_research_context(
+            &request.user_id,
+            request.operation_id.clone(),
+            adaq_factor_research::ResearchStage::Factors,
+        )?;
+        let predecessor = FactorCandidatePredecessor::from_projection(
+            request.user_id.clone(),
+            self.research_context_for_user(&request.user_id)?
+                .ok_or_else(|| "factor-context-required".to_owned())?,
+        )?;
+        let attempt = self.factor.build_candidate(request.clone(), Some(predecessor))?;
+        self.record_research_attempt_binding(
+            &request.user_id,
+            &frozen.operation_id,
+            adaq_factor_research::ResearchStage::Factors,
+            &attempt.attempt_id,
+        )?;
+        Ok(attempt)
+    }
+
+    pub(crate) fn retry_factor_attempt(
+        &self,
+        request: FactorAttemptRequest,
+    ) -> Result<FactorAttemptView, String> {
+        let (operation_id, stage) = self
+            .research_attempt_binding(&request.user_id, &request.attempt_id)?
+            .ok_or("research Context binding is missing for this Attempt")?;
+        if stage != adaq_factor_research::ResearchStage::Factors {
+            return Err("research Context binding is incompatible with this Attempt".into());
+        }
+        let context = self
+            .context_for_user(&request.user_id)?
+            .ok_or_else(|| "factor-context-required".to_owned())?;
+        context
+            .revalidate(&context, stage)
+            .map_err(|_| "factor-context-stale".to_owned())?;
+        let retry_operation_id = format!(
+            "{operation_id}:retry:{}:{}",
+            request.attempt_id, context.context_hash
+        );
+        let frozen = self.freeze_research_context(&request.user_id, retry_operation_id, stage)?;
+        let attempt = self.factor.retry(request)?;
+        self.record_research_attempt_binding(
+            &attempt.user_id,
+            &frozen.operation_id,
+            stage,
+            &attempt.attempt_id,
+        )?;
+        Ok(attempt)
+    }
+
     pub(crate) fn start_factor_materialization_from_context(
         &self,
         request: FactorMaterializationContextStartRequest,
@@ -1333,28 +1389,6 @@ impl LocalResearchState {
         )?;
         let _ = frozen;
         Ok(attempt)
-    }
-
-    pub(crate) fn validate_factor_evaluation_inputs_from_host(
-        &self,
-        request: &FactorEvaluationStartRequest,
-    ) -> Result<(), String> {
-        if request.feature_evidence.is_some() {
-            return Err("factor-context-feature-evidence-unavailable".into());
-        }
-        let universe = self
-            .snapshots
-            .universe_snapshot_for_user(
-                &request.user_id,
-                &request.protocol.point_in_time_universe_id,
-            )
-            .map_err(|_| "factor-context-universe-inaccessible".to_owned())?;
-        let expected =
-            self.factor_market_series_for_context(&request.user_id, &request.protocol, &universe)?;
-        if expected != request.market_series {
-            return Err("factor-context-market-evidence-mismatch".into());
-        }
-        Ok(())
     }
 
     fn factor_market_series_for_context(
