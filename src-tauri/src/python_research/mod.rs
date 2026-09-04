@@ -117,6 +117,7 @@ pub struct PythonResearchState {
     examples_root: PathBuf,
     queue_admitter: Mutex<Option<QueueAdmitter>>,
     queue_waker: Mutex<Option<QueueWaker>>,
+    resetting_users: Mutex<BTreeSet<String>>,
     completed_results: Arc<Mutex<BTreeMap<String, RunnerExecution>>>,
     runtime_cancellations: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
     runtime_progress: Arc<Mutex<BTreeMap<String, RuntimePreparationProgress>>>,
@@ -4729,6 +4730,7 @@ impl PythonResearchState {
             examples_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/python"),
             queue_admitter: Mutex::new(None),
             queue_waker: Mutex::new(None),
+            resetting_users: Mutex::new(BTreeSet::new()),
             completed_results: Arc::new(Mutex::new(BTreeMap::new())),
             runtime_cancellations: Mutex::new(BTreeMap::new()),
             runtime_progress: Arc::new(Mutex::new(BTreeMap::new())),
@@ -4780,6 +4782,149 @@ impl PythonResearchState {
             .clone()
             .ok_or_else(|| "Python Research Queue is not attached".to_owned())?;
         admitter(WorkKind::Python, &attempt.user_id, &attempt.attempt_id)
+    }
+
+    fn start_attempt(
+        &self,
+        request: AttemptStartRequest,
+    ) -> Result<ResearchAttempt, PythonResearchError> {
+        let resetting = self
+            .resetting_users
+            .lock()
+            .map_err(|_| PythonResearchError("research-reset-barrier-lock-poisoned".into()))?;
+        if resetting.contains(&request.user_id) {
+            return Err(PythonResearchError("research-reset-in-progress".into()));
+        }
+        let context = load_attempt_context(
+            &self.store,
+            &self.environment_store,
+            &self.runtime_store,
+            &request.user_id,
+            &request.project_id,
+            &request.revision_sha256,
+            Some(&request.environment_sha256),
+        )?;
+        if self
+            .trust_store
+            .get(
+                &request.user_id,
+                &request.project_id,
+                &request.revision_sha256,
+            )?
+            .is_none()
+        {
+            return Err(PythonResearchError("research-revision-not-trusted".into()));
+        }
+        let policy = effective_resource_policy(&context.manifest, request.resource_policy)?;
+        let execution = build_attempt_execution(
+            &context.revision,
+            &context.manifest,
+            &context.lock,
+            request.seed.unwrap_or(0),
+            None,
+            None,
+        )?;
+        let attempt = self.attempt_store.enqueue_with_execution(
+            request.user_id,
+            request.project_id,
+            request.revision_sha256,
+            context.environment.environment_sha256,
+            policy,
+            execution,
+        )?;
+        drop(resetting);
+        self.admit_attempt(&attempt).map_err(PythonResearchError)?;
+        Ok(attempt)
+    }
+
+    fn cancel_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<ResearchAttempt, PythonResearchError> {
+        let attempt = self.attempt_store.get(attempt_id)?;
+        if attempt.user_id != user_id {
+            return Err(PythonResearchError("research-attempt-not-found".into()));
+        }
+        let attempt = self
+            .attempt_store
+            .transition(attempt_id, AttemptTransition::Cancel)?;
+        self.notify_queue();
+        Ok(attempt)
+    }
+
+    fn retry_attempt(
+        &self,
+        user_id: &str,
+        attempt_id: &str,
+    ) -> Result<ResearchAttempt, PythonResearchError> {
+        let resetting = self
+            .resetting_users
+            .lock()
+            .map_err(|_| PythonResearchError("research-reset-barrier-lock-poisoned".into()))?;
+        if resetting.contains(user_id) {
+            return Err(PythonResearchError("research-reset-in-progress".into()));
+        }
+        let attempt = self.attempt_store.get(attempt_id)?;
+        if attempt.user_id != user_id {
+            return Err(PythonResearchError("research-attempt-not-found".into()));
+        }
+        let attempt = self.attempt_store.retry(attempt_id)?;
+        drop(resetting);
+        self.admit_attempt(&attempt).map_err(PythonResearchError)?;
+        Ok(attempt)
+    }
+
+    fn reset_user(&self, user_id: &str) -> Result<PythonResearchResetReport, PythonResearchError> {
+        {
+            let mut resetting = self
+                .resetting_users
+                .lock()
+                .map_err(|_| PythonResearchError("research-reset-barrier-lock-poisoned".into()))?;
+            if !resetting.insert(user_id.into()) {
+                return Err(PythonResearchError("research-reset-in-progress".into()));
+            }
+        }
+        let result = (|| {
+            self.attempt_store.cancel_user(user_id)?;
+            self.notify_queue();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while self.attempt_store.has_active_for_user(user_id)? {
+                if std::time::Instant::now() >= deadline {
+                    return Err(PythonResearchError(
+                        "research-reset-runner-did-not-stop".into(),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            let attempt_ids = self
+                .attempt_store
+                .list(user_id)?
+                .into_iter()
+                .map(|attempt| attempt.attempt_id)
+                .collect::<BTreeSet<_>>();
+            for attempt_id in &attempt_ids {
+                let artifact = self
+                    .root
+                    .join("attempt-results")
+                    .join(format!("{attempt_id}.artifact"));
+                if artifact.is_file() {
+                    fs::remove_file(artifact)?;
+                }
+            }
+            let report = self.store.reset_python_research_evidence(user_id)?;
+            self.attempt_store.reset_user(user_id)?;
+            self.trust_store.reset_user(user_id)?;
+            self.model_lab_store.reset_user(user_id)?;
+            if let Ok(mut results) = self.completed_results.lock() {
+                results.retain(|attempt_id, _| !attempt_ids.contains(attempt_id));
+            }
+            Ok(report)
+        })();
+        if let Ok(mut resetting) = self.resetting_users.lock() {
+            resetting.remove(user_id);
+        }
+        result
     }
 
     fn execute_attempt(&self, attempt_id: &str) -> QueueRunResult {
@@ -6704,57 +6849,10 @@ pub async fn research_reset(
 ) -> Result<PythonResearchResetReport, String> {
     let _ = user_id;
     let user_id = auth.user_id_for_window(window.label())?;
-    let store = state.store.clone();
-    let attempt_store = state.attempt_store.clone();
-    let trust_store = state.trust_store.clone();
-    let model_lab_store = state.model_lab_store.clone();
-    let completed_results = state.completed_results.clone();
-    let result_root = state.root.join("attempt-results");
-    let waker = state
-        .queue_waker
-        .lock()
-        .ok()
-        .and_then(|value| value.clone());
-    tauri::async_runtime::spawn_blocking(move || {
-        attempt_store.cancel_user(&user_id).map_err(map_error)?;
-        if let Some(waker) = waker.as_ref() {
-            waker();
-        }
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while attempt_store
-            .has_active_for_user(&user_id)
-            .map_err(map_error)?
-        {
-            if std::time::Instant::now() >= deadline {
-                return Err("research-reset-runner-did-not-stop".into());
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        let attempt_ids = attempt_store
-            .list(&user_id)
-            .map_err(map_error)?
-            .into_iter()
-            .map(|attempt| attempt.attempt_id)
-            .collect::<BTreeSet<_>>();
-        for attempt_id in &attempt_ids {
-            let artifact = result_root.join(format!("{attempt_id}.artifact"));
-            if artifact.is_file() {
-                fs::remove_file(artifact).map_err(|error| error.to_string())?;
-            }
-        }
-        let report = store
-            .reset_python_research_evidence(&user_id)
-            .map_err(map_error)?;
-        attempt_store.reset_user(&user_id).map_err(map_error)?;
-        trust_store.reset_user(&user_id).map_err(map_error)?;
-        model_lab_store.reset_user(&user_id).map_err(map_error)?;
-        if let Ok(mut results) = completed_results.lock() {
-            results.retain(|attempt_id, _| !attempt_ids.contains(attempt_id));
-        }
-        Ok(report)
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.reset_user(&user_id).map_err(map_error))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -6886,61 +6984,10 @@ pub async fn attempt_start(
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ResearchAttempt, String> {
     request.user_id = auth.user_id_for_window(window.label())?;
-    let project_store = state.store.clone();
-    let trust_store = state.trust_store.clone();
-    let attempt_store = state.attempt_store.clone();
-    let environment_store = state.environment_store.clone();
-    let runtime_store = state.runtime_store.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let context = load_attempt_context(
-            &project_store,
-            &environment_store,
-            &runtime_store,
-            &request.user_id,
-            &request.project_id,
-            &request.revision_sha256,
-            Some(&request.environment_sha256),
-        )
-        .map_err(map_error)?;
-        if trust_store
-            .get(
-                &request.user_id,
-                &request.project_id,
-                &request.revision_sha256,
-            )
-            .map_err(map_error)?
-            .is_none()
-        {
-            return Err("research-revision-not-trusted".into());
-        }
-        let policy = effective_resource_policy(&context.manifest, request.resource_policy)
-            .map_err(map_error)?;
-        let execution = build_attempt_execution(
-            &context.revision,
-            &context.manifest,
-            &context.lock,
-            request.seed.unwrap_or(0),
-            None,
-            None,
-        )
-        .map_err(map_error)?;
-        attempt_store
-            .enqueue_with_execution(
-                request.user_id,
-                request.project_id,
-                request.revision_sha256,
-                context.environment.environment_sha256,
-                policy,
-                execution,
-            )
-            .map_err(map_error)
-    })
-    .await
-    .map_err(|error| error.to_string())?
-    .and_then(|attempt| {
-        state.admit_attempt(&attempt)?;
-        Ok(attempt)
-    })
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.start_attempt(request).map_err(map_error))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -6951,13 +6998,14 @@ pub async fn attempt_cancel(
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ResearchAttempt, String> {
     request.user_id = auth.user_id_for_window(window.label())?;
-    transition_attempt(
-        state,
-        request.user_id,
-        request.attempt_id,
-        AttemptTransition::Cancel,
-    )
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .cancel_attempt(&request.user_id, &request.attempt_id)
+            .map_err(map_error)
+    })
     .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -6968,43 +7016,14 @@ pub async fn attempt_retry(
     state: State<'_, Arc<PythonResearchState>>,
 ) -> Result<ResearchAttempt, String> {
     request.user_id = auth.user_id_for_window(window.label())?;
-    let attempt_store = state.attempt_store.clone();
-    let user_id = request.user_id;
-    let attempt_id = request.attempt_id;
+    let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let attempt = attempt_store.get(&attempt_id).map_err(map_error)?;
-        if attempt.user_id != user_id {
-            return Err("research-attempt-not-found".into());
-        }
-        attempt_store.retry(&attempt_id).map_err(map_error)
-    })
-    .await
-    .map_err(|error| error.to_string())?
-    .and_then(|attempt| {
-        state.admit_attempt(&attempt)?;
-        Ok(attempt)
-    })
-}
-
-async fn transition_attempt(
-    state: State<'_, Arc<PythonResearchState>>,
-    user_id: String,
-    attempt_id: String,
-    transition: AttemptTransition,
-) -> Result<ResearchAttempt, String> {
-    let attempt_store = state.attempt_store.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let attempt = attempt_store.get(&attempt_id).map_err(map_error)?;
-        if attempt.user_id != user_id {
-            return Err("research-attempt-not-found".into());
-        }
-        attempt_store
-            .transition(&attempt_id, transition)
+        state
+            .retry_attempt(&request.user_id, &request.attempt_id)
             .map_err(map_error)
     })
     .await
     .map_err(|error| error.to_string())?
-    .inspect(|_| state.notify_queue())
 }
 
 #[tauri::command]
@@ -9077,6 +9096,27 @@ mod tests {
         );
         assert!(publish_attempt_artifact(&root, "attempt", &staging, &artifact).is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reset_barrier_rejects_new_attempts() {
+        let directory =
+            std::env::temp_dir().join(format!("adaq-python-reset-{}", uuid::Uuid::new_v4()));
+        let state = PythonResearchState::open(&directory);
+        state.resetting_users.lock().unwrap().insert("alice".into());
+
+        let error = state
+            .start_attempt(AttemptStartRequest {
+                user_id: "alice".into(),
+                project_id: "py-factor-test".into(),
+                revision_sha256: "a".repeat(64),
+                environment_sha256: "b".repeat(64),
+                resource_policy: None,
+                seed: None,
+            })
+            .unwrap_err();
+        assert_eq!(error.0, "research-reset-in-progress");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
