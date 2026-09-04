@@ -56,11 +56,10 @@ use crate::{
     dataset_generation::{DatasetGeneration, GenerationSource},
     factor_research::{
         FactorAttemptRequest, FactorAttemptView, FactorCandidateBuildRequest,
-        FactorCandidatePredecessor, FactorCandidatePublishRequest,
-        FactorCandidateView, FactorEvaluationContextStartRequest, FactorEvaluationStartRequest,
-        FactorEvidenceRequest, FactorMaterializationContextBinding,
-        FactorMaterializationContextStartRequest, FactorMaterializationStartRequest,
-        FactorResearch, FactorResearchSource, user_uuid,
+        FactorCandidatePredecessor, FactorCandidatePublishRequest, FactorCandidateView,
+        FactorEvaluationContextStartRequest, FactorEvaluationStartRequest, FactorEvidenceRequest,
+        FactorMaterializationContextBinding, FactorMaterializationContextStartRequest,
+        FactorMaterializationStartRequest, FactorResearch, FactorResearchSource, user_uuid,
     },
     features::{FeatureDatasetRequest, FeatureSource, Features},
     forecast_signal_dataset::{BacktestSignalDataset, backtest_signal_datasets},
@@ -95,6 +94,7 @@ pub struct LocalResearchState {
     pub(crate) paper_feedback: PaperFeedbackStore,
     pub(crate) paper_trading: crate::paper_trading::PaperTradingStore,
     pub(crate) research_contexts: Mutex<HashMap<String, ResearchEvidenceContext>>,
+    factor_context_gate: Mutex<()>,
 }
 
 #[derive(Serialize)]
@@ -837,6 +837,7 @@ impl LocalResearchState {
                 paper_feedback,
                 paper_trading,
                 research_contexts: Mutex::new(HashMap::new()),
+                factor_context_gate: Mutex::new(()),
             }
         }))
     }
@@ -845,6 +846,7 @@ impl LocalResearchState {
         &self,
         context: ResearchEvidenceContext,
     ) -> Result<adaq_factor_research::ResearchEvidenceProjection, String> {
+        let _gate = self.factor_context_gate.lock().map_err(string)?;
         let user_id = context.draft.user_id.clone();
         let projection = context.projection();
         let context_json = serde_json::to_string(&context).map_err(string)?;
@@ -1020,6 +1022,7 @@ impl LocalResearchState {
         &self,
         request: FactorCandidateBuildRequest,
     ) -> Result<FactorAttemptView, String> {
+        let _gate = self.factor_context_gate.lock().map_err(string)?;
         let frozen = self.freeze_research_context(
             &request.user_id,
             request.operation_id.clone(),
@@ -1030,7 +1033,9 @@ impl LocalResearchState {
             self.research_context_for_user(&request.user_id)?
                 .ok_or_else(|| "factor-context-required".to_owned())?,
         )?;
-        let attempt = self.factor.build_candidate(request.clone(), Some(predecessor))?;
+        let attempt = self
+            .factor
+            .build_candidate(request.clone(), Some(predecessor))?;
         self.record_research_attempt_binding(
             &request.user_id,
             &frozen.operation_id,
@@ -1044,12 +1049,14 @@ impl LocalResearchState {
         &self,
         request: FactorAttemptRequest,
     ) -> Result<FactorAttemptView, String> {
+        let _gate = self.factor_context_gate.lock().map_err(string)?;
         let (operation_id, stage) = self
             .research_attempt_binding(&request.user_id, &request.attempt_id)?
             .ok_or("research Context binding is missing for this Attempt")?;
         if stage != adaq_factor_research::ResearchStage::Factors {
             return Err("research Context binding is incompatible with this Attempt".into());
         }
+        self.require_frozen_research_evidence(&request.user_id, &operation_id, stage)?;
         let context = self
             .context_for_user(&request.user_id)?
             .ok_or_else(|| "factor-context-required".to_owned())?;
@@ -1090,6 +1097,7 @@ impl LocalResearchState {
             .dataset_id
             .clone();
         let projection = self.establish_factor_context(&request.user_id, &dataset_id)?;
+        let _gate = self.factor_context_gate.lock().map_err(string)?;
         let candidate = self.factor.get_candidate(FactorEvidenceRequest {
             user_id: request.user_id.clone(),
             evidence_id: request.candidate_hash.clone(),
@@ -1213,6 +1221,7 @@ impl LocalResearchState {
         }
         let projection =
             self.establish_factor_context(&request.user_id, &context_feature_dataset.dataset_id)?;
+        let _gate = self.factor_context_gate.lock().map_err(string)?;
         let candidate = self.factor.get_candidate(FactorEvidenceRequest {
             user_id: request.user_id.clone(),
             evidence_id: request.candidate_hash.clone(),

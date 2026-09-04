@@ -1127,7 +1127,14 @@ impl FactorResearch {
             ResearchStore::new(&database).start_attempt(user_id, kind, &request_json)?
         };
         if should_start && attempt.status == AttemptStatus::Pending {
-            (self.inner.admit)(WorkKind::Factor, &attempt.user_id, &attempt.attempt_id)?;
+            if let Err(error) =
+                (self.inner.admit)(WorkKind::Factor, &attempt.user_id, &attempt.attempt_id)
+            {
+                let database = self.database()?;
+                ResearchStore::new(&database)
+                    .cancel_attempt(&attempt.user_id, &attempt.attempt_id)?;
+                return Err(error);
+            }
         }
         Ok(attempt)
     }
@@ -9828,6 +9835,45 @@ mod tests {
             1
         );
         queue.shutdown();
+    }
+
+    #[test]
+    fn failed_admission_cancels_the_new_attempt() {
+        let database = Arc::new(Mutex::new(store()));
+        let directory = tempfile_dir("factor-admission-failure");
+        let source = Arc::new(TestSource {
+            database: database.clone(),
+            directory,
+        });
+        let research =
+            FactorResearch::open(source, Arc::new(|_, _, _| Err("admission failed".into())))
+                .unwrap();
+        let error = research
+            .build_candidate(
+                FactorCandidateBuildRequest {
+                    user_id: "alice".into(),
+                    operation_id: "factor-candidate-build:admission-failure".into(),
+                    candidate: test_candidate(),
+                    presentation: FactorPresentationMetadata {
+                        name: "Test".into(),
+                        description: String::new(),
+                        tags: Vec::new(),
+                    },
+                    build: None,
+                },
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error, "admission failed");
+        assert_eq!(
+            database
+                .lock()
+                .unwrap()
+                .query_row("SELECT status FROM factor_research_attempts", [], |row| row
+                    .get::<_, String>(0),)
+                .unwrap(),
+            "cancelled"
+        );
     }
 
     #[test]
