@@ -1029,7 +1029,7 @@ function EvidenceSelectors({
 					{options.universes.map((universe) => (
 						<option key={universe.snapshotId} value={universe.snapshotId}>
 							{universe.venue.id} {universe.interval} ·{" "}
-							{universe.snapshotId.slice(0, 8)}
+							{universe.snapshotId.replace(/^universe-/, "").slice(0, 8)}
 						</option>
 					))}
 				</select>
