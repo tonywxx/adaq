@@ -90,7 +90,8 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 	expect(index).toContain('performance.mark("adaq:webview-start")');
 	expect(main).toContain('markStartup("adaq:react-entry")');
 	expect(authGate).toContain('markStartup("adaq:auth-loading-visible")');
-	expect(workflow).toMatch(/id="workflow-steps"/);
+	expect(workflow).toMatch(/id="workflow-map"/);
+	expect(workflow).toMatch(/<details[\s\S]*?workflow\.stepsTitle/);
 	const definitions = read("./features/features/definitions-view.tsx");
 	expect(definitions).toMatch(/useState<"validate" \| "publish" \| null>/);
 	expect(definitions).toMatch(

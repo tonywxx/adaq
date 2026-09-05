@@ -12,7 +12,6 @@ import {
 	SystemDashboard,
 	type SystemDashboardProjection,
 } from "./operations-dashboard";
-import { WorkflowHomePage } from "@/features/workflow/workflow-page";
 
 jest.mock("@tauri-apps/api/core", () => ({ invoke: jest.fn() }));
 jest.mock("@tanstack/react-router", () => ({
@@ -274,32 +273,6 @@ test("keeps unavailable Alerts explicit instead of reporting zero unresolved Cri
 		"This summary is temporarily unavailable.",
 	);
 	expect(container.textContent).not.toContain("0 unresolved Critical condition");
-
-	await act(async () => root.unmount());
-	container.remove();
-});
-
-test("uses the System Dashboard at the root for an operationally responsible User", async () => {
-	mockInvoke.mockImplementation(async (command: string) => {
-		if (command === "system_dashboard") return responsibleProjection;
-		throw new Error(`unexpected command ${command}`);
-	});
-	const container = document.createElement("div");
-	const root = createRoot(container);
-	document.body.append(container);
-	await act(async () => {
-		root.render(
-			<AuthenticatedUserContext.Provider value="alice">
-				<QueryClientProvider client={new QueryClient()}>
-					<WorkflowHomePage />
-				</QueryClientProvider>
-			</AuthenticatedUserContext.Provider>,
-		);
-	});
-	await settle();
-
-	expect(container.textContent).toContain("System Dashboard");
-	expect(container.textContent).not.toContain("Workflow Guide");
 
 	await act(async () => root.unmount());
 	container.remove();

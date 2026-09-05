@@ -18,30 +18,37 @@ Operational Responsibility is defined in `CONTEXT.md` and ADR-0059. It includes 
 
 ## Information architecture
 
-The sidebar and guide use the same ordered structure:
+The sidebar is workspace navigation. Each executable route appears once; workflow
+steps are not additional sidebar links because several steps intentionally share
+one workspace. Page-local Tabs and stages own navigation within that workspace.
+
+The sidebar uses this structure:
 
 1. Foundations
+   - Data Foundation
    - Markets & Data
    - Feature Engineering
-2. Factor Research
-   - 1 Discover Factors
-   - 2 Evaluate & Promote Factors
-   - 3 Qualify, Package & Import Factor
-3. Model Research
-   - 4 Train Model
-   - 5 Evaluate Model
-   - 6 Qualify Model Deployment
-4. Strategy Validation
-   - 7 Build Strategy
-   - 8 Backtest, Validate & Qualify Strategy
+2. Research
+   - Factor Research
+   - Model Research
+3. Simulation & Validation
+   - Strategy Lab
+   - Backtest
+   - Validation
+4. Library
+   - Component Library
 5. Paper Operations
    - Operations Dashboard
-   - 9 Prepare Paper Account & Deploy Bot
-   - 10 Monitor, Diagnose & Review
-6. Component Library
-7. Help, Settings, GitHub, and WeChat
+   - Paper Trading
+   - Bots
+   - Paper Feedback
+6. Settings
+7. Help
+8. GitHub
+9. WeChat
 
-Existing workspace URLs remain stable. Planned steps open an inspectable guide detail instead of a dead route; implemented and partial steps expose a direct action to the existing workspace.
+Existing workspace URLs remain stable. The ten-step contract below remains the
+product workflow model, while the sidebar exposes only its current workspaces.
 
 ## Step contract
 
@@ -91,7 +98,7 @@ The page paints its semantic content immediately. Its order is:
 1. Title, short orientation, and one recommended primary action.
 2. Compact Foundations cards.
 3. A full-width `@antv/infographic` overview of the four modules and ten steps.
-4. A keyboard-accessible semantic step list that remains available if the graphic is loading or unavailable.
+4. One compact, keyboard-accessible semantic step list next to the map, collapsed by default and available if the graphic is loading or unavailable.
 5. Step details in a right sheet on desktop and bottom sheet on mobile.
 6. Honest Recent Work and Active Blockers empty states until reliable evidence is available.
 
@@ -103,7 +110,7 @@ The infographic is presentation, not the only navigation surface. Selecting a mo
 - Use a restrained research-workbench layout with four accessible module accents.
 - Desktop presents modules left to right; compact layouts use a vertical semantic sequence.
 - The guide explicitly shows the feedback path from monitoring to Factor, Model, and Strategy research.
-- Group expansion is session-local. The active workflow module opens automatically; users may open or close other modules.
+- The Guide owns workflow-step navigation; the sidebar owns executable workspaces. A step list is not repeated as a second sidebar tree.
 - Every state uses text as well as color. Focus, labels, headings, and tap targets remain keyboard and screen-reader accessible.
 
 ## Recommendation order

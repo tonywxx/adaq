@@ -6,6 +6,7 @@ import {
 	ArrowRightIcon,
 	BookOpenIcon,
 	BoxesIcon,
+	ChevronDownIcon,
 	DatabaseIcon,
 	RouteIcon,
 } from "lucide-react";
@@ -35,7 +36,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { markStartup } from "@/lib/startup-timing";
-import { workflowModules, workflowSteps } from "./workflow";
+import { workflowSteps } from "./workflow";
 import {
 	SystemDashboard,
 	SystemDashboardLoading,
@@ -107,7 +108,7 @@ export function WorkflowGuidePage({
 							<ArrowRightIcon aria-hidden="true" />
 						</Link>
 						<a
-							href="#workflow-steps"
+							href="#workflow-map"
 							className={buttonVariants({ variant: "outline" })}
 						>
 							{t("workflow.browseSteps")}
@@ -144,7 +145,7 @@ export function WorkflowGuidePage({
 				</div>
 			</section>
 
-			<section aria-labelledby="workflow-map-title">
+			<section id="workflow-map" aria-labelledby="workflow-map-title">
 				<div className="mb-1">
 					<h2 id="workflow-map-title" className="text-lg font-semibold">
 						{t("workflow.map.title")}
@@ -158,71 +159,53 @@ export function WorkflowGuidePage({
 					<ArrowDownLeftIcon className="size-4 text-primary" aria-hidden="true" />
 					<span>{t("workflow.map.feedback")}</span>
 				</div>
-			</section>
-
-			<section id="workflow-steps" aria-labelledby="workflow-steps-title">
-				<div className="mb-3">
-					<h2 id="workflow-steps-title" className="text-lg font-semibold">
-						{t("workflow.stepsTitle")}
-					</h2>
-					<p className="text-sm text-muted-foreground">
-						{t("workflow.stepsDescription")}
-					</p>
-				</div>
-				<div className="grid gap-4 xl:grid-cols-2">
-					{workflowModules.map((module) => (
-						<section
-							key={module.id}
-							className="overflow-hidden rounded-xl border bg-card"
-							aria-labelledby={`workflow-module-${module.id}`}
-						>
-							<div className="flex items-center gap-3 border-b px-4 py-3">
-								<span className={`h-8 w-1 rounded-full ${module.accent}`} />
-								<div className="min-w-0 flex-1">
-									<h3 id={`workflow-module-${module.id}`} className="font-medium">
-										{t(`workflow.modules.${module.id}.title`)}
-									</h3>
-									<p className="text-xs text-muted-foreground">
-										{t("workflow.stepRange", { range: module.steps })}
-									</p>
-								</div>
-							</div>
-							<ol className="divide-y">
-								{workflowSteps
-									.filter((step) => step.module === module.id)
-									.map((step) => (
-										<li key={step.id}>
-											<Link
-												to="/help/workflow/$step"
-												params={{ step: String(step.id) }}
-												className="group flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-												aria-haspopup="dialog"
-											>
-												<span className="grid size-7 shrink-0 place-items-center rounded-full border bg-background font-mono text-xs font-semibold">
-													{step.id}
+				<details className="mt-3 overflow-hidden rounded-xl border bg-card">
+					<summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+						<span>
+							<span className="block font-medium">{t("workflow.stepsTitle")}</span>
+							<span className="mt-1 block text-xs text-muted-foreground">
+								{t("workflow.stepsDescription")}
+							</span>
+						</span>
+						<ChevronDownIcon
+							className="size-4 shrink-0 text-muted-foreground transition-transform [[open]_&]:rotate-180"
+							aria-hidden="true"
+						/>
+					</summary>
+					<div className="border-t px-3 py-3">
+						<ol className="grid gap-2 md:grid-cols-2">
+							{workflowSteps.map((step) => (
+								<li key={step.id}>
+									<Link
+										to="/help/workflow/$step"
+										params={{ step: String(step.id) }}
+										className="group flex min-h-11 items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										aria-haspopup="dialog"
+									>
+										<span className="grid size-7 shrink-0 place-items-center rounded-full border bg-background font-mono text-xs font-semibold">
+											{step.id}
+										</span>
+										<span className="min-w-0 flex-1">
+											<span className="flex flex-wrap items-center gap-2">
+												<span className="font-medium">
+													{t(`workflow.steps.${step.id}.shortTitle`)}
 												</span>
-												<span className="min-w-0 flex-1">
-													<span className="flex flex-wrap items-center gap-2">
-														<span className="font-medium">
-															{t(`workflow.steps.${step.id}.title`)}
-														</span>
-														<CapabilityBadge step={step} />
-													</span>
-													<span className="mt-1 block text-xs leading-5 text-muted-foreground">
-														{t(`workflow.steps.${step.id}.summary`)}
-													</span>
-												</span>
-												<ArrowRightIcon
-													className="mt-1 size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5"
-													aria-hidden="true"
-												/>
-											</Link>
-										</li>
-									))}
-							</ol>
-						</section>
-					))}
-				</div>
+												<CapabilityBadge step={step} />
+											</span>
+											<span className="mt-1 block text-xs leading-5 text-muted-foreground">
+												{t(`workflow.steps.${step.id}.summary`)}
+											</span>
+										</span>
+										<ArrowRightIcon
+											className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5"
+											aria-hidden="true"
+										/>
+									</Link>
+								</li>
+							))}
+						</ol>
+					</div>
+				</details>
 			</section>
 
 			<section

@@ -55,6 +55,13 @@ import { formatDecimal } from "./format-decimal";
 const EXECUTION_PAGE_SIZE = 100;
 const RUN_HISTORY_PAGE_SIZE = 10;
 const SNAPSHOT_PAGE_SIZE = 10;
+const BACKTEST_STAGES = [
+	{ id: "data", label: "Configure data" },
+	{ id: "strategy", label: "Choose strategy" },
+	{ id: "execution", label: "Review execution" },
+	{ id: "results", label: "Inspect results" },
+] as const;
+type BacktestStage = (typeof BACKTEST_STAGES)[number]["id"];
 
 function formatDraftError(error: DraftError) {
 	if (error.kind === "incomplete-draft")
@@ -157,9 +164,7 @@ export function BacktestPage({
 		[instrument, snapshotInfo, watchlist],
 	);
 	const draft = draftSession.draft;
-	const stage: "data" | "strategy" | "execution" | "results" = showResults
-		? "results"
-		: draftSession.stage;
+	const stage: BacktestStage = showResults ? "results" : draftSession.stage;
 	const selectedInstrumentKey = draft.selectedInstrumentKey;
 	const interval = draft.interval;
 	const start = draft.start;
@@ -369,9 +374,7 @@ export function BacktestPage({
 			active = false;
 		};
 	}, [adapter, draft.snapshot?.snapshotId, strategy, userId]);
-	const selectStage = async (
-		next: "data" | "strategy" | "execution" | "results",
-	) => {
+	const selectStage = async (next: BacktestStage) => {
 		if (next === "results") {
 			if (!run) {
 				setMessage("Run a Backtest before viewing Results.");
@@ -719,19 +722,17 @@ export function BacktestPage({
 			description={`${selectedInstrument.code} · OKX Spot · Long Only`}
 		>
 			<nav aria-label="Backtest stages" className="mb-4 grid gap-2 sm:grid-cols-4">
-				{(["data", "strategy", "execution", "results"] as const).map(
-					(item, index) => (
-						<Button
-							key={item}
-							type="button"
-							variant={stage === item ? "default" : "outline"}
-							aria-current={stage === item ? "step" : undefined}
-							onClick={() => void selectStage(item)}
-						>
-							{index + 1}. {item[0].toUpperCase() + item.slice(1)}
-						</Button>
-					),
-				)}
+				{BACKTEST_STAGES.map(({ id, label }) => (
+					<Button
+						key={id}
+						type="button"
+						variant={stage === id ? "default" : "outline"}
+						aria-current={stage === id ? "step" : undefined}
+						onClick={() => void selectStage(id)}
+					>
+						{label}
+					</Button>
+				))}
 			</nav>
 			<Card>
 				<CardHeader>

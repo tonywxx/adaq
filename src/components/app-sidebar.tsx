@@ -11,20 +11,14 @@ import {
 	SidebarMenu,
 	SidebarMenuButton,
 	SidebarMenuItem,
-	SidebarMenuSub,
-	SidebarMenuSubButton,
-	SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
-import { workflowModules, workflowSteps } from "@/features/workflow/workflow";
 import { Link, useLocation } from "@tanstack/react-router";
 import {
 	CandlestickChart,
 	BotIcon,
 	ChartBarIcon,
-	DatabaseIcon,
-	ChevronDownIcon,
 	CircleHelpIcon,
-	CommandIcon,
+	DatabaseIcon,
 	FileTextIcon,
 	GitCompareArrows,
 	LayoutDashboardIcon,
@@ -33,31 +27,19 @@ import {
 	Settings2Icon,
 	SigmaIcon,
 } from "lucide-react";
-import {
-	useEffect,
-	useState,
-	type ComponentProps,
-	type ReactNode,
-} from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
-const moduleIcons: Record<(typeof workflowModules)[number]["id"], ReactNode> = {
-	factor: <SigmaIcon aria-hidden="true" />,
-	model: <CommandIcon aria-hidden="true" />,
-	strategy: <FileTextIcon aria-hidden="true" />,
-	operations: <ChartBarIcon aria-hidden="true" />,
-};
-
 const secondaryItems = [
-	{
-		titleKey: "nav.help",
-		url: "/help/workflow",
-		icon: <CircleHelpIcon />,
-	},
 	{
 		titleKey: "nav.settings",
 		url: "/settings/general",
 		icon: <Settings2Icon />,
+	},
+	{
+		titleKey: "nav.help",
+		url: "/help/workflow",
+		icon: <CircleHelpIcon />,
 	},
 	{
 		titleKey: "nav.github",
@@ -74,35 +56,15 @@ const secondaryItems = [
 export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 	const { t } = useTranslation();
 	const location = useLocation();
-	const activeStep = workflowSteps.find(
-		(step) => location.pathname === `/help/workflow/${step.id}`,
-	);
-	const activeModule =
-		location.pathname === "/operations" ||
-		location.pathname === "/paper-trading" ||
-		location.pathname === "/bots" ||
-		location.pathname === "/paper-feedback"
-			? "operations"
-			: location.pathname === "/factors"
-				? "factor"
-				: location.pathname === "/strategies"
-					? "strategy"
-					: activeStep?.module;
-	const [openModules, setOpenModules] = useState<Set<string>>(
-		() => new Set([activeModule ?? "factor"]),
-	);
-
-	useEffect(() => {
-		if (!activeModule) return;
-		setOpenModules((current) => {
-			if (current.has(activeModule)) return current;
-			return new Set([...current, activeModule]);
-		});
-	}, [activeModule]);
 
 	const navSecondary = secondaryItems.map((item) => ({
 		...item,
 		title: t(item.titleKey),
+		active:
+			item.url.startsWith("/") &&
+			location.pathname.startsWith(
+				item.url === "/settings/general" ? "/settings" : item.url,
+			),
 	}));
 
 	return (
@@ -162,118 +124,54 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 					</SidebarGroupContent>
 				</SidebarGroup>
 
-				{workflowModules.map((module) => {
-					const open = openModules.has(module.id);
-					return (
-						<SidebarGroup key={module.id}>
-							<SidebarGroupLabel asChild>
-								<button
-									type="button"
-									className="w-full justify-between"
-									aria-expanded={open}
-									aria-controls={`sidebar-workflow-${module.id}`}
-									onClick={() =>
-										setOpenModules((current) => {
-											const next = new Set(current);
-											if (open) next.delete(module.id);
-											else next.add(module.id);
-											return next;
-										})
-									}
-								>
-									<span>{t(`workflow.modules.${module.id}.title`)}</span>
-									<span className="flex items-center gap-1 font-mono text-[10px]">
-										{module.steps}
-										<ChevronDownIcon
-											className={`transition-transform ${open ? "rotate-180" : ""}`}
-											aria-hidden="true"
-										/>
-									</span>
-								</button>
-							</SidebarGroupLabel>
-							{open ? (
-								<SidebarGroupContent id={`sidebar-workflow-${module.id}`}>
-									<SidebarMenu>
-										{module.id === "factor" ? (
-											<SidebarLink
-												to="/factors"
-												label={t("nav.factorResearch")}
-												icon={<SigmaIcon aria-hidden="true" />}
-												active={location.pathname === "/factors"}
-											/>
-										) : null}
-										{module.id === "operations" ? (
-											<>
-												<SidebarLink
-													to="/operations"
-													label={t("nav.operationsDashboard")}
-													icon={moduleIcons[module.id]}
-													active={location.pathname === "/operations"}
-												/>
-												<SidebarLink
-													to="/paper-trading"
-													label={t("nav.paperTrading")}
-													icon={moduleIcons[module.id]}
-													active={location.pathname === "/paper-trading"}
-												/>
-												<SidebarLink
-													to="/bots"
-													label={t("nav.bots")}
-													icon={<BotIcon aria-hidden="true" />}
-													active={location.pathname === "/bots"}
-												/>
-												<SidebarLink
-													to="/paper-feedback"
-													label={t("nav.paperFeedback")}
-													icon={<FileTextIcon aria-hidden="true" />}
-													active={location.pathname === "/paper-feedback"}
-												/>
-											</>
-										) : null}
-										{module.id === "strategy" ? (
-											<SidebarLink
-												to="/strategies"
-												label={t("nav.strategyLab")}
-												icon={<FileTextIcon aria-hidden="true" />}
-												active={location.pathname === "/strategies"}
-											/>
-										) : null}
-										<SidebarMenuItem>
-											<div className="flex h-8 items-center gap-2 rounded-md px-2 text-sm text-sidebar-foreground/80 [&>svg]:size-4">
-												{moduleIcons[module.id]}
-												<span>{t("nav.workflowSteps")}</span>
-											</div>
-											<SidebarMenuSub>
-												{workflowSteps
-													.filter((step) => step.module === module.id)
-													.map((step) => (
-														<SidebarMenuSubItem key={step.id}>
-															<SidebarMenuSubButton
-																asChild
-																isActive={location.pathname === `/help/workflow/${step.id}`}
-															>
-																<Link
-																	to="/help/workflow/$step"
-																	params={{ step: String(step.id) }}
-																>
-																	<span className="font-mono text-[10px] text-muted-foreground">
-																		{step.id}
-																	</span>
-																	<span>{t(`workflow.steps.${step.id}.shortTitle`)}</span>
-																</Link>
-															</SidebarMenuSubButton>
-														</SidebarMenuSubItem>
-													))}
-											</SidebarMenuSub>
-										</SidebarMenuItem>
-									</SidebarMenu>
-								</SidebarGroupContent>
-							) : null}
-						</SidebarGroup>
-					);
-				})}
+				<SidebarGroup>
+					<SidebarGroupLabel>{t("nav.research")}</SidebarGroupLabel>
+					<SidebarGroupContent>
+						<SidebarMenu>
+							<SidebarLink
+								to="/factors"
+								label={t("nav.factorResearch")}
+								icon={<SigmaIcon aria-hidden="true" />}
+								active={location.pathname === "/factors"}
+							/>
+							<SidebarLink
+								to="/models"
+								label={t("nav.modelResearch")}
+								icon={<FileTextIcon aria-hidden="true" />}
+								active={location.pathname === "/models"}
+							/>
+						</SidebarMenu>
+					</SidebarGroupContent>
+				</SidebarGroup>
 
 				<SidebarGroup>
+					<SidebarGroupLabel>{t("nav.simulationValidation")}</SidebarGroupLabel>
+					<SidebarGroupContent>
+						<SidebarMenu>
+							<SidebarLink
+								to="/strategies"
+								label={t("nav.strategyLab")}
+								icon={<FileTextIcon aria-hidden="true" />}
+								active={location.pathname === "/strategies"}
+							/>
+							<SidebarLink
+								to="/backtest"
+								label={t("nav.backtest")}
+								icon={<ChartBarIcon aria-hidden="true" />}
+								active={location.pathname === "/backtest"}
+							/>
+							<SidebarLink
+								to="/validation"
+								label={t("nav.validation")}
+								icon={<FileTextIcon aria-hidden="true" />}
+								active={location.pathname === "/validation"}
+							/>
+						</SidebarMenu>
+					</SidebarGroupContent>
+				</SidebarGroup>
+
+				<SidebarGroup>
+					<SidebarGroupLabel>{t("nav.library")}</SidebarGroupLabel>
 					<SidebarGroupContent>
 						<SidebarMenu>
 							<SidebarLink
@@ -281,6 +179,38 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 								label={t("nav.componentLibrary")}
 								icon={<ListIcon aria-hidden="true" />}
 								active={location.pathname === "/components"}
+							/>
+						</SidebarMenu>
+					</SidebarGroupContent>
+				</SidebarGroup>
+
+				<SidebarGroup>
+					<SidebarGroupLabel>{t("nav.paperOperations")}</SidebarGroupLabel>
+					<SidebarGroupContent>
+						<SidebarMenu>
+							<SidebarLink
+								to="/operations"
+								label={t("nav.operationsDashboard")}
+								icon={<ChartBarIcon aria-hidden="true" />}
+								active={location.pathname === "/operations"}
+							/>
+							<SidebarLink
+								to="/paper-trading"
+								label={t("nav.paperTrading")}
+								icon={<ChartBarIcon aria-hidden="true" />}
+								active={location.pathname === "/paper-trading"}
+							/>
+							<SidebarLink
+								to="/bots"
+								label={t("nav.bots")}
+								icon={<BotIcon aria-hidden="true" />}
+								active={location.pathname === "/bots"}
+							/>
+							<SidebarLink
+								to="/paper-feedback"
+								label={t("nav.paperFeedback")}
+								icon={<FileTextIcon aria-hidden="true" />}
+								active={location.pathname === "/paper-feedback"}
 							/>
 						</SidebarMenu>
 					</SidebarGroupContent>
@@ -307,7 +237,10 @@ function SidebarLink({
 		| "/data-foundation"
 		| "/features"
 		| "/factors"
+		| "/models"
 		| "/strategies"
+		| "/backtest"
+		| "/validation"
 		| "/operations"
 		| "/paper-trading"
 		| "/bots"

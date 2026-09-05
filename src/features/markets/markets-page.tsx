@@ -148,53 +148,6 @@ const MARKET_CONFIG = {
 	},
 } as const;
 
-export function LegacyOperationsDashboard() {
-	const { t } = useTranslation();
-	return (
-		<PageFrame
-			title={t("operations.title")}
-			description={t("operations.description")}
-		>
-			<Card>
-				<CardHeader>
-					<CardTitle>{t("operations.paperOperations")}</CardTitle>
-					<CardDescription>
-						{t("operations.paperOperationsDescription")}
-					</CardDescription>
-					<CardAction>
-						<Badge variant="outline">{t("operations.planned")}</Badge>
-					</CardAction>
-				</CardHeader>
-			</Card>
-			<Card>
-				<CardHeader>
-					<CardTitle>{t("operations.marketSessions")}</CardTitle>
-					<CardDescription>
-						{t("operations.marketSessionsDescription")}
-					</CardDescription>
-				</CardHeader>
-				<CardContent className="grid gap-2 sm:grid-cols-4">
-					{(
-						[
-							["/factors", t("nav.factorResearch")],
-							["/markets/crypto", t("markets.crypto.title")],
-						] as const
-					).map(([to, label]) => (
-						<Link
-							key={to}
-							to={to}
-							className="flex items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-muted"
-						>
-							<span>{label}</span>
-							<ArrowRightIcon className="size-4" aria-hidden="true" />
-						</Link>
-					))}
-				</CardContent>
-			</Card>
-		</PageFrame>
-	);
-}
-
 export function MarketsOverview() {
 	const { t } = useTranslation();
 	const catalog = useMarketSessionStore((state) => state.watchlist);

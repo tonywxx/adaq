@@ -16,13 +16,17 @@ test("workspace navigation keeps one authenticated shell mounted", () => {
 	expect(source).toMatch(/path: "\/settings\/\$section"/);
 });
 
-test("routes adaptive home, Help, Operations, and the supported OKX workspace", () => {
+test("routes direct workspaces and the supported OKX operations", () => {
 	const routerSource = readFileSync(
 		new URL("./router.tsx", import.meta.url),
 		"utf8",
 	);
 	const sidebarSource = readFileSync(
 		new URL("./components/app-sidebar.tsx", import.meta.url),
+		"utf8",
+	);
+	const workflowSource = readFileSync(
+		new URL("./features/workflow/workflow-page.tsx", import.meta.url),
 		"utf8",
 	);
 	const marketsSource = readFileSync(
@@ -34,7 +38,11 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 		"utf8",
 	);
 
-	expect(routerSource).toMatch(/path: "\/",\s*component: WorkflowHomePage/);
+	expect(routerSource).toContain("component: WorkflowHomePage");
+	expect(routerSource).toMatch(
+		/path: "\/help\/workflow"[\s\S]*?component: WorkflowGuidePage/,
+	);
+	expect(routerSource).toContain('path: "/help/workflow/$step"');
 	expect(routerSource).toMatch(
 		/path: "\/operations"[\s\S]*?<OperationsDashboardPage \/>/,
 	);
@@ -56,8 +64,6 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 	expect(routerSource).not.toMatch(
 		/import \{[\s\S]*MarketsOverview[\s\S]*\} from "@\/features\/markets\/markets-page"/,
 	);
-	expect(routerSource).toContain('path: "/help/workflow"');
-	expect(routerSource).toContain('path: "/help/workflow/$step"');
 	expect(routerSource).toMatch(/const FactorsPage = lazy\(/);
 	expect(routerSource).toMatch(
 		/path: "\/strategies"[\s\S]*?<StrategyLabPage \/>/,
@@ -73,6 +79,10 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 	expect(sidebarSource).toMatch(/t\("nav\.marketsData"\)/);
 	expect(sidebarSource).toMatch(/to="\/factors"/);
 	expect(sidebarSource).toMatch(/t\("nav\.factorResearch"\)/);
+	expect(sidebarSource).toMatch(/to="\/models"/);
+	expect(sidebarSource).toMatch(/t\("nav\.modelResearch"\)/);
+	expect(sidebarSource).toMatch(/to="\/backtest"/);
+	expect(sidebarSource).toMatch(/to="\/validation"/);
 	expect(sidebarSource).toMatch(/to="\/paper-trading"/);
 	expect(sidebarSource).toMatch(/t\("nav\.paperTrading"\)/);
 	expect(sidebarSource).toMatch(/to="\/bots"/);
@@ -80,10 +90,18 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 	expect(sidebarSource).toMatch(/to="\/paper-feedback"/);
 	expect(sidebarSource).toMatch(/t\("nav\.paperFeedback"\)/);
 	expect(sidebarSource).toMatch(/startsWith\("\/markets"\)/);
+	expect(sidebarSource).toMatch(/url: "\/help\/workflow"/);
+	expect(sidebarSource).toMatch(/titleKey: "nav\.help"/);
+	expect(sidebarSource).toMatch(/t\("nav\.research"\)/);
+	expect(sidebarSource).toMatch(/t\("nav\.simulationValidation"\)/);
+	expect(sidebarSource).not.toContain("workflowSteps");
+	expect(sidebarSource).not.toContain("SidebarMenuSub");
 	expect(botsSource).toMatch(/invoke<BotView>\("bot_deploy"/);
 	expect(botsSource).toMatch(/confirmFlatten/);
 	expect(botsSource).not.toMatch(/paper_order_(submit|cancel|sync)/);
-	expect(sidebarSource).toContain('url: "/help/workflow"');
+	expect(workflowSource).toContain('id="workflow-map"');
+	expect(workflowSource).toContain("<details");
+	expect(workflowSource).not.toContain('id="workflow-steps"');
 	expect(marketsSource).toMatch(/staleTime: 5 \* 60_000/);
 	expect(marketsSource).toMatch(/gcTime: 30 \* 60_000/);
 	expect(marketsSource).toMatch(/aria-busy=/);
@@ -91,7 +109,7 @@ test("routes adaptive home, Help, Operations, and the supported OKX workspace", 
 	expect(marketsSource).toMatch(/gapsUnknown/);
 });
 
-test("keeps the ten-step workflow ordered and mapped to four modules", () => {
+test("keeps the ten-step workflow ordered and mapped to direct workspaces", () => {
 	expect(workflowSteps.map((step) => step.id)).toEqual([
 		1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 	]);
@@ -108,21 +126,19 @@ test("keeps the ten-step workflow ordered and mapped to four modules", () => {
 		["strategy", [7, 8]],
 		["operations", [9, 10]],
 	]);
-	expect(workflowSteps.map((step) => step.capability)).toEqual([
-		"available",
-		"available",
-		"partial",
-		"available",
-		"partial",
-		"partial",
-		"available",
-		"partial",
-		"planned",
-		"planned",
-	]);
 	expect(workflowSteps.slice(0, 2)).toEqual([
-		{ id: 1, module: "factor", capability: "available", target: "/factors" },
-		{ id: 2, module: "factor", capability: "available", target: "/factors" },
+		{
+			id: 1,
+			module: "factor",
+			capability: "available",
+			target: "/factors",
+		},
+		{
+			id: 2,
+			module: "factor",
+			capability: "available",
+			target: "/factors",
+		},
 	]);
 	expect(workflowSteps[3]).toEqual({
 		id: 4,
@@ -136,6 +152,20 @@ test("keeps the ten-step workflow ordered and mapped to four modules", () => {
 		capability: "available",
 		target: "/strategies",
 	});
+	expect(workflowSteps.slice(-2)).toEqual([
+		{
+			id: 9,
+			module: "operations",
+			capability: "planned",
+			milestone: "M15–M16",
+		},
+		{
+			id: 10,
+			module: "operations",
+			capability: "planned",
+			milestone: "M17–M18",
+		},
+	]);
 });
 
 test("Models switches immediately and keeps loading inside its controls", () => {
