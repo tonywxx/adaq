@@ -22,7 +22,7 @@ use std::{
 
 pub const WORKER_ARTIFACT_NAME: &str = "adaq-bot-worker";
 pub const WORKER_ARTIFACT_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const WORKER_PROTOCOL_VERSION: &str = "adaq-bot-worker-ipc@1.0.0";
+pub const WORKER_PROTOCOL_VERSION: &str = "adaq-bot-worker-ipc@1.1.0";
 pub const WORKER_RUNTIME_VERSION: &str = concat!("adaq-bot-runtime@", env!("CARGO_PKG_VERSION"));
 pub const WORKER_SIGNATURE_SCHEMA_VERSION: &str = "adaq-bot-worker-signature@1.0.0";
 pub const WORKER_SIGNING_KEY_ID: &str = "adaq-bot-worker-ed25519-v1";
@@ -571,6 +571,67 @@ pub struct WorkerFeatureRow {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerEvaluationValue {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerEvaluationRow {
+    pub instrument_id: String,
+    pub observation_time_ms: i64,
+    pub available_at_ms: i64,
+    pub factor_outputs: Vec<WorkerEvaluationValue>,
+    pub model_outputs: Vec<WorkerEvaluationValue>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerEvaluationEvidence {
+    pub rows: Vec<WorkerEvaluationRow>,
+}
+
+const MAX_EVALUATION_ROWS: usize = 4_096;
+const MAX_EVALUATION_OUTPUTS_PER_ROW: usize = 128;
+
+impl WorkerEvaluationEvidence {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.rows.len() > MAX_EVALUATION_ROWS {
+            return Err("evaluation evidence row limit exceeded".into());
+        }
+        for row in &self.rows {
+            if !is_bounded_text(&row.instrument_id, 128)
+                || row.observation_time_ms < 0
+                || row.available_at_ms < 0
+                || row.available_at_ms > row.observation_time_ms
+            {
+                return Err("evaluation evidence row identity is invalid".into());
+            }
+            let output_count = row
+                .factor_outputs
+                .len()
+                .saturating_add(row.model_outputs.len());
+            if output_count > MAX_EVALUATION_OUTPUTS_PER_ROW {
+                return Err("evaluation evidence output limit exceeded".into());
+            }
+            let mut names = std::collections::BTreeSet::new();
+            for output in row.factor_outputs.iter().chain(&row.model_outputs) {
+                if output.name.len() > 128
+                    || !is_lower_kebab_text(&output.name)
+                    || !is_decimal_text(&output.value)
+                    || !names.insert(&output.name)
+                {
+                    return Err("evaluation evidence output is invalid".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkerPosition {
     pub instrument_id: String,
     pub quantity: String,
@@ -784,6 +845,7 @@ pub enum WorkerMessage {
         decision_id: String,
         produced_at_ms: i64,
         target: WorkerTarget,
+        evaluation: WorkerEvaluationEvidence,
     },
     NoTarget {
         sequence: u64,
@@ -1007,6 +1069,7 @@ fn validate_message_shape(value: &Value) -> Result<(), ProtocolError> {
             "decisionId",
             "producedAtMs",
             "target",
+            "evaluation",
         ]
         .as_slice(),
         "no-target" => [
@@ -1286,6 +1349,7 @@ pub enum WorkerDecisionResult {
         decision_id: String,
         produced_at_ms: i64,
         target: WorkerTarget,
+        evaluation: WorkerEvaluationEvidence,
     },
     NoTarget {
         request_id: String,
@@ -1811,12 +1875,16 @@ impl WorkerSupervisor {
                 decision_id,
                 produced_at_ms,
                 target,
+                evaluation,
                 ..
             } if received_request == request_id => {
                 if let Err(error) =
                     target.validate_for(&self.attempt.bundle().input.strategy.world, &target_input)
                 {
                     return self.fail(&error.to_string());
+                }
+                if let Err(error) = evaluation.validate() {
+                    return self.fail(&error);
                 }
                 if let Err(error) =
                     self.attempt
@@ -1829,6 +1897,7 @@ impl WorkerSupervisor {
                     decision_id,
                     produced_at_ms,
                     target,
+                    evaluation,
                 })
             }
             WorkerMessage::NoTarget {
@@ -2456,5 +2525,25 @@ mod tests {
             target.validate_for(&StrategyWorld::PortfolioStrategy, &input),
             Err(RuntimeError::InvalidTarget)
         );
+    }
+
+    #[test]
+    fn evaluation_evidence_validation_rejects_duplicate_or_non_decimal_outputs() {
+        let evidence = WorkerEvaluationEvidence {
+            rows: vec![WorkerEvaluationRow {
+                instrument_id: "BTC-USDT".into(),
+                observation_time_ms: 2,
+                available_at_ms: 1,
+                factor_outputs: vec![WorkerEvaluationValue {
+                    name: "score".into(),
+                    value: "1.5".into(),
+                }],
+                model_outputs: vec![WorkerEvaluationValue {
+                    name: "score".into(),
+                    value: "not-a-decimal".into(),
+                }],
+            }],
+        };
+        assert!(evidence.validate().is_err());
     }
 }

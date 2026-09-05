@@ -37,9 +37,11 @@ use adaq_data_core::{
     TickerStreamEvent, TradeStreamEvent,
     market::{InstrumentId, PriceBasis, VenueKind},
 };
+use adaq_paper_trading_core::ExecutionOutcome;
 use rust_decimal::Decimal;
 use serde::Serialize;
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
 };
@@ -1240,6 +1242,19 @@ fn paper_feedback_snapshot_create(
         bot.bundle.candidate_revision,
     )?;
     let research_evidence = paper_feedback_research_evidence(&bot, &qualification, &revision)?;
+    let (market_snapshot, market_bars) =
+        state.snapshot_for_user(&user_id, &bot.bundle.market_data_snapshot_id)?;
+    let horizon_bars = strategy_target_horizon_bars(&revision);
+    let (market_evidence, realized_observations) = paper_feedback_market_evidence(
+        &bot,
+        &attempt,
+        &market_snapshot,
+        &market_bars,
+        horizon_bars,
+        request.observation_start_ms,
+        request.observation_end_ms,
+        request.realization_cutoff_ms,
+    );
     let account = state.paper_trading.view_optional(&user_id)?;
     if account
         .as_ref()
@@ -1248,9 +1263,19 @@ fn paper_feedback_snapshot_create(
         return Err("Paper account evidence does not match the Deployment Bundle".into());
     }
     let health = state.operations.health_for_user(&user_id)?;
-    let evidence =
-        paper_feedback_evidence(&bot, &attempt, account.as_ref(), &health, research_evidence);
-    let host_state = paper_feedback_state(&bot, &attempt, account.as_ref(), &health);
+    let evidence = paper_feedback_evidence(
+        &bot,
+        &attempt,
+        account.as_ref(),
+        &health,
+        research_evidence,
+        market_evidence,
+    );
+    let host_state = paper_feedback_state(
+        attempt.state,
+        realized_observations,
+        request.required_observations,
+    );
     state.paper_feedback.create_snapshot_with_state(
         paper_feedback::FeedbackSnapshotInput {
             user_id,
@@ -1260,7 +1285,7 @@ fn paper_feedback_snapshot_create(
             observation_start_ms: request.observation_start_ms,
             observation_end_ms: request.observation_end_ms,
             realization_cutoff_ms: request.realization_cutoff_ms,
-            realized_observations: 0,
+            realized_observations,
             required_observations: request.required_observations,
             evidence,
         },
@@ -1290,23 +1315,20 @@ fn paper_feedback_report_create(
     let snapshot = state
         .paper_feedback
         .snapshot_for_user(&user_id, &request.snapshot_id)?;
-    let report = state.paper_feedback.create_report(
+    let metrics = paper_feedback_metrics(&snapshot, request.lens);
+    let report_state = paper_feedback_report_state(&snapshot, request.lens, &metrics);
+    let report = state.paper_feedback.create_report_with_state(
         paper_feedback::FeedbackReportInput {
             user_id: user_id.clone(),
             snapshot_id: request.snapshot_id,
             lens: request.lens,
-            metrics: paper_feedback_metrics(&snapshot, request.lens),
+            metrics,
             comparable_evidence_id: None,
         },
         unix_now_ms(),
+        report_state,
     )?;
-    if matches!(
-        report.evidence_state,
-        paper_feedback::EvidenceState::Unknown
-            | paper_feedback::EvidenceState::Missing
-            | paper_feedback::EvidenceState::Incompatible
-            | paper_feedback::EvidenceState::Failed
-    ) {
+    if report.evidence_state != paper_feedback::EvidenceState::Ready {
         state.operations.observe(operations::HealthObservation {
             user_id,
             entity_id: report.report_id.clone(),
@@ -1352,45 +1374,292 @@ fn paper_feedback_review_decide(
 }
 
 fn paper_feedback_state(
-    bot: &bot_operations::BotView,
-    attempt: &bot_operations::BotRuntimeAttempt,
-    account: Option<&paper_trading::PaperAccountView>,
-    health: &[operations::HealthView],
+    attempt_state: adaq_bot_runtime::LifecycleState,
+    realized_observations: u64,
+    required_observations: u64,
 ) -> paper_feedback::EvidenceState {
-    let scope_compatible = account.is_none_or(|account| {
-        account
-            .account
-            .positions
-            .keys()
-            .chain(account.orders.iter().map(|order| &order.instrument))
-            .all(|instrument| instrument_in_scope(&bot.bundle.schedule, instrument))
-    });
-    if !scope_compatible {
-        return paper_feedback::EvidenceState::Incompatible;
-    }
-    if account.is_none() {
-        return paper_feedback::EvidenceState::Missing;
-    }
-    if attempt.state == adaq_bot_runtime::LifecycleState::Faulted {
+    if attempt_state == adaq_bot_runtime::LifecycleState::Faulted {
         return paper_feedback::EvidenceState::Failed;
     }
-    if attempt.reconciliation_required
-        || account.is_some_and(|account| {
-            account.restart_required
-                || account.reconciliation
-                    != adaq_paper_trading_core::ReconciliationState::Reconciled
-        })
-        || health.iter().any(|item| {
-            item.required
-                && matches!(
-                    item.state,
-                    operations::HealthState::Critical | operations::HealthState::Unknown
-                )
-        })
-    {
-        return paper_feedback::EvidenceState::Unknown;
+    if realized_observations == 0 {
+        paper_feedback::EvidenceState::NotYetRealized
+    } else if realized_observations < required_observations {
+        paper_feedback::EvidenceState::InsufficientEvidence
+    } else {
+        paper_feedback::EvidenceState::Ready
     }
-    paper_feedback::EvidenceState::NotYetRealized
+}
+
+const MAX_FEEDBACK_OBSERVATION_ROWS: usize = 4_096;
+
+fn retain_feedback_row(
+    rows: &mut Vec<serde_json::Value>,
+    excluded_rows: &mut u64,
+    value: serde_json::Value,
+) {
+    if rows.len() < MAX_FEEDBACK_OBSERVATION_ROWS {
+        rows.push(value);
+    } else {
+        *excluded_rows = excluded_rows.saturating_add(1);
+    }
+}
+
+fn retain_feedback_excluded_row(
+    rows: &mut Vec<serde_json::Value>,
+    excluded_rows: &mut u64,
+    value: serde_json::Value,
+) {
+    *excluded_rows = excluded_rows.saturating_add(1);
+    if rows.len() < MAX_FEEDBACK_OBSERVATION_ROWS {
+        rows.push(value);
+    }
+}
+
+fn strategy_target_horizon_bars(
+    revision: &strategy_candidate::StrategyCandidateRevision,
+) -> Option<u32> {
+    revision
+        .definition
+        .input_slots
+        .iter()
+        .filter_map(|slot| match &slot.binding {
+            strategy_candidate::StrategyInputBinding::Model(binding)
+                if binding.target_horizon_bars > 0 =>
+            {
+                Some(binding.target_horizon_bars)
+            }
+            _ => None,
+        })
+        .min()
+}
+
+fn strategy_target_exposure(
+    target: Option<&adaq_bot_runtime::WorkerTarget>,
+    instrument: &str,
+) -> Option<Decimal> {
+    match target? {
+        adaq_bot_runtime::WorkerTarget::Strategy { exposures, .. } => exposures
+            .iter()
+            .find(|exposure| exposure.instrument_id == instrument)
+            .and_then(|exposure| exposure.exposure.parse().ok()),
+        adaq_bot_runtime::WorkerTarget::Portfolio { weights, .. } => weights
+            .iter()
+            .find(|weight| weight.instrument_id == instrument)
+            .and_then(|weight| weight.weight.parse().ok()),
+    }
+}
+
+fn paper_feedback_market_evidence(
+    bot: &bot_operations::BotView,
+    attempt: &bot_operations::BotRuntimeAttempt,
+    snapshot: &MarketDataSnapshot,
+    bars: &[OhlcvBar],
+    horizon_bars: Option<u32>,
+    observation_start_ms: i64,
+    observation_end_ms: i64,
+    realization_cutoff_ms: i64,
+) -> (serde_json::Value, u64) {
+    let interval = snapshot.interval;
+    let mut rows = Vec::new();
+    let mut candidate_rows = 0_u64;
+    let mut realized_observations = 0_u64;
+    let mut excluded_rows = 0_u64;
+    let schedule_allows = |instrument: &str| {
+        instrument_in_scope(&bot.bundle.schedule, instrument)
+            && (instrument == snapshot.code
+                || instrument == format!("{}:{}", snapshot.src, snapshot.code))
+    };
+    for decision in &attempt.decisions {
+        let Some(clock) = decision.clock.as_ref() else {
+            retain_feedback_excluded_row(
+                &mut rows,
+                &mut excluded_rows,
+                serde_json::json!({
+                    "decisionId": decision.decision_id,
+                    "instrumentId": serde_json::Value::Null,
+                    "observationTimeMs": serde_json::Value::Null,
+                    "targetAvailable": false,
+                    "targetOutcomeAvailable": false,
+                    "reason": "decision-clock-missing",
+                }),
+            );
+            continue;
+        };
+        let decision_time_ms = clock.decision_time_ms();
+        if !(observation_start_ms..=observation_end_ms).contains(&decision_time_ms) {
+            continue;
+        }
+        let evaluation_rows = decision
+            .evaluation
+            .as_ref()
+            .map(|evidence| evidence.rows.as_slice())
+            .unwrap_or(&[]);
+        if evaluation_rows.is_empty() {
+            retain_feedback_excluded_row(
+                &mut rows,
+                &mut excluded_rows,
+                serde_json::json!({
+                    "decisionId": decision.decision_id,
+                    "instrumentId": serde_json::Value::Null,
+                    "observationTimeMs": decision_time_ms,
+                    "targetAvailable": false,
+                    "reason": "pipeline-evaluation-missing",
+                }),
+            );
+            continue;
+        }
+        for row in evaluation_rows {
+            candidate_rows = candidate_rows.saturating_add(1);
+            let mut evidence = serde_json::json!({
+                "decisionId": decision.decision_id,
+                "instrumentId": row.instrument_id,
+                "observationTimeMs": row.observation_time_ms,
+                "availableAtMs": row.available_at_ms,
+                "factorOutputs": row.factor_outputs,
+                "modelOutputs": row.model_outputs,
+                "targetAvailable": false,
+                "targetOutcomeAvailable": false,
+                "targetExposure": serde_json::Value::Null,
+            });
+            let reason = if !schedule_allows(&row.instrument_id) {
+                Some("instrument-not-in-frozen-snapshot")
+            } else if horizon_bars.is_none() {
+                Some("target-horizon-unbound")
+            } else if !(observation_start_ms..=observation_end_ms)
+                .contains(&row.observation_time_ms)
+            {
+                Some("observation-outside-requested-window")
+            } else if !matches!(
+                &bot.bundle.schedule,
+                bot_operations::BotSchedule::ClosedBar { .. }
+            ) && matches!(
+                &bot.bundle.schedule,
+                bot_operations::BotSchedule::ScheduledCrossSection { instruments, .. }
+                    if instruments.len() > 1
+            ) {
+                Some("portfolio-realization-requires-universe-snapshot")
+            } else if row.observation_time_ms > realization_cutoff_ms {
+                Some("observation-after-realization-cutoff")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                evidence["reason"] = serde_json::Value::String(reason.into());
+                retain_feedback_excluded_row(&mut rows, &mut excluded_rows, evidence);
+                continue;
+            }
+            let current_open = bars.iter().find_map(|bar| {
+                if bar.open_time_ms == row.observation_time_ms {
+                    Some(bar.open_time_ms)
+                } else {
+                    adaq_data_core::next_bar_open_time_ms(bar.open_time_ms, interval)
+                        .ok()
+                        .filter(|close| *close == row.observation_time_ms)
+                        .map(|_| bar.open_time_ms)
+                }
+            });
+            let Some(current_open) = current_open else {
+                evidence["reason"] = serde_json::Value::String("observation-not-aligned".into());
+                retain_feedback_excluded_row(&mut rows, &mut excluded_rows, evidence);
+                continue;
+            };
+            let mut future_open = current_open;
+            let mut unavailable_reason = None;
+            for _ in 0..horizon_bars.unwrap_or_default() {
+                future_open = match adaq_data_core::next_bar_open_time_ms(future_open, interval) {
+                    Ok(next) => next,
+                    Err(_) => {
+                        unavailable_reason = Some("target-horizon-overflow");
+                        break;
+                    }
+                };
+            }
+            let future_close_time_ms = if unavailable_reason.is_none() {
+                match adaq_data_core::next_bar_open_time_ms(future_open, interval) {
+                    Ok(close) => Some(close),
+                    Err(_) => {
+                        unavailable_reason = Some("target-horizon-overflow");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            if unavailable_reason.is_none()
+                && future_close_time_ms.is_some_and(|close| close > realization_cutoff_ms)
+            {
+                unavailable_reason = Some("target-horizon-not-matured");
+            }
+            let current_bar = bars.iter().find(|bar| bar.open_time_ms == current_open);
+            let future_bar = bars.iter().find(|bar| bar.open_time_ms == future_open);
+            if unavailable_reason.is_none() && (current_bar.is_none() || future_bar.is_none()) {
+                unavailable_reason = Some(
+                    if snapshot.gaps.iter().any(|gap| {
+                        future_open >= gap.start_time_ms && future_open < gap.end_time_ms
+                    }) {
+                        "market-data-gap"
+                    } else {
+                        "market-data-unavailable"
+                    },
+                );
+            }
+            if let Some(reason) = unavailable_reason {
+                evidence["reason"] = serde_json::Value::String(reason.into());
+                retain_feedback_excluded_row(&mut rows, &mut excluded_rows, evidence);
+                continue;
+            }
+            let current_close = current_bar.expect("checked above").close;
+            let future_close = future_bar.expect("checked above").close;
+            let Some(target_return) = future_close
+                .checked_div(current_close)
+                .and_then(|value| value.checked_sub(Decimal::ONE))
+            else {
+                evidence["reason"] = serde_json::Value::String("target-return-invalid".into());
+                retain_feedback_excluded_row(&mut rows, &mut excluded_rows, evidence);
+                continue;
+            };
+            evidence["targetAvailable"] = serde_json::Value::Bool(true);
+            evidence["targetReturn"] = serde_json::Value::String(target_return.to_string());
+            evidence["targetRealizedAtMs"] = serde_json::Value::Number(
+                future_close_time_ms
+                    .expect("horizon maturity checked above")
+                    .into(),
+            );
+            if let Some(exposure) =
+                strategy_target_exposure(decision.target.as_ref(), &row.instrument_id)
+            {
+                evidence["targetExposure"] = serde_json::Value::String(exposure.to_string());
+                if let Some(target_outcome) = target_return.checked_mul(exposure) {
+                    evidence["targetOutcomeAvailable"] = serde_json::Value::Bool(true);
+                    evidence["targetOutcomeReturn"] =
+                        serde_json::Value::String(target_outcome.to_string());
+                }
+            } else {
+                evidence["reason"] =
+                    serde_json::Value::String("strategy-target-missing-for-instrument".into());
+            }
+            realized_observations = realized_observations.saturating_add(1);
+            retain_feedback_row(&mut rows, &mut excluded_rows, evidence);
+        }
+    }
+    (
+        serde_json::json!({
+            "snapshotId": snapshot.snapshot_id,
+            "src": snapshot.src,
+            "code": snapshot.code,
+            "interval": snapshot.interval.as_str(),
+            "startTimeMs": snapshot.start_time_ms,
+            "endTimeMs": snapshot.end_time_ms,
+            "barCount": snapshot.bar_count,
+            "gaps": snapshot.gaps,
+            "horizonBars": horizon_bars,
+            "candidateRowCount": candidate_rows,
+            "realizedObservationCount": realized_observations,
+            "excludedRowCount": excluded_rows,
+            "rows": rows,
+        }),
+        realized_observations,
+    )
 }
 
 fn paper_feedback_evidence(
@@ -1399,6 +1668,7 @@ fn paper_feedback_evidence(
     account: Option<&paper_trading::PaperAccountView>,
     health: &[operations::HealthView],
     research: serde_json::Value,
+    market: serde_json::Value,
 ) -> serde_json::Value {
     serde_json::json!({
         "bundle": {
@@ -1429,6 +1699,9 @@ fn paper_feedback_evidence(
                 "decisionId": item.decision_id,
                 "outcome": item.outcome,
                 "targetHash": item.target_hash,
+                "target": item.target.as_ref(),
+                "clock": item.clock.as_ref(),
+                "evaluation": item.evaluation.as_ref(),
                 "observedAtMs": item.observed_at_ms,
             })).collect::<Vec<_>>(),
             "orders": attempt.orders.iter().map(|item| serde_json::json!({
@@ -1439,29 +1712,77 @@ fn paper_feedback_evidence(
                 "observedAtMs": item.observed_at_ms,
             })).collect::<Vec<_>>(),
         },
-        "paper": account.map(|account| serde_json::json!({
-            "accountId": account.account.account_id,
-            "currency": account.account.currency,
-            "observedAtMs": account.account.observed_at_ms,
-            "reconciliation": account.reconciliation,
-            "restartRequired": account.restart_required,
-            "positionInstruments": account.account.positions.keys().collect::<Vec<_>>(),
-            "orderCount": account.orders.len(),
-            "fillCount": account.fills.len(),
-            "riskDecisionCount": account.risk_decisions.len(),
-            "orders": account.orders.iter().map(|order| serde_json::json!({
-                "orderId": order.order_id,
-                "instrument": order.instrument,
-                "status": order.status,
-                "submittedAtMs": order.submitted_at_ms,
-            })).collect::<Vec<_>>(),
-            "fills": account.fills.iter().map(|fill| serde_json::json!({
-                "fillId": fill.fill_id,
-                "orderId": fill.order_id,
-                "occurredAtMs": fill.occurred_at_ms,
-                "fee": fill.fee,
-            })).collect::<Vec<_>>(),
-        })),
+        "paper": account.map(|account| {
+            let attempt_operations = attempt
+                .orders
+                .iter()
+                .map(|order| order.operation_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let provider_evidence = account
+                .provider_evidence
+                .iter()
+                .filter(|outcome| {
+                    paper_provider_operation_id(outcome)
+                        .is_some_and(|operation_id| attempt_operations.contains(operation_id))
+                })
+                .collect::<Vec<_>>();
+            let local_order_ids = provider_evidence
+                .iter()
+                .filter_map(|outcome| paper_provider_local_order_id(outcome).map(str::to_owned))
+                .collect::<std::collections::BTreeSet<_>>();
+            let orders = account
+                .orders
+                .iter()
+                .filter(|order| local_order_ids.contains(&order.order_id))
+                .collect::<Vec<_>>();
+            let order_ids = orders
+                .iter()
+                .map(|order| order.order_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let fills = account
+                .fills
+                .iter()
+                .filter(|fill| order_ids.contains(fill.order_id.as_str()))
+                .collect::<Vec<_>>();
+            let scope_compatible = account
+                .account
+                .positions
+                .keys()
+                .chain(orders.iter().map(|order| &order.instrument))
+                .all(|instrument| instrument_in_scope(&bot.bundle.schedule, instrument));
+            serde_json::json!({
+                "accountId": account.account.account_id,
+                "currency": account.account.currency,
+                "observedAtMs": account.account.observed_at_ms,
+                "reconciliation": account.reconciliation,
+                "restartRequired": account.restart_required,
+                "scopeCompatible": scope_compatible,
+                "positionInstruments": account.account.positions.keys().collect::<Vec<_>>(),
+                "orderCount": orders.len(),
+                "fillCount": fills.len(),
+                "riskDecisionCount": account.risk_decisions.len(),
+                "orders": orders.iter().map(|order| serde_json::json!({
+                    "orderId": order.order_id,
+                    "instrument": order.instrument,
+                    "side": &order.side,
+                    "quantity": order.quantity,
+                    "filledQuantity": order.filled_quantity,
+                    "limitPrice": order.limit_price,
+                    "status": order.status,
+                    "submittedAtMs": order.submitted_at_ms,
+                })).collect::<Vec<_>>(),
+                "fills": fills.iter().map(|fill| serde_json::json!({
+                    "fillId": fill.fill_id,
+                    "orderId": fill.order_id,
+                    "quantity": fill.quantity,
+                    "price": fill.price,
+                    "occurredAtMs": fill.occurred_at_ms,
+                    "fee": fill.fee,
+                    "evidence": &fill.evidence,
+                })).collect::<Vec<_>>(),
+                "providerEvidence": provider_evidence.iter().map(|outcome| paper_provider_evidence(outcome)).collect::<Vec<_>>(),
+            })
+        }),
         "operations": {
             "health": health.iter().map(|item| serde_json::json!({
                 "entityId": item.entity_id,
@@ -1473,11 +1794,46 @@ fn paper_feedback_evidence(
             })).collect::<Vec<_>>(),
         },
         "research": research,
+        "market": market,
         "retention": {
-            "providerEvidenceIncluded": false,
+            "providerEvidenceIncluded": account.is_some(),
             "credentialsIncluded": false,
             "rawSecretsIncluded": false,
         },
+    })
+}
+
+fn paper_provider_fields(outcome: &ExecutionOutcome) -> &adaq_paper_trading_core::ProviderEvidence {
+    match outcome {
+        ExecutionOutcome::Accepted(evidence)
+        | ExecutionOutcome::Rejected(evidence)
+        | ExecutionOutcome::Uncertain(evidence) => evidence,
+    }
+}
+
+fn paper_provider_operation_id(outcome: &ExecutionOutcome) -> Option<&str> {
+    Some(paper_provider_fields(outcome).operation_id.as_str())
+}
+
+fn paper_provider_local_order_id(outcome: &ExecutionOutcome) -> Option<&str> {
+    paper_provider_fields(outcome).local_order_id.as_deref()
+}
+
+fn paper_provider_evidence(outcome: &ExecutionOutcome) -> serde_json::Value {
+    let (outcome, evidence) = match outcome {
+        ExecutionOutcome::Accepted(evidence) => ("accepted", evidence),
+        ExecutionOutcome::Rejected(evidence) => ("rejected", evidence),
+        ExecutionOutcome::Uncertain(evidence) => ("uncertain", evidence),
+    };
+    serde_json::json!({
+        "outcome": outcome,
+        "provider": evidence.provider,
+        "operationId": evidence.operation_id,
+        "localOrderId": evidence.local_order_id,
+        "providerOrderId": evidence.provider_order_id,
+        "status": evidence.status,
+        "errorCode": evidence.error_code,
+        "observedAtMs": evidence.observed_at_ms,
     })
 }
 
@@ -1533,6 +1889,7 @@ fn paper_feedback_research_evidence(
             "validationMethodVersion": qualification.context.validation_method_version,
             "aggregationRuleVersion": qualification.context.aggregation_rule_version,
             "forecastInputs": qualification.context.signal_instances,
+            "targetHorizonBars": strategy_target_horizon_bars(revision),
         },
         "strategyRevision": {
             "candidateId": revision.candidate_id,
@@ -1548,41 +1905,327 @@ fn paper_feedback_research_evidence(
     }))
 }
 
+fn metric_number(value: &serde_json::Value) -> Option<f64> {
+    let value = value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))?;
+    value.is_finite().then_some(value)
+}
+
+fn metric_pairs(rows: &[serde_json::Value], output_key: &str) -> BTreeMap<String, Vec<(f64, f64)>> {
+    let mut pairs = BTreeMap::new();
+    for row in rows {
+        if row["targetAvailable"] != serde_json::Value::Bool(true) {
+            continue;
+        }
+        let Some(target) = metric_number(&row["targetReturn"]) else {
+            continue;
+        };
+        for output in row[output_key].as_array().into_iter().flatten() {
+            let Some(name) = output["name"].as_str() else {
+                continue;
+            };
+            let Some(value) = metric_number(&output["value"]) else {
+                continue;
+            };
+            pairs
+                .entry(name.to_owned())
+                .or_insert_with(Vec::new)
+                .push((value, target));
+        }
+    }
+    pairs
+}
+
+fn metric_row_count(rows: &[serde_json::Value], output_key: &str) -> u64 {
+    rows.iter()
+        .filter(|row| row["targetAvailable"] == serde_json::Value::Bool(true))
+        .filter(|row| {
+            row[output_key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|output| metric_number(&output["value"]).is_some())
+        })
+        .count() as u64
+}
+
+fn metric_correlation(pairs: &[(f64, f64)]) -> Option<f64> {
+    if pairs.len() < 2 {
+        return None;
+    }
+    let left_mean = pairs.iter().map(|(left, _)| *left).sum::<f64>() / pairs.len() as f64;
+    let right_mean = pairs.iter().map(|(_, right)| *right).sum::<f64>() / pairs.len() as f64;
+    let mut numerator = 0.0;
+    let mut left_sum = 0.0;
+    let mut right_sum = 0.0;
+    for (left, right) in pairs {
+        let left_delta = *left - left_mean;
+        let right_delta = *right - right_mean;
+        numerator += left_delta * right_delta;
+        left_sum += left_delta * left_delta;
+        right_sum += right_delta * right_delta;
+    }
+    let denominator = (left_sum * right_sum).sqrt();
+    (denominator > 0.0)
+        .then_some(numerator / denominator)
+        .filter(|value| value.is_finite())
+}
+
+fn metric_rank(values: &[f64]) -> Vec<f64> {
+    let mut order = (0..values.len()).collect::<Vec<_>>();
+    order.sort_by(|left, right| {
+        values[*left]
+            .partial_cmp(&values[*right])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.cmp(right))
+    });
+    let mut ranks = vec![0.0; values.len()];
+    let mut index = 0;
+    while index < order.len() {
+        let mut end = index + 1;
+        while end < order.len() && values[order[index]] == values[order[end]] {
+            end += 1;
+        }
+        let rank = (index + end - 1) as f64 / 2.0 + 1.0;
+        for position in &order[index..end] {
+            ranks[*position] = rank;
+        }
+        index = end;
+    }
+    ranks
+}
+
+fn metric_rank_correlation(pairs: &[(f64, f64)]) -> Option<f64> {
+    let left = pairs.iter().map(|(left, _)| *left).collect::<Vec<_>>();
+    let right = pairs.iter().map(|(_, right)| *right).collect::<Vec<_>>();
+    let left_rank = metric_rank(&left);
+    let right_rank = metric_rank(&right);
+    metric_correlation(&left_rank.into_iter().zip(right_rank).collect::<Vec<_>>())
+}
+
+fn feedback_rows(snapshot: &paper_feedback::FeedbackSnapshot) -> &[serde_json::Value] {
+    snapshot.input.evidence["market"]["rows"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn paper_feedback_report_state(
+    snapshot: &paper_feedback::FeedbackSnapshot,
+    lens: paper_feedback::FeedbackLens,
+    metrics: &serde_json::Value,
+) -> paper_feedback::EvidenceState {
+    if matches!(
+        snapshot.evidence_state,
+        paper_feedback::EvidenceState::Unknown
+            | paper_feedback::EvidenceState::Missing
+            | paper_feedback::EvidenceState::Incompatible
+            | paper_feedback::EvidenceState::Failed
+    ) {
+        return snapshot.evidence_state;
+    }
+    let lens_metrics = &metrics["lensMetrics"];
+    let (available, samples) = match lens {
+        paper_feedback::FeedbackLens::Factor => (
+            lens_metrics["factorOutputsAvailable"] == serde_json::Value::Bool(true),
+            lens_metrics["realizedFactorRows"].as_u64().unwrap_or(0),
+        ),
+        paper_feedback::FeedbackLens::Model => (
+            lens_metrics["predictionQualityAvailable"] == serde_json::Value::Bool(true),
+            lens_metrics["realizedPredictionRows"].as_u64().unwrap_or(0),
+        ),
+        paper_feedback::FeedbackLens::Strategy => (
+            lens_metrics["targetOutcomeAvailable"] == serde_json::Value::Bool(true),
+            lens_metrics["targetOutcomeSamples"].as_u64().unwrap_or(0),
+        ),
+        paper_feedback::FeedbackLens::Execution => (
+            lens_metrics["acknowledgementAndFillEvidenceAvailable"]
+                == serde_json::Value::Bool(true),
+            lens_metrics["executionObservationCount"]
+                .as_u64()
+                .unwrap_or(0),
+        ),
+    };
+    if !available {
+        return if snapshot.input.realized_observations == 0 {
+            paper_feedback::EvidenceState::NotYetRealized
+        } else {
+            paper_feedback::EvidenceState::Missing
+        };
+    }
+    if samples == 0 {
+        paper_feedback::EvidenceState::NotYetRealized
+    } else if samples < snapshot.input.required_observations {
+        paper_feedback::EvidenceState::InsufficientEvidence
+    } else {
+        paper_feedback::EvidenceState::Ready
+    }
+}
+
+fn paper_feedback_execution_metrics(paper: Option<&serde_json::Value>) -> serde_json::Value {
+    let Some(paper) = paper else {
+        return serde_json::json!({
+            "acknowledgementAndFillEvidenceAvailable": false,
+            "availabilityReason": "paper-account-evidence-missing",
+        });
+    };
+    let orders = paper["orders"].as_array().cloned().unwrap_or_default();
+    let fills = paper["fills"].as_array().cloned().unwrap_or_default();
+    let provider_evidence = paper["providerEvidence"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let execution_observation_count = orders.len().max(provider_evidence.len()).max(fills.len());
+    let acknowledged = provider_evidence
+        .iter()
+        .filter(|evidence| evidence["providerOrderId"].as_str().is_some())
+        .count();
+    let filled_orders = orders
+        .iter()
+        .filter(|order| metric_number(&order["filledQuantity"]).is_some_and(|value| value > 0.0))
+        .count();
+    let total_fees = fills
+        .iter()
+        .filter_map(|fill| metric_number(&fill["fee"]))
+        .sum::<f64>();
+    let order_by_id = orders
+        .iter()
+        .filter_map(|order| order["orderId"].as_str().map(|id| (id, order)))
+        .collect::<BTreeMap<_, _>>();
+    let slippages = fills
+        .iter()
+        .filter_map(|fill| {
+            let order = order_by_id.get(fill["orderId"].as_str()?)?;
+            let limit = metric_number(&order["limitPrice"])?;
+            let price = metric_number(&fill["price"])?;
+            (limit > 0.0).then_some(((price - limit).abs() / limit) * 10_000.0)
+        })
+        .collect::<Vec<_>>();
+    let evidence_available = paper.get("providerEvidence").is_some()
+        && paper["scopeCompatible"] != serde_json::Value::Bool(false)
+        && paper["restartRequired"] != serde_json::Value::Bool(true)
+        && paper["reconciliation"] == serde_json::json!("reconciled");
+    serde_json::json!({
+        "acknowledgementAndFillEvidenceAvailable": evidence_available,
+        "providerEvidenceCount": provider_evidence.len(),
+        "executionObservationCount": execution_observation_count,
+        "acknowledgedOrders": acknowledged,
+        "acknowledgementRate": if orders.is_empty() { serde_json::Value::Null } else { serde_json::json!(acknowledged as f64 / orders.len() as f64) },
+        "filledOrders": filled_orders,
+        "fillRate": if orders.is_empty() { serde_json::Value::Null } else { serde_json::json!(filled_orders as f64 / orders.len() as f64) },
+        "totalFees": total_fees,
+        "averageSlippageBps": if slippages.is_empty() { serde_json::Value::Null } else { serde_json::json!(slippages.iter().sum::<f64>() / slippages.len() as f64) },
+    })
+}
+
 fn paper_feedback_metrics(
     snapshot: &paper_feedback::FeedbackSnapshot,
     lens: paper_feedback::FeedbackLens,
 ) -> serde_json::Value {
-    let counts = snapshot
+    let paper = snapshot
         .input
         .evidence
         .get("paper")
-        .map(|paper| {
-            serde_json::json!({
-                "decisionBatches": snapshot.input.evidence["runtime"]["decisionBatchCount"],
-                "orders": paper["orderCount"],
-                "fills": paper["fillCount"],
-                "riskDecisions": paper["riskDecisionCount"],
-            })
+        .filter(|value| value.is_object());
+    let counts = serde_json::json!({
+        "decisionBatches": snapshot.input.evidence["runtime"]["decisionBatchCount"],
+        "orders": paper.and_then(|value| value["orderCount"].as_u64()).unwrap_or(0),
+        "fills": paper.and_then(|value| value["fillCount"].as_u64()).unwrap_or(0),
+        "riskDecisions": paper.and_then(|value| value["riskDecisionCount"].as_u64()).unwrap_or(0),
+    });
+    let rows = feedback_rows(snapshot);
+    let factor_pairs = metric_pairs(rows, "factorOutputs");
+    let model_pairs = metric_pairs(rows, "modelOutputs");
+    let factor_samples = factor_pairs.values().map(Vec::len).sum::<usize>() as u64;
+    let model_samples = model_pairs.values().map(Vec::len).sum::<usize>() as u64;
+    let factor_rows = metric_row_count(rows, "factorOutputs");
+    let model_rows = metric_row_count(rows, "modelOutputs");
+    let candidate_rows = snapshot.input.evidence["market"]["candidateRowCount"]
+        .as_u64()
+        .unwrap_or(0);
+    let factor_metrics = factor_pairs
+        .iter()
+        .map(|(name, pairs)| {
+            (
+                name.clone(),
+                serde_json::json!({
+                    "samples": pairs.len(),
+                    "coverage": if candidate_rows == 0 { serde_json::Value::Null } else { serde_json::json!(pairs.len() as f64 / candidate_rows as f64) },
+                    "ic": metric_correlation(pairs),
+                    "rankIc": metric_rank_correlation(pairs),
+                }),
+            )
         })
-        .unwrap_or_else(|| serde_json::json!({}));
+        .collect::<BTreeMap<_, _>>();
+    let model_metrics = model_pairs
+        .iter()
+        .map(|(name, pairs)| {
+            let errors = pairs
+                .iter()
+                .map(|(prediction, target)| prediction - target)
+                .collect::<Vec<_>>();
+            let mae = (!errors.is_empty())
+                .then(|| errors.iter().map(|error| error.abs()).sum::<f64>() / errors.len() as f64);
+            let rmse = (!errors.is_empty()).then(|| {
+                (errors.iter().map(|error| error * error).sum::<f64>() / errors.len() as f64).sqrt()
+            });
+            (
+                name.clone(),
+                serde_json::json!({
+                    "samples": pairs.len(),
+                    "mae": mae,
+                    "rmse": rmse,
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let target_outcomes = rows
+        .iter()
+        .filter(|row| row["targetOutcomeAvailable"] == serde_json::Value::Bool(true))
+        .filter_map(|row| metric_number(&row["targetOutcomeReturn"]))
+        .collect::<Vec<_>>();
+    let target_mean = (!target_outcomes.is_empty())
+        .then(|| target_outcomes.iter().sum::<f64>() / target_outcomes.len() as f64);
+    let execution = paper_feedback_execution_metrics(paper);
     let lens_metrics = match lens {
         paper_feedback::FeedbackLens::Factor => serde_json::json!({
-            "realizedFactorSamples": 0,
-            "factorOutputsAvailable": false,
+            "realizedFactorSamples": factor_samples,
+            "realizedFactorRows": factor_rows,
+            "factorOutputsAvailable": factor_rows > 0,
+            "outputMetrics": factor_metrics,
+            "availabilityReason": if factor_samples == 0 { Some("no-compatible-factor-output-pairs") } else { None },
         }),
         paper_feedback::FeedbackLens::Model => serde_json::json!({
-            "realizedPredictionSamples": 0,
-            "predictionQualityAvailable": false,
+            "realizedPredictionSamples": model_samples,
+            "realizedPredictionRows": model_rows,
+            "predictionQualityAvailable": model_rows > 0,
+            "outputMetrics": model_metrics,
+            "availabilityReason": if model_samples == 0 { Some("no-compatible-model-target-pairs") } else { None },
         }),
         paper_feedback::FeedbackLens::Strategy => serde_json::json!({
+            "targetOutcomeSamples": target_outcomes.len(),
+            "targetOutcomeAvailable": !target_outcomes.is_empty(),
+            "targetOutcomeMean": target_mean,
             "returnAndDrawdownAvailable": false,
+            "returnAndDrawdownReason": "historical-account-valuation-series-not-retained",
             "riskAndExecutionCounts": counts,
         }),
-        paper_feedback::FeedbackLens::Execution => serde_json::json!({
-            "acknowledgementAndFillEvidenceAvailable": snapshot.input.evidence["paper"].is_object(),
-            "executionCounts": counts,
-        }),
+        paper_feedback::FeedbackLens::Execution => {
+            let mut metrics = execution;
+            if let Some(object) = metrics.as_object_mut() {
+                object.insert("executionCounts".into(), counts.clone());
+            }
+            metrics
+        }
     };
+    let reasons = rows
+        .iter()
+        .filter_map(|row| row["reason"].as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
     serde_json::json!({
         "lens": lens,
         "evidenceState": snapshot.evidence_state,
@@ -1593,8 +2236,159 @@ fn paper_feedback_metrics(
         "directionalConclusion": false,
         "retainedCounts": counts,
         "lensMetrics": lens_metrics,
-        "note": "Host-retained evidence is not sufficient for a directional conclusion.",
+        "evidenceReasons": reasons,
+        "note": "Host-retained evidence is the only source for feedback metrics; unavailable rows remain non-directional.",
     })
+}
+
+#[cfg(test)]
+mod paper_feedback_metric_tests {
+    use super::*;
+
+    fn snapshot(evidence: serde_json::Value) -> paper_feedback::FeedbackSnapshot {
+        paper_feedback::FeedbackSnapshot {
+            snapshot_id: "snapshot".into(),
+            input: paper_feedback::FeedbackSnapshotInput {
+                user_id: "user".into(),
+                bundle_id: "bundle".into(),
+                bot_id: "bot".into(),
+                attempt_id: "attempt".into(),
+                observation_start_ms: 1,
+                observation_end_ms: 10,
+                realization_cutoff_ms: 20,
+                realized_observations: 2,
+                required_observations: 2,
+                evidence,
+            },
+            evidence_state: paper_feedback::EvidenceState::Ready,
+            created_at_ms: 30,
+        }
+    }
+
+    #[test]
+    fn factor_and_model_metrics_use_only_realized_pairs() {
+        let snapshot = snapshot(serde_json::json!({
+            "runtime": {"decisionBatchCount": 2},
+            "market": {
+                "candidateRowCount": 2,
+                "rows": [
+                    {"targetAvailable": true, "targetReturn": "1", "factorOutputs": [{"name": "score", "value": "1"}], "modelOutputs": [{"name": "forecast", "value": "1"}]},
+                    {"targetAvailable": true, "targetReturn": "2", "factorOutputs": [{"name": "score", "value": "2"}], "modelOutputs": [{"name": "forecast", "value": "2"}]},
+                    {"targetAvailable": false, "factorOutputs": [{"name": "score", "value": "100"}], "modelOutputs": [{"name": "forecast", "value": "100"}]}
+                ]
+            },
+            "paper": {"orderCount": 0, "fillCount": 0, "riskDecisionCount": 0}
+        }));
+        let factor = paper_feedback_metrics(&snapshot, paper_feedback::FeedbackLens::Factor);
+        assert_eq!(factor["lensMetrics"]["realizedFactorSamples"], 2);
+        assert_eq!(factor["lensMetrics"]["outputMetrics"]["score"]["ic"], 1.0);
+        assert_eq!(
+            factor["lensMetrics"]["outputMetrics"]["score"]["rankIc"],
+            1.0
+        );
+        let model = paper_feedback_metrics(&snapshot, paper_feedback::FeedbackLens::Model);
+        assert_eq!(model["lensMetrics"]["realizedPredictionSamples"], 2);
+        assert_eq!(
+            model["lensMetrics"]["outputMetrics"]["forecast"]["mae"],
+            0.0
+        );
+        assert_eq!(
+            model["lensMetrics"]["outputMetrics"]["forecast"]["rmse"],
+            0.0
+        );
+    }
+
+    #[test]
+    fn report_state_is_lens_specific_and_keeps_missing_outputs_explicit() {
+        let snapshot = snapshot(serde_json::json!({
+            "runtime": {"decisionBatchCount": 2},
+            "market": {"candidateRowCount": 2, "rows": [{"targetAvailable": true, "targetReturn": "1", "targetOutcomeAvailable": true, "targetOutcomeReturn": "1", "factorOutputs": [], "modelOutputs": []}]},
+            "paper": {"orderCount": 0, "fillCount": 0, "riskDecisionCount": 0, "orders": [], "fills": []}
+        }));
+        let factor = paper_feedback_metrics(&snapshot, paper_feedback::FeedbackLens::Factor);
+        assert_eq!(
+            paper_feedback_report_state(&snapshot, paper_feedback::FeedbackLens::Factor, &factor),
+            paper_feedback::EvidenceState::Missing
+        );
+        let strategy = paper_feedback_metrics(&snapshot, paper_feedback::FeedbackLens::Strategy);
+        assert_eq!(
+            paper_feedback_report_state(
+                &snapshot,
+                paper_feedback::FeedbackLens::Strategy,
+                &strategy
+            ),
+            paper_feedback::EvidenceState::InsufficientEvidence
+        );
+    }
+
+    #[test]
+    fn execution_metrics_use_retained_provider_and_fill_evidence() {
+        let paper = serde_json::json!({
+            "orders": [
+                {"orderId": "local-1", "filledQuantity": "2", "limitPrice": "100"},
+                {"orderId": "local-2", "filledQuantity": "0", "limitPrice": "100"}
+            ],
+            "fills": [
+                {"orderId": "local-1", "quantity": "2", "price": "101", "fee": "0.5"}
+            ],
+            "providerEvidence": [
+                {"outcome": "accepted", "providerOrderId": "remote-1", "localOrderId": "local-1"}
+            ]
+        });
+        let metrics = paper_feedback_execution_metrics(Some(&paper));
+        assert_eq!(metrics["providerEvidenceCount"], 1);
+        assert_eq!(metrics["acknowledgedOrders"], 1);
+        assert_eq!(metrics["filledOrders"], 1);
+        assert_eq!(metrics["totalFees"], 0.5);
+        assert_eq!(metrics["averageSlippageBps"], 100.0);
+    }
+
+    #[test]
+    fn report_state_counts_unique_realized_rows_per_lens() {
+        let snapshot = snapshot(serde_json::json!({
+            "runtime": {"decisionBatchCount": 1},
+            "market": {
+                "candidateRowCount": 1,
+                "rows": [{
+                    "targetAvailable": true,
+                    "targetReturn": "1",
+                    "factorOutputs": [
+                        {"name": "score", "value": "1"},
+                        {"name": "confidence", "value": "2"}
+                    ],
+                    "modelOutputs": []
+                }]
+            },
+            "paper": {
+                "orderCount": 1,
+                "fillCount": 0,
+                "riskDecisionCount": 1,
+                "reconciliation": "reconciled",
+                "restartRequired": false,
+                "scopeCompatible": true,
+                "orders": [{"orderId": "local-1", "filledQuantity": "0", "limitPrice": "100"}],
+                "fills": [],
+                "providerEvidence": []
+            }
+        }));
+        let factor = paper_feedback_metrics(&snapshot, paper_feedback::FeedbackLens::Factor);
+        assert_eq!(factor["lensMetrics"]["realizedFactorSamples"], 2);
+        assert_eq!(factor["lensMetrics"]["realizedFactorRows"], 1);
+        assert_eq!(
+            paper_feedback_report_state(&snapshot, paper_feedback::FeedbackLens::Factor, &factor),
+            paper_feedback::EvidenceState::InsufficientEvidence
+        );
+        let execution = paper_feedback_metrics(&snapshot, paper_feedback::FeedbackLens::Execution);
+        assert_eq!(execution["lensMetrics"]["executionObservationCount"], 1);
+        assert_eq!(
+            paper_feedback_report_state(
+                &snapshot,
+                paper_feedback::FeedbackLens::Execution,
+                &execution
+            ),
+            paper_feedback::EvidenceState::InsufficientEvidence
+        );
+    }
 }
 
 fn instrument_in_scope(schedule: &bot_operations::BotSchedule, instrument: &str) -> bool {

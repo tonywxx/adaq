@@ -818,6 +818,11 @@ const english = {
 		noReports: "No Reports have been generated.",
 		directionalUnavailable:
 			"Directional conclusions are unavailable until the Host has compatible realized evidence and sufficient samples.",
+		metricEvidence: "Host metrics",
+		evidenceReasons: "Evidence reasons",
+		metricYes: "Yes",
+		metricNo: "No",
+		metricUnavailable: "Unavailable",
 		generate: "Generate Report",
 		generating: "Generating…",
 		review: "Research Review Decision",
@@ -3946,6 +3951,11 @@ const simplifiedChinese = {
 		noReports: "尚未生成 Report。",
 		directionalUnavailable:
 			"在 Host 获得兼容的已实现证据且样本充足前，不提供方向性结论。",
+		metricEvidence: "Host 指标",
+		evidenceReasons: "证据原因",
+		metricYes: "是",
+		metricNo: "否",
+		metricUnavailable: "不可用",
 		generate: "生成 Report",
 		generating: "正在生成…",
 		review: "Research Review Decision",

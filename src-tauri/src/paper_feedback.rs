@@ -235,16 +235,42 @@ impl PaperFeedbackStore {
         input: FeedbackReportInput,
         created_at_ms: i64,
     ) -> Result<FeedbackReport, String> {
+        let snapshot_state = {
+            let conn = self.database.lock().map_err(|e| e.to_string())?;
+            let value: String = conn
+                .query_row(
+                    "SELECT evidence_state FROM paper_feedback_snapshots WHERE snapshot_id=?1 AND user_id=?2",
+                    params![input.snapshot_id, input.user_id],
+                    |row| row.get(0),
+                )
+                .map_err(|_| "Paper Feedback Snapshot was not found for User".to_owned())?;
+            parse_enum(&value)?
+        };
+        self.create_report_with_state(input, created_at_ms, snapshot_state)
+    }
+
+    pub(crate) fn create_report_with_state(
+        &self,
+        input: FeedbackReportInput,
+        created_at_ms: i64,
+        state: EvidenceState,
+    ) -> Result<FeedbackReport, String> {
         validate_user(&input.user_id)?;
         if created_at_ms <= 0 {
             return Err("invalid Paper Feedback Report timestamp".into());
         }
         let conn = self.database.lock().map_err(|e| e.to_string())?;
-        let snapshot_state: Option<String> = conn.query_row(
+        let snapshot_exists: bool = conn.query_row(
             "SELECT evidence_state FROM paper_feedback_snapshots WHERE snapshot_id=?1 AND user_id=?2",
-            params![input.snapshot_id, input.user_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
-        let snapshot_state = snapshot_state
-            .ok_or_else(|| "Paper Feedback Snapshot was not found for User".to_string())?;
+            params![input.snapshot_id, input.user_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .is_some();
+        if !snapshot_exists {
+            return Err("Paper Feedback Snapshot was not found for User".to_string());
+        }
         if input.snapshot_id.trim().is_empty()
             || !input.metrics.is_object()
             || input
@@ -254,8 +280,6 @@ impl PaperFeedbackStore {
         {
             return Err("invalid Paper Feedback Report binding".into());
         }
-        let state: EvidenceState =
-            serde_json::from_str(&format!("\"{snapshot_state}\"")).map_err(|e| e.to_string())?;
         let report = FeedbackReport {
             report_id: Uuid::new_v4().to_string(),
             input,
@@ -638,5 +662,33 @@ mod tests {
                 .unwrap();
             assert_eq!(report.evidence_state, EvidenceState::InsufficientEvidence);
         }
+    }
+
+    #[test]
+    fn report_state_can_be_overridden_per_lens_without_mutating_snapshot() {
+        let s = store();
+        let snapshot = s
+            .create_snapshot_with_state(snapshot_input(), 1, Some(EvidenceState::Ready))
+            .unwrap();
+        let report = s
+            .create_report_with_state(
+                FeedbackReportInput {
+                    user_id: "user".into(),
+                    snapshot_id: snapshot.snapshot_id.clone(),
+                    lens: FeedbackLens::Factor,
+                    metrics: serde_json::json!({"lensMetrics": {"factorOutputsAvailable": false}}),
+                    comparable_evidence_id: None,
+                },
+                2,
+                EvidenceState::Missing,
+            )
+            .unwrap();
+        assert_eq!(report.evidence_state, EvidenceState::Missing);
+        assert_eq!(
+            s.snapshot_for_user("user", &snapshot.snapshot_id)
+                .unwrap()
+                .evidence_state,
+            EvidenceState::Ready
+        );
     }
 }

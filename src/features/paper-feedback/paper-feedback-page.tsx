@@ -9,7 +9,7 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { formatDateTime } from "@/lib/i18n";
+import { formatDateTime, formatDecimal, formatNumber } from "@/lib/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { useMemo, useState } from "react";
@@ -464,6 +464,7 @@ export function PaperFeedbackPage() {
 											{t("paperFeedback.directionalUnavailable")}
 										</span>
 									) : null}
+									<MetricSummary metrics={item.input.metrics} t={t} />
 								</span>
 							</label>
 						))
@@ -536,6 +537,85 @@ export function PaperFeedbackPage() {
 			</Card>
 		</div>
 	);
+}
+
+function MetricSummary({
+	metrics,
+	t,
+}: {
+	metrics: Record<string, unknown>;
+	t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+	const lensMetrics =
+		metrics.lensMetrics && typeof metrics.lensMetrics === "object"
+			? (metrics.lensMetrics as Record<string, unknown>)
+			: null;
+	if (!lensMetrics || typeof lensMetrics !== "object") return null;
+	const entries = Object.entries(lensMetrics).filter(
+		([, value]) => value === null || typeof value !== "object",
+	);
+	const outputMetrics =
+		lensMetrics.outputMetrics && typeof lensMetrics.outputMetrics === "object"
+			? Object.entries(lensMetrics.outputMetrics as Record<string, unknown>)
+			: [];
+	const reasons = Array.isArray(metrics.evidenceReasons)
+		? metrics.evidenceReasons.filter(
+				(value): value is string => typeof value === "string",
+			)
+		: [];
+	if (!entries.length && !outputMetrics.length && !reasons.length) return null;
+	return (
+		<div className="grid gap-1 text-xs text-muted-foreground">
+			<span className="font-medium text-foreground">
+				{t("paperFeedback.metricEvidence")}
+			</span>
+			{entries.map(([key, value]) => (
+				<span key={key}>
+					{key}: {formatMetricValue(value, t)}
+				</span>
+			))}
+			{outputMetrics.map(([name, value]) => {
+				if (!value || typeof value !== "object") return null;
+				const values = Object.entries(value as Record<string, unknown>);
+				return (
+					<span key={`output-${name}`}>
+						{name}:{" "}
+						{values
+							.map(([key, metric]) => `${key}=${formatMetricValue(metric, t)}`)
+							.join(" · ")}
+					</span>
+				);
+			})}
+			{reasons.length ? (
+				<span>
+					{t("paperFeedback.evidenceReasons")}: {reasons.join(", ")}
+				</span>
+			) : null}
+		</div>
+	);
+}
+
+function formatMetricValue(
+	value: unknown,
+	t: (key: string, options?: Record<string, unknown>) => string,
+) {
+	if (typeof value === "number") {
+		return Number.isInteger(value)
+			? formatNumber(value)
+			: formatNumber(value, {
+					minimumFractionDigits: 4,
+					maximumFractionDigits: 4,
+				});
+	}
+	if (typeof value === "string" && /^-?\d+(?:\.\d+)?$/.test(value)) {
+		const parsed = Number(value);
+		if (Number.isFinite(parsed)) return formatMetricValue(parsed, t);
+		return formatDecimal(value, { maximumFractionDigits: 4 });
+	}
+	if (typeof value === "boolean")
+		return t(value ? "paperFeedback.metricYes" : "paperFeedback.metricNo");
+	if (value === null) return t("paperFeedback.metricUnavailable");
+	return String(value);
 }
 
 function DateField({

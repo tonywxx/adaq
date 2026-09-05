@@ -18,8 +18,8 @@ use adaq_backtest_core::{
 use adaq_bot_runtime::{
     DecisionClock, DeploymentBundle, LifecycleState, RuntimeEvent, WORKER_ARTIFACT_NAME,
     WORKER_SIGNATURE_SCHEMA_VERSION, WorkerArtifactBinding, WorkerArtifactSignature,
-    WorkerComponentLaunch, WorkerDecisionInput, WorkerDecisionResult, WorkerLaunchRequest,
-    WorkerTarget,
+    WorkerComponentLaunch, WorkerDecisionInput, WorkerDecisionResult, WorkerEvaluationEvidence,
+    WorkerLaunchRequest, WorkerTarget,
 };
 use adaq_component_tooling::{ComponentKind, ComponentPackage, FactorScope, ParameterType};
 use adaq_paper_trading_core::RiskPolicy as PaperRiskPolicy;
@@ -248,6 +248,12 @@ pub(crate) struct BotDecisionEvidence {
     pub decision_id: String,
     pub outcome: String,
     pub target_hash: Option<String>,
+    #[serde(default)]
+    pub target: Option<WorkerTarget>,
+    #[serde(default)]
+    pub clock: Option<DecisionClock>,
+    #[serde(default)]
+    pub evaluation: Option<WorkerEvaluationEvidence>,
     pub observed_at_ms: i64,
 }
 
@@ -827,28 +833,40 @@ impl BotStore {
         &self,
         user_id: &str,
         bot_id: &str,
+        clock: Option<&DecisionClock>,
         result: &WorkerDecisionResult,
     ) -> Result<BotView, String> {
         self.mutate(user_id, bot_id, |bot| {
             let attempt = current_attempt_mut(bot)?;
-            let (request_id, decision_id, outcome, target_hash) = match result {
+            let (request_id, decision_id, outcome, target_hash, target, evaluation) = match result {
                 WorkerDecisionResult::Target {
                     request_id,
                     decision_id,
                     target,
+                    evaluation,
                     ..
-                } => (request_id, decision_id, "target", Some(hash_json(target)?)),
+                } => (
+                    request_id,
+                    decision_id,
+                    "target",
+                    Some(hash_json(target)?),
+                    Some(target.clone()),
+                    Some(evaluation.clone()),
+                ),
                 WorkerDecisionResult::NoTarget {
                     request_id,
                     decision_id,
                     ..
-                } => (request_id, decision_id, "no-target", None),
+                } => (request_id, decision_id, "no-target", None, None, None),
             };
             attempt.decisions.push(BotDecisionEvidence {
                 request_id: bounded_text(request_id, 128),
                 decision_id: bounded_text(decision_id, 128),
                 outcome: outcome.into(),
                 target_hash,
+                target,
+                clock: clock.cloned(),
+                evaluation,
                 observed_at_ms: adaq_bot_runtime::unix_now_ms(),
             });
             if attempt.decisions.len() > MAX_DECISIONS {
@@ -1778,7 +1796,7 @@ pub(crate) async fn bot_decision(
                             reason: adaq_bot_runtime::NoTargetReason::MissingInput,
                             detail: safe_detail(&error),
                         };
-                        bots.record_decision(&user_id, &request.bot_id, &result)?;
+                        bots.record_decision(&user_id, &request.bot_id, None, &result)?;
                         bots.record_evidence(
                             &user_id,
                             &request.bot_id,
@@ -1797,7 +1815,7 @@ pub(crate) async fn bot_decision(
                         reason: adaq_bot_runtime::NoTargetReason::MissingInput,
                         detail: safe_detail(&error),
                     };
-                    bots.record_decision(&user_id, &request.bot_id, &result)?;
+                    bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result)?;
                     bots.record_evidence(
                         &user_id,
                         &request.bot_id,
@@ -1822,7 +1840,7 @@ pub(crate) async fn bot_decision(
                             reason: adaq_bot_runtime::NoTargetReason::MissingInput,
                             detail: safe_detail(&error),
                         };
-                        bots.record_decision(&user_id, &request.bot_id, &result)?;
+                        bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result)?;
                         bots.record_evidence(
                             &user_id,
                             &request.bot_id,
@@ -1862,7 +1880,7 @@ pub(crate) async fn bot_decision(
                                     .into(),
                             );
                         }
-                        bots.record_decision(&user_id, &request.bot_id, &result)?;
+                        bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result)?;
                         bots.record_evidence(
                             &user_id,
                             &request.bot_id,
@@ -1904,7 +1922,7 @@ pub(crate) async fn bot_decision(
                         reason: adaq_bot_runtime::NoTargetReason::DeadlineMissed,
                         ..
                     }) => {
-                        bots.record_decision(&user_id, &request.bot_id, result)?;
+                        bots.record_decision(&user_id, &request.bot_id, Some(&clock), result)?;
                         let _ = bots.fault(
                             &user_id,
                             &request.bot_id,
@@ -1920,7 +1938,7 @@ pub(crate) async fn bot_decision(
                         reason: adaq_bot_runtime::NoTargetReason::Warmup,
                         ..
                     }) => {
-                        bots.record_decision(&user_id, &request.bot_id, result)?;
+                        bots.record_decision(&user_id, &request.bot_id, Some(&clock), result)?;
                         bots.record_evidence(
                             &user_id,
                             &request.bot_id,
@@ -1930,7 +1948,7 @@ pub(crate) async fn bot_decision(
                             Some(clock.decision_id()),
                         )
                     }
-                    Ok(result) => bots.record_decision(&user_id, &request.bot_id, &result),
+                    Ok(result) => bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result),
                     Err(error) => {
                         let _ =
                             bots.fault(&user_id, &request.bot_id, "worker-decision-failed", &error);
@@ -4323,6 +4341,21 @@ mod tests {
 
     fn store(database: Arc<Mutex<Connection>>) -> BotStore {
         BotStore::open(database).unwrap()
+    }
+
+    #[test]
+    fn legacy_decision_evidence_reads_without_runtime_feedback_fields() {
+        let evidence: BotDecisionEvidence = serde_json::from_value(serde_json::json!({
+            "requestId": "request",
+            "decisionId": "decision",
+            "outcome": "target",
+            "targetHash": "hash",
+            "observedAtMs": 1
+        }))
+        .unwrap();
+        assert!(evidence.target.is_none());
+        assert!(evidence.clock.is_none());
+        assert!(evidence.evaluation.is_none());
     }
 
     #[test]

@@ -1,12 +1,12 @@
 use adaq_bot_runtime::{
     DecisionClock, DeploymentBundle, MAX_COMPONENT_BYTES, NoTargetReason, ProtocolSequence,
     StrategyWorld, WORKER_ARTIFACT_NAME, WORKER_ARTIFACT_VERSION, WORKER_PROTOCOL_VERSION,
-    WORKER_RUNTIME_VERSION, WorkerComponentPayload, WorkerDecisionInput, WorkerFactorBinding,
-    WorkerFactorScope, WorkerFeatureFrame, WorkerFeatureRow, WorkerHealthState, WorkerMessage,
-    WorkerModelBinding, WorkerParameterValue, WorkerPipelineBinding, WorkerPortfolioState,
-    WorkerRuntimePolicy, WorkerTarget, WorkerTargetWeight, current_platform_tag, decode_frame,
-    encode_frame, enforce_worker_process_limits, is_decimal_text, read_bounded_line, sha256_hex,
-    unix_now_ms,
+    WORKER_RUNTIME_VERSION, WorkerComponentPayload, WorkerDecisionInput, WorkerEvaluationEvidence,
+    WorkerEvaluationRow, WorkerEvaluationValue, WorkerFactorBinding, WorkerFactorScope,
+    WorkerFeatureFrame, WorkerFeatureRow, WorkerHealthState, WorkerMessage, WorkerModelBinding,
+    WorkerParameterValue, WorkerPipelineBinding, WorkerPortfolioState, WorkerRuntimePolicy,
+    WorkerTarget, WorkerTargetWeight, current_platform_tag, decode_frame, encode_frame,
+    enforce_worker_process_limits, is_decimal_text, read_bounded_line, sha256_hex, unix_now_ms,
 };
 use adaq_component_sdk::host::{
     factor_abi, factor_cross_sectional_abi, model_abi, portfolio_strategy_abi, strategy_abi,
@@ -451,7 +451,7 @@ impl WorkerState {
             .pipeline
             .as_ref()
             .ok_or_else(|| "worker-pipeline-missing".to_owned())?;
-        let prepared = match evaluate_pipeline(
+        let evaluated = match evaluate_pipeline(
             &clock,
             prepared,
             pipeline,
@@ -475,6 +475,10 @@ impl WorkerState {
                 );
             }
         };
+        let EvaluatedEngineInput {
+            input: prepared,
+            evidence,
+        } = evaluated;
         let target = match (self.engine.as_ref(), prepared) {
             (Some(LoadedEngine::Strategy(loader)), PreparedEngineInput::Strategy(frames)) => {
                 let targets = loader
@@ -570,6 +574,7 @@ impl WorkerState {
                 decision_id: clock.decision_id().to_owned(),
                 produced_at_ms,
                 target,
+                evaluation: evidence,
             }
         })
     }
@@ -766,6 +771,11 @@ enum PreparedInput {
 enum PreparedEngineInput {
     Strategy(Vec<strategy_abi::exports::adaq::strategy::api::FeatureFrame>),
     Portfolio(portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioFrame),
+}
+
+struct EvaluatedEngineInput {
+    input: PreparedEngineInput,
+    evidence: WorkerEvaluationEvidence,
 }
 
 #[derive(Debug)]
@@ -979,7 +989,7 @@ fn evaluate_pipeline(
     loaded: &LoadedPipeline,
     strategy: &adaq_bot_runtime::WorkerStrategyBinding,
     pipeline: &WorkerPipelineBinding,
-) -> Result<PreparedEngineInput, InputError> {
+) -> Result<EvaluatedEngineInput, InputError> {
     match prepared {
         PreparedInput::Strategy {
             instrument_id,
@@ -990,6 +1000,16 @@ fn evaluate_pipeline(
                 .iter()
                 .map(|frame| value_map(input_slots, &frame.values))
                 .collect::<Result<Vec<_>, _>>()?;
+            let mut evidence_rows = frames
+                .iter()
+                .map(|frame| WorkerEvaluationRow {
+                    instrument_id: frame.instrument_id.clone(),
+                    observation_time_ms: frame.open_time_ms,
+                    available_at_ms: frame.available_at_ms,
+                    factor_outputs: Vec::new(),
+                    model_outputs: Vec::new(),
+                })
+                .collect::<Vec<_>>();
             for factor in &loaded.factors {
                 if factor.binding.scope != WorkerFactorScope::TimeSeries {
                     return Err(InputError::Fault(
@@ -1039,7 +1059,12 @@ fn evaluate_pipeline(
                         "factor output count differs from the input row count".into(),
                     ));
                 }
-                for ((frame_values, frame), result) in values.iter_mut().zip(&frames).zip(results) {
+                for (((frame_values, frame), evidence_row), result) in values
+                    .iter_mut()
+                    .zip(&frames)
+                    .zip(evidence_rows.iter_mut())
+                    .zip(results)
+                {
                     if result.instrument_id != instrument_id
                         || result.observation_time_ms != frame.open_time_ms
                     {
@@ -1064,6 +1089,10 @@ fn evaluate_pipeline(
                         ));
                     }
                     for output in outputs {
+                        evidence_row.factor_outputs.push(WorkerEvaluationValue {
+                            name: output.name.clone(),
+                            value: output.value.to_string(),
+                        });
                         frame_values.insert(output.name, Some(output.value));
                     }
                 }
@@ -1089,7 +1118,12 @@ fn evaluate_pipeline(
                         "model output count differs from the input row count".into(),
                     ));
                 }
-                for ((frame_values, frame), result) in values.iter_mut().zip(&frames).zip(results) {
+                for (((frame_values, frame), evidence_row), result) in values
+                    .iter_mut()
+                    .zip(&frames)
+                    .zip(evidence_rows.iter_mut())
+                    .zip(results)
+                {
                     let Some(result) = result else {
                         return Err(InputError::NoTarget(
                             NoTargetReason::MissingInput,
@@ -1106,6 +1140,10 @@ fn evaluate_pipeline(
                         ));
                     }
                     for (name, value) in model.binding.output_names.iter().zip(result.values) {
+                        evidence_row.model_outputs.push(WorkerEvaluationValue {
+                            name: name.clone(),
+                            value: value.to_string(),
+                        });
                         frame_values.insert(name.clone(), Some(value));
                     }
                 }
@@ -1120,7 +1158,12 @@ fn evaluate_pipeline(
                     })
                 })
                 .collect::<Result<Vec<_>, InputError>>()?;
-            Ok(PreparedEngineInput::Strategy(frames))
+            Ok(EvaluatedEngineInput {
+                input: PreparedEngineInput::Strategy(frames),
+                evidence: WorkerEvaluationEvidence {
+                    rows: evidence_rows,
+                },
+            })
         }
         PreparedInput::Portfolio {
             universe_id,
@@ -1132,6 +1175,16 @@ fn evaluate_pipeline(
                 .iter()
                 .map(|row| value_map(input_slots, &row.values))
                 .collect::<Result<Vec<_>, _>>()?;
+            let mut evidence_rows = rows
+                .iter()
+                .map(|row| WorkerEvaluationRow {
+                    instrument_id: row.instrument_id.clone(),
+                    observation_time_ms: clock.decision_time_ms(),
+                    available_at_ms: row.available_at_ms,
+                    factor_outputs: Vec::new(),
+                    model_outputs: Vec::new(),
+                })
+                .collect::<Vec<_>>();
             let universe = rows
                 .iter()
                 .map(|row| row.instrument_id.clone())
@@ -1185,7 +1238,12 @@ fn evaluate_pipeline(
                         "factor output count differs from the input row count".into(),
                     ));
                 }
-                for ((frame_values, row), result) in values.iter_mut().zip(&rows).zip(results) {
+                for (((frame_values, row), evidence_row), result) in values
+                    .iter_mut()
+                    .zip(&rows)
+                    .zip(evidence_rows.iter_mut())
+                    .zip(results)
+                {
                     if result.instrument_id != row.instrument_id
                         || result.observation_time_ms != clock.decision_time_ms()
                     {
@@ -1214,6 +1272,10 @@ fn evaluate_pipeline(
                         ));
                     }
                     for output in outputs {
+                        evidence_row.factor_outputs.push(WorkerEvaluationValue {
+                            name: output.name.clone(),
+                            value: output.value.to_string(),
+                        });
                         frame_values.insert(output.name, Some(output.value));
                     }
                 }
@@ -1239,7 +1301,12 @@ fn evaluate_pipeline(
                         "model output count differs from the input row count".into(),
                     ));
                 }
-                for ((frame_values, row), result) in values.iter_mut().zip(&rows).zip(results) {
+                for (((frame_values, row), evidence_row), result) in values
+                    .iter_mut()
+                    .zip(&rows)
+                    .zip(evidence_rows.iter_mut())
+                    .zip(results)
+                {
                     let Some(result) = result else {
                         return Err(InputError::NoTarget(
                             NoTargetReason::MissingInput,
@@ -1256,6 +1323,10 @@ fn evaluate_pipeline(
                         ));
                     }
                     for (name, value) in model.binding.output_names.iter().zip(result.values) {
+                        evidence_row.model_outputs.push(WorkerEvaluationValue {
+                            name: name.clone(),
+                            value: value.to_string(),
+                        });
                         frame_values.insert(name.clone(), Some(value));
                     }
                 }
@@ -1272,14 +1343,19 @@ fn evaluate_pipeline(
                     )
                 })
                 .collect::<Result<Vec<_>, InputError>>()?;
-            Ok(PreparedEngineInput::Portfolio(
-                portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioFrame {
-                    decision_time_ms: clock.decision_time_ms(),
-                    universe_id,
-                    rows,
-                    state: portfolio_state(&state)?,
+            Ok(EvaluatedEngineInput {
+                input: PreparedEngineInput::Portfolio(
+                    portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioFrame {
+                        decision_time_ms: clock.decision_time_ms(),
+                        universe_id,
+                        rows,
+                        state: portfolio_state(&state)?,
+                    },
+                ),
+                evidence: WorkerEvaluationEvidence {
+                    rows: evidence_rows,
                 },
-            ))
+            })
         }
     }
 }

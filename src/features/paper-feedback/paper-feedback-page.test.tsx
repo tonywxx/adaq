@@ -50,7 +50,16 @@ const report = {
 	input: {
 		snapshotId: "snapshot-a",
 		lens: "factor",
-		metrics: {},
+		metrics: {
+			lensMetrics: {
+				realizedFactorSamples: 2,
+				factorOutputsAvailable: true,
+				outputMetrics: {
+					score: { samples: 2, coverage: 1, ic: 0.5, rankIc: 0.4 },
+				},
+			},
+			evidenceReasons: ["target-horizon-not-matured"],
+		},
 		comparableEvidenceId: null,
 	},
 	evidenceState: "notYetRealized",
@@ -157,5 +166,9 @@ test("creates a Host-bound snapshot and exposes all four review lenses", async (
 	expect(mockInvoke).toHaveBeenCalledWith("paper_feedback_report_create", {
 		request: { snapshotId: "snapshot-a", lens: "factor" },
 	});
+	expect(container.textContent).toContain(
+		"score: samples=2 · coverage=1 · ic=0.5000 · rankIc=0.4000",
+	);
+	expect(container.textContent).toContain("target-horizon-not-matured");
 	await unmount(root, container);
 });

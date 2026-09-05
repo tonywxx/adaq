@@ -303,11 +303,14 @@ fn signed_strategy_worker_process_runs_warmup_and_target() -> Result<(), String>
                     instrument_id,
                     exposures,
                 },
+            evaluation,
             ..
         } => {
             assert_eq!(decision_id, format!("bar-{}", decision_time_ms + 1));
             assert_eq!(instrument_id, "BTC-USDT");
             assert_eq!(exposures[0].exposure, "1");
+            assert_eq!(evaluation.rows[0].factor_outputs[0].name, "close-change");
+            assert_eq!(evaluation.rows[0].factor_outputs[0].value, "1");
         }
         other => panic!("expected signed worker target, got {other:?}"),
     }
@@ -357,13 +360,17 @@ fn signed_strategy_worker_processes_model_before_target() -> Result<(), String> 
             },
         )
         .map_err(|error| format!("model pipeline: {error}"))?;
-    assert!(matches!(
-        result,
+    match result {
         WorkerDecisionResult::Target {
             target: WorkerTarget::Strategy { .. },
+            evaluation,
             ..
+        } => {
+            assert_eq!(evaluation.rows[0].model_outputs[0].name, "close");
+            assert_eq!(evaluation.rows[0].model_outputs[0].value, "3");
         }
-    ));
+        other => panic!("expected model evidence, got {other:?}"),
+    }
     supervisor.shutdown("request-stop-model")?;
     assert_eq!(supervisor.state(), LifecycleState::Stopped);
     let _ = fs::remove_dir_all(temp_dir);
@@ -422,13 +429,22 @@ fn signed_portfolio_worker_processes_cross_section_factor_before_target() -> Res
             },
         )
         .map_err(|error| format!("portfolio factor pipeline: {error}"))?;
-    assert!(matches!(
-        result,
+    match result {
         WorkerDecisionResult::Target {
             target: WorkerTarget::Portfolio { .. },
+            evaluation,
             ..
+        } => {
+            assert_eq!(evaluation.rows.len(), 2);
+            assert!(
+                evaluation
+                    .rows
+                    .iter()
+                    .all(|row| row.factor_outputs[0].name == "cross-sectional-score")
+            );
         }
-    ));
+        other => panic!("expected cross-sectional evidence, got {other:?}"),
+    }
     supervisor.shutdown("request-stop-portfolio-factor")?;
     assert_eq!(supervisor.state(), LifecycleState::Stopped);
     let _ = fs::remove_dir_all(temp_dir);

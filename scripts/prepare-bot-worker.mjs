@@ -32,7 +32,7 @@ if (!signingKey && !signingKeyFile) {
     artifactName: 'adaq-bot-worker',
     artifactVersion: '0.1.0',
     platform: target,
-    protocolVersion: 'adaq-bot-worker-ipc@1.0.0',
+    protocolVersion: 'adaq-bot-worker-ipc@1.1.0',
     runtimeVersion: 'adaq-bot-runtime@0.1.0',
     artifactSha256: 'unsigned-test-artifact',
     signingKeyId: 'adaq-bot-worker-ed25519-v1',
