@@ -709,7 +709,7 @@ impl Features {
 
     pub(crate) fn start_materialization_with_evidence(
         &self,
-        request: FeatureMaterializationStartRequest,
+        mut request: FeatureMaterializationStartRequest,
         evidence: &FrozenResearchEvidence,
     ) -> Result<MaterializationAttempt, String> {
         let universe_id = evidence
@@ -727,6 +727,7 @@ impl Features {
             &request.user_id,
             &request.request.point_in_time_universe_id,
         )?;
+        request.request.materialize_universe_members = true;
         self.start_materialization(request)
     }
 

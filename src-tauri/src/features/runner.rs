@@ -250,6 +250,22 @@ fn run_materialization_body(
                 };
             }
         }
+    } else if request.materialize_universe_members {
+        match time_series_universe_events(
+            inner,
+            user_id,
+            &request.snapshot_id,
+            &request.point_in_time_universe_id,
+            &request.observation_range,
+        ) {
+            Ok(events) => events,
+            Err(error) => {
+                return Outcome::Failed {
+                    code: "invalid-feature-evidence".into(),
+                    diagnostic: bounded_diagnostic(error),
+                };
+            }
+        }
     } else {
         let (snapshot, bars) = match inner
             .source
@@ -613,6 +629,42 @@ pub(super) fn snapshot_events(
             FeatureMarketBar::from_ohlcv(bar.clone()),
         )));
         last_observation_time = close;
+    }
+    Ok(events)
+}
+
+/// Expands a time-series Plan over each immutable PIT Universe member. The
+/// selected Snapshot remains the anchor identity and must be a member.
+fn time_series_universe_events(
+    inner: &FeaturesInner,
+    user_id: &str,
+    snapshot_id: &str,
+    universe_id: &str,
+    range: &ObservationRange,
+) -> Result<Vec<FeatureInputEvent>, String> {
+    let universe = inner
+        .source
+        .universe_snapshot_for_user(user_id, universe_id)?;
+    if !universe
+        .components
+        .iter()
+        .any(|component| component.snapshot_id == snapshot_id)
+    {
+        return Err("feature-snapshot-universe-identity-mismatch".into());
+    }
+    let mut components = universe.components.iter().collect::<Vec<_>>();
+    components.sort_by_key(|component| {
+        instrument_id_for(
+            &component.dataset.instrument.venue.id,
+            &component.dataset.instrument.code,
+        )
+    });
+    let mut events = Vec::new();
+    for component in components {
+        let (snapshot, bars) = inner
+            .source
+            .snapshot_for_user(user_id, &component.snapshot_id)?;
+        events.extend(snapshot_events(&snapshot, &bars, range)?);
     }
     Ok(events)
 }

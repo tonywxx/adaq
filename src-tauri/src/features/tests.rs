@@ -1007,6 +1007,64 @@ fn fitting_insufficient_samples_fails_and_retry_keeps_source_evidence() {
 }
 
 #[test]
+fn evidence_bound_time_series_materialization_expands_every_pit_member() {
+    let (root, state, snapshot_id, _second_snapshot_id, universe_id) =
+        cross_sectional_setup("time-series-universe-members");
+    let definition = FeatureDefinition::freeze(return_draft()).unwrap();
+    let plan = native_plan(vec![definition.clone()]);
+    let request = FeatureMaterializationRequest::new(
+        "alice",
+        plan.plan_hash(),
+        snapshot_id,
+        universe_id,
+        ObservationRange {
+            start_time_ms: HOUR,
+            end_time_ms: 4 * HOUR,
+        },
+        BTreeMap::new(),
+        9,
+    )
+    .map(|mut request| {
+        request.materialize_universe_members = true;
+        request
+    })
+    .unwrap();
+    let started = state
+        .features
+        .start_materialization(FeatureMaterializationStartRequest {
+            user_id: "alice".into(),
+            request,
+            plan: plan_draft(vec![definition]),
+        })
+        .unwrap();
+    let completed = wait_for_materialization(
+        &state,
+        "alice",
+        &started.attempt_id,
+        MaterializationAttemptStatus::Completed,
+    );
+    let rows = state
+        .features
+        .dataset_rows(FeatureDatasetRowsRequest {
+            user_id: "alice".into(),
+            dataset_id: completed.dataset_id.unwrap(),
+            filter: FeatureDatasetFilter::default(),
+            offset: 0,
+        })
+        .unwrap()
+        .rows;
+    assert_eq!(rows.len(), 6);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.instrument_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["okx:BTC-USDT", "okx:ETH-USDT"])
+    );
+    drop(state);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn materialization_completes_a_dataset_and_reuses_completed_evidence() {
     let (root, state, snapshot) = setup("materialization-complete");
     let definition = FeatureDefinition::freeze(return_draft()).unwrap();
