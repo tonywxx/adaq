@@ -109,6 +109,53 @@ impl BotSchedule {
         }
         Ok(())
     }
+
+    pub(crate) fn contains_external_instrument(&self, instrument: &str) -> bool {
+        match self {
+            Self::ClosedBar { instrument_id, .. } => {
+                instrument_id == instrument || okx_instrument_code(instrument_id) == instrument
+            }
+            Self::ScheduledCrossSection { instruments, .. } => {
+                instruments.iter().any(|candidate| {
+                    candidate == instrument || okx_instrument_code(candidate) == instrument
+                })
+            }
+        }
+    }
+}
+
+fn canonical_okx_instrument_id(instrument: &str) -> Result<String, String> {
+    let code = okx_instrument_code(instrument);
+    if code.is_empty() || code.contains(':') {
+        return Err("OKX instrument codes must not contain a source prefix.".into());
+    }
+    Ok(format!("okx:{code}"))
+}
+
+fn okx_instrument_code(instrument: &str) -> &str {
+    instrument.strip_prefix("okx:").unwrap_or(instrument)
+}
+
+fn canonicalize_okx_schedule(schedule: BotSchedule) -> Result<BotSchedule, String> {
+    match schedule {
+        BotSchedule::ClosedBar {
+            instrument_id,
+            interval,
+        } => Ok(BotSchedule::ClosedBar {
+            instrument_id: canonical_okx_instrument_id(&instrument_id)?,
+            interval,
+        }),
+        BotSchedule::ScheduledCrossSection {
+            universe_id,
+            instruments,
+        } => Ok(BotSchedule::ScheduledCrossSection {
+            universe_id,
+            instruments: instruments
+                .iter()
+                .map(|instrument| canonical_okx_instrument_id(instrument))
+                .collect::<Result<_, _>>()?,
+        }),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1552,7 +1599,7 @@ pub(crate) async fn bot_deploy(
             eligible,
             &request.profile_id,
             &request.account_id,
-            request.schedule,
+            canonicalize_okx_schedule(request.schedule)?,
             artifact.binding,
             &local,
         )?;
@@ -2507,12 +2554,11 @@ fn authoritative_decision_input(
     {
         return Err("Portfolio state is stale, uncertain, or bound to another account.".into());
     }
-    if account
-        .account
-        .positions
-        .keys()
-        .any(|instrument| !instruments.contains(instrument))
-    {
+    if account.account.positions.keys().any(|instrument| {
+        canonical_okx_instrument_id(instrument)
+            .map(|instrument| !instruments.contains(&instrument))
+            .unwrap_or(true)
+    }) {
         return Err("Unowned account exposure prevents a Portfolio Decision Batch.".into());
     }
     let positions = account
@@ -2521,7 +2567,7 @@ fn authoritative_decision_input(
         .iter()
         .map(|(instrument, position)| {
             Ok(adaq_bot_runtime::WorkerPosition {
-                instrument_id: instrument.clone(),
+                instrument_id: canonical_okx_instrument_id(instrument)?,
                 quantity: position.quantity.to_string(),
                 price: market_price(local, user_id, instrument)?.to_string(),
             })
@@ -2632,12 +2678,11 @@ fn execute_strategy_target(
     {
         return Err("Strategy Target does not match the immutable ClosedBar schedule.".into());
     }
-    if account
-        .account
-        .positions
-        .keys()
-        .any(|instrument| instrument != instrument_id)
-    {
+    if account.account.positions.keys().any(|instrument| {
+        canonical_okx_instrument_id(instrument)
+            .map(|instrument| instrument != instrument_id)
+            .unwrap_or(true)
+    }) {
         return Err("Unowned account exposure prevents new Bot risk.".into());
     }
     let requested = exposures
@@ -2670,7 +2715,7 @@ fn execute_strategy_target(
     let position = account
         .account
         .positions
-        .get(instrument_id)
+        .get(okx_instrument_code(instrument_id))
         .cloned()
         .unwrap_or(adaq_paper_trading_core::Position {
             quantity: Decimal::ZERO,
@@ -2747,12 +2792,11 @@ fn execute_portfolio_target(
     {
         return Err("Portfolio Target does not contain the complete scheduled Universe.".into());
     }
-    if account
-        .account
-        .positions
-        .keys()
-        .any(|instrument| !instruments.contains(instrument))
-    {
+    if account.account.positions.keys().any(|instrument| {
+        canonical_okx_instrument_id(instrument)
+            .map(|instrument| !instruments.contains(&instrument))
+            .unwrap_or(true)
+    }) {
         return Err("Unowned account exposure prevents new Portfolio risk.".into());
     }
     let cash_reserve = cash_reserve
@@ -2800,11 +2844,11 @@ fn execute_portfolio_target(
         .iter()
         .map(|(instrument, position)| {
             Ok((
-                instrument.clone(),
+                canonical_okx_instrument_id(instrument)?,
                 PortfolioPosition {
                     quantity: position.quantity,
                     price: *prices
-                        .get(instrument)
+                        .get(&canonical_okx_instrument_id(instrument)?)
                         .ok_or_else(|| "Portfolio position price is unavailable.".to_owned())?,
                 },
             ))
@@ -2911,7 +2955,7 @@ fn execute_portfolio_target(
             account
                 .account
                 .positions
-                .get(instrument)
+                .get(okx_instrument_code(instrument))
                 .map(|position| position.sellable_quantity)
                 .unwrap_or_default(),
             &bundle.execution_profile,
@@ -2945,9 +2989,10 @@ fn market_price(
     let ticker = local
         .connections
         .with_okx_demo_client(user_id, |client| {
-            tauri::async_runtime::block_on(
-                client.fetch_ticker(instrument, adaq_trading_crypto::Params::new()),
-            )
+            tauri::async_runtime::block_on(client.fetch_ticker(
+                okx_instrument_code(instrument),
+                adaq_trading_crypto::Params::new(),
+            ))
         })?
         .map_err(|error| error.to_string())?;
     ticker
@@ -3033,7 +3078,7 @@ fn submit_target_order(
     let request = PaperOrderRequest {
         user_id: user_id.into(),
         operation_id: operation_id.clone(),
-        instrument: order.instrument.clone(),
+        instrument: okx_instrument_code(&order.instrument).into(),
         side: order.side.into(),
         quantity: order.quantity,
         limit_price: order.limit_price,
@@ -3060,7 +3105,7 @@ fn submit_target_order(
     let price = order.limit_price.to_string();
     let remote = local.connections.create_okx_demo_order(
         user_id,
-        &order.instrument,
+        okx_instrument_code(&order.instrument),
         "limit",
         order.side,
         &quantity,
@@ -3973,11 +4018,14 @@ fn stop_bot(app: &AppHandle, user_id: &str, request: BotStopRequest) -> Result<B
 fn bot_instrument_scope(bundle: &BotDeploymentBundle) -> BTreeSet<String> {
     match &bundle.schedule {
         BotSchedule::ClosedBar { instrument_id, .. } => {
-            [instrument_id.clone()].into_iter().collect()
+            [okx_instrument_code(instrument_id).to_owned()]
+                .into_iter()
+                .collect()
         }
-        BotSchedule::ScheduledCrossSection { instruments, .. } => {
-            instruments.iter().cloned().collect()
-        }
+        BotSchedule::ScheduledCrossSection { instruments, .. } => instruments
+            .iter()
+            .map(|instrument| okx_instrument_code(instrument).to_owned())
+            .collect(),
     }
 }
 
@@ -4500,6 +4548,26 @@ mod tests {
         store.begin_attempt("user-a", "bot-a", false).unwrap();
         assert!(store.begin_attempt("user-a", "bot-b", false).is_err());
         assert!(store.get("user-b", "bot-a").is_err());
+    }
+
+    #[test]
+    fn okx_schedules_keep_canonical_data_ids_and_external_order_codes() {
+        let schedule = canonicalize_okx_schedule(BotSchedule::ScheduledCrossSection {
+            universe_id: "universe".into(),
+            instruments: vec!["BTC-USDT".into(), "okx:ETH-USDT".into()],
+        })
+        .unwrap();
+
+        assert_eq!(
+            schedule,
+            BotSchedule::ScheduledCrossSection {
+                universe_id: "universe".into(),
+                instruments: vec!["okx:BTC-USDT".into(), "okx:ETH-USDT".into()],
+            }
+        );
+        assert!(schedule.contains_external_instrument("BTC-USDT"));
+        assert!(schedule.contains_external_instrument("okx:ETH-USDT"));
+        assert_eq!(okx_instrument_code("okx:BTC-USDT"), "BTC-USDT");
     }
 
     #[test]

@@ -2392,12 +2392,7 @@ mod paper_feedback_metric_tests {
 }
 
 fn instrument_in_scope(schedule: &bot_operations::BotSchedule, instrument: &str) -> bool {
-    match schedule {
-        bot_operations::BotSchedule::ClosedBar { instrument_id, .. } => instrument_id == instrument,
-        bot_operations::BotSchedule::ScheduledCrossSection { instruments, .. } => {
-            instruments.iter().any(|candidate| candidate == instrument)
-        }
-    }
+    schedule.contains_external_instrument(instrument)
 }
 
 #[tauri::command]
