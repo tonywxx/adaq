@@ -24,6 +24,7 @@ if (process.platform === "darwin") {
 const command = process.platform === "win32" ? "tauri.cmd" : "tauri";
 const result = spawnSync(command, process.argv.slice(2), {
 	env,
+	shell: process.platform === "win32",
 	stdio: "inherit",
 });
 
