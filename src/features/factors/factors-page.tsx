@@ -3097,19 +3097,28 @@ function DecisionsWorkspace({
 		userId,
 		"decision-candidates",
 		adapter.listCandidates,
+		{ allPages: true },
 	);
 	const datasets = useFactorPage(
 		userId,
 		"decision-datasets",
 		adapter.listDatasets,
+		{ allPages: true },
 	);
-	const reports = useFactorPage(userId, "decision-reports", adapter.listReports);
-	const policies = useFactorPage(userId, "policies", adapter.listPolicies);
-	const decisions = useFactorPage(userId, "decisions", adapter.listDecisions);
+	const reports = useFactorPage(userId, "decision-reports", adapter.listReports, {
+		allPages: true,
+	});
+	const policies = useFactorPage(userId, "policies", adapter.listPolicies, {
+		allPages: true,
+	});
+	const decisions = useFactorPage(userId, "decisions", adapter.listDecisions, {
+		allPages: true,
+	});
 	const libraryPage = useFactorPage(
 		userId,
 		"decision-library",
 		adapter.listDecisionLibrary,
+		{ allPages: true },
 	);
 	const gate6Candidates = useFactorPage(
 		userId,
@@ -3133,12 +3142,6 @@ function DecisionsWorkspace({
 		userId,
 		"gate6-policies",
 		adapter.listPolicies,
-		{ allPages: true },
-	);
-	const gate6Decisions = useFactorPage(
-		userId,
-		"gate6-decisions",
-		adapter.listDecisionLibrary,
 		{ allPages: true },
 	);
 	const [candidateHash, setCandidateHash] = useState("");
@@ -3390,7 +3393,6 @@ function DecisionsWorkspace({
 	};
 	const library = libraryPage.data?.items ?? [];
 	const gate6Error =
-		gate6Decisions.error ??
 		gate6Candidates.error ??
 		gate6Datasets.error ??
 		gate6Reports.error ??
@@ -3400,9 +3402,9 @@ function DecisionsWorkspace({
 			<Gate6QualificationWorkspace
 				userId={userId}
 				adapter={adapter}
-				decisions={gate6Decisions.data?.items ?? []}
+				decisions={libraryPage.data?.items ?? []}
 				decisionLoading={
-					gate6Decisions.loading ||
+					libraryPage.loading ||
 					gate6Candidates.loading ||
 					gate6Datasets.loading ||
 					gate6Reports.loading ||

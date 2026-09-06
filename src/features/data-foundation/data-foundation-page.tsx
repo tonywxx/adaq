@@ -98,6 +98,8 @@ type SnapshotOption = {
 	code: string;
 	interval: string;
 	barCount: number;
+	startTimeMs?: number;
+	endTimeMs?: number;
 };
 
 type UniverseOption = {
@@ -105,6 +107,10 @@ type UniverseOption = {
 	startTimeMs: number;
 	endTimeMs: number;
 	contentSha256: string;
+	universe: {
+		coverageStartMs?: number;
+		coverageEndMs?: number;
+	};
 };
 
 type QualityView = {
@@ -1208,6 +1214,39 @@ export function DataFoundationPage() {
 
 	const establishContext = async () => {
 		if (!userId || !snapshotId) return;
+		const selectedSnapshot = snapshotsQuery.data?.find(
+			(snapshot) => snapshot.snapshotId === snapshotId,
+		);
+		const selectedUniverse = universeQuery.data?.find(
+			(universe) => universe.snapshotId === universeId,
+		);
+		const snapshotStartMs = selectedSnapshot?.startTimeMs;
+		const snapshotEndMs = selectedSnapshot?.endTimeMs;
+		if (
+			typeof snapshotStartMs !== "number" ||
+			typeof snapshotEndMs !== "number" ||
+			!Number.isFinite(snapshotStartMs) ||
+			!Number.isFinite(snapshotEndMs)
+		) {
+			setError("The selected Snapshot has no usable coverage range.");
+			return;
+		}
+		const rangeStartMs = Math.max(
+			snapshotStartMs,
+			selectedUniverse?.universe.coverageStartMs ??
+				selectedUniverse?.startTimeMs ??
+				snapshotStartMs,
+		);
+		const rangeEndMs = Math.min(
+			snapshotEndMs,
+			selectedUniverse?.universe.coverageEndMs ??
+				selectedUniverse?.endTimeMs ??
+				snapshotEndMs,
+		);
+		if (rangeStartMs >= rangeEndMs) {
+			setError("The selected Snapshot and Universe have no shared coverage range.");
+			return;
+		}
 		setError(undefined);
 		try {
 			await invoke("research_context_establish", {
@@ -1215,8 +1254,8 @@ export function DataFoundationPage() {
 					userId,
 					market: contextMarket,
 					venue: contextVenue,
-					rangeStartMs: Date.parse(`${rangeStart}T00:00:00Z`),
-					rangeEndMs: Date.parse(`${rangeEnd}T00:00:00Z`) + 86_400_000,
+					rangeStartMs,
+					rangeEndMs,
 					snapshotId,
 					universeId: universeId || null,
 					evidence: [

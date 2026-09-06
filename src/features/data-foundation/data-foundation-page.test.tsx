@@ -67,10 +67,24 @@ jest.mock("@tauri-apps/api/core", () => ({
 					code: "BTC-USDT",
 					interval: "1m",
 					barCount: 10,
+					startTimeMs: 1_000,
+					endTimeMs: 2_000,
 				},
 			];
 		}
-		if (command === "snapshot_list_universe") return { items: [] };
+		if (command === "snapshot_list_universe") {
+			return {
+				items: [
+					{
+						snapshotId: "universe-1",
+						startTimeMs: 1_000,
+						endTimeMs: 2_000,
+						contentSha256: "content-hash",
+						universe: { coverageStartMs: 1_500 },
+					},
+				],
+			};
+		}
 		if (command === "research_context_get") return null;
 		if (command === "foundation_acquisition_history") {
 			return [
@@ -259,6 +273,47 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(mockInvoke).toHaveBeenCalledWith("foundation_acquisition_history", {
 		userId: "user-1",
 	});
+	const contextSnapshot = Array.from(container.querySelectorAll("select")).find(
+		(select) => Array.from(select.options).some((option) => option.value === "snapshot-1"),
+	);
+	expect(contextSnapshot).toBeDefined();
+	await act(async () => {
+		if (contextSnapshot) {
+			contextSnapshot.value = "snapshot-1";
+			contextSnapshot.dispatchEvent(new Event("change", { bubbles: true }));
+		}
+		await Promise.resolve();
+	});
+	const contextUniverse = Array.from(container.querySelectorAll("select")).find(
+		(select) => Array.from(select.options).some((option) => option.value === "universe-1"),
+	);
+	await act(async () => {
+		if (contextUniverse) {
+			contextUniverse.value = "universe-1";
+			contextUniverse.dispatchEvent(new Event("change", { bubbles: true }));
+		}
+		await Promise.resolve();
+	});
+	const establishContextButton = Array.from(container.querySelectorAll("button")).find(
+		(button) => button.textContent === i18n.t("dataFoundation.establishContext"),
+	);
+	expect(establishContextButton).toBeDefined();
+	await act(async () => {
+		establishContextButton?.click();
+		await Promise.resolve();
+	});
+	expect(mockInvoke).toHaveBeenCalledWith(
+		"research_context_establish",
+		expect.objectContaining({
+			draft: expect.objectContaining({
+				rangeStartMs: 1_500,
+				rangeEndMs: 2_000,
+				snapshotId: "snapshot-1",
+				universeId: "universe-1",
+			}),
+			stage: "features",
+		}),
+	);
 	jest.spyOn(window, "confirm").mockReturnValue(true);
 
 	const instrumentButton = Array.from(container.querySelectorAll("button")).find(

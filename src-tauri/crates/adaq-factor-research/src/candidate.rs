@@ -16,7 +16,8 @@ use adaq_component_tooling::{
     ParameterDefinition, ParameterType, RunLimits, create_project, verify_package,
 };
 use adaq_feature_engine::{
-    FeatureEngineIdentity, FeaturePlan, FeatureSource, FrozenBuiltInParameter,
+    FeatureEngineIdentity, FeatureInput, FeatureOperator, FeaturePlan, FeatureSource,
+    FrozenBuiltInParameter,
 };
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -524,19 +525,9 @@ pub fn generate_declarative_candidate_package(
             .feature_slots
             .iter()
             .map(|slot| {
-                let plan_slot = plan
-                    .slots()
-                    .iter()
-                    .find(|plan_slot| plan_slot.name == slot.name)
-                    .ok_or_else(|| {
-                        format!(
-                            "Declarative Factor Feature Slot {} is absent from frozen Plan",
-                            slot.name
-                        )
-                    })?;
                 Ok(FeatureSlotDefinition {
                     name: slot.name.clone(),
-                    source: manifest_slot_source(&plan_slot.source)?,
+                    source: plan_slot_source(&plan, &slot.name)?,
                 })
             })
             .collect::<Result<_, String>>()?,
@@ -546,7 +537,7 @@ pub fn generate_declarative_candidate_package(
             .map(|output| output.name.clone())
             .collect(),
         dependencies: Vec::new(),
-        warmup_bars: plan.effective_warmup_bars(),
+        warmup_bars: 0,
         model_scope: None,
         model_outputs: Vec::new(),
         model_artifact: None,
@@ -573,8 +564,7 @@ pub fn generate_declarative_candidate_package(
             Ok((output.name.clone(), index))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let source =
-        render_declarative_factor_source(candidate, &output_slots, plan.effective_warmup_bars());
+    let source = render_declarative_factor_source(candidate, &output_slots, 0);
     let definition_json = crate::canonical_json(definition).map_err(string)?;
     let source_sha256 = adaq_feature_engine::sha256(&definition_json);
     let project_name = format!("adaq-factor-{}", attempt_id.simple());
@@ -640,6 +630,53 @@ pub fn generate_declarative_candidate_package(
     })();
     let _ = fs::remove_dir_all(&project);
     result
+}
+
+fn plan_slot_source(plan: &FeaturePlan, slot_name: &str) -> Result<FeatureSlotSource, String> {
+    if let Some(slot) = plan.slots().iter().find(|slot| slot.name == slot_name) {
+        return manifest_slot_source(&slot.source);
+    }
+    let Some((definition, output)) = plan.definitions().iter().find_map(|definition| {
+        definition
+            .outputs()
+            .iter()
+            .find(|output| output.name == slot_name)
+            .map(|output| (definition, output))
+    }) else {
+        return Err(format!(
+            "Declarative Factor Feature Slot {slot_name} is absent from frozen Plan"
+        ));
+    };
+    let node = definition
+        .nodes()
+        .iter()
+        .find(|node| node.id == output.node_id)
+        .ok_or_else(|| format!("Declarative Factor Feature Slot {slot_name} has no frozen node"))?;
+    let FeatureOperator::Indicator { id } = &node.operator else {
+        return Err(format!(
+            "Declarative Factor Feature Slot {slot_name} is not a directly reproducible indicator"
+        ));
+    };
+    let inputs = node
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| match input {
+            FeatureInput::Market { field } => Ok((
+                format!("real-{index}"),
+                serde_json::to_value(field).map_err(string)?,
+            )),
+            FeatureInput::Node { .. } | FeatureInput::Artifact { .. } => Err(format!(
+                "Declarative Factor Feature Slot {slot_name} has a non-market input"
+            )),
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    Ok(FeatureSlotSource::BuiltIn {
+        indicator: id.clone(),
+        output: "value".into(),
+        inputs,
+        parameters: node.parameters.clone(),
+    })
 }
 
 fn generate_lockfile(root: &std::path::Path) -> Result<String, String> {
@@ -1158,5 +1195,90 @@ mod tests {
                 .iter()
                 .any(|command| command.contains("cargo component build"))
         );
+    }
+
+    #[test]
+    fn declarative_generator_resolves_direct_indicator_feature_outputs() {
+        let engine_identity = FeatureEngineIdentity::for_tests();
+        let definition =
+            adaq_feature_engine::FeatureDefinition::freeze(adaq_feature_engine::DefinitionDraft {
+                definition_id: Uuid::new_v4(),
+                revision: 1,
+                scope: adaq_feature_engine::FeatureScope::TimeSeries,
+                nodes: vec![adaq_feature_engine::FeatureNode {
+                    id: "ema".into(),
+                    operator: FeatureOperator::Indicator { id: "ema".into() },
+                    scope: adaq_feature_engine::FeatureScope::TimeSeries,
+                    inputs: vec![FeatureInput::Market {
+                        field: adaq_feature_engine::MarketField::Close,
+                    }],
+                    parameters: BTreeMap::from([("time-period".into(), serde_json::json!(5))]),
+                    warmup_bars: 5,
+                }],
+                outputs: vec![adaq_feature_engine::FeatureOutput {
+                    name: "ema-5".into(),
+                    node_id: "ema".into(),
+                }],
+            })
+            .unwrap();
+        let plan = FeaturePlan::freeze(adaq_feature_engine::FeaturePlanDraft {
+            definitions: vec![definition],
+            engine_identity: engine_identity.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(
+            plan_slot_source(&plan, "ema-5").unwrap(),
+            FeatureSlotSource::BuiltIn {
+                indicator: "ema".into(),
+                output: "value".into(),
+                inputs: BTreeMap::from([("real-0".into(), serde_json::json!("close"))]),
+                parameters: BTreeMap::from([("time-period".into(), serde_json::json!(5))]),
+            }
+        );
+        let (candidate, _) = DeclarativeFactorDraft {
+            user_id: Uuid::new_v4(),
+            candidate_id: Uuid::new_v4(),
+            revision: 1,
+            scope: FactorScope::TimeSeries,
+            feature_slots: vec![FactorFeatureSlot {
+                name: "ema-5".into(),
+            }],
+            parameters: Vec::new(),
+            outputs: vec![FactorOutput {
+                name: "factor-value".into(),
+            }],
+            definition: DeclarativeFactorDefinition {
+                feature_plan_hash: plan.plan_hash().into(),
+                operator_catalog_version: adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION
+                    .into(),
+                outputs: vec![crate::DeclarativeFactorOutputBinding {
+                    output_name: "factor-value".into(),
+                    feature_slot: "ema-5".into(),
+                }],
+            },
+            presentation: FactorPresentationMetadata {
+                name: "EMA passthrough".into(),
+                description: String::new(),
+                tags: Vec::new(),
+            },
+        }
+        .publish()
+        .unwrap();
+        let result = generate_declarative_candidate_package(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            &candidate,
+            "ema-factor",
+            &plan.to_json(),
+            &engine_identity,
+            FactorResourcePolicy {
+                fuel_per_call: 1_000_000,
+                memory_bytes: 64 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.package.manifest.warmup_bars, 0);
     }
 }
