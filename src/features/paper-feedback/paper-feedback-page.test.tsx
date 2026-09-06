@@ -23,8 +23,8 @@ const bot = {
 		{
 			attemptId: "attempt-a",
 			state: "running",
-			createdAtMs: Date.parse("2026-08-29T00:00:00Z"),
-			updatedAtMs: Date.parse("2026-08-29T01:00:00Z"),
+			createdAtMs: Date.parse("2026-08-29T00:00:12Z"),
+			updatedAtMs: Date.parse("2026-08-29T01:00:45Z"),
 		},
 	],
 };
@@ -153,6 +153,15 @@ test("creates a Host-bound snapshot and exposes all four review lenses", async (
 			requiredObservations: 20,
 		},
 	});
+	const snapshotRequest = mockInvoke.mock.calls.find(
+		([command]) => command === "paper_feedback_snapshot_create",
+	)?.[1] as { request: Record<string, number> };
+	expect(snapshotRequest.request.observationStartMs).toBeGreaterThanOrEqual(
+		bot.attempts[0].createdAtMs,
+	);
+	expect(snapshotRequest.request.observationEndMs).toBeLessThanOrEqual(
+		bot.attempts[0].updatedAtMs,
+	);
 	for (const lens of ["Factor", "Model", "Strategy", "Execution"]) {
 		expect(container.textContent).toContain(`Generate Report · ${lens}`);
 	}

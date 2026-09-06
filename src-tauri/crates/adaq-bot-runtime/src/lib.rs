@@ -22,6 +22,7 @@ use std::{
 
 pub const WORKER_ARTIFACT_NAME: &str = "adaq-bot-worker";
 pub const WORKER_ARTIFACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const LEGACY_WORKER_PROTOCOL_VERSION: &str = "adaq-bot-worker-ipc@1.0.0";
 pub const WORKER_PROTOCOL_VERSION: &str = "adaq-bot-worker-ipc@1.1.0";
 pub const WORKER_RUNTIME_VERSION: &str = concat!("adaq-bot-runtime@", env!("CARGO_PKG_VERSION"));
 pub const WORKER_SIGNATURE_SCHEMA_VERSION: &str = "adaq-bot-worker-signature@1.0.0";
@@ -358,6 +359,25 @@ impl WorkerArtifactBinding {
         }
         Ok(())
     }
+
+    fn validate_for_feedback(&self) -> Result<(), RuntimeError> {
+        if self.artifact_name != WORKER_ARTIFACT_NAME
+            || !is_bounded_text(&self.artifact_version, 64)
+            || !is_bounded_text(&self.platform, 64)
+            || !matches!(
+                self.protocol_version.as_str(),
+                WORKER_PROTOCOL_VERSION | LEGACY_WORKER_PROTOCOL_VERSION
+            )
+            || !is_bounded_text(&self.runtime_version, 128)
+            || !is_sha256(&self.sha256)
+            || self.signing_key_id != WORKER_SIGNING_KEY_ID
+            || self.signature.len() != 128
+            || !self.signature.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(RuntimeError::InvalidWorkerBinding);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -382,6 +402,14 @@ pub struct DeploymentBundleInput {
 
 impl DeploymentBundleInput {
     fn validate(&self) -> Result<(), RuntimeError> {
+        self.validate_with_worker(true)
+    }
+
+    fn validate_for_feedback(&self) -> Result<(), RuntimeError> {
+        self.validate_with_worker(false)
+    }
+
+    fn validate_with_worker(&self, validate_worker: bool) -> Result<(), RuntimeError> {
         if !is_bounded_text(&self.bot_id, MAX_ID_BYTES)
             || !is_bounded_text(&self.strategy_id, MAX_ID_BYTES)
             || !is_bounded_text(&self.account_id, MAX_ID_BYTES)
@@ -404,7 +432,11 @@ impl DeploymentBundleInput {
         self.strategy.validate()?;
         self.pipeline
             .validate(&self.component_hashes, &self.model_hashes)?;
-        self.worker.validate()?;
+        if validate_worker {
+            self.worker.validate()?;
+        } else {
+            self.worker.validate_for_feedback()?;
+        }
         self.worker_policy.validate()?;
         Ok(())
     }
@@ -429,12 +461,21 @@ impl DeploymentBundle {
 
     pub fn verify(&self) -> Result<(), RuntimeError> {
         self.input.validate()?;
+        self.verify_identity()
+    }
+
+    pub fn verify_identity(&self) -> Result<(), RuntimeError> {
         let bytes = serde_json::to_vec(&self.input).map_err(|_| RuntimeError::Serialization)?;
         if self.identity == sha256_hex(&bytes) {
             Ok(())
         } else {
             Err(RuntimeError::BundleMutated)
         }
+    }
+
+    pub fn verify_for_feedback(&self) -> Result<(), RuntimeError> {
+        self.input.validate_for_feedback()?;
+        self.verify_identity()
     }
 }
 
@@ -2326,6 +2367,16 @@ mod tests {
             worker_policy: WorkerRuntimePolicy::default(),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn identity_verification_keeps_legacy_worker_bindings_readable() {
+        let mut bundle = bundle();
+        bundle.input.worker.protocol_version = "adaq-bot-worker-ipc@1.0.0".into();
+        bundle.identity = sha256_hex(&serde_json::to_vec(&bundle.input).unwrap());
+
+        assert_eq!(bundle.verify(), Err(RuntimeError::InvalidWorkerBinding));
+        assert_eq!(bundle.verify_for_feedback(), Ok(()));
     }
 
     fn running() -> RuntimeAttempt {

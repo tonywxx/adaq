@@ -1862,7 +1862,7 @@ fn paper_feedback_research_evidence(
         || revision.semantic_context.feature_plan_hash
             != bundle.runtime_bundle.input.feature_plan_hash
         || revision.semantic_context.snapshot_id != qualification.context.snapshot_id
-        || revision.semantic_context.universe_id != qualification.context.universe_id
+        || revision.semantic_context.universe_id != qualification.context.universe_snapshot_id
     {
         return Err(
             "Paper Feedback research evidence does not match the exact Deployment Bundle".into(),

@@ -201,6 +201,15 @@ impl BotDeploymentBundle {
         Ok(())
     }
 
+    pub(crate) fn verify_for_feedback(&self) -> Result<(), String> {
+        self.verify_contents_with_runtime_validation(false)?;
+        let expected = hash_json(&self.without_identity())?;
+        if self.identity != expected {
+            return Err("Bot Deployment Bundle identity is mutated".into());
+        }
+        Ok(())
+    }
+
     fn without_identity(&self) -> Self {
         let mut copy = self.clone();
         copy.identity.clear();
@@ -208,6 +217,13 @@ impl BotDeploymentBundle {
     }
 
     fn verify_contents(&self) -> Result<(), String> {
+        self.verify_contents_with_runtime_validation(true)
+    }
+
+    fn verify_contents_with_runtime_validation(
+        &self,
+        validate_runtime: bool,
+    ) -> Result<(), String> {
         let research_risk_policy_hash = hash_json(&self.research_risk_policy)?;
         let execution_profile_hash = hash_json(&self.execution_profile)?;
         let legacy = self.schema_version == LEGACY_BOT_SCHEMA_VERSION
@@ -254,9 +270,15 @@ impl BotDeploymentBundle {
         {
             return Err("Bot Deployment Bundle is invalid".into());
         }
-        self.runtime_bundle
-            .verify()
-            .map_err(|error| error.to_string())?;
+        if validate_runtime {
+            self.runtime_bundle
+                .verify()
+                .map_err(|error| error.to_string())?;
+        } else {
+            self.runtime_bundle
+                .verify_for_feedback()
+                .map_err(|error| error.to_string())?;
+        }
         self.schedule
             .validate(runtime_scope(&self.runtime_bundle), &self.universe_id)?;
         Ok(())
@@ -593,7 +615,7 @@ impl BotStore {
         now_ms: i64,
     ) -> Result<(BotView, BotRuntimeAttempt), String> {
         let bot = self.get(user_id, bot_id)?;
-        bot.bundle.verify()?;
+        bot.bundle.verify_for_feedback()?;
         if bot.bundle.identity != bundle_id || bot.current_attempt_id.as_deref() != Some(attempt_id)
         {
             return Err(
@@ -4473,6 +4495,17 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn feedback_binding_keeps_legacy_worker_bindings_readable() {
+        let mut bundle = bundle("bot-a", "account-a");
+        bundle.runtime_bundle.input.worker.protocol_version = "adaq-bot-worker-ipc@1.0.0".into();
+        bundle.runtime_bundle.identity = hash_json(&bundle.runtime_bundle.input).unwrap();
+        bundle.identity = hash_json(&bundle.without_identity()).unwrap();
+
+        assert!(bundle.verify().is_err());
+        assert!(bundle.verify_for_feedback().is_ok());
     }
 
     #[test]

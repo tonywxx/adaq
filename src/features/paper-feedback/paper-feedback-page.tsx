@@ -213,9 +213,10 @@ export function PaperFeedbackPage() {
 		setAttemptId(nextAttempt?.attemptId ?? "");
 		if (nextAttempt) {
 			const end = Math.min(nextAttempt.updatedAtMs, Date.now());
-			setObservationStart(toDateInput(nextAttempt.createdAtMs));
-			setObservationEnd(toDateInput(end));
-			setRealizationCutoff(toDateInput(end));
+			setObservationStart(toDateInput(roundUpToMinute(nextAttempt.createdAtMs)));
+			const safeEnd = roundDownToMinute(end);
+			setObservationEnd(toDateInput(safeEnd));
+			setRealizationCutoff(toDateInput(safeEnd));
 		}
 	}
 
@@ -666,4 +667,12 @@ function toDateInput(value: number) {
 	const date = new Date(value);
 	const pad = (part: number) => String(part).padStart(2, "0");
 	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function roundUpToMinute(value: number) {
+	return Math.ceil(value / 60_000) * 60_000;
+}
+
+function roundDownToMinute(value: number) {
+	return Math.floor(value / 60_000) * 60_000;
 }
