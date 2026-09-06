@@ -46,7 +46,7 @@
 			"binaries/adaq-bot-worker"
 		],
 		"resources": [
-			"binaries/*.sig"
+			"binaries/*"
 		],
 		"createUpdaterArtifacts": true,
 		"copyright": "Copyright 2026 TONy.Wu",
