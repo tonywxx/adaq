@@ -8,7 +8,7 @@ keywords = ["quant-trading", "crypto", "exchange", "prediction-market", "stock-m
 license = "Apache-2.0"
 name = "adaq"
 repository = "https://github.com/tonywxx/adaq"
-version = "0.9.5"
+version = "0.9.6"
 
 [workspace]
 members = [
