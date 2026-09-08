@@ -54,12 +54,18 @@ function TooltipContent({
   align?: "start" | "center" | "end"
   sideOffset?: number
 }) {
+  // jsdom has no layout viewport, so collision middleware can keep repositioning the popup.
+  const collisionAvoidance =
+    typeof process !== "undefined" && process.env.NODE_ENV === "test"
+      ? { side: "none" as const, align: "none" as const }
+      : undefined
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Positioner
         sideOffset={sideOffset}
         side={side}
         align={align}
+        collisionAvoidance={collisionAvoidance}
         className="z-50"
       >
         <TooltipPrimitive.Popup

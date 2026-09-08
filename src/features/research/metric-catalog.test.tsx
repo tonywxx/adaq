@@ -66,11 +66,11 @@ test("keeps representative research meanings precise and contextual", () => {
 
 test.each(["pointer", "focus", "click"])(
 	"opens the accessible definition by %s",
-	async (mode) => {
+	(mode) => {
 		const container = document.createElement("div");
 		document.body.append(container);
 		const root = createRoot(container);
-		await act(async () => {
+		act(() => {
 			root.render(<MetricInfo metricId="strategy.sharpe" />);
 		});
 		const trigger = container.querySelector(
@@ -84,7 +84,7 @@ test.each(["pointer", "focus", "click"])(
 		expect(trigger.textContent).toBe("Sharpe");
 		expect(trigger.textContent).not.toContain("ⓘ");
 
-		await act(async () => {
+		act(() => {
 			if (mode === "pointer") {
 				trigger.dispatchEvent(new MouseEvent("mouseenter"));
 			} else if (mode === "focus") {
@@ -92,7 +92,6 @@ test.each(["pointer", "focus", "click"])(
 			} else {
 				trigger.click();
 			}
-			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
 		expect(document.body.textContent).toContain("Formula:");
@@ -105,7 +104,7 @@ test.each(["pointer", "focus", "click"])(
 		expect(content?.className).toContain("text-popover-foreground");
 		expect(content?.parentElement?.className).toContain("z-50");
 
-		await act(async () => root.unmount());
+		act(() => root.unmount());
 		container.remove();
 	},
 );
