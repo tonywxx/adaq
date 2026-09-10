@@ -484,7 +484,9 @@ export function OperationsDashboard() {
 											</div>
 											<div>
 												<dt className="inline font-medium">{t("operations.policyId")}: </dt>
-												<dd className="inline">{alert.policyId}</dd>
+												<dd className="inline">
+													<IdentifierDisplay id={alert.policyId} />
+												</dd>
 											</div>
 											<div>
 												<dt className="inline font-medium">
@@ -498,7 +500,9 @@ export function OperationsDashboard() {
 												<dt className="inline font-medium">
 													{t("operations.firstEvent")}:{" "}
 												</dt>
-												<dd className="inline">{alert.firstEventId}</dd>
+												<dd className="inline">
+													<IdentifierDisplay id={alert.firstEventId} />
+												</dd>
 											</div>
 											<div>
 												<dt className="inline font-medium">
@@ -512,7 +516,9 @@ export function OperationsDashboard() {
 												<dt className="inline font-medium">
 													{t("operations.lastEvent")}:{" "}
 												</dt>
-												<dd className="inline">{alert.lastEventId}</dd>
+												<dd className="inline">
+													<IdentifierDisplay id={alert.lastEventId} />
+												</dd>
 											</div>
 											<div>
 												<dt className="inline font-medium">

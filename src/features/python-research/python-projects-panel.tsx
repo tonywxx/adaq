@@ -672,7 +672,9 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 						<CardContent className="grid gap-3 text-sm">
 							<div className="grid gap-1">
 								<strong>{t("pythonResearch.projects.review.revision")}</strong>
-								<code className="break-all">{preview.value.revisionSha256}</code>
+								<code className="break-all">
+									<IdentifierDisplay id={preview.value.revisionSha256} />
+								</code>
 							</div>
 							<div className="grid gap-1">
 								<strong>{t("pythonResearch.projects.review.entryPoint")}</strong>
@@ -696,11 +698,15 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 							</div>
 							<div className="grid gap-1">
 								<strong>{t("pythonResearch.projects.review.sdk")}</strong>
-								<code className="break-all">{preview.value.sdkArtifactSha256}</code>
+								<code className="break-all">
+									<IdentifierDisplay id={preview.value.sdkArtifactSha256} />
+								</code>
 							</div>
 							<div className="grid gap-1">
 								<strong>{t("pythonResearch.projects.review.environment")}</strong>
-								<code className="break-all">{preview.value.environmentSha256}</code>
+								<code className="break-all">
+									<IdentifierDisplay id={preview.value.environmentSha256} />
+								</code>
 							</div>
 							<div className="grid gap-1">
 								<strong>{t("pythonResearch.projects.review.inputBindings")}</strong>

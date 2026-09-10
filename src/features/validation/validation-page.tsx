@@ -704,12 +704,17 @@ export function ValidationPage() {
 							>
 								<div>
 									<p>{protocolSummary(protocol)}</p>
-									<code className="break-all text-xs">{protocol.protocolId}</code>
+									<code className="break-all text-xs">
+										<IdentifierDisplay id={protocol.protocolId} />
+									</code>
 									<details className="mt-2">
 										<summary>Review immutable Protocol</summary>
 										{protocolDetails(protocol).map((window) => (
 											<p key={`${window.snapshotId}:${window.boundary}`} className="mt-2">
-												Snapshot <code className="break-all">{window.snapshotId}</code>
+												Snapshot{" "}
+												<code className="break-all">
+													<IdentifierDisplay id={window.snapshotId} />
+												</code>
 												<br />
 												Sample-out boundary: {window.boundary}
 												<br />
@@ -719,7 +724,9 @@ export function ValidationPage() {
 										{protocol.crossMarket?.contexts.map((context, index) => (
 											<p key={context.snapshotId} className="mt-2">
 												Market context {index + 1}:{" "}
-												<code className="break-all">{context.snapshotId}</code>
+												<code className="break-all">
+													<IdentifierDisplay id={context.snapshotId} />
+												</code>
 												<br />
 												Configuration: {context.runOverride ? "exact override" : "shared"}
 											</p>
@@ -1118,7 +1125,9 @@ function ProtocolContext({
 				Snapshot: {run.snapshot.code} · {run.snapshot.interval} ·{" "}
 				{run.snapshot.barCount} Bars
 			</p>
-			<code className="block break-all text-xs">{run.snapshot.snapshotId}</code>
+			<code className="block break-all text-xs">
+				<IdentifierDisplay id={run.snapshot.snapshotId} />
+			</code>
 			<p className="mt-2">
 				Strategy: {labels.get(config.strategyArchiveSha256) ?? "Unknown package"}
 			</p>
@@ -1129,11 +1138,16 @@ function ProtocolContext({
 				<p key={factor.alias} className="mt-2">
 					Factor {factor.alias}:{" "}
 					{labels.get(factor.archiveSha256) ?? "Unknown package"}
-					<code className="block break-all text-xs">{factor.archiveSha256}</code>
+					<code className="block break-all text-xs">
+						<IdentifierDisplay id={factor.archiveSha256} />
+					</code>
 				</p>
 			))}
 			<p className="mt-2">
-				Backtest Run <code className="break-all">{run.runId}</code>
+				Backtest Run{" "}
+				<code className="break-all">
+					<IdentifierDisplay id={run.runId} />
+				</code>
 			</p>
 		</div>
 	);
@@ -1325,10 +1339,14 @@ function ReportViews({
 						)}
 						<p className="mt-2 text-xs">
 							Sample-in Snapshot{" "}
-							<code className="break-all">{window.sampleInSnapshotId}</code>
+							<code className="break-all">
+								<IdentifierDisplay id={window.sampleInSnapshotId} />
+							</code>
 							<br />
 							Sample-out Snapshot{" "}
-							<code className="break-all">{window.sampleOutSnapshotId}</code>
+							<code className="break-all">
+								<IdentifierDisplay id={window.sampleOutSnapshotId} />
+							</code>
 							<br />
 							<a className="underline" href="/backtest">
 								Sample-in Run {window.sampleInRunId ?? "not completed"}
@@ -1348,7 +1366,9 @@ function ReportViews({
 						<code>{report.aggregationRuleVersion}</code>
 					</p>
 					<p>Protocol</p>
-					<code className="block break-all text-xs">{report.protocolId}</code>
+					<code className="block break-all text-xs">
+						<IdentifierDisplay id={report.protocolId} />
+					</code>
 					{protocol ? (
 						<pre className="overflow-x-auto whitespace-pre-wrap text-xs">
 							{JSON.stringify(protocol, null, 2)}
@@ -1359,7 +1379,9 @@ function ReportViews({
 						</p>
 					)}
 					<p>Authoritative Report identity</p>
-					<code className="block break-all text-xs">{report.reportId}</code>
+					<code className="block break-all text-xs">
+						<IdentifierDisplay id={report.reportId} />
+					</code>
 					{report.recommendedContexts.length > 0 && (
 						<div>
 							<p className="mt-2">Recommended Contexts</p>

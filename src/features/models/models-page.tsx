@@ -704,13 +704,17 @@ export function ModelsPage({
 											</div>
 											<div>
 												<dt className="inline font-medium text-foreground">Snapshot: </dt>
-												<dd className="inline select-text">{item.snapshotId}</dd>
+												<dd className="inline select-text">
+													<IdentifierDisplay id={item.snapshotId} />
+												</dd>
 											</div>
 											<div>
 												<dt className="inline font-medium text-foreground">
 													Feature Plan:{" "}
 												</dt>
-												<dd className="inline select-text">{item.featurePlanHash}</dd>
+												<dd className="inline select-text">
+													<IdentifierDisplay id={item.featurePlanHash} />
+												</dd>
 											</div>
 											<div>
 												<dt className="inline font-medium text-foreground">

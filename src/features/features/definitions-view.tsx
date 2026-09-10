@@ -630,7 +630,9 @@ export function DefinitionsView({
 														<td className="py-1.5 pr-3 font-mono">
 															{observation.outputName}
 														</td>
-														<td className="py-1.5 pr-3">{observation.instrumentId}</td>
+														<td className="py-1.5 pr-3">
+															<IdentifierDisplay id={observation.instrumentId} />
+														</td>
 														<td className="py-1.5 pr-3 whitespace-nowrap">
 															{formatUtc(observation.observationTimeMs)}
 														</td>

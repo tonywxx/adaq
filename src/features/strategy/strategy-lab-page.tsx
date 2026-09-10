@@ -666,7 +666,9 @@ export function StrategyLabPage() {
 											</span>
 											<div>
 												<p className="text-xs text-muted-foreground">ID</p>
-												<code className="text-sm">{node.nodeId}</code>
+												<code className="text-sm">
+													<IdentifierDisplay id={node.nodeId} />
+												</code>
 											</div>
 											<div>
 												<p className="text-xs text-muted-foreground">

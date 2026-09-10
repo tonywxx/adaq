@@ -286,13 +286,17 @@ function DatasetInspector({
 							<dt className="inline font-medium">
 								{t("features.datasets.manifest.requestHash")}:{" "}
 							</dt>
-							<dd className="inline break-all font-mono">{manifest.requestHash}</dd>
+							<dd className="inline break-all font-mono">
+								<IdentifierDisplay id={manifest.requestHash} />
+							</dd>
 						</div>
 						<div>
 							<dt className="inline font-medium">
 								{t("features.datasets.manifest.snapshot")}:{" "}
 							</dt>
-							<dd className="inline font-mono">{manifest.request.snapshotId}</dd>
+							<dd className="inline font-mono">
+								<IdentifierDisplay id={manifest.request.snapshotId} />
+							</dd>
 						</div>
 						<div>
 							<dt className="inline font-medium">
@@ -335,7 +339,9 @@ function DatasetInspector({
 							<dt className="inline font-medium">
 								{t("features.datasets.manifest.contentSha256")}:{" "}
 							</dt>
-							<dd className="inline break-all font-mono">{manifest.contentSha256}</dd>
+							<dd className="inline break-all font-mono">
+								<IdentifierDisplay id={manifest.contentSha256} />
+							</dd>
 						</div>
 					</dl>
 				</section>
@@ -561,7 +567,9 @@ function DatasetInspector({
 												key={`${row.instrumentId}-${row.observationTimeMs}`}
 												className="border-b"
 											>
-												<td className="py-1.5 pr-3">{row.instrumentId}</td>
+												<td className="py-1.5 pr-3">
+													<IdentifierDisplay id={row.instrumentId} />
+												</td>
 												<td className="py-1.5 pr-3 whitespace-nowrap">
 													{formatUtc(row.observationTimeMs)}
 												</td>

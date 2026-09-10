@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
@@ -241,7 +242,9 @@ function ProfileSummary({ profile }: { profile: ProfileView }) {
 						<dt className="text-muted-foreground">
 							{t("settings.connections.accountId")}
 						</dt>
-						<dd className="font-mono">{profile.accountId}</dd>
+						<dd className="font-mono">
+							<IdentifierDisplay id={profile.accountId} />
+						</dd>
 					</>
 				) : null}
 				{profile.currency ? (

@@ -352,7 +352,9 @@ export function FittingView({
 												<dt className="inline font-medium">
 													{t("features.fitting.artifact")}:{" "}
 												</dt>
-												<dd className="inline break-all font-mono">{attempt.artifactId}</dd>
+												<dd className="inline break-all font-mono">
+													<IdentifierDisplay id={attempt.artifactId} />
+												</dd>
 											</div>
 										)}
 									</dl>
@@ -787,7 +789,9 @@ export function MaterializationView({
 											<dt className="inline font-medium">
 												{t("features.materialization.requestHash")}:{" "}
 											</dt>
-											<dd className="inline break-all font-mono">{attempt.requestHash}</dd>
+											<dd className="inline break-all font-mono">
+												<IdentifierDisplay id={attempt.requestHash} />
+											</dd>
 										</div>
 										{attempt.sourceAttemptId && (
 											<div>
