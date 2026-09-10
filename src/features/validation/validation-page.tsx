@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { identifierLabel } from "@/lib/identifier-display";
@@ -970,7 +971,10 @@ function CrossMarketControls({
 							{context.snapshot.barCount} Bars
 						</p>
 						<code className="block break-all text-xs">
-							{identifierLabel(context.snapshot.snapshotId, t("identifiers.snapshot"))}
+							<IdentifierDisplay
+								id={context.snapshot.snapshotId}
+								label={t("identifiers.snapshot")}
+							/>
 						</code>
 						<div className="mt-2 flex flex-wrap gap-2">
 							<Button

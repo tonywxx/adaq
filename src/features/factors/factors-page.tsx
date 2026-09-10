@@ -925,27 +925,27 @@ function MaterializationStart({
 								<Detail
 									label={t("factors.candidates.contextHash")}
 									value={context.contextHash}
-									mono
+									identifier
 								/>
 								<Detail
 									label={t("factors.datasets.featureDataset")}
 									value={context.featureDataset.datasetId}
-									mono
+									identifier
 								/>
 								<Detail
 									label={t("factors.candidates.featurePlanHash")}
 									value={context.featureDataset.featurePlanHash}
-									mono
+									identifier
 								/>
 								<Detail
 									label={t("factors.datasets.snapshot")}
 									value={context.snapshotId}
-									mono
+									identifier
 								/>
 								<Detail
 									label={t("factors.datasets.universe")}
 									value={context.universeId ?? "—"}
-									mono
+									identifier
 								/>
 								<Detail
 									label={t("factors.candidates.range")}
@@ -1325,22 +1325,22 @@ function DatasetInspector({
 					<Detail
 						label={t("factors.datasets.candidate")}
 						value={textAt(dataset.manifest, "candidateHash")}
-						mono
+						identifier
 					/>
 					<Detail
 						label={t("factors.datasets.featureDataset")}
 						value={textAt(dataset.manifest, "featureDatasetId")}
-						mono
+						identifier
 					/>
 					<Detail
 						label={t("factors.datasets.snapshot")}
 						value={textAt(dataset.manifest, "marketDataSnapshotId")}
-						mono
+						identifier
 					/>
 					<Detail
 						label={t("factors.datasets.universe")}
 						value={textAt(dataset.manifest, "pointInTimeUniverseId")}
-						mono
+						identifier
 					/>
 					<Detail
 						label={t("factors.datasets.range")}
@@ -1350,12 +1350,12 @@ function DatasetInspector({
 					<Detail
 						label={t("factors.datasets.engine")}
 						value={textAt(dataset.manifest, "engineIdentity.engineId")}
-						mono
+						identifier
 					/>
 					<Detail
 						label={t("factors.datasets.payload")}
 						value={shortFactorHash(valueAt(dataset.manifest, "payloadSha256"))}
-						mono
+						identifier
 					/>
 					<Detail
 						label={t("factors.datasets.size")}
@@ -1874,32 +1874,32 @@ function EvaluationStart({
 							<Detail
 								label={t("factors.candidates.candidateHash")}
 								value={textAt(selectedCandidate.candidate, "candidateHash")}
-								mono
+								identifier
 							/>
 							<Detail
 								label={t("factors.evaluations.dataset")}
 								value={textAt(selectedDataset.manifest, "datasetId")}
-								mono
+								identifier
 							/>
 							<Detail
 								label={t("factors.datasets.featureDataset")}
 								value={textAt(selectedDataset.manifest, "featureDatasetId")}
-								mono
+								identifier
 							/>
 							<Detail
 								label={t("factors.candidates.featurePlanHash")}
 								value={textAt(selectedDataset.manifest, "featurePlanHash")}
-								mono
+								identifier
 							/>
 							<Detail
 								label={t("factors.datasets.snapshot")}
 								value={textAt(selectedDataset.manifest, "marketDataSnapshotId")}
-								mono
+								identifier
 							/>
 							<Detail
 								label={t("factors.datasets.universe")}
 								value={textAt(selectedDataset.manifest, "pointInTimeUniverseId")}
-								mono
+								identifier
 							/>
 						</dl>
 						<EvidenceJson
@@ -2017,12 +2017,12 @@ function ReportInspector({
 					<Detail
 						label={t("factors.evaluations.dataset")}
 						value={shortFactorHash(valueAt(report.report, "factorDatasetId"))}
-						mono
+						identifier
 					/>
 					<Detail
 						label={t("factors.evaluations.protocolHash")}
 						value={shortFactorHash(valueAt(report.report, "protocolHash"))}
-						mono
+						identifier
 					/>
 					<Detail
 						label={t("factors.evaluations.targetUnavailable")}
@@ -2762,7 +2762,7 @@ function Gate6QualificationWorkspace({
 									<Detail
 										label={t("factors.gate6.decision")}
 										value={selectedDecisionId || "—"}
-										mono
+										identifier
 									/>
 									<Detail
 										label={t("factors.gate6.output")}
@@ -2772,42 +2772,42 @@ function Gate6QualificationWorkspace({
 									<Detail
 										label={t("factors.gate6.candidate")}
 										value={candidateHash || "—"}
-										mono
+										identifier
 									/>
 									<Detail
 										label={t("factors.gate6.policy")}
 										value={policyHash || "—"}
-										mono
+										identifier
 									/>
 									<Detail
 										label={t("factors.gate6.reports")}
 										value={reportHashes.join(", ") || "—"}
-										mono
+										identifier
 									/>
 									<Detail
 										label={t("factors.gate6.factorDataset")}
 										value={factorDatasetId || "—"}
-										mono
+										identifier
 									/>
 									<Detail
 										label={t("factors.gate6.featureDataset")}
 										value={textAt(predecessor?.featureDataset, "datasetId", "—")}
-										mono
+										identifier
 									/>
 									<Detail
 										label={t("factors.gate6.featurePlan")}
 										value={textAt(predecessor?.featureDataset, "featurePlanHash", "—")}
-										mono
+										identifier
 									/>
 									<Detail
 										label={t("factors.gate6.marketSnapshot")}
 										value={textAt(predecessor, "snapshotId", "—")}
-										mono
+										identifier
 									/>
 									<Detail
 										label={t("factors.gate6.universe")}
 										value={textAt(predecessor, "universeId", "—")}
-										mono
+										identifier
 									/>
 									<Detail
 										label={t("factors.gate6.context")}
@@ -2898,17 +2898,17 @@ function Gate6QualificationWorkspace({
 								<Detail
 									label={t("factors.gate6.attempt")}
 									value={operation.attempt.attemptId}
-									mono
+									identifier
 								/>
 								<Detail
 									label={t("factors.gate6.requestHash")}
 									value={operation.attempt.requestHash}
-									mono
+									identifier
 								/>
 								<Detail
 									label={t("factors.gate6.result")}
 									value={operation.attempt.resultId ?? "—"}
-									mono
+									identifier
 								/>
 							</dl>
 							{operation.attempt.progressTotal > 0 ? (
@@ -2950,12 +2950,12 @@ function Gate6QualificationWorkspace({
 										<Detail
 											label={t("factors.gate6.package")}
 											value={operation.candidate.packageSha256}
-											mono
+											identifier
 										/>
 										<Detail
 											label={t("factors.gate6.component")}
 											value={textAt(operation.candidate.manifest, "componentId", "—")}
-											mono
+											identifier
 										/>
 										<Detail
 											label={t("factors.gate6.version")}
@@ -2964,7 +2964,7 @@ function Gate6QualificationWorkspace({
 										<Detail
 											label={t("factors.gate6.wasm")}
 											value={textAt(operation.candidate.manifest, "wasmSha256", "—")}
-											mono
+											identifier
 										/>
 									</dl>
 									<EvidenceJson
@@ -2987,7 +2987,7 @@ function Gate6QualificationWorkspace({
 										<Detail
 											label={t("factors.gate6.package")}
 											value={operation.qualification.packageSha256 ?? "—"}
-											mono
+											identifier
 										/>
 										<Detail
 											label={t("factors.gate6.provenance")}
@@ -3641,25 +3641,33 @@ function DecisionsWorkspace({
 								<Detail
 									label={t("factors.decisions.candidateSelection")}
 									value={candidateHash}
-									mono
+									identifier
 								/>
 								<Detail
 									label={t("factors.decisions.datasetSelection")}
 									value={datasetId}
-									mono
+									identifier
 								/>
 								<Detail
 									label={t("factors.decisions.reportSelection")}
 									value={reportHash}
-									mono
+									identifier
 								/>
 								<Detail
 									label={t("factors.decisions.policySelection")}
 									value={policyHash}
-									mono
+									identifier
 								/>
-								<Detail label={t("factors.decisions.family")} value={familyId} mono />
-								<Detail label={t("factors.decisions.trial")} value={trialId} mono />
+								<Detail
+									label={t("factors.decisions.family")}
+									value={familyId}
+									identifier
+								/>
+								<Detail
+									label={t("factors.decisions.trial")}
+									value={trialId}
+									identifier
+								/>
 								<Detail
 									label={t("factors.decisions.evidenceState")}
 									value={localizedFactorCode(
@@ -3670,7 +3678,7 @@ function DecisionsWorkspace({
 								<Detail
 									label={t("factors.decisions.lineageHash")}
 									value={textAt(lineage?.lineage, "lineageHash", t("factors.loading"))}
-									mono
+									identifier
 								/>
 							</dl>
 							{lineageLoading ? (

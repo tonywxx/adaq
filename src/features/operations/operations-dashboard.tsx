@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { useAuthenticatedUserId } from "@/authenticated-user";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -356,7 +357,10 @@ export function OperationsDashboard() {
 											</Badge>
 										</div>
 										<p className="mt-1 text-xs text-muted-foreground">
-											{identifierLabel(item.entityId, t("identifiers.entity"))}
+											<IdentifierDisplay
+												id={item.entityId}
+												label={t("identifiers.entity")}
+											/>
 											{item.required ? ` · ${t("operations.required")}` : ""}
 										</p>
 										<p className="mt-1 text-xs text-muted-foreground">{item.condition}</p>
@@ -453,8 +457,11 @@ export function OperationsDashboard() {
 										</div>
 									</div>
 									<p className="mt-1 text-xs text-muted-foreground">
-										{identifierLabel(alert.entityId, t("identifiers.entity"))} ·{" "}
-										{label(`operations.actions.${alert.safetyAction}`)} ·{" "}
+										<IdentifierDisplay
+											id={alert.entityId}
+											label={t("identifiers.entity")}
+										/>{" "}
+										· {label(`operations.actions.${alert.safetyAction}`)} ·{" "}
 										{t("operations.occurrences", { count: alert.occurrenceCount })}
 									</p>
 									<details
@@ -529,7 +536,10 @@ export function OperationsDashboard() {
 													{history.data.map((item) => (
 														<li key={item.lifecycleId}>
 															{label(`operations.states.${item.state}`)} · {item.actor} ·{" "}
-															{identifierLabel(item.eventId, t("identifiers.event"))}
+															<IdentifierDisplay
+																id={item.eventId}
+																label={t("identifiers.event")}
+															/>
 														</li>
 													))}
 												</ul>
@@ -572,7 +582,10 @@ export function OperationsDashboard() {
 								</Badge>
 							</div>
 							<p className="mt-1 text-xs text-muted-foreground">
-								{identifierLabel(event.entityId, t("identifiers.entity"))}
+								<IdentifierDisplay
+									id={event.entityId}
+									label={t("identifiers.entity")}
+								/>
 							</p>
 							{event.diagnostic ? (
 								<p className="mt-1 text-xs text-muted-foreground">{event.diagnostic}</p>
@@ -682,7 +695,10 @@ export function SystemDashboard({
 											<Badge variant="outline">{stateLabel("states", item.state)}</Badge>
 										</div>
 										<p className="mt-1 text-xs text-muted-foreground">
-											{identifierLabel(item.entityId, t("identifiers.entity"))}
+											<IdentifierDisplay
+												id={item.entityId}
+												label={t("identifiers.entity")}
+											/>
 											{item.required ? ` · ${t("operations.required")}` : ""}
 										</p>
 									</div>
@@ -739,8 +755,11 @@ export function SystemDashboard({
 										</Badge>
 									</div>
 									<p className="mt-1 text-xs text-muted-foreground">
-										{identifierLabel(alert.entityId, t("identifiers.entity"))} ·{" "}
-										{stateLabel("alertStates", alert.state)}
+										<IdentifierDisplay
+											id={alert.entityId}
+											label={t("identifiers.entity")}
+										/>{" "}
+										· {stateLabel("alertStates", alert.state)}
 									</p>
 								</div>
 							))
@@ -774,7 +793,7 @@ export function SystemDashboard({
 								<div className="rounded-md border p-3" key={bot.botId}>
 									<div className="flex flex-wrap items-center justify-between gap-2">
 										<span className="font-medium">
-											{identifierLabel(bot.botId, t("identifiers.bot"))}
+											<IdentifierDisplay id={bot.botId} label={t("identifiers.bot")} />
 										</span>
 										<Badge variant={bot.state === "faulted" ? "destructive" : "outline"}>
 											{stateLabel("lifecycleStates", bot.state)}
@@ -969,7 +988,10 @@ export function SystemDashboard({
 									</Badge>
 								</div>
 								<p className="mt-1 text-xs text-muted-foreground">
-									{identifierLabel(event.entityId, t("identifiers.entity"))}
+									<IdentifierDisplay
+										id={event.entityId}
+										label={t("identifiers.entity")}
+									/>
 								</p>
 							</div>
 						))

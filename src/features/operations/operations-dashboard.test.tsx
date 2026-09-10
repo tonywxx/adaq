@@ -1,6 +1,8 @@
 /** @jest-environment jsdom */
 
 import "@/lib/i18n";
+import { i18n } from "@/lib/i18n";
+import { abbreviateIdentifier } from "@/lib/identifier-display";
 import { AuthenticatedUserContext } from "@/authenticated-user";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -174,7 +176,7 @@ test("refreshes expanded lifecycle history after acknowledgement", async () => {
 	});
 	await settle();
 	expect(container.textContent).toContain(
-		"Active · host · Operational event · event-first",
+		`Active · host · ${i18n.t("identifiers.event")}${abbreviateIdentifier("event-first")}`,
 	);
 
 	await act(async () => {
@@ -186,7 +188,7 @@ test("refreshes expanded lifecycle history after acknowledgement", async () => {
 
 	expect(historyCalls).toBeGreaterThan(1);
 	expect(container.textContent).toContain(
-		"Acknowledged · alice · Operational event · event-acknowledged",
+		`Acknowledged · alice · ${i18n.t("identifiers.event")}${abbreviateIdentifier("event-acknowledged")}`,
 	);
 
 	await act(async () => root.unmount());

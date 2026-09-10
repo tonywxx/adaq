@@ -1,10 +1,10 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { useAuthenticatedUserId } from "@/authenticated-user";
 import { invoke } from "@tauri-apps/api/core";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { identifierLabel } from "@/lib/identifier-display";
 
 type Alert = {
 	alertId: string;
@@ -64,15 +64,14 @@ export function CriticalOperationalBanner() {
 					</button>
 				</div>
 			</div>
-			<p className="mt-2 text-xs">
-				{critical
-					.slice(0, 3)
-					.map(
-						(alert) =>
-							`${identifierLabel(alert.entityId, t("identifiers.entity"))} · ${alert.condition}`,
-					)
-					.join(" · ")}
-			</p>
+			<ul className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+				{critical.slice(0, 3).map((alert) => (
+					<li key={alert.alertId} className="flex items-center gap-1">
+						<IdentifierDisplay id={alert.entityId} label={t("identifiers.entity")} />
+						<span>{alert.condition}</span>
+					</li>
+				))}
+			</ul>
 		</div>
 	);
 }

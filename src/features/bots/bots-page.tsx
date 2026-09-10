@@ -475,7 +475,10 @@ export function BotsPage() {
 											{attempt?.decisions.slice(-8).map((decision) => (
 												<p key={decision.decisionId} className="text-muted-foreground">
 													{decision.outcome} ·{" "}
-													{identifierLabel(decision.decisionId, t("identifiers.decision"))}
+													<IdentifierDisplay
+														id={decision.decisionId}
+														label={t("identifiers.decision")}
+													/>
 													{decision.targetHash
 														? ` · ${t("identifiers.fingerprint")}: ${decision.targetHash.slice(0, 12)}`
 														: ""}
@@ -490,10 +493,19 @@ export function BotsPage() {
 													className="text-muted-foreground"
 												>
 													{order.status} ·{" "}
-													{identifierLabel(order.operationId, t("identifiers.operation"))}
-													{order.providerOrderId
-														? ` · ${identifierLabel(order.providerOrderId, t("identifiers.providerOrder"))}`
-														: ""}
+													<IdentifierDisplay
+														id={order.operationId}
+														label={t("identifiers.operation")}
+													/>
+													{order.providerOrderId ? (
+														<>
+															{" · "}
+															<IdentifierDisplay
+																id={order.providerOrderId}
+																label={t("identifiers.providerOrder")}
+															/>
+														</>
+													) : null}
 												</p>
 											))}
 										</div>
@@ -505,9 +517,15 @@ export function BotsPage() {
 													className="text-muted-foreground"
 												>
 													{item.kind}/{item.code} · {item.detail}
-													{item.relatedId
-														? ` · ${identifierLabel(item.relatedId, t("identifiers.related"))}`
-														: ""}
+													{item.relatedId ? (
+														<>
+															{" · "}
+															<IdentifierDisplay
+																id={item.relatedId}
+																label={t("identifiers.related")}
+															/>
+														</>
+													) : null}
 												</p>
 											))}
 										</div>

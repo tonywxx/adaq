@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -89,18 +90,23 @@ export function Detail({
 	label,
 	value,
 	mono = false,
+	identifier = false,
 }: {
 	label: string;
 	value: string;
 	mono?: boolean;
+	identifier?: boolean;
 }) {
-	const className = mono
-		? "mt-1 break-all font-mono text-xs"
-		: "mt-1 break-all font-medium";
+	const className =
+		mono || identifier
+			? "mt-1 break-all font-mono text-xs"
+			: "mt-1 break-all font-medium";
 	return (
 		<div className="min-w-0">
 			<dt className="text-xs text-muted-foreground">{label}</dt>
-			<dd className={className}>{value}</dd>
+			<dd className={className}>
+				{identifier ? <IdentifierDisplay id={value} /> : value}
+			</dd>
 		</div>
 	);
 }

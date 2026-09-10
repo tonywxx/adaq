@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -294,7 +295,10 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 								{t("pythonResearch.factorLab.synthetic")}
 							</Badge>
 							<code>
-								{identifierLabel(run.projectId, t("identifiers.pythonProject"))}
+								<IdentifierDisplay
+									id={run.projectId}
+									label={t("identifiers.pythonProject")}
+								/>
 							</code>
 							<span className="text-muted-foreground">
 								{run.rowsPerTrial} {t("pythonResearch.factorLab.rowsPerTrial")}
@@ -440,7 +444,10 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 															? t("pythonResearch.factorLab.exact")
 															: t("pythonResearch.factorLab.divergent")}
 														; {report.partitions.join(", ")};{" "}
-														{identifierLabel(report.firstAttemptId, t("identifiers.attempt"))}{" "}
+														<IdentifierDisplay
+															id={report.firstAttemptId}
+															label={t("identifiers.attempt")}
+														/>{" "}
 														/ {report.replayAttemptId};{" "}
 														{identifierLabel(
 															report.processContractSha256,

@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -984,7 +985,10 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								className="flex flex-wrap items-center gap-2 border-t pt-2 first:border-0 first:pt-0"
 							>
 								<code className="break-all text-xs">
-									{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
+									<IdentifierDisplay
+										id={attempt.attemptId}
+										label={t("identifiers.attempt")}
+									/>
 								</code>
 								<Badge
 									variant="outline"
@@ -1271,7 +1275,10 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							})}
 						</span>
 						<code className="break-all text-xs">
-							{identifierLabel(decision.decisionId, t("identifiers.decision"))}
+							<IdentifierDisplay
+								id={decision.decisionId}
+								label={t("identifiers.decision")}
+							/>
 						</code>
 						<p className="basis-full break-all font-mono text-xs text-muted-foreground">
 							{t("pythonResearch.modelLab.decisionIdentity", {
@@ -1324,7 +1331,10 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								})}
 							</Badge>
 							<code className="break-all text-xs">
-								{identifierLabel(finalEvaluation.decisionId, t("identifiers.decision"))}
+								<IdentifierDisplay
+									id={finalEvaluation.decisionId}
+									label={t("identifiers.decision")}
+								/>
 							</code>
 						</div>
 						{finalEvaluation.attemptId ? (
@@ -1356,7 +1366,12 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							mse: report.meanSquaredError,
 							mae: report.meanAbsoluteError,
 						})}{" "}
-						· {identifierLabel(report.reportId, t("identifiers.evaluationReport"))} ·{" "}
+						·{" "}
+						<IdentifierDisplay
+							id={report.reportId}
+							label={t("identifiers.evaluationReport")}
+						/>{" "}
+						·{" "}
 						{t("pythonResearch.modelLab.reportEvidence", {
 							state: report.evidenceState,
 							artifact: report.artifactSha256,

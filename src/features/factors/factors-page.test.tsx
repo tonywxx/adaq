@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { clearSessionCache } from "@/lib/session-cache";
 import { i18n } from "@/lib/i18n";
+import { abbreviateIdentifier } from "@/lib/identifier-display";
 import { useMarketSessionStore } from "@/lib/market-session";
 import { writeFactorCache } from "./factor-data";
 import {
@@ -666,12 +667,14 @@ test("records a Decision only after structured evidence is frozen", async () => 
 	const evidenceDetails = Array.from(
 		mounted.container.querySelectorAll("dt"),
 	).map((label) => label.parentElement?.textContent);
+	// Identifiers render through the shared control, so the row shows the abbreviation
+	// while the complete value stays in the tooltip.
 	expect(evidenceDetails).toEqual(
 		expect.arrayContaining([
-			`${i18n.t("factors.decisions.candidateSelection")}${candidateHash}`,
-			`${i18n.t("factors.decisions.datasetSelection")}dataset-1`,
-			`${i18n.t("factors.decisions.reportSelection")}${reportHash}`,
-			`${i18n.t("factors.decisions.policySelection")}${policyHash}`,
+			`${i18n.t("factors.decisions.candidateSelection")}${abbreviateIdentifier(candidateHash)}`,
+			`${i18n.t("factors.decisions.datasetSelection")}${abbreviateIdentifier("dataset-1")}`,
+			`${i18n.t("factors.decisions.reportSelection")}${abbreviateIdentifier(reportHash)}`,
+			`${i18n.t("factors.decisions.policySelection")}${abbreviateIdentifier(policyHash)}`,
 		]),
 	);
 

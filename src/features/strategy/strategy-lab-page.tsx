@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -887,7 +888,10 @@ export function StrategyLabPage() {
 															)}
 														</span>{" "}
 														<code className="text-xs">
-															{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
+															<IdentifierDisplay
+																id={attempt.attemptId}
+																label={t("identifiers.attempt")}
+															/>
 														</code>
 														{attempt.diagnostics.map((diagnostic) => (
 															<p
@@ -1248,7 +1252,10 @@ function QualificationPanel({
 							</Badge>
 						</div>
 						<code className="break-all text-xs">
-							{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
+							<IdentifierDisplay
+								id={attempt.attemptId}
+								label={t("identifiers.attempt")}
+							/>
 						</code>
 						{attempt.diagnostics.map((diagnostic) => (
 							<p

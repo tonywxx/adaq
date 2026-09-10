@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,7 +17,6 @@ import {
 	PaginationPrevious,
 } from "@/components/ui/pagination";
 import { useMarketSessionStore } from "@/lib/market-session";
-import { identifierLabel } from "@/lib/identifier-display";
 import { invoke } from "@tauri-apps/api/core";
 import { LoaderCircleIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -485,7 +485,10 @@ function ComponentDetail({
 								<li className="rounded-md border p-3 text-sm" key={dependency.alias}>
 									<p className="font-medium">{dependency.alias}</p>
 									<p className="break-all font-mono text-xs text-muted-foreground">
-										{identifierLabel(dependency.componentId, t("identifiers.component"))}{" "}
+										<IdentifierDisplay
+											id={dependency.componentId}
+											label={t("identifiers.component")}
+										/>{" "}
 										· {dependency.version}
 									</p>
 								</li>

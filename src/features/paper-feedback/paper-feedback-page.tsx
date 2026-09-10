@@ -382,8 +382,15 @@ export function PaperFeedbackPage() {
 										/>
 									</CardTitle>
 									<CardDescription>
-										{identifierLabel(item.snapshotId, t("identifiers.feedbackSnapshot"))}{" "}
-										· {identifierLabel(item.input.bundleId, t("identifiers.bundle"))}
+										<IdentifierDisplay
+											id={item.snapshotId}
+											label={t("identifiers.feedbackSnapshot")}
+										/>{" "}
+										·{" "}
+										<IdentifierDisplay
+											id={item.input.bundleId}
+											label={t("identifiers.bundle")}
+										/>
 									</CardDescription>
 								</div>
 								<StateBadge state={item.evidenceState} t={t} />
@@ -466,7 +473,11 @@ export function PaperFeedbackPage() {
 										<StateBadge state={item.evidenceState} t={t} />
 									</span>
 									<span className="text-xs text-muted-foreground">
-										{identifierLabel(item.reportId, t("identifiers.feedbackReport"))} ·{" "}
+										<IdentifierDisplay
+											id={item.reportId}
+											label={t("identifiers.feedbackReport")}
+										/>{" "}
+										·{" "}
 										{identifierLabel(
 											item.input.snapshotId,
 											t("identifiers.feedbackSnapshot"),

@@ -595,7 +595,10 @@ export function ModelsPage({
 												<span className="break-all select-text">
 													{attempt.status} · {attempt.progressCompleted}/
 													{attempt.progressTotal || "?"} ·{" "}
-													{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
+													<IdentifierDisplay
+														id={attempt.attemptId}
+														label={t("identifiers.attempt")}
+													/>
 												</span>
 												{(attempt.status === "failed" ||
 													attempt.status === "cancelled") && (

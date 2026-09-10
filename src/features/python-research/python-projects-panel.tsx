@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { readFile, writeFile } from "@tauri-apps/plugin-fs";
@@ -12,7 +13,6 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { isTauriRuntime } from "@/lib/http";
-import { identifierLabel } from "@/lib/identifier-display";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -489,7 +489,10 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 						>
 							<div className="flex flex-wrap items-center gap-2">
 								<code className="break-all">
-									{identifierLabel(project.projectId, t("identifiers.pythonProject"))}
+									<IdentifierDisplay
+										id={project.projectId}
+										label={t("identifiers.pythonProject")}
+									/>
 								</code>
 								<Badge variant={project.state === "clean" ? "secondary" : "outline"}>
 									{t(`pythonResearch.projects.state.${project.state}`)}
@@ -598,7 +601,10 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 						>
 							<div className="flex flex-wrap items-center gap-2">
 								<code className="break-all">
-									{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
+									<IdentifierDisplay
+										id={attempt.attemptId}
+										label={t("identifiers.attempt")}
+									/>
 								</code>
 								<Badge variant="outline">{attempt.status}</Badge>
 								<span className="text-muted-foreground">#{attempt.queueSequence}</span>
