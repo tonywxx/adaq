@@ -611,10 +611,7 @@ export function StrategyLabPage() {
 								{catalog?.factorInputs.map((input) => (
 									<option key={factorSourceKey(input)} value={factorSourceKey(input)}>
 										{input.outputName} ·{" "}
-										{identifierLabel(
-											input.decisionHash,
-											t("identifiers.factorDecision"),
-										)}
+										{identifierLabel(input.decisionHash, t("identifiers.factorDecision"))}
 									</option>
 								))}
 							</select>
@@ -892,8 +889,8 @@ export function StrategyLabPage() {
 															)}
 														</span>{" "}
 														<code className="text-xs">
-													{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
-												</code>
+															{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
+														</code>
 														{attempt.diagnostics.map((diagnostic) => (
 															<p
 																className="mt-1 font-mono text-xs"
@@ -1151,8 +1148,8 @@ function QualificationPanel({
 							<option value="">{t("strategyLab.qualification.selectRevision")}</option>
 							{options.map(({ key, candidate, item }) => (
 								<option key={key} value={key}>
-								{identifierLabel(candidate.candidateId, t("identifiers.candidate"))} ·{" "}
-								{item.revision.revision} · {candidate.scope}
+									{identifierLabel(candidate.candidateId, t("identifiers.candidate"))} ·{" "}
+									{item.revision.revision} · {candidate.scope}
 								</option>
 							))}
 						</select>
@@ -1253,8 +1250,8 @@ function QualificationPanel({
 							</Badge>
 						</div>
 						<code className="break-all text-xs">
-						{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
-					</code>
+							{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
+						</code>
 						{attempt.diagnostics.map((diagnostic) => (
 							<p
 								className="mt-2 font-mono text-xs text-destructive"

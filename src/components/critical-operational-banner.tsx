@@ -4,6 +4,7 @@ import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { identifierLabel } from "@/lib/identifier-display";
 
 type Alert = {
 	alertId: string;
@@ -66,7 +67,10 @@ export function CriticalOperationalBanner() {
 			<p className="mt-2 text-xs">
 				{critical
 					.slice(0, 3)
-					.map((alert) => `${alert.entityId} · ${alert.condition}`)
+					.map(
+						(alert) =>
+							`${identifierLabel(alert.entityId, t("identifiers.entity"))} · ${alert.condition}`,
+					)
 					.join(" · ")}
 			</p>
 		</div>

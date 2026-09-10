@@ -253,8 +253,12 @@ export function BotsPage() {
 										qualification.qualificationId,
 										t("identifiers.qualification"),
 									)}{" "}
-									· {identifierLabel(qualification.candidateId, t("identifiers.candidate"))} r
-									{qualification.candidateRevision}
+									·{" "}
+									{identifierLabel(
+										qualification.candidateId,
+										t("identifiers.candidate"),
+									)}{" "}
+									r{qualification.candidateRevision}
 								</option>
 							))}
 						</select>
@@ -396,10 +400,7 @@ export function BotsPage() {
 							<CardHeader className="flex flex-row items-start justify-between gap-3">
 								<div>
 									<CardTitle>
-										<IdentifierDisplay
-											id={bot.botId}
-											label={t("identifiers.bot")}
-										/>
+										<IdentifierDisplay id={bot.botId} label={t("identifiers.bot")} />
 									</CardTitle>
 									<CardDescription>
 										{t("bots.bundle")}: {bot.bundle.identity}
@@ -473,11 +474,11 @@ export function BotsPage() {
 											<p className="font-medium">{t("bots.decisions")}</p>
 											{attempt?.decisions.slice(-8).map((decision) => (
 												<p key={decision.decisionId} className="text-muted-foreground">
-												{decision.outcome} ·{" "}
-												{identifierLabel(decision.decisionId, t("identifiers.decision"))}
-												{decision.targetHash
-													? ` · ${t("identifiers.fingerprint")}: ${decision.targetHash.slice(0, 12)}`
-													: ""}
+													{decision.outcome} ·{" "}
+													{identifierLabel(decision.decisionId, t("identifiers.decision"))}
+													{decision.targetHash
+														? ` · ${t("identifiers.fingerprint")}: ${decision.targetHash.slice(0, 12)}`
+														: ""}
 												</p>
 											))}
 										</div>

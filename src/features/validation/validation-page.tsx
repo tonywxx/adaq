@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { identifierLabel } from "@/lib/identifier-display";
 import { Input } from "@/components/ui/input";
 import { LoadingState } from "@/components/loading-state";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -920,6 +921,7 @@ function CrossMarketControls({
 	onChange: (command: DraftCommand) => void;
 	onLoadOverride: (snapshotId: string, runId: string) => Promise<void>;
 }) {
+	const { t } = useTranslation();
 	const selected = new Set(
 		contexts.map((context) => context.snapshot.snapshotId),
 	);
@@ -968,7 +970,7 @@ function CrossMarketControls({
 							{context.snapshot.barCount} Bars
 						</p>
 						<code className="block break-all text-xs">
-							{context.snapshot.snapshotId}
+							{identifierLabel(context.snapshot.snapshotId, t("identifiers.snapshot"))}
 						</code>
 						<div className="mt-2 flex flex-wrap gap-2">
 							<Button
@@ -1035,7 +1037,8 @@ function CrossMarketControls({
 										.filter((run) => run.snapshotId === context.snapshot.snapshotId)
 										.map((run) => (
 											<option key={run.runId} value={run.runId}>
-												{run.code} · {run.interval} · {run.runId.slice(0, 12)}
+												{run.code} · {run.interval} ·{" "}
+												{identifierLabel(run.runId, t("identifiers.backtestRun"))}
 											</option>
 										))}
 								</select>

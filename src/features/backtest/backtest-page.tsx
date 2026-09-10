@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { identifierLabel } from "@/lib/identifier-display";
 import { Input } from "@/components/ui/input";
 import { LoadingState } from "@/components/loading-state";
 import { Label } from "@/components/ui/label";
@@ -864,7 +865,11 @@ export function BacktestPage({
 											<option value="">Select</option>
 											{universeSnapshots.map((item) => (
 												<option key={item.snapshotId} value={item.snapshotId}>
-													{item.universe.universeId} · {item.universe.evidenceState}
+													{identifierLabel(
+														item.universe.universeId,
+														t("identifiers.universe"),
+													)}{" "}
+													· {item.universe.evidenceState}
 												</option>
 											))}
 										</select>
@@ -940,8 +945,12 @@ export function BacktestPage({
 													key={`${candidate.datasetId}:${candidate.signalName}`}
 													value={`${candidate.datasetId}:${candidate.signalName}`}
 												>
-													{candidate.signalName} · {candidate.datasetId.slice(0, 12)} ·{" "}
-													{candidate.evidenceState}
+													{candidate.signalName} ·{" "}
+													{identifierLabel(
+														candidate.datasetId,
+														t("identifiers.signalDataset"),
+													)}{" "}
+													· {candidate.evidenceState}
 												</option>
 											))}
 									</select>

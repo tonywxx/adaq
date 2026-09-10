@@ -3766,9 +3766,9 @@ function DecisionsWorkspace({
 								{matchingDecisions.map((item) => {
 									const id = textAt(item.decision, "decisionId", "");
 									return (
-									<option key={id} value={id}>
-										{identifierLabel(id, t("identifiers.factorDecision"))}
-									</option>
+										<option key={id} value={id}>
+											{identifierLabel(id, t("identifiers.factorDecision"))}
+										</option>
 									);
 								})}
 							</select>

@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/card";
 import type { LibraryComponent } from "@/features/components/component-library";
 import { isTauriRuntime } from "@/lib/http";
+import { identifierLabel } from "@/lib/identifier-display";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -955,7 +956,11 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								key={item.decision.decisionHash}
 								value={item.decision.decisionHash}
 							>
-								{item.decision.state} · {item.decision.candidateHash}
+								{item.decision.state} ·{" "}
+								{identifierLabel(
+									item.decision.candidateHash,
+									t("identifiers.candidate"),
+								)}
 							</option>
 						))}
 					</select>
@@ -978,7 +983,9 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								key={attempt.attemptId}
 								className="flex flex-wrap items-center gap-2 border-t pt-2 first:border-0 first:pt-0"
 							>
-								<code className="break-all text-xs">{attempt.attemptId}</code>
+								<code className="break-all text-xs">
+									{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
+								</code>
 								<Badge
 									variant="outline"
 									data-status={attempt.status}
@@ -1263,7 +1270,9 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								alpha: decision.selectedAlpha,
 							})}
 						</span>
-						<code className="break-all text-xs">{decision.decisionId}</code>
+						<code className="break-all text-xs">
+							{identifierLabel(decision.decisionId, t("identifiers.decision"))}
+						</code>
 						<p className="basis-full break-all font-mono text-xs text-muted-foreground">
 							{t("pythonResearch.modelLab.decisionIdentity", {
 								binding: decision.bindingSha256,
@@ -1314,7 +1323,9 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 									defaultValue: finalEvaluation.status,
 								})}
 							</Badge>
-							<code className="break-all text-xs">{finalEvaluation.decisionId}</code>
+							<code className="break-all text-xs">
+								{identifierLabel(finalEvaluation.decisionId, t("identifiers.decision"))}
+							</code>
 						</div>
 						{finalEvaluation.attemptId ? (
 							<p className="break-all font-mono text-xs text-muted-foreground">
@@ -1345,7 +1356,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							mse: report.meanSquaredError,
 							mae: report.meanAbsoluteError,
 						})}{" "}
-						· {report.reportId} ·{" "}
+						· {identifierLabel(report.reportId, t("identifiers.evaluationReport"))} ·{" "}
 						{t("pythonResearch.modelLab.reportEvidence", {
 							state: report.evidenceState,
 							artifact: report.artifactSha256,
@@ -1399,7 +1410,12 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 											? t("pythonResearch.modelLab.qualified")
 											: t("pythonResearch.modelLab.researchOnly")}
 									</Badge>
-									<code className="break-all text-xs">{deployment.reportId}</code>
+									<code className="break-all text-xs">
+										{identifierLabel(
+											deployment.reportId,
+											t("identifiers.evaluationReport"),
+										)}
+									</code>
 								</div>
 								<p className="break-all font-mono text-xs text-muted-foreground">
 									{t("pythonResearch.modelLab.deploymentAttemptArtifact", {

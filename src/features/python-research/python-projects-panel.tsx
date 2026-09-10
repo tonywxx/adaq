@@ -12,6 +12,7 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { isTauriRuntime } from "@/lib/http";
+import { identifierLabel } from "@/lib/identifier-display";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -487,7 +488,9 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 							className="grid gap-2 rounded-md border p-3 text-sm"
 						>
 							<div className="flex flex-wrap items-center gap-2">
-								<code className="break-all">{project.projectId}</code>
+								<code className="break-all">
+									{identifierLabel(project.projectId, t("identifiers.pythonProject"))}
+								</code>
 								<Badge variant={project.state === "clean" ? "secondary" : "outline"}>
 									{t(`pythonResearch.projects.state.${project.state}`)}
 								</Badge>
@@ -594,7 +597,9 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 							className="grid gap-1 rounded-md border p-3 text-sm"
 						>
 							<div className="flex flex-wrap items-center gap-2">
-								<code className="break-all">{attempt.attemptId}</code>
+								<code className="break-all">
+									{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
+								</code>
 								<Badge variant="outline">{attempt.status}</Badge>
 								<span className="text-muted-foreground">#{attempt.queueSequence}</span>
 								<div className="ml-auto flex gap-2">

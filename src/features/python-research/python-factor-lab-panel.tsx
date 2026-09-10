@@ -8,6 +8,7 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { isTauriRuntime } from "@/lib/http";
+import { identifierLabel } from "@/lib/identifier-display";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -292,7 +293,9 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 							<Badge variant="secondary">
 								{t("pythonResearch.factorLab.synthetic")}
 							</Badge>
-							<code>{run.projectId}</code>
+							<code>
+								{identifierLabel(run.projectId, t("identifiers.pythonProject"))}
+							</code>
 							<span className="text-muted-foreground">
 								{run.rowsPerTrial} {t("pythonResearch.factorLab.rowsPerTrial")}
 							</span>
@@ -436,10 +439,24 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 														{report.exact
 															? t("pythonResearch.factorLab.exact")
 															: t("pythonResearch.factorLab.divergent")}
-														; {report.partitions.join(", ")}; {report.firstAttemptId} /{" "}
-														{report.replayAttemptId}; {report.processContractSha256};{" "}
-														{report.firstInputSha256} / {report.replayInputSha256};{" "}
-														{report.firstProcessSha256} / {report.replayProcessSha256}
+														; {report.partitions.join(", ")};{" "}
+														{identifierLabel(report.firstAttemptId, t("identifiers.attempt"))}{" "}
+														/ {report.replayAttemptId};{" "}
+														{identifierLabel(
+															report.processContractSha256,
+															t("identifiers.protocol"),
+														)}
+														;{" "}
+														{identifierLabel(
+															report.firstInputSha256,
+															t("identifiers.fingerprint"),
+														)}{" "}
+														/ {report.replayInputSha256};{" "}
+														{identifierLabel(
+															report.firstProcessSha256,
+															t("identifiers.fingerprint"),
+														)}{" "}
+														/ {report.replayProcessSha256}
 													</p>
 												),
 											)}

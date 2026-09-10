@@ -8,6 +8,7 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { isTauriRuntime } from "@/lib/http";
+import { identifierLabel } from "@/lib/identifier-display";
 import { invoke } from "@tauri-apps/api/core";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -458,13 +459,23 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 								{runtime.expectedVersion} · {runtime.platform ?? "—"} · {runtime.source}
 							</p>
 							<p className="break-all font-mono text-xs text-muted-foreground">
-								{runtime.artifactSha256 ?? "—"} · {bytes(runtime.downloadBytes)}{" "}
-								download · {bytes(runtime.installedBytes)} installed ·{" "}
-								{runtime.license ?? "—"}
+								{runtime.artifactSha256
+									? identifierLabel(
+											runtime.artifactSha256,
+											t("identifiers.pythonRuntime"),
+										)
+									: "—"}{" "}
+								· {bytes(runtime.downloadBytes)} download ·{" "}
+								{bytes(runtime.installedBytes)} installed · {runtime.license ?? "—"}
 							</p>
 							<p className="break-all font-mono text-xs text-muted-foreground">
-								{runtime.wheelhouseIdentity ?? "—"} · {runtime.wheelhouseStatus} ·{" "}
-								{runtime.wheelhouseWheelCount} wheels ·{" "}
+								{runtime.wheelhouseIdentity
+									? identifierLabel(
+											runtime.wheelhouseIdentity,
+											t("identifiers.wheelhouse"),
+										)
+									: "—"}{" "}
+								· {runtime.wheelhouseStatus} · {runtime.wheelhouseWheelCount} wheels ·{" "}
 								{bytes(runtime.wheelhouseDiskBytes)} wheelhouse ·{" "}
 								{bytes(runtime.environmentCacheBytes)} environments ·{" "}
 								{bytes(runtime.runtimeCacheBytes)} runtime cache
@@ -658,7 +669,13 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 						<div className="grid gap-2 text-xs">
 							{EXECUTABLE_PROJECTS.map(({ id }) => (
 								<p key={id} className="break-all font-mono">
-									{id}: {previews[id]?.revisionSha256}
+									{id}:{" "}
+									{previews[id]?.revisionSha256
+										? identifierLabel(
+												previews[id]?.revisionSha256 ?? "",
+												t("identifiers.revision"),
+											)
+										: "—"}
 								</p>
 							))}
 						</div>

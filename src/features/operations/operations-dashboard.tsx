@@ -530,8 +530,8 @@ export function OperationsDashboard() {
 												<ul className="mt-1 grid gap-1">
 													{history.data.map((item) => (
 														<li key={item.lifecycleId}>
-													{label(`operations.states.${item.state}`)} · {item.actor} ·{" "}
-													{identifierLabel(item.eventId, t("identifiers.event"))}
+															{label(`operations.states.${item.state}`)} · {item.actor} ·{" "}
+															{identifierLabel(item.eventId, t("identifiers.event"))}
 														</li>
 													))}
 												</ul>
@@ -974,8 +974,8 @@ export function SystemDashboard({
 									</Badge>
 								</div>
 								<p className="mt-1 text-xs text-muted-foreground">
-								{identifierLabel(event.entityId, t("identifiers.entity"))}
-							</p>
+									{identifierLabel(event.entityId, t("identifiers.entity"))}
+								</p>
 							</div>
 						))
 					) : (
