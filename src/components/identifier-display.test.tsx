@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 import { renderToStaticMarkup } from "react-dom/server";
 import { changeInterfaceLocale, i18n } from "@/lib/i18n";
-import { identifierLabel } from "@/lib/identifier-display";
+import { identifierLabel, truncateIdentifier } from "@/lib/identifier-display";
 import { IdentifierDisplay } from "./identifier-display";
 
 test("names and localized fallbacks retain complete, distinct raw identities", async () => {
@@ -40,4 +40,9 @@ test("names and localized fallbacks retain complete, distinct raw identities", a
 	} finally {
 		await changeInterfaceLocale("en-US");
 	}
+});
+
+test("truncated identifiers only gain an ellipsis when something was cut", () => {
+	expect(truncateIdentifier("ab".repeat(32), 16)).toBe(`${"ab".repeat(8)}…`);
+	expect(truncateIdentifier("short-id", 16)).toBe("short-id");
 });

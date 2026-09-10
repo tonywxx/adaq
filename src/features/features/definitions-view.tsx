@@ -1,4 +1,4 @@
-import { identifierLabel } from "@/lib/identifier-display";
+import { identifierLabel, truncateIdentifier } from "@/lib/identifier-display";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -171,7 +171,7 @@ export function DefinitionsView({
 			setFeedback({
 				kind: "ok",
 				text: t("features.definitions.published", {
-					hash: published.definitionHash.slice(0, 12),
+					hash: truncateIdentifier(published.definitionHash, 12),
 				}),
 			});
 			setEditor(null);

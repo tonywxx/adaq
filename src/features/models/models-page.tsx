@@ -509,7 +509,8 @@ export function ModelsPage({
 										>
 											{models.map((item) => (
 												<option key={item.archiveSha256} value={item.archiveSha256}>
-													{item.name} — {item.archiveSha256}
+													{item.name} —{" "}
+													{identifierLabel(item.archiveSha256, t("identifiers.archive"))}
 												</option>
 											))}
 										</select>

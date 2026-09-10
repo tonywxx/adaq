@@ -180,7 +180,7 @@ export function ComponentsPage() {
 			setImportFeedback({
 				tone: "success",
 				summary: `${file.name} imported as ${imported.name} v${imported.version}.`,
-				details: `Archive SHA-256: ${imported.archiveSha256}\nWASM SHA-256: ${imported.wasmSha256}`,
+				details: `${t("identifiers.archive")}: ${imported.archiveSha256}\n${t("identifiers.wasm")}: ${imported.wasmSha256}`,
 			});
 		} catch (error) {
 			setImportFeedback({
@@ -433,8 +433,11 @@ function ComponentDetail({
 
 				<DetailSection title="Exact hashes">
 					<div className="space-y-3">
-						<HashValue label="Archive SHA-256" value={component.archiveSha256} />
-						<HashValue label="WASM SHA-256" value={component.wasmSha256} />
+						<HashValue
+							label={t("identifiers.archive")}
+							value={component.archiveSha256}
+						/>
+						<HashValue label={t("identifiers.wasm")} value={component.wasmSha256} />
 					</div>
 				</DetailSection>
 
@@ -540,7 +543,7 @@ function ComponentDetail({
 				{component.modelArtifact && (
 					<DetailSection title="Embedded Model Artifact">
 						<HashValue
-							label="Artifact SHA-256"
+							label={t("identifiers.modelArtifact")}
 							value={component.modelArtifact.sha256}
 						/>
 						<pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">

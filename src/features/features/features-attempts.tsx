@@ -1,5 +1,5 @@
 import { IdentifierDisplay } from "@/components/identifier-display";
-import { identifierLabel } from "@/lib/identifier-display";
+import { identifierLabel, truncateIdentifier } from "@/lib/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -326,7 +326,7 @@ export function FittingView({
 												{t("features.fitting.protocolHash")}:{" "}
 											</dt>
 											<dd className="inline font-mono" title={attempt.protocolHash}>
-												{attempt.protocolHash.slice(0, 16)}…
+												{truncateIdentifier(attempt.protocolHash, 16)}
 											</dd>
 										</div>
 										<div>
@@ -334,7 +334,7 @@ export function FittingView({
 												{t("features.fitting.planHash")}:{" "}
 											</dt>
 											<dd className="inline font-mono" title={attempt.planHash}>
-												{attempt.planHash.slice(0, 16)}…
+												{truncateIdentifier(attempt.planHash, 16)}
 											</dd>
 										</div>
 										{attempt.sourceAttemptId && (
@@ -343,7 +343,7 @@ export function FittingView({
 													{t("features.fitting.sourceAttempt")}:{" "}
 												</dt>
 												<dd className="inline font-mono" title={attempt.sourceAttemptId}>
-													{attempt.sourceAttemptId.slice(0, 16)}…
+													{truncateIdentifier(attempt.sourceAttemptId, 16)}
 												</dd>
 											</div>
 										)}
@@ -795,7 +795,7 @@ export function MaterializationView({
 													{t("features.materialization.sourceAttempt")}:{" "}
 												</dt>
 												<dd className="inline font-mono" title={attempt.sourceAttemptId}>
-													{attempt.sourceAttemptId.slice(0, 16)}…
+													{truncateIdentifier(attempt.sourceAttemptId, 16)}
 												</dd>
 											</div>
 										)}
@@ -805,7 +805,7 @@ export function MaterializationView({
 													{t("features.materialization.dataset")}:{" "}
 												</dt>
 												<dd className="inline font-mono" title={attempt.datasetId}>
-													{attempt.datasetId.slice(0, 16)}…
+													{truncateIdentifier(attempt.datasetId, 16)}
 												</dd>
 											</div>
 										)}

@@ -992,7 +992,7 @@ function MarketEvidenceCard({
 						}
 					/>
 					<EvidenceField
-						label={t("markets.evidence.calendar")}
+						label={t("identifiers.calendar")}
 						value={calendar?.snapshot.snapshotId ?? t("markets.unavailable")}
 					/>
 					<EvidenceField
