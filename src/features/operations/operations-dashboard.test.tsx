@@ -173,7 +173,9 @@ test("refreshes expanded lifecycle history after acknowledgement", async () => {
 		details.dispatchEvent(new Event("toggle", { bubbles: true }));
 	});
 	await settle();
-	expect(container.textContent).toContain("Active · host · event-first");
+	expect(container.textContent).toContain(
+		"Active · host · Operational event · event-first",
+	);
 
 	await act(async () => {
 		Array.from(container.querySelectorAll("button"))
@@ -184,7 +186,7 @@ test("refreshes expanded lifecycle history after acknowledgement", async () => {
 
 	expect(historyCalls).toBeGreaterThan(1);
 	expect(container.textContent).toContain(
-		"Acknowledged · alice · event-acknowledged",
+		"Acknowledged · alice · Operational event · event-acknowledged",
 	);
 
 	await act(async () => root.unmount());

@@ -15,6 +15,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatDateTime, formatDecimal, formatNumber } from "@/lib/i18n";
+import { identifierLabel } from "@/lib/identifier-display";
 
 export type Health = {
 	entityId: string;
@@ -357,7 +358,7 @@ export function OperationsDashboard() {
 											</Badge>
 										</div>
 										<p className="mt-1 text-xs text-muted-foreground">
-											{item.entityId}
+											{identifierLabel(item.entityId, t("identifiers.entity"))}
 											{item.required ? ` · ${t("operations.required")}` : ""}
 										</p>
 										<p className="mt-1 text-xs text-muted-foreground">{item.condition}</p>
@@ -454,8 +455,9 @@ export function OperationsDashboard() {
 										</div>
 									</div>
 									<p className="mt-1 text-xs text-muted-foreground">
-										{alert.entityId} · {label(`operations.actions.${alert.safetyAction}`)}{" "}
-										· {t("operations.occurrences", { count: alert.occurrenceCount })}
+										{identifierLabel(alert.entityId, t("identifiers.entity"))} ·{" "}
+										{label(`operations.actions.${alert.safetyAction}`)} ·{" "}
+										{t("operations.occurrences", { count: alert.occurrenceCount })}
 									</p>
 									<details
 										className="mt-2 text-xs"
@@ -528,8 +530,8 @@ export function OperationsDashboard() {
 												<ul className="mt-1 grid gap-1">
 													{history.data.map((item) => (
 														<li key={item.lifecycleId}>
-															{label(`operations.states.${item.state}`)} · {item.actor} ·{" "}
-															{item.eventId}
+													{label(`operations.states.${item.state}`)} · {item.actor} ·{" "}
+													{identifierLabel(item.eventId, t("identifiers.event"))}
 														</li>
 													))}
 												</ul>
@@ -571,7 +573,9 @@ export function OperationsDashboard() {
 									{label(`operations.dimensions.${event.dimension}`)}
 								</Badge>
 							</div>
-							<p className="mt-1 text-xs text-muted-foreground">{event.entityId}</p>
+							<p className="mt-1 text-xs text-muted-foreground">
+								{identifierLabel(event.entityId, t("identifiers.entity"))}
+							</p>
 							{event.diagnostic ? (
 								<p className="mt-1 text-xs text-muted-foreground">{event.diagnostic}</p>
 							) : null}
@@ -683,7 +687,7 @@ export function SystemDashboard({
 											<Badge variant="outline">{stateLabel("states", item.state)}</Badge>
 										</div>
 										<p className="mt-1 text-xs text-muted-foreground">
-											{item.entityId}
+											{identifierLabel(item.entityId, t("identifiers.entity"))}
 											{item.required ? ` · ${t("operations.required")}` : ""}
 										</p>
 									</div>
@@ -740,7 +744,8 @@ export function SystemDashboard({
 										</Badge>
 									</div>
 									<p className="mt-1 text-xs text-muted-foreground">
-										{alert.entityId} · {stateLabel("alertStates", alert.state)}
+										{identifierLabel(alert.entityId, t("identifiers.entity"))} ·{" "}
+										{stateLabel("alertStates", alert.state)}
 									</p>
 								</div>
 							))
@@ -773,7 +778,9 @@ export function SystemDashboard({
 							projection.bots.map((bot) => (
 								<div className="rounded-md border p-3" key={bot.botId}>
 									<div className="flex flex-wrap items-center justify-between gap-2">
-										<span className="font-medium">{bot.botId}</span>
+										<span className="font-medium">
+											{identifierLabel(bot.botId, t("identifiers.bot"))}
+										</span>
 										<Badge variant={bot.state === "faulted" ? "destructive" : "outline"}>
 											{stateLabel("lifecycleStates", bot.state)}
 										</Badge>
@@ -822,7 +829,10 @@ export function SystemDashboard({
 							<div className="space-y-2 text-sm">
 								<div className="flex flex-wrap items-center justify-between gap-2">
 									<span className="font-medium">
-										{projection.paperAccount.accountId}
+										{identifierLabel(
+											projection.paperAccount.accountId,
+											t("identifiers.account"),
+										)}
 									</span>
 									<Badge variant="outline">
 										{stateLabel("paperStates", projection.paperAccount.reconciliation)}
@@ -963,7 +973,9 @@ export function SystemDashboard({
 										{stateLabel("dimensions", event.dimension)}
 									</Badge>
 								</div>
-								<p className="mt-1 text-xs text-muted-foreground">{event.entityId}</p>
+								<p className="mt-1 text-xs text-muted-foreground">
+								{identifierLabel(event.entityId, t("identifiers.entity"))}
+							</p>
 							</div>
 						))
 					) : (

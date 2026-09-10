@@ -1,4 +1,5 @@
 import { useAuthenticatedUserId } from "@/authenticated-user";
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,6 +14,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { identifierLabel } from "@/lib/identifier-display";
 
 type Qualification = {
 	qualificationId: string;
@@ -247,7 +249,11 @@ export function BotsPage() {
 									key={qualification.qualificationId}
 									value={qualification.qualificationId}
 								>
-									{qualification.qualificationId} · {qualification.candidateId} r
+									{identifierLabel(
+										qualification.qualificationId,
+										t("identifiers.qualification"),
+									)}{" "}
+									· {identifierLabel(qualification.candidateId, t("identifiers.candidate"))} r
 									{qualification.candidateRevision}
 								</option>
 							))}
@@ -281,7 +287,10 @@ export function BotsPage() {
 								)
 								.map((profile) => (
 									<option key={profile.profileId} value={profile.profileId}>
-										{profile.profileId} · {profile.accountId}
+										{identifierLabel(profile.profileId, t("identifiers.connection"))} ·{" "}
+										{profile.accountId
+											? identifierLabel(profile.accountId, t("identifiers.account"))
+											: ""}
 									</option>
 								))}
 						</select>
@@ -386,7 +395,12 @@ export function BotsPage() {
 						<Card key={bot.botId}>
 							<CardHeader className="flex flex-row items-start justify-between gap-3">
 								<div>
-									<CardTitle>{bot.botId}</CardTitle>
+									<CardTitle>
+										<IdentifierDisplay
+											id={bot.botId}
+											label={t("identifiers.bot")}
+										/>
+									</CardTitle>
 									<CardDescription>
 										{t("bots.bundle")}: {bot.bundle.identity}
 									</CardDescription>
@@ -459,10 +473,11 @@ export function BotsPage() {
 											<p className="font-medium">{t("bots.decisions")}</p>
 											{attempt?.decisions.slice(-8).map((decision) => (
 												<p key={decision.decisionId} className="text-muted-foreground">
-													{decision.outcome} · {decision.decisionId}
-													{decision.targetHash
-														? ` · ${decision.targetHash.slice(0, 12)}`
-														: ""}
+												{decision.outcome} ·{" "}
+												{identifierLabel(decision.decisionId, t("identifiers.decision"))}
+												{decision.targetHash
+													? ` · ${t("identifiers.fingerprint")}: ${decision.targetHash.slice(0, 12)}`
+													: ""}
 												</p>
 											))}
 										</div>
@@ -473,8 +488,11 @@ export function BotsPage() {
 													key={`${order.operationId}-${order.observedAtMs}`}
 													className="text-muted-foreground"
 												>
-													{order.status} · {order.operationId}
-													{order.providerOrderId ? ` · ${order.providerOrderId}` : ""}
+													{order.status} ·{" "}
+													{identifierLabel(order.operationId, t("identifiers.operation"))}
+													{order.providerOrderId
+														? ` · ${identifierLabel(order.providerOrderId, t("identifiers.providerOrder"))}`
+														: ""}
 												</p>
 											))}
 										</div>
@@ -486,7 +504,9 @@ export function BotsPage() {
 													className="text-muted-foreground"
 												>
 													{item.kind}/{item.code} · {item.detail}
-													{item.relatedId ? ` · ${item.relatedId}` : ""}
+													{item.relatedId
+														? ` · ${identifierLabel(item.relatedId, t("identifiers.related"))}`
+														: ""}
 												</p>
 											))}
 										</div>
