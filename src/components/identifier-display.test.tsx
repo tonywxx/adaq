@@ -3,14 +3,18 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot } from "react-dom/client";
 import { act } from "react";
 import { changeInterfaceLocale, i18n } from "@/lib/i18n";
-import { identifierLabel, truncateIdentifier } from "@/lib/identifier-display";
+import {
+	abbreviateIdentifier,
+	identifierLabel,
+	truncateIdentifier,
+} from "@/lib/identifier-display";
 import { IdentifierDisplay } from "./identifier-display";
 
 (
 	globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-test("names and localized fallbacks retain complete, distinct raw identities", async () => {
+test("identifiers show a readable name and an abbreviation beside it", async () => {
 	const ids = ["ab".repeat(32), `${"ab".repeat(31)}cd`];
 	try {
 		for (const locale of ["en-US", "zh-CN"] as const) {
@@ -32,10 +36,15 @@ test("names and localized fallbacks retain complete, distinct raw identities", a
 			);
 			const codes = container.querySelectorAll("code");
 			expect(container.textContent).toContain("Momentum signals");
+			// A blank name falls back to the label; the value itself is abbreviated and
+			// the complete identity no longer sits in the rendered text.
 			expect(codes[1].previousElementSibling?.textContent).toBe(label);
 			ids.forEach((id, index) => {
-				expect(codes[index].textContent).toContain(id);
+				expect(codes[index].textContent).toBe(abbreviateIdentifier(id));
+				expect(codes[index].textContent).not.toContain(id);
 			});
+			expect(abbreviateIdentifier(ids[0])).not.toBe(abbreviateIdentifier(ids[1]));
+			// Native options cannot host the control, so they keep the complete value.
 			expect(container.querySelector("select")?.value).toBe(ids[1]);
 			const options = container.querySelectorAll("option");
 			ids.forEach((id, index) => {
@@ -65,11 +74,7 @@ test("compact identifiers abbreviate the value and copy the complete one", async
 	const root = createRoot(container);
 	await act(async () => {
 		root.render(
-			<IdentifierDisplay
-				id={id}
-				label={i18n.t("identifiers.featureDataset")}
-				variant="compact"
-			/>,
+			<IdentifierDisplay id={id} label={i18n.t("identifiers.featureDataset")} />,
 		);
 	});
 	expect(container.textContent).toContain("aba…bab");

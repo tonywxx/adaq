@@ -250,9 +250,12 @@ test("keeps failed Attempt identity, recovery code, and retry feedback accessibl
 	expect(mounted.container.textContent).toContain("research-interrupted");
 	expect(mounted.container.textContent).toContain("source-123456789…");
 	expect(mounted.container.querySelector('[role="alert"]')).not.toBeNull();
-	expect(mounted.container.querySelector("button")?.textContent).toContain(
-		i18n.t("factors.attempts.retry"),
-	);
+	// Identifiers render as copy controls, so scope the query to the retry action.
+	expect(
+		Array.from(mounted.container.querySelectorAll("button")).find((button) =>
+			button.textContent?.includes(i18n.t("factors.attempts.retry")),
+		),
+	).not.toBeUndefined();
 
 	await unmount(mounted.root, mounted.container);
 });

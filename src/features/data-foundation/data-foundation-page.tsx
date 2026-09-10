@@ -407,7 +407,6 @@ function SourceProvenancePanel({
 										id={item.sourceId}
 										label={t("identifiers.source")}
 										name={item.publicationEvidenceName}
-										variant="compact"
 									/>
 								}
 							/>
@@ -423,18 +422,15 @@ function SourceProvenancePanel({
 								<IdentifierDisplay
 									id={item.source.contentSha256}
 									label={t("dataFoundation.sourceContentHash")}
-									variant="compact"
 								/>
 								<IdentifierDisplay
 									id={item.source.payloadSha256}
 									label={t("dataFoundation.sourcePayloadHash")}
-									variant="compact"
 								/>
 								{item.source.acquisitionContentSha256 ? (
 									<IdentifierDisplay
 										id={item.source.acquisitionContentSha256}
 										label={t("dataFoundation.sourceAcquisitionHash")}
-										variant="compact"
 									/>
 								) : null}
 								{item.source.responseSha256s.map((hash, index) => (
@@ -442,7 +438,6 @@ function SourceProvenancePanel({
 										key={hash}
 										id={hash}
 										label={t("dataFoundation.sourceResponseHash", { number: index + 1 })}
-										variant="compact"
 									/>
 								))}
 							</div>
@@ -522,7 +517,6 @@ function SourceProvenancePanel({
 										<IdentifierDisplay
 											id={item.operation.operationId}
 											label={t("identifiers.operation")}
-											variant="compact"
 										/>
 									}
 								/>
@@ -694,7 +688,6 @@ function InstrumentEvidencePanel({
 						id={latest.snapshotId}
 						label={t("dataFoundation.catalogFallbackName")}
 						name={catalogDisplayName(latest, t("dataFoundation.catalogFallbackName"))}
-						variant="compact"
 					/>
 				</span>
 			</div>
@@ -798,7 +791,6 @@ function InstrumentEvidencePanel({
 												snapshot,
 												t("dataFoundation.catalogFallbackName"),
 											)}
-											variant="compact"
 										/>
 									</td>
 								</tr>
@@ -2273,7 +2265,6 @@ function AcquisitionOperationHistory({
 								<IdentifierDisplay
 									id={operation.operationId}
 									label={`${t("identifiers.operation")} · ${formatTimestamp(operation.startedAtMs)}`}
-									variant="compact"
 								/>
 								{operation.error ? (
 									<p className="text-destructive">{operation.error}</p>
