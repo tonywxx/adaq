@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -125,7 +126,7 @@ export function AttemptsPanel({
 									className="rounded-md border p-3 text-sm"
 									aria-busy={!isTerminalFactorAttempt(attempt.status)}
 									aria-label={t("factors.attempts.attemptLabel", {
-										id: shortFactorHash(attempt.attemptId, 12),
+										id: attempt.attemptId,
 									})}
 								>
 									<ResearchContextEvidence
@@ -134,7 +135,10 @@ export function AttemptsPanel({
 									/>
 									<div className="flex flex-wrap items-center gap-2">
 										<span className="font-mono text-xs">
-											{shortFactorHash(attempt.attemptId, 12)}
+											<IdentifierDisplay
+												id={attempt.attemptId}
+												label={t("identifiers.attempt")}
+											/>
 										</span>
 										<span aria-live="polite" aria-atomic="true">
 											<FactorAttemptStatusBadge status={attempt.status} />

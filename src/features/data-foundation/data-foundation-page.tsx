@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import {
 	Card,
@@ -7,6 +8,8 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { identifierLabel } from "@/lib/identifier-display";
 import { formatDateTime } from "@/lib/i18n";
 import { getErrorMessage, useMarketSessionStore } from "@/lib/market-session";
 import { Link } from "@tanstack/react-router";
@@ -188,10 +191,10 @@ type InstrumentMasterSnapshot = {
 	minimumQuoteVolume24h?: string;
 };
 
+type BackfillScope = "custom" | "watchlist" | "all";
+
 const shortId = (value: string) =>
 	value.length > 8 ? `${value.slice(0, 3)}...${value.slice(-3)}` : value;
-
-type BackfillScope = "custom" | "watchlist" | "all";
 
 const normalizeNamePart = (value: string) => value.trim().replace(/\s+/g, "-");
 
@@ -281,7 +284,10 @@ const buildPublicationEvidenceName = (
 const backfillScopeFromStorage = (value: unknown): BackfillScope =>
 	value === "watchlist" ? "watchlist" : value === "all" ? "all" : "custom";
 
-const catalogDisplayName = (snapshot: InstrumentMasterSnapshot) =>
+const catalogDisplayName = (
+	snapshot: InstrumentMasterSnapshot,
+	fallback: string,
+) =>
 	snapshot.catalogName ??
 	(snapshot.minimumQuoteVolume24h != null && snapshot.ignoreUntradable != null
 		? buildCatalogName(
@@ -289,7 +295,7 @@ const catalogDisplayName = (snapshot: InstrumentMasterSnapshot) =>
 				snapshot.minimumQuoteVolume24h,
 				snapshot.ignoreUntradable,
 			)
-		: "—");
+		: fallback);
 
 const humanizeNumber = (value: string | number | undefined) => {
 	const number = Number(value);
@@ -361,8 +367,9 @@ function SourceProvenancePanel({
 				item.kind === "dataset" ? (
 					<details key={item.sourceId} className="rounded-md border p-3">
 						<summary className="cursor-pointer text-sm font-medium">
-							{item.publicationEvidenceName ?? "—"} · {item.source.provider} ·{" "}
-							{item.source.instrument?.code ?? "—"} · {item.source.interval ?? "—"}
+							{item.publicationEvidenceName || t("identifiers.source")} ·{" "}
+							{item.source.provider} · {item.source.instrument?.code ?? "—"} ·{" "}
+							{item.source.interval ?? "—"}
 						</summary>
 						<div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
 							<ContextField
@@ -391,23 +398,49 @@ function SourceProvenancePanel({
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceRevision")}
-								value={`${item.revision} · ${item.sourceId}`}
+								value={String(item.revision)}
+							/>
+							<ContextField
+								label={t("identifiers.source")}
+								value={
+									<IdentifierDisplay
+										id={item.sourceId}
+										label={t("identifiers.source")}
+										name={item.publicationEvidenceName}
+									/>
+								}
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceLogicalKey")}
 								value={item.source.logicalKey}
 							/>
-							<ContextField
-								label={t("dataFoundation.sourceHashes")}
-								value={[
-									item.source.contentSha256,
-									item.source.payloadSha256,
-									item.source.acquisitionContentSha256,
-									...item.source.responseSha256s,
-								]
-									.filter(Boolean)
-									.join("\n")}
-							/>
+							<div className="grid gap-2 rounded-md border p-3 sm:col-span-2">
+								<strong>{t("dataFoundation.sourceHashes")}</strong>
+								<p className="text-muted-foreground">
+									{t("dataFoundation.sourceHashDescription")}
+								</p>
+								<IdentifierDisplay
+									id={item.source.contentSha256}
+									label={t("dataFoundation.sourceContentHash")}
+								/>
+								<IdentifierDisplay
+									id={item.source.payloadSha256}
+									label={t("dataFoundation.sourcePayloadHash")}
+								/>
+								{item.source.acquisitionContentSha256 ? (
+									<IdentifierDisplay
+										id={item.source.acquisitionContentSha256}
+										label={t("dataFoundation.sourceAcquisitionHash")}
+									/>
+								) : null}
+								{item.source.responseSha256s.map((hash, index) => (
+									<IdentifierDisplay
+										key={hash}
+										id={hash}
+										label={t("dataFoundation.sourceResponseHash", { number: index + 1 })}
+									/>
+								))}
+							</div>
 							<ContextField
 								label={t("dataFoundation.sourceRetrieved")}
 								value={formatTimestamp(item.source.retrievedAtMs)}
@@ -475,8 +508,19 @@ function SourceProvenancePanel({
 							/>
 							<ContextField
 								label={t("dataFoundation.sourceRevision")}
-								value={`${item.operation.revision ?? "—"} · ${item.operation.sourceId ?? "—"}`}
+								value={String(item.operation.revision ?? "—")}
 							/>
+							{item.operation.operationId ? (
+								<ContextField
+									label={t("identifiers.operation")}
+									value={
+										<IdentifierDisplay
+											id={item.operation.operationId}
+											label={t("identifiers.operation")}
+										/>
+									}
+								/>
+							) : null}
 							<ContextField label={t("dataFoundation.sourceHashes")} value="—" />
 							<ContextField
 								label={t("dataFoundation.sourceRetrieved")}
@@ -633,7 +677,9 @@ function InstrumentEvidencePanel({
 			<div className="grid gap-1 sm:grid-cols-4">
 				<span>
 					{t("dataFoundation.okxCatalogNameLabel")}{" "}
-					<strong className="text-primary">{catalogDisplayName(latest)}</strong>
+					<strong className="text-primary">
+						{catalogDisplayName(latest, t("dataFoundation.catalogFallbackName"))}
+					</strong>
 				</span>
 				<span>
 					{t("dataFoundation.okxInstrumentMasterCountLabel")}{" "}
@@ -649,9 +695,11 @@ function InstrumentEvidencePanel({
 				</span>
 				<span>
 					{t("dataFoundation.okxInstrumentMasterSnapshotLabel")}{" "}
-					<strong className="font-mono text-primary">
-						{shortId(latest.snapshotId)}
-					</strong>
+					<IdentifierDisplay
+						id={latest.snapshotId}
+						label={t("dataFoundation.catalogFallbackName")}
+						name={catalogDisplayName(latest, t("dataFoundation.catalogFallbackName"))}
+					/>
 				</span>
 			</div>
 			<div className="max-h-72 overflow-auto rounded-md border">
@@ -724,7 +772,12 @@ function InstrumentEvidencePanel({
 									}}
 									tabIndex={0}
 								>
-									<td className="p-2 font-medium">{catalogDisplayName(snapshot)}</td>
+									<td className="p-2 font-medium">
+										{catalogDisplayName(
+											snapshot,
+											t("dataFoundation.catalogFallbackName"),
+										)}
+									</td>
 									<td className="p-2">{humanizeNumber(snapshot.instruments.length)}</td>
 									<td className="p-2">
 										{humanizeNumber(snapshot.minimumQuoteVolume24h)}
@@ -741,8 +794,15 @@ function InstrumentEvidencePanel({
 									<td className="p-2">
 										{formatCatalogDateTime(snapshot.retrievedAtMs)}
 									</td>
-									<td className="p-2 font-mono" title={snapshot.snapshotId}>
-										{shortId(snapshot.snapshotId)}
+									<td className="p-2">
+										<IdentifierDisplay
+											id={snapshot.snapshotId}
+											label={t("dataFoundation.catalogFallbackName")}
+											name={catalogDisplayName(
+												snapshot,
+												t("dataFoundation.catalogFallbackName"),
+											)}
+										/>
 									</td>
 								</tr>
 							))}
@@ -1047,7 +1107,11 @@ export function DataFoundationPage() {
 			setUniverseId(result.universeSnapshotId);
 			toast.success(
 				t("dataFoundation.gateTwoPublished", {
-					id: result.universeSnapshotId,
+					id: identifierLabel(
+						result.universeSnapshotId,
+						t("identifiers.universe"),
+						result.publicationEvidenceName,
+					),
 				}),
 			);
 			await Promise.all([
@@ -1437,691 +1501,739 @@ export function DataFoundationPage() {
 					{t("dataFoundation.description")}
 				</p>
 			</div>
-			<Card>
-				<CardHeader>
-					<CardTitle>{t("dataFoundation.readinessTitle")}</CardTitle>
-					<CardDescription>
-						{t("dataFoundation.readinessDescription")}
-					</CardDescription>
-				</CardHeader>
-				<CardContent className="grid gap-3 sm:grid-cols-3">
-					<ReadinessStat
-						label={t("dataFoundation.sourceEvidence")}
-						value={pipelineQuery.data?.length ?? 0}
-						loading={pipelineQuery.isPending}
-					/>
-					<ReadinessStat
-						label={t("dataFoundation.canonicalEvidence")}
-						value={
-							pipelineQuery.data?.filter((item) => Boolean(item.canonicalId)).length ??
-							0
-						}
-						loading={pipelineQuery.isPending}
-					/>
-					<ReadinessStat
-						label={t("dataFoundation.degradedOrRejected")}
-						value={
-							pipelineQuery.data?.filter(
-								(item) => item.state === "degraded" || item.state === "rejected",
-							).length ?? 0
-						}
-						loading={pipelineQuery.isPending}
-					/>
-				</CardContent>
-			</Card>
-			<Card>
-				<CardHeader>
-					<CardTitle>{t("dataFoundation.sourceProvenanceTitle")}</CardTitle>
-					<CardDescription>
-						{t("dataFoundation.sourceProvenanceDescription")}
-					</CardDescription>
-				</CardHeader>
-				<CardContent>
-					{pipelineQuery.isPending ? (
-						<p className="text-sm text-muted-foreground" role="status">
-							{t("dataFoundation.loadingHistory")}
-						</p>
-					) : (
-						<SourceProvenancePanel
-							datasets={pipelineQuery.data ?? []}
-							operations={acquisitionQuery.data ?? []}
-							t={t}
-						/>
-					)}
-				</CardContent>
-			</Card>
-			<div className="grid gap-4 lg:grid-cols-3">
-				{markets.map((market) => {
-					const active = activeOperation?.startsWith(`${market.id}-`) ?? false;
-					return (
-						<Card key={market.id} className="h-fit lg:col-span-3">
-							<CardHeader>
-								<div className="flex items-start justify-between gap-3">
-									<div>
-										<StepTitle step={1}>{t(market.titleKey)}</StepTitle>
-										<CardDescription>{t(market.descriptionKey)}</CardDescription>
+			<Tabs defaultValue="overview" className="min-w-0 gap-4">
+				<TabsList
+					aria-label={t("dataFoundation.tabsLabel")}
+					className="w-full flex-wrap justify-start gap-1 group-data-horizontal/tabs:h-auto"
+				>
+					<TabsTrigger value="overview" className="flex-none">
+						{t("dataFoundation.tabs.overview")}
+					</TabsTrigger>
+					<TabsTrigger value="catalog" className="flex-none">
+						{t("dataFoundation.tabs.catalog")}
+					</TabsTrigger>
+					<TabsTrigger value="acquisition" className="flex-none">
+						{t("dataFoundation.tabs.acquisition")}
+					</TabsTrigger>
+					<TabsTrigger value="provenance" className="flex-none">
+						{t("dataFoundation.tabs.provenance")}
+					</TabsTrigger>
+					<TabsTrigger value="context" className="flex-none">
+						{t("dataFoundation.tabs.context")}
+					</TabsTrigger>
+				</TabsList>
+				<TabsContent value="overview" keepMounted className="min-w-0 space-y-4">
+					<Card>
+						<CardHeader>
+							<CardTitle>{t("dataFoundation.readinessTitle")}</CardTitle>
+							<CardDescription>
+								{t("dataFoundation.readinessDescription")}
+							</CardDescription>
+						</CardHeader>
+						<CardContent className="grid gap-3 sm:grid-cols-3">
+							<ReadinessStat
+								label={t("dataFoundation.sourceEvidence")}
+								value={pipelineQuery.data?.length ?? 0}
+								loading={pipelineQuery.isPending}
+							/>
+							<ReadinessStat
+								label={t("dataFoundation.canonicalEvidence")}
+								value={
+									pipelineQuery.data?.filter((item) => Boolean(item.canonicalId))
+										.length ?? 0
+								}
+								loading={pipelineQuery.isPending}
+							/>
+							<ReadinessStat
+								label={t("dataFoundation.degradedOrRejected")}
+								value={
+									pipelineQuery.data?.filter(
+										(item) => item.state === "degraded" || item.state === "rejected",
+									).length ?? 0
+								}
+								loading={pipelineQuery.isPending}
+							/>
+						</CardContent>
+					</Card>
+				</TabsContent>
+				<TabsContent value="catalog" keepMounted className="min-w-0 space-y-4">
+					<div className="grid gap-4 lg:grid-cols-3">
+						{markets.map((market) => {
+							const active = activeOperation?.startsWith(`${market.id}-`) ?? false;
+							return (
+								<Card key={market.id} className="h-fit lg:col-span-3">
+									<CardHeader>
+										<div className="flex items-start justify-between gap-3">
+											<div>
+												<StepTitle step={1}>{t(market.titleKey)}</StepTitle>
+												<CardDescription>{t(market.descriptionKey)}</CardDescription>
+											</div>
+											<Badge variant={active ? "default" : "outline"}>
+												{active
+													? t("dataFoundation.running")
+													: t("dataFoundation.readyToAcquire")}
+											</Badge>
+										</div>
+									</CardHeader>
+									<CardContent className="flex flex-wrap gap-2">
+										<div className="w-full grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+											<label className="grid gap-1">
+												<span>{t("dataFoundation.okxCatalogName")}</span>
+												<input
+													className="h-9 rounded-md border bg-background px-2"
+													value={catalogNameInput}
+													onChange={(event) => setCatalogNameInput(event.target.value)}
+													placeholder={t("dataFoundation.okxCatalogName")}
+												/>
+											</label>
+											<label className="grid gap-1">
+												<span>{t("dataFoundation.okxMinimumQuoteVolume")}</span>
+												<input
+													className="h-9 rounded-md border bg-background px-2"
+													inputMode="decimal"
+													value={minimumQuoteVolume24h}
+													onChange={(event) => setMinimumQuoteVolume24h(event.target.value)}
+												/>
+											</label>
+											<label className="flex items-center gap-2">
+												<input
+													type="checkbox"
+													checked={ignoreUntradable}
+													onChange={(event) => setIgnoreUntradable(event.target.checked)}
+												/>
+												{t("dataFoundation.okxIgnoreUntradable")}
+											</label>
+										</div>
+										<button
+											type="button"
+											className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
+											onClick={() => void acquire(market)}
+											disabled={Boolean(activeOperation)}
+										>
+											{t(market.acquireButtonKey)}
+										</button>
+										{active && market.cancelCommand ? (
+											<button
+												type="button"
+												className="inline-flex h-9 items-center justify-center rounded-md border px-3 text-sm font-medium hover:bg-muted"
+												onClick={() => void cancel(market)}
+											>
+												{t("dataFoundation.cancelAcquisition")}
+											</button>
+										) : null}
+										<Link
+											to={market.workspace}
+											className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
+										>
+											{t("dataFoundation.openMarketWorkspace")}
+											<ArrowRightIcon className="size-4" aria-hidden="true" />
+										</Link>
+										<div className="w-full border-t pt-4">
+											<p className="mb-3 text-sm font-medium">
+												{t("dataFoundation.okxInstrumentMasterEvidenceTitle")}
+											</p>
+											<InstrumentEvidencePanel
+												snapshots={instrumentMasterQuery.data}
+												pending={instrumentMasterQuery.isPending}
+												t={t}
+											/>
+										</div>
+									</CardContent>
+								</Card>
+							);
+						})}
+					</div>
+				</TabsContent>
+				<TabsContent value="acquisition" keepMounted className="min-w-0 space-y-4">
+					<Card>
+						<CardHeader>
+							<StepTitle step={2}>{t("dataFoundation.publicationTitle")}</StepTitle>
+							<CardDescription>
+								{t("dataFoundation.publicationDescription")}
+							</CardDescription>
+						</CardHeader>
+						<CardContent className="grid gap-3">
+							<div className="grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+								<label
+									className="grid gap-1 sm:col-span-2 lg:col-span-4"
+									htmlFor="publication-evidence-name"
+								>
+									<span>{t("dataFoundation.publicationEvidenceName")}</span>
+									<Input
+										id="publication-evidence-name"
+										value={publicationEvidenceNameInput}
+										disabled={Boolean(backfillTaskId)}
+										placeholder={t("dataFoundation.publicationEvidenceNamePlaceholder")}
+										onChange={(event) =>
+											setPublicationEvidenceNameInput(event.target.value)
+										}
+									/>
+								</label>
+								<label className="grid gap-1">
+									<span>{t("dataFoundation.backfillScope")}</span>
+									<select
+										className="h-9 rounded-md border bg-background px-3"
+										value={backfillScope}
+										disabled={Boolean(backfillTaskId)}
+										onChange={(event) =>
+											setBackfillScope(event.target.value as BackfillScope)
+										}
+									>
+										<option value="custom">{t("dataFoundation.backfillCustom")}</option>
+										<option value="watchlist">
+											{t("dataFoundation.backfillWatchlist")}
+										</option>
+										<option value="all">{t("dataFoundation.backfillAll")}</option>
+									</select>
+								</label>
+								<label className="grid gap-1 text-right">
+									<span>{t("dataFoundation.backfillInterval")}</span>
+									<select
+										className="ml-auto h-9 w-1/2 rounded-md border bg-background px-3"
+										value={backfillInterval}
+										disabled={Boolean(backfillTaskId)}
+										onChange={(event) =>
+											setBackfillInterval(event.target.value as OkxInterval)
+										}
+									>
+										{OKX_INTERVALS.map((interval) => (
+											<option key={interval} value={interval}>
+												{interval}
+											</option>
+										))}
+									</select>
+								</label>
+								<label className="grid gap-1" htmlFor="backfill-range-start">
+									<span>{t("dataFoundation.rangeStart")}</span>
+									<Input
+										id="backfill-range-start"
+										type="date"
+										value={rangeStart}
+										disabled={Boolean(backfillTaskId)}
+										onChange={(event) => setRangeStart(event.target.value)}
+									/>
+								</label>
+								<label className="grid gap-1" htmlFor="backfill-range-end">
+									<span>{t("dataFoundation.rangeEnd")}</span>
+									<Input
+										id="backfill-range-end"
+										type="date"
+										value={rangeEnd}
+										max={latestClosedDate}
+										disabled={Boolean(backfillTaskId)}
+										onChange={(event) => setRangeEnd(event.target.value)}
+									/>
+								</label>
+								<label
+									className="grid gap-1 sm:col-span-2 lg:col-span-4"
+									htmlFor="okx-backfill-instruments"
+								>
+									<span>{t("dataFoundation.backfillCustomInstruments")}</span>
+									<Input
+										id="okx-backfill-instruments"
+										value={instrumentCodes}
+										disabled={backfillScope !== "custom" || Boolean(backfillTaskId)}
+										placeholder="BTC-USDT, ETH-USDT"
+										onChange={(event) => setInstrumentCodes(event.target.value)}
+									/>
+									<p className="text-xs text-muted-foreground">
+										{t("dataFoundation.backfillCustomInstrumentsHint")}
+									</p>
+								</label>
+								{backfillScope === "watchlist" ? (
+									<div className="rounded-md border p-2 text-xs text-muted-foreground sm:col-span-2 lg:col-span-4">
+										<strong className="text-foreground">
+											{t("dataFoundation.backfillWatchlistContents")}
+										</strong>
+										<p>
+											{watchlistCodes.length
+												? watchlistCodes.join(", ")
+												: t("dataFoundation.backfillWatchlistEmpty")}
+										</p>
 									</div>
-									<Badge variant={active ? "default" : "outline"}>
-										{active
-											? t("dataFoundation.running")
-											: t("dataFoundation.readyToAcquire")}
-									</Badge>
-								</div>
-							</CardHeader>
-							<CardContent className="flex flex-wrap gap-2">
-								<div className="w-full grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
-									<label className="grid gap-1">
-										<span>{t("dataFoundation.okxCatalogName")}</span>
-										<input
-											className="h-9 rounded-md border bg-background px-2"
-											value={catalogNameInput}
-											onChange={(event) => setCatalogNameInput(event.target.value)}
-											placeholder={t("dataFoundation.okxCatalogName")}
-										/>
+								) : null}
+								{backfillScope === "all" ? (
+									<label className="grid gap-1 sm:col-span-2 lg:col-span-4">
+										<span>{t("dataFoundation.backfillAllSnapshot")}</span>
+										<select
+											className="h-9 rounded-md border bg-background px-3"
+											value={selectedBackfillSnapshot?.snapshotId ?? ""}
+											disabled={Boolean(backfillTaskId) || !backfillSnapshots.length}
+											onChange={(event) =>
+												setSelectedBackfillSnapshotId(event.target.value)
+											}
+										>
+											{backfillSnapshots.length ? (
+												backfillSnapshots.map((snapshot) => (
+													<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
+														{catalogDisplayName(
+															snapshot,
+															t("dataFoundation.catalogFallbackName"),
+														)}{" "}
+														- {shortId(snapshot.snapshotId)} -{" "}
+														{formatCatalogDateTime(snapshot.retrievedAtMs)} -{" "}
+														{humanizeNumber(snapshot.instruments.length)}
+													</option>
+												))
+											) : (
+												<option value="">
+													{t("dataFoundation.okxInstrumentMasterEmpty")}
+												</option>
+											)}
+										</select>
 									</label>
-									<label className="grid gap-1">
-										<span>{t("dataFoundation.okxMinimumQuoteVolume")}</span>
-										<input
-											className="h-9 rounded-md border bg-background px-2"
-											inputMode="decimal"
-											value={minimumQuoteVolume24h}
-											onChange={(event) => setMinimumQuoteVolume24h(event.target.value)}
-										/>
-									</label>
-									<label className="flex items-center gap-2">
-										<input
-											type="checkbox"
-											checked={ignoreUntradable}
-											onChange={(event) => setIgnoreUntradable(event.target.checked)}
-										/>
-										{t("dataFoundation.okxIgnoreUntradable")}
-									</label>
+								) : null}
+							</div>
+							<div className="flex flex-wrap items-center gap-3 rounded-md border p-3">
+								<div className="min-w-0 flex-1">
+									<strong className="text-sm">
+										{t("dataFoundation.okxBackfillTitle")}
+									</strong>
+									<p className="text-xs text-muted-foreground">
+										{t("dataFoundation.okxBackfillDescription")}
+									</p>
+									{backfillProgress ? (
+										<div className="grid gap-1" role="status">
+											<p className="text-xs text-muted-foreground">
+												{backfillProgress}
+												{backfillStats?.currentInstrument
+													? ` · ${backfillStats.currentInstrument}`
+													: ""}
+											</p>
+											{backfillStats?.instrumentCount ? (
+												<>
+													<progress
+														className="h-2 w-full"
+														max={backfillStats.instrumentCount}
+														value={backfillStats.completedInstruments}
+														aria-label="OKX backfill progress"
+													/>
+													<span className="text-xs text-muted-foreground">
+														{backfillStats.completedInstruments}/
+														{backfillStats.instrumentCount} instruments
+													</span>
+												</>
+											) : null}
+										</div>
+									) : null}
 								</div>
 								<button
 									type="button"
-									className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
-									onClick={() => void acquire(market)}
-									disabled={Boolean(activeOperation)}
+									className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+									disabled={Boolean(activeOperation || backfillTaskId)}
+									onClick={() => void runOkxBackfill()}
 								>
-									{t(market.acquireButtonKey)}
+									{backfillTaskId
+										? t("dataFoundation.okxBackfillRunning")
+										: t("dataFoundation.okxBackfillStart")}
 								</button>
-								{active && market.cancelCommand ? (
+								{backfillTaskId ? (
 									<button
 										type="button"
-										className="inline-flex h-9 items-center justify-center rounded-md border px-3 text-sm font-medium hover:bg-muted"
-										onClick={() => void cancel(market)}
+										className="rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted"
+										onClick={() => void cancelOkxBackfill()}
 									>
-										{t("dataFoundation.cancelAcquisition")}
+										{t("dataFoundation.okxBackfillCancel")}
 									</button>
 								) : null}
-								<Link
-									to={market.workspace}
-									className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
-								>
-									{t("dataFoundation.openMarketWorkspace")}
-									<ArrowRightIcon className="size-4" aria-hidden="true" />
-								</Link>
-								<div className="w-full border-t pt-4">
-									<p className="mb-3 text-sm font-medium">
-										{t("dataFoundation.okxInstrumentMasterEvidenceTitle")}
-									</p>
-									<InstrumentEvidencePanel
-										snapshots={instrumentMasterQuery.data}
-										pending={instrumentMasterQuery.isPending}
-										t={t}
-									/>
-								</div>
-							</CardContent>
-						</Card>
-					);
-				})}
-			</div>
-			<Card className="order-2">
-				<CardHeader>
-					<StepTitle step={3}>{t("dataFoundation.selectContextTitle")}</StepTitle>
-					<CardDescription>
-						{t("dataFoundation.selectContextDescription")}
-					</CardDescription>
-				</CardHeader>
-				<CardContent className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-					<label className="grid gap-1 text-sm">
-						<span>{t("dataFoundation.contextMarket")}</span>
-						<select
-							className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
-							value={contextMarket}
-							onChange={(event) => {
-								const next = event.target.value as FoundationMarket["id"];
-								setContextMarket(next);
-								setContextVenue(MARKET_VENUES[next][0]);
-							}}
-						>
-							{markets.map((market) => (
-								<option key={market.id} value={market.id}>
-									{t(market.titleKey)}
-								</option>
-							))}
-						</select>
-					</label>
-					<label className="grid gap-1 text-sm">
-						<span>{t("dataFoundation.contextVenue")}</span>
-						<select
-							className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
-							value={contextVenue}
-							onChange={(event) => setContextVenue(event.target.value)}
-						>
-							{MARKET_VENUES[contextMarket].map((venue) => (
-								<option key={venue}>{venue}</option>
-							))}
-						</select>
-					</label>
-					<label className="grid gap-1 text-sm">
-						<span>{t("dataFoundation.contextSnapshot")}</span>
-						<select
-							className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
-							value={snapshotId}
-							onChange={(event) => setSnapshotId(event.target.value)}
-						>
-							<option value="">{t("dataFoundation.selectSnapshot")}</option>
-							{snapshotsQuery.data?.map((snapshot) => (
-								<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
-									{snapshot.publicationEvidenceName ?? "—"} · {snapshot.code} ·{" "}
-									{snapshot.interval} · {snapshot.barCount}
-								</option>
-							))}
-						</select>
-					</label>
-					<label className="grid gap-1 text-sm">
-						<span>{t("dataFoundation.contextUniverse")}</span>
-						<select
-							className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
-							value={universeId}
-							onChange={(event) => setUniverseId(event.target.value)}
-						>
-							<option value="">{t("dataFoundation.selectUniverse")}</option>
-							{universeQuery.data?.map((universe) => (
-								<option key={universe.snapshotId} value={universe.snapshotId}>
-									{universe.snapshotId} · {universe.contentSha256.slice(0, 8)}
-								</option>
-							))}
-						</select>
-					</label>
-					<button
-						type="button"
-						className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50 md:col-span-2 lg:col-span-2 lg:justify-self-start"
-						disabled={!snapshotId || snapshotsQuery.isPending}
-						onClick={() => void establishContext()}
-					>
-						{t("dataFoundation.establishContext")}
-					</button>
-				</CardContent>
-			</Card>
-			<Card className="order-1">
-				<CardHeader>
-					<StepTitle step={2}>{t("dataFoundation.publicationTitle")}</StepTitle>
-					<CardDescription>
-						{t("dataFoundation.publicationDescription")}
-					</CardDescription>
-				</CardHeader>
-				<CardContent className="grid gap-3">
-					<div className="grid gap-3 rounded-md border p-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-						<label
-							className="grid gap-1 sm:col-span-2 lg:col-span-4"
-							htmlFor="publication-evidence-name"
-						>
-							<span>{t("dataFoundation.publicationEvidenceName")}</span>
-							<Input
-								id="publication-evidence-name"
-								value={publicationEvidenceNameInput}
-								disabled={Boolean(backfillTaskId)}
-								placeholder={t("dataFoundation.publicationEvidenceNamePlaceholder")}
-								onChange={(event) =>
-									setPublicationEvidenceNameInput(event.target.value)
-								}
-							/>
-						</label>
-						<label className="grid gap-1">
-							<span>{t("dataFoundation.backfillScope")}</span>
-							<select
-								className="h-9 rounded-md border bg-background px-3"
-								value={backfillScope}
-								disabled={Boolean(backfillTaskId)}
-								onChange={(event) =>
-									setBackfillScope(event.target.value as BackfillScope)
-								}
-							>
-								<option value="custom">{t("dataFoundation.backfillCustom")}</option>
-								<option value="watchlist">
-									{t("dataFoundation.backfillWatchlist")}
-								</option>
-								<option value="all">{t("dataFoundation.backfillAll")}</option>
-							</select>
-						</label>
-						<label className="grid gap-1 text-right">
-							<span>{t("dataFoundation.backfillInterval")}</span>
-							<select
-								className="ml-auto h-9 w-1/2 rounded-md border bg-background px-3"
-								value={backfillInterval}
-								disabled={Boolean(backfillTaskId)}
-								onChange={(event) =>
-									setBackfillInterval(event.target.value as OkxInterval)
-								}
-							>
-								{OKX_INTERVALS.map((interval) => (
-									<option key={interval} value={interval}>
-										{interval}
-									</option>
-								))}
-							</select>
-						</label>
-						<label className="grid gap-1" htmlFor="backfill-range-start">
-							<span>{t("dataFoundation.rangeStart")}</span>
-							<Input
-								id="backfill-range-start"
-								type="date"
-								value={rangeStart}
-								disabled={Boolean(backfillTaskId)}
-								onChange={(event) => setRangeStart(event.target.value)}
-							/>
-						</label>
-						<label className="grid gap-1" htmlFor="backfill-range-end">
-							<span>{t("dataFoundation.rangeEnd")}</span>
-							<Input
-								id="backfill-range-end"
-								type="date"
-								value={rangeEnd}
-								max={latestClosedDate}
-								disabled={Boolean(backfillTaskId)}
-								onChange={(event) => setRangeEnd(event.target.value)}
-							/>
-						</label>
-						<label
-							className="grid gap-1 sm:col-span-2 lg:col-span-4"
-							htmlFor="okx-backfill-instruments"
-						>
-							<span>{t("dataFoundation.backfillCustomInstruments")}</span>
-							<Input
-								id="okx-backfill-instruments"
-								value={instrumentCodes}
-								disabled={backfillScope !== "custom" || Boolean(backfillTaskId)}
-								placeholder="BTC-USDT, ETH-USDT"
-								onChange={(event) => setInstrumentCodes(event.target.value)}
-							/>
-							<p className="text-xs text-muted-foreground">
-								{t("dataFoundation.backfillCustomInstrumentsHint")}
-							</p>
-						</label>
-						{backfillScope === "watchlist" ? (
-							<div className="rounded-md border p-2 text-xs text-muted-foreground sm:col-span-2 lg:col-span-4">
-								<strong className="text-foreground">
-									{t("dataFoundation.backfillWatchlistContents")}
-								</strong>
-								<p>
-									{watchlistCodes.length
-										? watchlistCodes.join(", ")
-										: t("dataFoundation.backfillWatchlistEmpty")}
-								</p>
-							</div>
-						) : null}
-						{backfillScope === "all" ? (
-							<label className="grid gap-1 sm:col-span-2 lg:col-span-4">
-								<span>{t("dataFoundation.backfillAllSnapshot")}</span>
-								<select
-									className="h-9 rounded-md border bg-background px-3"
-									value={selectedBackfillSnapshot?.snapshotId ?? ""}
-									disabled={Boolean(backfillTaskId) || !backfillSnapshots.length}
-									onChange={(event) => setSelectedBackfillSnapshotId(event.target.value)}
-								>
-									{backfillSnapshots.length ? (
-										backfillSnapshots.map((snapshot) => (
-											<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
-												{catalogDisplayName(snapshot)} - {shortId(snapshot.snapshotId)} -{" "}
-												{formatCatalogDateTime(snapshot.retrievedAtMs)} -{" "}
-												{humanizeNumber(snapshot.instruments.length)}
-											</option>
-										))
-									) : (
-										<option value="">
-											{t("dataFoundation.okxInstrumentMasterEmpty")}
-										</option>
+								{savedBackfill && !backfillTaskId ? (
+									<button
+										type="button"
+										className="rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted"
+										onClick={() => void runOkxBackfill(savedBackfill)}
+									>
+										{t("dataFoundation.backfillResume")}
+									</button>
+								) : null}
+								<button
+									type="button"
+									className="rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
+									disabled={Boolean(
+										activeOperation ||
+											backfillTaskId ||
+											publishingGateTwo ||
+											!gateTwoRequest,
 									)}
-								</select>
-							</label>
-						) : null}
-					</div>
-					<div className="flex flex-wrap items-center gap-3 rounded-md border p-3">
-						<div className="min-w-0 flex-1">
-							<strong className="text-sm">
-								{t("dataFoundation.okxBackfillTitle")}
-							</strong>
-							<p className="text-xs text-muted-foreground">
-								{t("dataFoundation.okxBackfillDescription")}
-							</p>
-							{backfillProgress ? (
-								<div className="grid gap-1" role="status">
-									<p className="text-xs text-muted-foreground">
-										{backfillProgress}
-										{backfillStats?.currentInstrument
-											? ` · ${backfillStats.currentInstrument}`
-											: ""}
+									onClick={() => void publishGateTwo()}
+								>
+									{publishingGateTwo
+										? t("dataFoundation.publishingGateTwo")
+										: t("dataFoundation.publishGateTwo")}
+								</button>
+								{universeId ? (
+									<p className="w-full text-xs text-muted-foreground" role="status">
+										{t("dataFoundation.gateTwoPublished", { id: universeId })}
 									</p>
-									{backfillStats?.instrumentCount ? (
-										<>
-											<progress
-												className="h-2 w-full"
-												max={backfillStats.instrumentCount}
-												value={backfillStats.completedInstruments}
-												aria-label="OKX backfill progress"
-											/>
-											<span className="text-xs text-muted-foreground">
-												{backfillStats.completedInstruments}/{backfillStats.instrumentCount}{" "}
-												instruments
-											</span>
-										</>
-									) : null}
+								) : null}
+							</div>
+							{backfillTaskId && backfillStats ? (
+								<div className="grid gap-1 rounded-md border p-3 text-xs text-muted-foreground">
+									<div className="flex justify-between gap-2">
+										<span>{t("dataFoundation.backfillElapsed")}</span>
+										<span>{elapsedLabel}</span>
+									</div>
+									<div className="flex justify-between gap-2">
+										<span>{t("dataFoundation.backfillEta")}</span>
+										<span>{etaLabel}</span>
+									</div>
+									<div className="flex justify-between gap-2">
+										<span>{t("dataFoundation.backfillRecords")}</span>
+										<span>{backfillStats.downloadedRecords}</span>
+									</div>
 								</div>
 							) : null}
-						</div>
-						<button
-							type="button"
-							className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-							disabled={Boolean(activeOperation || backfillTaskId)}
-							onClick={() => void runOkxBackfill()}
-						>
-							{backfillTaskId
-								? t("dataFoundation.okxBackfillRunning")
-								: t("dataFoundation.okxBackfillStart")}
-						</button>
-						{backfillTaskId ? (
-							<button
-								type="button"
-								className="rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted"
-								onClick={() => void cancelOkxBackfill()}
-							>
-								{t("dataFoundation.okxBackfillCancel")}
-							</button>
-						) : null}
-						{savedBackfill && !backfillTaskId ? (
-							<button
-								type="button"
-								className="rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted"
-								onClick={() => void runOkxBackfill(savedBackfill)}
-							>
-								{t("dataFoundation.backfillResume")}
-							</button>
-						) : null}
-						<button
-							type="button"
-							className="rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
-							disabled={Boolean(
-								activeOperation ||
-									backfillTaskId ||
-									publishingGateTwo ||
-									!gateTwoRequest,
-							)}
-							onClick={() => void publishGateTwo()}
-						>
-							{publishingGateTwo
-								? t("dataFoundation.publishingGateTwo")
-								: t("dataFoundation.publishGateTwo")}
-						</button>
-						{universeId ? (
-							<p className="w-full text-xs text-muted-foreground" role="status">
-								{t("dataFoundation.gateTwoPublished", { id: universeId })}
-							</p>
-						) : null}
-					</div>
-					{backfillTaskId && backfillStats ? (
-						<div className="grid gap-1 rounded-md border p-3 text-xs text-muted-foreground">
-							<div className="flex justify-between gap-2">
-								<span>{t("dataFoundation.backfillElapsed")}</span>
-								<span>{elapsedLabel}</span>
+							<div className="mt-4 border-t pt-3">
+								<strong className="text-base">
+									{t("dataFoundation.backfillHistoryTitle")}
+								</strong>
 							</div>
-							<div className="flex justify-between gap-2">
-								<span>{t("dataFoundation.backfillEta")}</span>
-								<span>{etaLabel}</span>
-							</div>
-							<div className="flex justify-between gap-2">
-								<span>{t("dataFoundation.backfillRecords")}</span>
-								<span>{backfillStats.downloadedRecords}</span>
-							</div>
-						</div>
-					) : null}
-					<div className="mt-4 border-t pt-3">
-						<strong className="text-base">
-							{t("dataFoundation.backfillHistoryTitle")}
-						</strong>
-					</div>
-					{pipelineQuery.data?.length ? (
-						<>
-							{publicationSlice.map((dataset) => (
-								<div
-									key={dataset.sourceId}
-									className="grid gap-2 rounded-md border p-3"
-								>
-									<button
-										type="button"
-										className={`grid gap-1 text-left text-sm ${selectedSourceId === dataset.sourceId ? "text-primary" : ""}`}
-										onClick={() => setSelectedSourceId(dataset.sourceId)}
-									>
-										<span className="font-medium">
-											{dataset.publicationEvidenceName ?? "—"}
-										</span>
-										<span
-											className="font-mono text-xs text-muted-foreground"
-											title={dataset.sourceId}
-										>
-											{shortId(dataset.sourceId)}
-										</span>
-										<span className="text-muted-foreground">
-											{t("dataFoundation.publicationCounts", {
-												source: dataset.sourceRecordCount,
-												canonical: dataset.canonicalRecordCount,
-												quarantined: dataset.quarantinedRecordCount,
-												gaps: dataset.gapCount,
-											})}
-										</span>
-										<span className="flex flex-wrap items-center gap-2 text-xs">
-											<span>{t("dataFoundation.validationResult")}</span>
-											<Badge variant={dataset.state === "passed" ? "default" : "outline"}>
-												{dataset.qualityReportId
-													? t(`dataFoundation.states.${dataset.state}`)
-													: t("dataFoundation.notValidated")}
-											</Badge>
-											<span className="text-muted-foreground">
-												{t("dataFoundation.validationTime")}:{" "}
-												{formatTimestamp(dataset.validatedAtMs)}
-											</span>
-										</span>
-									</button>
-									<button
-										type="button"
-										className="justify-self-start rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-										disabled={Boolean(publishingSourceId || backfillTaskId)}
-										onClick={() => void publishSource(dataset)}
-									>
-										{publishingSourceId === dataset.sourceId
-											? dataset.qualityReportId
-												? t("dataFoundation.forcingRevalidation")
-												: t("dataFoundation.assessingQuality")
-											: dataset.qualityReportId
-												? t("dataFoundation.forceRevalidate")
-												: t("dataFoundation.assessQuality")}
-									</button>
-									<button
-										type="button"
-										className="justify-self-start rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-										disabled={!dataset.canonicalId || Boolean(publishingId)}
-										onClick={() => void publish(dataset, dataset.state === "degraded")}
-									>
-										{publishingId === dataset.canonicalId
-											? t("dataFoundation.publishing")
-											: dataset.state === "degraded"
-												? t("dataFoundation.acceptDegradedPublish")
-												: t("dataFoundation.publishSnapshot")}
-									</button>
-								</div>
-							))}
-							<Pagination
-								page={publicationSafePage}
-								pageCount={publicationPageCount}
-								onPageChange={setPublicationPage}
-							/>
-						</>
-					) : (
-						<p className="text-sm text-muted-foreground">
-							{t("dataFoundation.emptyPublication")}
-						</p>
-					)}
-					{qualityQuery.data ? (
-						<div className="rounded-md border p-3 text-sm">
-							<div className="flex flex-wrap items-center justify-between gap-2">
-								<strong>{t("dataFoundation.qualityDetail")}</strong>
-								<Badge
-									variant={qualityQuery.data.state === "passed" ? "default" : "outline"}
-								>
-									{t(`dataFoundation.states.${qualityQuery.data.state}`)}
-								</Badge>
-							</div>
-							<p className="mt-2 text-muted-foreground">
-								{t("dataFoundation.qualityCounts", qualityQuery.data)}
-							</p>
-							<p className="mt-1 text-xs text-muted-foreground">
-								{t("dataFoundation.validationTime")}:{" "}
-								{formatTimestamp(selectedDataset?.validatedAtMs)}
-							</p>
-							{qualityQuery.data.state !== "passed" ? (
-								<div className="mt-2 text-amber-700 dark:text-amber-300" role="status">
-									<p>{t("dataFoundation.downstreamBlocked")}</p>
-									{qualityQuery.data.reasons.length ? (
-										<ul className="mt-1 list-disc pl-5">
-											{qualityQuery.data.reasons.map((reason) => (
-												<li key={reason.code}>
-													{reason.code}: {reason.message}
-												</li>
-											))}
-										</ul>
-									) : null}
-								</div>
-							) : null}
-						</div>
-					) : null}
-					<div className="mt-4 border-t pt-4">
-						<p className="mb-3 text-base font-medium">
-							{t("dataFoundation.executionStatus")}
-						</p>
-						{acquisitionQuery.isPending ? (
-							<p className="text-sm text-muted-foreground" role="status">
-								{t("dataFoundation.loadingHistory")}
-							</p>
-						) : acquisitionQuery.data?.length ? (
-							<div className="grid gap-3 text-sm">
-								<div className="grid gap-2">
-									{acquisitionSlice.map((operation) => (
+							{pipelineQuery.data?.length ? (
+								<>
+									{publicationSlice.map((dataset) => (
 										<div
-											key={`${operation.instrument.venue.id}:${operation.instrument.code}:${operation.interval}`}
-											className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3"
+											key={dataset.sourceId}
+											className="grid gap-2 rounded-md border p-3"
 										>
-											<div>
-												<strong>{operation.instrument.code}</strong>
-												<span className="ml-2 text-muted-foreground">
-													{operation.interval} ·{" "}
-													{t("dataFoundation.pages", { count: operation.pages })} ·{" "}
-													{t("dataFoundation.revision", {
-														revision: operation.revision ?? "—",
-													})}{" "}
-													· {t("dataFoundation.retries", { count: operation.retryCount })}
+											<button
+												type="button"
+												className={`grid gap-1 text-left text-sm ${selectedSourceId === dataset.sourceId ? "text-primary" : ""}`}
+												onClick={() => setSelectedSourceId(dataset.sourceId)}
+											>
+												<span className="font-medium">
+													{dataset.publicationEvidenceName ?? "—"}
 												</span>
-												{operation.lastError ? (
-													<p className="mt-1 text-destructive">{operation.lastError}</p>
-												) : null}
-											</div>
-											<div className="flex items-center gap-2">
-												<Badge
-													variant={operation.state === "completed" ? "default" : "outline"}
+												<span
+													className="font-mono text-xs text-muted-foreground"
+													title={dataset.sourceId}
 												>
-													{t(`dataFoundation.states.${operation.state}`)}
-												</Badge>
-												{operation.state === "failed" || operation.state === "cancelled" ? (
-													<button
-														type="button"
-														className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-														onClick={() => void retry(operation)}
-														disabled={Boolean(activeOperation)}
+													{t("identifiers.source")} · {shortId(dataset.sourceId)}
+												</span>
+												<span className="text-muted-foreground">
+													{t("dataFoundation.publicationCounts", {
+														source: dataset.sourceRecordCount,
+														canonical: dataset.canonicalRecordCount,
+														quarantined: dataset.quarantinedRecordCount,
+														gaps: dataset.gapCount,
+													})}
+												</span>
+												<span className="flex flex-wrap items-center gap-2 text-xs">
+													<span>{t("dataFoundation.validationResult")}</span>
+													<Badge
+														variant={dataset.state === "passed" ? "default" : "outline"}
 													>
-														{t("dataFoundation.retryAcquisition")}
-													</button>
-												) : null}
-											</div>
+														{dataset.qualityReportId
+															? t(`dataFoundation.states.${dataset.state}`)
+															: t("dataFoundation.notValidated")}
+													</Badge>
+													<span className="text-muted-foreground">
+														{t("dataFoundation.validationTime")}:{" "}
+														{formatTimestamp(dataset.validatedAtMs)}
+													</span>
+												</span>
+											</button>
+											<button
+												type="button"
+												className="justify-self-start rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+												disabled={Boolean(publishingSourceId || backfillTaskId)}
+												onClick={() => void publishSource(dataset)}
+											>
+												{publishingSourceId === dataset.sourceId
+													? dataset.qualityReportId
+														? t("dataFoundation.forcingRevalidation")
+														: t("dataFoundation.assessingQuality")
+													: dataset.qualityReportId
+														? t("dataFoundation.forceRevalidate")
+														: t("dataFoundation.assessQuality")}
+											</button>
+											<button
+												type="button"
+												className="justify-self-start rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+												disabled={!dataset.canonicalId || Boolean(publishingId)}
+												onClick={() => void publish(dataset, dataset.state === "degraded")}
+											>
+												{publishingId === dataset.canonicalId
+													? t("dataFoundation.publishing")
+													: dataset.state === "degraded"
+														? t("dataFoundation.acceptDegradedPublish")
+														: t("dataFoundation.publishSnapshot")}
+											</button>
 										</div>
 									))}
+									<Pagination
+										page={publicationSafePage}
+										pageCount={publicationPageCount}
+										onPageChange={setPublicationPage}
+									/>
+								</>
+							) : (
+								<p className="text-sm text-muted-foreground">
+									{t("dataFoundation.emptyPublication")}
+								</p>
+							)}
+							{qualityQuery.data ? (
+								<div className="rounded-md border p-3 text-sm">
+									<div className="flex flex-wrap items-center justify-between gap-2">
+										<strong>{t("dataFoundation.qualityDetail")}</strong>
+										<Badge
+											variant={
+												qualityQuery.data.state === "passed" ? "default" : "outline"
+											}
+										>
+											{t(`dataFoundation.states.${qualityQuery.data.state}`)}
+										</Badge>
+									</div>
+									<p className="mt-2 text-muted-foreground">
+										{t("dataFoundation.qualityCounts", qualityQuery.data)}
+									</p>
+									<p className="mt-1 text-xs text-muted-foreground">
+										{t("dataFoundation.validationTime")}:{" "}
+										{formatTimestamp(selectedDataset?.validatedAtMs)}
+									</p>
+									{qualityQuery.data.state !== "passed" ? (
+										<div
+											className="mt-2 text-amber-700 dark:text-amber-300"
+											role="status"
+										>
+											<p>{t("dataFoundation.downstreamBlocked")}</p>
+											{qualityQuery.data.reasons.length ? (
+												<ul className="mt-1 list-disc pl-5">
+													{qualityQuery.data.reasons.map((reason) => (
+														<li key={reason.code}>
+															{reason.code}: {reason.message}
+														</li>
+													))}
+												</ul>
+											) : null}
+										</div>
+									) : null}
 								</div>
-								<Pagination
-									page={acquisitionSafePage}
-									pageCount={acquisitionPageCount}
-									onPageChange={setAcquisitionPage}
+							) : null}
+							<div className="mt-4 border-t pt-4">
+								<p className="mb-3 text-base font-medium">
+									{t("dataFoundation.executionStatus")}
+								</p>
+								{acquisitionQuery.isPending ? (
+									<p className="text-sm text-muted-foreground" role="status">
+										{t("dataFoundation.loadingHistory")}
+									</p>
+								) : acquisitionQuery.data?.length ? (
+									<div className="grid gap-3 text-sm">
+										<div className="grid gap-2">
+											{acquisitionSlice.map((operation) => (
+												<div
+													key={`${operation.instrument.venue.id}:${operation.instrument.code}:${operation.interval}`}
+													className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3"
+												>
+													<div>
+														<strong>{operation.instrument.code}</strong>
+														<span className="ml-2 text-muted-foreground">
+															{operation.interval} ·{" "}
+															{t("dataFoundation.pages", { count: operation.pages })} ·{" "}
+															{t("dataFoundation.revision", {
+																revision: operation.revision ?? "—",
+															})}{" "}
+															· {t("dataFoundation.retries", { count: operation.retryCount })}
+														</span>
+														{operation.lastError ? (
+															<p className="mt-1 text-destructive">{operation.lastError}</p>
+														) : null}
+													</div>
+													<div className="flex items-center gap-2">
+														<Badge
+															variant={operation.state === "completed" ? "default" : "outline"}
+														>
+															{t(`dataFoundation.states.${operation.state}`)}
+														</Badge>
+														{operation.state === "failed" ||
+														operation.state === "cancelled" ? (
+															<button
+																type="button"
+																className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+																onClick={() => void retry(operation)}
+																disabled={Boolean(activeOperation)}
+															>
+																{t("dataFoundation.retryAcquisition")}
+															</button>
+														) : null}
+													</div>
+												</div>
+											))}
+										</div>
+										<Pagination
+											page={acquisitionSafePage}
+											pageCount={acquisitionPageCount}
+											onPageChange={setAcquisitionPage}
+										/>
+									</div>
+								) : (
+									<p className="text-sm text-muted-foreground">
+										{t("dataFoundation.emptyHistory")}
+									</p>
+								)}
+								<AcquisitionOperationHistory
+									loading={foundationHistoryQuery.isPending}
+									operations={foundationHistoryQuery.data ?? []}
+									onCancel={async (operation) => {
+										if (
+											!userId ||
+											operation.market !== "crypto" ||
+											operation.venue !== "okx"
+										)
+											return;
+										try {
+											await invoke("okx_backfill_cancel", {
+												request: { userId, taskId: operation.operationId },
+											});
+											await Promise.all([
+												acquisitionQuery.refetch(),
+												foundationHistoryQuery.refetch(),
+											]);
+										} catch (cause) {
+											setError(getErrorMessage(cause));
+										}
+									}}
+									onRetry={(operation) => void retryOkxBackfill(operation.operationId)}
 								/>
 							</div>
-						) : (
-							<p className="text-sm text-muted-foreground">
-								{t("dataFoundation.emptyHistory")}
-							</p>
-						)}
-						<AcquisitionOperationHistory
-							loading={foundationHistoryQuery.isPending}
-							operations={foundationHistoryQuery.data ?? []}
-							onCancel={async (operation) => {
-								if (
-									!userId ||
-									operation.market !== "crypto" ||
-									operation.venue !== "okx"
-								)
-									return;
-								try {
-									await invoke("okx_backfill_cancel", {
-										request: { userId, taskId: operation.operationId },
-									});
-									await Promise.all([
-										acquisitionQuery.refetch(),
-										foundationHistoryQuery.refetch(),
-									]);
-								} catch (cause) {
-									setError(getErrorMessage(cause));
-								}
-							}}
-							onRetry={(operation) => void retryOkxBackfill(operation.operationId)}
-						/>
-					</div>
-				</CardContent>
-			</Card>
-			<Card className="order-3">
-				<CardHeader>
-					<CardTitle>{t("dataFoundation.contextTitle")}</CardTitle>
-					<CardDescription>{t("dataFoundation.contextDescription")}</CardDescription>
-				</CardHeader>
-				<CardContent>
-					{contextQuery.data ? (
-						<div className="grid gap-2 text-sm sm:grid-cols-3">
-							<ReadinessStat
-								label={t("dataFoundation.contextState")}
-								value={contextQuery.data.contextRevision}
-								loading={false}
-							/>
-							<ContextField
-								label={t("dataFoundation.contextMarket")}
-								value={`${contextQuery.data.market} · ${contextQuery.data.venue}`}
-							/>
-							<ContextField
-								label={t("dataFoundation.contextSnapshot")}
-								value={contextQuery.data.snapshotId}
-							/>
-						</div>
-					) : (
-						<p className="text-sm text-muted-foreground">
-							{t("dataFoundation.contextEmpty")}
-						</p>
-					)}
-				</CardContent>
-			</Card>
+						</CardContent>
+					</Card>
+				</TabsContent>
+				<TabsContent value="provenance" keepMounted className="min-w-0 space-y-4">
+					<Card>
+						<CardHeader>
+							<CardTitle>{t("dataFoundation.sourceProvenanceTitle")}</CardTitle>
+							<CardDescription>
+								{t("dataFoundation.sourceProvenanceDescription")}
+							</CardDescription>
+						</CardHeader>
+						<CardContent>
+							{pipelineQuery.isPending ? (
+								<p className="text-sm text-muted-foreground" role="status">
+									{t("dataFoundation.loadingHistory")}
+								</p>
+							) : (
+								<SourceProvenancePanel
+									datasets={pipelineQuery.data ?? []}
+									operations={acquisitionQuery.data ?? []}
+									t={t}
+								/>
+							)}
+						</CardContent>
+					</Card>
+				</TabsContent>
+				<TabsContent value="context" keepMounted className="min-w-0 space-y-4">
+					<Card>
+						<CardHeader>
+							<StepTitle step={3}>{t("dataFoundation.selectContextTitle")}</StepTitle>
+							<CardDescription>
+								{t("dataFoundation.selectContextDescription")}
+							</CardDescription>
+						</CardHeader>
+						<CardContent className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+							<label className="grid gap-1 text-sm">
+								<span>{t("dataFoundation.contextMarket")}</span>
+								<select
+									className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+									value={contextMarket}
+									onChange={(event) => {
+										const next = event.target.value as FoundationMarket["id"];
+										setContextMarket(next);
+										setContextVenue(MARKET_VENUES[next][0]);
+									}}
+								>
+									{markets.map((market) => (
+										<option key={market.id} value={market.id}>
+											{t(market.titleKey)}
+										</option>
+									))}
+								</select>
+							</label>
+							<label className="grid gap-1 text-sm">
+								<span>{t("dataFoundation.contextVenue")}</span>
+								<select
+									className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+									value={contextVenue}
+									onChange={(event) => setContextVenue(event.target.value)}
+								>
+									{MARKET_VENUES[contextMarket].map((venue) => (
+										<option key={venue}>{venue}</option>
+									))}
+								</select>
+							</label>
+							<label className="grid gap-1 text-sm">
+								<span>{t("dataFoundation.contextSnapshot")}</span>
+								<select
+									className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+									value={snapshotId}
+									onChange={(event) => setSnapshotId(event.target.value)}
+								>
+									<option value="">{t("dataFoundation.selectSnapshot")}</option>
+									{snapshotsQuery.data?.map((snapshot) => (
+										<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
+											{snapshot.publicationEvidenceName ?? "—"} · {snapshot.code} ·{" "}
+											{snapshot.interval} · {snapshot.barCount}
+										</option>
+									))}
+								</select>
+							</label>
+							<label className="grid gap-1 text-sm">
+								<span>{t("dataFoundation.contextUniverse")}</span>
+								<select
+									className="h-9 w-full min-w-0 rounded-md border bg-background px-3"
+									value={universeId}
+									onChange={(event) => setUniverseId(event.target.value)}
+								>
+									<option value="">{t("dataFoundation.selectUniverse")}</option>
+									{universeQuery.data?.map((universe) => (
+										<option key={universe.snapshotId} value={universe.snapshotId}>
+											{universe.snapshotId} · {universe.contentSha256.slice(0, 8)}
+										</option>
+									))}
+								</select>
+							</label>
+							<button
+								type="button"
+								className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50 md:col-span-2 lg:col-span-2 lg:justify-self-start"
+								disabled={!snapshotId || snapshotsQuery.isPending}
+								onClick={() => void establishContext()}
+							>
+								{t("dataFoundation.establishContext")}
+							</button>
+						</CardContent>
+					</Card>
+					<Card>
+						<CardHeader>
+							<CardTitle>{t("dataFoundation.contextTitle")}</CardTitle>
+							<CardDescription>
+								{t("dataFoundation.contextDescription")}
+							</CardDescription>
+						</CardHeader>
+						<CardContent>
+							{contextQuery.data ? (
+								<div className="grid gap-2 text-sm sm:grid-cols-3">
+									<ReadinessStat
+										label={t("dataFoundation.contextState")}
+										value={contextQuery.data.contextRevision}
+										loading={false}
+									/>
+									<ContextField
+										label={t("dataFoundation.contextMarket")}
+										value={`${contextQuery.data.market} · ${contextQuery.data.venue}`}
+									/>
+									<ContextField
+										label={t("dataFoundation.contextSnapshot")}
+										value={contextQuery.data.snapshotId}
+									/>
+								</div>
+							) : (
+								<p className="text-sm text-muted-foreground">
+									{t("dataFoundation.contextEmpty")}
+								</p>
+							)}
+						</CardContent>
+					</Card>
+				</TabsContent>
+			</Tabs>
 		</div>
 	);
 }
@@ -2165,7 +2277,10 @@ function AcquisitionOperationHistory({
 							<div>
 								<strong>{operation.market}</strong>
 								<span className="ml-2 text-muted-foreground">{operation.venue}</span>
-								<p className="text-xs text-muted-foreground">{operation.operationId}</p>
+								<IdentifierDisplay
+									id={operation.operationId}
+									label={`${t("identifiers.operation")} · ${formatTimestamp(operation.startedAtMs)}`}
+								/>
 								{operation.error ? (
 									<p className="text-destructive">{operation.error}</p>
 								) : null}
@@ -2210,11 +2325,11 @@ function AcquisitionOperationHistory({
 	);
 }
 
-function ContextField({ label, value }: { label: string; value: string }) {
+function ContextField({ label, value }: { label: string; value: ReactNode }) {
 	return (
 		<div className="rounded-md border p-3">
 			<div className="text-xs text-muted-foreground">{label}</div>
-			<code className="block break-all text-sm">{value}</code>
+			<div className="break-all text-sm">{value}</div>
 		</div>
 	);
 }

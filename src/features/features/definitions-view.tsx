@@ -1,3 +1,5 @@
+import { identifierLabel } from "@/lib/identifier-display";
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -169,7 +171,7 @@ export function DefinitionsView({
 			setFeedback({
 				kind: "ok",
 				text: t("features.definitions.published", {
-					hash: published.definitionHash.slice(0, 12),
+					hash: published.definitionHash,
 				}),
 			});
 			setEditor(null);
@@ -248,11 +250,18 @@ export function DefinitionsView({
 									{definitions.map((definition) => (
 										<tr key={definition.definitionHash} className="border-b">
 											<td className="py-2 pr-4">
-												{definition.name || definition.definitionId}
+												<IdentifierDisplay
+													id={definition.definitionId}
+													label={t("identifiers.definition")}
+													name={definition.name}
+												/>
 											</td>
 											<td className="py-2 pr-4">r{definition.revision}</td>
 											<td className="py-2 pr-4 font-mono text-xs">
-												{definition.definitionHash.slice(0, 16)}…
+												<IdentifierDisplay
+													id={definition.definitionHash}
+													label={t("identifiers.definitionHash")}
+												/>
 											</td>
 											<td className="py-2 pr-4 whitespace-nowrap">
 												{formatUtc(definition.createdAtMs)} UTC
@@ -297,7 +306,11 @@ export function DefinitionsView({
 						<CardTitle className="text-base">
 							{t("features.definitions.editor.draftHint")} ·{" "}
 							<span className="font-mono text-sm">
-								{editor.draft.definitionId} · r{editor.draft.revision}
+								{identifierLabel(
+									editor.draft.definitionId,
+									t("identifiers.definition"),
+								)}{" "}
+								· r{editor.draft.revision}
 							</span>
 						</CardTitle>
 					</CardHeader>
@@ -433,7 +446,7 @@ export function DefinitionsView({
 									{snapshots.map((snapshot) => (
 										<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
 											{snapshot.code} {snapshot.interval} ·{" "}
-											{snapshot.snapshotId.slice(0, 8)}
+											{identifierLabel(snapshot.snapshotId, t("identifiers.snapshot"))}
 										</option>
 									))}
 								</select>
@@ -455,7 +468,7 @@ export function DefinitionsView({
 									{universes.map((universe) => (
 										<option key={universe.snapshotId} value={universe.snapshotId}>
 											{universe.venue.id} {universe.interval} ·{" "}
-											{universe.snapshotId.replace(/^universe-/, "").slice(0, 8)}
+											{identifierLabel(universe.snapshotId, t("identifiers.universe"))}
 										</option>
 									))}
 								</select>
@@ -554,7 +567,10 @@ export function DefinitionsView({
 												}
 											/>
 											<span className="font-mono">
-												{artifact.artifactId.slice(0, 12)}…
+												<IdentifierDisplay
+													id={artifact.artifactId}
+													label={t("identifiers.artifact")}
+												/>
 											</span>
 										</label>
 									))}

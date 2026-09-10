@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { invoke } from "@tauri-apps/api/core";
 import { useQuery } from "@tanstack/react-query";
@@ -70,7 +71,10 @@ export function ResearchContextEvidence({
 					{query.data.featureDataset.featurePlanHash}
 				</span>
 			)}
-			<span className="break-all">{query.data.operationId}</span>
+			<IdentifierDisplay
+				id={query.data.operationId}
+				label={t("identifiers.operation")}
+			/>
 		</div>
 	);
 }

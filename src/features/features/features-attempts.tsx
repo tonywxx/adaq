@@ -1,3 +1,5 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
+import { identifierLabel } from "@/lib/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -263,7 +265,10 @@ export function FittingView({
 								<li key={attempt.attemptId} className="rounded-md border p-3 text-sm">
 									<div className="flex flex-wrap items-center gap-2">
 										<span className="font-mono text-xs">
-											{attempt.attemptId.slice(0, 16)}…
+											<IdentifierDisplay
+												id={attempt.attemptId}
+												label={t("identifiers.attempt")}
+											/>
 										</span>
 										<AttemptStatusBadge status={attempt.status} />
 										<span className="text-xs text-muted-foreground">
@@ -320,25 +325,23 @@ export function FittingView({
 											<dt className="inline font-medium">
 												{t("features.fitting.protocolHash")}:{" "}
 											</dt>
-											<dd className="inline font-mono">
-												{attempt.protocolHash.slice(0, 16)}…
+											<dd className="inline break-all font-mono">
+												{attempt.protocolHash}
 											</dd>
 										</div>
 										<div>
 											<dt className="inline font-medium">
 												{t("features.fitting.planHash")}:{" "}
 											</dt>
-											<dd className="inline font-mono">
-												{attempt.planHash.slice(0, 16)}…
-											</dd>
+											<dd className="inline break-all font-mono">{attempt.planHash}</dd>
 										</div>
 										{attempt.sourceAttemptId && (
 											<div>
 												<dt className="inline font-medium">
 													{t("features.fitting.sourceAttempt")}:{" "}
 												</dt>
-												<dd className="inline font-mono">
-													{attempt.sourceAttemptId.slice(0, 16)}…
+												<dd className="inline break-all font-mono">
+													{attempt.sourceAttemptId}
 												</dd>
 											</div>
 										)}
@@ -347,9 +350,7 @@ export function FittingView({
 												<dt className="inline font-medium">
 													{t("features.fitting.artifact")}:{" "}
 												</dt>
-												<dd className="inline font-mono">
-													{attempt.artifactId.slice(0, 16)}…
-												</dd>
+												<dd className="inline break-all font-mono">{attempt.artifactId}</dd>
 											</div>
 										)}
 									</dl>
@@ -724,7 +725,10 @@ export function MaterializationView({
 								<li key={attempt.attemptId} className="rounded-md border p-3 text-sm">
 									<div className="flex flex-wrap items-center gap-2">
 										<span className="font-mono text-xs">
-											{attempt.attemptId.slice(0, 16)}…
+											<IdentifierDisplay
+												id={attempt.attemptId}
+												label={t("identifiers.attempt")}
+											/>
 										</span>
 										<AttemptStatusBadge status={attempt.status} />
 										<span className="text-xs text-muted-foreground">
@@ -781,17 +785,15 @@ export function MaterializationView({
 											<dt className="inline font-medium">
 												{t("features.materialization.requestHash")}:{" "}
 											</dt>
-											<dd className="inline font-mono">
-												{attempt.requestHash.slice(0, 16)}…
-											</dd>
+											<dd className="inline break-all font-mono">{attempt.requestHash}</dd>
 										</div>
 										{attempt.sourceAttemptId && (
 											<div>
 												<dt className="inline font-medium">
 													{t("features.materialization.sourceAttempt")}:{" "}
 												</dt>
-												<dd className="inline font-mono">
-													{attempt.sourceAttemptId.slice(0, 16)}…
+												<dd className="inline break-all font-mono">
+													{attempt.sourceAttemptId}
 												</dd>
 											</div>
 										)}
@@ -800,9 +802,7 @@ export function MaterializationView({
 												<dt className="inline font-medium">
 													{t("features.materialization.dataset")}:{" "}
 												</dt>
-												<dd className="inline font-mono">
-													{attempt.datasetId.slice(0, 16)}…
-												</dd>
+												<dd className="inline break-all font-mono">{attempt.datasetId}</dd>
 											</div>
 										)}
 									</dl>
@@ -958,7 +958,12 @@ function EvidenceSelectors({
 					<option value="">{t("features.form.none")}</option>
 					{(options.definitions ?? []).map((definition) => (
 						<option key={definition.definitionHash} value={definition.definitionHash}>
-							{definition.name || definition.definitionId} · r{definition.revision}
+							{identifierLabel(
+								definition.definitionHash,
+								t("identifiers.definition"),
+								definition.name,
+							)}{" "}
+							· r{definition.revision}
 						</option>
 					))}
 				</select>
@@ -1012,7 +1017,8 @@ function EvidenceSelectors({
 					<option value="">{t("features.form.none")}</option>
 					{options.snapshots.map((snapshot) => (
 						<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
-							{snapshot.code} {snapshot.interval} · {snapshot.snapshotId.slice(0, 8)}
+							{identifierLabel(snapshot.snapshotId, t("identifiers.snapshot"))} ·{" "}
+							{snapshot.code} {snapshot.interval}
 						</option>
 					))}
 				</select>
@@ -1029,7 +1035,7 @@ function EvidenceSelectors({
 					{options.universes.map((universe) => (
 						<option key={universe.snapshotId} value={universe.snapshotId}>
 							{universe.venue.id} {universe.interval} ·{" "}
-							{universe.snapshotId.replace(/^universe-/, "").slice(0, 8)}
+							{identifierLabel(universe.snapshotId, t("identifiers.universe"))}
 						</option>
 					))}
 				</select>

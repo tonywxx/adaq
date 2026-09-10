@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -120,7 +121,13 @@ export function DatasetsView({
 									{datasets.map((dataset) => (
 										<tr key={dataset.datasetId} className="border-b">
 											<td className="py-2 pr-4 font-mono text-xs">
-												{dataset.datasetId.slice(0, 16)}…
+												<IdentifierDisplay
+													id={dataset.datasetId}
+													label={t("identifiers.featureDataset")}
+													name={dataset.manifest.outputs
+														.map((output) => output.outputName)
+														.join(" · ")}
+												/>
 											</td>
 											<td className="py-2 pr-4">
 												{formatNumber(dataset.manifest.rowCount)}
@@ -250,7 +257,15 @@ function DatasetInspector({
 	return (
 		<Card>
 			<CardHeader className="flex-row items-center justify-between space-y-0">
-				<CardTitle className="font-mono text-base">{dataset.datasetId}</CardTitle>
+				<CardTitle className="text-base">
+					<IdentifierDisplay
+						id={dataset.datasetId}
+						label={t("identifiers.featureDataset")}
+						name={dataset.manifest.outputs
+							.map((output) => output.outputName)
+							.join(" · ")}
+					/>
+				</CardTitle>
 				<Button
 					type="button"
 					variant="ghost"

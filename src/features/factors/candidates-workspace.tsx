@@ -1,3 +1,5 @@
+import { identifierLabel } from "@/lib/identifier-display";
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LockKeyholeIcon, SigmaIcon } from "lucide-react";
@@ -11,11 +13,7 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import type { FactorAdapter } from "./factor-adapter";
-import {
-	parseFactorJson,
-	parseFactorJsonArray,
-	shortFactorHash,
-} from "./factor-data";
+import { parseFactorJson, parseFactorJsonArray } from "./factor-data";
 import { AttemptsPanel } from "./factor-attempts-panel";
 import { Detail, Field, TextField } from "./factor-form-fields";
 import {
@@ -29,7 +27,6 @@ import {
 	lines,
 	newUuid,
 	textAt,
-	valueAt,
 } from "./factor-workspace-support";
 import { useFactorPage } from "./factor-workspace-data";
 import type { ResearchEvidenceProjection } from "@/features/research/research-context-preflight";
@@ -415,7 +412,11 @@ export function CandidatesWorkspace({
 											>
 												<td className="py-3 pr-4">
 													<div className="font-mono text-xs">
-														{shortFactorHash(valueAt(item.candidate, "candidateHash"))}
+														<IdentifierDisplay
+															id={textAt(item.candidate, "candidateHash")}
+															label={t("identifiers.candidate")}
+															name={item.presentation.name}
+														/>
 													</div>
 													<div className="text-xs text-muted-foreground">
 														r{textAt(item.candidate, "revision")}
@@ -429,11 +430,17 @@ export function CandidatesWorkspace({
 													{item.predecessor ? (
 														<>
 															<div className="font-mono text-xs">
-																{item.predecessor.featureDataset.datasetId}
+																<IdentifierDisplay
+																	id={item.predecessor.featureDataset.datasetId}
+																	label={t("identifiers.featureDataset")}
+																/>
 															</div>
 															<div className="font-mono text-xs text-muted-foreground">
 																r{item.predecessor.contextRevision} ·{" "}
-																{shortFactorHash(item.predecessor.contextHash)}
+																{identifierLabel(
+																	item.predecessor.contextHash,
+																	t("identifiers.researchContext"),
+																)}
 															</div>
 														</>
 													) : (

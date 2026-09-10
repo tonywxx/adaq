@@ -1,3 +1,4 @@
+import { identifierLabel } from "@/lib/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -262,7 +263,9 @@ export function ResearchContextPreflight({
 								</option>
 								{featureDatasetsQuery.data?.map((dataset) => (
 									<option key={dataset.datasetId} value={dataset.datasetId}>
-										{dataset.datasetId} · {dataset.manifest.request.featurePlanHash}
+										{identifierLabel(dataset.datasetId, t("identifiers.featureDataset"))}{" "}
+										· {t("identifiers.featurePlan")}:{" "}
+										{dataset.manifest.request.featurePlanHash}
 									</option>
 								))}
 							</select>
