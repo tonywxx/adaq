@@ -1473,6 +1473,7 @@ const english = {
 			"Author Feature Definitions, run Fitting and Materialization Attempts, and inspect immutable Datasets.",
 		loading: "Loading…",
 		retryLoad: "Retry loading",
+		tabsLabel: "Feature Engineering sections",
 		tabs: {
 			definitions: "Definitions",
 			fitting: "Fitting Attempts",
@@ -4622,6 +4623,7 @@ const simplifiedChinese = {
 		description: "编写特征定义，运行拟合与物化尝试，并检查不可变数据集。",
 		loading: "加载中…",
 		retryLoad: "重试加载",
+		tabsLabel: "特征工程分区",
 		tabs: {
 			definitions: "定义",
 			fitting: "拟合尝试",

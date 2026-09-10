@@ -55,7 +55,11 @@ test("slow workspace reads expose loading feedback at their data boundaries", ()
 
 	// The /features shell paints immediately; session wait shows bounded
 	// aria-busy feedback, and each owning view manages its own loading state.
-	expect(features).toMatch(/aria-busy="true"/);
+	expect(features).toMatch(
+		/<FeaturesLoading label=\{t\("features.loading"\)\} \/>/,
+	);
+	const featuresShared = read("./features/features/features-shared.tsx");
+	expect(featuresShared).toMatch(/aria-busy="true"/);
 	expect(features).toMatch(
 		/<DefinitionsView userId=\{userId\} adapter=\{adapter\} \/>/,
 	);

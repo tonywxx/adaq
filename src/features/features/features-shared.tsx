@@ -35,7 +35,8 @@ export function FeaturesLoading({ label }: { label: string }) {
 	return (
 		<p
 			aria-busy="true"
-			className="py-8 text-center text-sm text-muted-foreground"
+			role="status"
+			className="py-8 text-sm text-muted-foreground"
 		>
 			{label}
 		</p>
@@ -71,9 +72,7 @@ export function FeaturesError({
 }
 
 export function FeaturesEmpty({ message }: { message: string }) {
-	return (
-		<p className="py-8 text-center text-sm text-muted-foreground">{message}</p>
-	);
+	return <p className="py-8 text-sm text-muted-foreground">{message}</p>;
 }
 
 export function formatUtc(ms: number): string {
