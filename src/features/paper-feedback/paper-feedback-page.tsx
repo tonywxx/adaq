@@ -398,7 +398,11 @@ export function PaperFeedbackPage() {
 							<CardContent className="grid gap-2 text-sm">
 								<div className="grid gap-1 text-muted-foreground sm:grid-cols-2">
 									<span>
-										{t("paperFeedback.attempt")}: {item.input.attemptId}
+										{t("paperFeedback.attempt")}:{" "}
+										<IdentifierDisplay
+											id={item.input.attemptId}
+											label={t("identifiers.botAttempt")}
+										/>
 									</span>
 									<span>
 										{t("paperFeedback.created")}: {formatDateTime(item.createdAtMs)}
@@ -473,15 +477,15 @@ export function PaperFeedbackPage() {
 										<StateBadge state={item.evidenceState} t={t} />
 									</span>
 									<span className="text-xs text-muted-foreground">
-										<IdentifierDisplay
-											id={item.reportId}
-											label={t("identifiers.feedbackReport")}
-										/>{" "}
-										·{" "}
-										{identifierLabel(
-											item.input.snapshotId,
-											t("identifiers.feedbackSnapshot"),
-										)}
+									<IdentifierDisplay
+										id={item.reportId}
+										label={t("identifiers.feedbackReport")}
+									/>{" "}
+									·{" "}
+									<IdentifierDisplay
+										id={item.input.snapshotId}
+										label={t("identifiers.feedbackSnapshot")}
+									/>
 									</span>
 									{item.input.metrics.directionalConclusion === false ? (
 										<span className="text-xs text-muted-foreground">

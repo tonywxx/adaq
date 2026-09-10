@@ -841,7 +841,10 @@ export function StrategyLabPage() {
 													{t("strategyLab.revisionHash")}
 												</p>
 												<code className="break-all text-xs">
-													{item.revision.revisionHash}
+													<IdentifierDisplay
+														id={item.revision.revisionHash}
+														label={t("identifiers.revision")}
+													/>
 												</code>
 												<details className="mt-3 rounded-md border p-2">
 													<summary className="cursor-pointer font-medium">
@@ -860,10 +863,22 @@ export function StrategyLabPage() {
 														</p>
 														<p>
 															{t("strategyLab.semanticContext")}:{" "}
-															{item.revision.semanticContext.featurePlanHash} ·{" "}
-															{item.revision.semanticContext.researchContextHash} ·{" "}
-															{item.revision.semanticContext.snapshotId} ·{" "}
-															{item.revision.semanticContext.universeId}
+															<IdentifierDisplay
+																id={item.revision.semanticContext.featurePlanHash}
+																label={t("identifiers.featurePlan")}
+															/> ·{" "}
+															<IdentifierDisplay
+																id={item.revision.semanticContext.researchContextHash}
+																label={t("identifiers.researchContext")}
+															/> ·{" "}
+															<IdentifierDisplay
+																id={item.revision.semanticContext.snapshotId}
+																label={t("identifiers.snapshot")}
+															/> ·{" "}
+															<IdentifierDisplay
+																id={item.revision.semanticContext.universeId}
+																label={t("identifiers.universe")}
+															/>
 														</p>
 														<pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2">
 															{JSON.stringify(item.revision.definition, null, 2)}
@@ -1283,21 +1298,21 @@ function QualificationPanel({
 					<div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-sm">
 						<p className="font-medium">{t("strategyLab.qualification.qualified")}</p>
 						<code className="break-all text-xs">
-							{identifierLabel(
-								qualification.qualificationId,
-								t("identifiers.qualification"),
-							)}
+							<IdentifierDisplay
+								id={qualification.qualificationId}
+								label={t("identifiers.qualification")}
+							/>
 						</code>
 						<p className="mt-2 text-muted-foreground">
-							{identifierLabel(
-								qualification.backtestRunId,
-								t("identifiers.backtestRun"),
-							)}{" "}
+							<IdentifierDisplay
+								id={qualification.backtestRunId}
+								label={t("identifiers.backtestRun")}
+							/>{" "}
 							·{" "}
-							{identifierLabel(
-								qualification.validationReportId,
-								t("identifiers.validationReport"),
-							)}
+							<IdentifierDisplay
+								id={qualification.validationReportId}
+								label={t("identifiers.validationReport")}
+							/>
 						</p>
 						<details className="mt-3 rounded-md bg-muted/40 p-3">
 							<summary className="cursor-pointer font-medium">

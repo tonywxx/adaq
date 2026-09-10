@@ -1314,7 +1314,9 @@ function DatasetInspector({
 			<CardHeader className="flex-row items-start justify-between space-y-0">
 				<div>
 					<CardTitle>{t("factors.datasets.inspector")}</CardTitle>
-					<CardDescription className="font-mono">{datasetId}</CardDescription>
+					<CardDescription className="font-mono">
+						<IdentifierDisplay id={datasetId} label={t("identifiers.factorDataset")} />
+					</CardDescription>
 				</div>
 				<Button type="button" variant="outline" size="sm" onClick={onClose}>
 					{t("factors.datasets.close")}

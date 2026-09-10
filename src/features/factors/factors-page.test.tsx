@@ -249,7 +249,9 @@ test("keeps failed Attempt identity, recovery code, and retry feedback accessibl
 		i18n.t("factors.attempts.recoveredDiagnostic"),
 	);
 	expect(mounted.container.textContent).toContain("research-interrupted");
-	expect(mounted.container.textContent).toContain("source-123456789…");
+	expect(mounted.container.textContent).toContain(
+		abbreviateIdentifier("source-1234567890"),
+	);
 	expect(mounted.container.querySelector('[role="alert"]')).not.toBeNull();
 	// Identifiers render as copy controls, so scope the query to the retry action.
 	expect(

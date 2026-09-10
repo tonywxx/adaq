@@ -1,4 +1,3 @@
-import { identifierLabel } from "@/lib/identifier-display";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -436,11 +435,11 @@ export function CandidatesWorkspace({
 																/>
 															</div>
 															<div className="font-mono text-xs text-muted-foreground">
-																r{item.predecessor.contextRevision} ·{" "}
-																{identifierLabel(
-																	item.predecessor.contextHash,
-																	t("identifiers.researchContext"),
-																)}
+															r{item.predecessor.contextRevision} ·{" "}
+															<IdentifierDisplay
+																id={item.predecessor.contextHash}
+																label={t("identifiers.researchContext")}
+															/>
 															</div>
 														</>
 													) : (

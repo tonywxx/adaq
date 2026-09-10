@@ -9,7 +9,6 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { isTauriRuntime } from "@/lib/http";
-import { identifierLabel } from "@/lib/identifier-display";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -279,7 +278,7 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 						</p>
 						<p>
 							{t("pythonResearch.factorLab.environment")}{" "}
-							{environment.environmentSha256}
+							<IdentifierDisplay id={environment.environmentSha256} />
 						</p>
 					</div>
 				) : null}
@@ -329,10 +328,12 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 							})}
 						</div>
 						<p className="break-all font-mono text-xs text-muted-foreground">
-							{t("pythonResearch.factorLab.fixture")} {run.fixtureSha256}
+							{t("pythonResearch.factorLab.fixture")}{" "}
+							<IdentifierDisplay id={run.fixtureSha256} />
 						</p>
 						<p className="break-all font-mono text-xs text-muted-foreground">
-							{t("pythonResearch.factorLab.attempt")} {run.attemptId} ·{" "}
+							{t("pythonResearch.factorLab.attempt")}{" "}
+							<IdentifierDisplay id={run.attemptId} /> ·{" "}
 							{t("pythonResearch.factorLab.family")}{" "}
 							{run.familyId ?? t("pythonResearch.factorLab.pending")}
 						</p>
@@ -340,12 +341,14 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 							<div className="grid gap-1 break-all font-mono text-xs text-muted-foreground">
 								{run.projectRevisionSha256 ? (
 									<p>
-										{t("pythonResearch.factorLab.revision")} {run.projectRevisionSha256}
+										{t("pythonResearch.factorLab.revision")}{" "}
+										<IdentifierDisplay id={run.projectRevisionSha256} />
 									</p>
 								) : null}
 								{run.environmentSha256 ? (
 									<p>
-										{t("pythonResearch.factorLab.environment")} {run.environmentSha256}
+										{t("pythonResearch.factorLab.environment")}{" "}
+										<IdentifierDisplay id={run.environmentSha256} />
 									</p>
 								) : null}
 								{run.inputBindings ? (
@@ -367,7 +370,8 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 								) : null}
 								{run.sdkArtifactSha256 ? (
 									<p>
-										{t("pythonResearch.factorLab.sdk")} {run.sdkArtifactSha256}
+										{t("pythonResearch.factorLab.sdk")}{" "}
+										<IdentifierDisplay id={run.sdkArtifactSha256} />
 									</p>
 								) : null}
 								{run.resourcePolicy ? (
@@ -378,7 +382,8 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 								) : null}
 								{run.snapshotId ? (
 									<p>
-										{t("pythonResearch.factorLab.snapshot")} {run.snapshotId}
+										{t("pythonResearch.factorLab.snapshot")}{" "}
+										<IdentifierDisplay id={run.snapshotId} />
 									</p>
 								) : null}
 								{run.snapshotBindings ? (
@@ -390,12 +395,13 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 								{run.pointInTimeUniverseId ? (
 									<p>
 										{t("pythonResearch.factorLab.pointInTimeUniverse")}{" "}
-										{run.pointInTimeUniverseId}
+										<IdentifierDisplay id={run.pointInTimeUniverseId} />
 									</p>
 								) : null}
 								{run.featureDatasetId ? (
 									<p>
-										{t("pythonResearch.factorLab.featureDataset")} {run.featureDatasetId}
+										{t("pythonResearch.factorLab.featureDataset")}{" "}
+										<IdentifierDisplay id={run.featureDatasetId} />
 									</p>
 								) : null}
 								{run.featureDatasetBindings ? (
@@ -407,12 +413,13 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 								{run.featureEvidenceSha256 ? (
 									<p>
 										{t("pythonResearch.factorLab.featureEvidence")}{" "}
-										{run.featureEvidenceSha256}
+										<IdentifierDisplay id={run.featureEvidenceSha256} />
 									</p>
 								) : null}
 								{run.featurePlanHash ? (
 									<p>
-										{t("pythonResearch.factorLab.featurePlan")} {run.featurePlanHash}
+										{t("pythonResearch.factorLab.featurePlan")}{" "}
+										<IdentifierDisplay id={run.featurePlanHash} />
 									</p>
 								) : null}
 								{run.engineIdentity ? (
@@ -423,7 +430,7 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 								{run.repeatabilityReportSha256 ? (
 									<p>
 										{t("pythonResearch.factorLab.repeatabilityReport")}{" "}
-										{run.repeatabilityReportSha256} (
+										<IdentifierDisplay id={run.repeatabilityReportSha256} /> (
 										{run.repeatabilityVerified
 											? t("pythonResearch.factorLab.verified")
 											: t("pythonResearch.factorLab.unverified")}
@@ -448,22 +455,21 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 															id={report.firstAttemptId}
 															label={t("identifiers.attempt")}
 														/>{" "}
-														/ {report.replayAttemptId};{" "}
-														{identifierLabel(
-															report.processContractSha256,
-															t("identifiers.protocol"),
-														)}
-														;{" "}
-														{identifierLabel(
-															report.firstInputSha256,
-															t("identifiers.fingerprint"),
-														)}{" "}
-														/ {report.replayInputSha256};{" "}
-														{identifierLabel(
-															report.firstProcessSha256,
-															t("identifiers.fingerprint"),
-														)}{" "}
-														/ {report.replayProcessSha256}
+													/ <IdentifierDisplay id={report.replayAttemptId} />;{" "}
+													<IdentifierDisplay
+														id={report.processContractSha256}
+														label={t("identifiers.protocol")}
+													/>{" "}
+													/ <IdentifierDisplay id={report.replayInputSha256} />;{" "}
+													<IdentifierDisplay
+														id={report.firstInputSha256}
+														label={t("identifiers.fingerprint")}
+													/>{" "}
+													/ <IdentifierDisplay id={report.replayProcessSha256} />;{" "}
+													<IdentifierDisplay
+														id={report.firstProcessSha256}
+														label={t("identifiers.fingerprint")}
+													/>
 													</p>
 												),
 											)}
@@ -474,7 +480,8 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 						) : null}
 						{run.candidateHash ? (
 							<p className="break-all font-mono text-xs text-muted-foreground">
-								{t("pythonResearch.factorLab.candidate")} {run.candidateHash}
+								{t("pythonResearch.factorLab.candidate")}{" "}
+								<IdentifierDisplay id={run.candidateHash} />
 							</p>
 						) : null}
 						{run.datasetIds.length > 0 ? (
@@ -491,23 +498,25 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 						{run.promotionPolicyHash ? (
 							<p className="break-all font-mono text-xs text-muted-foreground">
 								{t("pythonResearch.factorLab.promotionPolicy")}{" "}
-								{run.promotionPolicyHash}
+								<IdentifierDisplay id={run.promotionPolicyHash} />
 							</p>
 						) : null}
 						{run.selectedTrialId ? (
 							<p className="break-all font-mono text-xs text-muted-foreground">
-								{t("pythonResearch.factorLab.selectedTrial")} {run.selectedTrialId}
+								{t("pythonResearch.factorLab.selectedTrial")}{" "}
+								<IdentifierDisplay id={run.selectedTrialId} />
 							</p>
 						) : null}
 						{run.selectionHash ? (
 							<p className="break-all font-mono text-xs text-muted-foreground">
-								{t("pythonResearch.factorLab.selectionDecision")} {run.selectionHash}
+								{t("pythonResearch.factorLab.selectionDecision")}{" "}
+								<IdentifierDisplay id={run.selectionHash} />
 							</p>
 						) : null}
 						{run.promotionProtocolHash ? (
 							<p className="break-all font-mono text-xs text-muted-foreground">
 								{t("pythonResearch.factorLab.promotionProtocol")}{" "}
-								{run.promotionProtocolHash}
+								<IdentifierDisplay id={run.promotionProtocolHash} />
 							</p>
 						) : null}
 						<details>
@@ -603,7 +612,7 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 						{run.promotionDecisionHash ? (
 							<p className="break-all font-mono text-xs text-muted-foreground">
 								{t("pythonResearch.factorLab.promotionRecorded")}{" "}
-								{run.promotionDecisionHash}
+								<IdentifierDisplay id={run.promotionDecisionHash} />
 							</p>
 						) : null}
 					</>

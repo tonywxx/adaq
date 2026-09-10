@@ -16,7 +16,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatDateTime, formatDecimal, formatNumber } from "@/lib/i18n";
-import { identifierLabel } from "@/lib/identifier-display";
 
 export type Health = {
 	entityId: string;
@@ -849,10 +848,10 @@ export function SystemDashboard({
 							<div className="space-y-2 text-sm">
 								<div className="flex flex-wrap items-center justify-between gap-2">
 									<span className="font-medium">
-										{identifierLabel(
-											projection.paperAccount.accountId,
-											t("identifiers.account"),
-										)}
+										<IdentifierDisplay
+											id={projection.paperAccount.accountId}
+											label={t("identifiers.account")}
+										/>
 									</span>
 									<Badge variant="outline">
 										{stateLabel("paperStates", projection.paperAccount.reconciliation)}

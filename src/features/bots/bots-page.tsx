@@ -414,17 +414,31 @@ export function BotsPage() {
 								<div className="grid gap-1 text-muted-foreground">
 									<div>
 										{t("bots.qualification")}:{" "}
-										<span className="text-foreground">{bot.bundle.qualificationId}</span>
+										<span className="text-foreground">
+											<IdentifierDisplay
+												id={bot.bundle.qualificationId}
+												label={t("identifiers.qualification")}
+											/>
+										</span>
 									</div>
 									<div>
 										{t("bots.candidate")}:{" "}
 										<span className="text-foreground">
-											{bot.bundle.candidateId} r{bot.bundle.candidateRevision}
+											<IdentifierDisplay
+												id={bot.bundle.candidateId}
+												label={t("identifiers.candidate")}
+											/>{" "}
+											r{bot.bundle.candidateRevision}
 										</span>
 									</div>
 									<div>
 										{t("bots.account")}:{" "}
-										<span className="text-foreground">{bot.bundle.accountId}</span>
+										<span className="text-foreground">
+											<IdentifierDisplay
+												id={bot.bundle.accountId}
+												label={t("identifiers.account")}
+											/>
+										</span>
 									</div>
 									<div>
 										{t("bots.attempt")}:{" "}

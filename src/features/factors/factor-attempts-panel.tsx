@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/card";
 import { ResearchContextEvidence } from "@/features/research/research-context-evidence";
 import { formatDateTime, formatNumber } from "@/lib/i18n";
-import { isTerminalFactorAttempt, shortFactorHash } from "./factor-data";
+import { isTerminalFactorAttempt } from "./factor-data";
 import type { FactorAdapter } from "./factor-adapter";
 import type { FactorAttemptView } from "./factor-types";
 import { useFactorPage } from "./factor-workspace-data";
@@ -206,17 +206,17 @@ export function AttemptsPanel({
 											<dt className="inline font-medium">
 												{t("factors.attempts.requestHash")}:{" "}
 											</dt>
-											<dd className="inline font-mono" title={attempt.requestHash}>
-												{shortFactorHash(attempt.requestHash, 16)}
-											</dd>
+										<dd className="inline font-mono">
+											<IdentifierDisplay id={attempt.requestHash} />
+										</dd>
 										</div>
 										{attempt.sourceAttemptId ? (
 											<div>
 												<dt className="inline font-medium">
 													{t("factors.attempts.sourceAttempt")}:{" "}
 												</dt>
-												<dd className="inline font-mono" title={attempt.sourceAttemptId}>
-													{shortFactorHash(attempt.sourceAttemptId, 16)}
+												<dd className="inline font-mono">
+													<IdentifierDisplay id={attempt.sourceAttemptId} />
 												</dd>
 											</div>
 										) : null}
@@ -225,8 +225,8 @@ export function AttemptsPanel({
 												<dt className="inline font-medium">
 													{t("factors.attempts.result")}:{" "}
 												</dt>
-												<dd className="inline font-mono" title={attempt.resultId}>
-													{shortFactorHash(attempt.resultId, 16)}
+												<dd className="inline font-mono">
+													<IdentifierDisplay id={attempt.resultId} />
 												</dd>
 											</div>
 										) : null}

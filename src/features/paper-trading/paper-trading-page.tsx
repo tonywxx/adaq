@@ -8,6 +8,7 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { formatDateTime, formatDecimal } from "@/lib/i18n";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -199,7 +200,12 @@ export function PaperTradingPage() {
 						<Card>
 							<CardHeader>
 								<CardTitle>{t("paperTrading.account")}</CardTitle>
-								<CardDescription>{view.account.account_id}</CardDescription>
+								<CardDescription>
+									<IdentifierDisplay
+										id={view.account.account_id}
+										label={t("identifiers.account")}
+									/>
+								</CardDescription>
 							</CardHeader>
 							<CardContent className="grid gap-2 text-sm">
 								<div className="flex justify-between gap-3">

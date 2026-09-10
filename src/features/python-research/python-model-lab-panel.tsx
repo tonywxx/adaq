@@ -1062,7 +1062,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								{t("pythonResearch.modelLab.synthetic")}
 							</Badge>
 							<span>
-								{run.adapterId} · α={run.alpha}
+								<IdentifierDisplay id={run.adapterId} /> · α={run.alpha}
 							</span>
 							<span className="text-muted-foreground">
 								{run.trainRows} / {run.selectionRows} / {run.finalRows} rows
@@ -1076,7 +1076,8 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							})}
 						</p>
 						<p className="break-all font-mono text-xs text-muted-foreground">
-							Artifact {run.artifactSha256} · Forecast {run.forecastSha256}
+							Artifact <IdentifierDisplay id={run.artifactSha256} /> · Forecast{" "}
+							<IdentifierDisplay id={run.forecastSha256} />
 						</p>
 						<p className="break-all font-mono text-xs text-muted-foreground">
 							{t("pythonResearch.modelLab.binding", {
@@ -1128,15 +1129,17 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							</p>
 						))}
 						<p className="break-all font-mono text-xs text-muted-foreground">
-							Factor {run.factorDecisionHash} · Dataset {run.factorDatasetId} · Feature{" "}
-							{run.featureDatasetId} · lookback {run.factorLookback}
+							Factor <IdentifierDisplay id={run.factorDecisionHash} /> · Dataset{" "}
+							<IdentifierDisplay id={run.factorDatasetId} /> · Feature{" "}
+							<IdentifierDisplay id={run.featureDatasetId} /> · lookback{" "}
+							{run.factorLookback}
 						</p>
 					</div>
 				) : null}
 				{experiment ? (
 					<div className="grid gap-2 rounded-md border p-3">
 						<p className="break-all font-mono text-xs">
-							Experiment {experiment.experimentId}
+							Experiment <IdentifierDisplay id={experiment.experimentId} />
 						</p>
 						<p className="break-all font-mono text-xs text-muted-foreground">
 							{t("pythonResearch.modelLab.lineage", {
@@ -1426,10 +1429,10 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 											: t("pythonResearch.modelLab.researchOnly")}
 									</Badge>
 									<code className="break-all text-xs">
-										{identifierLabel(
-											deployment.reportId,
-											t("identifiers.evaluationReport"),
-										)}
+										<IdentifierDisplay
+											id={deployment.reportId}
+											label={t("identifiers.evaluationReport")}
+										/>
 									</code>
 								</div>
 								<p className="break-all font-mono text-xs text-muted-foreground">
@@ -1506,7 +1509,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 										className="break-all text-xs text-muted-foreground"
 									>
 										{component.name} v{component.version} · {component.kind} ·{" "}
-										{component.archiveSha256}
+										<IdentifierDisplay id={component.archiveSha256} />
 									</p>
 								))}
 							</div>

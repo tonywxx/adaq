@@ -7,8 +7,8 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { isTauriRuntime } from "@/lib/http";
-import { identifierLabel } from "@/lib/identifier-display";
 import { invoke } from "@tauri-apps/api/core";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -460,20 +460,20 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 							</p>
 							<p className="break-all font-mono text-xs text-muted-foreground">
 								{runtime.artifactSha256
-									? identifierLabel(
-											runtime.artifactSha256,
-											t("identifiers.pythonRuntime"),
-										)
+									? <IdentifierDisplay
+											id={runtime.artifactSha256}
+											label={t("identifiers.pythonRuntime")}
+										/>
 									: "—"}{" "}
 								· {bytes(runtime.downloadBytes)} download ·{" "}
 								{bytes(runtime.installedBytes)} installed · {runtime.license ?? "—"}
 							</p>
 							<p className="break-all font-mono text-xs text-muted-foreground">
 								{runtime.wheelhouseIdentity
-									? identifierLabel(
-											runtime.wheelhouseIdentity,
-											t("identifiers.wheelhouse"),
-										)
+									? <IdentifierDisplay
+											id={runtime.wheelhouseIdentity}
+											label={t("identifiers.wheelhouse")}
+										/>
 									: "—"}{" "}
 								· {runtime.wheelhouseStatus} · {runtime.wheelhouseWheelCount} wheels ·{" "}
 								{bytes(runtime.wheelhouseDiskBytes)} wheelhouse ·{" "}
@@ -671,10 +671,10 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 								<p key={id} className="break-all font-mono">
 									{id}:{" "}
 									{previews[id]?.revisionSha256
-										? identifierLabel(
-												previews[id]?.revisionSha256 ?? "",
-												t("identifiers.revision"),
-											)
+										? <IdentifierDisplay
+												id={previews[id]?.revisionSha256 ?? ""}
+												label={t("identifiers.revision")}
+											/>
 										: "—"}
 								</p>
 							))}

@@ -518,7 +518,8 @@ test("reloads persisted trials with recovery status and source Attempt identity"
 	});
 	await settle();
 
-	expect(container.textContent).toContain("Experiment experiment-sha");
+	// The identifier control shows the abbreviation; the complete value lives in its tooltip.
+	expect(container.textContent).toContain("Experiment exp…sha");
 	expect(container.textContent).toContain("Interrupted");
 	expect(container.textContent).toContain("Source Attempt attempt-original");
 	expect(container.textContent).toContain(

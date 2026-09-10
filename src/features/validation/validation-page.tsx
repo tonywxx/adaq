@@ -1132,7 +1132,7 @@ function ProtocolContext({
 				Strategy: {labels.get(config.strategyArchiveSha256) ?? "Unknown package"}
 			</p>
 			<code className="block break-all text-xs">
-				{config.strategyArchiveSha256}
+				<IdentifierDisplay id={config.strategyArchiveSha256} />
 			</code>
 			{config.factorInstances.map((factor) => (
 				<p key={factor.alias} className="mt-2">

@@ -2,6 +2,7 @@
 
 import "@/lib/i18n";
 import { AuthenticatedUserContext } from "@/authenticated-user";
+import { abbreviateIdentifier } from "@/lib/identifier-display";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { act } from "react";
@@ -113,7 +114,9 @@ test("keeps retained evidence visible until a confirmed reconcile succeeds", asy
 	const { container, root } = await mount();
 
 	expect(container.textContent).toContain("Paper Trading Workspace");
-	expect(container.textContent).toContain("okx-demo-account");
+	expect(container.textContent).toContain(
+		abbreviateIdentifier("okx-demo-account"),
+	);
 	expect(container.textContent).toContain("approved");
 	expect(container.textContent).toContain("Retained connection is degraded.");
 	expect(mockInvoke).toHaveBeenCalledWith("paper_account_view");
@@ -144,7 +147,9 @@ test("keeps the retained view when Reconcile fails", async () => {
 	await act(async () => button(container, "Confirm Reconcile")?.click());
 	await settle();
 
-	expect(container.textContent).toContain("okx-demo-account");
+	expect(container.textContent).toContain(
+		abbreviateIdentifier("okx-demo-account"),
+	);
 	expect(container.textContent).toContain(
 		"Reconcile cannot start because the OKX Demo connection is unavailable.",
 	);

@@ -655,18 +655,10 @@ function Detail({
 }
 
 function HashValue({ label, value }: { label: string; value: string }) {
+	if (!value) return null;
 	return (
 		<div className="min-w-0 rounded-md border p-3">
-			<p className="text-xs text-muted-foreground">{label}</p>
-			<code className="block break-all text-xs">{value}</code>
-			<Button
-				className="mt-2"
-				size="xs"
-				variant="outline"
-				onClick={() => void navigator.clipboard.writeText(value)}
-			>
-				Copy {label}
-			</Button>
+			<IdentifierDisplay id={value} label={label} />
 		</div>
 	);
 }

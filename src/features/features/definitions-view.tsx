@@ -306,10 +306,10 @@ export function DefinitionsView({
 						<CardTitle className="text-base">
 							{t("features.definitions.editor.draftHint")} ·{" "}
 							<span className="font-mono text-sm">
-								{identifierLabel(
-									editor.draft.definitionId,
-									t("identifiers.definition"),
-								)}{" "}
+								<IdentifierDisplay
+									id={editor.draft.definitionId}
+									label={t("identifiers.definition")}
+								/>{" "}
 								· r{editor.draft.revision}
 							</span>
 						</CardTitle>

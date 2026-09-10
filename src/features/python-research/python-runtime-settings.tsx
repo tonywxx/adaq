@@ -7,8 +7,8 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { isTauriRuntime } from "@/lib/http";
-import { identifierLabel } from "@/lib/identifier-display";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -231,19 +231,19 @@ export function PythonRuntimeSettings({ userId }: { userId?: string }) {
 						) : null}
 						{profile.artifactSha256 ? (
 							<p className="break-all font-mono text-xs">
-								{identifierLabel(
-									profile.artifactSha256,
-									t("identifiers.pythonRuntime"),
-								)}
+								<IdentifierDisplay
+									id={profile.artifactSha256}
+									label={t("identifiers.pythonRuntime")}
+								/>
 							</p>
 						) : null}
 						{profile.preparationAttemptId ? (
 							<p className="break-all font-mono text-xs">
 								{profile.preparationStatus}:{" "}
-								{identifierLabel(
-									profile.preparationAttemptId,
-									t("identifiers.attempt"),
-								)}
+								<IdentifierDisplay
+									id={profile.preparationAttemptId}
+									label={t("identifiers.attempt")}
+								/>
 							</p>
 						) : null}
 						{profile.preparationDiagnostic ? (

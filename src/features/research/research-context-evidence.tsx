@@ -57,18 +57,26 @@ export function ResearchContextEvidence({
 				{t(`researchContext.stages.${query.data.stage}`)}
 			</span>
 			<span className="break-all">
-				{t("researchContext.snapshot")}: {query.data.snapshotId}
+				{t("researchContext.snapshot")}:{" "}
+				<IdentifierDisplay id={query.data.snapshotId} label={t("identifiers.snapshot")} />
 			</span>
 			{query.data.universeId && (
 				<span className="break-all">
-					{t("researchContext.universe")}: {query.data.universeId}
+					{t("researchContext.universe")}:{" "}
+					<IdentifierDisplay id={query.data.universeId} label={t("identifiers.universe")} />
 				</span>
 			)}
 			{query.data.featureDataset && (
 				<span className="break-all">
 					{t("researchContext.featureDataset")}:{" "}
-					{query.data.featureDataset.datasetId} · {t("researchContext.featurePlan")}:{" "}
-					{query.data.featureDataset.featurePlanHash}
+					<IdentifierDisplay
+						id={query.data.featureDataset.datasetId}
+						label={t("identifiers.featureDataset")}
+					/> · {t("researchContext.featurePlan")}:{" "}
+					<IdentifierDisplay
+						id={query.data.featureDataset.featurePlanHash}
+						label={t("identifiers.featurePlan")}
+					/>
 				</span>
 			)}
 			<IdentifierDisplay

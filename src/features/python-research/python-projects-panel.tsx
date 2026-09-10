@@ -646,7 +646,8 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 							) : null}
 							{attempt.stagedResultSha256 ? (
 								<p className="break-all font-mono text-xs text-muted-foreground">
-									{t("pythonResearch.projects.result")}: {attempt.stagedResultSha256}
+									{t("pythonResearch.projects.result")}:{" "}
+									<IdentifierDisplay id={attempt.stagedResultSha256} />
 								</p>
 							) : null}
 						</div>
