@@ -9,7 +9,10 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { identifierLabel } from "@/lib/identifier-display";
+import {
+	abbreviateIdentifier,
+	identifierLabel,
+} from "@/lib/identifier-display";
 import { formatDateTime } from "@/lib/i18n";
 import { getErrorMessage, useMarketSessionStore } from "@/lib/market-session";
 import { Link } from "@tanstack/react-router";
@@ -192,9 +195,6 @@ type InstrumentMasterSnapshot = {
 };
 
 type BackfillScope = "custom" | "watchlist" | "all";
-
-const shortId = (value: string) =>
-	value.length > 8 ? `${value.slice(0, 3)}...${value.slice(-3)}` : value;
 
 const normalizeNamePart = (value: string) => value.trim().replace(/\s+/g, "-");
 
@@ -407,6 +407,7 @@ function SourceProvenancePanel({
 										id={item.sourceId}
 										label={t("identifiers.source")}
 										name={item.publicationEvidenceName}
+										variant="compact"
 									/>
 								}
 							/>
@@ -422,15 +423,18 @@ function SourceProvenancePanel({
 								<IdentifierDisplay
 									id={item.source.contentSha256}
 									label={t("dataFoundation.sourceContentHash")}
+									variant="compact"
 								/>
 								<IdentifierDisplay
 									id={item.source.payloadSha256}
 									label={t("dataFoundation.sourcePayloadHash")}
+									variant="compact"
 								/>
 								{item.source.acquisitionContentSha256 ? (
 									<IdentifierDisplay
 										id={item.source.acquisitionContentSha256}
 										label={t("dataFoundation.sourceAcquisitionHash")}
+										variant="compact"
 									/>
 								) : null}
 								{item.source.responseSha256s.map((hash, index) => (
@@ -438,6 +442,7 @@ function SourceProvenancePanel({
 										key={hash}
 										id={hash}
 										label={t("dataFoundation.sourceResponseHash", { number: index + 1 })}
+										variant="compact"
 									/>
 								))}
 							</div>
@@ -517,6 +522,7 @@ function SourceProvenancePanel({
 										<IdentifierDisplay
 											id={item.operation.operationId}
 											label={t("identifiers.operation")}
+											variant="compact"
 										/>
 									}
 								/>
@@ -633,17 +639,6 @@ const markets: FoundationMarket[] = [
 	},
 ];
 
-function StepTitle({ step, children }: { step: number; children: ReactNode }) {
-	return (
-		<CardTitle className="flex items-center gap-2">
-			<span className="inline-flex size-7 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground">
-				{step}
-			</span>
-			{children}
-		</CardTitle>
-	);
-}
-
 function InstrumentEvidencePanel({
 	snapshots,
 	pending,
@@ -699,6 +694,7 @@ function InstrumentEvidencePanel({
 						id={latest.snapshotId}
 						label={t("dataFoundation.catalogFallbackName")}
 						name={catalogDisplayName(latest, t("dataFoundation.catalogFallbackName"))}
+						variant="compact"
 					/>
 				</span>
 			</div>
@@ -802,6 +798,7 @@ function InstrumentEvidencePanel({
 												snapshot,
 												t("dataFoundation.catalogFallbackName"),
 											)}
+											variant="compact"
 										/>
 									</td>
 								</tr>
@@ -1501,61 +1498,56 @@ export function DataFoundationPage() {
 					{t("dataFoundation.description")}
 				</p>
 			</div>
-			<Tabs defaultValue="overview" className="min-w-0 gap-4">
+			<Card>
+				<CardHeader>
+					<CardTitle>{t("dataFoundation.readinessTitle")}</CardTitle>
+					<CardDescription>
+						{t("dataFoundation.readinessDescription")}
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="grid gap-3 sm:grid-cols-3">
+					<ReadinessStat
+						label={t("dataFoundation.sourceEvidence")}
+						value={pipelineQuery.data?.length ?? 0}
+						loading={pipelineQuery.isPending}
+					/>
+					<ReadinessStat
+						label={t("dataFoundation.canonicalEvidence")}
+						value={
+							pipelineQuery.data?.filter((item) => Boolean(item.canonicalId)).length ??
+							0
+						}
+						loading={pipelineQuery.isPending}
+					/>
+					<ReadinessStat
+						label={t("dataFoundation.degradedOrRejected")}
+						value={
+							pipelineQuery.data?.filter(
+								(item) => item.state === "degraded" || item.state === "rejected",
+							).length ?? 0
+						}
+						loading={pipelineQuery.isPending}
+					/>
+				</CardContent>
+			</Card>
+			<Tabs defaultValue="catalog" className="min-w-0 gap-4">
 				<TabsList
 					aria-label={t("dataFoundation.tabsLabel")}
 					className="w-full flex-wrap justify-start gap-1 group-data-horizontal/tabs:h-auto"
 				>
-					<TabsTrigger value="overview" className="flex-none">
-						{t("dataFoundation.tabs.overview")}
-					</TabsTrigger>
 					<TabsTrigger value="catalog" className="flex-none">
 						{t("dataFoundation.tabs.catalog")}
 					</TabsTrigger>
 					<TabsTrigger value="acquisition" className="flex-none">
 						{t("dataFoundation.tabs.acquisition")}
 					</TabsTrigger>
-					<TabsTrigger value="provenance" className="flex-none">
-						{t("dataFoundation.tabs.provenance")}
-					</TabsTrigger>
 					<TabsTrigger value="context" className="flex-none">
 						{t("dataFoundation.tabs.context")}
 					</TabsTrigger>
+					<TabsTrigger value="provenance" className="flex-none">
+						{t("dataFoundation.tabs.provenance")}
+					</TabsTrigger>
 				</TabsList>
-				<TabsContent value="overview" keepMounted className="min-w-0 space-y-4">
-					<Card>
-						<CardHeader>
-							<CardTitle>{t("dataFoundation.readinessTitle")}</CardTitle>
-							<CardDescription>
-								{t("dataFoundation.readinessDescription")}
-							</CardDescription>
-						</CardHeader>
-						<CardContent className="grid gap-3 sm:grid-cols-3">
-							<ReadinessStat
-								label={t("dataFoundation.sourceEvidence")}
-								value={pipelineQuery.data?.length ?? 0}
-								loading={pipelineQuery.isPending}
-							/>
-							<ReadinessStat
-								label={t("dataFoundation.canonicalEvidence")}
-								value={
-									pipelineQuery.data?.filter((item) => Boolean(item.canonicalId))
-										.length ?? 0
-								}
-								loading={pipelineQuery.isPending}
-							/>
-							<ReadinessStat
-								label={t("dataFoundation.degradedOrRejected")}
-								value={
-									pipelineQuery.data?.filter(
-										(item) => item.state === "degraded" || item.state === "rejected",
-									).length ?? 0
-								}
-								loading={pipelineQuery.isPending}
-							/>
-						</CardContent>
-					</Card>
-				</TabsContent>
 				<TabsContent value="catalog" keepMounted className="min-w-0 space-y-4">
 					<div className="grid gap-4 lg:grid-cols-3">
 						{markets.map((market) => {
@@ -1565,7 +1557,7 @@ export function DataFoundationPage() {
 									<CardHeader>
 										<div className="flex items-start justify-between gap-3">
 											<div>
-												<StepTitle step={1}>{t(market.titleKey)}</StepTitle>
+												<CardTitle>{t(market.titleKey)}</CardTitle>
 												<CardDescription>{t(market.descriptionKey)}</CardDescription>
 											</div>
 											<Badge variant={active ? "default" : "outline"}>
@@ -1647,7 +1639,7 @@ export function DataFoundationPage() {
 				<TabsContent value="acquisition" keepMounted className="min-w-0 space-y-4">
 					<Card>
 						<CardHeader>
-							<StepTitle step={2}>{t("dataFoundation.publicationTitle")}</StepTitle>
+							<CardTitle>{t("dataFoundation.publicationTitle")}</CardTitle>
 							<CardDescription>
 								{t("dataFoundation.publicationDescription")}
 							</CardDescription>
@@ -1770,7 +1762,7 @@ export function DataFoundationPage() {
 															snapshot,
 															t("dataFoundation.catalogFallbackName"),
 														)}{" "}
-														- {shortId(snapshot.snapshotId)} -{" "}
+														- {abbreviateIdentifier(snapshot.snapshotId)} -{" "}
 														{formatCatalogDateTime(snapshot.retrievedAtMs)} -{" "}
 														{humanizeNumber(snapshot.instruments.length)}
 													</option>
@@ -1906,7 +1898,8 @@ export function DataFoundationPage() {
 													className="font-mono text-xs text-muted-foreground"
 													title={dataset.sourceId}
 												>
-													{t("identifiers.source")} · {shortId(dataset.sourceId)}
+													{t("identifiers.source")} ·{" "}
+													{abbreviateIdentifier(dataset.sourceId)}
 												</span>
 												<span className="text-muted-foreground">
 													{t("dataFoundation.publicationCounts", {
@@ -2098,33 +2091,10 @@ export function DataFoundationPage() {
 						</CardContent>
 					</Card>
 				</TabsContent>
-				<TabsContent value="provenance" keepMounted className="min-w-0 space-y-4">
-					<Card>
-						<CardHeader>
-							<CardTitle>{t("dataFoundation.sourceProvenanceTitle")}</CardTitle>
-							<CardDescription>
-								{t("dataFoundation.sourceProvenanceDescription")}
-							</CardDescription>
-						</CardHeader>
-						<CardContent>
-							{pipelineQuery.isPending ? (
-								<p className="text-sm text-muted-foreground" role="status">
-									{t("dataFoundation.loadingHistory")}
-								</p>
-							) : (
-								<SourceProvenancePanel
-									datasets={pipelineQuery.data ?? []}
-									operations={acquisitionQuery.data ?? []}
-									t={t}
-								/>
-							)}
-						</CardContent>
-					</Card>
-				</TabsContent>
 				<TabsContent value="context" keepMounted className="min-w-0 space-y-4">
 					<Card>
 						<CardHeader>
-							<StepTitle step={3}>{t("dataFoundation.selectContextTitle")}</StepTitle>
+							<CardTitle>{t("dataFoundation.selectContextTitle")}</CardTitle>
 							<CardDescription>
 								{t("dataFoundation.selectContextDescription")}
 							</CardDescription>
@@ -2233,6 +2203,29 @@ export function DataFoundationPage() {
 						</CardContent>
 					</Card>
 				</TabsContent>
+				<TabsContent value="provenance" keepMounted className="min-w-0 space-y-4">
+					<Card>
+						<CardHeader>
+							<CardTitle>{t("dataFoundation.sourceProvenanceTitle")}</CardTitle>
+							<CardDescription>
+								{t("dataFoundation.sourceProvenanceDescription")}
+							</CardDescription>
+						</CardHeader>
+						<CardContent>
+							{pipelineQuery.isPending ? (
+								<p className="text-sm text-muted-foreground" role="status">
+									{t("dataFoundation.loadingHistory")}
+								</p>
+							) : (
+								<SourceProvenancePanel
+									datasets={pipelineQuery.data ?? []}
+									operations={acquisitionQuery.data ?? []}
+									t={t}
+								/>
+							)}
+						</CardContent>
+					</Card>
+				</TabsContent>
 			</Tabs>
 		</div>
 	);
@@ -2280,6 +2273,7 @@ function AcquisitionOperationHistory({
 								<IdentifierDisplay
 									id={operation.operationId}
 									label={`${t("identifiers.operation")} · ${formatTimestamp(operation.startedAtMs)}`}
+									variant="compact"
 								/>
 								{operation.error ? (
 									<p className="text-destructive">{operation.error}</p>

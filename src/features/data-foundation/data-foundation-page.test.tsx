@@ -267,7 +267,9 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(container.textContent).toContain(
 		"btc-usdt_okx-watchlist-1h-19700101-19700101",
 	);
-	expect(container.textContent).toContain("content-hash");
+	// Identifiers render abbreviated; the complete value only lives in the tooltip.
+	expect(container.textContent).not.toContain("content-hash");
+	expect(container.textContent).toContain("con…ash");
 	expect(container.textContent).toContain("okx|BTC-USDT|1h|1|2");
 	expect(container.textContent).toContain("retained upstream timeout");
 	expect(mockInvoke).toHaveBeenCalledWith("foundation_acquisition_history", {
