@@ -429,7 +429,7 @@ function PageFrame({
 		<div className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
 			<div className="flex items-start justify-between gap-4">
 				<div>
-					<h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+					<h1 className="text-2xl font-semibold">{title}</h1>
 					<p className="text-sm text-muted-foreground">{description}</p>
 				</div>
 				{trailing}

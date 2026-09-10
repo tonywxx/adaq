@@ -86,20 +86,18 @@ export function WorkflowGuidePage({
 	);
 
 	return (
-		<main className="flex min-w-0 flex-1 flex-col gap-6 p-4 lg:p-6">
+		<main className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
 			<section className="relative overflow-hidden rounded-2xl border bg-card p-5 shadow-xs lg:p-7">
 				<div
 					className="absolute inset-y-0 left-0 w-1 bg-primary"
 					aria-hidden="true"
 				/>
-				<div className="max-w-3xl">
+				<div>
 					<p className="mb-3 font-mono text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">
 						{t("workflow.eyebrow")}
 					</p>
-					<h1 className="text-3xl font-semibold tracking-tight lg:text-4xl">
-						{t("workflow.title")}
-					</h1>
-					<p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground lg:text-base">
+					<h1 className="text-2xl font-semibold">{t("workflow.title")}</h1>
+					<p className="text-sm text-muted-foreground">
 						{t("workflow.description")}
 					</p>
 					<div className="mt-5 flex flex-wrap gap-2">

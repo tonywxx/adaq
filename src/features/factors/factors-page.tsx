@@ -183,7 +183,7 @@ export function FactorsPage({
 
 	return (
 		<main
-			className="mx-auto min-w-0 max-w-7xl flex-1 space-y-5 p-4 md:p-6"
+			className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6"
 			data-route="factors"
 		>
 			<Breadcrumb aria-label={t("factors.breadcrumb")}>
@@ -207,12 +207,8 @@ export function FactorsPage({
 						M11 · {t("factors.eyebrow")}
 					</p>
 				</div>
-				<h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
-					{t("factors.title")}
-				</h1>
-				<p className="max-w-4xl text-sm leading-6 text-muted-foreground">
-					{t("factors.description")}
-				</p>
+				<h1 className="text-2xl font-semibold">{t("factors.title")}</h1>
+				<p className="text-sm text-muted-foreground">{t("factors.description")}</p>
 				<div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-muted-foreground">
 					{t("factors.historicalEvidenceNote")}
 				</div>
@@ -228,7 +224,7 @@ export function FactorsPage({
 				<LoadingState label={t("factors.loading")} />
 			) : (
 				<Tabs value={tab} onValueChange={(value) => setTab(value as FactorTab)}>
-					<TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
+					<TabsList className="w-full flex-wrap justify-start gap-1 group-data-horizontal/tabs:h-auto">
 						<TabsTrigger value="families">{t("factors.tabs.families")}</TabsTrigger>
 						<TabsTrigger value="candidates">
 							{t("factors.tabs.candidates")}

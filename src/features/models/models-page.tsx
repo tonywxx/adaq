@@ -473,8 +473,11 @@ export function ModelsPage({
 		}
 	};
 	return (
-		<main className="mx-auto w-full max-w-6xl p-4 sm:p-6" aria-busy={busy}>
-			<header className="mb-6">
+		<main
+			className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6"
+			aria-busy={busy}
+		>
+			<header>
 				<h1 className="text-2xl font-semibold">Models</h1>
 				<p className="text-sm text-muted-foreground">
 					Generate immutable forecast evidence from a verified Model Package.
@@ -485,7 +488,7 @@ export function ModelsPage({
 			{userId ? <PythonProjectsPanel userId={userId} kind="model" /> : null}
 			{userId ? <PythonModelLabPanel userId={userId} /> : null}
 			<Tabs value={tab} onValueChange={setTab}>
-				<TabsList className="max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+				<TabsList className="w-full flex-wrap justify-start gap-1 group-data-horizontal/tabs:h-auto">
 					<TabsTrigger value="create">Create Dataset</TabsTrigger>
 					<TabsTrigger value="datasets">Signal Datasets</TabsTrigger>
 					<TabsTrigger value="evaluations">Evaluation Reports</TabsTrigger>

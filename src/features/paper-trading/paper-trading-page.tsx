@@ -108,15 +108,13 @@ export function PaperTradingPage() {
 	];
 
 	return (
-		<div className="grid gap-4 p-4 md:p-6">
+		<div className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
 			<header className="flex flex-wrap items-start justify-between gap-3">
 				<div>
 					<p className="text-sm text-muted-foreground">
 						{t("paperTrading.eyebrow")}
 					</p>
-					<h1 className="text-2xl font-semibold tracking-tight">
-						{t("paperTrading.title")}
-					</h1>
+					<h1 className="text-2xl font-semibold">{t("paperTrading.title")}</h1>
 					<p className="text-sm text-muted-foreground">
 						{t("paperTrading.description")}
 					</p>

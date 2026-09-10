@@ -121,16 +121,14 @@ export function SettingsPage() {
 	return (
 		<div className="flex min-h-full w-full bg-background">
 			<SettingsNavigation section={section} />
-			<main className="min-w-0 flex-1 px-6 py-8 lg:px-10">
-				<div className="mx-auto w-full max-w-3xl">
-					{section === "general" && <GeneralSettings />}
-					{section === "profile" && <ProfileSettings />}
-					{section === "appearance" && <AppearanceSettings />}
-					{section === "keyboard-shortcuts" && <KeyboardSettings />}
-					{section === "account" && <AccountSettings />}
-					{section === "connections" && <ConnectionsSettings />}
-					{section === "data-storage" && <DataStorageSettings />}
-				</div>
+			<main className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
+				{section === "general" && <GeneralSettings />}
+				{section === "profile" && <ProfileSettings />}
+				{section === "appearance" && <AppearanceSettings />}
+				{section === "keyboard-shortcuts" && <KeyboardSettings />}
+				{section === "account" && <AccountSettings />}
+				{section === "connections" && <ConnectionsSettings />}
+				{section === "data-storage" && <DataStorageSettings />}
 			</main>
 		</div>
 	);
@@ -187,7 +185,7 @@ function SettingsHeader({
 }) {
 	return (
 		<header className="mb-6">
-			<h2 className="text-2xl font-semibold tracking-tight">{title}</h2>
+			<h2 className="text-2xl font-semibold">{title}</h2>
 			<p className="mt-1 text-sm text-muted-foreground">{description}</p>
 		</header>
 	);

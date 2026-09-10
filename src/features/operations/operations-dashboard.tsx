@@ -270,12 +270,10 @@ export function OperationsDashboard() {
 	};
 
 	return (
-		<div className="grid gap-4 p-4 md:p-6">
+		<div className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
 			<header className="flex flex-wrap items-start justify-between gap-3">
 				<div>
-					<h1 className="text-2xl font-semibold tracking-tight">
-						{t("operations.title")}
-					</h1>
+					<h1 className="text-2xl font-semibold">{t("operations.title")}</h1>
 					<p className="text-sm text-muted-foreground">
 						{t("operations.description")}
 					</p>
@@ -631,7 +629,7 @@ export function SystemDashboard({
 
 	return (
 		<main
-			className="grid min-w-0 gap-4 p-4 md:p-6"
+			className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6"
 			aria-labelledby="system-dashboard-title"
 		>
 			<header className="flex flex-wrap items-start justify-between gap-3">
@@ -639,10 +637,7 @@ export function SystemDashboard({
 					<p className="text-sm text-muted-foreground">
 						{t("operations.systemDashboardEyebrow")}
 					</p>
-					<h1
-						id="system-dashboard-title"
-						className="text-2xl font-semibold tracking-tight"
-					>
+					<h1 id="system-dashboard-title" className="text-2xl font-semibold">
 						{t("operations.systemDashboardTitle")}
 					</h1>
 					<p className="text-sm text-muted-foreground">
@@ -1034,11 +1029,11 @@ export function SystemDashboardLoading() {
 	const { t } = useTranslation();
 	return (
 		<main
-			className="grid min-w-0 gap-4 p-4 md:p-6"
+			className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6"
 			aria-busy="true"
 			aria-label={t("operations.systemDashboardTitle")}
 		>
-			<h1 className="text-2xl font-semibold tracking-tight">
+			<h1 className="text-2xl font-semibold">
 				{t("operations.systemDashboardTitle")}
 			</h1>
 			<p role="status" className="text-sm text-muted-foreground">
@@ -1052,14 +1047,14 @@ export function SystemDashboardUnavailable() {
 	const { t } = useTranslation();
 	return (
 		<main
-			className="grid min-w-0 gap-4 p-4 md:p-6"
+			className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6"
 			aria-labelledby="system-dashboard-unavailable-title"
 		>
 			<Card>
 				<CardHeader>
 					<h1
 						id="system-dashboard-unavailable-title"
-						className="text-2xl font-semibold tracking-tight"
+						className="text-2xl font-semibold"
 					>
 						{t("operations.systemDashboardTitle")}
 					</h1>

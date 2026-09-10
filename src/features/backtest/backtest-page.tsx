@@ -1267,7 +1267,7 @@ export function BacktestPage({
 				<Tabs key={run.runId} value={resultTab} onValueChange={setResultTab}>
 					<TabsList
 						aria-label="Backtest Run results"
-						className="w-full justify-start overflow-x-auto"
+						className="w-full flex-wrap justify-start gap-1 group-data-horizontal/tabs:h-auto"
 					>
 						<TabsTrigger value="overview">Overview</TabsTrigger>
 						<TabsTrigger value="decisions">Decisions</TabsTrigger>

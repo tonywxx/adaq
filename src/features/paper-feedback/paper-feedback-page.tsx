@@ -228,14 +228,12 @@ export function PaperFeedbackPage() {
 	const selectedReportSet = new Set(selectedReports);
 
 	return (
-		<div className="grid gap-4 p-4 md:p-6">
+		<div className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
 			<header>
 				<p className="text-sm text-muted-foreground">
 					{t("paperFeedback.eyebrow")}
 				</p>
-				<h1 className="text-2xl font-semibold tracking-tight">
-					{t("paperFeedback.title")}
-				</h1>
+				<h1 className="text-2xl font-semibold">{t("paperFeedback.title")}</h1>
 				<p className="text-sm text-muted-foreground">
 					{t("paperFeedback.description")}
 				</p>

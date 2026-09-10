@@ -777,7 +777,7 @@ export function ValidationPage() {
 							>
 								<TabsList
 									aria-label="Validation Report views"
-									className="w-full justify-start overflow-x-auto"
+									className="w-full flex-wrap justify-start gap-1 group-data-horizontal/tabs:h-auto"
 								>
 									<TabsTrigger value="summary">Summary</TabsTrigger>
 									<TabsTrigger value="evidence">Evidence</TabsTrigger>

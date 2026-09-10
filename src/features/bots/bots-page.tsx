@@ -213,10 +213,10 @@ export function BotsPage() {
 	}
 
 	return (
-		<div className="grid gap-4 p-4 md:p-6">
+		<div className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
 			<header>
 				<p className="text-sm text-muted-foreground">{t("bots.eyebrow")}</p>
-				<h1 className="text-2xl font-semibold tracking-tight">{t("bots.title")}</h1>
+				<h1 className="text-2xl font-semibold">{t("bots.title")}</h1>
 				<p className="text-sm text-muted-foreground">{t("bots.description")}</p>
 			</header>
 

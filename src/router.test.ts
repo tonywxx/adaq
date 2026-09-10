@@ -221,7 +221,9 @@ test("Forecast Evaluation presentation keeps partial evidence and native exports
 	expect(source).toMatch(/not proven out-of-sample/);
 	expect(source).toMatch(/metrics: report\.metrics,[\s\S]*?unavailableRows/);
 	expect(source).toMatch(/aria-live="polite"/);
-	expect(source).toMatch(/max-w-full overflow-x-auto/);
+	// A third tab must stay inside its container: the tab strip wraps on the shared
+	// layout instead of scrolling, so no tab is ever hidden off-screen.
+	expect(source).toMatch(/w-full flex-wrap justify-start gap-1/);
 	expect(metricSource).toMatch(/<Tooltip open=\{open\}/);
 	expect(metricSource).toMatch(/border-b border-dashed/);
 	expect(metricSource).not.toMatch(/border-y/);

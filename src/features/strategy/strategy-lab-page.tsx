@@ -529,15 +529,13 @@ export function StrategyLabPage() {
 							: "draft";
 
 	return (
-		<main className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-8">
+		<main className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
 			<header className="space-y-2">
 				<p className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
 					{t("strategyLab.eyebrow")}
 				</p>
-				<h1 className="text-3xl font-semibold tracking-tight">
-					{t("strategyLab.title")}
-				</h1>
-				<p className="max-w-3xl text-muted-foreground">
+				<h1 className="text-2xl font-semibold">{t("strategyLab.title")}</h1>
+				<p className="text-sm text-muted-foreground">
 					{t("strategyLab.description")}
 				</p>
 				<div className="flex items-center gap-2 text-sm" aria-live="polite">
