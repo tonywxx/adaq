@@ -881,28 +881,9 @@ impl Features {
         let dataset = store
             .dataset(user_id, dataset_id)
             .map_err(|error| error.to_string())?;
-        let row_capacity = usize::try_from(dataset.manifest.row_count)
-            .map_err(|_| "Feature Dataset row count exceeds the host allocation limit")?;
-        let mut rows = Vec::with_capacity(row_capacity);
-        let mut offset = 0usize;
-        loop {
-            let page = store
-                .page(
-                    user_id,
-                    dataset_id,
-                    FeatureDatasetFilter {
-                        limit: adaq_feature_engine::FEATURE_DATASET_MAX_PAGE_SIZE,
-                        ..FeatureDatasetFilter::default()
-                    },
-                    offset,
-                )
-                .map_err(|error| error.to_string())?;
-            rows.extend(page.rows);
-            match page.next_offset {
-                Some(next) => offset = next,
-                None => break,
-            }
-        }
+        let rows = store
+            .read_rows(&dataset)
+            .map_err(|error| error.to_string())?;
         CompletedFeatureDataset::new(
             user_id,
             dataset.dataset_id,

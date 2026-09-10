@@ -13,8 +13,8 @@ use serde_json::Value;
 
 use crate::package::is_lower_kebab;
 use crate::{
-    ComponentKind, ComponentManifest, ComponentParameterValue, FeatureSlotSource, ModelOutput,
-    ParameterType, StrategyArchitecture,
+    ComponentKind, ComponentManifest, ComponentParameterValue, FeatureSlotDefinition,
+    FeatureSlotSource, ModelOutput, ParameterDefinition, ParameterType, StrategyArchitecture,
 };
 
 pub use adaq_feature_engine::FrozenBuiltInParameter;
@@ -278,6 +278,42 @@ pub struct FrozenFactorView<'a> {
     pub warmup_bars: u32,
 }
 
+pub fn freeze_builtin_feature_slot(slot: &FeatureSlotDefinition) -> Result<FeatureSlot, PlanIssue> {
+    let FeatureSlotSource::BuiltIn {
+        indicator,
+        output,
+        inputs,
+        parameters,
+    } = &slot.source
+    else {
+        return Err(issue(
+            "not-a-builtin-feature-slot",
+            Some(&slot.name),
+            Some("builtin"),
+            None,
+        ));
+    };
+    let resolved = freeze_builtin(
+        &[],
+        indicator.as_str(),
+        output.as_str(),
+        &inputs,
+        &parameters,
+        &BTreeMap::new(),
+    )
+    .map_err(|(code, field)| issue(code, Some(&slot.name), Some("builtin"), field.as_deref()))?;
+    Ok(FeatureSlot {
+        name: slot.name.clone(),
+        source: FeatureSource::BuiltIn {
+            indicator: indicator.clone(),
+            output: output.clone(),
+            real_inputs: resolved.real_inputs,
+            parameters: resolved.parameters,
+        },
+        warmup_bars: resolved.warmup_bars,
+    })
+}
+
 pub fn validate_and_freeze_feature_plan(
     manifest: &ComponentManifest,
     consumer_package_sha256: &str,
@@ -512,7 +548,7 @@ pub fn validate_and_freeze_feature_plan_with_bindings_and_parameters(
                 inputs,
                 parameters,
             } => match freeze_builtin(
-                manifest,
+                &manifest.parameters,
                 indicator,
                 output,
                 inputs,
@@ -779,7 +815,7 @@ struct ResolvedBuiltIn {
 }
 
 fn freeze_builtin(
-    manifest: &ComponentManifest,
+    parameter_definitions: &[ParameterDefinition],
     indicator: &str,
     output: &str,
     inputs: &BTreeMap<String, Value>,
@@ -838,8 +874,7 @@ fn freeze_builtin(
                     .get("strategyParameter")
                     .and_then(Value::as_str)
                     .ok_or(("invalid-indicator-parameter", Some(parameter.id.clone())))?;
-                let declared = manifest
-                    .parameters
+                let declared = parameter_definitions
                     .iter()
                     .find(|item| item.name == strategy_parameter)
                     .ok_or((

@@ -3105,9 +3105,14 @@ function DecisionsWorkspace({
 		adapter.listDatasets,
 		{ allPages: true },
 	);
-	const reports = useFactorPage(userId, "decision-reports", adapter.listReports, {
-		allPages: true,
-	});
+	const reports = useFactorPage(
+		userId,
+		"decision-reports",
+		adapter.listReports,
+		{
+			allPages: true,
+		},
+	);
 	const policies = useFactorPage(userId, "policies", adapter.listPolicies, {
 		allPages: true,
 	});

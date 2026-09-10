@@ -4,9 +4,9 @@ use adaq_bot_runtime::{
     WORKER_SIGNING_KEY_ID, WorkerArtifactBinding, WorkerArtifactSignature, WorkerArtifactVerifier,
     WorkerComponentLaunch, WorkerDecisionInput, WorkerDecisionResult, WorkerFactorBinding,
     WorkerFactorScope, WorkerFeatureFrame, WorkerFeatureRow, WorkerLaunchRequest,
-    WorkerModelBinding, WorkerParameterValue, WorkerPipelineBinding, WorkerPortfolioState,
-    WorkerRuntimePolicy, WorkerStrategyBinding, WorkerSupervisor, WorkerTarget, WorkerTrustRoot,
-    current_platform_tag, sha256_hex, unix_now_ms,
+    WorkerModelBinding, WorkerParameterValue, WorkerPipelineBinding, WorkerPipelineInputBinding,
+    WorkerPortfolioState, WorkerRuntimePolicy, WorkerStrategyBinding, WorkerSupervisor,
+    WorkerTarget, WorkerTrustRoot, current_platform_tag, sha256_hex, unix_now_ms,
 };
 use ed25519_dalek::SigningKey;
 use std::{
@@ -73,7 +73,8 @@ fn launch_worker(
     let component_wasm = fs::read(&component_path)
         .map_err(|error| format!("fixture {}: {error}", component_path.display()))?;
     let component_sha256 = sha256_hex(&component_wasm);
-    let (pipeline, pipeline_components, component_hashes, model_hashes) = match pipeline_fixture {
+    let (mut pipeline, pipeline_components, component_hashes, model_hashes) = match pipeline_fixture
+    {
         Some(PipelineFixture::Factor(factor)) => {
             let factor_path = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../fixtures")
@@ -95,6 +96,7 @@ fn launch_worker(
                         parameters: vec![WorkerParameterValue::Integer(1)],
                     }],
                     models: vec![],
+                    strategy_inputs: vec![],
                 },
                 vec![WorkerComponentLaunch {
                     component_sha256: factor_sha256.clone(),
@@ -124,6 +126,7 @@ fn launch_worker(
                         seed: 7,
                         parameters: vec![WorkerParameterValue::String("valid".into())],
                     }],
+                    strategy_inputs: vec![],
                 },
                 vec![WorkerComponentLaunch {
                     component_sha256: model_sha256.clone(),
@@ -140,6 +143,15 @@ fn launch_worker(
             vec![],
         ),
     };
+    if !pipeline.factors.is_empty() || !pipeline.models.is_empty() {
+        pipeline.strategy_inputs = feature_slots
+            .iter()
+            .map(|alias| WorkerPipelineInputBinding {
+                alias: alias.clone(),
+                source: alias.clone(),
+            })
+            .collect();
+    }
     let temp_dir = std::env::temp_dir().join(format!(
         "adaq-bot-worker-smoke-{fixture}-{}-{}",
         std::process::id(),

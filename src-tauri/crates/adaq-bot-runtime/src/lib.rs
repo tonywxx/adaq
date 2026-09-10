@@ -264,12 +264,21 @@ impl WorkerModelBinding {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerPipelineInputBinding {
+    pub alias: String,
+    pub source: String,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkerPipelineBinding {
     pub input_slots: Vec<String>,
     pub factors: Vec<WorkerFactorBinding>,
     pub models: Vec<WorkerModelBinding>,
+    #[serde(default)]
+    pub strategy_inputs: Vec<WorkerPipelineInputBinding>,
 }
 
 impl WorkerPipelineBinding {
@@ -277,6 +286,7 @@ impl WorkerPipelineBinding {
         &self,
         component_hashes: &[String],
         model_hashes: &[String],
+        strategy_slots: &[String],
     ) -> Result<(), RuntimeError> {
         if self.input_slots.len() > 64
             || self
@@ -286,6 +296,7 @@ impl WorkerPipelineBinding {
             || has_duplicates(&self.input_slots)
             || self.factors.len() > 64
             || self.models.len() > 64
+            || self.strategy_inputs.len() > 64
             || (!self.factors.is_empty() || !self.models.is_empty()) && self.input_slots.is_empty()
         {
             return Err(RuntimeError::InvalidPipelineBinding);
@@ -318,6 +329,23 @@ impl WorkerPipelineBinding {
             {
                 return Err(RuntimeError::InvalidPipelineBinding);
             }
+        }
+        let mut aliases = HashSet::new();
+        for input in &self.strategy_inputs {
+            if !is_bounded_text(&input.alias, 128)
+                || !is_bounded_text(&input.source, 128)
+                || !aliases.insert(input.alias.as_str())
+                || !strategy_slots.iter().any(|slot| slot == &input.alias)
+                || (!input_names.contains(input.source.as_str())
+                    && !output_names.contains(input.source.as_str()))
+            {
+                return Err(RuntimeError::InvalidPipelineBinding);
+            }
+        }
+        if (!self.factors.is_empty() || !self.models.is_empty())
+            && self.strategy_inputs.len() != strategy_slots.len()
+        {
+            return Err(RuntimeError::InvalidPipelineBinding);
         }
         Ok(())
     }
@@ -430,8 +458,11 @@ impl DeploymentBundleInput {
             return Err(RuntimeError::BundleNotQualified);
         }
         self.strategy.validate()?;
-        self.pipeline
-            .validate(&self.component_hashes, &self.model_hashes)?;
+        self.pipeline.validate(
+            &self.component_hashes,
+            &self.model_hashes,
+            &self.strategy.feature_slots,
+        )?;
         if validate_worker {
             self.worker.validate()?;
         } else {

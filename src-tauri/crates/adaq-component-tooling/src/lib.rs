@@ -26,8 +26,8 @@ pub use package::{
 pub use plan::{
     EngineIdentity, FactorInstancePlanInput, FrozenBuiltInParameter, FrozenFactorView,
     FrozenFeaturePlan, FrozenSourceView, PlanIssue, PlanLoadError, PlanValidationError,
-    SignalPlanInput, builtin_engine_market_field, native_engine_identity,
-    validate_and_freeze_feature_plan,
+    SignalPlanInput, builtin_engine_market_field, freeze_builtin_feature_slot,
+    native_engine_identity, validate_and_freeze_feature_plan,
     validate_and_freeze_feature_plan_with_bindings_and_parameters,
     validate_and_freeze_feature_plan_with_factors,
     validate_and_freeze_feature_plan_with_factors_and_parameters,

@@ -44,6 +44,7 @@ use adaq_factor_research::{
     FactorEvaluationProtocolDraft, FactorLens, FactorMarketSeries, FactorOrientation, FactorTarget,
     ResearchEvidenceContext,
 };
+use adaq_feature_engine::{FeatureOperator, FeaturePlan};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -1125,6 +1126,13 @@ impl LocalResearchState {
             &snapshot.code,
             &feature_dataset.manifest.request.valuation_currency,
         )?;
+        let feature_plan_json =
+            serde_json::to_vec(&feature_dataset.manifest.plan_json).map_err(string)?;
+        let feature_plan = FeaturePlan::load_for_engine(
+            &feature_plan_json,
+            &feature_dataset.manifest.engine_identity,
+        )
+        .map_err(|error| format!("factor-context-feature-plan-invalid: {error}"))?;
         let candidate_hash = request.candidate_hash.clone();
         let protocol = adaq_factor_research::FactorMaterializationProtocol::freeze(
             adaq_factor_research::FactorMaterializationProtocolDraft {
@@ -1160,6 +1168,7 @@ impl LocalResearchState {
                     &candidate.candidate,
                     &request.candidate_hash,
                     &projection,
+                    &feature_plan,
                 ),
                 seed: request.seed,
             },
@@ -3110,7 +3119,25 @@ fn factor_native_engine_identity(
     candidate: &adaq_factor_research::FactorCandidate,
     candidate_hash: &str,
     context: &adaq_factor_research::ResearchEvidenceProjection,
+    feature_plan: &FeaturePlan,
 ) -> adaq_factor_research::ResearchEngineProvenance {
+    let mut parameters = BTreeMap::from([
+        (
+            "contextRevision".into(),
+            context.context_revision.to_string(),
+        ),
+        ("scope".into(), candidate.scope.world().into()),
+    ]);
+    let lookbacks = candidate
+        .feature_slots
+        .iter()
+        .filter_map(|candidate_slot| feature_slot_lookback(feature_plan, &candidate_slot.name))
+        .collect::<HashSet<_>>();
+    if lookbacks.len() == 1 {
+        if let Some(lookback) = lookbacks.into_iter().next() {
+            parameters.insert("lookback".into(), lookback.to_string());
+        }
+    }
     adaq_factor_research::ResearchEngineProvenance {
         engine_id: "adaq-native-factor".into(),
         engine_version: env!("CARGO_PKG_VERSION").into(),
@@ -3118,13 +3145,7 @@ fn factor_native_engine_identity(
         target_triple: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
         build_id: env!("CARGO_PKG_VERSION").into(),
         environment: BTreeMap::new(),
-        parameters: BTreeMap::from([
-            (
-                "contextRevision".into(),
-                context.context_revision.to_string(),
-            ),
-            ("scope".into(), candidate.scope.world().into()),
-        ]),
+        parameters,
         input_identities: vec![
             candidate_hash.into(),
             context.context_hash.clone(),
@@ -3137,6 +3158,27 @@ fn factor_native_engine_identity(
             context.universe_id.clone().unwrap_or_default(),
         ],
     }
+}
+
+fn feature_slot_lookback(feature_plan: &FeaturePlan, slot_name: &str) -> Option<u32> {
+    feature_plan.definitions().iter().find_map(|definition| {
+        let output = definition
+            .outputs()
+            .iter()
+            .find(|output| output.name == slot_name)?;
+        let node = definition
+            .nodes()
+            .iter()
+            .find(|node| node.id == output.node_id)?;
+        if !matches!(node.operator, FeatureOperator::Indicator { .. }) {
+            return None;
+        }
+        node.parameters
+            .get("time-period")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+    })
 }
 
 fn factor_context_dataset_error(error: &str) -> String {

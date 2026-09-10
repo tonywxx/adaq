@@ -3,8 +3,8 @@
 //! blocking, missing-reference failure, endpoint allowlisting,
 //! environment mismatch, clock skew, permissions, and zero order requests.
 //! All tests use the in-memory secret store and a scripted HTTP executor;
-//! production OS-store behavior is covered by the ignored manual test in
-//! secret_store.rs.
+//! production OS-store selection is a default-build composition concern, not a
+//! test operation.
 
 use std::sync::{Arc, Mutex};
 
@@ -194,6 +194,55 @@ fn okx_credentials() -> ProviderCredentials {
 
 fn error_code<T>(result: Result<T, ConnectionError>) -> String {
     result.err().expect("expected an error").code
+}
+
+#[cfg(feature = "local-env-credentials")]
+#[test]
+#[ignore = "explicit local-only OKX Demo acceptance operation"]
+fn local_env_paper_reconcile_against_demo_account() -> Result<(), String> {
+    if std::env::var("ADAQ_LIVE_ACCEPTANCE").as_deref() != Ok("1") {
+        return Ok(());
+    }
+    let app_data_dir = std::env::var("ADAQ_LIVE_APP_DATA_DIR")
+        .map_err(|_| "ADAQ_LIVE_APP_DATA_DIR is required".to_owned())?;
+    let user_id = std::env::var("ADAQ_LIVE_USER_ID")
+        .map_err(|_| "ADAQ_LIVE_USER_ID is required".to_owned())?;
+    let database = Arc::new(Mutex::new(
+        Connection::open(std::path::Path::new(&app_data_dir).join("adaq.db"))
+            .map_err(|error| error.to_string())?,
+    ));
+    let manager = ConnectionManager::open_production(database.clone())?;
+    let profile = manager
+        .list(&user_id)?
+        .into_iter()
+        .find(|profile| profile.provider == Provider::OkxDemo)
+        .ok_or_else(|| "No OKX Demo profile is available".to_owned())?;
+    if profile.status != ProfileStatus::Usable {
+        return Err("The OKX Demo profile is unusable".to_owned());
+    }
+    let account_id = profile
+        .account_id
+        .clone()
+        .ok_or_else(|| "The OKX Demo profile has no account identity".to_owned())?;
+    let paper_trading = crate::paper_trading::PaperTradingStore::open(database)?;
+    let now_ms = crate::unix_now_ms();
+    let account =
+        manager.with_okx_demo_reconciliation(&user_id, now_ms, |open_orders, balances| {
+            paper_trading.provider_balance(
+                &user_id,
+                account_id.clone(),
+                open_orders,
+                balances,
+                now_ms,
+            )
+        })??;
+
+    assert_eq!(account.account.account_id, account_id);
+    assert_eq!(
+        account.reconciliation,
+        adaq_paper_trading_core::ReconciliationState::Reconciled
+    );
+    Ok(())
 }
 
 #[test]

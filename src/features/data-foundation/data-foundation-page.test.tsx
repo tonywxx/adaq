@@ -274,7 +274,8 @@ test("renders localized evidence and persisted operation history", async () => {
 		userId: "user-1",
 	});
 	const contextSnapshot = Array.from(container.querySelectorAll("select")).find(
-		(select) => Array.from(select.options).some((option) => option.value === "snapshot-1"),
+		(select) =>
+			Array.from(select.options).some((option) => option.value === "snapshot-1"),
 	);
 	expect(contextSnapshot).toBeDefined();
 	await act(async () => {
@@ -285,7 +286,8 @@ test("renders localized evidence and persisted operation history", async () => {
 		await Promise.resolve();
 	});
 	const contextUniverse = Array.from(container.querySelectorAll("select")).find(
-		(select) => Array.from(select.options).some((option) => option.value === "universe-1"),
+		(select) =>
+			Array.from(select.options).some((option) => option.value === "universe-1"),
 	);
 	await act(async () => {
 		if (contextUniverse) {
@@ -294,7 +296,9 @@ test("renders localized evidence and persisted operation history", async () => {
 		}
 		await Promise.resolve();
 	});
-	const establishContextButton = Array.from(container.querySelectorAll("button")).find(
+	const establishContextButton = Array.from(
+		container.querySelectorAll("button"),
+	).find(
 		(button) => button.textContent === i18n.t("dataFoundation.establishContext"),
 	);
 	expect(establishContextButton).toBeDefined();

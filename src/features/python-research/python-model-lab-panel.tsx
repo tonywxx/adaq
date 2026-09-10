@@ -357,8 +357,15 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 			]);
 			if (!isCurrentRequest(token) || activeUserId.current !== userId) return;
 			setProjects(current);
-			setFactorDecisions(
-				decisionPage.items.filter((item) => item.decision.state !== "rejected"),
+			const availableDecisions = decisionPage.items.filter(
+				(item) => item.decision.state !== "rejected",
+			);
+			setFactorDecisions(availableDecisions);
+			setFactorDecisionHash((current) =>
+				current &&
+				availableDecisions.some((item) => item.decision.decisionHash === current)
+					? current
+					: (availableDecisions[0]?.decision.decisionHash ?? ""),
 			);
 			const modelProject = current.find(
 				(project) => project.projectId === "py-model-qlib-ridge-return",
@@ -433,8 +440,11 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 
 	useEffect(() => {
 		void refreshProjects();
-		void refreshExperiments();
-	}, [refreshExperiments, refreshProjects]);
+	}, [refreshProjects]);
+
+	useEffect(() => {
+		if (factorDecisionHash) void refreshExperiments(factorDecisionHash);
+	}, [factorDecisionHash, refreshExperiments]);
 
 	useEffect(() => {
 		void refreshAttempts();

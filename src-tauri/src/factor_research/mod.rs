@@ -423,6 +423,7 @@ pub(crate) struct FactorModelInputBinding {
     pub feature_plan_hash: String,
     pub snapshot_id: String,
     pub universe_id: String,
+    pub output_name: String,
     pub lookback: u32,
 }
 
@@ -1985,13 +1986,17 @@ impl FactorResearch {
                 );
             }
             for decision in &evidence.binding.component_decisions {
-                inputs.push(self.accepted_component_input_from_evidence(
+                match self.accepted_component_input_from_evidence(
                     user_id,
                     &record,
                     &evidence,
                     decision.decision.decision_id,
                     &decision.decision.output_name,
-                )?);
+                ) {
+                    Ok(input) => inputs.push(input),
+                    Err(error) if stale_component_decision_error(&error) => continue,
+                    Err(error) => return Err(error),
+                }
             }
         }
         inputs.sort_by(|left, right| {
@@ -3457,6 +3462,14 @@ fn factor_component_qualification_evidence(
         return Ok(None);
     }
     serde_json::from_value(value).map(Some).map_err(string)
+}
+
+fn stale_component_decision_error(error: &str) -> bool {
+    matches!(
+        error,
+        "Factor Component requires a current Component Eligible Decision"
+            | "Factor Component Decision is superseded or stale"
+    )
 }
 
 fn validate_component_qualification_evidence(
@@ -6761,6 +6774,7 @@ impl<'a> ResearchStore<'a> {
             feature_plan_hash: evaluation.feature_plan_hash,
             snapshot_id: evaluation.market_data_snapshot_id,
             universe_id: evaluation.point_in_time_universe_id,
+            output_name: record.decision.output_name,
             lookback,
         })
     }
@@ -8491,6 +8505,19 @@ mod tests {
         let database = Connection::open_in_memory().unwrap();
         ResearchStore::new(&database).initialize().unwrap();
         database
+    }
+
+    #[test]
+    fn stale_component_decision_errors_do_not_enter_current_input_catalog() {
+        assert!(stale_component_decision_error(
+            "Factor Component requires a current Component Eligible Decision"
+        ));
+        assert!(stale_component_decision_error(
+            "Factor Component Decision is superseded or stale"
+        ));
+        assert!(!stale_component_decision_error(
+            "Factor Component qualification package identity is invalid"
+        ));
     }
 
     #[test]

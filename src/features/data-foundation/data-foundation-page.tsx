@@ -1244,7 +1244,9 @@ export function DataFoundationPage() {
 				snapshotEndMs,
 		);
 		if (rangeStartMs >= rangeEndMs) {
-			setError("The selected Snapshot and Universe have no shared coverage range.");
+			setError(
+				"The selected Snapshot and Universe have no shared coverage range.",
+			);
 			return;
 		}
 		setError(undefined);

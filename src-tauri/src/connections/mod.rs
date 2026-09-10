@@ -23,7 +23,11 @@ use rand::RngCore;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-use secret_store::{KeyringSecretStore, SecretStore};
+#[cfg(not(feature = "local-env-credentials"))]
+use secret_store::KeyringSecretStore;
+#[cfg(feature = "local-env-credentials")]
+use secret_store::LocalEnvSecretStore;
+use secret_store::SecretStore;
 use tester::{
     ALPACA_MARKET_DATA_ENDPOINT, ConnectionEvidence, ConnectionTester, HttpExecutor,
     ReqwestExecutor, TestCredential, TestFailure,
@@ -287,12 +291,18 @@ pub(crate) struct ConnectionManager {
 }
 
 impl ConnectionManager {
-    /// Opens the Connection domain with production dependencies: the OS
-    /// secret store, the real HTTP executor, and the (empty) runtime guard.
+    /// Opens the Connection domain with production dependencies. Default
+    /// builds use the OS secret store; the Debug-only local acceptance build
+    /// uses the read-only repository `.env` store for OKX Demo tests.
     pub(crate) fn open_production(database: Arc<Mutex<Connection>>) -> Result<Self, String> {
+        #[cfg(feature = "local-env-credentials")]
+        let secrets: Arc<dyn SecretStore> = Arc::new(LocalEnvSecretStore::load()?);
+        #[cfg(not(feature = "local-env-credentials"))]
+        let secrets: Arc<dyn SecretStore> = Arc::new(KeyringSecretStore);
+
         Self::open(
             database,
-            Arc::new(KeyringSecretStore),
+            secrets,
             Arc::new(ReqwestExecutor::new()),
             Arc::new(EmptyRuntimeGuard),
         )

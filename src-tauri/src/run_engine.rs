@@ -5,13 +5,13 @@ use adaq_component_sdk::host::factor_abi;
 use adaq_component_sdk::host::strategy_abi;
 use adaq_component_tooling::{
     ComponentParameterValue, FeatureSlotDefinition, FeatureSlotSource, FrozenFeaturePlan,
-    FrozenSourceView, RunLimits, WasmLoader,
+    FrozenSourceView, RunLimits, WasmLoader, freeze_builtin_feature_slot,
 };
 use adaq_data_core::{BarGap, BarInterval, OhlcvBar, next_bar_open_time_ms};
 use adaq_feature_engine::{
     FeatureDependencyInput, FeatureEngine, FeatureEvaluationError, FeatureEvaluationInput,
-    FeatureInputEvent, FeatureMarketBar, FeatureObservation, FeatureObservationValue,
-    FeatureUnavailabilityReason,
+    FeatureInputEvent, FeatureMarketBar, FeatureObservation, FeatureObservationValue, FeaturePlan,
+    FeaturePlanDraft, FeatureUnavailabilityReason,
 };
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 
@@ -496,6 +496,7 @@ fn evaluate_factors(
     request: &RunRequest<'_>,
     bars: &[OhlcvBar],
 ) -> Result<HashMap<String, Vec<Option<HashMap<String, f64>>>>, String> {
+    let builtin_values = evaluate_factor_builtins(request, bars)?;
     let paths = request
         .factors
         .iter()
@@ -559,14 +560,38 @@ fn evaluate_factors(
                 .collect(),
             factor.parameters,
         )?;
-        let mut rows = Vec::with_capacity(bars.len());
-        for chunk in bars.chunks(4096) {
+        let first_available = (0..bars.len())
+            .find(|index| {
+                factor
+                    .feature_slots
+                    .iter()
+                    .enumerate()
+                    .all(|(slot_index, slot)| {
+                        !matches!(
+                            factor_request
+                                .manifest_feature_slots
+                                .get(slot_index)
+                                .map(|definition| &definition.source),
+                            Some(FeatureSlotSource::BuiltIn { .. })
+                        ) || builtin_values
+                            .get(slot)
+                            .and_then(|values| values.get(*index))
+                            .is_some_and(Option::is_some)
+                    })
+            })
+            .unwrap_or(bars.len());
+        let mut rows = vec![None; bars.len()];
+        let mut chunk_start = first_available;
+        for chunk in bars[first_available..].chunks(4096) {
             let input = chunk
                 .iter()
-                .map(|bar| {
+                .enumerate()
+                .map(|(offset, bar)| {
                     factor_row(
                         factor.feature_slots,
                         factor_request.manifest_feature_slots,
+                        &builtin_values,
+                        chunk_start + offset,
                         bar,
                     )
                 })
@@ -605,12 +630,100 @@ fn evaluate_factors(
                             .flat_map(|outputs| outputs.iter().copied()),
                     )
                 });
-                rows.push(row.transpose()?);
+                rows[chunk_start + offset] = row.transpose()?;
             }
+            chunk_start += chunk.len();
         }
         evaluated.insert(factor.alias.to_owned(), rows);
     }
     Ok(evaluated)
+}
+
+fn evaluate_factor_builtins(
+    request: &RunRequest<'_>,
+    bars: &[OhlcvBar],
+) -> Result<HashMap<String, Vec<Option<f64>>>, String> {
+    let mut slots: Vec<adaq_feature_engine::FeatureSlot> = Vec::new();
+    for factor in request.factors {
+        for definition in factor.manifest_feature_slots {
+            if !matches!(definition.source, FeatureSlotSource::BuiltIn { .. }) {
+                continue;
+            }
+            let frozen = freeze_builtin_feature_slot(definition)
+                .map_err(|error| format!("Factor built-in slot validation failed: {error:?}"))?;
+            if let Some(existing) = slots.iter().find(|slot| slot.name == frozen.name) {
+                if existing != &frozen {
+                    return Err(format!(
+                        "Factor Feature Slot has conflicting built-in bindings: {}",
+                        frozen.name
+                    ));
+                }
+            } else {
+                slots.push(frozen);
+            }
+        }
+    }
+    if slots.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let feature_plan = FeaturePlan::freeze(FeaturePlanDraft {
+        slots: slots.clone(),
+        engine_identity: request.plan.feature_plan().engine_identity(),
+        operator_catalog: adaq_feature_engine::FeatureOperatorCatalog::initial(),
+        ..FeaturePlanDraft::default()
+    })
+    .map_err(|error| format!("Factor built-in Feature Plan validation failed: {error:?}"))?;
+    let mut evaluator = FeatureEngine::new(feature_plan.engine_identity())
+        .evaluator(feature_plan)
+        .map_err(|error| format!("Factor built-in evaluator failed: {error}"))?;
+    let names = slots
+        .iter()
+        .map(|slot| slot.name.as_str())
+        .collect::<Vec<_>>();
+    let mut values = names
+        .iter()
+        .map(|name| ((*name).to_owned(), Vec::with_capacity(bars.len())))
+        .collect::<HashMap<_, _>>();
+    for bar in bars {
+        let input = FeatureEvaluationInput::new(
+            "component-run",
+            bar.open_time_ms,
+            bar.open_time_ms,
+            FeatureMarketBar::from_ohlcv(bar.clone()),
+        );
+        let observations = evaluator
+            .observe(FeatureInputEvent::observation(input))
+            .map_err(|error| {
+                format!(
+                    "Factor built-in evaluation failed at Bar {}: {}",
+                    bar.open_time_ms, error
+                )
+            })?;
+        for name in &names {
+            let observation = observations
+                .iter()
+                .find(|observation| observation.output_name == *name)
+                .ok_or_else(|| format!("Factor built-in output is missing: {name}"))?;
+            let value = match observation.value {
+                FeatureObservationValue::Available { value, .. } => Some(value),
+                FeatureObservationValue::Unavailable {
+                    reason: FeatureUnavailabilityReason::Warmup,
+                } => None,
+                FeatureObservationValue::Unavailable { reason } => {
+                    return Err(format!(
+                        "Factor built-in slot is unavailable at Bar {}: {}",
+                        bar.open_time_ms,
+                        reason.code()
+                    ));
+                }
+            };
+            values
+                .get_mut(*name)
+                .expect("factor built-in slot was initialized")
+                .push(value);
+        }
+    }
+    Ok(values)
 }
 
 fn bounded_context(value: &str) -> (String, bool) {
@@ -624,37 +737,15 @@ fn bounded_context(value: &str) -> (String, bool) {
 fn factor_row(
     feature_slots: &[String],
     manifest_feature_slots: &[FeatureSlotDefinition],
+    builtin_values: &HashMap<String, Vec<Option<f64>>>,
+    bar_index: usize,
     bar: &OhlcvBar,
 ) -> Result<factor_abi::exports::adaq::factor::time_series_api::TimeSeriesRow, String> {
     let slots = feature_slots
         .iter()
         .enumerate()
         .map(|(index, slot)| {
-            let field = match manifest_feature_slots.get(index) {
-                Some(definition) if definition.name == *slot => match &definition.source {
-                    FeatureSlotSource::Market { field } => *field,
-                    _ => {
-                        return Err(format!("Factor Feature Slot has no host binding: {slot}"));
-                    }
-                },
-                Some(_) => {
-                    return Err(format!(
-                        "Factor Feature Slot manifest order differs from the frozen plan: {slot}"
-                    ));
-                }
-                None => match slot.as_str() {
-                    "open" => adaq_component_tooling::MarketField::Open,
-                    "high" => adaq_component_tooling::MarketField::High,
-                    "low" => adaq_component_tooling::MarketField::Low,
-                    "close" => adaq_component_tooling::MarketField::Close,
-                    "base-volume" => adaq_component_tooling::MarketField::BaseVolume,
-                    "quote-volume" => adaq_component_tooling::MarketField::QuoteVolume,
-                    other => {
-                        return Err(format!("Factor Feature Slot has no host binding: {other}"));
-                    }
-                },
-            };
-            let value = match field {
+            let market_value = |field: adaq_component_tooling::MarketField| match field {
                 adaq_component_tooling::MarketField::Open => bar.open,
                 adaq_component_tooling::MarketField::High => bar.high,
                 adaq_component_tooling::MarketField::Low => bar.low,
@@ -662,10 +753,55 @@ fn factor_row(
                 adaq_component_tooling::MarketField::BaseVolume => bar.base_volume,
                 adaq_component_tooling::MarketField::QuoteVolume => bar.quote_volume,
             };
-            let value = value
-                .to_f64()
-                .filter(|value| value.is_finite())
-                .ok_or_else(|| format!("Factor Feature Slot is not finite: {slot}"))?;
+            let value = match manifest_feature_slots.get(index) {
+                Some(definition) if definition.name == *slot => match &definition.source {
+                    FeatureSlotSource::Market { field } => market_value(*field)
+                        .to_f64()
+                        .filter(|value| value.is_finite())
+                        .ok_or_else(|| format!("Factor Feature Slot is not finite: {slot}")),
+                    FeatureSlotSource::BuiltIn { .. } => builtin_values
+                        .get(slot)
+                        .and_then(|values| values.get(bar_index))
+                        .and_then(|value| *value)
+                        .ok_or_else(|| format!("Factor Feature Slot is unavailable: {slot}")),
+                    _ => return Err(format!("Factor Feature Slot has no host binding: {slot}")),
+                },
+                Some(_) => {
+                    return Err(format!(
+                        "Factor Feature Slot manifest order differs from the frozen plan: {slot}"
+                    ));
+                }
+                None => match slot.as_str() {
+                    "open" => market_value(adaq_component_tooling::MarketField::Open)
+                        .to_f64()
+                        .filter(|value| value.is_finite())
+                        .ok_or_else(|| format!("Factor Feature Slot is not finite: {slot}")),
+                    "high" => market_value(adaq_component_tooling::MarketField::High)
+                        .to_f64()
+                        .filter(|value| value.is_finite())
+                        .ok_or_else(|| format!("Factor Feature Slot is not finite: {slot}")),
+                    "low" => market_value(adaq_component_tooling::MarketField::Low)
+                        .to_f64()
+                        .filter(|value| value.is_finite())
+                        .ok_or_else(|| format!("Factor Feature Slot is not finite: {slot}")),
+                    "close" => market_value(adaq_component_tooling::MarketField::Close)
+                        .to_f64()
+                        .filter(|value| value.is_finite())
+                        .ok_or_else(|| format!("Factor Feature Slot is not finite: {slot}")),
+                    "base-volume" => market_value(adaq_component_tooling::MarketField::BaseVolume)
+                        .to_f64()
+                        .filter(|value| value.is_finite())
+                        .ok_or_else(|| format!("Factor Feature Slot is not finite: {slot}")),
+                    "quote-volume" => {
+                        market_value(adaq_component_tooling::MarketField::QuoteVolume)
+                            .to_f64()
+                            .filter(|value| value.is_finite())
+                            .ok_or_else(|| format!("Factor Feature Slot is not finite: {slot}"))
+                    }
+                    other => Err(format!("Factor Feature Slot has no host binding: {other}")),
+                },
+            };
+            let value = value?;
             Ok(
                 factor_abi::exports::adaq::factor::time_series_api::FeatureValue {
                     value,
@@ -907,11 +1043,85 @@ mod tests {
             },
         ];
         let frozen_slots = vec!["ema-5".into(), "ema-10".into()];
-        let row = factor_row(&frozen_slots, &manifest_slots, &bar(1, "11", "1")).unwrap();
+        let row = factor_row(
+            &frozen_slots,
+            &manifest_slots,
+            &HashMap::new(),
+            0,
+            &bar(1, "11", "1"),
+        )
+        .unwrap();
         assert_eq!(
             row.slots.iter().map(|slot| slot.value).collect::<Vec<_>>(),
             [11.0, 11.0]
         );
+    }
+
+    #[test]
+    fn builtin_factor_slots_use_feature_engine_values() {
+        let strategy_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/external-strategy/manifest.json"
+        ))
+        .unwrap();
+        let mut factor_manifest = serde_json::from_str::<ComponentManifest>(include_str!(
+            "../fixtures/factor/manifest.json"
+        ))
+        .unwrap();
+        factor_manifest.feature_slots = vec![FeatureSlotDefinition {
+            name: "ema-5".into(),
+            source: FeatureSlotSource::BuiltIn {
+                indicator: "ema".into(),
+                output: "value".into(),
+                inputs: BTreeMap::from([("real-0".into(), serde_json::json!("close"))]),
+                parameters: BTreeMap::from([("time-period".into(), serde_json::json!(5))]),
+            },
+        }];
+        let plan = validate_and_freeze_feature_plan_with_factors(
+            &strategy_manifest,
+            &"a".repeat(64),
+            &native_engine_identity().unwrap(),
+            &[FactorInstancePlanInput {
+                alias: "change",
+                manifest: &factor_manifest,
+                parameters: Vec::new(),
+            }],
+        )
+        .unwrap();
+        let bars = (1..=6)
+            .map(|close| bar(close, &close.to_string(), "1"))
+            .collect::<Vec<_>>();
+        let factors = [FactorRunRequest {
+            alias: "change",
+            path: "",
+            manifest_feature_slots: &factor_manifest.feature_slots,
+        }];
+        let values = evaluate_factor_builtins(
+            &RunRequest {
+                strategy_path: "",
+                strategy_parameters: &[],
+                factors: &factors,
+                signals: &[],
+                bars: &bars,
+                gaps: &[],
+                plan: &plan,
+                position_mode: PositionMode::LongOnly,
+                limits: RunLimits::default(),
+            },
+            &bars,
+        )
+        .unwrap();
+        let ema = values.get("ema-5").unwrap();
+        let first_ready = ema.iter().position(Option::is_some).unwrap();
+        assert!(first_ready > 0);
+        let row = factor_row(
+            &["ema-5".into()],
+            &factor_manifest.feature_slots,
+            &values,
+            first_ready,
+            &bars[first_ready],
+        )
+        .unwrap();
+        assert!(row.slots[0].value.is_finite());
     }
 
     fn plan() -> FrozenFeaturePlan {

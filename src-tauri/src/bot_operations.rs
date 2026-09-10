@@ -1051,7 +1051,9 @@ impl BotStore {
         positions: Vec<String>,
         reconciliation_proven: bool,
     ) -> Result<BotView, String> {
-        self.mutate(user_id, bot_id, |bot| {
+        // A legacy Worker binding cannot run, but a faulted Bot must still be
+        // stoppable so Host recovery can persist a safe state and release its lease.
+        self.mutate_with_runtime_validation(user_id, bot_id, false, |bot| {
             let attempt = current_attempt_mut(bot)?;
             let now = adaq_bot_runtime::unix_now_ms();
             if is_active_state(attempt.state) && attempt.state != LifecycleState::Stopping {
@@ -1137,10 +1139,20 @@ impl BotStore {
         bot_id: &str,
         action: impl FnOnce(&mut PersistedBot) -> Result<(), String>,
     ) -> Result<BotView, String> {
+        self.mutate_with_runtime_validation(user_id, bot_id, true, action)
+    }
+
+    fn mutate_with_runtime_validation(
+        &self,
+        user_id: &str,
+        bot_id: &str,
+        validate_runtime: bool,
+        action: impl FnOnce(&mut PersistedBot) -> Result<(), String>,
+    ) -> Result<BotView, String> {
         let mut database = self.database.lock().map_err(|error| error.to_string())?;
         let mut bot = self.load_record_locked(&database, user_id, bot_id)?;
         action(&mut bot)?;
-        self.save_record_locked(&mut database, &bot)?;
+        self.save_record_locked_with_runtime_validation(&mut database, &bot, validate_runtime)?;
         Ok(bot.view())
     }
 
@@ -1209,7 +1221,20 @@ impl BotStore {
         database: &mut Connection,
         bot: &PersistedBot,
     ) -> Result<(), String> {
-        bot.bundle.verify()?;
+        self.save_record_locked_with_runtime_validation(database, bot, true)
+    }
+
+    fn save_record_locked_with_runtime_validation(
+        &self,
+        database: &mut Connection,
+        bot: &PersistedBot,
+        validate_runtime: bool,
+    ) -> Result<(), String> {
+        if validate_runtime {
+            bot.bundle.verify()?;
+        } else {
+            bot.bundle.verify_for_feedback()?;
+        }
         if bot.attempts.len() > MAX_ATTEMPTS
             || bot.attempts.iter().any(|attempt| {
                 attempt.evidence.len() > MAX_EVIDENCE
@@ -3230,6 +3255,10 @@ fn build_bundle(
     let mut pipeline_archives = Vec::new();
     let mut factors = Vec::new();
     let mut models = Vec::new();
+    let mut pipeline_input_slots = Vec::new();
+    let mut pipeline_input_slot_set = HashSet::new();
+    let mut pipeline_output_names = HashSet::new();
+    let mut strategy_inputs = Vec::new();
     let mut seen_components = HashSet::new();
 
     for slot in &revision.definition.input_slots {
@@ -3259,10 +3288,25 @@ fn build_bundle(
                     .manifest
                     .factor_scope
                     .ok_or_else(|| "Factor package has no declared scope".to_owned())?;
+                let feature_slots = feature_slot_names(&package)?;
+                for slot_name in &feature_slots {
+                    if pipeline_input_slot_set.insert(slot_name.clone()) {
+                        pipeline_input_slots.push(slot_name.clone());
+                    }
+                }
+                for output_name in &package.manifest.output_names {
+                    if !pipeline_output_names.insert(output_name.clone()) {
+                        return Err("Pipeline Component output names must be unique".into());
+                    }
+                }
+                strategy_inputs.push(adaq_bot_runtime::WorkerPipelineInputBinding {
+                    alias: slot.alias.clone(),
+                    source: binding.output_name.clone(),
+                });
                 factors.push(adaq_bot_runtime::WorkerFactorBinding {
                     scope: factor_scope_name(scope),
                     component_sha256: package.manifest.wasm_sha256.clone(),
-                    feature_slots: feature_slot_names(&package)?,
+                    feature_slots,
                     output_names: package.manifest.output_names.clone(),
                     warmup_bars: u64::from(package.manifest.warmup_bars),
                     parameters: package_parameters(&package, None)?,
@@ -3299,9 +3343,24 @@ fn build_bundle(
                 }
                 model_hashes.push(component_hash.clone());
                 pipeline_archives.push(binding.package_archive_sha256.clone());
+                let feature_slots = feature_slot_names(&package)?;
+                for slot_name in &feature_slots {
+                    if pipeline_input_slot_set.insert(slot_name.clone()) {
+                        pipeline_input_slots.push(slot_name.clone());
+                    }
+                }
+                for output_name in &output_names {
+                    if !pipeline_output_names.insert(output_name.clone()) {
+                        return Err("Pipeline Component output names must be unique".into());
+                    }
+                }
+                strategy_inputs.push(adaq_bot_runtime::WorkerPipelineInputBinding {
+                    alias: slot.alias.clone(),
+                    source: binding.output_name.clone(),
+                });
                 models.push(adaq_bot_runtime::WorkerModelBinding {
                     component_sha256: component_hash,
-                    feature_slots: feature_slot_names(&package)?,
+                    feature_slots,
                     output_names,
                     seed: qualification.context.seed,
                     parameters: package_parameters(&package, None)?,
@@ -3309,6 +3368,7 @@ fn build_bundle(
             }
         }
     }
+    pipeline_input_slots.retain(|slot| !pipeline_output_names.contains(slot));
     if component_hashes[0] != strategy_package.manifest.wasm_sha256 {
         return Err("Strategy component identity changed while preparing the Bundle".into());
     }
@@ -3336,14 +3396,10 @@ fn build_bundle(
             parameters: strategy_parameters,
         },
         pipeline: adaq_bot_runtime::WorkerPipelineBinding {
-            input_slots: revision
-                .definition
-                .input_slots
-                .iter()
-                .map(|slot| slot.alias.clone())
-                .collect(),
+            input_slots: pipeline_input_slots,
             factors,
             models,
+            strategy_inputs,
         },
         worker,
         worker_policy,
@@ -4506,6 +4562,50 @@ mod tests {
 
         assert!(bundle.verify().is_err());
         assert!(bundle.verify_for_feedback().is_ok());
+    }
+
+    #[test]
+    fn complete_stop_releases_lease_for_legacy_worker_binding() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = store(database.clone());
+        store
+            .deploy("user-a", bundle("bot-a", "account-a"))
+            .unwrap();
+        store.begin_attempt("user-a", "bot-a", false).unwrap();
+        store
+            .fault("user-a", "bot-a", "host-restart", "test")
+            .unwrap();
+
+        let mut legacy = bundle("bot-a", "account-a");
+        legacy.runtime_bundle.input.worker.protocol_version = "adaq-bot-worker-ipc@1.0.0".into();
+        legacy.runtime_bundle.identity = hash_json(&legacy.runtime_bundle.input).unwrap();
+        legacy.identity = hash_json(&legacy.without_identity()).unwrap();
+
+        {
+            let database = database.lock().unwrap();
+            database
+                .execute(
+                    "UPDATE bots SET bundle_json = ?1 WHERE user_id = ?2 AND bot_id = ?3",
+                    rusqlite::params![serde_json::to_string(&legacy).unwrap(), "user-a", "bot-a"],
+                )
+                .unwrap();
+        }
+
+        let stopped = store
+            .complete_stop("user-a", "bot-a", BotStopPolicy::KeepPosition, vec![], true)
+            .unwrap();
+        assert_eq!(stopped.state, LifecycleState::Stopped);
+
+        let lease_count: i64 = database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM bot_account_leases WHERE account_id = ?1",
+                ["account-a"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(lease_count, 0);
     }
 
     #[test]

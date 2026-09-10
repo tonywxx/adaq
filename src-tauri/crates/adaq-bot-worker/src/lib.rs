@@ -975,6 +975,37 @@ fn present_values(
         .collect()
 }
 
+fn strategy_input_values(
+    values: &HashMap<String, Option<f64>>,
+    strategy: &adaq_bot_runtime::WorkerStrategyBinding,
+    pipeline: &WorkerPipelineBinding,
+) -> Result<Vec<f64>, InputError> {
+    if pipeline.strategy_inputs.is_empty() {
+        return present_values(values, &strategy.feature_slots);
+    }
+    strategy
+        .feature_slots
+        .iter()
+        .map(|alias| {
+            let source = pipeline
+                .strategy_inputs
+                .iter()
+                .find(|input| input.alias == *alias)
+                .map(|input| input.source.as_str())
+                .ok_or(InputError::Fault(
+                    "strategy-input-binding-invalid",
+                    "strategy input source is not bound",
+                ))?;
+            values.get(source).copied().flatten().ok_or_else(|| {
+                InputError::NoTarget(
+                    NoTargetReason::MissingInput,
+                    format!("required pipeline output is unavailable: {source}"),
+                )
+            })
+        })
+        .collect()
+}
+
 fn missing_stage_output(binding: &WorkerFactorBinding) -> NoTargetReason {
     if binding.warmup_bars > 0 {
         NoTargetReason::Warmup
@@ -1154,7 +1185,7 @@ fn evaluate_pipeline(
                 .map(|(frame, values)| {
                     Ok(strategy_abi::exports::adaq::strategy::api::FeatureFrame {
                         open_time_ms: frame.open_time_ms,
-                        values: present_values(&values, &strategy.feature_slots)?,
+                        values: strategy_input_values(&values, strategy, pipeline)?,
                     })
                 })
                 .collect::<Result<Vec<_>, InputError>>()?;
@@ -1338,7 +1369,7 @@ fn evaluate_pipeline(
                     Ok(
                         portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::FeatureRow {
                             instrument_id: row.instrument_id.clone(),
-                            values: present_values(&values, &strategy.feature_slots)?,
+                            values: strategy_input_values(&values, strategy, pipeline)?,
                         },
                     )
                 })
@@ -1502,6 +1533,7 @@ fn spawn_heartbeat(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use adaq_bot_runtime::WorkerPipelineInputBinding;
 
     #[test]
     fn missing_values_become_no_target_inputs() {
@@ -1540,5 +1572,37 @@ mod tests {
             error,
             InputError::NoTarget(NoTargetReason::MissingInput, _)
         ));
+    }
+
+    #[test]
+    fn strategy_inputs_map_component_outputs_to_strategy_slots() {
+        let values = HashMap::from([
+            ("factor-value".to_owned(), Some(0.25)),
+            ("forecast".to_owned(), Some(0.75)),
+        ]);
+        let strategy = adaq_bot_runtime::WorkerStrategyBinding {
+            world: StrategyWorld::Strategy,
+            component_sha256: "a".repeat(64),
+            feature_slots: vec!["factor-score".into(), "forecast-signal".into()],
+            parameters: Vec::new(),
+        };
+        let pipeline = WorkerPipelineBinding {
+            strategy_inputs: vec![
+                WorkerPipelineInputBinding {
+                    alias: "factor-score".into(),
+                    source: "factor-value".into(),
+                },
+                WorkerPipelineInputBinding {
+                    alias: "forecast-signal".into(),
+                    source: "forecast".into(),
+                },
+            ],
+            ..WorkerPipelineBinding::default()
+        };
+
+        assert_eq!(
+            strategy_input_values(&values, &strategy, &pipeline).unwrap(),
+            vec![0.25, 0.75]
+        );
     }
 }

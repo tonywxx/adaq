@@ -1506,7 +1506,7 @@ impl FeatureMaterializationStore {
         self.attempt(user_id, attempt_id)
     }
 
-    fn read_rows(
+    pub fn read_rows(
         &self,
         dataset: &FeatureDataset,
     ) -> Result<Vec<FeatureDatasetRow>, MaterializationStoreError> {

@@ -2170,6 +2170,7 @@ struct ModelInputEvidence {
     feature_plan_hash: String,
     snapshot_id: String,
     universe_id: String,
+    output_name: String,
     lookback: u32,
 }
 
@@ -2738,6 +2739,7 @@ fn accepted_model_deployment_replay(
         feature_plan_hash: factor_binding.feature_plan_hash,
         snapshot_id: factor_binding.snapshot_id,
         universe_id: factor_binding.universe_id,
+        output_name: factor_binding.output_name,
         lookback: factor_binding.lookback,
     };
     if model_input_evidence_hash(&crate::factor_research::FactorModelInputBinding {
@@ -2748,6 +2750,7 @@ fn accepted_model_deployment_replay(
         feature_plan_hash: input.feature_plan_hash.clone(),
         snapshot_id: input.snapshot_id.clone(),
         universe_id: input.universe_id.clone(),
+        output_name: input.output_name.clone(),
         lookback: input.lookback,
     })? != run.input_evidence_sha256
     {
@@ -3314,6 +3317,10 @@ fn build_model_evidence(
     fixture.validate()?;
     let windows = TutorialWindows::m12();
     windows.validate()?;
+    let output_name = factor_dataset
+        .and_then(|dataset| dataset.manifest.output_names.first())
+        .cloned()
+        .unwrap_or_else(|| "momentum-score".into());
     let factor_values = match factor_dataset {
         Some(dataset)
             if dataset.manifest.dataset_id == input.factor_dataset_id
@@ -3325,12 +3332,12 @@ fn build_model_evidence(
                     .manifest
                     .output_names
                     .iter()
-                    .any(|name| name == "momentum-score") =>
+                    .any(|name| name == &output_name) =>
         {
             dataset
                 .rows
                 .iter()
-                .filter_map(|row| match row.values.get("momentum-score") {
+                .filter_map(|row| match row.values.get(&output_name) {
                     Some(FactorObservationValue::Available { value, .. }) => {
                         Some(((row.instrument_id.clone(), row.observation_time_ms), *value))
                     }
@@ -3427,19 +3434,19 @@ fn build_model_evidence(
     let dataset = DatasetH::new(vec![
         HostPartition {
             name: PartitionName::Train,
-            feature_names: vec!["momentum-score".into()],
+            feature_names: vec![output_name.clone()],
             rows: train_rows,
             labels_visible: true,
         },
         HostPartition {
             name: PartitionName::SelectionValidation,
-            feature_names: vec!["momentum-score".into()],
+            feature_names: vec![output_name.clone()],
             rows: selection_rows,
             labels_visible: true,
         },
         HostPartition {
             name: PartitionName::Test,
-            feature_names: vec!["momentum-score".into()],
+            feature_names: vec![output_name],
             rows: final_rows,
             labels_visible: false,
         },
@@ -7062,6 +7069,7 @@ pub async fn model_demo_run(
             feature_plan_hash: factor_binding.feature_plan_hash,
             snapshot_id: factor_binding.snapshot_id,
             universe_id: factor_binding.universe_id,
+            output_name: factor_binding.output_name,
             lookback: factor_binding.lookback,
         };
         let factor_dataset =
@@ -8145,6 +8153,7 @@ pub async fn model_final_evaluate(
                 feature_plan_hash: factor_binding.feature_plan_hash,
                 snapshot_id: factor_binding.snapshot_id,
                 universe_id: factor_binding.universe_id,
+                output_name: factor_binding.output_name,
                 lookback: factor_binding.lookback,
             };
             let factor_dataset =
@@ -9419,6 +9428,7 @@ mod tests {
                 feature_plan_hash: sha256(b"feature-plan"),
                 snapshot_id: sha256(b"snapshot"),
                 universe_id: sha256(b"universe"),
+                output_name: "momentum-score".into(),
                 lookback: 20,
             },
             HostResourcePolicy::m12_default(),
@@ -9454,6 +9464,7 @@ mod tests {
                 feature_plan_hash: sha256(b"feature-plan"),
                 snapshot_id: sha256(b"snapshot"),
                 universe_id: sha256(b"universe"),
+                output_name: "momentum-score".into(),
                 lookback: 20,
             },
             HostResourcePolicy::m12_default(),
@@ -9526,6 +9537,7 @@ mod tests {
                 feature_plan_hash: sha256(b"plan"),
                 snapshot_id: sha256(b"snapshot"),
                 universe_id: sha256(b"universe"),
+                output_name: "momentum-score".into(),
                 lookback: 20,
             },
             HostResourcePolicy::m12_default(),
@@ -9601,6 +9613,7 @@ mod tests {
                     feature_plan_hash: sha256(b"plan"),
                     snapshot_id: sha256(b"snapshot"),
                     universe_id: sha256(b"universe"),
+                    output_name: "momentum-score".into(),
                     lookback: 20,
                 },
                 HostResourcePolicy::m12_default(),
@@ -10118,6 +10131,7 @@ mod tests {
             feature_plan_hash: model_binding.feature_plan_hash.clone(),
             snapshot_id: model_binding.snapshot_id.clone(),
             universe_id: model_binding.universe_id.clone(),
+            output_name: model_binding.output_name.clone(),
             lookback: model_binding.lookback,
         };
         let model = demo_model_run_with_evidence(
