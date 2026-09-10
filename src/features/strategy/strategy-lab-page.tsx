@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { useMarketSessionStore } from "@/lib/market-session";
+import { identifierLabel } from "@/lib/identifier-display";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -609,7 +610,11 @@ export function StrategyLabPage() {
 								<option value="">{t("strategyLab.selectFactor")}</option>
 								{catalog?.factorInputs.map((input) => (
 									<option key={factorSourceKey(input)} value={factorSourceKey(input)}>
-										{input.outputName} · {input.decisionHash.slice(0, 12)}
+										{input.outputName} ·{" "}
+										{identifierLabel(
+											input.decisionHash,
+											t("identifiers.factorDecision"),
+										)}
 									</option>
 								))}
 							</select>
@@ -629,7 +634,11 @@ export function StrategyLabPage() {
 								<option value="">{t("strategyLab.selectModel")}</option>
 								{catalog?.modelInputs.map((input) => (
 									<option key={modelSourceKey(input)} value={modelSourceKey(input)}>
-										{input.qualificationReportId.slice(0, 12)} · {input.componentVersion}
+										{identifierLabel(
+											input.qualificationReportId,
+											t("identifiers.qualification"),
+										)}{" "}
+										· {input.componentVersion}
 									</option>
 								))}
 							</select>
@@ -882,7 +891,9 @@ export function StrategyLabPage() {
 																`strategyLab.status.${attempt.status === "ready-to-create" ? "ready" : attempt.status === "published" ? "published" : "rejected"}`,
 															)}
 														</span>{" "}
-														<code className="text-xs">{attempt.attemptId}</code>
+														<code className="text-xs">
+													{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
+												</code>
 														{attempt.diagnostics.map((diagnostic) => (
 															<p
 																className="mt-1 font-mono text-xs"
@@ -1140,8 +1151,8 @@ function QualificationPanel({
 							<option value="">{t("strategyLab.qualification.selectRevision")}</option>
 							{options.map(({ key, candidate, item }) => (
 								<option key={key} value={key}>
-									{candidate.candidateId.slice(0, 12)} · {item.revision.revision} ·{" "}
-									{candidate.scope}
+								{identifierLabel(candidate.candidateId, t("identifiers.candidate"))} ·{" "}
+								{item.revision.revision} · {candidate.scope}
 								</option>
 							))}
 						</select>
@@ -1241,7 +1252,9 @@ function QualificationPanel({
 								{attempt.status}
 							</Badge>
 						</div>
-						<code className="break-all text-xs">{attempt.attemptId}</code>
+						<code className="break-all text-xs">
+						{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
+					</code>
 						{attempt.diagnostics.map((diagnostic) => (
 							<p
 								className="mt-2 font-mono text-xs text-destructive"
@@ -1265,9 +1278,22 @@ function QualificationPanel({
 				{qualification ? (
 					<div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-sm">
 						<p className="font-medium">{t("strategyLab.qualification.qualified")}</p>
-						<code className="break-all text-xs">{qualification.qualificationId}</code>
+						<code className="break-all text-xs">
+							{identifierLabel(
+								qualification.qualificationId,
+								t("identifiers.qualification"),
+							)}
+						</code>
 						<p className="mt-2 text-muted-foreground">
-							{qualification.backtestRunId} · {qualification.validationReportId}
+							{identifierLabel(
+								qualification.backtestRunId,
+								t("identifiers.backtestRun"),
+							)}{" "}
+							·{" "}
+							{identifierLabel(
+								qualification.validationReportId,
+								t("identifiers.validationReport"),
+							)}
 						</p>
 						<details className="mt-3 rounded-md bg-muted/40 p-3">
 							<summary className="cursor-pointer font-medium">

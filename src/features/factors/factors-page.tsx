@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
+import { IdentifierDisplay } from "@/components/identifier-display";
 import {
 	archiveSha256,
 	type LibraryComponent,
 } from "@/features/components/component-library";
+import { identifierLabel } from "@/lib/identifier-display";
 import {
 	DatabaseIcon,
 	GitBranchIcon,
@@ -1821,7 +1823,7 @@ function EvaluationStart({
 								const id = textAt(dataset.manifest, "datasetId", "");
 								return (
 									<option key={id} value={id}>
-										{shortFactorHash(id)} ·{" "}
+										{identifierLabel(id, t("identifiers.factorDataset"))} ·{" "}
 										{formatNumber(
 											Number(valueAt(dataset.manifest, "observationCount") ?? 0),
 										)}{" "}
@@ -1994,8 +1996,11 @@ function ReportInspector({
 			<CardHeader className="flex-row items-start justify-between space-y-0">
 				<div>
 					<CardTitle>{t("factors.evaluations.inspector")}</CardTitle>
-					<CardDescription className="font-mono">
-						{textAt(report.report, "reportHash")}
+					<CardDescription>
+						<IdentifierDisplay
+							id={textAt(report.report, "reportHash")}
+							label={t("identifiers.fingerprint")}
+						/>
 					</CardDescription>
 				</div>
 				<Button type="button" variant="outline" size="sm" onClick={onClose}>
@@ -3520,7 +3525,7 @@ function DecisionsWorkspace({
 									const id = textAt(item.manifest, "datasetId", "");
 									return (
 										<option key={id} value={id}>
-											{id}
+											{identifierLabel(id, t("identifiers.factorDataset"))}
 										</option>
 									);
 								})}
@@ -3576,7 +3581,7 @@ function DecisionsWorkspace({
 									const hash = textAt(item.report, "reportHash", "");
 									return (
 										<option key={hash} value={hash}>
-											{`${shortFactorHash(hash)} · ${localizedFactorCode(textAt(item.report, "evidenceState", "unknown"), t)}`}
+											{`${identifierLabel(hash, t("identifiers.fingerprint"))} · ${localizedFactorCode(textAt(item.report, "evidenceState", "unknown"), t)}`}
 										</option>
 									);
 								})}
@@ -3608,7 +3613,7 @@ function DecisionsWorkspace({
 									const hash = textAt(item.policy, "policyHash", "");
 									return (
 										<option key={hash} value={hash}>
-											{`r${textAt(item.policy, "revision")} · ${shortFactorHash(hash)}`}
+											{`r${textAt(item.policy, "revision")} · ${identifierLabel(hash, t("identifiers.fingerprint"))}`}
 										</option>
 									);
 								})}
@@ -3761,9 +3766,9 @@ function DecisionsWorkspace({
 								{matchingDecisions.map((item) => {
 									const id = textAt(item.decision, "decisionId", "");
 									return (
-										<option key={id} value={id}>
-											{shortFactorHash(id)}
-										</option>
+									<option key={id} value={id}>
+										{identifierLabel(id, t("identifiers.factorDecision"))}
+									</option>
 									);
 								})}
 							</select>
@@ -4103,7 +4108,10 @@ function DecisionsWorkspace({
 								<div className="flex flex-wrap items-center gap-2">
 									<Badge variant="outline">r{textAt(item.policy, "revision")}</Badge>
 									<span className="font-mono text-xs">
-										{shortFactorHash(valueAt(item.policy, "policyHash"))}
+										{identifierLabel(
+											textAt(item.policy, "policyHash"),
+											t("identifiers.fingerprint"),
+										)}
 									</span>
 								</div>
 								<div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
