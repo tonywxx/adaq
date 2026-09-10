@@ -1,4 +1,5 @@
 import { useAuthenticatedUserId } from "@/authenticated-user";
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { formatDateTime, formatDecimal, formatNumber } from "@/lib/i18n";
+import { identifierLabel } from "@/lib/identifier-display";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { useMemo, useState } from "react";
@@ -278,7 +280,8 @@ export function PaperFeedbackPage() {
 							<option value="">{t("paperFeedback.selectBot")}</option>
 							{eligibleBots.map((bot) => (
 								<option key={bot.botId} value={bot.botId}>
-									{bot.botId} · {bot.bundle.identity}
+									{identifierLabel(bot.botId, t("identifiers.bot"))} ·{" "}
+									{bot.bundle.identity}
 								</option>
 							))}
 						</select>
@@ -306,7 +309,8 @@ export function PaperFeedbackPage() {
 								.filter((attempt) => attempt.attemptId === selectedBot.currentAttemptId)
 								.map((attempt) => (
 									<option key={attempt.attemptId} value={attempt.attemptId}>
-										{attempt.attemptId} · {attempt.state}
+										{identifierLabel(attempt.attemptId, t("identifiers.botAttempt"))} ·{" "}
+										{attempt.state}
 									</option>
 								))}
 						</select>
@@ -373,9 +377,15 @@ export function PaperFeedbackPage() {
 						<Card key={item.snapshotId}>
 							<CardHeader className="flex flex-row items-start justify-between gap-3">
 								<div>
-									<CardTitle>{item.input.botId}</CardTitle>
+									<CardTitle>
+										<IdentifierDisplay
+											id={item.input.botId}
+											label={t("identifiers.bot")}
+										/>
+									</CardTitle>
 									<CardDescription>
-										{item.snapshotId} · {item.input.bundleId}
+										{identifierLabel(item.snapshotId, t("identifiers.feedbackSnapshot"))} ·{" "}
+										{identifierLabel(item.input.bundleId, t("identifiers.bundle"))}
 									</CardDescription>
 								</div>
 								<StateBadge state={item.evidenceState} t={t} />
@@ -458,7 +468,8 @@ export function PaperFeedbackPage() {
 										<StateBadge state={item.evidenceState} t={t} />
 									</span>
 									<span className="text-xs text-muted-foreground">
-										{item.reportId} · {item.input.snapshotId}
+										{identifierLabel(item.reportId, t("identifiers.feedbackReport"))} ·{" "}
+										{identifierLabel(item.input.snapshotId, t("identifiers.feedbackSnapshot"))}
 									</span>
 									{item.input.metrics.directionalConclusion === false ? (
 										<span className="text-xs text-muted-foreground">

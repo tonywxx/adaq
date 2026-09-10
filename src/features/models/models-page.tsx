@@ -1,3 +1,4 @@
+import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -31,12 +32,12 @@ import {
 	datasetStatusSummary,
 	evaluationMetricKind,
 	evaluationExportFilename,
-	evaluationReportSummary,
 	formatModelError,
 	isCompatibleEvaluationSignal,
 	signalRowPageRequest,
 	signalRowSummary,
 } from "./models-workspace";
+import { identifierLabel } from "@/lib/identifier-display";
 type ModelOutput = EvaluationSignalContract;
 
 const metricValue = (value?: number) =>
@@ -544,7 +545,8 @@ export function ModelsPage({
 									>
 										{snapshots.map((item) => (
 											<option key={item.snapshotId} value={item.snapshotId}>
-												{item.code} {item.interval} — {item.snapshotId}
+												{item.code} {item.interval} —{" "}
+												{identifierLabel(item.snapshotId, t("identifiers.snapshot"))}
 											</option>
 										))}
 									</select>
@@ -588,7 +590,8 @@ export function ModelsPage({
 											<div className="flex items-center justify-between gap-3">
 												<span className="break-all select-text">
 													{attempt.status} · {attempt.progressCompleted}/
-													{attempt.progressTotal || "?"} · {attempt.attemptId}
+													{attempt.progressTotal || "?"} ·{" "}
+													{identifierLabel(attempt.attemptId, t("identifiers.attempt"))}
 												</span>
 												{(attempt.status === "failed" ||
 													attempt.status === "cancelled") && (
@@ -951,8 +954,12 @@ export function ModelsPage({
 								evaluationReports.map((report) => (
 									<Card key={report.reportId}>
 										<CardHeader>
-											<CardTitle className="break-all text-base">
-												{evaluationReportSummary(report)}
+											<CardTitle className="text-base">
+												<IdentifierDisplay
+													id={report.reportId}
+													label={t("identifiers.evaluationReport")}
+													name={report.evidenceState.summary}
+												/>
 											</CardTitle>
 										</CardHeader>
 										<CardContent className="grid gap-3 text-sm">
