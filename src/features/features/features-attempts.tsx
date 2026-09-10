@@ -325,23 +325,25 @@ export function FittingView({
 											<dt className="inline font-medium">
 												{t("features.fitting.protocolHash")}:{" "}
 											</dt>
-											<dd className="inline break-all font-mono">
-												{attempt.protocolHash}
+											<dd className="inline font-mono" title={attempt.protocolHash}>
+												{attempt.protocolHash.slice(0, 16)}…
 											</dd>
 										</div>
 										<div>
 											<dt className="inline font-medium">
 												{t("features.fitting.planHash")}:{" "}
 											</dt>
-											<dd className="inline break-all font-mono">{attempt.planHash}</dd>
+											<dd className="inline font-mono" title={attempt.planHash}>
+												{attempt.planHash.slice(0, 16)}…
+											</dd>
 										</div>
 										{attempt.sourceAttemptId && (
 											<div>
 												<dt className="inline font-medium">
 													{t("features.fitting.sourceAttempt")}:{" "}
 												</dt>
-												<dd className="inline break-all font-mono">
-													{attempt.sourceAttemptId}
+												<dd className="inline font-mono" title={attempt.sourceAttemptId}>
+													{attempt.sourceAttemptId.slice(0, 16)}…
 												</dd>
 											</div>
 										)}
@@ -792,8 +794,8 @@ export function MaterializationView({
 												<dt className="inline font-medium">
 													{t("features.materialization.sourceAttempt")}:{" "}
 												</dt>
-												<dd className="inline break-all font-mono">
-													{attempt.sourceAttemptId}
+												<dd className="inline font-mono" title={attempt.sourceAttemptId}>
+													{attempt.sourceAttemptId.slice(0, 16)}…
 												</dd>
 											</div>
 										)}
@@ -802,7 +804,9 @@ export function MaterializationView({
 												<dt className="inline font-medium">
 													{t("features.materialization.dataset")}:{" "}
 												</dt>
-												<dd className="inline break-all font-mono">{attempt.datasetId}</dd>
+												<dd className="inline font-mono" title={attempt.datasetId}>
+													{attempt.datasetId.slice(0, 16)}…
+												</dd>
 											</div>
 										)}
 									</dl>

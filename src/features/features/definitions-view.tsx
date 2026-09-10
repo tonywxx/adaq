@@ -171,7 +171,7 @@ export function DefinitionsView({
 			setFeedback({
 				kind: "ok",
 				text: t("features.definitions.published", {
-					hash: published.definitionHash,
+					hash: published.definitionHash.slice(0, 12),
 				}),
 			});
 			setEditor(null);
