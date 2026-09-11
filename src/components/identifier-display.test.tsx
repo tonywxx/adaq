@@ -44,12 +44,15 @@ test("identifiers show a readable name and an abbreviation beside it", async () 
 				expect(codes[index].textContent).not.toContain(id);
 			});
 			expect(abbreviateIdentifier(ids[0])).not.toBe(abbreviateIdentifier(ids[1]));
-			// Native options cannot host the control, so they keep the complete value.
+			// Native options cannot host the control, but they show the same
+			// abbreviation so the value reads consistently everywhere.
 			expect(container.querySelector("select")?.value).toBe(ids[1]);
 			const options = container.querySelectorAll("option");
 			ids.forEach((id, index) => {
 				expect(options[index].value).toBe(id);
-				expect(options[index].textContent).toBe(`${label} · ${id}`);
+				expect(options[index].textContent).toBe(
+					`${label} · ${abbreviateIdentifier(id)}`,
+				);
 			});
 		}
 	} finally {

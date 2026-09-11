@@ -1,7 +1,7 @@
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { identifierLabel } from "@/lib/identifier-display";
+import { abbreviateIdentifier, identifierLabel } from "@/lib/identifier-display";
 import { Input } from "@/components/ui/input";
 import { LoadingState } from "@/components/loading-state";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -400,7 +400,7 @@ export function ValidationPage() {
 			);
 			if (!accepted.ok || accepted.value.ignored) return;
 			setFeedback({
-				summary: `Protocol ${protocol.protocolId.slice(0, 16)} frozen and immutable.`,
+				summary: `Protocol ${abbreviateIdentifier(protocol.protocolId)} frozen and immutable.`,
 			});
 			await refresh();
 		} catch (error) {
@@ -423,7 +423,7 @@ export function ValidationPage() {
 				request: { userId, protocolId },
 			});
 			setFeedback({
-				summary: `Validation Report ${report.reportId.slice(0, 16)} completed.`,
+				summary: `Validation Report ${abbreviateIdentifier(report.reportId)} completed.`,
 			});
 			await Promise.all([refresh(), refreshRuns(runsPage)]);
 		} catch (error) {
@@ -774,7 +774,7 @@ export function ValidationPage() {
 										}
 										onClick={() => setSelectedReportId(report.reportId)}
 									>
-										Report {report.reportId.slice(0, 12)}
+										Report {abbreviateIdentifier(report.reportId)}
 									</Button>
 								))}
 							</div>

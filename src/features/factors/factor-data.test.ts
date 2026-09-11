@@ -18,7 +18,7 @@ test("bounds explicit Grid Search before it reaches the native API", () => {
 test("keeps pagination and exact evidence identifiers deterministic", () => {
 	expect(factorPageCount(0)).toBe(1);
 	expect(factorPageCount(101)).toBe(3);
-	expect(shortFactorHash("a".repeat(64))).toBe(`${"a".repeat(16)}…`);
+	expect(shortFactorHash("a".repeat(64))).toBe("aaa…aaa");
 	expect(parseFactorJson('{"schemaVersion":"1.0.0"}', "draft")).toEqual({
 		schemaVersion: "1.0.0",
 	});

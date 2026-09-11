@@ -1,4 +1,4 @@
-import { identifierLabel } from "@/lib/identifier-display";
+import { abbreviateIdentifier, identifierLabel } from "@/lib/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -265,7 +265,7 @@ export function ResearchContextPreflight({
 									<option key={dataset.datasetId} value={dataset.datasetId}>
 										{identifierLabel(dataset.datasetId, t("identifiers.featureDataset"))}{" "}
 										· {t("identifiers.featurePlan")}:{" "}
-										{dataset.manifest.request.featurePlanHash}
+										{abbreviateIdentifier(dataset.manifest.request.featurePlanHash)}
 									</option>
 								))}
 							</select>

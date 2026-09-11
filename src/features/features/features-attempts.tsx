@@ -1,5 +1,5 @@
 import { IdentifierDisplay } from "@/components/identifier-display";
-import { identifierLabel, truncateIdentifier } from "@/lib/identifier-display";
+import { identifierLabel } from "@/lib/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -325,29 +325,29 @@ export function FittingView({
 											<dt className="inline font-medium">
 												{t("features.fitting.protocolHash")}:{" "}
 											</dt>
-											<dd className="inline font-mono" title={attempt.protocolHash}>
-												{truncateIdentifier(attempt.protocolHash, 16)}
-											</dd>
+										<dd className="inline font-mono">
+											<IdentifierDisplay id={attempt.protocolHash} />
+										</dd>
 										</div>
 										<div>
 											<dt className="inline font-medium">
 												{t("features.fitting.planHash")}:{" "}
 											</dt>
-											<dd className="inline font-mono" title={attempt.planHash}>
-												{truncateIdentifier(attempt.planHash, 16)}
-											</dd>
+										<dd className="inline font-mono">
+											<IdentifierDisplay id={attempt.planHash} />
+										</dd>
 										</div>
 										{attempt.sourceAttemptId && (
 											<div>
 												<dt className="inline font-medium">
 													{t("features.fitting.sourceAttempt")}:{" "}
 												</dt>
-												<dd className="inline font-mono" title={attempt.sourceAttemptId}>
-													{truncateIdentifier(attempt.sourceAttemptId, 16)}
-												</dd>
-											</div>
-										)}
-										{attempt.artifactId && (
+											<dd className="inline font-mono">
+												<IdentifierDisplay id={attempt.sourceAttemptId} />
+											</dd>
+										</div>
+									)}
+									{attempt.artifactId && (
 											<div>
 												<dt className="inline font-medium">
 													{t("features.fitting.artifact")}:{" "}
@@ -798,19 +798,19 @@ export function MaterializationView({
 												<dt className="inline font-medium">
 													{t("features.materialization.sourceAttempt")}:{" "}
 												</dt>
-												<dd className="inline font-mono" title={attempt.sourceAttemptId}>
-													{truncateIdentifier(attempt.sourceAttemptId, 16)}
-												</dd>
-											</div>
-										)}
-										{attempt.datasetId && (
+											<dd className="inline font-mono">
+												<IdentifierDisplay id={attempt.sourceAttemptId} />
+											</dd>
+										</div>
+									)}
+									{attempt.datasetId && (
 											<div>
 												<dt className="inline font-medium">
 													{t("features.materialization.dataset")}:{" "}
 												</dt>
-												<dd className="inline font-mono" title={attempt.datasetId}>
-													{truncateIdentifier(attempt.datasetId, 16)}
-												</dd>
+											<dd className="inline font-mono">
+												<IdentifierDisplay id={attempt.datasetId} />
+											</dd>
 											</div>
 										)}
 									</dl>

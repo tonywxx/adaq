@@ -23,11 +23,12 @@ export function truncateIdentifier(id: string, length: number) {
 	return id.length > length ? `${id.slice(0, length)}…` : id;
 }
 
-// Native options need text content; keep their complete identity alongside the label.
+// Native options and toasts need text content, so they cannot host the interactive
+// control; they still show the same abbreviated form to keep the UI consistent.
 export function identifierLabel(
 	id: string,
 	label: string,
 	name?: string | null,
 ) {
-	return `${identifierName(id, label, name)} · ${id}`;
+	return `${identifierName(id, label, name)} · ${abbreviateIdentifier(id)}`;
 }

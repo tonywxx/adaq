@@ -493,9 +493,17 @@ export function BotsPage() {
 														id={decision.decisionId}
 														label={t("identifiers.decision")}
 													/>
-													{decision.targetHash
-														? ` · ${t("identifiers.fingerprint")}: ${decision.targetHash.slice(0, 12)}`
-														: ""}
+												{decision.targetHash ? (
+													<>
+														{" · "}
+														<IdentifierDisplay
+															id={decision.targetHash}
+															label={t("identifiers.fingerprint")}
+														/>
+													</>
+												) : (
+													""
+												)}
 												</p>
 											))}
 										</div>

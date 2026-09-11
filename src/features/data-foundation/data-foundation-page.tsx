@@ -2148,7 +2148,8 @@ export function DataFoundationPage() {
 									<option value="">{t("dataFoundation.selectUniverse")}</option>
 									{universeQuery.data?.map((universe) => (
 										<option key={universe.snapshotId} value={universe.snapshotId}>
-											{universe.snapshotId} · {universe.contentSha256.slice(0, 8)}
+											{abbreviateIdentifier(universe.snapshotId)} ·{" "}
+											{abbreviateIdentifier(universe.contentSha256)}
 										</option>
 									))}
 								</select>

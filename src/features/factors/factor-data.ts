@@ -1,3 +1,4 @@
+import { abbreviateIdentifier } from "@/lib/identifier-display";
 import { readSessionCache, writeSessionCache } from "@/lib/session-cache";
 import type { FactorJson } from "./factor-types";
 
@@ -36,9 +37,10 @@ export function factorHash(value: unknown) {
 	return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
-export function shortFactorHash(value: unknown, length = 16) {
+// Shares the app-wide identifier form so factor hashes read the same everywhere.
+export function shortFactorHash(value: unknown) {
 	if (typeof value !== "string") return "—";
-	return value.length > length ? `${value.slice(0, length)}…` : value;
+	return abbreviateIdentifier(value);
 }
 
 export function factorString(value: unknown, fallback = "—") {

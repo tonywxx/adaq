@@ -504,7 +504,7 @@ function LineageDetails({ view }: { view: FactorLineageView }) {
 						{view.trials.map((trial) => (
 							<tr key={textAt(trial, "trialId")} className="border-b">
 								<td className="py-2 pr-3 font-mono">
-									{shortFactorHash(textAt(trial, "trialId"), 12)}
+									{shortFactorHash(textAt(trial, "trialId"))}
 								</td>
 								<td className="py-2 pr-3">
 									<Badge

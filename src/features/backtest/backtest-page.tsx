@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { identifierLabel } from "@/lib/identifier-display";
+import { abbreviateIdentifier, identifierLabel } from "@/lib/identifier-display";
 import { Input } from "@/components/ui/input";
 import { LoadingState } from "@/components/loading-state";
 import { Label } from "@/components/ui/label";
@@ -593,7 +593,7 @@ export function BacktestPage({
 				});
 				if (attemptId)
 					await adapter.completeStrategyAttempt(attemptId, value.runId);
-				setMessage(`Portfolio Attempt ${value.runId.slice(0, 12)} completed.`);
+				setMessage(`Portfolio Attempt ${abbreviateIdentifier(value.runId)} completed.`);
 				return;
 			}
 			const value = await adapter.run(runEffect.request);
@@ -601,7 +601,7 @@ export function BacktestPage({
 			setRun(value);
 			setExecutionOffset(0);
 			setShowResults(true);
-			setMessage(`Run ${value.runId.slice(0, 12)} completed.`);
+			setMessage(`Run ${abbreviateIdentifier(value.runId)} completed.`);
 			if (historyPage === 1) void refreshHistory(1);
 			else setHistoryPage(1);
 		} catch (error) {
@@ -714,7 +714,7 @@ export function BacktestPage({
 		setDraftSession(restored.value);
 		setShowResults(false);
 		setMessage(
-			`Run ${source.runId.slice(0, 12)} copied into a new editable configuration.`,
+			`Run ${abbreviateIdentifier(source.runId)} copied into a new editable configuration.`,
 		);
 	};
 	return (
