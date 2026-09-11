@@ -8,7 +8,6 @@ import {
 } from "@/components/ui/tooltip";
 import {
 	abbreviateIdentifier,
-	identifierName,
 	identifierOptionalName,
 } from "@/lib/identifier-display";
 import { cn } from "@/lib/utils";
@@ -72,9 +71,9 @@ export function IdentifierDisplay({
 				sideOffset={4}
 				className="block max-w-[min(28rem,calc(100vw-2rem))]"
 			>
-				<span className="text-muted-foreground">
-					{visibleName ?? identifierName(id, t("identifiers.fullId"))}
-				</span>
+				{visibleName ? (
+					<span className="text-muted-foreground">{visibleName}</span>
+				) : null}
 				<code className="mt-1 block break-all font-mono">{id}</code>
 			</TooltipContent>
 		</Tooltip>

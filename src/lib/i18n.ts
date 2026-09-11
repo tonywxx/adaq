@@ -9,7 +9,6 @@ export const INTERFACE_LOCALE_STORAGE_KEY = "adaq.interfaceLocale";
 
 const english = {
 	identifiers: {
-		fullId: "Full identifier",
 		copyHint: "Click to copy the full identifier",
 		snapshot: "Market data snapshot",
 		universe: "Point-in-time universe snapshot",
@@ -2956,7 +2955,6 @@ const factorResearchSimplifiedChinese = {
 
 const simplifiedChinese = {
 	identifiers: {
-		fullId: "完整标识",
 		copyHint: "点击复制完整标识",
 		snapshot: "市场数据快照",
 		universe: "时点品种池快照",
