@@ -1,18 +1,18 @@
-# M10 Feature Engineering
+# Feature Engineering（特征工程）
 
-[English](./m10-feature-engineering.md)
+[English](./feature-engineering.md)
 
-状态：已接受的架构与可执行交付基线。M9 已完成；M10 issues 实现本契约。
+状态：Feature Engineering（Host-owned 特征工程工作区）的已接受架构。
 
 ## 最终结果
 
-M10 交付一个 Host-owned、Tauri-independent 的 `adaq-feature-engine`，把不可变 M9 Market Evidence 转换为因果且可复现的 Feature Evidence。用户可以发布 Feature Definition、拟合声明式 Transformation、冻结 Feature Plan、物化不可变 Feature Dataset、检查其 Provenance 与 Missingness，并在 M11 Factor Research 中复用 Completed Dataset。
+Feature Engineering 交付一个 Host-owned、Tauri-independent 的 `adaq-feature-engine`，把不可变 Market Evidence 转换为因果且可复现的 Feature Evidence。用户可以发布 Feature Definition、拟合声明式 Transformation、冻结 Feature Plan、物化不可变 Feature Dataset、检查其 Provenance 与 Missingness，并在 Factor Research 中复用 Completed Dataset。
 
-Historical Batch Materialization 与 Stateful Observation Evaluation 使用同一 Plan 和 Operator State Machine。M10 证明二者等价，但不把 Online Evaluator 连接到 Paper Provider 或 Trading Bot。
+Historical Batch Materialization 与 Stateful Observation Evaluation 使用同一 Plan 和 Operator State Machine。引擎证明二者等价，但不把 Online Evaluator 连接到 Paper Provider 或 Trading Bot。
 
 ## 边界
 
-M10 包含：
+特征引擎包含：
 
 - Pointwise、Time-Series 与 Cross-Sectional Feature Scope。
 - 有限、版本化 Feature Operator Catalog，而不是 Script 或通用表达式语言。
@@ -20,11 +20,11 @@ M10 包含：
 - 精确 Availability、Warmup、Missingness、Typed Error、Fitting、Immutable Evidence 与 User-scoped Lifecycle Record。
 - 本地化 `/features` Workspace，包含 Definitions、Fitting Attempts、Materialization Attempts 与 Datasets。
 
-M10 不包含：
+不包含：
 
 - 任意 Python、JavaScript、Rust、Notebook 或 `adaq:feature` Component 执行。
 - Factor Research/Promotion、Model Training、Strategy Construction、Paper Order、Bot 或 Marketplace。
-- M11 或后续 Workflow 隐式触发 Fitting 或 Feature Materialization。
+- 后续 Workflow 隐式触发 Fitting 或 Feature Materialization。
 - Future-return Feature、future-known backward adjustment、silent imputation、forward-fill、drop row 或修改 Canonical Market Data。
 - Feature Dataset export 与拖拽式 Graph Canvas。
 
@@ -44,9 +44,9 @@ M10 不包含：
 - Plan 冻结 Definition Revision、有序 Output、Feature Scope、Operator Parameter、Fitted Transformation Artifact、Warmup、Availability、Missingness、Feature Operator Catalog、Feature Engine、Indicator Engine、Target/Build Identity 与 Seed。
 - Plan 可复用，不绑定单一 Snapshot、Universe 或 Observation Range。
 - Feature Materialization Request 绑定 User、Plan、Market Data Snapshot、Point-in-Time Instrument Universe、Observation Range、Parameter 与 Seed。
-- pre-v1 不兼容 Feature Schema 启动时拒绝并要求显式 device-level Reset；M10 不提供 migration、dual reader 或 automatic deletion。
+- pre-v1 不兼容 Feature Schema 启动时拒绝并要求显式 device-level Reset；引擎不提供 migration、dual reader 或 automatic deletion。
 
-Canonical Definition/Plan JSON 上限为 1 MiB、256 DAG nodes、64 ordered outputs、DAG depth 64、100,000 effective Warmup Bars。Dataset 与 Runtime 上限由 M10 benchmark 决定。
+Canonical Definition/Plan JSON 上限为 1 MiB、256 DAG nodes、64 ordered outputs、DAG depth 64、100,000 effective Warmup Bars。Dataset 与 Runtime 上限由已记录的引擎 benchmark 决定。
 
 ## Feature 语义
 
@@ -58,7 +58,7 @@ Feature Scope 显式区分：
 - Time Series 按因果 Observation Time 顺序读取一个 Instrument。
 - Cross Sectional 在一个 Observation Time 读取完整 Point-in-Time Instrument Universe。
 
-M10 只允许 Pointwise → Time Series → Cross Sectional 的依赖扩张；Cross-Sectional Output 必须是终端。Cross-Sectional Plan 绑定单一 Venue、Asset Class、Bar Interval、Price Basis 与 Valuation Currency。Observed 与 Reconstructed Universe 可以物化并保留精确 Evidence State；Unknown 使完整 Batch Unavailable。
+依赖扩张只允许 Pointwise → Time Series → Cross Sectional；Cross-Sectional Output 必须是终端。Cross-Sectional Plan 绑定单一 Venue、Asset Class、Bar Interval、Price Basis 与 Valuation Currency。Observed 与 Reconstructed Universe 可以物化并保留精确 Evidence State；Unknown 使完整 Batch Unavailable。
 
 Available At 是全部 Input 与 Fitted Transformation Artifact Availability 的最大值。Corporate Action 使用记录的发布与生效 Evidence；本地计算时间只是 Operational Metadata，不属于 Historical Identity。
 
@@ -116,7 +116,7 @@ Materialization 先写私有 Staging，校验完整 Schema、Row、Hash 后原�
 
 Pointwise/Time-Series Branch 按 Instrument 与 Continuous Bar Segment 流式执行；Cross-Sectional Branch 按完整 Observation-Time Batch 执行。Chunk Size 不进入 Identity，也不能改变 Output。Batch Materialization 与 Stateful Observation Evaluation 必须在 Chunk Boundary、Bar Gap、Missing Dependency 与 Restart Reconstruction 下产生等价 Feature Observation。
 
-M11 只能消费 Completed Feature Dataset。M10 Definition 不能依赖 Factor Output；Component Adapter 继续支持现有 Strategy/Model Slot 绑定 External Factor，但不得产生 Definition Cycle。
+Factor Research 只能消费 Completed Feature Dataset。Feature Definition 不能依赖 Factor Output；Component Adapter 继续支持现有 Strategy/Model Slot 绑定 External Factor，但不得产生 Definition Cycle。
 
 ## Feature Workspace
 
@@ -126,7 +126,7 @@ Definition Editor 使用 Accessible Ordered Node List，而不是 Canvas。每�
 
 Dataset Inspection 显示 Manifest/Provenance、每 Output Coverage、Unavailable Reason Counts、Minimum、Maximum、Mean、Population Standard Deviation，以及按 Instrument、Time、Output、State 过滤的 50-row pagination。Rebuildable Summary 只是 Content Inspection，不是 Factor/Model Evaluation。
 
-## 验收
+## 验证
 
 Reference Journey：
 
@@ -136,23 +136,8 @@ Reference Journey：
 
 Failure Coverage 包括 Fitting Leakage、Insufficient Samples、Undefined Arithmetic、Non-finite Engine Output、Cancellation、Interruption Recovery、Atomic Publication、Incompatible Schema Rejection、User Isolation、Deletion Lock 与 Batch/Observation Equivalence。
 
-M10 Performance Acceptance 使用 1,000,000-Bar Time-Series Workload 与 10,000-Instrument × 252-Observation Cross-Sectional Workload，证明 bounded memory、cancellation、chunk equivalence 与 responsive GUI scheduling，并记录 canonical macOS ARM64 baseline，不预先编造 latency/RSS target。
+Workspace 验证覆盖 Definition 生命周期、Fitting Protocol 与 Artifact、Dataset Materialization 与 Attempt、Dataset Inspection、语义证明（Batch/Observation Equivalence、因果 Availability、Chunk 与 Restart Determinism）、User Isolation 与 Evidence Boundary，以及 1024 px 下本地化、可访问的 `/features` GUI。
 
-每个 Child 把所有 Acceptance Criterion 映射到 Implementation 与独立 Evidence。最终 Gate 包括 Focused Test、`cargo fmt --all --check`、`cargo test --workspace`、`cargo check --workspace`、Frontend Jest、`pnpm run build`、Lint、`git diff --check`、双语 parity、Accessibility 与 supported-platform CI evidence。
+Performance 验证使用 1,000,000-Bar Time-Series Workload 与 10,000-Instrument × 252-Observation Cross-Sectional Workload，证明 bounded memory、cancellation、chunk equivalence 与 responsive GUI scheduling，并记录 canonical macOS ARM64 baseline，不预先编造 latency/RSS target。
 
-## 交付切片
-
-M10 通过十个 dependency-ordered slices 交付：
-
-1. [#78 — Core Contract、Feature Operator Catalog、Plan 2.0、Identity](https://github.com/tonywxx/adaq/issues/78)。
-2. [#79 — Pointwise/Time-Series Operator](https://github.com/tonywxx/adaq/issues/79)。
-3. [#80 — Cross-Sectional Scope 与 Universe Operator](https://github.com/tonywxx/adaq/issues/80)。
-4. [#81 — Fitting Protocol、Attempt、Artifact](https://github.com/tonywxx/adaq/issues/81)。
-5. [#82 — Feature Dataset Materialization Lifecycle 与 Parquet Evidence](https://github.com/tonywxx/adaq/issues/82)。
-6. [#83 — Batch/Observation Equivalence 与 Component Integration](https://github.com/tonywxx/adaq/issues/83)。
-7. [#84 — User-scoped Native API 与 Background Runner](https://github.com/tonywxx/adaq/issues/84)。
-8. [#85 — Localized Feature Workspace](https://github.com/tonywxx/adaq/issues/85)。
-9. [#86 — Three-market Fixture、Benchmark、Hardening](https://github.com/tonywxx/adaq/issues/86)。
-10. [#87 — Bilingual Cross-platform Acceptance](https://github.com/tonywxx/adaq/issues/87)。
-
-M10 已发布为 [Parent Issue #77](https://github.com/tonywxx/adaq/issues/77)。依赖为 `1 → {2,4,5}`、`2 → 3`、`{2,3,4,5} → 6`、`{5,6} → 7`、`7 → 8`、`{6,7} → 9`、`{1…9} → 10`。M10.1 是唯一初始可执行 Frontier。
+最终 Gate 包括 Focused Test、`cargo fmt --all --check`、`cargo test --workspace`、`cargo check --workspace`、Frontend Jest（`pnpm test`）、`pnpm run build`、Lint、`git diff --check`、双语 parity、Accessibility 与 supported-platform CI evidence。Focused 原生测试位于 `src-tauri/crates/adaq-feature-engine/tests/`（`contracts.rs`、`operators.rs`、`fitting.rs`、`materialization.rs`、`reference_fixtures.rs`）。

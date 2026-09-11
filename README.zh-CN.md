@@ -6,50 +6,33 @@
 
 > **AdaQ** (Ada Quant) 是一个 AI 驱动的量化交易平台，支持股票和数字加密资产。
 
-AdaQ V1 是本地优先的研究、回测与模拟桌面应用。它不执行真实账户订单；真实交易属于未来独立的、由主机控制的监督式 Live 里程碑。
+## V1 状态：工程自动验收已成功
 
-## 功能特性
+**AdaQ V1 工程自动验收已成功** —— 代码、构建、测试、组件、研究链路、Desktop、Paper Reconcile 与 Bot 安全生命周期已通过验收。最新一次自动化验收[在 macOS ARM64 与 Windows x86_64 上全绿](https://github.com/tonywxx/adaq/actions/runs/34547508572)，[release v0.9.8](https://github.com/tonywxx/adaq/releases/tag/v0.9.8) 已发布。
 
-- **本地优先的研究、回测与模拟** —— 可复现的本地市场数据研究与回测。AdaQ V1 执行确定性的 Spot 模拟，绝不发出真实订单；真实交易属于未来的独立里程碑。
-- **不可变、可审计的运行记录** —— 每一次 Backtest Run 都不可变地绑定 Market Data Snapshot、Component Lock、参数、Indicator Plan、Execution Profile、引擎版本与 seed。结果在本地持久化，包含 Target Decisions、模拟订单、成交、权益、费用、指标、历史记录和图表，并提供可重放级的 provenance。
-- **沙箱化的 WebAssembly 组件** —— 基于版本化 Component ABI（`adaq:factor@2.0.0`、`adaq:strategy@1.0.0`）的确定性 WASM Factor 与 Strategy 组件。Factor Component 消费按范围划分、由主机解析的 Feature Batch，并返回保留身份的具名标量输出；Strategy Component 消费密集的 Feature Slots，并输出完整的 Target Exposure 决策。
-- **可验证的 `.adaq` 包** —— 带有权威 Component Meta 的不可变、内容寻址 Component Package。Package、Run 与 Snapshot 均以内容寻址，因而 provenance 精确且可复现。
-- **组件库** —— 列表/详情式组件库，展示名称、类型、版本、兼容性与 Run-lock 状态；详情视图公开参数、Feature Slots、Factor 依赖、Warmup、ABI/SDK/Manifest 版本与精确哈希。通过原生文件选择器导入；删除需确认并展示阻止删除的引用。
-- **TA-Lib Indicator Engine 与 Feature Slots** —— 主机固定官方 C TA-Lib v0.7.1，并暴露含 160 个 Indicators、179 个输出的 `adaq-indicator-catalog@1.0.0`。用 `planHash` 冻结 canonical Indicator Plan；支持 Market、Built-in、External 三类 Factor Slot source；按 Continuous Bar Segment 执行，在 Bar Gaps 重置分析状态，并执行 typed Plan/Run errors 与固定资源上限。
-- **Model 研究与 Forecast Signal Dataset（M8）** —— 原生 Model Component 与外部生成的 `.adaq-signals` 证据共同产出不可变 Forecast Signal Dataset、Forecast Evaluation Report，并驱动兼容的 Signal-driven 或 Hybrid Strategy Run。
-- **多市场数据基础（M9）** —— OKX Spot、中国 A 股和美国股票路径保留 Source、Canonical、Quality、Point-in-Time Universe、Calendar、Capability 与不可变 Snapshot 证据；Markets GUI 展示三个市场，并使用一个 User-scoped Watchlist。
-- **研究验证** —— 不可变的 Validation Protocol 与 Validation Report 支持时间顺序留出（chronological holdout）、滚动前推（walk-forward）与跨市场研究，提供可追溯证据及 JSON / Markdown 导出。
-- **双语桌面 GUI（Tauri 2 + React 19）** —— 以 Operations Dashboard 为首页；包含 Markets、Components、Models、Backtest、Validation 等工作区，以及账户、locale 和 Provider Connections 设置。UI 通过 `i18next` / `react-i18next` 提供英文（美国）与简体中文，支持本地化格式、浅色/深色主题与无障碍控件。
-- **精确、可信的数值** —— 金融数值在领域与 IPC 边界间保持精确的 Decimal 表示；canonical 身份、可用性、Provider 能力与 provenance 在各处均可检查。
+该结论有明确边界：它**不代表**策略盈利，也**不授权** Live Trading。当前 Demo Bot 仍无成交（0 fills）与 realized feedback 样本。AdaQ V1 是本地优先的研究、回测与模拟桌面应用，绝不执行真实账户订单；真实交易属于未来独立的、由主机控制的监督式里程碑。详细证据见 [V1 自动验收摘要](V1自动验收文档.md)与 [V1 模拟盘 Bot 分析报告](V1模拟盘Bot分析报告.md)。
 
-## V1 适用范围
+## V1 工作流
 
-AdaQ V1 是一个**本地优先的研究、回测与模拟**桌面应用，不执行任何真实账户订单。当前可用的闭环为：检查 OKX Spot、中国 A 股和美国股票的市场证据；开发或导入 Component；准备精确 Market Data Snapshot 与 Feature Plan；研究并评估不可变 Factor Evidence、记录明确 Promotion Decision；生成或导入不可变 Forecast Signal 证据；评估预测；运行 Dataset-first 沙箱化 Strategy Backtest；检查持久化 provenance 与结果；并生成研究验证证据。
+AdaQ V1 是一条本地优先的闭环，按用户工作流组织：
 
-当前 M12 交付不包含（路线图 M13–M18）：Portfolio Strategy、Paper Trading 账户与执行、受监督 Trading Bot、Marketplace 发布，以及任何真实资金交易。
+**数据 → Feature / Factor / Model → Strategy / Backtest → Paper / Bot → Operations / Feedback**
+
+| 阶段 | 当前可完成的工作 |
+| --- | --- |
+| **数据** | 检查 OKX Spot、中国 A 股与美国股票证据；采集、校验并冻结带 Source/Canonical/Quality provenance 的不可变 Market Data Snapshot，使用一个 User-scoped Watchlist。 |
+| **Feature** | 在 `/features` 工作区发布因果 Feature Definition、拟合声明的 Transformation、冻结 Feature Plan，并物化不可变的 Parquet Feature Dataset。 |
+| **Factor** | 在 `/factors` 工作区基于不可变 Factor Dataset 研究因子，进行因果评估、保留 Research Family lineage 与多重检验控制，并记录 User-owned Promotion Decision。 |
+| **Model** | 在本地 Python 研究 Lab 训练 Qlib Ridge 模型；生成原生或外部（`.adaq-signals`）Forecast Signal Dataset 与不可变 Forecast Evaluation Report。 |
+| **Strategy / Backtest** | 在不可变 Snapshot 上运行 Dataset-first 的沙箱化 Strategy Backtest，提供完整 provenance；用 chronological holdout、walk-forward 或 cross-market Protocol 做验证。 |
+| **Paper / Bot** | 连接不下单的 Paper/Demo 账户（OKX Demo、Alpaca Paper、本地 A 股模拟器），完成 OKX Demo Paper 对账，并部署受监督、决策 fail-closed 的 Bot。 |
+| **Operations / Feedback** | 在 Operations Dashboard 监控运行健康与告警；通过 Paper Feedback 与人工复核的 Research Review Decision 闭环。 |
+
+底层能力：版本化 ABI 下的沙箱化 WebAssembly Factor/Strategy/Model 组件、可验证的内容寻址 `.adaq` 包、固定 C TA-Lib 指标引擎（160 个指标）、精确 Decimal 金融数值、不可变可审计的 Run，以及双语（English / 简体中文）Tauri 2 + React 19 桌面 GUI。
 
 ## AdaQ App
 
 ![AdaQ App](screenshots/adaq-app-ui-zh-CN.png)
-
-## 已实现里程碑
-
-| 里程碑 | 已交付能力 |
-| -------- | ------------ |
-| M1 | 版本化的 WebAssembly Component ABI：`adaq:factor@2.0.0` 与 `adaq:strategy@1.0.0`。Factor Component 将按范围划分、由主机解析的 Feature Batch 转换为保留身份的具名标量输出；Strategy Component 消费密集的 Feature Slots，并输出完整的 Target Exposure 决策。 |
-| M2 | 确定性的内存 Run Engine。主机校验 Closed Bars、执行沙箱资源限制、绑定有序 Feature Slots、记录 Warmup 或 Missing Input 暂停，并在无效数据或无效目标仓位时 fail closed。 |
-| M3 | 可复现的 crypto Spot Backtest。Backtest Run 不可变地绑定 Market Data Snapshot、Component Lock、参数、Indicator Plan、Execution Profile、引擎版本与 seed。结果本地持久化，包括 Target Decisions、模拟订单、成交、权益、费用、指标、历史记录和图表。 |
-| M4 | Component Developer Kit。Rust SDK、`adaq-component` CLI、模板、conformance 检查与 `.adaq` 打包流程支持 Factor 和 Strategy Component 的 `new`、`build`、`verify`。 |
-| M5 | TA-Lib Indicator Engine、Indicator Catalog 与 Feature Slots。主机固定官方 C TA-Lib v0.7.1，暴露含 160 个 Indicators、179 个输出的 `adaq-indicator-catalog@1.0.0`，用 `planHash` 冻结 canonical Indicator Plans，支持 Market、Built-in、External 三类 Factor Slot source，按 Continuous Bar Segment 执行，在 Bar Gaps 重置分析状态，并执行 typed Plan/Run errors 与固定资源上限。 |
-| M6 | 可执行组件与研究验证。双语可执行 Factor 和 Strategy 示例讲解受支持的 SDK 与 CLI 工作流；可重放级 Backtest Run provenance 保留全部权威输入；不可变 Validation Protocol 与 Validation Report 支持时间顺序留出、滚动前推和跨市场研究，并提供可追溯证据及 JSON/Markdown 导出。 |
-| M7 | 研究工作区产品化。Components、Backtest 和 Validation 在不可变本地证据之上提供引导式、可审计的桌面工作流；[双语人工验收指南](docs/m7-manual-acceptance.zh-CN.md)覆盖从空项目开始的完整路径。 |
-| M8 | Model 研究与 Dataset-first Backtest。原生 Model Component 和外部 `.adaq-signals` 证据生成不可变 Forecast Signal Dataset、Forecast Evaluation Report，以及兼容的 Signal-driven 或 Hybrid Strategy Run。[双语人工验收指南](docs/m8-manual-acceptance.zh-CN.md)覆盖完整的人工复核路径。 |
-| M9 | 多市场数据与平台基础。OKX Spot、通过 `akshare-rs` 的中国 A 股、通过 Alpaca Basic 的美国股票提供可检查的 Source/Canonical/Quality/Snapshot 证据、安全且不下单的 Paper/Demo Connections、双语 Markets Routes 与一个 User-scoped Watchlist。[M9 双语人工验收指南](docs/m9-manual-acceptance.zh-CN.md)覆盖最终跨平台复核路径。 |
-| M10 | 状态：已接受。Feature Engineering。因果 Feature Definitions 与 Feature Plan 2.0 构成不可变 revision chain；Fitting Protocols 发布 fitted Transformation Artifacts；materialization 发布不可变 Parquet Feature Datasets，带原子完成与恢复；batch 与 observation 评估在同一 evaluator 下等价；User-scoped Feature APIs 运行于一个持久 FIFO background runner；本地化 `/features` workspace 覆盖 Definitions、Fitting、Materialization、Datasets 与 Preview。[M10 双语人工验收指南](docs/m10-manual-acceptance.zh-CN.md)（[English](docs/m10-manual-acceptance.md)）覆盖最终跨平台复核路径。 |
-| M11 | 状态：已接受。Factor Research 与 Promotion。Factor ABI v2、Declarative 与 Private Custom Candidate、不可变 Factor Dataset、因果 Time-Series/Cross-Sectional Evaluation Report、保留 Research Family、User-owned Promotion Decision、共享 Native Research Scheduling 与本地化 `/factors` Workspace 已完成。[M11 双语人工验收指南](docs/m11-manual-acceptance.zh-CN.md)（[English](docs/m11-manual-acceptance.md)）记录最终跨平台 Evidence Matrix。 |
-| M12 | 状态：已接受。Python Research SDK 与 Qlib-first Model Lab。Managed Runtime、受信任 Runner 执行、Python Factor Candidate、Host-owned Parameter Grid、Qlib Ridge Experiment、不可变 Linear Model Artifact、Forecast Signal Dataset 以及双语 Tutorial/Acceptance Gate 已完成。参见 [M12 架构](docs/m12-python-research-and-model-lab.zh-CN.md)（[English](docs/m12-python-research-and-model-lab.md)）与[人工验收指南](docs/m12-python-research-manual-acceptance.zh-CN.md)（[English](docs/m12-python-research-manual-acceptance.md)）。 |
-
-M1-M12 合起来形成当前研究闭环：检查可信的多市场证据，开发或导入 Component，冻结精确市场数据与 Feature Plan，计算 Feature 并生成 finalized immutable Feature Dataset，研究并评估 Factor、保留 Evidence、记录明确 Promotion Decision，训练或导入受支持的 Model Evidence，生成或导入不可变 Forecast Signal 证据，评估预测，运行 Dataset-first 沙箱化 Strategy Backtest，检查持久化 provenance 与结果，并生成研究验证证据。
 
 ## 快速开始
 
@@ -82,7 +65,7 @@ pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-该命令会启动 Vite 开发服务器（<http://localhost:1420）并打开原生桌面窗口。>
+该命令会启动 Vite 开发服务器（<http://localhost:1420>）并打开原生桌面窗口。
 
 ### 构建（生产 / 发布）
 
@@ -169,8 +152,26 @@ adaq-component verify dist/my-factor-0.1.0.adaq --previous ../my-factor-0.1.0/ma
 
 ## 文档
 
+文档按用户工作流组织。根目录状态文件：[V1 自动验收摘要](V1自动验收文档.md)与 [V1 模拟盘 Bot 分析报告](V1模拟盘Bot分析报告.md)（0 fills，非收益证明）。
+
 | English | 简体中文 | 说明 |
 | --- | --- | --- |
+| [Research Workspaces](docs/research-workspaces.md) | — | Components、Backtest、Validation 工作区契约与人工验证路径 |
+| [Market Workspaces](docs/market-workspaces.md) | [行情工作区中文](docs/market-workspaces.zh-CN.md) | 三市场观察、Watchlist、Provenance 与数据验证路径 |
+| [Feature Engineering](docs/feature-engineering.md) | [特征工程中文](docs/feature-engineering.zh-CN.md) | Feature Definition、Plan、Fitting、Materialization 与 `/features` 工作区 |
+| [Factor Research](docs/factor-research.md) | [因子研究中文](docs/factor-research.zh-CN.md) | Factor Lab、ABI v2、Evaluation、Promotion 与 `/factors` 工作区 |
+| [Model Research](docs/model-research.md) | [模型研究中文](docs/model-research.zh-CN.md) | Forecast Signal Dataset、Forecast Evaluation、Python 研究 Lab 与 Qlib Ridge 路径 |
+| [Strategy, Risk & Execution](docs/strategy-risk-execution.md) | [策略风险执行中文](docs/strategy-risk-execution.zh-CN.md) | Strategy Intent、Host Risk、OMS 与执行边界 |
+| [Paper Trading Accounts](docs/paper-trading-accounts.md) | [模拟盘账户中文](docs/paper-trading-accounts.zh-CN.md) | Paper 账户、对账与 Currency Scoping |
+| [Bot Runtime](docs/bot-runtime.md) | [Bot 运行时中文](docs/bot-runtime.zh-CN.md) | 受监督 Bot Worker、Attempt、调度与 fail-closed 安全设计 |
+| [Operations Dashboard](docs/operations-dashboard.md) | [运行仪表盘中文](docs/operations-dashboard.zh-CN.md) | 首页选择、Operational Responsibility 与仪表盘边界 |
+| [Monitoring & Alerting](docs/monitoring-and-alerting.md) | [监控告警中文](docs/monitoring-and-alerting.zh-CN.md) | 多维健康监控与 Append-only 告警 |
+| [Research Feedback Loop](docs/research-feedback-loop.md) | [研究反馈闭环中文](docs/research-feedback-loop.zh-CN.md) | 把模拟盘证据闭环回人工复核的研究 |
+| [A-share Data Path](docs/a-share-data-path.md) | [A 股数据路径中文](docs/a-share-data-path.zh-CN.md) | 中国 A 股采集与模拟器契约 |
+| [A-share Paper Trading](docs/a-share-paper-trading.md) | [A 股模拟交易中文](docs/a-share-paper-trading.zh-CN.md) | 本地 A 股模拟器 Paper 执行 |
+| [Alpaca Data Path](docs/alpaca-data-path.md) | [Alpaca 数据路径中文](docs/alpaca-data-path.zh-CN.md) | 通过 Alpaca 的美股数据采集 |
+| [Paper Connections](docs/paper-connections.md) | [Paper 连接中文](docs/paper-connections.zh-CN.md) | Provider 连接、密钥存储与 No-order Invariant |
+| [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | 外部 `Kronos-small` 推理、规范 Forecast Signals、评估与 Dataset-first Backtest |
 | [Component SDK](src-tauri/crates/adaq-component-sdk/README.md) | [Component SDK 中文](src-tauri/crates/adaq-component-sdk/README.zh-CN.md) | 用于实现 Factor 与 Strategy Component 的 Rust SDK |
 | [CLI Tooling](src-tauri/crates/adaq-component-tooling/README.md) | [CLI 工具中文](src-tauri/crates/adaq-component-tooling/README.zh-CN.md) | 构建、验证与管理 `.adaq` 包 |
 | [Component Template](src-tauri/crates/adaq-component-tooling/templates/README.md) | [组件模板中文](src-tauri/crates/adaq-component-tooling/templates/README.zh-CN.md) | 为生成的组件项目提供脚手架 README |
@@ -179,17 +180,6 @@ adaq-component verify dist/my-factor-0.1.0.adaq --previous ../my-factor-0.1.0/ma
 | [Indicator Catalog](docs/reference/indicator-catalog.md) | [指标目录中文](docs/reference/indicator-catalog.zh-CN.md) | 160 个指标与 179 个输出，含输入、参数与 Warmup |
 | [Research Metrics](docs/reference/research-metrics.md) | [研究指标中文](docs/reference/research-metrics.zh-CN.md) | 回测与研究绩效指标 |
 | [Developing Components](docs/components/developing-components.md) | [开发组件中文](docs/components/developing-components.zh-CN.md) | Factor/Strategy 编写、Feature Slots 与 SemVer 规则 |
-| [M7 Research Workspace](docs/m7-research-workspace.md) | [M7 研究工作区中文](docs/m7-research-workspace.zh-CN.md) | 桌面研究工作区设计与验收范围 |
-| [M7 Manual Acceptance](docs/m7-manual-acceptance.md) | [M7 人工验收中文](docs/m7-manual-acceptance.zh-CN.md) | 完整、需人工复核的研究工作区验收路径 |
-| [M8 Manual Acceptance](docs/m8-manual-acceptance.md) | [M8 人工验收中文](docs/m8-manual-acceptance.zh-CN.md) | 完整的 Model、Forecast Evaluation 与 Dataset-first Backtest 验收路径 |
-| [M9 Manual Acceptance](docs/m9-manual-acceptance.md) | [M9 人工验收中文](docs/m9-manual-acceptance.zh-CN.md) | 历史多市场 M9 验收记录；当前 V1 Readiness 仅为 OKX |
-| [M10 Manual Acceptance](docs/m10-manual-acceptance.md) | [M10 人工验收中文](docs/m10-manual-acceptance.zh-CN.md) | Feature Definitions、fitting、materialization、Feature Datasets 与 `/features` workspace 的双语跨平台验收路径 |
-| [M11 Factor Research Architecture](docs/m11-factor-research.md) | [M11 Factor Research 架构中文](docs/m11-factor-research.zh-CN.md) | 已接受的 Factor Lab、ABI v2、Evaluation、Promotion 与 Delivery Baseline；参见 [M11 双语人工验收指南](docs/m11-manual-acceptance.zh-CN.md)（[English](docs/m11-manual-acceptance.md)） |
-| [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | 外部 `Kronos-small` 推理、规范 Forecast Signals、评估与 Dataset-first Backtest |
-| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | 已接受的 OKX-only“研究到 Paper”V1 范围与 Milestone 架构 |
-| [V1 Completion Recovery Map](docs/v1-completion-recovery-map.md) | [V1 完成度恢复图](docs/v1-completion-recovery-map.zh-CN.md) | 当前 HEAD 清单、R1–R14 恢复图、验收边界与关闭证据 |
-
-M12 已通过同一 External Model Adapter 边界提供受控 Microsoft Qlib Ridge 训练。M8 不包含训练、内嵌或受控 Python Runner、Verified external inference 或 Marketplace 发布。
 
 ## 免责声明
 

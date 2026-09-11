@@ -139,6 +139,19 @@ V1 提供足够行情观察能力，用于检查三条 Data 与 Paper Trading Pa
 7. Market Workflow Link 绝不能绕过 Research Qualification、Host Risk、OMS 或 Paper Execution Adapter。
 8. English (US) 与简体中文提供等价功能与 Accessible Label。
 
+## 验证路径
+
+基于 Fixture 的验证路径覆盖三条 Market Route 背后的数据基础（macOS ARM64 为基准；Windows 使用 PowerShell 与 `Get-FileHash -Algorithm SHA256`，Linux 使用 `sha256sum`）：
+
+1. **OKX Spot** — `cd src-tauri && cargo test -p adaq-data-pipeline --lib okx::tests -- --nocapture` 覆盖 Instrument Master、分页、限频/重试、Closed Bar、Checkpoint、Restart/Resume、Gap、Revision、REST/WebSocket Reconciliation、有界 Trade Retention 与非持久 Level 2。在 `/markets/crypto` 中检查 Instrument Master、从中断 Checkpoint 恢复采集、检查 Source/Canonical 质量、确定性派生更高 Interval，并重新发布不可变 Snapshot。
+2. **中国 A 股** — `cd src-tauri && cargo test -p adaq-data-pipeline --lib a_share` 覆盖 Actual-upstream Provenance、SSE/SZSE Identity、精确小数、Session、Corporate Action、质量、取消与 Restart/Resume。在 `/markets/a-shares` 中检查采集 Provenance、带 `Asia/Shanghai` Session 的 Unadjusted `PriceBasis`，以及独立不可变的 Corporate Action Evidence。
+3. **美国股票** — `cd src-tauri && cargo test -p adaq-data-core --lib alpaca` 覆盖固定 Endpoint、精确数值、IEX Capability、DST/节假日/提前收盘日历、Symbol 限制与 Daily Bar 锚定；`cargo test -p adaq-data-pipeline --lib us_equity` 覆盖 Pipeline。在 `/markets/us-equities` 中检查 Provider Capability Snapshot 与 `America/New_York` 语义的 Session Evidence。
+4. **质量、Lifecycle 与研究 Evidence** — `cd src-tauri && cargo test -p adaq-data-pipeline --lib` 覆盖 Passed/Degraded/Rejected 路径、Quarantine、显式 Gap、取消、原子清理、User Isolation、Revision 与 Snapshot 发布。Scheduled Closure 是日历 Evidence 而非假 Bar Gap；真实 Gap 被保留、绝不 Forward-fill；历史 Source Revision 保持 Append-only；被引用 Snapshot 被 Deletion Lock；旧 Snapshot 重放其原始不可变 Evidence。
+5. **Connections 与 No-order Invariant** — `cargo test --lib connections` 覆盖 Fixture 驱动的保存、测试、轮换、删除、User Isolation、Endpoint Allowlist、Redaction、权限、Currency 与 Clock-skew；`cargo test --lib connections connection_test_never_requests_an_order_endpoint` 证明每次连接测试均为只读（不请求 `/orders` 或 Trade Endpoint）。Alpaca Paper 与 OKX Demo 是仅有的连接环境；Live/自定义 Endpoint 在联网前被拒绝。
+6. **本地化与 Shell** — `pnpm exec jest --watchman=false --runInBand src/lib/i18n.test.ts src/bootstrap.test.ts` 覆盖 Locale Resolution、持久化边界、Fallback、`Intl` 格式化与 First-paint 顺序；Market Route 在 1024 px 下保持键盘可访问，状态含义不依赖颜色。
+
+凭据、Authorization Header、OTP、Token、私有路径与私有行情数据绝不进入 Evidence；可选的真实 Provider 检查只能使用维护者在 **Settings → Connections** 中输入的凭据，并在结束后删除。
+
 ## 已实现 GUI 与截图预期
 
 桌面实现现在提供上述四个 Route，保留 `/markets/crypto` 的现有 Crypto Workspace，并在三个 Market Filter 之间使用同一个 Venue 加 Native Code 的 Watchlist Identity。A 股与美股页面会明确展示 Provider Observation、Calendar Coverage、不可用的 Bid/Ask 与 Direct-provider Bar Quality，不会把它们升级为 Canonical Evidence。

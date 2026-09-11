@@ -1,14 +1,14 @@
-# M12 Python Research SDK 与 Qlib-first Model Lab
+# Model Research：Python Research SDK 与 Qlib-first Model Lab
 
-[English](./m12-python-research-and-model-lab.md)
+[English](./model-research.md)
 
-状态：本文件是已接受 M12 合同的实现与验证记录；该合同已作为 [Parent Specification #97](https://github.com/tonywxx/adaq/issues/97) 与 Child Issue #98–#104 发布。Q1–Q92 仍是边界；子 Issue 关闭前仍需逐条 Acceptance 证据和支持平台 CI。
+状态：Python Research 与 Model Lab 合同的已接受架构与验证记录。Q1–Q92 仍是边界。
 
-对应的分阶段验收合同见 [M12 Python Research 人工验收指南](./m12-python-research-manual-acceptance.zh-CN.md)。
+[验证](#验证)一节记录分阶段验收合同与 Automated Gates。
 
 ## 结果
 
-M12 把 Python 作为 ADAQ 可编辑的本地研究界面，但不把 Python 变成部署边界。用户可以针对 Host 提供的精确证据，创建、检查、调参、导入、导出并可复现地运行一个 Factor 或 Model Python Research Project。M13 为 Strategy Project 加入相同工作流。M14 只从规范 Portable Definition 或已注册的纯数据 Model Artifact 生成合格 WASI Component。
+Model Lab 把 Python 作为 ADAQ 可编辑的本地研究界面，但不把 Python 变成部署边界。用户可以针对 Host 提供的精确证据，创建、检查、调参、导入、导出并可复现地运行一个 Factor 或 Model Python Research Project。后续扩展为 Strategy Project 加入相同工作流；另一个后续扩展只从规范 Portable Definition 或已注册的纯数据 Model Artifact 生成合格 WASI Component。
 
 App 在需要时安装并管理固定的 CPython 3.12 Runtime，不使用也不要求 System Python；缺少 Python Runtime 时，ADAQ 其他功能仍可使用。Python 不获得 Credential、Order、权威 Database、内部 Parquet Layout 或 Deployment Authority。
 
@@ -18,28 +18,28 @@ App 在需要时安装并管理固定的 CPython 3.12 Runtime，不使用也不�
 2. `py-model-qlib-ridge-return` 训练 Qlib Ridge Model 并发布一个 Forecast Signal Dataset。
 3. `py-strategy-top-n-forecast` 把 Forecast 与 Factor 组合为 Portable Long-only Top-N Strategy。
 
-前两个属于 M12，第三个在 M13 可执行；符合条件时，三者在 M14 成为 Component Generation 输入。
+前两个已交付；第三个随未来 Strategy 扩展变为可执行；符合条件时，三者在未来 Component-generation 扩展中成为 Component Generation 输入。
 
 ## 产品边界
 
-M12 包含：
+Model Lab 包含：
 
 - 一个覆盖 Factor、Model 与已冻结未来 Strategy Contract 的公开 Python Research SDK。
 - 在所属 Lab 内完成源码可见的 Project 创建、静态验证、惰性 Import/Export、不可变 Revision、精确 Trust Decision、锁定 Environment、Run、Cancel、Log 与 Evidence 导航。
 - 首次使用 Python 时安装 ADAQ 管理的 CPython 3.12.x Runtime。
 - 每个 Attempt 一个私有 Python Research Runner Process，以及一个版本化 Host Protocol。
-- 把 Python Factor 作为第三种 M11 Factor Candidate Source，并复用既有 Dataset、Evaluation、Family 与 Promotion Evidence。
+- 把 Python Factor 作为第三种 Factor Candidate Source，并复用既有 Dataset、Evaluation、Family 与 Promotion Evidence。
 - Host-fed Qlib Dataset Bridge 和一个注册 Qlib Ridge Adapter，生成 `adaq:linear-model@1`。
 - Host-owned 有限 Parameter Grid、Selection Decision、Held-out Final Evaluation、Repeatability Report 与既有 Forecast Signal Contract。
 - 双语、离线、合成 Tutorial 的 Factor 与 Model 两段。
 
-M12 不包含：
+不包含：
 
 - System/User-selected Python、Conda、Mutable Virtual Environment、Run 时 `pip install`、Source Distribution 或 Dependency Build Script。
 - Embedded Monaco、Jupyter、Terminal、把 Notebook 当作权威执行证据，或 Notebook-to-WASM 翻译。
 - 通用 Qlib 兼容、Qlib Provider/Downloader、Alpha158 隐式数据、任意 Python Serialization，以及通用 Python-to-WASM 或 Qlib-to-ONNX 转换。
-- Python Strategy Execution、Portfolio Backtest 改动与完整 Tutorial 链；这些属于 M13。
-- Component Generation、Compilation、Conformance、Equivalence 与 Import；这些属于 M14。
+- Python Strategy Execution、Portfolio Backtest 改动与完整 Tutorial 链；这些属于未来 Strategy 扩展。
+- Component Generation、Compilation、Conformance、Equivalence 与 Import；这些属于未来 Component-generation 扩展。
 - Marketplace Hosting、Payment、Licence Enforcement 或任意代码的强 Sandbox 承诺。
 
 ## 架构与所有权
@@ -196,13 +196,13 @@ Arrow-compatible Schema 与 Parquet/Arrow IPC 是权威 Table Contract。Pandas 
 
 ## Python Factor 路径
 
-Python 成为 Declarative 和私有 Custom WASM 之外的第三种 M11 Factor Candidate Source。Python Candidate 绑定一个精确 Factor Project Revision 与 Environment，并生成标准 Factor Dataset；现有 M11 Evaluation、Research Family、Trial、Promotion Policy/Decision 与 Promoted Factor Library 仍是权威。
+Python 成为 Declarative 和私有 Custom WASM 之外的第三种 Factor Candidate Source。Python Candidate 绑定一个精确 Factor Project Revision 与 Environment，并生成标准 Factor Dataset；现有 Factor Evaluation、Research Family、Trial、Promotion Policy/Decision 与 Promoted Factor Library 仍是权威。
 
 Portable Factor 实现 `define(context) -> FactorDefinition`，且 Definition 阶段不能读取 Dataset。它在版本化 Feature Operator Catalog 下构造现有 Feature Definition Graph 与 Feature Plan，再返回规范 Declarative Factor Definition。Python Lambda 与 Custom Operator 不能进入 Definition。
 
 Imperative Factor 实现 `evaluate(context, batches) -> Iterator[FactorOutputBatch]`。Host 提供 Scope-correct Batch 与 Continuous Bar Segment Boundary；Bar Gap 后创建新 Project/Evaluator Object。Output Identity、Order、Availability 与 Finite Value 必须精确匹配。
 
-Imperative Python 通过 Repeatability 与正常 M11 Gate 后可以成为 Research Validated，但不是 Component Eligible。Component Eligibility 要求已接受 Portable Definition 或未来明确 Exporter。引入 Python Candidate Source 将 `FACTOR_RESEARCH_SCHEMA_VERSION` 从 `1.0.0` 提升为 `1.1.0`；不兼容 Evidence 必须走独立的显式 Device-level Factor Research Reset。
+Imperative Python 通过 Repeatability 与正常 Factor Research Gate 后可以成为 Research Validated，但不是 Component Eligible。Component Eligibility 要求已接受 Portable Definition 或未来明确 Exporter。引入 Python Candidate Source 将 `FACTOR_RESEARCH_SCHEMA_VERSION` 从 `1.0.0` 提升为 `1.1.0`；不兼容 Evidence 必须走独立的显式 Device-level Factor Research Reset。
 
 参考 Project 构建：
 
@@ -214,7 +214,7 @@ close → backward-simple-return(lookback) → cross-sectional-percentile → mo
 
 ## Qlib-first Model 路径
 
-M12 只支持一个注册 Model Research Adapter：Qlib `LinearModel` Ridge Mode。能 Import 或继承 Qlib Base Class 不代表其他 Algorithm 已受支持。
+Model Lab 只支持一个注册 Model Research Adapter：Qlib `LinearModel` Ridge Mode。能 Import 或继承 Qlib Base Class 不代表其他 Algorithm 已受支持。
 
 `adaq.qlib` 把 Host-supplied Arrow Partition 转换为只读 `(datetime, instrument)` Pandas Table，只提供 `train`、`valid` 和 Feature-only `test` 所需的有限 `DatasetH.prepare()` Surface。它不初始化 Qlib Provider、不使用 Qlib Data Directory、不下载数据、不构造 Alpha158、不访问 Network。
 
@@ -232,7 +232,19 @@ Host-owned Preprocessing 只在 Train 上 Fit，冻结 Fitted Transformation Art
 
 Adapter 发布 `adaq:linear-model@1`：有序 Input Slot、Finite Coefficient、Intercept、Numeric Representation、精确 Transformation Artifact、一个 Forecast Contract 与 Adapter Provenance。公开 Forecast 生成前必须重新加载该纯数据 Schema。Python Pickle、Executable Object Graph、Dataset Byte 与 Training Source 永不属于权威 Artifact。
 
-M14 首个 Model Exporter 只支持 `adaq:linear-model@1 → WASI Model Component`。M12 不承诺通用 Qlib-to-WASM、Qlib-to-ONNX 或 Local Qlib Paper Qualification。
+未来 Component-generation 扩展的首个 Model Exporter 只支持 `adaq:linear-model@1 → WASI Model Component`。通用 Qlib-to-WASM、Qlib-to-ONNX 或 Local Qlib Paper Qualification 均不承诺。
+
+## Forecast Signal Dataset 与 Dataset-first Backtest
+
+除 Python Lab 外，Models Workspace 还生产与消费不可变 Forecast Signal Evidence：
+
+- **Native Model Component** 在不可变 Market Data Snapshot 上执行离线 Single-Instrument 推理；每个 Completed Attempt 原子发布恰好一个 Forecast Signal Dataset，以 Parquet Hash、Feature Plan、Component Lock、Seed 与 Producer Segment Provenance 进行 Content-address 标识。
+- **外部 `.adaq-signals` Evidence**（例如 [Kronos Adapter](../examples/external-models/kronos/README.zh-CN.md)）通过原子校验导入：Archive/Parquet Hash 检查、Snapshot 对齐、Artifact 与 Preprocessing Provenance，以及绝不静默升级的 Externally Generated 信任状态。Export 保持 Dataset Identity 不变。
+- **Forecast Evaluation Report** 按 Signal Contract Kind 度量预测证据：Expected Value（MAE/RMSE/Bias/Correlation）、Probability（Brier/Log Loss/ROC AUC/Calibration）与 Score（IC/ICIR/Quantile），并包含 Coverage、Missingness、Distribution 与 Stability Window。Evidence State 为 Out-of-sample、Overlapping 或 Unknown；上游窗口重叠绝不升级 Trust。
+- **Dataset-first Backtest** 把 Strategy 的 Forecast Signal Slot 绑定到恰好一个兼容 Dataset Signal——不提供 Approximate Join、Resample、Forward-fill 或混合 Snapshot。`availableAt` 被强制执行，Fill 不得早于下一根 Bar，不可用的对齐值使 Run 以 `Run Pause::MissingInput` 暂停，绝不替换为零、不变仓位或未来数据。
+- 负面路径同样是合同：非法 Horizon 或 Kind/Target 组合在导入前失败；畸形或 Hash 不匹配的 Archive 被原子拒绝；取消的 Attempt 不发布任何结果；被引用的 Dataset/Artifact 被 Deletion Lock。
+
+Forecast Evaluation 度量预测证据；Backtest 与 Validation 度量 Strategy 行为。两者都不是盈利结论、Live Trading、Verified External Inference 或 Marketplace 准入。Training/Fitting/Tuning 与嵌入式 Python 是 Model Lab 的职责（见下文）；Cross-sectional Inference、把生成未来路径当作已实现数据、Portfolio Optimization、OMS/EMS 与受控 GPU/ONNX Runner 均不在范围内。
 
 ## Parameter Selection 与 Evidence Truth
 
@@ -247,9 +259,9 @@ Python Repeatability Report 在全新进程与允许 Batch Partition 下重放�
 
 Unverified/Divergent Output 仍可检查，但不能通过 Promotion、Component Generation 或 Runtime Qualification。
 
-## M13 Strategy 边界
+## Strategy 扩展边界
 
-M12 冻结 SDK Type，但不执行 Strategy Project。M13 加入 `start(context) -> StrategySession`，随后由 Host 严格串行调用 `decide(decision_batch, portfolio_state)`；不 Pipeline，不 Prefetch Future Batch。Bar Gap 后创建新 Project/Session。
+SDK 冻结 Strategy Type，但当前不执行 Strategy Project。未来 Strategy 扩展加入 `start(context) -> StrategySession`，随后由 Host 严格串行调用 `decide(decision_batch, portfolio_state)`；不 Pipeline，不 Prefetch Future Batch。Bar Gap 后创建新 Project/Session。
 
 Strategy 只返回一个完整 Target Decision 或 Portfolio Target。Host Risk、Execution、Backtest、Fill 与 Portfolio Update 仍是权威。任何 Required Universe Member 缺少 Required Slot 时，在调用前记录 `Run Pause::MissingInput`；Silent Eligibility Filtering 无效。
 
@@ -264,9 +276,9 @@ Strategy 只返回一个完整 Target Decision 或 Portfolio Target。Host Risk�
 
 ## Portable Parameter 与 Component Generation
 
-Factor/Strategy Portable Definition 只能通过 Typed Parameter Reference 引用有限 Manifest Allowed Value。研究选中值成为生成 Component Default。M14 必须在 Host Limit 内对每个允许组合运行 Conformance/Equivalence。Model Training Hyperparameter 固定在 Artifact 内，不变成 Inference Parameter。
+Factor/Strategy Portable Definition 只能通过 Typed Parameter Reference 引用有限 Manifest Allowed Value。研究选中值成为生成 Component Default。未来 Component-generation 扩展必须在 Host Limit 内对每个允许组合运行 Conformance/Equivalence。Model Training Hyperparameter 固定在 Artifact 内，不变成 Inference Parameter。
 
-M14 只把规范 Declarative Factor/Strategy Definition 或 `adaq:linear-model@1` 输入固定 Rust SDK Generator，再编译 WASM。Python Source、Runtime、Wheelhouse、Environment 与 Lock 不进入 `.adaq`。
+该扩展只把规范 Declarative Factor/Strategy Definition 或 `adaq:linear-model@1` 输入固定 Rust SDK Generator，再编译 WASM。Python Source、Runtime、Wheelhouse、Environment 与 Lock 不进入 `.adaq`。
 
 Generated Component Provenance 绑定 Project Revision、Definition/Artifact、Parameter Schema、Promotion/Selection Decision、Generator、SDK、ABI、Toolchain、Build Attempt 与 Component Equivalence Report。WASM 不带源码并提高逆向成本，但不能在用户自有设备上保证绝对保密；更强保护需要 Managed Remote Execution。
 
@@ -309,7 +321,7 @@ Run Python Tutorial 是引导流程。双语面板挂载在 Model Lab 路由中�
 3. 运行 Factor Grid 并展示 Evaluation Evidence。
 4. 等待用户 Factor Parameter Selection 与 Research Validated Promotion Decision。
 5. 运行 Model Grid，等待 Model Parameter Selection，再运行 Held-out Final Evaluation。
-6. M13 中运行 Strategy Grid，等待 Strategy Parameter Selection，再运行最终 Backtest。
+6. 未来 Strategy 扩展可用后，运行 Strategy Grid，等待 Strategy Parameter Selection，再运行最终 Backtest。
 
 可以自动化机械 Validation、Preparation、Execution 与 Navigation；不能自动化 Trust、Promotion、Selection 或 Final Evidence Claim。
 
@@ -342,27 +354,37 @@ Python Metadata 使用精确 `PYTHON_RESEARCH_SCHEMA_VERSION=1.0.0`。不兼容�
 
 Python Factor Integration 单独把 `FACTOR_RESEARCH_SCHEMA_VERSION` 从 `1.0.0` 提升到 `1.1.0`。不兼容 Factor Evidence 走现有显式 Device-level Factor Research Reset。两条路径都不 Migration、Dual-read 或自动删除 Pre-v1 Internal-testing Evidence。
 
-## Delivery Slice
+## 验证
 
-M12 使用七个有依赖顺序的 Child Issue，并保持一个初始 Executable Frontier：
+任何验证运行前的前置条件：
 
-1. [#98 — Project、Archive、Public SDK Contract 与 Static Validation](https://github.com/tonywxx/adaq/issues/98)。
-2. [#99 — Managed CPython、Signed Wheelhouse、Lock、Sync 与 Environment Lifecycle](https://github.com/tonywxx/adaq/issues/99)。
-3. [#100 — Runner Protocol、Attempt、Trust、Resource、Cancel、Recovery 与 Shared Queue Integration](https://github.com/tonywxx/adaq/issues/100)。
-4. [#101 — Python Factor Candidate、Factor Schema/Reset、Factor Lab 与 `py-factor-cross-sectional-momentum`](https://github.com/tonywxx/adaq/issues/101)。
-5. [#102 — Qlib Dataset Bridge、Ridge Adapter、Host Transformation 与 Linear Model Artifact](https://github.com/tonywxx/adaq/issues/102)。
-6. [#103 — Model Lab、Grid、Selection、Repeatability、Final Evaluation 与 `py-model-qlib-ridge-return`](https://github.com/tonywxx/adaq/issues/103)。
-7. [#104 — 双语 Guided Tutorial 的 Factor/Model 阶段、Failure Matrix 与三平台 M12 Acceptance](https://github.com/tonywxx/adaq/issues/104)。
+- App 在未安装 ADAQ Python Runtime 时即可启动，非 Python 路由可用；测试不使用 System Python、Conda Environment、激活的 Virtualenv 或 User `PATH` Interpreter。
+- 三个 Example 位于 `examples/python/`；共享 Dataset Fixture 位于 `src-tauri/fixtures/python-tutorial/`，且不出现在任何 Project Archive 中；所有 Instrument 与价格历史均明确标注为合成数据。
+- Research Attempt 在无必需网络数据下运行；只有显式 Runtime 或 Wheel Preparation 步骤允许联网。
 
-每个 Child 都包含可独立执行的 Problem、Solution、Acceptance Criteria 与 Out of Scope。GitHub 原生 `blocked_by` 边表达 `#98 → #99 → #100 → #101 → #102 → #103 → #104`；#98 是唯一初始 Executable Frontier。
+负面边界检查不得发现嵌入式 IDE、Jupyter Server、Generic Scripts Page、Python Order API、子进程环境中的凭据、Qlib Data Downloader/Provider、Alpha158 隐式输入、通用 Qlib Model 承诺、通用 Python-to-WASM Converter 或 Marketplace 发布 UI。
 
-M13 负责 Strategy Execution、Portfolio Backtest Integration、Portable Strategy Operation、`py-strategy-top-n-forecast` 与完整 Tutorial Chain。M14 负责固定 Rust Generator、Build、Conformance、Equivalence、Package Identity、`.adaq` 与 Component Library Import。除接受的版本化 Public Contract Type 外，M12 不为这些 Milestone 添加不可执行占位实现。
+Automated Gates 在被审阅 Revision 上运行：
 
-## CI 与验收
+```sh
+(
+  cd src-tauri
+  cargo fmt --all --check
+  cargo test -p adaq-python-research
+  cargo test --workspace
+  cargo check --workspace
+)
+pnpm exec jest --watchman=false --runInBand
+pnpm run build
+pnpm run lint
+git diff --check
+```
 
-Pull Request 在 Linux x86_64 运行完整无网络 Factor → Model Tutorial Path，并在 macOS ARM64、Windows x86_64、Linux x86_64 运行快速 Manifest/Archive/SDK Contract Check。`main`、Release 与 Manual Workflow 在三平台运行 Runtime Preparation、当期适用的完整 Tutorial Chain、Golden Evidence，以及 Cancel、Trust、Lock、Invalid-output Failure。
+同时运行各 Slice 提交的仓库托管命令，覆盖：公开 SDK 与私有 Runner 的单元/合同测试；确定性 Project Archive 生成与 hostile-archive Fixture；Runtime/Wheelhouse 签名与 Lock 测试；Runner Protocol、Cancel、Restart、Resource 与 Redaction 测试；Python Factor 精确 Golden 与 Repeatability 测试；Qlib Ridge Artifact/Reload、Withheld-label、Tolerance 与 Forecast Dataset 测试；双语文档路径/Parameter/预期结构检查（含 `python/tutorial_tests/run_tutorial_tests.py`）；以及 Retained Diagnostic Secret/Path Scan。
 
-每个接受 M12、M13、M14 的 Slice 必须为其新增能力记录至少一次 All-platform Green Run；本地通过不能替代 Supported-platform Evidence。完整标准与 Evidence Capture 见[人工验收指南](./m12-python-research-manual-acceptance.zh-CN.md)。
+Tutorial Parity Contract 断言固定 Fixture Window（Train 1–100、Purge 101–105、Selection Validation 106–140、Embargo 141–145、Final Evaluation 146–180）、三个示例 Project ID、双语引导式 `Run Python Tutorial` 入口，以及验收 Workflow 中的支持平台。每条命令退出码必须为 0，并记录精确测试计数、忽略项、警告、Fixture Hash 与平台限制。
+
+完整 Failure Matrix 包括 Cancel、Untrusted Revision、Lock/Hash Failure、Invalid Output、Restart Recovery 与 Staging Isolation。Factor/Model Example 必须保持可执行、双语、准备后离线且可独立检查；任何 Partial、Divergent、Overlapping、Untrusted、Unsupported 或 Failed Result 都不得呈现为 Qualified。本地通过不能替代 CI 记录的 Supported-platform Evidence。
 
 ## 决策索引
 

@@ -139,6 +139,19 @@ V1 includes enough market observation to inspect its three data and Paper Tradin
 7. Market workflow links never bypass research qualification, Host Risk, OMS, or Paper Execution Adapters.
 8. English (US) and Simplified Chinese provide equivalent functionality and accessible labels.
 
+## Verification journeys
+
+Fixture-backed verification journeys cover the data foundation behind the three market routes (macOS ARM64 canonical; Windows uses PowerShell and `Get-FileHash -Algorithm SHA256`, Linux uses `sha256sum`):
+
+1. **OKX Spot** — `cd src-tauri && cargo test -p adaq-data-pipeline --lib okx::tests -- --nocapture` covers Instrument Master, pagination, rate/retry handling, closed bars, checkpoints, restart/resume, gaps, revisions, REST/WebSocket reconciliation, bounded Trade retention, and non-persistent Level 2. In `/markets/crypto`, inspect the Instrument Master, resume an interrupted acquisition from its checkpoint, check Source/Canonical quality, derive a higher interval deterministically, and republish the immutable Snapshot.
+2. **China A-share** — `cd src-tauri && cargo test -p adaq-data-pipeline --lib a_share` covers actual-upstream provenance, SSE/SZSE identity, exact decimals, sessions, corporate actions, quality, cancellation, and restart/resume. In `/markets/a-shares`, inspect acquisition provenance, unadjusted `PriceBasis` with `Asia/Shanghai` sessions, and the separate immutable Corporate Action evidence.
+3. **U.S. equity** — `cd src-tauri && cargo test -p adaq-data-core --lib alpaca` covers fixed endpoints, exact values, IEX capability, DST/holiday/early-close calendars, symbol limits, and daily-bar anchoring; `cargo test -p adaq-data-pipeline --lib us_equity` covers the pipeline. In `/markets/us-equities`, inspect the Provider Capability Snapshot and session evidence with `America/New_York` semantics.
+4. **Quality, lifecycle, and research evidence** — `cd src-tauri && cargo test -p adaq-data-pipeline --lib` covers Passed/Degraded/Rejected paths, quarantine, explicit gaps, cancellation, atomic cleanup, user isolation, revisions, and Snapshot publication. Scheduled closures are calendar evidence, not false Bar Gaps; genuine gaps are retained, never forward-filled; prior Source revisions remain append-only; referenced Snapshots are deletion-locked; old Snapshots replay their original immutable evidence.
+5. **Connections and no-order invariant** — `cargo test --lib connections` covers fixture-backed save, test, rotation, deletion, user isolation, endpoint allowlisting, redaction, permissions, currency, and clock-skew handling; `cargo test --lib connections connection_test_never_requests_an_order_endpoint` proves every connection test is read-only (no `/orders` or trade endpoint). Alpaca Paper and OKX Demo are the only connection environments; Live or custom endpoints are rejected before network use.
+6. **Localization and shell** — `pnpm exec jest --watchman=false --runInBand src/lib/i18n.test.ts src/bootstrap.test.ts` covers locale resolution, persistence boundaries, fallback, `Intl` formatting, and first-paint ordering; market routes stay keyboard-accessible at 1024 px with non-color state meaning.
+
+Credentials, authorization headers, OTPs, tokens, private paths, and private market data never enter evidence; optional real-provider checks run only with maintainer-owned credentials entered in **Settings → Connections** and are deleted afterward.
+
 ## Implemented GUI and screenshot expectations
 
 The desktop implementation now exposes the four routes above, keeps the existing Crypto workspace at `/markets/crypto`, and uses one Venue-plus-native-code Watchlist identity across the market filters. A-share and U.S. equity pages keep provider observations, calendar coverage, unavailable Bid/Ask values, and direct-provider Bar quality visible rather than upgrading them to canonical evidence.
