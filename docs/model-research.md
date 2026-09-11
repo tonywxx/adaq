@@ -1,14 +1,14 @@
-# M12 Python Research SDK and Qlib-first Model Lab
+# Model Research: Python Research SDK and Qlib-first Model Lab
 
-[简体中文](./m12-python-research-and-model-lab.zh-CN.md)
+[简体中文](./model-research.zh-CN.md)
 
-Status: implementation and verification record for the accepted M12 contract published as [parent specification #97](https://github.com/tonywxx/adaq/issues/97) with child issues #98–#104. Design decisions Q1-Q92 remain the boundary; child issue closure still requires criterion-level evidence and supported-platform CI.
+Status: accepted architecture and verification record for the Python research and model lab contract. Design decisions Q1-Q92 remain the boundary.
 
-The corresponding phased acceptance contract is [M12 Python Research manual acceptance](./m12-python-research-manual-acceptance.md).
+The [Verification](#verification) section records the phased acceptance contract and automated gates.
 
 ## Outcome
 
-M12 makes Python the editable local research surface for ADAQ without making Python the deployment boundary. A User can create, inspect, tune, import, export, and reproducibly execute one Factor or Model Python Research Project over exact Host-supplied evidence. M13 adds the same workflow for Strategy Projects. M14 generates qualified WASI Components only from canonical portable Definitions or registered data-only Model Artifacts.
+The model lab makes Python the editable local research surface for ADAQ without making Python the deployment boundary. A User can create, inspect, tune, import, export, and reproducibly execute one Factor or Model Python Research Project over exact Host-supplied evidence. A future extension adds the same workflow for Strategy Projects, and a further extension generates qualified WASI Components only from canonical portable Definitions or registered data-only Model Artifacts.
 
 The App installs and manages its own pinned CPython 3.12 runtime on demand. It does not use or require the system Python, and the rest of ADAQ continues to work when the Python Runtime is absent. Python receives no credential, order, authoritative database, internal Parquet layout, or deployment authority.
 
@@ -18,28 +18,28 @@ The three bundled examples form one guided, executable journey:
 2. `py-model-qlib-ridge-return` fits a Qlib Ridge Model and publishes one Forecast Signal Dataset.
 3. `py-strategy-top-n-forecast` combines the Forecast and Factor in a portable Long-only Top-N Strategy.
 
-The first two are M12 deliverables, the third becomes executable in M13, and all three become Component-generation inputs in M14 where eligible.
+The first two are delivered; the third becomes executable with the future Strategy extension, and all three become Component-generation inputs in the future Component-generation extension where eligible.
 
 ## Product boundary
 
-M12 includes:
+The model lab includes:
 
 - One public Python Research SDK for Factor, Model, and frozen future Strategy contracts.
 - Source-visible Python Project creation, validation, inert import/export, immutable Revisions, exact Trust Decisions, locked Environments, Runs, cancellation, logs, and evidence navigation inside the owning Lab.
 - An ADAQ-managed CPython 3.12.x Runtime installed only on first Python use.
 - One private Python Research Runner process per Attempt and one versioned Host protocol.
-- Python Factor as a third M11 Factor Candidate source using existing Dataset, Evaluation, Family, and Promotion evidence.
+- Python Factor as a third Factor Candidate source using existing Dataset, Evaluation, Family, and Promotion evidence.
 - A Host-fed Qlib Dataset Bridge and one registered Qlib Ridge Adapter producing `adaq:linear-model@1`.
 - Host-owned finite parameter Grids, Selection Decisions, held-out Final Evaluation, Repeatability Reports, and existing Forecast Signal contracts.
 - The Factor and Model portions of a bilingual, offline, synthetic tutorial.
 
-M12 excludes:
+It excludes:
 
 - System or User-selected Python interpreters, Conda, mutable virtual environments, `pip install` during Run, source distributions, and dependency build scripts.
 - Embedded Monaco, Jupyter, terminal, notebook execution as authoritative evidence, or notebook-to-WASM translation.
 - Generic Qlib compatibility, Qlib Providers or downloaders, Alpha158 implicit data, arbitrary Python serialization, and generic Python-to-WASM or Qlib-to-ONNX conversion.
-- Python Strategy execution, Portfolio Backtest changes, and the complete tutorial chain, which belong to M13.
-- Component generation, compilation, conformance, equivalence, and import, which belong to M14.
+- Python Strategy execution, Portfolio Backtest changes, and the complete tutorial chain, which belong to the future Strategy extension.
+- Component generation, compilation, conformance, equivalence, and import, which belong to the future Component-generation extension.
 - Marketplace hosting, payments, licence enforcement, or a strong arbitrary-code sandbox.
 
 ## Architecture and ownership
@@ -200,13 +200,13 @@ Arrow-compatible schemas and Parquet or Arrow IPC are authoritative for tables. 
 
 ## Python Factor path
 
-Python becomes the third M11 Factor Candidate source beside Declarative and private Custom WASM Candidates. A Python Candidate binds one exact Factor Project Revision and Environment and materializes the standard Factor Dataset. Existing M11 Evaluation, Research Family, Trial, Promotion Policy, Decision, and Promoted Factor Library semantics remain authoritative.
+Python becomes the third Factor Candidate source beside Declarative and private Custom WASM Candidates. A Python Candidate binds one exact Factor Project Revision and Environment and materializes the standard Factor Dataset. Existing Factor Evaluation, Research Family, Trial, Promotion Policy, Decision, and Promoted Factor Library semantics remain authoritative.
 
 Portable Factor implements `define(context) -> FactorDefinition` without Dataset access. It constructs the existing Feature Definition graph and Feature Plan under the versioned Feature Operator Catalog, then returns the canonical Declarative Factor Definition. Python lambdas and custom operators cannot enter it.
 
 Imperative Factor implements `evaluate(context, batches) -> Iterator[FactorOutputBatch]`. The Host supplies scope-correct batches and Continuous Bar Segment boundaries. A Bar Gap creates a new Project/evaluator object. Output identity, order, availability, and finite values must match exactly.
 
-Imperative Python may become Research Validated after repeatability and normal M11 gates, but it is not Component Eligible. Component eligibility requires an accepted Portable Definition or another future explicit exporter. Introducing the Python Candidate source advances `FACTOR_RESEARCH_SCHEMA_VERSION` from `1.0.0` to `1.1.0`; incompatible evidence requires the separately accepted explicit device-level Factor Research Reset.
+Imperative Python may become Research Validated after repeatability and the normal Factor Research gates, but it is not Component Eligible. Component eligibility requires an accepted Portable Definition or another future explicit exporter. Introducing the Python Candidate source advances `FACTOR_RESEARCH_SCHEMA_VERSION` from `1.0.0` to `1.1.0`; incompatible evidence requires the separately accepted explicit device-level Factor Research Reset.
 
 The reference Project builds:
 
@@ -218,7 +218,7 @@ Its finite Grid is `lookback={5,20,60}`, with tutorial default 20.
 
 ## Qlib-first Model path
 
-M12 supports one registered Model Research Adapter: Qlib `LinearModel` in Ridge mode. Importability or inheritance from a Qlib base class does not make another algorithm supported.
+The model lab supports one registered Model Research Adapter: Qlib `LinearModel` in Ridge mode. Importability or inheritance from a Qlib base class does not make another algorithm supported.
 
 `adaq.qlib` converts Host-supplied Arrow partitions into read-only pandas tables indexed by `(datetime, instrument)` and supplies only the supported `DatasetH.prepare()` surface for `train`, `valid`, and feature-only `test`. It never initializes a Qlib Provider, uses a Qlib data directory, downloads data, constructs Alpha158, or accesses a network.
 
@@ -236,7 +236,19 @@ The first Project declares exactly one Continuous Forecast Target, five-Bar hori
 
 The Adapter publishes `adaq:linear-model@1`, containing ordered Input Slots, finite coefficients, intercept, numeric representation, exact Transformation Artifact, one Forecast contract, and Adapter provenance. It reloads that data-only schema before published Forecast generation. Python pickle, executable object graphs, Dataset bytes, and training source are never authoritative Artifact contents.
 
-M14's first Model Exporter supports only `adaq:linear-model@1 → WASI Model Component`. Generic Qlib-to-WASM, Qlib-to-ONNX, and Local Qlib Paper qualification are not promised by M12.
+The future Component-generation extension's first Model Exporter supports only `adaq:linear-model@1 → WASI Model Component`. Generic Qlib-to-WASM, Qlib-to-ONNX, and Local Qlib Paper qualification are not promised.
+
+## Forecast Signal Datasets and Dataset-first Backtests
+
+Alongside the Python lab, the Models workspace produces and consumes immutable Forecast Signal evidence:
+
+- **Native Model Components** run offline Single-Instrument inference over an immutable Market Data Snapshot and publish exactly one Forecast Signal Dataset per completed Attempt, content-addressed with Parquet hashes, Feature Plan, Component Lock, Seed, and Producer Segment provenance.
+- **External `.adaq-signals` evidence** (for example the [Kronos adapter](../examples/external-models/kronos/README.md)) is imported through atomic validation: archive/Parquet hash checks, Snapshot alignment, Artifact and preprocessing provenance, and an Externally Generated trust state that is never upgraded silently. Export preserves Dataset identity.
+- **Forecast Evaluation Reports** measure prediction evidence per Signal contract kind: Expected Value (MAE/RMSE/bias/correlation), Probability (Brier/Log Loss/ROC AUC/calibration), and Score (IC/ICIR/quantiles), with coverage, missingness, distribution, and stability windows. Evidence State is Out-of-sample, Overlapping, or Unknown; overlapping upstream windows never upgrade trust.
+- **Dataset-first Backtests** bind a Strategy's Forecast Signal Slot to exactly one compatible Dataset Signal — no approximate join, resampling, forward-fill, or mixed Snapshot is offered. `availableAt` is enforced, fills cannot precede the next Bar, and unavailable aligned values pause the Run as `Run Pause::MissingInput` instead of substituting zero, flat exposure, or future evidence.
+- Negative paths are contract: invalid horizons or Kind/Target combinations fail before import; malformed or hash-mismatched archives are rejected atomically; cancelled Attempts publish nothing; referenced Datasets and Artifacts are deletion-locked.
+
+Forecast Evaluation measures prediction evidence; Backtest and Validation measure Strategy behavior. Neither is a profitability claim, live trading, Verified external inference, or Marketplace approval. Training, fitting, tuning, and embedded Python are the model lab's responsibility (below); Cross-sectional inference, generated future paths as realized data, Portfolio Optimization, OMS/EMS, and a controlled GPU/ONNX Runner remain out of scope.
 
 ## Parameter selection and evidence truth
 
@@ -251,9 +263,9 @@ A Python Repeatability Report replays one exact Revision, Environment, Input bin
 
 Unverified or Divergent outputs remain inspectable but cannot pass Promotion, Component Generation, or Runtime Qualification.
 
-## Strategy boundary for M13
+## Strategy extension boundary
 
-M12 freezes SDK types but does not execute Strategy Projects. M13 adds `start(context) -> StrategySession`, followed by strictly serial Host calls to `decide(decision_batch, portfolio_state)`. No calls are pipelined and no future batch is prefetched. A Bar Gap creates a new Project and Session.
+The SDK freezes Strategy types, but Strategy Projects do not execute yet. The future Strategy extension adds `start(context) -> StrategySession`, followed by strictly serial Host calls to `decide(decision_batch, portfolio_state)`. No calls are pipelined and no future batch is prefetched. A Bar Gap creates a new Project and Session.
 
 The Strategy returns only one complete Target Decision or Portfolio Target. Host Risk, Execution, Backtest, fills, and Portfolio updates remain authoritative. Missing any required Slot for a required Universe member records `Run Pause::MissingInput` before invocation; silent eligibility filtering is invalid.
 
@@ -268,9 +280,9 @@ The reference Strategy uses `forecast-weight={0.5,0.7}`, `top-n={3,5}`, and `cas
 
 ## Portable parameters and Component generation
 
-Factor and Strategy Portable Definitions may use typed Parameter References only to finite Manifest Allowed Values. The selected research value becomes the generated Component default. M14 must run conformance and equivalence for every allowed combination within Host limits. Model training hyperparameters stay frozen in the Model Artifact and do not become inference parameters.
+Factor and Strategy Portable Definitions may use typed Parameter References only to finite Manifest Allowed Values. The selected research value becomes the generated Component default. The future Component-generation extension must run conformance and equivalence for every allowed combination within Host limits. Model training hyperparameters stay frozen in the Model Artifact and do not become inference parameters.
 
-M14 feeds only a canonical Declarative Factor or Strategy Definition or `adaq:linear-model@1` into fixed Rust SDK Generators, then compiles WASM. Python source, Runtime, Wheelhouse, Environment, and Lock never enter `.adaq`.
+That extension feeds only a canonical Declarative Factor or Strategy Definition or `adaq:linear-model@1` into fixed Rust SDK Generators, then compiles WASM. Python source, Runtime, Wheelhouse, Environment, and Lock never enter `.adaq`.
 
 Generated Component Provenance binds Project Revision, Definition or Artifact, parameter schema, Promotion or Selection Decision, Generator, SDK, ABI, toolchain, Build Attempt, and Component Equivalence Report. WASM omits source and raises reverse-engineering cost but does not guarantee secrecy on a User-owned device; stronger protection requires managed remote execution.
 
@@ -313,7 +325,7 @@ Run Python Tutorial is guided rather than unattended. The bilingual panel is mou
 3. Run Factor Grid and display Evaluation evidence.
 4. Wait for User Factor Parameter Selection and Research Validated Promotion Decisions.
 5. Run Model Grid, wait for Model Parameter Selection, then run held-out Final Evaluation.
-6. In M13, run Strategy Grid, wait for Strategy Parameter Selection, then run the final Backtest.
+6. With the future Strategy extension, run Strategy Grid, wait for Strategy Parameter Selection, then run the final Backtest.
 
 Mechanical validation, preparation, execution, and navigation may be automated. Trust, Promotion, Selection, and claims about Final evidence may not be automated.
 
@@ -346,27 +358,37 @@ Python metadata uses exact `PYTHON_RESEARCH_SCHEMA_VERSION=1.0.0`. An incompatib
 
 Python Factor integration separately advances `FACTOR_RESEARCH_SCHEMA_VERSION` from `1.0.0` to `1.1.0`. Incompatible Factor evidence uses the existing explicit device-level Factor Research Reset. Neither path migrates, dual-reads, or auto-deletes pre-v1 internal-testing evidence.
 
-## Delivery slices
+## Verification
 
-M12 uses seven dependency-ordered child issues with one initial executable frontier:
+Preconditions before any verification run:
 
-1. [#98 — Project, Archive, public SDK contracts, and static validation](https://github.com/tonywxx/adaq/issues/98).
-2. [#99 — Managed CPython, signed Wheelhouse, Lock, Sync, and Environment lifecycle](https://github.com/tonywxx/adaq/issues/99).
-3. [#100 — Runner Protocol, Attempt, Trust, Resource, cancellation, recovery, and shared Queue integration](https://github.com/tonywxx/adaq/issues/100).
-4. [#101 — Python Factor Candidate, Factor schema/reset, Factor Lab, and `py-factor-cross-sectional-momentum`](https://github.com/tonywxx/adaq/issues/101).
-5. [#102 — Qlib Dataset Bridge, Ridge Adapter, Host transformations, and Linear Model Artifact](https://github.com/tonywxx/adaq/issues/102).
-6. [#103 — Model Lab, Grid, Selection, Repeatability, Final Evaluation, and `py-model-qlib-ridge-return`](https://github.com/tonywxx/adaq/issues/103).
-7. [#104 — Bilingual guided tutorial Factor/Model stages, failure matrix, and three-platform M12 acceptance](https://github.com/tonywxx/adaq/issues/104).
+- The App starts and non-Python routes work with no ADAQ Python Runtime installed; no system Python, Conda environment, active virtualenv, or User `PATH` interpreter is used.
+- The three examples are under `examples/python/`; the shared Dataset fixture is under `src-tauri/fixtures/python-tutorial/` and absent from every Project Archive, with all Instruments and price history visibly synthetic.
+- Research Attempts run with no required network data; network is enabled only for the explicit Runtime or Wheel preparation step.
 
-Every child contains independently actionable Problem, Solution, Acceptance Criteria, and Out of Scope sections. Native GitHub `blocked_by` edges express `#98 → #99 → #100 → #101 → #102 → #103 → #104`; #98 is the only initial executable frontier.
+Negative boundary inspection must find no embedded IDE, Jupyter server, generic Scripts page, Python order API, credentials in child environments, Qlib data downloader or Provider, Alpha158 implicit input, generic Qlib model promise, generic Python-to-WASM converter, or Marketplace publication UI.
 
-M13 owns Strategy execution, Portfolio Backtest integration, Portable Strategy Operations, `py-strategy-top-n-forecast`, and the complete tutorial chain. M14 owns fixed Rust Generators, Build, Conformance, Equivalence, Package identity, `.adaq`, and Component Library import. M12 adds no non-executable placeholder implementation for those milestones beyond the accepted versioned public contract types.
+Automated gates at the reviewed revision:
 
-## CI and acceptance
+```sh
+(
+  cd src-tauri
+  cargo fmt --all --check
+  cargo test -p adaq-python-research
+  cargo test --workspace
+  cargo check --workspace
+)
+pnpm exec jest --watchman=false --runInBand
+pnpm run build
+pnpm run lint
+git diff --check
+```
 
-Pull requests run the complete no-network Factor → Model tutorial path on Linux x86_64 and fast Manifest, Archive, and SDK contract checks on macOS ARM64, Windows x86_64, and Linux x86_64. `main`, Release, and manual workflows run Runtime preparation, the applicable full tutorial chain, Golden evidence, and cancellation, trust, Lock, and invalid-output failures on all three platforms.
+Also run the committed repository-managed commands for: public SDK and private Runner unit/contract tests; deterministic Project Archive generation and hostile-archive fixtures; Runtime/Wheelhouse signature and Lock tests; Runner Protocol, cancellation, restart, resource, and redaction tests; Python Factor exact Golden and repeatability tests; Qlib Ridge Artifact/reload, withheld-label, tolerance, and Forecast Dataset tests; bilingual documentation path/parameter/expected-structure checks (including `python/tutorial_tests/run_tutorial_tests.py`); and the retained diagnostic secret/path scan.
 
-Each accepting M12, M13, and M14 slice records at least one all-platform green run for the capability it adds. A local pass never substitutes for supported-platform evidence. Full criteria and evidence capture are in the [manual acceptance guide](./m12-python-research-manual-acceptance.md).
+The tutorial parity contract asserts the fixed fixture windows (Train 1–100, Purge 101–105, Selection Validation 106–140, Embargo 141–145, Final Evaluation 146–180), the three example Project IDs, the guided `Run Python Tutorial` surface in both languages, and the supported platforms in the acceptance workflow. Every command must exit zero. Record exact test counts, ignored tests, warnings, fixture hashes, and any platform-specific limitation.
+
+The full failure matrix includes cancellation, untrusted Revision, Lock/hash failure, invalid output, restart recovery, and staging isolation. Factor and Model examples must remain executable, bilingual, offline after preparation, and independently inspectable; no partial, divergent, overlapping, untrusted, unsupported, or failed result is presented as qualified. A local pass never substitutes for the supported-platform evidence recorded by CI.
 
 ## Decision index
 

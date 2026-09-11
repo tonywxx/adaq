@@ -90,16 +90,14 @@ def main() -> None:
         for forbidden in ("provider", "requests", "urllib", "http://", "https://", "sqlite"):
             assert_true(forbidden not in source, f"{project_id}: forbidden source dependency {forbidden}")
 
-    guide = (ROOT / "docs/m12-python-research-and-model-lab.md").read_text(encoding="utf-8")
-    guide_zh = (ROOT / "docs/m12-python-research-and-model-lab.zh-CN.md").read_text(encoding="utf-8")
-    acceptance = (ROOT / "docs/m12-python-research-manual-acceptance.md").read_text(encoding="utf-8")
-    acceptance_zh = (ROOT / "docs/m12-python-research-manual-acceptance.zh-CN.md").read_text(encoding="utf-8")
-    for document in (guide, guide_zh, acceptance, acceptance_zh):
+    guide = (ROOT / "docs/model-research.md").read_text(encoding="utf-8")
+    guide_zh = (ROOT / "docs/model-research.zh-CN.md").read_text(encoding="utf-8")
+    for document in (guide, guide_zh):
         for marker in ("1–100", "101–105", "106–140", "141–145", "146–180"):
             assert_true(marker in document, f"tutorial window missing: {marker}")
         for project_id in PROJECTS:
             assert_true(project_id in document, f"tutorial project missing: {project_id}")
-    assert_true("M13" in guide and "M14" in guide, "deferred milestone boundary missing")
+    assert_true("Strategy extension boundary" in guide and "Strategy 扩展边界" in guide_zh, "deferred strategy boundary missing")
     assert_true("Run Python Tutorial" in guide, "English tutorial surface missing")
     assert_true("Run Python Tutorial" in guide_zh, "Chinese tutorial surface missing")
     workflow = (ROOT / ".github/workflows/v1-acceptance.yml").read_text(encoding="utf-8")
@@ -117,7 +115,7 @@ def main() -> None:
             names = "\n".join(archive.namelist())
             assert_true("python-tutorial-a-share" not in names, f"fixture embedded in {archive_path}")
 
-    print(f"tutorial parity passed: fixture=1 projects={len(PROJECTS)} bilingual_docs=4 archives={len(archives)}")
+    print(f"tutorial parity passed: fixture=1 projects={len(PROJECTS)} bilingual_docs=2 archives={len(archives)}")
 
 
 if __name__ == "__main__":

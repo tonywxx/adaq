@@ -1,18 +1,18 @@
-# M11 Factor Research and Promotion
+# Factor Research and Promotion
 
-[简体中文](./m11-factor-research.zh-CN.md)
+[简体中文](./factor-research.zh-CN.md)
 
-Status: accepted M11 architecture and delivery, published as [parent issue #88](https://github.com/tonywxx/adaq/issues/88). M10 and M11.1-M11.7 are complete; M11.8 acceptance evidence is recorded in the [bilingual manual acceptance guide](./m11-manual-acceptance.md).
+Status: accepted architecture for the host-owned Factor Lab and the Tauri-independent `adaq-factor-research` core.
 
 ## Outcome
 
-M11 delivers one host-owned Factor Lab and a Tauri-independent `adaq-factor-research` core. Users can publish Declarative Factor Definitions or build private Custom Factor Candidates, materialize immutable Factor Datasets from Completed M10 Feature Datasets, evaluate exact outputs under scope-correct and cost-aware Protocols, retain every Trial in its Research Family lineage, and record explicit Rejected, Research Validated, or Component Eligible Promotion Decisions.
+Factor Research delivers one host-owned Factor Lab and a Tauri-independent `adaq-factor-research` core. Users can publish Declarative Factor Definitions or build private Custom Factor Candidates, materialize immutable Factor Datasets from Completed Feature Datasets, evaluate exact outputs under scope-correct and cost-aware Protocols, retain every Trial in its Research Family lineage, and record explicit Rejected, Research Validated, or Component Eligible Promotion Decisions.
 
-Research Validated outputs become exact selectable evidence for M12 Model research. M11 does not guarantee future profitability, automatically promote a score, import generated Components, or execute Python or Qlib.
+Research Validated outputs become exact selectable evidence for Model research. Factor Research does not guarantee future profitability, automatically promote a score, import generated Components, or execute Python or Qlib.
 
 ## Boundary
 
-M11 includes:
+Factor Research includes:
 
 - Time-Series and Cross-Sectional Factor Scopes under one Factor product.
 - Declarative Factor Definitions using Feature Operator Catalog semantics and Custom Factor Projects built into private non-imported Candidate Packages.
@@ -23,7 +23,7 @@ M11 includes:
 - User-owned Promotion Decisions and a derived Promoted Factor Library.
 - A localized `/factors` workspace for Families, Candidates, Datasets, Evaluations, and Decisions.
 
-M11 excludes:
+It excludes:
 
 - Qlib, Python, notebook execution, notebook-to-Rust translation, or a second Research Engine.
 - Model training, Forecast Signal Dataset production, Strategy construction, or Backtest changes.
@@ -35,18 +35,18 @@ M11 excludes:
 
 `adaq-factor-research` owns Factor materialization contracts, Factor Dataset evidence, the versioned Factor Metric Catalog, Evaluation Protocols and Reports, Research Families and Trials, Promotion Policies and Decisions, and Promoted Factor Library projections. `adaq-feature-engine` remains authoritative for Feature Definitions, Feature Plans, Availability, Warmup, Missingness, and completed Feature inputs. `adaq-component-tooling` and the SDK own Factor ABI v2, Candidate Package validation, WASM sandboxing, and package contracts.
 
-M11 uses the ADAQ Native Research Engine only. Every result freezes Research Engine Provenance. A future Qlib adapter may produce comparable evidence under a distinct Engine identity but may not silently claim formula or numeric equivalence.
+Factor Research uses the ADAQ Native Research Engine only. Every result freezes Research Engine Provenance. A future Qlib adapter may produce comparable evidence under a distinct Engine identity but may not silently claim formula or numeric equivalence.
 
 ## Candidates, revisions, and identity
 
 A Factor Candidate is one exact Declarative Factor Definition revision or private Custom Factor Package:
 
 - A mutable Declarative Draft has no evidence identity. Publication creates a positive integer revision with canonical RFC 8785 JSON and lowercase SHA-256 identity.
-- Declarative logic reuses Feature Operator Catalog operations and Plan 2.0 semantics; M11 adds no parallel expression language.
+- Declarative logic reuses Feature Operator Catalog operations and Plan 2.0 semantics; Factor Research adds no parallel expression language.
 - Name, description, and Factor Tags are User-scoped presentation metadata outside semantic hashes.
 - A Custom Factor Project is exact User-authored Rust source. A Candidate Build Attempt freezes the source hash, SDK, ABI, toolchain, target, commands, environment, resource policy, logs, and resulting Package hash.
-- Candidate builds use fixed host commands with no network or custom scripts. A successful package remains private and non-imported; M14 owns qualification and Component Library import.
-- Parameter search is an explicit deterministic Cartesian Grid of at most 256 Trials. M11 does not perform adaptive optimization.
+- Candidate builds use fixed host commands with no network or custom scripts. A successful package remains private and non-imported; Component qualification and Component Library import are a separate future extension.
+- Parameter search is an explicit deterministic Cartesian Grid of at most 256 Trials. Adaptive optimization is not performed.
 
 The same Candidate hash, Target, Universe, window, or explicit derivation creates lineage between Research Families. Families and lineage cannot be deleted to evade multiple-testing evidence.
 
@@ -58,7 +58,7 @@ Every Factor declares one Scope, ordered Feature Slots, parameters, one through 
 - Cross-Sectional execution receives every deterministically ordered member of one Point-in-Time Instrument Universe at one Observation Time. Each Slot cell is Available or typed Unavailable. The Component returns one identity-preserving result per member and may not delete or reorder rows.
 - The host validates membership, order, row and output counts, availability, finite values, determinism, fuel, memory, and output identity before publication.
 
-Factor ABI v2 directly replaces pre-v1 Factor ABI v1. Incompatible stored packages and evidence are rejected with typed `reset-required` and explicit device-level Reset guidance; M11 adds no migration, dual reader, or automatic deletion.
+Factor ABI v2 directly replaces pre-v1 Factor ABI v1. Incompatible stored packages and evidence are rejected with typed `reset-required` and explicit device-level Reset guidance; no migration, dual reader, or automatic deletion is added.
 
 ## Materialization and storage
 
@@ -70,7 +70,7 @@ Exact active requests coalesce, exact Completed evidence is reused, Retry create
 
 ## Target and market context
 
-M11 supports only `Future Close Return` with one or more positive integer Bar horizons:
+Factor Research supports only `Future Close Return` with one or more positive integer Bar horizons:
 
 `close[t + h] / close[t] - 1`
 
@@ -98,9 +98,9 @@ An undefined metric is never encoded as zero. Insufficient samples, constant val
 
 ## Neutralization, regimes, and Economic Lens
 
-M11 neutralization is Cross-Sectional ordinary least squares at each Observation Time with an intercept and Protocol-selected nuisance Features. Complete cases determine the fit while the complete Universe and missingness remain in evidence. Insufficient samples or a singular design matrix makes the batch Unavailable. M11 adds no generic Time-Series neutralization.
+Neutralization is Cross-Sectional ordinary least squares at each Observation Time with an intercept and Protocol-selected nuisance Features. Complete cases determine the fit while the complete Universe and missingness remain in evidence. Insufficient samples or a singular design matrix makes the batch Unavailable. No generic Time-Series neutralization is added.
 
-A Regime Definition selects one causal Feature and fits deterministic bucket thresholds only on the frozen selection window. Those thresholds apply unchanged to evaluation observations. Reports retain the Feature, Artifact or threshold identity, coverage, and per-bucket results; M11 does not invent mutable Bull/Bear labels.
+A Regime Definition selects one causal Feature and fits deterministic bucket thresholds only on the frozen selection window. Those thresholds apply unchanged to evaluation observations. Reports retain the Feature, Artifact or threshold identity, coverage, and per-bucket results; mutable Bull/Bear labels are not invented.
 
 The standardized Economic Lens uses deterministic average ranks, five quantiles, and equal weights and reports Top-only and Top-minus-Bottom evidence. A value available at `t` may act no earlier than the next eligible Bar. Rebalance rules, fees, slippage, costs, and Long/Short feasibility are frozen. This is diagnostic research evidence, not a Strategy Component or ADAQ Backtest Run.
 
@@ -112,17 +112,17 @@ Research Families retain Completed, Failed, Cancelled, Rejected, and Superseded 
 
 ## Promotion
 
-A Factor Promotion Policy is immutable and versioned. A conservative system template requires explicit minimum coverage, sample size, Holm-adjusted significance, subperiod sign consistency, cost-aware outcome, required Lenses, and complete provenance, but M11 does not hard-code universal IC or return thresholds. A changed threshold set creates a new Policy identity.
+A Factor Promotion Policy is immutable and versioned. A conservative system template requires explicit minimum coverage, sample size, Holm-adjusted significance, subperiod sign consistency, cost-aware outcome, required Lenses, and complete provenance, but no universal IC or return threshold is hard-coded. A changed threshold set creates a new Policy identity.
 
 The system checks eligibility; the User decides. Each Factor Promotion Decision targets one exact named output and is immutable:
 
 - `Rejected` records that the cited evidence was not accepted.
-- `Research Validated` requires at least one Policy-satisfying Out-of-sample Report and permits exact selection by M12.
-- `Component Eligible` includes all Research Validated gates plus deterministic execution, complete source provenance, ABI v2 expressibility, and buildability. M14 still performs Build, Conformance, Equivalence, qualification, and import.
+- `Research Validated` requires at least one Policy-satisfying Out-of-sample Report and permits exact selection by Model research.
+- `Component Eligible` includes all Research Validated gates plus deterministic execution, complete source provenance, ABI v2 expressibility, and buildability. Build, Conformance, Equivalence, qualification, and import remain a separate future extension.
 
-A later Decision may cite and supersede an earlier Decision without mutating it. The Promoted Factor Library is a User-scoped read-only projection of current Decisions, not copied evidence or a floating latest-version store. A multi-output Dataset promotes outputs independently; a multi-output Custom Package becomes M14-eligible only when every public output is Component Eligible.
+A later Decision may cite and supersede an earlier Decision without mutating it. The Promoted Factor Library is a User-scoped read-only projection of current Decisions, not copied evidence or a floating latest-version store. A multi-output Dataset promotes outputs independently; a multi-output Custom Package becomes qualification-eligible only when every public output is Component Eligible.
 
-M12 may select only one exact Completed Factor Dataset output with a current Research Validated or Component Eligible Decision and must freeze the Dataset, Report, Decision, Policy, and Research Engine Provenance. It may not implicitly recompute or promote a Factor.
+Model research may select only one exact Completed Factor Dataset output with a current Research Validated or Component Eligible Decision and must freeze the Dataset, Report, Decision, Policy, and Research Engine Provenance. It may not implicitly recompute or promote a Factor.
 
 ## Attempts, queue, and native APIs
 
@@ -136,19 +136,19 @@ Dataset, Candidate, Policy, Report, and Decision references enforce deletion loc
 
 `/factors` paints its shell immediately and contains Families, Candidates, Datasets, Evaluations, and Decisions. Each card or control owns its loading, build, run, cancellation, error, and retry state. User-scoped read lists render current-session cache first and refresh in the background without weakening validation.
 
-The workspace exposes immutable identities, lineage, market context, missingness, Target availability, fold boundaries, Lens formulas, ordered metrics and samples, multiple-testing adjustments, Policy gates, Decision history, deletion locks, and M12 eligibility in English (US) and Simplified Chinese. It never labels historical evidence as guaranteed, hides failed Trials, or offers an automatic Promote control.
+The workspace exposes immutable identities, lineage, market context, missingness, Target availability, fold boundaries, Lens formulas, ordered metrics and samples, multiple-testing adjustments, Policy gates, Decision history, deletion locks, and Model-research eligibility in English (US) and Simplified Chinese. It never labels historical evidence as guaranteed, hides failed Trials, or offers an automatic Promote control.
 
 ## Resource and numeric contracts
 
-M11 retains the existing 1 MiB canonical JSON, 64-output, WASM fuel and memory limits and sets Grid Search to at most 256 Trials. Dataset-row, Fold, Horizon, Lens, nuisance-column, and worker ceilings are measured and frozen before public APIs are accepted. Checked arithmetic and limits run before allocation or evaluation.
+Factor Research retains the existing 1 MiB canonical JSON, 64-output, WASM fuel and memory limits and sets Grid Search to at most 256 Trials. Dataset-row, Fold, Horizon, Lens, nuisance-column, and worker ceilings are measured and frozen before public APIs are accepted. Checked arithmetic and limits run before allocation or evaluation.
 
 The same Engine Identity, inputs, Protocol, Seed, and build must produce bit-identical evidence independent of chunking. Different target, compiler, or platform builds retain distinct Engine identities. Golden fixtures may establish exact or declared tolerance-based cross-platform equivalence, but Reports with distinct Engine identities never share a hash.
 
-Performance acceptance uses a 1,000,000-observation Time-Series workload and a 10,000-Instrument × 252-Observation-Time Cross-Sectional workload. It proves bounded memory, cancellation, chunk equivalence, determinism, restart recovery, and responsive GUI scheduling and records a canonical macOS ARM64 baseline without inventing latency or RSS targets.
+Performance verification uses a 1,000,000-observation Time-Series workload and a 10,000-Instrument × 252-Observation-Time Cross-Sectional workload. It proves bounded memory, cancellation, chunk equivalence, determinism, restart recovery, and responsive GUI scheduling and records a canonical macOS ARM64 baseline without inventing latency or RSS targets.
 
-## M11.7 hardening evidence
+## Hardening and resource ceilings
 
-Issue #94 freezes the following public ceilings from the canonical candidate workload rather than from a latency promise: 2,520,000 Factor Dataset rows (10,000 instruments × 252 observations), 32 evaluation folds, 16 horizons, 5 lenses, 16 nuisance Features, and one device-wide research worker. Checked arithmetic runs before Dataset or evaluation allocation.
+The following public ceilings are frozen from the canonical candidate workload rather than from a latency promise: 2,520,000 Factor Dataset rows (10,000 instruments × 252 observations), 32 evaluation folds, 16 horizons, 5 lenses, 16 nuisance Features, and one device-wide research worker. Checked arithmetic runs before Dataset or evaluation allocation.
 
 The committed evidence is independent of the implementation under test:
 
@@ -169,7 +169,7 @@ sh crates/adaq-factor-research/scripts/check_generated.sh
 
 The native Factor tests retain Parquet atomic publication, cancellation, restart recovery, queue fairness, User isolation, deletion locks, and credential/path redaction in `src-tauri/src/factor_research/mod.rs`. The supported-platform workflow runs the generated-reference gate and the canonical benchmark on macOS ARM64, alongside the full workspace matrix on Windows x86_64 and Linux x86_64.
 
-## Acceptance
+## Verification
 
 Reference journeys cover:
 
@@ -179,19 +179,25 @@ Reference journeys cover:
 
 Failure coverage includes Factor ABI v1 Reset, Candidate build failure, missing input, non-finite output, Universe mismatch, singular neutralization, undefined metrics, leakage, Family-lineage omission, Policy failure, cancellation, restart recovery, atomic publication, User isolation, and deletion locks.
 
-Every child maps each Acceptance Criterion to implementation and independent evidence. Final gates include focused tests, `cargo fmt --all --check`, `cargo test --workspace`, `cargo check --workspace`, Factor ABI/component conformance, frontend Jest, `pnpm run build`, lint, `git diff --check`, bilingual parity, accessibility, secret scanning for retained build evidence, and supported-platform CI.
+Workspace verification covers Declarative and Custom Candidate paths, Evidence identity, the three-market journeys, failure and recovery paths, the localized accessible `/factors` workspace, performance baselines and resource ceilings, and the boundary checks that keep Qlib/Python Runner, training, Strategies, Component import, Paper/Bot/Live/Marketplace, auto-promotion, adaptive optimization, and pooling outside Factor Research.
 
-## Delivery slices
+Automated gates at the reviewed revision:
 
-M11 is published through eight dependency-ordered slices:
+```sh
+(
+  cd src-tauri
+  cargo fmt --all --check
+  cargo test --workspace
+  cargo check --workspace
+  cargo test -p adaq-factor-research --test reference_fixtures
+  cargo test -p adaq-factor-research --test metric_golden
+  cargo test -p adaq-factor-research --test benchmarks -- --test-threads=1
+  sh crates/adaq-factor-research/scripts/check_generated.sh
+)
+pnpm exec jest --watchman=false --runInBand
+pnpm run build
+pnpm run lint
+git diff --check
+```
 
-1. [#92 — Core contracts, Factor ABI v2, and Factor Metric Catalog](https://github.com/tonywxx/adaq/issues/92).
-2. [#90 — Declarative and Custom Candidate execution and Factor Dataset materialization](https://github.com/tonywxx/adaq/issues/90).
-3. [#89 — Targets, Lenses, neutralization, Economic diagnostics, and robustness evaluation](https://github.com/tonywxx/adaq/issues/89).
-4. [#91 — Research Families, Grid Search, multiple testing, Promotion Policies, and Decisions](https://github.com/tonywxx/adaq/issues/91).
-5. [#95 — SQLite/Parquet evidence, shared research FIFO, and User-scoped native APIs](https://github.com/tonywxx/adaq/issues/95).
-6. [#96 — Localized `/factors` workspace](https://github.com/tonywxx/adaq/issues/96).
-7. [#94 — Three-market fixtures, benchmarks, resource limits, and hardening](https://github.com/tonywxx/adaq/issues/94).
-8. [#93 — Bilingual cross-platform acceptance, manual guide, and roadmap closure](https://github.com/tonywxx/adaq/issues/93).
-
-Dependencies are `#92 → #90 → #89 → #91 → #95 → #96`, `{#90,#89,#91,#95} → #94`, and `{#92,#90,#89,#91,#95,#96,#94} → #93`. #92 was the only initial executable frontier. The final cross-slice evidence and supported-platform record are maintained in the [M11 manual acceptance guide](./m11-manual-acceptance.md); #93 is the acceptance record for this completed milestone.
+Expected result: every command exits zero. A local pass never substitutes for the supported-platform matrix recorded by the acceptance workflow.

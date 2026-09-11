@@ -1,6 +1,6 @@
-# V1 模拟盘 Bot 分析报告
+# V1 模拟盘 Bot 分析报告（0 fills · 非收益证明）
 
-> 当前状态提示：下方原有 2026-09-04 内容是历史报告。当前头 2026-09-09 的真实状态见文末；当前 Bot 并非 running，Paper Account 并非 reconciled，不能把历史结论当作现在的运行结果。
+> 当前结论（2026-09-09 末轮 `.env` Debug 复验，当前权威）：Paper Account 已通过 `.env` 专用路径完成真实 OKX Demo Reconcile（Provider operation `reconcile-1788997971055`）；当前无 Running Bot。模拟盘累计成交 **0 fills**、无 realized feedback 样本——本报告**不是收益证明**，也不授权 Live Trading。下方 2026-09-04 原始报告及其后各轮记录均为历史证据，按日期与上下文理解，不当作当前运行状态。
 
 报告日期：2026-09-04  
 范围：ADAQ V1 / OKX Spot 研究链路 / OKX Demo Paper / Bot / Operations  
