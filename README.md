@@ -6,50 +6,33 @@
 
 > **AdaQ** (Ada Quant) is an AI-powered quantitative trading platform for equities and digital crypto assets.
 
-AdaQ V1 is a local-first research, backtesting, and simulation desktop app. It does not execute real account orders; live trading is a separate future supervised, host-controlled milestone.
+## V1 status: engineering acceptance passed
 
-## Features
+**AdaQ V1 engineering acceptance has succeeded** — code, build, tests, components, the research chain, Desktop, Paper Reconcile, and the Bot safety lifecycle have passed acceptance. The latest automated acceptance run is [green on macOS ARM64 and Windows x86_64](https://github.com/tonywxx/adaq/actions/runs/34547508572), and [release v0.9.8](https://github.com/tonywxx/adaq/releases/tag/v0.9.8) is published.
 
-- **Local-first research, backtesting & simulation** — Reproducible local market-data research and backtesting. AdaQ V1 runs deterministic Spot simulation and never places real orders; live trading is a separate future milestone.
-- **Immutable, auditable runs** — Every Backtest Run immutably binds a Market Data Snapshot, Component Lock, parameters, Indicator Plan, Execution Profile, engine version, and seed. Results persist locally with Target Decisions, simulated orders, fills, equity, fees, metrics, history, and charts, plus replay-grade provenance.
-- **Sandboxed WebAssembly components** — Deterministic WASM Factor and Strategy Components under versioned Component ABIs (`adaq:factor@2.0.0`, `adaq:strategy@1.0.0`). Factor Components consume scope-specific, host-resolved Feature Batches and return identity-preserving named scalar outputs; Strategy Components consume dense Feature Slots and emit complete Target Exposure decisions.
-- **Verifiable `.adaq` packages** — Immutable, content-addressed Component Packages with authoritative Component Meta. Packages, runs, and snapshots are content-addressed so provenance is exact and reproducible.
-- **Component Library** — List-and-detail library showing name, kind, version, compatibility, and Run-lock status; the detail view exposes parameters, Feature Slots, Factor dependencies, Warmup, ABI/SDK/Manifest versions, and exact hashes. Import via the native file picker; deletion requires confirmation and shows the references that block removal.
-- **TA-Lib Indicator Engine & Feature Slots** — The host pins official C TA-Lib v0.7.1 and exposes `adaq-indicator-catalog@1.0.0` with 160 indicators and 179 outputs. Canonical Indicator Plans are frozen with `planHash`; Market, Built-in, and External Factor Slot sources are supported; indicators evaluate by Continuous Bar Segment, reset analytical state at Bar Gaps, and enforce typed Plan/Run errors plus fixed resource ceilings.
-- **Model research & Forecast Signal Datasets (M8)** — Native Model Components and externally generated `.adaq-signals` evidence produce immutable Forecast Signal Datasets and Forecast Evaluation Reports, and drive compatible Signal-driven or Hybrid Strategy Runs.
-- **Multi-market data foundation (M9)** — OKX Spot, China A-share, and U.S. equity paths preserve Source, Canonical, Quality, Point-in-Time Universe, calendar, capability, and immutable Snapshot evidence; the Markets GUI exposes all three markets with one user-scoped Watchlist.
-- **Research validation** — Immutable Validation Protocols and Reports support chronological holdout, walk-forward, and cross-market studies with traceable evidence and JSON / Markdown exports.
-- **Bilingual desktop GUI (Tauri 2 + React 19)** — Operations Dashboard home; Markets, Components, Models, Backtest, and Validation workspaces; Settings for account, locale, and provider Connections. The UI ships in English (US) and Simplified Chinese through `i18next` / `react-i18next` with locale-aware formatting, light/dark themes, and accessible controls.
-- **Exact, trustworthy values** — Financial values use exact Decimal representation across domain and IPC boundaries; canonical identities, availability, provider capability, and provenance stay inspectable everywhere.
+This statement is explicitly scoped: it does **not** mean strategies are profitable, and it does **not** authorize Live Trading. The current Demo Bot still has zero fills and no realized feedback samples. AdaQ V1 is a local-first research, backtesting, and simulation desktop app; it never executes real account orders, and live trading remains a separate future supervised, host-controlled milestone. Details and evidence: [V1 acceptance summary](V1自动验收文档.md) and the [V1 Demo Bot analysis report](V1模拟盘Bot分析报告.md).
 
-## Scope of V1
+## The V1 workflow
 
-AdaQ V1 is a **local-first research, backtesting, and simulation** desktop app. It executes no real account orders. The closed loop you can use today is: inspect OKX Spot, China A-share, and U.S. equity market evidence; develop or import a Component; prepare exact Market Data Snapshots and Feature Plans; research and evaluate immutable Factor evidence with explicit promotion Decisions; generate or import immutable Forecast Signal evidence; evaluate predictions; run a Dataset-first sandboxed Strategy Backtest; inspect persisted provenance and results; and produce research-validation evidence.
+AdaQ V1 is one local-first loop, organized by user workflow:
 
-Not included in the current M12 delivery (roadmap M13–M18): portfolio Strategies, Paper Trading accounts and execution, supervised Trading Bots, Marketplace publishing, and any real-money trading.
+**数据 Data → Feature / Factor / Model → Strategy / Backtest → Paper / Bot → Operations / Feedback**
+
+| Stage | What you can do today |
+| --- | --- |
+| **数据 Data** | Inspect OKX Spot, China A-share, and U.S. equity evidence; acquire, validate, and freeze immutable Market Data Snapshots with Source/Canonical/Quality provenance and one User-scoped Watchlist. |
+| **Feature** | Publish causal Feature Definitions, fit declared transformations, freeze Feature Plans, and materialize immutable Parquet Feature Datasets in the `/features` workspace. |
+| **Factor** | Research Factors over immutable Factor Datasets with causal evaluation, Research Family lineage, multiple-testing controls, and User-owned Promotion Decisions in `/factors`. |
+| **Model** | Train Qlib Ridge models in the local Python research lab; produce native or external (`.adaq-signals`) Forecast Signal Datasets and immutable Forecast Evaluation Reports. |
+| **Strategy / Backtest** | Run Dataset-first, sandboxed Strategy Backtests over immutable Snapshots with full provenance; validate with chronological holdout, walk-forward, or cross-market Protocols. |
+| **Paper / Bot** | Connect non-ordering Paper/Demo accounts (OKX Demo, Alpaca Paper, local A-share simulator), reconcile OKX Demo Paper accounts, and deploy supervised Bots whose decisions fail closed without complete inputs. |
+| **Operations / Feedback** | Monitor runtime health and alerts on the Operations Dashboard; close the loop through Paper Feedback and human-reviewed Research Review Decisions. |
+
+Under the hood: sandboxed WebAssembly Factor/Strategy/Model Components under versioned ABIs, verifiable content-addressed `.adaq` packages, the pinned C TA-Lib indicator engine with 160 indicators, exact Decimal financial values, immutable and auditable runs, and a bilingual (English / 简体中文) Tauri 2 + React 19 desktop GUI.
 
 ## AdaQ App
 
 ![AdaQ App](screenshots/adaq-app-ui.png)
-
-## Implemented Milestones
-
-| Milestone | Delivered capability |
-| ----------- | ---------------------- |
-| M1 | Versioned WebAssembly Component ABI for `adaq:factor@2.0.0` and `adaq:strategy@1.0.0`. Factor Components transform scope-specific host-resolved Feature Batches into identity-preserving named scalar outputs; Strategy Components consume dense Feature Slots and emit complete Target Exposure decisions. |
-| M2 | Deterministic in-memory Run Engine. The host validates Closed Bars, enforces sandbox limits, binds ordered Feature Slots, records warmup or missing-input pauses, and fails closed on invalid data or invalid targets. |
-| M3 | Reproducible crypto Spot Backtest. A Backtest Run immutably binds a Market Data Snapshot, Component Lock, parameters, Indicator Plan, Execution Profile, engine version, and seed. Results persist locally with Target Decisions, simulated orders, fills, equity, fees, metrics, history, and charts. |
-| M4 | Component Developer Kit. The Rust SDK, `adaq-component` CLI, templates, conformance checks, and `.adaq` packaging flow support `new`, `build`, and `verify` for Factor and Strategy Components. |
-| M5 | TA-Lib Indicator Engine, Indicator Catalog, and Feature Slots. The host pins official C TA-Lib v0.7.1, exposes `adaq-indicator-catalog@1.0.0` with 160 Indicators and 179 outputs, freezes canonical Indicator Plans with `planHash`, supports Market, Built-in, and External Factor Slot sources, evaluates by Continuous Bar Segment, resets analytical state at Bar Gaps, and enforces typed Plan/Run errors plus fixed resource ceilings. |
-| M6 | Executable Components and Research Validation. Bilingual executable Factor and Strategy examples teach the supported SDK and CLI workflow; replay-grade Backtest Run provenance preserves every authoritative input; immutable Validation Protocols and Reports support chronological holdout, walk-forward, and cross-market research with traceable evidence and JSON/Markdown exports. |
-| M7 | Research Workspace Productization. Components, Backtest, and Validation provide guided, auditable desktop workflows over immutable local evidence; the [bilingual manual acceptance guides](docs/m7-manual-acceptance.md) cover the complete from-empty-project path. |
-| M8 | Model research and Dataset-first Backtests. Native Model Components and external `.adaq-signals` evidence produce immutable Forecast Signal Datasets, Forecast Evaluation Reports, and compatible Signal-driven or Hybrid Strategy Runs. The [bilingual manual acceptance guides](docs/m8-manual-acceptance.md) cover the complete reviewed path. |
-| M9 | Multi-market data and platform foundation. OKX Spot, China A-shares through `akshare-rs`, and U.S. equities through Alpaca Basic provide inspectable Source/Canonical/Quality/Snapshot evidence, secure non-ordering Paper/Demo connections, bilingual Markets routes, and one user-scoped Watchlist. The [M9 bilingual manual acceptance guides](docs/m9-manual-acceptance.md) cover the final cross-platform review path. |
-| M10 | Status: Accepted. Feature Engineering. Causal Feature Definitions and Feature Plan 2.0 form immutable revision chains; Fitting Protocols publish fitted Transformation Artifacts; materialization publishes immutable Parquet Feature Datasets with atomic completion and recovery; batch and observation evaluation are equivalent under one evaluator; User-scoped Feature APIs run over one persistent FIFO background runner; and the localized `/features` workspace covers Definitions, Fitting, Materialization, Datasets, and Preview. The [M10 bilingual manual acceptance guides](docs/m10-manual-acceptance.md) ([中文](docs/m10-manual-acceptance.zh-CN.md)) cover the final cross-platform review path. |
-| M11 | Status: Accepted. Factor Research and Promotion. Factor ABI v2, Declarative and private Custom Candidates, immutable Factor Datasets, causal Time-Series and Cross-Sectional Evaluation Reports, retained Research Families, User-owned Promotion Decisions, shared native research scheduling, and the localized `/factors` workspace are complete. The [M11 bilingual manual acceptance guides](docs/m11-manual-acceptance.md) ([中文](docs/m11-manual-acceptance.zh-CN.md)) record the final cross-platform evidence matrix. |
-| M12 | Status: Accepted. Python Research SDK and Qlib-first Model Lab. Managed runtimes, trusted Runner execution, Python Factor Candidates, Host-owned parameter grids, Qlib Ridge experiments, immutable Linear Model Artifacts, Forecast Signal Datasets, and the bilingual tutorial/acceptance gates are complete. See the [M12 architecture](docs/m12-python-research-and-model-lab.md) ([中文](docs/m12-python-research-and-model-lab.zh-CN.md)) and [manual acceptance guides](docs/m12-python-research-manual-acceptance.md) ([中文](docs/m12-python-research-manual-acceptance.zh-CN.md)). |
-
-Together, M1-M12 provide the current research loop: inspect trustworthy multi-market evidence, develop or import a Component, freeze exact market data and Feature Plans, compute Features and finalize immutable Feature Datasets, research and evaluate Factors with retained evidence, record explicit promotion Decisions, train or import supported Model evidence, produce or import immutable Forecast Signal evidence, evaluate predictions, run a Dataset-first sandboxed Strategy Backtest, inspect persisted provenance and results, and produce research-validation evidence.
 
 ## Getting Started
 
@@ -169,8 +152,26 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 
 ## Documentation
 
+Guides are organized by the user workflow. Root-level status records: [V1 acceptance summary](V1自动验收文档.md) and the [V1 Demo Bot analysis report](V1模拟盘Bot分析报告.md) (0 fills, not a profitability statement).
+
 | English | 简体中文 | Description |
 | --------- | ---------- | ------------- |
+| [Research Workspaces](docs/research-workspaces.md) | — | Components, Backtest, and Validation workspace contracts and manual verification path |
+| [Market Workspaces](docs/market-workspaces.md) | [行情工作区中文](docs/market-workspaces.zh-CN.md) | Three-market observation, Watchlist, provenance, and data-verification journeys |
+| [Feature Engineering](docs/feature-engineering.md) | [特征工程中文](docs/feature-engineering.zh-CN.md) | Feature Definitions, Plans, fitting, materialization, and the `/features` workspace |
+| [Factor Research](docs/factor-research.md) | [因子研究中文](docs/factor-research.zh-CN.md) | Factor Lab, ABI v2, evaluation, promotion, and the `/factors` workspace |
+| [Model Research](docs/model-research.md) | [模型研究中文](docs/model-research.zh-CN.md) | Forecast Signal Datasets, Forecast Evaluation, Python research lab, and Qlib Ridge path |
+| [Strategy, Risk & Execution](docs/strategy-risk-execution.md) | [策略风险执行中文](docs/strategy-risk-execution.zh-CN.md) | Strategy intent, Host Risk, OMS, and execution boundaries |
+| [Paper Trading Accounts](docs/paper-trading-accounts.md) | [模拟盘账户中文](docs/paper-trading-accounts.zh-CN.md) | Paper accounts, reconciliation, and currency scoping |
+| [Bot Runtime](docs/bot-runtime.md) | [Bot 运行时中文](docs/bot-runtime.zh-CN.md) | Supervised Bot workers, attempts, scheduling, and fail-closed safety |
+| [Operations Dashboard](docs/operations-dashboard.md) | [运行仪表盘中文](docs/operations-dashboard.zh-CN.md) | Home selection, operational responsibility, and dashboard boundaries |
+| [Monitoring & Alerting](docs/monitoring-and-alerting.md) | [监控告警中文](docs/monitoring-and-alerting.zh-CN.md) | Multidimensional health monitoring and append-only alerts |
+| [Research Feedback Loop](docs/research-feedback-loop.md) | [研究反馈闭环中文](docs/research-feedback-loop.zh-CN.md) | Closing paper evidence back into human-reviewed research |
+| [A-share Data Path](docs/a-share-data-path.md) | [A 股数据路径中文](docs/a-share-data-path.zh-CN.md) | China A-share acquisition and simulator contract |
+| [A-share Paper Trading](docs/a-share-paper-trading.md) | [A 股模拟交易中文](docs/a-share-paper-trading.zh-CN.md) | Local A-share simulator Paper execution |
+| [Alpaca Data Path](docs/alpaca-data-path.md) | [Alpaca 数据路径中文](docs/alpaca-data-path.zh-CN.md) | U.S. equity data acquisition through Alpaca |
+| [Paper Connections](docs/paper-connections.md) | [Paper 连接中文](docs/paper-connections.zh-CN.md) | Provider connections, secret storage, and no-order invariant |
+| [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | External `Kronos-small` inference, canonical Forecast Signals, evaluation, and Dataset-first Backtest |
 | [Component SDK](src-tauri/crates/adaq-component-sdk/README.md) | [Component SDK 中文](src-tauri/crates/adaq-component-sdk/README.zh-CN.md) | Rust SDK for implementing Factor and Strategy Components |
 | [CLI Tooling](src-tauri/crates/adaq-component-tooling/README.md) | [CLI 工具中文](src-tauri/crates/adaq-component-tooling/README.zh-CN.md) | Build, verify, and manage `.adaq` packages |
 | [Component Template](src-tauri/crates/adaq-component-tooling/templates/README.md) | [组件模板中文](src-tauri/crates/adaq-component-tooling/templates/README.zh-CN.md) | Scaffold README for generated component projects |
@@ -179,17 +180,6 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 | [Indicator Catalog](docs/reference/indicator-catalog.md) | [指标目录中文](docs/reference/indicator-catalog.zh-CN.md) | 160 indicators and 179 outputs with inputs, parameters, and Warmup |
 | [Research Metrics](docs/reference/research-metrics.md) | [研究指标中文](docs/reference/research-metrics.zh-CN.md) | Backtest and research performance metrics |
 | [Developing Components](docs/components/developing-components.md) | [开发组件中文](docs/components/developing-components.zh-CN.md) | Factor/Strategy authoring, Feature Slots, and SemVer rules |
-| [M7 Research Workspace](docs/m7-research-workspace.md) | [M7 研究工作区中文](docs/m7-research-workspace.zh-CN.md) | Desktop research-workspace design and acceptance scope |
-| [M7 Manual Acceptance](docs/m7-manual-acceptance.md) | [M7 人工验收中文](docs/m7-manual-acceptance.zh-CN.md) | Complete human-reviewed research-workspace acceptance path |
-| [M8 Manual Acceptance](docs/m8-manual-acceptance.md) | [M8 人工验收中文](docs/m8-manual-acceptance.zh-CN.md) | Complete Model, Forecast Evaluation, and Dataset-first Backtest acceptance path |
-| [M9 Manual Acceptance](docs/m9-manual-acceptance.md) | [M9 人工验收中文](docs/m9-manual-acceptance.zh-CN.md) | Historical multi-market M9 acceptance record; current V1 readiness is OKX-only |
-| [M10 Manual Acceptance](docs/m10-manual-acceptance.md) | [M10 人工验收中文](docs/m10-manual-acceptance.zh-CN.md) | Bilingual cross-platform acceptance path for Feature Definitions, fitting, materialization, Feature Datasets, and the `/features` workspace |
-| [M11 Factor Research Architecture](docs/m11-factor-research.md) | [M11 Factor Research 架构中文](docs/m11-factor-research.zh-CN.md) | Accepted Factor Lab, ABI v2, evaluation, promotion, and delivery baseline; see the [M11 manual acceptance guides](docs/m11-manual-acceptance.md) ([中文](docs/m11-manual-acceptance.zh-CN.md)) |
-| [External Kronos Adapter](examples/external-models/kronos/README.md) | [外部 Kronos Adapter](examples/external-models/kronos/README.zh-CN.md) | External `Kronos-small` inference, canonical Forecast Signals, evaluation, and Dataset-first Backtest |
-| [V1 Roadmap](docs/v1-roadmap.md) | [V1 路线图中文](docs/v1-roadmap.zh-CN.md) | Accepted OKX-only research-to-Paper V1 scope and milestone architecture |
-| [V1 Completion Recovery Map](docs/v1-completion-recovery-map.md) | [V1 完成度恢复图](docs/v1-completion-recovery-map.zh-CN.md) | Current-head inventory, R1–R14 recovery graph, acceptance boundaries, and closure evidence |
-
-M12 delivers controlled Microsoft Qlib Ridge training through the same External Model Adapter boundary. M8 did not include training, an embedded or controlled Python Runner, Verified external inference, or Marketplace publishing.
 
 ## Disclaimer
 

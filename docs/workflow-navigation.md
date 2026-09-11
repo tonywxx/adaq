@@ -4,7 +4,7 @@
 
 The authenticated application shell presents ADAQ as one research-to-paper workflow. A user opening the app should see the next honest action, understand which capabilities exist today, and reach every step without learning the underlying milestone structure.
 
-For V1, this workflow is scoped to OKX Spot data and OKX Demo Paper execution under ADR 0090 and the [V1 Completion Recovery Map](./v1-completion-recovery-map.md). Retained A-share and U.S. equity routes are Post-V1 and must not appear as supported V1 steps or readiness claims.
+For V1, this workflow is scoped to OKX Spot data and OKX Demo Paper execution under ADR 0090. Retained A-share and U.S. equity routes are Post-V1 and must not appear as supported V1 steps or readiness claims.
 
 ## Home selection
 
@@ -12,7 +12,7 @@ For V1, this workflow is scoped to OKX Spot data and OKX Demo Paper execution un
 - `/` shows the Operations Dashboard when authoritative runtime evidence establishes Operational Responsibility.
 - `/help/workflow` always opens the Workflow Guide.
 - `/operations` always opens the Operations Dashboard.
-- Until M15 introduces authoritative Bot Runtime records, the home condition resolves to the Workflow Guide. The UI must not invent a running Bot or simulated status.
+- Until an active Bot Runtime establishes authoritative runtime records, the home condition resolves to the Workflow Guide. The UI must not invent a running Bot or simulated status.
 
 Operational Responsibility is defined in `CONTEXT.md` and ADR-0059. It includes a non-terminal or faulted Bot Runtime Attempt, reconciliation work, retained Paper positions or non-terminal Paper orders, and active Warning or Critical alerts.
 
@@ -54,16 +54,16 @@ product workflow model, while the sidebar exposes only its current workspaces.
 
 | Step | Capability | Primary output | Current entry |
 | --- | --- | --- | --- |
-| 1 Discover Factors | Available · M11 | Factor Candidate | `/factors` |
-| 2 Evaluate & Promote Factors | Available · M11 | Factor Promotion Decision | `/factors` |
+| 1 Discover Factors | Available | Factor Candidate | `/factors` |
+| 2 Evaluate & Promote Factors | Available | Factor Promotion Decision | `/factors` |
 | 3 Qualify, Package & Import Factor | Partial | Qualified Factor Package + Component Meta | Component Library |
-| 4 Train Model | Available · M12 | Validated Model Artifact | Models |
+| 4 Train Model | Available | Validated Model Artifact | Models |
 | 5 Evaluate Model | Partial | Forecast Evaluation Report | Models |
 | 6 Qualify Model Deployment | Partial | Model Runtime Qualification Report | Models |
-| 7 Build Strategy | Planned · M13 | Strategy Candidate | Guide detail |
+| 7 Build Strategy | Planned | Strategy Candidate | Guide detail |
 | 8 Backtest, Validate & Qualify Strategy | Partial | Validation Report + Qualified Strategy Package | Backtest |
-| 9 Prepare Paper Account & Deploy Bot | Planned · M15–M16 | Bot Deployment Bundle + first Running Attempt | Guide detail |
-| 10 Monitor, Diagnose & Review | Planned · M17–M18 | Events, alerts, paper feedback, and a Research Review Decision | Guide detail |
+| 9 Prepare Paper Account & Deploy Bot | Partial | Bot Deployment Bundle + first Running Attempt | Bots |
+| 10 Monitor, Diagnose & Review | Partial | Events, alerts, paper feedback, and a Research Review Decision | Operations |
 
 Step 6 preserves both deployment paths: Portable models are packaged and imported; Local Qlib Paper models receive runtime qualification without a portable package. Step 10 reports operational health rather than a permanent completion state, and review creates new research attempts rather than mutating a running bundle.
 
@@ -73,7 +73,7 @@ Capability state describes product availability:
 
 - Available
 - Partial
-- Planned · Mxx
+- Planned
 
 Workflow state describes user evidence only when authoritative data exists:
 
@@ -128,4 +128,4 @@ Failed history does not permanently replace the next useful action. When multipl
 
 ## Delivery boundary
 
-This navigation slice adds no Bot persistence, Tauri command, database table, workflow project record, or synthetic status. M15–M18 will supply the runtime evidence that activates Operations home and enriches steps 9–10.
+This navigation slice adds no Bot persistence, Tauri command, database table, workflow project record, or synthetic status. The Paper/Bot runtime slices supply the runtime evidence that activates Operations home and enriches steps 9–10.

@@ -1,18 +1,18 @@
-# M10 Feature Engineering
+# Feature Engineering
 
-[简体中文](./m10-feature-engineering.zh-CN.md)
+[简体中文](./feature-engineering.zh-CN.md)
 
-Status: accepted architecture and executable delivery baseline. M9 is complete; M10 issues implement this contract.
+Status: accepted architecture for the host-owned Feature Engineering workspace.
 
 ## Outcome
 
-M10 delivers one host-owned, Tauri-independent `adaq-feature-engine` that turns immutable M9 market evidence into causal, reproducible Feature evidence. Users can publish Feature Definitions, fit declared transformations, freeze Feature Plans, materialize immutable Feature Datasets, inspect their provenance and missingness, and reuse finalized Datasets in M11 Factor research.
+Feature Engineering delivers one host-owned, Tauri-independent `adaq-feature-engine` that turns immutable market evidence into causal, reproducible Feature evidence. Users can publish Feature Definitions, fit declared transformations, freeze Feature Plans, materialize immutable Feature Datasets, inspect their provenance and missingness, and reuse finalized Datasets in Factor research.
 
-The same Plan and operator state machine serves historical batch materialization and stateful observation evaluation. M10 proves their equivalence but does not connect the online evaluator to a Paper Provider or Trading Bot.
+The same Plan and operator state machine serves historical batch materialization and stateful observation evaluation. The engine proves their equivalence but does not connect the online evaluator to a Paper Provider or Trading Bot.
 
 ## Boundary
 
-M10 includes:
+The feature engine includes:
 
 - Pointwise, Time-Series, and Cross-Sectional Feature Scopes.
 - A finite versioned Feature Operator Catalog rather than scripts or a general expression language.
@@ -20,11 +20,11 @@ M10 includes:
 - Exact availability, Warmup, missingness, typed errors, fitting, immutable evidence, and User-scoped lifecycle records.
 - A localized `/features` workspace for Definitions, Fitting Attempts, Materialization Attempts, and Datasets.
 
-M10 excludes:
+It excludes:
 
 - Arbitrary Python, JavaScript, Rust, notebook, or `adaq:feature` Component execution.
 - Factor research, promotion, Model training, Strategy construction, Paper orders, Bots, and Marketplace work.
-- Implicit fitting or Feature materialization from M11 or later workflows.
+- Implicit fitting or Feature materialization from later workflows.
 - Future-return Features, future-known backward adjustment, silent imputation, forward-fill, row deletion, or Canonical Market Data mutation.
 - Feature Dataset export and a drag-and-drop graph canvas.
 
@@ -44,9 +44,9 @@ This supersedes only the Plan schema and ownership portions of ADR 0012 and ADR 
 - A Plan freezes Definition revisions, ordered outputs, Feature Scopes, operator parameters, Fitted Transformation Artifacts, Warmup, availability, missingness, the Feature Operator Catalog, Feature Engine, Indicator Engine, target/build identities, and Seed.
 - A Plan is reusable and does not bind one Snapshot, Universe, or observation range.
 - A Feature Materialization Request binds User, Plan, Market Data Snapshot, Point-in-Time Instrument Universe, observation range, parameters, and Seed.
-- Pre-v1 incompatible stored Feature schemas are rejected with explicit device-level Reset guidance. M10 adds no migration, dual reader, or automatic deletion.
+- Pre-v1 incompatible stored Feature schemas are rejected with explicit device-level Reset guidance. The engine adds no migration, dual reader, or automatic deletion.
 
-Canonical Definition and Plan JSON is limited to 1 MiB, 256 DAG nodes, 64 ordered outputs, DAG depth 64, and 100,000 effective Warmup Bars. Dataset and runtime ceilings come from M10 benchmarks.
+Canonical Definition and Plan JSON is limited to 1 MiB, 256 DAG nodes, 64 ordered outputs, DAG depth 64, and 100,000 effective Warmup Bars. Dataset and runtime ceilings come from recorded engine benchmarks.
 
 ## Feature semantics
 
@@ -58,7 +58,7 @@ Feature Scope is explicit:
 - Time Series reads one Instrument in causal Observation Time order.
 - Cross Sectional reads one complete Point-in-Time Instrument Universe at one Observation Time.
 
-M10 allows only Pointwise → Time Series → Cross Sectional dependency expansion. Cross-Sectional outputs are terminal. A Cross-Sectional Plan binds one Venue, Asset Class, Bar Interval, Price Basis, and Valuation Currency. Observed and Reconstructed Universes may materialize with their exact evidence state; Unknown makes the complete batch Unavailable.
+Dependency expansion is limited to Pointwise → Time Series → Cross Sectional. Cross-Sectional outputs are terminal. A Cross-Sectional Plan binds one Venue, Asset Class, Bar Interval, Price Basis, and Valuation Currency. Observed and Reconstructed Universes may materialize with their exact evidence state; Unknown makes the complete batch Unavailable.
 
 Available At is the latest availability among all inputs and any Fitted Transformation Artifact. Corporate Action facts use recorded publication and effective evidence. Local computation time is operational metadata, not historical identity.
 
@@ -84,7 +84,7 @@ The initial catalog includes:
 - TA-Lib Indicators through `adaq-indicator-engine`.
 - Backward Simple Return and Log Return only.
 - Full-window rolling mean, population standard deviation, minimum, maximum, and Realized Volatility.
-- Quote Volume, rolling Quote Volume, zero-volume state, and unit-preserving Amihud Illiquidity. M10 does not call Quote Volume turnover or invent a Turnover Ratio without a trustworthy denominator.
+- Quote Volume, rolling Quote Volume, zero-volume state, and unit-preserving Amihud Illiquidity. Quote Volume is not called turnover, and no Turnover Ratio is invented without a trustworthy denominator.
 - Venue-local trading day of week, trading month, minutes from session open, minutes to session close, Session Progress, one-hot, and sine/cosine encodings.
 - Cross-Sectional Rank, Percentile, and Z-score.
 - Causal forward Split adjustment and a separate Dividend Total Return Feature.
@@ -116,7 +116,7 @@ Materialization writes private staging files, validates complete schema, rows, a
 
 Pointwise and Time-Series branches stream by Instrument and Continuous Bar Segment. Cross-Sectional branches process one complete Observation-Time batch. Chunk size never enters identity or changes output. Batch materialization and stateful observation evaluation must produce equivalent Feature Observations across chunk boundaries, Bar Gaps, missing dependencies, and restart reconstruction.
 
-M11 consumes only Completed Feature Datasets. M10 Definitions cannot depend on Factor outputs; the Component adapter preserves existing Strategy and Model Slot bindings to external Factors without allowing a Definition cycle.
+Factor research consumes only Completed Feature Datasets. Feature Definitions cannot depend on Factor outputs; the Component adapter preserves existing Strategy and Model Slot bindings to external Factors without allowing a Definition cycle.
 
 ## Feature workspace
 
@@ -126,7 +126,7 @@ The Definition editor is an accessible ordered node list, not a canvas. Each nod
 
 Dataset inspection shows Manifest and provenance, per-output coverage, Unavailability reason counts, minimum, maximum, mean, population standard deviation, and filtered 50-row pagination by Instrument, time, output, and state. The rebuildable Summary is content inspection, not Factor or Model evaluation.
 
-## Acceptance
+## Verification
 
 Reference journeys are:
 
@@ -136,23 +136,8 @@ Reference journeys are:
 
 Failure coverage includes fitting leakage, insufficient samples, undefined arithmetic, non-finite engine output, cancellation, interruption recovery, atomic publication, incompatible schema rejection, User isolation, deletion locks, and batch/observation equivalence.
 
-M10 performance acceptance uses a 1,000,000-Bar Time-Series workload and a 10,000-Instrument × 252-Observation Cross-Sectional workload. It proves bounded memory, cancellation, chunk equivalence, and responsive GUI scheduling and records the canonical macOS ARM64 baseline without inventing an advance latency or RSS target.
+Workspace verification covers the Definition lifecycle, Fitting Protocols and Artifacts, Dataset materialization and attempts, Dataset inspection, semantic proofs (batch/observation equivalence, causal availability, chunk and restart determinism), User isolation and evidence boundaries, and the localized accessible `/features` GUI at 1024 px.
 
-Every child maps each Acceptance Criterion to implementation and independent evidence. Final gates include focused tests, `cargo fmt --all --check`, `cargo test --workspace`, `cargo check --workspace`, frontend Jest, `pnpm run build`, lint, `git diff --check`, bilingual parity, accessibility, and supported-platform CI evidence.
+Performance verification uses a 1,000,000-Bar Time-Series workload and a 10,000-Instrument × 252-Observation Cross-Sectional workload. It proves bounded memory, cancellation, chunk equivalence, and responsive GUI scheduling and records the canonical macOS ARM64 baseline without inventing an advance latency or RSS target.
 
-## Delivery slices
-
-M10 is delivered through ten dependency-ordered slices:
-
-1. [#78 — Core contracts, Feature Operator Catalog, Plan 2.0, and identity](https://github.com/tonywxx/adaq/issues/78).
-2. [#79 — Pointwise and Time-Series operators](https://github.com/tonywxx/adaq/issues/79).
-3. [#80 — Cross-Sectional Scope and Universe operators](https://github.com/tonywxx/adaq/issues/80).
-4. [#81 — Fitting Protocols, Attempts, and Artifacts](https://github.com/tonywxx/adaq/issues/81).
-5. [#82 — Feature Dataset materialization lifecycle and Parquet evidence](https://github.com/tonywxx/adaq/issues/82).
-6. [#83 — Batch/observation equivalence and Component integration](https://github.com/tonywxx/adaq/issues/83).
-7. [#84 — User-scoped native APIs and background runner](https://github.com/tonywxx/adaq/issues/84).
-8. [#85 — Localized Feature Workspace](https://github.com/tonywxx/adaq/issues/85).
-9. [#86 — Three-market fixtures, benchmarks, and hardening](https://github.com/tonywxx/adaq/issues/86).
-10. [#87 — Bilingual cross-platform acceptance](https://github.com/tonywxx/adaq/issues/87).
-
-M10 is published as [parent issue #77](https://github.com/tonywxx/adaq/issues/77). Dependencies are `1 → {2,4,5}`, `2 → 3`, `{2,3,4,5} → 6`, `{5,6} → 7`, `7 → 8`, `{6,7} → 9`, and `{1…9} → 10`. M10.1 is the only initial executable frontier.
+Final gates include focused tests, `cargo fmt --all --check`, `cargo test --workspace`, `cargo check --workspace`, frontend Jest (`pnpm test`), `pnpm run build`, lint, `git diff --check`, bilingual parity, accessibility, and supported-platform CI evidence. Focused native suites live in `src-tauri/crates/adaq-feature-engine/tests/` (`contracts.rs`, `operators.rs`, `fitting.rs`, `materialization.rs`, `reference_fixtures.rs`).
