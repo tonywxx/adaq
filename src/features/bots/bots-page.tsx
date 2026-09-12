@@ -45,6 +45,7 @@ type BotView = {
 		connectionProfileId: string;
 		schedule:
 			| { type: "closed-bar"; instrumentId: string; interval: string }
+			| { type: "ema-double-cross"; instrumentId: string }
 			| {
 					type: "scheduled-cross-section";
 					universeId: string;
@@ -94,7 +95,10 @@ type BotView = {
 	};
 };
 
-type ScheduleKind = "closed-bar" | "scheduled-cross-section";
+type ScheduleKind =
+	| "closed-bar"
+	| "ema-double-cross"
+	| "scheduled-cross-section";
 
 const commandId = () => globalThis.crypto.randomUUID();
 
@@ -147,14 +151,16 @@ export function BotsPage() {
 					schedule:
 						scheduleKind === "closed-bar"
 							? { type: "closed-bar", instrumentId, interval }
-							: {
-									type: "scheduled-cross-section",
-									universeId,
-									instruments: instruments
-										.split(",")
-										.map((value) => value.trim())
-										.filter(Boolean),
-								},
+							: scheduleKind === "ema-double-cross"
+								? { type: "ema-double-cross", instrumentId }
+								: {
+										type: "scheduled-cross-section",
+										universeId,
+										instruments: instruments
+											.split(",")
+											.map((value) => value.trim())
+											.filter(Boolean),
+									},
 				},
 			}),
 		onSuccess: async () => {
@@ -309,12 +315,13 @@ export function BotsPage() {
 							className="h-9 rounded-md border bg-background px-3 text-sm"
 						>
 							<option value="closed-bar">{t("bots.closedBar")}</option>
+							<option value="ema-double-cross">{t("bots.emaDoubleCross")}</option>
 							<option value="scheduled-cross-section">
 								{t("bots.scheduledCrossSection")}
 							</option>
 						</select>
 					</div>
-					{scheduleKind === "closed-bar" ? (
+					{scheduleKind === "closed-bar" || scheduleKind === "ema-double-cross" ? (
 						<>
 							<div className="grid gap-2">
 								<Label htmlFor="bot-instrument">{t("bots.instrument")}</Label>
@@ -326,15 +333,17 @@ export function BotsPage() {
 									className="h-9 rounded-md border bg-background px-3 text-sm"
 								/>
 							</div>
-							<div className="grid gap-2">
-								<Label htmlFor="bot-interval">{t("bots.interval")}</Label>
-								<input
-									id="bot-interval"
-									value={interval}
-									onChange={(event) => setInterval(event.target.value)}
-									className="h-9 rounded-md border bg-background px-3 text-sm"
-								/>
-							</div>
+							{scheduleKind === "closed-bar" && (
+								<div className="grid gap-2">
+									<Label htmlFor="bot-interval">{t("bots.interval")}</Label>
+									<input
+										id="bot-interval"
+										value={interval}
+										onChange={(event) => setInterval(event.target.value)}
+										className="h-9 rounded-md border bg-background px-3 text-sm"
+									/>
+								</div>
+							)}
 						</>
 					) : (
 						<>
@@ -493,17 +502,17 @@ export function BotsPage() {
 														id={decision.decisionId}
 														label={t("identifiers.decision")}
 													/>
-												{decision.targetHash ? (
-													<>
-														{" · "}
-														<IdentifierDisplay
-															id={decision.targetHash}
-															label={t("identifiers.fingerprint")}
-														/>
-													</>
-												) : (
-													""
-												)}
+													{decision.targetHash ? (
+														<>
+															{" · "}
+															<IdentifierDisplay
+																id={decision.targetHash}
+																label={t("identifiers.fingerprint")}
+															/>
+														</>
+													) : (
+														""
+													)}
 												</p>
 											))}
 										</div>

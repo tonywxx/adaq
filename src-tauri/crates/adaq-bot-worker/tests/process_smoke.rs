@@ -195,6 +195,7 @@ fn launch_worker(
         execution_profile_hash: "e".repeat(64),
         worker_binary_hash: worker.sha256.clone(),
         qualification_evidence_hash: "b".repeat(64),
+        decision_mode: None,
         strategy: WorkerStrategyBinding {
             world,
             component_sha256,

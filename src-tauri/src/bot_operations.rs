@@ -51,6 +51,8 @@ const MAX_ORDERS: usize = 512;
 const MAX_TEXT_BYTES: usize = 512;
 // ponytail: fixed 30s host deadline until schedule metadata carries a venue-specific policy.
 const DECISION_DEADLINE_GRACE_MS: i64 = 30_000;
+const EMA_INITIAL_ALLOCATION_USDT: Decimal = Decimal::from_parts(3_269_476, 0, 0, false, 2);
+const EMA_ENTRY_NOTIONAL_CAP_USDT: Decimal = Decimal::from_parts(3_236_781, 0, 0, false, 2);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -67,6 +69,9 @@ pub(crate) enum BotSchedule {
     ScheduledCrossSection {
         universe_id: String,
         instruments: Vec<String>,
+    },
+    EmaDoubleCross {
+        instrument_id: String,
     },
 }
 
@@ -106,6 +111,19 @@ impl BotSchedule {
                     );
                 }
             }
+            Self::EmaDoubleCross { instrument_id } => {
+                if scope != StrategyScope::SingleInstrument
+                    || !bounded(instrument_id, 128)
+                    || !matches!(
+                        okx_instrument_code(instrument_id),
+                        "BTC-USDT" | "ETH-USDT" | "SOL-USDT"
+                    )
+                {
+                    return Err(
+                        "EmaDoubleCross schedule does not match the qualified Strategy".into(),
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -119,6 +137,9 @@ impl BotSchedule {
                 instruments.iter().any(|candidate| {
                     candidate == instrument || okx_instrument_code(candidate) == instrument
                 })
+            }
+            Self::EmaDoubleCross { instrument_id } => {
+                instrument_id == instrument || okx_instrument_code(instrument_id) == instrument
             }
         }
     }
@@ -154,6 +175,9 @@ fn canonicalize_okx_schedule(schedule: BotSchedule) -> Result<BotSchedule, Strin
                 .iter()
                 .map(|instrument| canonical_okx_instrument_id(instrument))
                 .collect::<Result<_, _>>()?,
+        }),
+        BotSchedule::EmaDoubleCross { instrument_id } => Ok(BotSchedule::EmaDoubleCross {
+            instrument_id: canonical_okx_instrument_id(&instrument_id)?,
         }),
     }
 }
@@ -281,6 +305,11 @@ impl BotDeploymentBundle {
         }
         self.schedule
             .validate(runtime_scope(&self.runtime_bundle), &self.universe_id)?;
+        let expected_decision_mode = matches!(&self.schedule, BotSchedule::EmaDoubleCross { .. })
+            .then_some(adaq_bot_runtime::ema_double_cross::EMA_DECISION_MODE);
+        if self.runtime_bundle.input.decision_mode.as_deref() != expected_decision_mode {
+            return Err("Bot decision mode does not match the immutable schedule".into());
+        }
         Ok(())
     }
 }
@@ -441,6 +470,15 @@ impl BotStore {
                     user_id TEXT NOT NULL,
                     attempt_id TEXT NOT NULL,
                     acquired_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS bot_instrument_leases (
+                    account_id TEXT NOT NULL,
+                    instrument_id TEXT NOT NULL,
+                    bot_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL,
+                    acquired_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY(account_id, instrument_id)
                 );
                 CREATE TABLE IF NOT EXISTS bot_commands (
                     user_id TEXT NOT NULL,
@@ -723,27 +761,60 @@ impl BotStore {
         }
         let attempt_id = Uuid::new_v4().to_string();
         let now = adaq_bot_runtime::unix_now_ms();
-        let lease = database
-            .query_row(
-                "SELECT bot_id, user_id FROM bot_account_leases WHERE account_id = ?1",
-                [&bot.bundle.account_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?;
-        if let Some((lease_bot, lease_user)) = lease
-            && (lease_bot != bot_id || lease_user != user_id)
-        {
-            return Err("The OKX Demo account is controlled by another Bot".into());
+        if let BotSchedule::EmaDoubleCross { instrument_id } = &bot.bundle.schedule {
+            let instrument_id = okx_instrument_code(instrument_id);
+            let lease = database
+                .query_row(
+                    "SELECT bot_id, user_id FROM bot_instrument_leases
+                     WHERE account_id = ?1 AND instrument_id = ?2",
+                    params![bot.bundle.account_id, instrument_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?;
+            if let Some((lease_bot, lease_user)) = lease
+                && (lease_bot != bot_id || lease_user != user_id)
+            {
+                return Err("The OKX Demo instrument is controlled by another Bot".into());
+            }
+            database
+                .execute(
+                    "INSERT OR REPLACE INTO bot_instrument_leases
+                     (account_id, instrument_id, bot_id, user_id, attempt_id, acquired_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        bot.bundle.account_id,
+                        instrument_id,
+                        bot_id,
+                        user_id,
+                        attempt_id,
+                        now
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        } else {
+            let lease = database
+                .query_row(
+                    "SELECT bot_id, user_id FROM bot_account_leases WHERE account_id = ?1",
+                    [&bot.bundle.account_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?;
+            if let Some((lease_bot, lease_user)) = lease
+                && (lease_bot != bot_id || lease_user != user_id)
+            {
+                return Err("The OKX Demo account is controlled by another Bot".into());
+            }
+            database
+                .execute(
+                    "INSERT OR REPLACE INTO bot_account_leases
+                     (account_id, bot_id, user_id, attempt_id, acquired_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![bot.bundle.account_id, bot_id, user_id, attempt_id, now],
+                )
+                .map_err(|error| error.to_string())?;
         }
-        database
-            .execute(
-                "INSERT OR REPLACE INTO bot_account_leases
-                 (account_id, bot_id, user_id, attempt_id, acquired_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![bot.bundle.account_id, bot_id, user_id, attempt_id, now],
-            )
-            .map_err(|error| error.to_string())?;
         let mut attempt = BotRuntimeAttempt {
             attempt_id: attempt_id.clone(),
             bot_id: bot_id.into(),
@@ -925,8 +996,16 @@ impl BotStore {
                 WorkerDecisionResult::NoTarget {
                     request_id,
                     decision_id,
+                    evaluation,
                     ..
-                } => (request_id, decision_id, "no-target", None, None, None),
+                } => (
+                    request_id,
+                    decision_id,
+                    "no-target",
+                    None,
+                    None,
+                    evaluation.clone(),
+                ),
             };
             attempt.decisions.push(BotDecisionEvidence {
                 request_id: bounded_text(request_id, 128),
@@ -954,6 +1033,7 @@ impl BotStore {
         request_id: &str,
         decision_id: &str,
         decision_time_ms: Option<i64>,
+        allow_equal_time: bool,
     ) -> Result<DecisionClaim, String> {
         validate_user(user_id)?;
         if !bounded(attempt_id, 128) || !bounded(request_id, 128) || !bounded(decision_id, 128) {
@@ -994,7 +1074,13 @@ impl BotStore {
                 .iter()
                 .find(|attempt| attempt.attempt_id == attempt_id)
                 .and_then(|attempt| attempt.last_decision_time_ms)
-                .is_some_and(|last_decision_time_ms| decision_time_ms <= last_decision_time_ms)
+                .is_some_and(|last_decision_time_ms| {
+                    if allow_equal_time {
+                        decision_time_ms < last_decision_time_ms
+                    } else {
+                        decision_time_ms <= last_decision_time_ms
+                    }
+                })
         }) {
             return Ok(DecisionClaim::Stale);
         }
@@ -1129,7 +1215,37 @@ impl BotStore {
                  WHERE account_id = ?1 AND bot_id = ?2 AND user_id = ?3",
                 params![account_id, bot_id, user_id],
             )
+            .map_err(|error| error.to_string())?;
+        self.database
+            .lock()
+            .map_err(|error| error.to_string())?
+            .execute(
+                "DELETE FROM bot_instrument_leases
+                 WHERE account_id = ?1 AND bot_id = ?2 AND user_id = ?3",
+                params![account_id, bot_id, user_id],
+            )
             .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn instrument_lease_exists(
+        &self,
+        user_id: &str,
+        account_id: &str,
+        instrument_id: &str,
+    ) -> Result<bool, String> {
+        self.database
+            .lock()
+            .map_err(|error| error.to_string())?
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM bot_instrument_leases
+                    WHERE user_id = ?1 AND account_id = ?2 AND instrument_id = ?3
+                )",
+                params![user_id, account_id, instrument_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|exists| exists != 0)
             .map_err(|error| error.to_string())
     }
 
@@ -1273,7 +1389,9 @@ impl RuntimeGuard for BotStore {
             .lock()
             .map_err(|error| format!("database lock: {error}"))?
             .query_row(
-                "SELECT COUNT(*) FROM bot_account_leases WHERE user_id = ?1",
+                "SELECT
+                    (SELECT COUNT(*) FROM bot_account_leases WHERE user_id = ?1)
+                    + (SELECT COUNT(*) FROM bot_instrument_leases WHERE user_id = ?1)",
                 [user_id],
                 |row| row.get::<_, i64>(0),
             )
@@ -1571,6 +1689,8 @@ pub(crate) struct BotDecisionRequest {
     pub command_id: String,
     pub request_id: String,
     pub dataset_id: String,
+    #[serde(default)]
+    pub trade_id: Option<String>,
 }
 
 struct HostDecisionBatch {
@@ -1731,11 +1851,20 @@ pub(crate) async fn bot_decision(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let local = app.state::<Arc<LocalResearchState>>();
-        let bots = app.state::<Arc<BotStore>>();
-        let supervisor = app.state::<Arc<crate::bot_supervisor::BotSupervisor>>();
-        bots.command(
+    tauri::async_runtime::spawn_blocking(move || run_bot_decision(&app, &user_id, request))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn run_bot_decision(
+    app: &AppHandle,
+    user_id: &str,
+    request: BotDecisionRequest,
+) -> Result<BotView, String> {
+    let local = app.state::<Arc<LocalResearchState>>();
+    let bots = app.state::<Arc<BotStore>>();
+    let supervisor = app.state::<Arc<crate::bot_supervisor::BotSupervisor>>();
+    bots.command(
             &user_id,
             &request.bot_id,
             &request.command_id,
@@ -1747,6 +1876,10 @@ pub(crate) async fn bot_decision(
                 }
                 let validation: Result<(), String> = if !bounded(&request.request_id, 128)
                     || !bounded(&request.dataset_id, 128)
+                    || request
+                        .trade_id
+                        .as_deref()
+                        .is_some_and(|trade_id| !bounded(trade_id, 256))
                 {
                     Err("Decision request identity is missing or exceeds the Host limit.".into())
                 } else {
@@ -1772,10 +1905,11 @@ pub(crate) async fn bot_decision(
                     &user_id,
                     &view.bundle,
                     &request.dataset_id,
+                    request.trade_id.as_deref(),
                 );
                 if let Err(error) = &host_batch {
                     local.operations.observe(crate::operations::HealthObservation {
-                        user_id: user_id.clone(),
+                        user_id: user_id.into(),
                         entity_id: view.bundle.market_data_snapshot_id.clone(),
                         dimension: crate::operations::HealthDimension::MarketData,
                         state: crate::operations::HealthState::Unknown,
@@ -1798,7 +1932,7 @@ pub(crate) async fn bot_decision(
                     })?;
                 } else {
                     local.operations.observe(crate::operations::HealthObservation {
-                        user_id: user_id.clone(),
+                        user_id: user_id.into(),
                         entity_id: view.bundle.market_data_snapshot_id.clone(),
                         dimension: crate::operations::HealthDimension::MarketData,
                         state: crate::operations::HealthState::Healthy,
@@ -1844,6 +1978,9 @@ pub(crate) async fn bot_decision(
                         .as_ref()
                         .ok()
                         .map(|batch| batch.clock.decision_time_ms()),
+                    host_batch.as_ref().is_ok_and(|batch| {
+                        matches!(batch.clock, DecisionClock::TradeEvent { .. })
+                    }),
                 )?;
                 match claim {
                     DecisionClaim::New => {}
@@ -1889,6 +2026,7 @@ pub(crate) async fn bot_decision(
                             decision_id: decision_id.clone(),
                             reason: adaq_bot_runtime::NoTargetReason::MissingInput,
                             detail: safe_detail(&error),
+                            evaluation: None,
                         };
                         bots.record_decision(&user_id, &request.bot_id, None, &result)?;
                         bots.record_evidence(
@@ -1908,6 +2046,7 @@ pub(crate) async fn bot_decision(
                         decision_id: decision_id.clone(),
                         reason: adaq_bot_runtime::NoTargetReason::MissingInput,
                         detail: safe_detail(&error),
+                        evaluation: None,
                     };
                     bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result)?;
                     bots.record_evidence(
@@ -1933,6 +2072,7 @@ pub(crate) async fn bot_decision(
                             decision_id: decision_id.clone(),
                             reason: adaq_bot_runtime::NoTargetReason::MissingInput,
                             detail: safe_detail(&error),
+                            evaluation: None,
                         };
                         bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result)?;
                         bots.record_evidence(
@@ -2054,9 +2194,44 @@ pub(crate) async fn bot_decision(
                 }
             },
         )
-    })
-    .await
-    .map_err(|error| error.to_string())?
+}
+
+pub(crate) fn dispatch_trade_event(
+    app: &AppHandle,
+    user_id: &str,
+    instrument_code: &str,
+    trade_id: &str,
+) -> Result<(), String> {
+    validate_user(user_id)?;
+    if !bounded(instrument_code, 128) || !bounded(trade_id, 256) {
+        return Err("Trade event identity exceeds the Host limit.".into());
+    }
+    let bots = app.state::<Arc<BotStore>>();
+    let views = bots.list(user_id)?;
+    let mut first_error = None;
+    for view in views {
+        if view.state != LifecycleState::Running
+            || !matches!(
+                &view.bundle.schedule,
+                BotSchedule::EmaDoubleCross { instrument_id }
+                    if okx_instrument_code(instrument_id) == instrument_code
+            )
+        {
+            continue;
+        }
+        let identity = hash_json(&(view.bot_id.as_str(), trade_id))?;
+        let request = BotDecisionRequest {
+            bot_id: view.bot_id,
+            command_id: format!("stream-decision-{identity}"),
+            request_id: format!("stream-request-{identity}"),
+            dataset_id: instrument_code.into(),
+            trade_id: Some(trade_id.into()),
+        };
+        if let Err(error) = run_bot_decision(app, user_id, request) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn host_decision_batch(
@@ -2064,9 +2239,10 @@ fn host_decision_batch(
     user_id: &str,
     bundle: &BotDeploymentBundle,
     dataset_id: &str,
+    trade_id: Option<&str>,
 ) -> Result<HostDecisionBatch, String> {
-    let clock = host_schedule_clock(local, user_id, bundle, dataset_id)?;
-    let input = host_decision_input(local, user_id, bundle, dataset_id, &clock)?;
+    let clock = host_schedule_clock(local, user_id, bundle, dataset_id, trade_id)?;
+    let input = host_decision_input(local, user_id, bundle, dataset_id, trade_id, &clock)?;
     Ok(HostDecisionBatch { clock, input })
 }
 
@@ -2086,7 +2262,12 @@ fn host_schedule_clock(
     user_id: &str,
     bundle: &BotDeploymentBundle,
     dataset_id: &str,
+    trade_id: Option<&str>,
 ) -> Result<DecisionClock, String> {
+    if let BotSchedule::EmaDoubleCross { instrument_id } = &bundle.schedule {
+        let trade_id = trade_id.unwrap_or(dataset_id);
+        return host_event_clock(local, user_id, bundle, instrument_id, trade_id);
+    }
     let store = local.features.materialization_store();
     let dataset =
         crate::features::Features::completed_dataset_from_store(&store, user_id, dataset_id)?;
@@ -2178,7 +2359,48 @@ fn host_schedule_clock(
                 available_instruments: instruments.clone(),
             })
         }
+        BotSchedule::EmaDoubleCross { .. } => unreachable!("event schedule handled above"),
     }
+}
+
+fn host_event_clock(
+    local: &LocalResearchState,
+    user_id: &str,
+    bundle: &BotDeploymentBundle,
+    instrument_id: &str,
+    trade_id: &str,
+) -> Result<DecisionClock, String> {
+    let retained = local
+        .okx
+        .retained_trade_for_user(user_id, okx_instrument_code(instrument_id), trade_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The requested retained OKX Trade is unavailable.".to_owned())?;
+    let trade = retained.trade;
+    let now = adaq_bot_runtime::unix_now_ms();
+    if trade.timestamp_ms < 0
+        || trade.timestamp_ms > now
+        || retained.received_at_ms <= 0
+        || retained.received_at_ms > now
+        || retained.available_at_ms < trade.timestamp_ms
+        || retained.available_at_ms > retained.received_at_ms
+        || now.saturating_sub(retained.received_at_ms) > DECISION_DEADLINE_GRACE_MS
+    {
+        return Err("The retained OKX Trade is stale or has invalid availability metadata.".into());
+    }
+    let (deadline_ms, next_execution_ms) = host_schedule_window(retained.received_at_ms, now)?;
+    Ok(DecisionClock::TradeEvent {
+        decision_id: host_decision_id(
+            bundle,
+            &format!("ema-double-cross:{trade_id}"),
+            trade.timestamp_ms,
+        )?,
+        instrument_id: instrument_id.into(),
+        observation_time_ms: trade.timestamp_ms,
+        decision_time_ms: retained.received_at_ms,
+        available_at_ms: retained.available_at_ms,
+        deadline_ms,
+        next_execution_ms,
+    })
 }
 
 fn host_feature_available_at(
@@ -2217,8 +2439,13 @@ fn host_decision_input(
     user_id: &str,
     bundle: &BotDeploymentBundle,
     dataset_id: &str,
+    trade_id: Option<&str>,
     clock: &DecisionClock,
 ) -> Result<WorkerDecisionInput, String> {
+    if let BotSchedule::EmaDoubleCross { instrument_id } = &bundle.schedule {
+        let trade_id = trade_id.unwrap_or(dataset_id);
+        return host_event_input(local, user_id, bundle, instrument_id, trade_id, clock);
+    }
     let store = local.features.materialization_store();
     let dataset =
         crate::features::Features::completed_dataset_from_store(&store, user_id, dataset_id)?;
@@ -2355,7 +2582,136 @@ fn host_decision_input(
                 },
             })
         }
+        DecisionClock::TradeEvent { .. } => unreachable!("event clock handled above"),
     }
+}
+
+fn host_event_input(
+    local: &LocalResearchState,
+    user_id: &str,
+    bundle: &BotDeploymentBundle,
+    instrument_id: &str,
+    trade_id: &str,
+    clock: &DecisionClock,
+) -> Result<WorkerDecisionInput, String> {
+    let DecisionClock::TradeEvent {
+        decision_time_ms,
+        available_at_ms,
+        ..
+    } = clock
+    else {
+        return Err("EMA double-cross input requires a TradeEvent clock.".into());
+    };
+    let retained = local
+        .okx
+        .retained_trade_for_user(user_id, okx_instrument_code(instrument_id), trade_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The requested retained OKX Trade is unavailable.".to_owned())?;
+    let trade = retained.trade;
+    let (snapshot, bars) = local
+        .snapshots
+        .snapshot_for_user(user_id, &bundle.market_data_snapshot_id)?;
+    if okx_instrument_code(&snapshot.code) != okx_instrument_code(instrument_id)
+        || snapshot.interval != adaq_data_core::BarInterval::FifteenMinutes
+        || !snapshot.gaps.is_empty()
+    {
+        return Err(
+            "The frozen Market Data Snapshot is not a complete exact 15m EMA context.".into(),
+        );
+    }
+    if trade.timestamp_ms > *decision_time_ms
+        || retained.available_at_ms > *available_at_ms
+        || retained.received_at_ms != *decision_time_ms
+    {
+        return Err("The retained Trade is newer than the Host decision clock.".into());
+    }
+    let stream_health = local
+        .okx
+        .stream_health(user_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|health| health.stream_kind == "trade");
+    if stream_health
+        .as_ref()
+        .is_some_and(|health| health.status != "live")
+    {
+        return Err("The OKX Trade stream is not live; confirmation evidence is blocked.".into());
+    }
+    let stream_epoch = stream_health
+        .map(|health| health.reconnect_count)
+        .unwrap_or_default();
+    let mut events = bars
+        .into_iter()
+        .filter_map(|bar| {
+            let close_time_ms = bar
+                .open_time_ms
+                .checked_add(adaq_bot_runtime::ema_double_cross::EMA_BAR_INTERVAL_MS)?;
+            (close_time_ms <= trade.timestamp_ms).then(|| {
+                Ok(adaq_bot_runtime::WorkerMarketEvent::BarClosed {
+                    instrument_id: instrument_id.into(),
+                    bar_open_time_ms: bar.open_time_ms,
+                    close: bar.close.to_string(),
+                    observed_at_ms: close_time_ms,
+                    available_at_ms: close_time_ms,
+                    evidence_id: hash_json(&(
+                        bundle.market_data_snapshot_id.as_str(),
+                        bar.open_time_ms,
+                    ))
+                    .unwrap_or_else(|_| format!("bar-{}", bar.open_time_ms)),
+                    replay: true,
+                })
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    events.sort_by_key(|event| match event {
+        adaq_bot_runtime::WorkerMarketEvent::BarClosed {
+            bar_open_time_ms, ..
+        } => *bar_open_time_ms,
+        adaq_bot_runtime::WorkerMarketEvent::Trade { .. } => i64::MAX,
+    });
+    let max_events = usize::try_from(
+        bundle
+            .runtime_bundle
+            .input
+            .worker_policy
+            .max_decision_frames,
+    )
+    .map_err(|_| "Worker event limit exceeds the Host allocation limit".to_owned())?;
+    let bar_limit = max_events.saturating_sub(1);
+    if events.len() > bar_limit {
+        return Err(
+            "The frozen EMA replay interval exceeds the Worker event limit; no truncated replay is authorized."
+                .into(),
+        );
+    }
+    events.push(adaq_bot_runtime::WorkerMarketEvent::Trade {
+        instrument_id: instrument_id.into(),
+        trade_id: trade.trade_id,
+        price: trade.price.to_string(),
+        quantity: trade.quantity.to_string(),
+        observed_at_ms: trade.timestamp_ms,
+        available_at_ms: *available_at_ms,
+        received_at_ms: *decision_time_ms,
+    });
+    let account = local.paper_trading.view_optional(user_id)?.ok_or_else(|| {
+        "A reconciled OKX Demo account is required before a Decision Batch.".to_owned()
+    })?;
+    if account.account.account_id != bundle.account_id
+        || !account_is_reconciled_and_quiet(Some(&account))
+    {
+        return Err("Account state is stale, uncertain, or bound to another account.".into());
+    }
+    let owned_position = account
+        .account
+        .positions
+        .get(okx_instrument_code(instrument_id))
+        .is_some_and(|position| position.quantity > Decimal::ZERO);
+    Ok(WorkerDecisionInput::Event {
+        instrument_id: instrument_id.into(),
+        events,
+        owned_position,
+        stream_epoch,
+    })
 }
 
 fn host_schedule_window(decision_time_ms: i64, now_ms: i64) -> Result<(i64, i64), String> {
@@ -2403,6 +2759,7 @@ fn bundle_interval(bundle: &BotDeploymentBundle) -> Result<adaq_data_core::BarIn
             .copied()
             .find(|candidate| candidate.as_str() == interval)
             .ok_or_else(|| "Bot ClosedBar interval is invalid".to_owned()),
+        BotSchedule::EmaDoubleCross { .. } => Ok(adaq_data_core::BarInterval::FifteenMinutes),
         BotSchedule::ScheduledCrossSection { .. } => {
             Err("Portfolio decision does not have a ClosedBar interval".into())
         }
@@ -2480,7 +2837,85 @@ fn validate_decision_input(
         {
             Ok(())
         }
+        (
+            BotSchedule::EmaDoubleCross { instrument_id },
+            DecisionClock::TradeEvent {
+                instrument_id: clock_instrument,
+                decision_time_ms,
+                ..
+            },
+            WorkerDecisionInput::Event {
+                instrument_id: input_instrument,
+                events,
+                ..
+            },
+        ) if instrument_id == clock_instrument
+            && instrument_id == input_instrument
+            && !events.is_empty()
+            && events.len()
+                <= usize::try_from(
+                    bundle
+                        .runtime_bundle
+                        .input
+                        .worker_policy
+                        .max_decision_frames,
+                )
+                .unwrap_or_default()
+            && matches!(
+                events.last(),
+                Some(adaq_bot_runtime::WorkerMarketEvent::Trade { .. })
+            )
+            && events
+                .iter()
+                .all(|event| valid_market_event(event, instrument_id, *decision_time_ms)) =>
+        {
+            Ok(())
+        }
         _ => Err("Decision Batch does not match the immutable Bot schedule.".into()),
+    }
+}
+
+fn valid_market_event(
+    event: &adaq_bot_runtime::WorkerMarketEvent,
+    expected_instrument: &str,
+    decision_time_ms: i64,
+) -> bool {
+    if event.instrument_id() != expected_instrument || !bounded(event.event_id(), 256) {
+        return false;
+    }
+    match event {
+        adaq_bot_runtime::WorkerMarketEvent::BarClosed {
+            bar_open_time_ms,
+            close,
+            observed_at_ms,
+            available_at_ms,
+            ..
+        } => {
+            *bar_open_time_ms >= 0
+                && bar_open_time_ms % adaq_bot_runtime::ema_double_cross::EMA_BAR_INTERVAL_MS == 0
+                && adaq_component_sdk::parse_decimal(close).is_ok_and(|close| close > Decimal::ZERO)
+                && *observed_at_ms
+                    >= bar_open_time_ms
+                        .saturating_add(adaq_bot_runtime::ema_double_cross::EMA_BAR_INTERVAL_MS)
+                && *observed_at_ms <= *available_at_ms
+                && *available_at_ms <= decision_time_ms
+        }
+        adaq_bot_runtime::WorkerMarketEvent::Trade {
+            price,
+            quantity,
+            observed_at_ms,
+            available_at_ms,
+            received_at_ms,
+            ..
+        } => {
+            adaq_component_sdk::parse_decimal(price).is_ok_and(|price| price > Decimal::ZERO)
+                && adaq_component_sdk::parse_decimal(quantity)
+                    .is_ok_and(|quantity| quantity > Decimal::ZERO)
+                && *observed_at_ms >= 0
+                && *observed_at_ms <= *available_at_ms
+                && *available_at_ms <= *received_at_ms
+                && *received_at_ms <= decision_time_ms
+        }
     }
 }
 
@@ -2649,6 +3084,9 @@ fn execute_target(
         }
         | DecisionClock::ScheduledCrossSection {
             next_execution_ms, ..
+        }
+        | DecisionClock::TradeEvent {
+            next_execution_ms, ..
         } => *next_execution_ms,
     };
     if adaq_bot_runtime::unix_now_ms() < next_execution_ms {
@@ -2714,21 +3152,40 @@ fn execute_strategy_target(
     exposures: &[adaq_bot_runtime::WorkerExposure],
     decision_id: &str,
 ) -> Result<(), String> {
-    if !matches!(
-        &bundle.schedule,
-        BotSchedule::ClosedBar { instrument_id: scheduled, .. } if scheduled == instrument_id
-    ) || exposures.is_empty()
+    let schedule_matches = match &bundle.schedule {
+        BotSchedule::ClosedBar {
+            instrument_id: scheduled,
+            ..
+        }
+        | BotSchedule::EmaDoubleCross {
+            instrument_id: scheduled,
+        } => scheduled == instrument_id,
+        BotSchedule::ScheduledCrossSection { .. } => false,
+    };
+    if !schedule_matches
+        || exposures.is_empty()
         || !exposures.iter().all(|exposure| {
             exposure.instrument_id == instrument_id
                 && adaq_bot_runtime::is_decimal_text(&exposure.exposure)
         })
     {
-        return Err("Strategy Target does not match the immutable ClosedBar schedule.".into());
+        return Err(
+            "Strategy Target does not match the immutable single-instrument schedule.".into(),
+        );
     }
+    let ema_schedule = matches!(&bundle.schedule, BotSchedule::EmaDoubleCross { .. });
     if account.account.positions.keys().any(|instrument| {
-        canonical_okx_instrument_id(instrument)
-            .map(|instrument| instrument != instrument_id)
-            .unwrap_or(true)
+        let code = okx_instrument_code(instrument);
+        if canonical_okx_instrument_id(instrument)
+            .map(|canonical| canonical == instrument_id)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        !(ema_schedule
+            && bots
+                .instrument_lease_exists(user_id, &bundle.account_id, code)
+                .unwrap_or(false))
     }) {
         return Err("Unowned account exposure prevents new Bot risk.".into());
     }
@@ -2776,13 +3233,39 @@ fn execute_strategy_target(
                 "Strategy account equity overflowed the Decimal limit.".to_owned()
             })?)
             .ok_or_else(|| "Strategy account equity overflowed the Decimal limit.".to_owned())?;
-    let desired = equity
+    let target_equity = if matches!(&bundle.schedule, BotSchedule::EmaDoubleCross { .. }) {
+        EMA_ENTRY_NOTIONAL_CAP_USDT
+    } else {
+        equity
+    };
+    let desired = target_equity
         .checked_mul(approved)
         .ok_or_else(|| "Strategy target notional overflowed the Decimal limit.".to_owned())?;
     let current = position
         .quantity
         .checked_mul(price)
         .ok_or_else(|| "Strategy position notional overflowed the Decimal limit.".to_owned())?;
+    let difference = desired
+        .checked_sub(current)
+        .ok_or_else(|| "Strategy allocation difference overflowed the Decimal limit.".to_owned())?;
+    if ema_schedule && difference > Decimal::ZERO {
+        let fee = match bundle.execution_profile.fill_policy {
+            adaq_backtest_core::FillPolicy::Maker => bundle.execution_profile.maker_fee_rate,
+            adaq_backtest_core::FillPolicy::Taker => bundle.execution_profile.taker_fee_rate,
+        };
+        let required_cash = difference
+            .checked_mul(Decimal::ONE + fee)
+            .and_then(|value| value.checked_add(bundle.paper_risk_policy.reserve_cash))
+            .ok_or_else(|| {
+                "Strategy allocation cash requirement overflowed the Decimal limit.".to_owned()
+            })?;
+        if account.buying_power < required_cash {
+            return Err(
+                "The EMA Bot allocation is not fully funded; no partial entry order is authorized."
+                    .into(),
+            );
+        }
+    }
     let Some(order) = plan_spot_order(
         instrument_id,
         price,
@@ -3376,8 +3859,9 @@ fn build_bundle(
         StrategyScope::SingleInstrument => adaq_bot_runtime::StrategyWorld::Strategy,
         StrategyScope::Portfolio => adaq_bot_runtime::StrategyWorld::PortfolioStrategy,
     };
+    let is_ema_schedule = matches!(&schedule, BotSchedule::EmaDoubleCross { .. });
     let mut worker_policy = adaq_bot_runtime::WorkerRuntimePolicy::default();
-    worker_policy.warmup_decisions = 1;
+    worker_policy.warmup_decisions = if is_ema_schedule { 0 } else { 1 };
     let runtime_bundle = DeploymentBundle::freeze(adaq_bot_runtime::DeploymentBundleInput {
         bot_id: bot_id.clone(),
         strategy_id: qualification.qualification_id.clone(),
@@ -3389,6 +3873,8 @@ fn build_bundle(
         execution_profile_hash: hash_json(&qualification.context.execution_profile)?,
         worker_binary_hash: worker.sha256.clone(),
         qualification_evidence_hash: qualification.evidence_hash.clone(),
+        decision_mode: is_ema_schedule
+            .then_some(adaq_bot_runtime::ema_double_cross::EMA_DECISION_MODE.into()),
         strategy: adaq_bot_runtime::WorkerStrategyBinding {
             world,
             component_sha256: strategy_package.manifest.wasm_sha256.clone(),
@@ -3422,8 +3908,16 @@ fn build_bundle(
         schedule,
         research_risk_policy: qualification.context.risk_policy.clone(),
         paper_risk_policy: PaperRiskPolicy {
-            max_order_notional: Decimal::from(100_000),
-            reserve_cash: Decimal::ZERO,
+            max_order_notional: if is_ema_schedule {
+                EMA_ENTRY_NOTIONAL_CAP_USDT
+            } else {
+                Decimal::from(100_000)
+            },
+            reserve_cash: if is_ema_schedule {
+                EMA_INITIAL_ALLOCATION_USDT - EMA_ENTRY_NOTIONAL_CAP_USDT
+            } else {
+                Decimal::ZERO
+            },
             freeze_new_risk: false,
         },
         execution_profile: qualification.context.execution_profile.clone(),
@@ -4100,6 +4594,11 @@ fn bot_instrument_scope(bundle: &BotDeploymentBundle) -> BTreeSet<String> {
                 .into_iter()
                 .collect()
         }
+        BotSchedule::EmaDoubleCross { instrument_id } => {
+            [okx_instrument_code(instrument_id).to_owned()]
+                .into_iter()
+                .collect()
+        }
         BotSchedule::ScheduledCrossSection { instruments, .. } => instruments
             .iter()
             .map(|instrument| okx_instrument_code(instrument).to_owned())
@@ -4421,6 +4920,7 @@ mod tests {
             execution_profile_hash: hash_json(&execution_profile).unwrap(),
             worker_binary_hash: hash('a'),
             qualification_evidence_hash: hash('b'),
+            decision_mode: None,
             strategy: WorkerStrategyBinding {
                 world: StrategyWorld::Strategy,
                 component_sha256: hash('c'),
@@ -4741,6 +5241,7 @@ mod tests {
                     "request-a",
                     "decision-a",
                     Some(1),
+                    false,
                 )
                 .unwrap(),
             DecisionClaim::New
@@ -4756,6 +5257,7 @@ mod tests {
                     "request-a",
                     "decision-a",
                     Some(1),
+                    false,
                 )
                 .unwrap(),
             DecisionClaim::Duplicate
@@ -4769,6 +5271,7 @@ mod tests {
                     "request-b",
                     "decision-a",
                     Some(1),
+                    false,
                 )
                 .unwrap(),
             DecisionClaim::Conflict
@@ -4782,6 +5285,7 @@ mod tests {
                     "request-c",
                     "decision-c",
                     Some(0),
+                    false,
                 )
                 .unwrap(),
             DecisionClaim::Stale

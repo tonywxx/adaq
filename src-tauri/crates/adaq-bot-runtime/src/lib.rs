@@ -20,10 +20,13 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+pub mod ema_double_cross;
+
 pub const WORKER_ARTIFACT_NAME: &str = "adaq-bot-worker";
 pub const WORKER_ARTIFACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LEGACY_WORKER_PROTOCOL_VERSION: &str = "adaq-bot-worker-ipc@1.0.0";
-pub const WORKER_PROTOCOL_VERSION: &str = "adaq-bot-worker-ipc@1.1.0";
+pub const PREVIOUS_WORKER_PROTOCOL_VERSION: &str = "adaq-bot-worker-ipc@1.1.0";
+pub const WORKER_PROTOCOL_VERSION: &str = "adaq-bot-worker-ipc@1.2.0";
 pub const WORKER_RUNTIME_VERSION: &str = concat!("adaq-bot-runtime@", env!("CARGO_PKG_VERSION"));
 pub const WORKER_SIGNATURE_SCHEMA_VERSION: &str = "adaq-bot-worker-signature@1.0.0";
 pub const WORKER_SIGNING_KEY_ID: &str = "adaq-bot-worker-ed25519-v1";
@@ -394,7 +397,9 @@ impl WorkerArtifactBinding {
             || !is_bounded_text(&self.platform, 64)
             || !matches!(
                 self.protocol_version.as_str(),
-                WORKER_PROTOCOL_VERSION | LEGACY_WORKER_PROTOCOL_VERSION
+                WORKER_PROTOCOL_VERSION
+                    | PREVIOUS_WORKER_PROTOCOL_VERSION
+                    | LEGACY_WORKER_PROTOCOL_VERSION
             )
             || !is_bounded_text(&self.runtime_version, 128)
             || !is_sha256(&self.sha256)
@@ -421,6 +426,8 @@ pub struct DeploymentBundleInput {
     pub execution_profile_hash: String,
     pub worker_binary_hash: String,
     pub qualification_evidence_hash: String,
+    #[serde(default)]
+    pub decision_mode: Option<String>,
     pub strategy: WorkerStrategyBinding,
     #[serde(default)]
     pub pipeline: WorkerPipelineBinding,
@@ -450,6 +457,9 @@ impl DeploymentBundleInput {
             || !is_sha256(&self.execution_profile_hash)
             || !is_sha256(&self.qualification_evidence_hash)
             || !is_sha256(&self.worker_binary_hash)
+            || self.decision_mode.as_deref().is_some_and(|mode| {
+                mode != ema_double_cross::EMA_DECISION_MODE || !is_bounded_text(mode, 64)
+            })
             || self.worker_binary_hash != self.worker.sha256
             || !self
                 .component_hashes
@@ -529,6 +539,15 @@ pub enum DecisionClock {
         universe: Vec<String>,
         available_instruments: Vec<String>,
     },
+    TradeEvent {
+        decision_id: String,
+        instrument_id: String,
+        observation_time_ms: i64,
+        decision_time_ms: i64,
+        available_at_ms: i64,
+        deadline_ms: i64,
+        next_execution_ms: i64,
+    },
 }
 
 impl DecisionClock {
@@ -576,6 +595,29 @@ impl DecisionClock {
                     *next_execution_ms,
                 )
             }
+            Self::TradeEvent {
+                decision_id,
+                instrument_id,
+                observation_time_ms,
+                decision_time_ms,
+                available_at_ms,
+                deadline_ms,
+                next_execution_ms,
+            } => {
+                if instrument_id.trim().is_empty()
+                    || observation_time_ms < &0
+                    || available_at_ms < observation_time_ms
+                    || available_at_ms > decision_time_ms
+                {
+                    return Err(RuntimeError::UnavailableInput);
+                }
+                (
+                    decision_id,
+                    *decision_time_ms,
+                    *deadline_ms,
+                    *next_execution_ms,
+                )
+            }
         };
         if id.trim().is_empty() || deadline < decision || next <= decision {
             return Err(RuntimeError::InvalidClock);
@@ -586,7 +628,8 @@ impl DecisionClock {
     pub fn decision_id(&self) -> &str {
         match self {
             Self::ClosedBar { decision_id, .. }
-            | Self::ScheduledCrossSection { decision_id, .. } => decision_id,
+            | Self::ScheduledCrossSection { decision_id, .. }
+            | Self::TradeEvent { decision_id, .. } => decision_id,
         }
     }
 
@@ -597,6 +640,9 @@ impl DecisionClock {
             }
             | Self::ScheduledCrossSection {
                 decision_time_ms, ..
+            }
+            | Self::TradeEvent {
+                decision_time_ms, ..
             } => *decision_time_ms,
         }
     }
@@ -604,7 +650,8 @@ impl DecisionClock {
     pub fn deadline_ms(&self) -> i64 {
         match self {
             Self::ClosedBar { deadline_ms, .. }
-            | Self::ScheduledCrossSection { deadline_ms, .. } => *deadline_ms,
+            | Self::ScheduledCrossSection { deadline_ms, .. }
+            | Self::TradeEvent { deadline_ms, .. } => *deadline_ms,
         }
     }
 
@@ -660,8 +707,22 @@ pub struct WorkerEvaluationRow {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerEventEvaluation {
+    pub event_id: String,
+    pub instrument_id: String,
+    pub kind: String,
+    pub observed_at_ms: i64,
+    pub available_at_ms: i64,
+    pub received_at_ms: i64,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkerEvaluationEvidence {
     pub rows: Vec<WorkerEvaluationRow>,
+    #[serde(default)]
+    pub events: Vec<WorkerEventEvaluation>,
 }
 
 const MAX_EVALUATION_ROWS: usize = 4_096;
@@ -698,6 +759,21 @@ impl WorkerEvaluationEvidence {
                 }
             }
         }
+        if self.events.len() > MAX_EVALUATION_ROWS {
+            return Err("event evidence row limit exceeded".into());
+        }
+        for event in &self.events {
+            if !is_bounded_text(&event.event_id, 256)
+                || !is_bounded_text(&event.instrument_id, 128)
+                || !is_lower_kebab_text(&event.kind)
+                || !is_lower_kebab_text(&event.status)
+                || event.observed_at_ms < 0
+                || event.available_at_ms < event.observed_at_ms
+                || event.received_at_ms < event.available_at_ms
+            {
+                return Err("event evidence identity is invalid".into());
+            }
+        }
         Ok(())
     }
 }
@@ -717,6 +793,52 @@ pub struct WorkerPortfolioState {
     pub positions: Vec<WorkerPosition>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
+pub enum WorkerMarketEvent {
+    BarClosed {
+        instrument_id: String,
+        bar_open_time_ms: i64,
+        close: String,
+        observed_at_ms: i64,
+        available_at_ms: i64,
+        evidence_id: String,
+        #[serde(default)]
+        replay: bool,
+    },
+    Trade {
+        instrument_id: String,
+        trade_id: String,
+        price: String,
+        quantity: String,
+        observed_at_ms: i64,
+        available_at_ms: i64,
+        received_at_ms: i64,
+    },
+}
+
+impl WorkerMarketEvent {
+    pub fn instrument_id(&self) -> &str {
+        match self {
+            Self::BarClosed { instrument_id, .. } | Self::Trade { instrument_id, .. } => {
+                instrument_id
+            }
+        }
+    }
+
+    pub fn event_id(&self) -> &str {
+        match self {
+            Self::BarClosed { evidence_id, .. } => evidence_id,
+            Self::Trade { trade_id, .. } => trade_id,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(
     tag = "type",
@@ -733,6 +855,12 @@ pub enum WorkerDecisionInput {
         universe_id: String,
         rows: Vec<WorkerFeatureRow>,
         state: WorkerPortfolioState,
+    },
+    Event {
+        instrument_id: String,
+        events: Vec<WorkerMarketEvent>,
+        owned_position: bool,
+        stream_epoch: u32,
     },
 }
 
@@ -800,6 +928,31 @@ impl WorkerTarget {
                 }
             }
             (
+                StrategyWorld::Strategy,
+                Self::Strategy {
+                    instrument_id,
+                    exposures,
+                },
+                WorkerDecisionInput::Event {
+                    instrument_id: expected,
+                    events,
+                    ..
+                },
+            ) => {
+                if instrument_id != expected
+                    || exposures.len() != 1
+                    || exposures.iter().any(|exposure| {
+                        exposure.instrument_id != *expected
+                            || !is_decimal_text(&exposure.exposure)
+                            || exposure.exposure.chars().any(char::is_control)
+                    })
+                    || events.is_empty()
+                    || events.iter().any(|event| event.instrument_id() != expected)
+                {
+                    return Err(RuntimeError::InvalidTarget);
+                }
+            }
+            (
                 StrategyWorld::PortfolioStrategy,
                 Self::Portfolio {
                     universe_id,
@@ -848,6 +1001,7 @@ pub enum NoTargetReason {
     DeadlineMissed,
     StaleDecision,
     NoSignal,
+    EvidenceBlocked,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -925,6 +1079,8 @@ pub enum WorkerMessage {
         decision_id: String,
         reason: NoTargetReason,
         detail: String,
+        #[serde(default)]
+        evaluation: Option<WorkerEvaluationEvidence>,
     },
     Heartbeat {
         sequence: u64,
@@ -1151,6 +1307,7 @@ fn validate_message_shape(value: &Value) -> Result<(), ProtocolError> {
             "decisionId",
             "reason",
             "detail",
+            "evaluation",
         ]
         .as_slice(),
         "heartbeat" => ["type", "sequence", "observedAtMs", "state"].as_slice(),
@@ -1428,6 +1585,8 @@ pub enum WorkerDecisionResult {
         decision_id: String,
         reason: NoTargetReason,
         detail: String,
+        #[serde(default)]
+        evaluation: Option<WorkerEvaluationEvidence>,
     },
 }
 
@@ -1977,6 +2136,7 @@ impl WorkerSupervisor {
                 decision_id,
                 reason,
                 detail,
+                evaluation,
                 ..
             } if received_request == request_id && decision_id == clock.decision_id() => {
                 if reason == NoTargetReason::DeadlineMissed {
@@ -1987,6 +2147,7 @@ impl WorkerSupervisor {
                     decision_id,
                     reason,
                     detail: bound_text(&detail, self.policy.max_diagnostic_bytes as usize),
+                    evaluation,
                 })
             }
             WorkerMessage::Fault { code, detail, .. } => self.fail_with_detail(&code, &detail),
@@ -2387,6 +2548,7 @@ mod tests {
             execution_profile_hash: "e".repeat(64),
             worker_binary_hash: worker.sha256.clone(),
             qualification_evidence_hash: "b".repeat(64),
+            decision_mode: None,
             strategy: WorkerStrategyBinding {
                 world: StrategyWorld::Strategy,
                 component_sha256: "c".repeat(64),
@@ -2625,6 +2787,7 @@ mod tests {
                     value: "not-a-decimal".into(),
                 }],
             }],
+            events: Vec::new(),
         };
         assert!(evidence.validate().is_err());
     }

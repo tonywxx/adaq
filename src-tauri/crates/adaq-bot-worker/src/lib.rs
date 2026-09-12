@@ -2,11 +2,17 @@ use adaq_bot_runtime::{
     DecisionClock, DeploymentBundle, MAX_COMPONENT_BYTES, NoTargetReason, ProtocolSequence,
     StrategyWorld, WORKER_ARTIFACT_NAME, WORKER_ARTIFACT_VERSION, WORKER_PROTOCOL_VERSION,
     WORKER_RUNTIME_VERSION, WorkerComponentPayload, WorkerDecisionInput, WorkerEvaluationEvidence,
-    WorkerEvaluationRow, WorkerEvaluationValue, WorkerFactorBinding, WorkerFactorScope,
-    WorkerFeatureFrame, WorkerFeatureRow, WorkerHealthState, WorkerMessage, WorkerModelBinding,
-    WorkerParameterValue, WorkerPipelineBinding, WorkerPortfolioState, WorkerRuntimePolicy,
-    WorkerTarget, WorkerTargetWeight, current_platform_tag, decode_frame, encode_frame,
-    enforce_worker_process_limits, is_decimal_text, read_bounded_line, sha256_hex, unix_now_ms,
+    WorkerEvaluationRow, WorkerEvaluationValue, WorkerEventEvaluation, WorkerFactorBinding,
+    WorkerFactorScope, WorkerFeatureFrame, WorkerFeatureRow, WorkerHealthState, WorkerMarketEvent,
+    WorkerMessage, WorkerModelBinding, WorkerParameterValue, WorkerPipelineBinding,
+    WorkerPortfolioState, WorkerRuntimePolicy, WorkerTarget, WorkerTargetWeight,
+    current_platform_tag, decode_frame,
+    ema_double_cross::{
+        ConfirmedBar, EMA_BAR_INTERVAL_MS, EMA_CONFIRMATION_MS, EMA_FAST_PERIOD, EMA_SLOW_PERIOD,
+        EmaDoubleCrossConfig, EmaDoubleCrossEngine, EmaEvent, EmaProcessOutcome, EmaTrade,
+    },
+    encode_frame, enforce_worker_process_limits, is_decimal_text, read_bounded_line, sha256_hex,
+    unix_now_ms,
 };
 use adaq_component_sdk::host::{
     factor_abi, factor_cross_sectional_abi, model_abi, portfolio_strategy_abi, strategy_abi,
@@ -150,6 +156,8 @@ struct WorkerState {
     bundle: Option<DeploymentBundle>,
     pipeline: Option<LoadedPipeline>,
     engine: Option<LoadedEngine>,
+    ema_double_cross: Option<EmaDoubleCrossEngine>,
+    ema_stream_epoch: Option<u32>,
     initialized: bool,
     warmup_seen: u64,
     last_decision_time_ms: Option<i64>,
@@ -164,6 +172,8 @@ impl WorkerState {
             bundle: None,
             pipeline: None,
             engine: None,
+            ema_double_cross: None,
+            ema_stream_epoch: None,
             initialized: false,
             warmup_seen: 0,
             last_decision_time_ms: None,
@@ -400,10 +410,11 @@ impl WorkerState {
             .ok_or_else(|| "worker-bundle-missing".to_owned())?;
         let policy = bundle.input.worker_policy.clone();
         clock.validate().map_err(|error| error.to_string())?;
-        if self
-            .last_decision_time_ms
-            .is_some_and(|last| clock.decision_time_ms() <= last)
-        {
+        let equal_decision_time_is_valid = matches!(clock, DecisionClock::TradeEvent { .. });
+        if self.last_decision_time_ms.is_some_and(|last| {
+            clock.decision_time_ms() < last
+                || (!equal_decision_time_is_valid && clock.decision_time_ms() == last)
+        }) {
             return self.no_target(
                 request_id,
                 clock,
@@ -422,6 +433,9 @@ impl WorkerState {
                 output,
                 next_sequence,
             );
+        }
+        if matches!(clock, DecisionClock::TradeEvent { .. }) {
+            return self.event_decision(request_id, clock, input, output, next_sequence);
         }
         let prepared = match prepare_input(
             &clock,
@@ -579,6 +593,373 @@ impl WorkerState {
         })
     }
 
+    fn event_decision(
+        &mut self,
+        request_id: String,
+        clock: DecisionClock,
+        input: WorkerDecisionInput,
+        output: &Output,
+        next_sequence: &Arc<AtomicU64>,
+    ) -> Result<(), String> {
+        let (instrument_id, events, owned_position, stream_epoch) = match &input {
+            WorkerDecisionInput::Event {
+                instrument_id,
+                events,
+                owned_position,
+                stream_epoch,
+            } => (
+                instrument_id.clone(),
+                events,
+                *owned_position,
+                *stream_epoch,
+            ),
+            _ => {
+                return self.fault(
+                    output,
+                    next_sequence,
+                    Some(request_id),
+                    "event-input-mismatch",
+                    "TradeEvent clock requires event decision input",
+                );
+            }
+        };
+        let clock_instrument = match &clock {
+            DecisionClock::TradeEvent { instrument_id, .. } => instrument_id,
+            _ => unreachable!("event_decision is only called for TradeEvent"),
+        };
+        if instrument_id != *clock_instrument || events.is_empty() {
+            return self.fault(
+                output,
+                next_sequence,
+                Some(request_id),
+                "event-identity-mismatch",
+                "event decision instrument or event list is invalid",
+            );
+        }
+        let bundle = self
+            .bundle
+            .as_ref()
+            .ok_or_else(|| "worker-bundle-missing".to_owned())?;
+        if bundle.input.strategy.world != StrategyWorld::Strategy {
+            return self.fault(
+                output,
+                next_sequence,
+                Some(request_id),
+                "event-world-mismatch",
+                "TradeEvent decisions require a single-instrument Strategy world",
+            );
+        }
+        if bundle.input.decision_mode.as_deref()
+            != Some(adaq_bot_runtime::ema_double_cross::EMA_DECISION_MODE)
+        {
+            return self.fault(
+                output,
+                next_sequence,
+                Some(request_id),
+                "event-mode-mismatch",
+                "TradeEvent decisions require the frozen EMA double-cross mode",
+            );
+        }
+        let policy = bundle.input.worker_policy.clone();
+        if events.len() > policy.max_decision_frames as usize {
+            return self.fault(
+                output,
+                next_sequence,
+                Some(request_id),
+                "event-frame-limit",
+                "event decision exceeds the frozen event limit",
+            );
+        }
+        if self.ema_double_cross.is_none() {
+            self.ema_double_cross = Some(
+                EmaDoubleCrossEngine::new(
+                    EmaDoubleCrossConfig {
+                        fast_period: EMA_FAST_PERIOD,
+                        slow_period: EMA_SLOW_PERIOD,
+                        bar_interval_ms: EMA_BAR_INTERVAL_MS,
+                        confirmation_ms: EMA_CONFIRMATION_MS,
+                    },
+                    instrument_id.clone(),
+                )
+                .map_err(|error| error.to_string())?,
+            );
+        }
+        let engine = self
+            .ema_double_cross
+            .as_mut()
+            .ok_or_else(|| "ema-double-cross-engine-missing".to_owned())?;
+        if engine.instrument_id() != instrument_id {
+            return self.fault(
+                output,
+                next_sequence,
+                Some(request_id),
+                "event-instrument-mismatch",
+                "one worker cannot process multiple event instruments",
+            );
+        }
+        if self
+            .ema_stream_epoch
+            .is_some_and(|previous| previous != stream_epoch)
+        {
+            engine
+                .process(EmaEvent::Connected {
+                    at_ms: clock.decision_time_ms(),
+                })
+                .map_err(|error| error.to_string())?;
+        }
+        self.ema_stream_epoch = Some(stream_epoch);
+        engine.set_owned_position(owned_position);
+
+        let mut rows = Vec::new();
+        let mut event_evidence = Vec::with_capacity(events.len());
+        let mut signal = None;
+        let mut saw_ready_observation = false;
+        for source in events {
+            if source.instrument_id() != instrument_id {
+                return self.fault(
+                    output,
+                    next_sequence,
+                    Some(request_id),
+                    "event-instrument-mismatch",
+                    "event instrument does not match the clock",
+                );
+            }
+            if let WorkerMarketEvent::BarClosed {
+                bar_open_time_ms,
+                replay: true,
+                ..
+            } = source
+                && engine
+                    .current_bar_open_time_ms()
+                    .is_some_and(|current| *bar_open_time_ms < current)
+            {
+                event_evidence.push(WorkerEventEvaluation {
+                    event_id: source.event_id().to_owned(),
+                    instrument_id: instrument_id.clone(),
+                    kind: "bar-closed".into(),
+                    observed_at_ms: match source {
+                        WorkerMarketEvent::BarClosed { observed_at_ms, .. } => *observed_at_ms,
+                        WorkerMarketEvent::Trade { .. } => unreachable!(),
+                    },
+                    available_at_ms: match source {
+                        WorkerMarketEvent::BarClosed {
+                            available_at_ms, ..
+                        } => *available_at_ms,
+                        WorkerMarketEvent::Trade { .. } => unreachable!(),
+                    },
+                    received_at_ms: match source {
+                        WorkerMarketEvent::BarClosed {
+                            available_at_ms, ..
+                        } => *available_at_ms,
+                        WorkerMarketEvent::Trade { .. } => unreachable!(),
+                    },
+                    status: "replayed".into(),
+                });
+                continue;
+            }
+            let (event, kind, observed_at_ms, available_at_ms, received_at_ms) = match source {
+                WorkerMarketEvent::BarClosed {
+                    bar_open_time_ms,
+                    close,
+                    observed_at_ms,
+                    available_at_ms,
+                    evidence_id,
+                    ..
+                } => {
+                    let close = match adaq_component_sdk::parse_decimal(close) {
+                        Ok(close) => close,
+                        Err(_) => {
+                            return self.fault(
+                                output,
+                                next_sequence,
+                                Some(request_id),
+                                "event-decimal-invalid",
+                                "confirmed bar close is not exact Decimal text",
+                            );
+                        }
+                    };
+                    (
+                        EmaEvent::BarClosed(ConfirmedBar {
+                            bar_open_time_ms: *bar_open_time_ms,
+                            close,
+                            observed_at_ms: *observed_at_ms,
+                            available_at_ms: *available_at_ms,
+                            evidence_id: evidence_id.clone(),
+                        }),
+                        "bar-closed",
+                        *observed_at_ms,
+                        *available_at_ms,
+                        *available_at_ms,
+                    )
+                }
+                WorkerMarketEvent::Trade {
+                    trade_id,
+                    price,
+                    quantity,
+                    observed_at_ms,
+                    available_at_ms,
+                    received_at_ms,
+                    ..
+                } => {
+                    let price = match adaq_component_sdk::parse_decimal(price) {
+                        Ok(price) => price,
+                        Err(_) => {
+                            return self.fault(
+                                output,
+                                next_sequence,
+                                Some(request_id),
+                                "event-decimal-invalid",
+                                "trade price is not exact Decimal text",
+                            );
+                        }
+                    };
+                    let quantity = match adaq_component_sdk::parse_decimal(quantity) {
+                        Ok(quantity) => quantity,
+                        Err(_) => {
+                            return self.fault(
+                                output,
+                                next_sequence,
+                                Some(request_id),
+                                "event-decimal-invalid",
+                                "trade quantity is not exact Decimal text",
+                            );
+                        }
+                    };
+                    (
+                        EmaEvent::Trade(EmaTrade {
+                            trade_id: trade_id.clone(),
+                            price,
+                            quantity,
+                            observed_at_ms: *observed_at_ms,
+                            available_at_ms: *available_at_ms,
+                            received_at_ms: *received_at_ms,
+                        }),
+                        "trade",
+                        *observed_at_ms,
+                        *available_at_ms,
+                        *received_at_ms,
+                    )
+                }
+            };
+            let outcome = engine.process(event).map_err(|error| error.to_string())?;
+            let status = match &outcome {
+                EmaProcessOutcome::Observation(observation) => {
+                    saw_ready_observation |=
+                        observation.fast_ema != 0.into() && observation.slow_ema != 0.into();
+                    if observation.signal.is_some() {
+                        signal = observation.signal;
+                    }
+                    if let EmaProcessOutcome::Observation(observation) = &outcome {
+                        rows.push(WorkerEvaluationRow {
+                            instrument_id: instrument_id.clone(),
+                            observation_time_ms: observation.observed_at_ms,
+                            available_at_ms: observation.observed_at_ms,
+                            factor_outputs: vec![
+                                WorkerEvaluationValue {
+                                    name: "ema-5".into(),
+                                    value: observation.fast_ema.to_string(),
+                                },
+                                WorkerEvaluationValue {
+                                    name: "ema-10".into(),
+                                    value: observation.slow_ema.to_string(),
+                                },
+                            ],
+                            model_outputs: Vec::new(),
+                        });
+                    }
+                    "observed"
+                }
+                EmaProcessOutcome::BarAccepted { .. } => "bar-accepted",
+                EmaProcessOutcome::Connected => "connected",
+                EmaProcessOutcome::Disconnected => "disconnected",
+                EmaProcessOutcome::Ignored(_) => "ignored",
+                EmaProcessOutcome::Blocked { .. } => "blocked",
+            };
+            event_evidence.push(WorkerEventEvaluation {
+                event_id: source.event_id().to_owned(),
+                instrument_id: instrument_id.clone(),
+                kind: kind.into(),
+                observed_at_ms,
+                available_at_ms,
+                received_at_ms,
+                status: status.into(),
+            });
+            if let EmaProcessOutcome::Blocked { detail, .. } = outcome {
+                self.last_decision_time_ms = Some(clock.decision_time_ms());
+                let evaluation = WorkerEvaluationEvidence {
+                    rows: rows.clone(),
+                    events: event_evidence.clone(),
+                };
+                evaluation.validate()?;
+                return self.no_target_with_evidence(
+                    request_id,
+                    clock,
+                    NoTargetReason::EvidenceBlocked,
+                    detail,
+                    Some(evaluation),
+                    output,
+                    next_sequence,
+                );
+            }
+        }
+        self.last_decision_time_ms = Some(clock.decision_time_ms());
+        let evaluation = WorkerEvaluationEvidence {
+            rows,
+            events: event_evidence,
+        };
+        evaluation.validate()?;
+        let Some(signal) = signal else {
+            return self.no_target_with_evidence(
+                request_id,
+                clock,
+                if saw_ready_observation {
+                    NoTargetReason::NoSignal
+                } else {
+                    NoTargetReason::Warmup
+                },
+                "EMA double-cross has not produced an executable signal",
+                Some(evaluation),
+                output,
+                next_sequence,
+            );
+        };
+        let exposure = match signal {
+            adaq_bot_runtime::ema_double_cross::EmaSignal::Buy => "1",
+            adaq_bot_runtime::ema_double_cross::EmaSignal::Sell => "0",
+        };
+        let target = WorkerTarget::Strategy {
+            instrument_id: instrument_id.clone(),
+            exposures: vec![adaq_bot_runtime::WorkerExposure {
+                instrument_id,
+                exposure: exposure.into(),
+            }],
+        };
+        target
+            .validate_for(&StrategyWorld::Strategy, &input)
+            .map_err(|error| error.to_string())?;
+        let produced_at_ms = unix_now_ms();
+        if produced_at_ms > clock.deadline_ms() {
+            return self.no_target(
+                request_id,
+                clock,
+                NoTargetReason::DeadlineMissed,
+                "event strategy evaluation completed after the decision deadline",
+                output,
+                next_sequence,
+            );
+        }
+        send_message(output, next_sequence, &policy, |sequence| {
+            WorkerMessage::Target {
+                sequence,
+                request_id,
+                decision_id: clock.decision_id().to_owned(),
+                produced_at_ms,
+                target,
+                evaluation,
+            }
+        })
+    }
+
     fn no_target(
         &self,
         request_id: String,
@@ -599,6 +980,36 @@ impl WorkerState {
                     .chars()
                     .take(policy.max_diagnostic_bytes as usize)
                     .collect(),
+                evaluation: None,
+            }
+        })
+    }
+
+    fn no_target_with_evidence(
+        &self,
+        request_id: String,
+        clock: DecisionClock,
+        reason: NoTargetReason,
+        detail: &str,
+        evaluation: Option<WorkerEvaluationEvidence>,
+        output: &Output,
+        next_sequence: &Arc<AtomicU64>,
+    ) -> Result<(), String> {
+        if let Some(evaluation) = &evaluation {
+            evaluation.validate()?;
+        }
+        let policy = self.policy();
+        send_message(output, next_sequence, &policy, |sequence| {
+            WorkerMessage::NoTarget {
+                sequence,
+                request_id,
+                decision_id: clock.decision_id().to_owned(),
+                reason,
+                detail: detail
+                    .chars()
+                    .take(policy.max_diagnostic_bytes as usize)
+                    .collect(),
+                evaluation,
             }
         })
     }
@@ -1193,6 +1604,7 @@ fn evaluate_pipeline(
                 input: PreparedEngineInput::Strategy(frames),
                 evidence: WorkerEvaluationEvidence {
                     rows: evidence_rows,
+                    events: Vec::new(),
                 },
             })
         }
@@ -1385,6 +1797,7 @@ fn evaluate_pipeline(
                 ),
                 evidence: WorkerEvaluationEvidence {
                     rows: evidence_rows,
+                    events: Vec::new(),
                 },
             })
         }
@@ -1449,6 +1862,7 @@ fn input_frame_count(input: &WorkerDecisionInput) -> usize {
     match input {
         WorkerDecisionInput::Strategy { frames, .. } => frames.len(),
         WorkerDecisionInput::Portfolio { .. } => 1,
+        WorkerDecisionInput::Event { .. } => 1,
     }
 }
 

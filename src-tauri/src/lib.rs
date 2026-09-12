@@ -5656,12 +5656,34 @@ fn market_subscribe_trades(
         .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
     let task_path = app.state::<Arc<LocalResearchState>>().okx.clone();
     let task_channel = on_event.clone();
+    let task_app = app.clone();
     let user_id = request.user_id;
     let stream_user_id = user_id.clone();
     let codes = request.codes;
     let task = tauri::async_runtime::spawn(async move {
         if let Err(error) = task_path
-            .stream_trades(&user_id, &codes, |event| task_channel.send(event).is_ok())
+            .stream_trades(&user_id, &codes, |event| {
+                let trade_identity = match &event {
+                    TradeStreamEvent::Snapshot(trade) => {
+                        Some((trade.code.clone(), trade.trade_id.clone()))
+                    }
+                    _ => None,
+                };
+                let delivered = task_channel.send(event).is_ok();
+                if let Some((instrument_code, trade_id)) = trade_identity {
+                    let dispatch_app = task_app.clone();
+                    let dispatch_user_id = user_id.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let _ = bot_operations::dispatch_trade_event(
+                            &dispatch_app,
+                            &dispatch_user_id,
+                            &instrument_code,
+                            &trade_id,
+                        );
+                    });
+                }
+                delivered
+            })
             .await
         {
             let _ = task_channel.send(TradeStreamEvent::Error(error));

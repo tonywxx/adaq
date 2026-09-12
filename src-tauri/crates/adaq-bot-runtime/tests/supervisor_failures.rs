@@ -89,6 +89,7 @@ fn launch_probe(
         execution_profile_hash: "e".repeat(64),
         worker_binary_hash: worker.sha256.clone(),
         qualification_evidence_hash: "b".repeat(64),
+        decision_mode: None,
         strategy: WorkerStrategyBinding {
             world: StrategyWorld::Strategy,
             component_sha256,

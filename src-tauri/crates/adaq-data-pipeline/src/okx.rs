@@ -299,6 +299,13 @@ pub struct OkxSpotDataPath {
     active_acquisitions: Arc<Mutex<HashMap<String, (String, CancellationToken)>>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedTrade {
+    pub trade: MarketTrade,
+    pub available_at_ms: i64,
+    pub received_at_ms: i64,
+}
+
 impl OkxSpotDataPath {
     pub fn open(pipeline: DataPipeline, client: OkxClient) -> Result<Self, PipelineError> {
         Self::open_with_trade_retention(pipeline, client, OkxTradeRetentionPolicy::default())
@@ -1281,21 +1288,51 @@ impl OkxSpotDataPath {
             ));
         }
         let trade_json = serde_json::to_string(trade).map_err(storage)?;
+        let received_at_ms = now_ms();
         let database = self.database()?;
-        database
-            .execute(
-                "INSERT OR REPLACE INTO okx_market_trades
-                 (user_id, instrument_code, trade_id, timestamp_ms, trade_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    user_id,
-                    trade.code,
-                    trade.trade_id,
-                    trade.timestamp_ms,
-                    trade_json
-                ],
+        let existing = database
+            .query_row(
+                "SELECT timestamp_ms, available_at_ms, received_at_ms, trade_json
+                 FROM okx_market_trades
+                 WHERE user_id = ?1 AND instrument_code = ?2 AND trade_id = ?3",
+                params![user_id, trade.code, trade.trade_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
             )
+            .optional()
             .map_err(storage)?;
+        if let Some((timestamp_ms, _, _, existing_json)) = existing {
+            let existing_trade: MarketTrade =
+                serde_json::from_str(&existing_json).map_err(storage)?;
+            if existing_trade != *trade || timestamp_ms != trade.timestamp_ms {
+                return Err(PipelineError::InvalidRequest(
+                    "Conflicting OKX Trade identity cannot be replaced".into(),
+                ));
+            }
+        } else {
+            database
+                .execute(
+                    "INSERT INTO okx_market_trades
+                     (user_id, instrument_code, trade_id, timestamp_ms,
+                      available_at_ms, received_at_ms, trade_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)",
+                    params![
+                        user_id,
+                        trade.code,
+                        trade.trade_id,
+                        trade.timestamp_ms,
+                        received_at_ms,
+                        trade_json
+                    ],
+                )
+                .map_err(storage)?;
+        }
         drop(database);
         self.prune_trade_retention(user_id, now_ms())?;
         let database = self.database()?;
@@ -1387,6 +1424,60 @@ impl OkxSpotDataPath {
             .map_err(storage)
     }
 
+    pub fn retained_trade_for_user(
+        &self,
+        user_id: &str,
+        instrument_code: &str,
+        trade_id: &str,
+    ) -> Result<Option<RetainedTrade>, PipelineError> {
+        validate_user(user_id)?;
+        if instrument_code.trim().is_empty() || trade_id.trim().is_empty() {
+            return Err(PipelineError::InvalidRequest(
+                "OKX retained Trade identity is invalid".into(),
+            ));
+        }
+        self.prune_trade_retention(user_id, now_ms())?;
+        let database = self.database()?;
+        let trade_json = database
+            .query_row(
+                "SELECT timestamp_ms, available_at_ms, received_at_ms, trade_json
+                 FROM okx_market_trades
+                 WHERE user_id = ?1 AND instrument_code = ?2 AND trade_id = ?3",
+                params![user_id, instrument_code, trade_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(storage)?;
+        trade_json
+            .map(|(timestamp_ms, available_at_ms, received_at_ms, json)| {
+                let trade: MarketTrade = serde_json::from_str(&json).map_err(storage)?;
+                if trade.src != "okx"
+                    || trade.code != instrument_code
+                    || trade.trade_id != trade_id
+                    || trade.timestamp_ms != timestamp_ms
+                    || available_at_ms <= 0
+                    || received_at_ms < available_at_ms
+                {
+                    return Err(PipelineError::InvalidRequest(
+                        "Retained OKX Trade identity or availability metadata is invalid".into(),
+                    ));
+                }
+                Ok(RetainedTrade {
+                    trade,
+                    available_at_ms,
+                    received_at_ms,
+                })
+            })
+            .transpose()
+    }
+
     pub async fn stream_tickers<F>(
         &self,
         user_id: &str,
@@ -1429,6 +1520,11 @@ impl OkxSpotDataPath {
             .stream_trades(codes, |event| {
                 if let TradeStreamEvent::Snapshot(trade) = &event {
                     if let Err(error) = self.retain_trade(user_id, trade) {
+                        store_stream_error(&stream_error, error);
+                        return false;
+                    }
+                    if let Err(error) = self.set_stream_health(user_id, "trade", "live", None, None)
+                    {
                         store_stream_error(&stream_error, error);
                         return false;
                     }
@@ -2240,6 +2336,8 @@ impl OkxSpotDataPath {
                     instrument_code TEXT NOT NULL,
                     trade_id TEXT NOT NULL,
                     timestamp_ms INTEGER NOT NULL,
+                    available_at_ms INTEGER NOT NULL DEFAULT 0,
+                    received_at_ms INTEGER NOT NULL DEFAULT 0,
                     trade_json TEXT NOT NULL,
                     PRIMARY KEY(user_id, instrument_code, trade_id)
                  );
@@ -2250,7 +2348,31 @@ impl OkxSpotDataPath {
                     PRIMARY KEY(user_id, stream_kind)
                  );",
             )
-            .map_err(storage)
+            .map_err(storage)?;
+        let columns = {
+            let mut statement = database
+                .prepare("PRAGMA table_info(okx_market_trades)")
+                .map_err(storage)?;
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(storage)?
+                .collect::<Result<HashSet<_>, _>>()
+                .map_err(storage)?
+        };
+        for (name, definition) in [
+            ("available_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ("received_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !columns.contains(name) {
+                database
+                    .execute(
+                        &format!("ALTER TABLE okx_market_trades ADD COLUMN {name} {definition}"),
+                        [],
+                    )
+                    .map_err(storage)?;
+            }
+        }
+        Ok(())
     }
 
     fn set_stream_health(
@@ -3466,6 +3588,25 @@ mod tests {
             .unwrap();
         path.retain_trade("alice", &trade("new", now)).unwrap();
         assert_eq!(path.retained_trade_count("alice", "BTC-USDT").unwrap(), 1);
+        assert_eq!(
+            path.retained_trade_for_user("alice", "BTC-USDT", "new")
+                .unwrap()
+                .unwrap()
+                .trade
+                .trade_id,
+            "new"
+        );
+        assert!(
+            path.retained_trade_for_user("alice", "BTC-USDT", "old")
+                .unwrap()
+                .is_none()
+        );
+        let mut conflicting = trade("new", now);
+        conflicting.price = "2".parse().unwrap();
+        assert!(matches!(
+            path.retain_trade("alice", &conflicting),
+            Err(PipelineError::InvalidRequest(message)) if message.contains("cannot be replaced")
+        ));
         assert!(path.stream_health("alice").unwrap().is_empty());
     }
 }
