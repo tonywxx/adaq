@@ -327,39 +327,45 @@ impl WorkerState {
             }
         };
         let slots = bundle.input.strategy.feature_slots.clone();
-        let engine = match bundle.input.strategy.world {
-            StrategyWorld::Strategy => {
-                let loader = WasmLoader::with_limits(limits);
-                let slots = slots
-                    .into_iter()
-                    .map(|name| strategy_abi::exports::adaq::strategy::api::FeatureSlot { name })
-                    .collect();
-                loader
-                    .load_strategy_bytes(&component_wasm, slots, &parameters)
-                    .map_err(|error| format!("component-load-failed: {error}"))?;
-                LoadedEngine::Strategy(loader)
-            }
-            StrategyWorld::PortfolioStrategy => {
-                let loader = WasmLoader::with_limits(limits);
-                let slots = slots
-                    .into_iter()
-                    .map(|name| {
-                        portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::FeatureSlot {
-                            name,
-                        }
-                    })
-                    .collect();
-                loader
-                    .load_portfolio_strategy_bytes(&component_wasm, slots, &parameters)
-                    .map_err(|error| format!("component-load-failed: {error}"))?;
-                LoadedEngine::PortfolioStrategy(loader)
-            }
+        let engine = if bundle.input.decision_mode.as_deref()
+            == Some(adaq_bot_runtime::ema_double_cross::EMA_DECISION_MODE)
+        {
+            None
+        } else {
+            Some(match bundle.input.strategy.world {
+                StrategyWorld::Strategy => {
+                    let loader = WasmLoader::with_limits(limits);
+                    let slots = slots
+                        .into_iter()
+                        .map(|name| strategy_abi::exports::adaq::strategy::api::FeatureSlot { name })
+                        .collect();
+                    loader
+                        .load_strategy_bytes(&component_wasm, slots, &parameters)
+                        .map_err(|error| format!("component-load-failed: {error}"))?;
+                    LoadedEngine::Strategy(loader)
+                }
+                StrategyWorld::PortfolioStrategy => {
+                    let loader = WasmLoader::with_limits(limits);
+                    let slots = slots
+                        .into_iter()
+                        .map(|name| {
+                            portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::FeatureSlot {
+                                name,
+                            }
+                        })
+                        .collect();
+                    loader
+                        .load_portfolio_strategy_bytes(&component_wasm, slots, &parameters)
+                        .map_err(|error| format!("component-load-failed: {error}"))?;
+                    LoadedEngine::PortfolioStrategy(loader)
+                }
+            })
         };
         let bundle_identity = bundle.identity.clone();
         let world = bundle.input.strategy.world.clone();
         self.bundle = Some(bundle);
         self.pipeline = Some(pipeline);
-        self.engine = Some(engine);
+        self.engine = engine;
         self.initialized = true;
         send_message(output, next_sequence, &policy, |sequence| {
             WorkerMessage::Initialized {

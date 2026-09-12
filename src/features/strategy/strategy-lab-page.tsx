@@ -162,6 +162,31 @@ type Qualification = {
 	validationReportId: string;
 	gate12Eligible: boolean;
 	gate12ContinuationRequired: boolean;
+	evidenceHash?: string;
+	context?: {
+		snapshotId: string;
+		universeSnapshotId: string;
+		universeId: string;
+	};
+};
+
+type EmaSnapshot = {
+	snapshotId: string;
+	code: string;
+	interval: string;
+	startTimeMs: number;
+	endTimeMs: number;
+	barCount: number;
+	gaps: Array<unknown>;
+};
+
+type EmaUniverseSnapshot = {
+	snapshotId: string;
+	interval: string;
+	universe: {
+		universeId: string;
+		instruments: Array<{ code: string }>;
+	};
 };
 
 const afterPaint = () =>
@@ -312,10 +337,19 @@ export function StrategyLabPage() {
 		| "retry"
 		| "qualification"
 		| "qualify"
+		| "ema-qualify"
 		| ""
 	>("");
 	const [message, setMessage] = useState("");
 	const [error, setError] = useState("");
+	const [emaSnapshots, setEmaSnapshots] = useState<EmaSnapshot[]>([]);
+	const [emaUniverseSnapshots, setEmaUniverseSnapshots] = useState<
+		EmaUniverseSnapshot[]
+	>([]);
+	const [emaInstrumentId, setEmaInstrumentId] = useState("BTC-USDT");
+	const [emaSnapshotId, setEmaSnapshotId] = useState("");
+	const [emaUniverseSnapshotId, setEmaUniverseSnapshotId] = useState("");
+	const [emaQualification, setEmaQualification] = useState<Qualification>();
 
 	const factor = useMemo(
 		() =>
@@ -334,12 +368,21 @@ export function StrategyLabPage() {
 		setError("");
 		await afterPaint();
 		try {
-			const [nextCatalog, nextCandidates] = await Promise.all([
-				invoke("strategy_candidate_catalog") as Promise<Catalog>,
-				invoke("strategy_candidate_list") as Promise<Candidate[]>,
-			]);
+			const [nextCatalog, nextCandidates, nextSnapshots, nextUniverses] =
+				await Promise.all([
+					invoke("strategy_candidate_catalog") as Promise<Catalog>,
+					invoke("strategy_candidate_list") as Promise<Candidate[]>,
+					invoke("snapshot_list_readable", {
+						request: { userId },
+					}) as Promise<EmaSnapshot[]>,
+					invoke("snapshot_list_universe", {
+						request: { userId, page: 1 },
+					}) as Promise<{ items: EmaUniverseSnapshot[] }>,
+				]);
 			setCatalog(nextCatalog);
 			setCandidates(nextCandidates);
+			setEmaSnapshots(nextSnapshots);
+			setEmaUniverseSnapshots(nextUniverses.items);
 			if (nextCatalog.factorInputs[0]) {
 				setFactorKey(
 					(current) => current || factorSourceKey(nextCatalog.factorInputs[0]),
@@ -356,6 +399,49 @@ export function StrategyLabPage() {
 			setBusy("");
 		}
 	}, [userId]);
+
+	const matchingEmaSnapshots = useMemo(
+		() =>
+			emaSnapshots.filter(
+				(snapshot) =>
+					snapshot.interval === "15m" &&
+					snapshot.code.toUpperCase() === emaInstrumentId,
+			),
+		[emaInstrumentId, emaSnapshots],
+	);
+	const matchingEmaUniverses = useMemo(
+		() =>
+			emaUniverseSnapshots.filter(
+				(snapshot) =>
+					snapshot.interval === "15m" &&
+					snapshot.universe.instruments.some(
+						(instrument) => instrument.code.toUpperCase() === emaInstrumentId,
+					),
+			),
+		[emaInstrumentId, emaUniverseSnapshots],
+	);
+
+	useEffect(() => {
+		if (
+			!matchingEmaSnapshots.some(
+				(snapshot) => snapshot.snapshotId === emaSnapshotId,
+			)
+		) {
+			setEmaSnapshotId(matchingEmaSnapshots[0]?.snapshotId ?? "");
+		}
+		if (
+			!matchingEmaUniverses.some(
+				(snapshot) => snapshot.snapshotId === emaUniverseSnapshotId,
+			)
+		) {
+			setEmaUniverseSnapshotId(matchingEmaUniverses[0]?.snapshotId ?? "");
+		}
+	}, [
+		emaSnapshotId,
+		emaUniverseSnapshotId,
+		matchingEmaSnapshots,
+		matchingEmaUniverses,
+	]);
 
 	useEffect(() => {
 		let active = true;
@@ -505,6 +591,28 @@ export function StrategyLabPage() {
 				t("strategyLab.qualification.error", { error: formatError(requestError) }),
 			);
 			return undefined;
+		} finally {
+			setBusy("");
+		}
+	};
+
+	const qualifyEmaDoubleCross = async () => {
+		if (!emaSnapshotId || !emaUniverseSnapshotId) return;
+		setBusy("ema-qualify");
+		setError("");
+		setMessage("");
+		try {
+			const qualification = (await invoke("strategy_qualification_ema_qualify", {
+				request: {
+					snapshotId: emaSnapshotId,
+					universeSnapshotId: emaUniverseSnapshotId,
+					instrumentId: emaInstrumentId,
+				},
+			})) as Qualification;
+			setEmaQualification(qualification);
+			setMessage(t("strategyLab.ema.qualified"));
+		} catch (requestError) {
+			setError(t("strategyLab.ema.error", { error: formatError(requestError) }));
 		} finally {
 			setBusy("");
 		}
@@ -767,6 +875,23 @@ export function StrategyLabPage() {
 				</CardContent>
 			</Card>
 
+			<EmaDoubleCrossPanel
+				instrumentId={emaInstrumentId}
+				onInstrumentChange={(value) => {
+					setEmaInstrumentId(value);
+					setEmaQualification(undefined);
+				}}
+				snapshotId={emaSnapshotId}
+				onSnapshotChange={setEmaSnapshotId}
+				universeSnapshotId={emaUniverseSnapshotId}
+				onUniverseSnapshotChange={setEmaUniverseSnapshotId}
+				snapshots={matchingEmaSnapshots}
+				universeSnapshots={matchingEmaUniverses}
+				qualification={emaQualification}
+				busy={busy}
+				onQualify={() => void qualifyEmaDoubleCross()}
+			/>
+
 			<QualificationPanel
 				candidates={candidates}
 				userId={userId}
@@ -866,15 +991,18 @@ export function StrategyLabPage() {
 															<IdentifierDisplay
 																id={item.revision.semanticContext.featurePlanHash}
 																label={t("identifiers.featurePlan")}
-															/> ·{" "}
+															/>{" "}
+															·{" "}
 															<IdentifierDisplay
 																id={item.revision.semanticContext.researchContextHash}
 																label={t("identifiers.researchContext")}
-															/> ·{" "}
+															/>{" "}
+															·{" "}
 															<IdentifierDisplay
 																id={item.revision.semanticContext.snapshotId}
 																label={t("identifiers.snapshot")}
-															/> ·{" "}
+															/>{" "}
+															·{" "}
 															<IdentifierDisplay
 																id={item.revision.semanticContext.universeId}
 																label={t("identifiers.universe")}
@@ -931,6 +1059,131 @@ export function StrategyLabPage() {
 				)}
 			</section>
 		</main>
+	);
+}
+
+function EmaDoubleCrossPanel({
+	instrumentId,
+	onInstrumentChange,
+	snapshotId,
+	onSnapshotChange,
+	universeSnapshotId,
+	onUniverseSnapshotChange,
+	snapshots,
+	universeSnapshots,
+	qualification,
+	busy,
+	onQualify,
+}: {
+	instrumentId: string;
+	onInstrumentChange: (value: string) => void;
+	snapshotId: string;
+	onSnapshotChange: (value: string) => void;
+	universeSnapshotId: string;
+	onUniverseSnapshotChange: (value: string) => void;
+	snapshots: EmaSnapshot[];
+	universeSnapshots: EmaUniverseSnapshot[];
+	qualification?: Qualification;
+	busy: string;
+	onQualify: () => void;
+}) {
+	const { t } = useTranslation();
+	return (
+		<Card>
+			<CardHeader>
+				<CardTitle>{t("strategyLab.ema.title")}</CardTitle>
+				<CardDescription>{t("strategyLab.ema.description")}</CardDescription>
+			</CardHeader>
+			<CardContent className="space-y-4">
+				<div className="grid gap-4 md:grid-cols-3">
+					<div className="space-y-2">
+						<Label htmlFor="ema-instrument">{t("strategyLab.ema.instrument")}</Label>
+						<select
+							id="ema-instrument"
+							className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+							value={instrumentId}
+							onChange={(event) => onInstrumentChange(event.target.value)}
+						>
+							{["BTC-USDT", "ETH-USDT", "SOL-USDT"].map((instrument) => (
+								<option key={instrument} value={instrument}>
+									{instrument}
+								</option>
+							))}
+						</select>
+					</div>
+					<div className="space-y-2">
+						<Label htmlFor="ema-snapshot">{t("strategyLab.ema.snapshot")}</Label>
+						<select
+							id="ema-snapshot"
+							className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+							value={snapshotId}
+							onChange={(event) => onSnapshotChange(event.target.value)}
+						>
+							<option value="">{t("strategyLab.ema.selectSnapshot")}</option>
+							{snapshots.map((snapshot) => (
+								<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
+									{identifierLabel(snapshot.snapshotId, t("identifiers.snapshot"))} ·{" "}
+									{snapshot.barCount} bars
+								</option>
+							))}
+						</select>
+					</div>
+					<div className="space-y-2">
+						<Label htmlFor="ema-universe">{t("strategyLab.ema.universe")}</Label>
+						<select
+							id="ema-universe"
+							className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+							value={universeSnapshotId}
+							onChange={(event) => onUniverseSnapshotChange(event.target.value)}
+						>
+							<option value="">{t("strategyLab.ema.selectUniverse")}</option>
+							{universeSnapshots.map((snapshot) => (
+								<option key={snapshot.snapshotId} value={snapshot.snapshotId}>
+									{identifierLabel(snapshot.snapshotId, t("identifiers.universe"))} ·{" "}
+									{snapshot.universe.universeId}
+								</option>
+							))}
+						</select>
+					</div>
+				</div>
+				<div className="rounded-md border bg-muted/20 p-3 text-sm">
+					<p className="font-medium">{t("strategyLab.ema.rulesTitle")}</p>
+					<p className="mt-1 text-muted-foreground">{t("strategyLab.ema.rules")}</p>
+				</div>
+				<Button
+					type="button"
+					onClick={onQualify}
+					disabled={!snapshotId || !universeSnapshotId || busy !== ""}
+				>
+					{busy === "ema-qualify"
+						? t("strategyLab.ema.qualifying")
+						: t("strategyLab.ema.qualify")}
+				</Button>
+				{qualification ? (
+					<details className="rounded-md border p-3 text-sm" open>
+						<summary className="cursor-pointer font-medium">
+							{t("strategyLab.ema.evidenceTitle")}
+						</summary>
+						<div className="mt-3 grid gap-2 text-xs text-muted-foreground">
+							<p>{t("strategyLab.ema.evidenceDescription")}</p>
+							<p>
+								{t("strategyLab.ema.qualificationId")}: {qualification.qualificationId}
+							</p>
+							<p>
+								{t("strategyLab.ema.revisionHash")}:{" "}
+								{qualification.candidateRevisionHash}
+							</p>
+							{qualification.context ? (
+								<p>
+									{t("strategyLab.ema.context")}: {qualification.context.snapshotId} ·{" "}
+									{qualification.context.universeSnapshotId}
+								</p>
+							) : null}
+						</div>
+					</details>
+				) : null}
+			</CardContent>
+		</Card>
 	);
 }
 

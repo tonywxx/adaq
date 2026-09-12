@@ -253,6 +253,29 @@ const english = {
 			qualified: "Strategy Qualification created.",
 			error: "Strategy Qualification request failed: {{error}}",
 		},
+		ema: {
+			title: "Model-free EMA Double-Cross",
+			description:
+				"Qualify the exact 15m EMA5/EMA10 Trade Event strategy from real Snapshot and Universe evidence.",
+			instrument: "Instrument",
+			snapshot: "15m Market Data Snapshot",
+			universe: "15m Universe Snapshot",
+			selectSnapshot: "Select a complete 15m Snapshot",
+			selectUniverse: "Select a matching Universe Snapshot",
+			rulesTitle: "Frozen rules",
+			rules:
+				"EMA5 and EMA10 use Decimal closes seeded after warmup. Crossings are confirmed for 60 seconds; only closed bars commit state. Entry allocation is 32694.76 USDT with a 32367.81 USDT cap.",
+			qualify: "Replay and qualify",
+			qualifying: "Replaying evidence…",
+			qualified: "Model-free EMA Double-Cross Qualification created.",
+			evidenceTitle: "Immutable replay evidence",
+			evidenceDescription:
+				"The Host replayed the stored closed bars through the same EMA runtime and bound the result to the selected Snapshot and Universe identities.",
+			qualificationId: "Qualification ID",
+			revisionHash: "Deterministic strategy hash",
+			context: "Bound evidence",
+			error: "EMA Qualification request failed: {{error}}",
+		},
 	},
 	titlebar: {
 		back: "Back",
@@ -938,6 +961,7 @@ const english = {
 		exactQualificationHint:
 			"Raw Candidates, foreign revisions, and continuation-required Qualifications are rejected.",
 		selectQualification: "Select an eligible Qualification",
+		emaQualification: "Model-free EMA Double-Cross",
 		connection: "OKX Demo connection",
 		okxDemoOnly:
 			"The Host verifies the exact account identity before deployment.",
@@ -3190,6 +3214,29 @@ const simplifiedChinese = {
 			qualified: "已创建 Strategy Qualification。",
 			error: "Strategy Qualification 请求失败：{{error}}",
 		},
+		ema: {
+			title: "Model-free EMA 双均线交叉",
+			description:
+				"使用真实 Snapshot 和 Universe 证据，为精确的 15m EMA5/EMA10 Trade Event 策略创建资格记录。",
+			instrument: "标的",
+			snapshot: "15m Market Data Snapshot",
+			universe: "15m Universe Snapshot",
+			selectSnapshot: "选择完整的 15m Snapshot",
+			selectUniverse: "选择匹配的 Universe Snapshot",
+			rulesTitle: "冻结规则",
+			rules:
+				"EMA5 和 EMA10 使用 Decimal 收盘价并在 warmup 后播种。交叉持续 60 秒才确认，只有已收盘 Bar 可以提交状态。入场资金为 32694.76 USDT，单笔上限为 32367.81 USDT。",
+			qualify: "回放并创建资格",
+			qualifying: "正在回放证据…",
+			qualified: "已创建 Model-free EMA 双均线交叉 Qualification。",
+			evidenceTitle: "不可变回放证据",
+			evidenceDescription:
+				"Host 使用同一个 EMA runtime 回放存储的已收盘 Bar，并将结果绑定到所选 Snapshot 和 Universe 身份。",
+			qualificationId: "Qualification ID",
+			revisionHash: "确定性策略哈希",
+			context: "绑定证据",
+			error: "EMA Qualification 请求失败：{{error}}",
+		},
 	},
 	pythonResearch: {
 		factorLab: {
@@ -4134,6 +4181,7 @@ const simplifiedChinese = {
 		exactQualificationHint:
 			"Raw Candidate、外部 Revision 以及需要继续完成的 Qualification 都会被拒绝。",
 		selectQualification: "选择可用的 Qualification",
+		emaQualification: "Model-free EMA 双均线交叉",
 		connection: "OKX Demo 连接",
 		okxDemoOnly: "部署前由 Host 验证精确的账户身份。",
 		selectConnection: "选择可用的 OKX Demo 连接",

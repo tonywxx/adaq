@@ -626,6 +626,15 @@ impl OkxSpotDataPath {
         })
     }
 
+    pub fn point_in_time_universe_from_snapshot(
+        &self,
+        user_id: &str,
+        snapshot_id: &str,
+    ) -> Result<PointInTimeInstrumentUniverse, PipelineError> {
+        validate_user(user_id)?;
+        self.instrument_master_snapshot(user_id, snapshot_id)
+    }
+
     pub fn acquisition_status(
         &self,
         user_id: &str,
@@ -2169,7 +2178,7 @@ impl OkxSpotDataPath {
             as_of_ms: snapshot.retrieved_at_ms,
             snapshot_id: Some(snapshot.snapshot_id),
             evidence_state: UniverseEvidenceState::Observed,
-            evidence_reasons: Vec::new(),
+            evidence_reasons: vec!["instrument-master-pinned-snapshot".into()],
             coverage_start_ms: None,
             coverage_end_ms: None,
             instruments: snapshot.instruments,

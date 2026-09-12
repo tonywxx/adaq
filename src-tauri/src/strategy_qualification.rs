@@ -51,6 +51,9 @@ const STRATEGY_BUILD_COMMANDS: &[&str] = &[
     "rustup run stable cargo component build --offline --locked --release --target wasm32-unknown-unknown",
 ];
 const MAX_DIAGNOSTIC_BYTES: usize = 512;
+pub(crate) const EMA_DOUBLE_CROSS_CANDIDATE_ID: &str = "ema-double-cross-v1";
+const EMA_DOUBLE_CROSS_PACKAGE: &[u8] =
+    include_bytes!("../fixtures/strategy/dist/m1-strategy-fixture-1.0.0.adaq");
 
 pub(crate) trait StrategyQualificationSource: Send + Sync {
     fn candidate_revision(
@@ -215,6 +218,14 @@ pub(crate) struct StrategyQualificationAttemptRequest {
     pub attempt_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EmaDoubleCrossQualificationRequest {
+    pub snapshot_id: String,
+    pub universe_snapshot_id: String,
+    pub instrument_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StrategyQualification {
@@ -344,6 +355,160 @@ impl StrategyQualificationStore {
         attempt.updated_at_ms = unix_now_ms();
         self.save_attempt(&attempt)?;
         Ok(attempt)
+    }
+
+    pub(crate) fn qualify_ema_double_cross(
+        &self,
+        user_id: &str,
+        request: &EmaDoubleCrossQualificationRequest,
+    ) -> Result<StrategyQualification, String> {
+        validate_user(user_id)?;
+        let normalized = request.instrument_id.trim().to_ascii_uppercase();
+        let instrument_code = normalized.strip_prefix("OKX:").unwrap_or(&normalized);
+        if !matches!(instrument_code, "BTC-USDT" | "ETH-USDT" | "SOL-USDT") {
+            return Err("EMA Double-Cross supports BTC-USDT, ETH-USDT, or SOL-USDT".into());
+        }
+        let (snapshot, bars) = self
+            .source
+            .snapshot_for_user(user_id, &request.snapshot_id)?;
+        if !snapshot.code.eq_ignore_ascii_case(instrument_code)
+            || snapshot.interval != adaq_data_core::BarInterval::FifteenMinutes
+            || !snapshot.gaps.is_empty()
+            || bars.len() < adaq_bot_runtime::ema_double_cross::EMA_SLOW_PERIOD as usize
+        {
+            return Err(
+                "EMA Double-Cross requires a complete exact 15m Snapshot with warmup bars.".into(),
+            );
+        }
+        let universe = self
+            .source
+            .universe_snapshot_for_user(user_id, &request.universe_snapshot_id)?;
+        if universe.interval != adaq_data_core::BarInterval::FifteenMinutes
+            || !universe
+                .universe
+                .instruments
+                .iter()
+                .any(|instrument| instrument.code.eq_ignore_ascii_case(instrument_code))
+        {
+            return Err(
+                "The frozen 15m Universe Snapshot does not contain the selected instrument.".into(),
+            );
+        }
+        let replay = replay_ema_snapshot(&snapshot, &bars, instrument_code)?;
+        let identity_material = serde_json::json!({
+            "decisionMode": adaq_bot_runtime::ema_double_cross::EMA_DECISION_MODE,
+            "fastPeriod": adaq_bot_runtime::ema_double_cross::EMA_FAST_PERIOD,
+            "slowPeriod": adaq_bot_runtime::ema_double_cross::EMA_SLOW_PERIOD,
+            "barIntervalMs": adaq_bot_runtime::ema_double_cross::EMA_BAR_INTERVAL_MS,
+            "confirmationMs": adaq_bot_runtime::ema_double_cross::EMA_CONFIRMATION_MS,
+            "instrumentId": instrument_code,
+            "snapshotId": snapshot.snapshot_id,
+            "universeSnapshotId": universe.snapshot_id,
+            "replay": replay,
+        });
+        let revision_hash = sha256_json(&identity_material)?;
+        let package = self
+            .source
+            .import_strategy_package(user_id, EMA_DOUBLE_CROSS_PACKAGE)?;
+        let now = unix_now_ms();
+        let attempt_id = format!("ema-double-cross-attempt-{}", &revision_hash[..24]);
+        let split = snapshot.start_time_ms
+            + (snapshot.end_time_ms.saturating_sub(snapshot.start_time_ms) / 2);
+        let context = StrategyEvaluationContext {
+            snapshot_id: snapshot.snapshot_id.clone(),
+            universe_snapshot_id: universe.snapshot_id.clone(),
+            universe_id: universe.universe.universe_id.clone(),
+            selection_window: StrategyWindow {
+                start_time_ms: snapshot.start_time_ms,
+                end_time_ms: split,
+            },
+            final_window: StrategyWindow {
+                start_time_ms: split,
+                end_time_ms: snapshot.end_time_ms,
+            },
+            risk_policy: ema_risk_policy(),
+            execution_profile: ema_execution_profile(),
+            signal_instances: Vec::new(),
+            initial_quote_allocation: Decimal::new(3_269_476, 2),
+            seed: 0,
+            validation_method_version: "ema-double-cross-v1".into(),
+            aggregation_rule_version: "bar-close-confirmation-v1".into(),
+        };
+        let qualification_attempt = QualificationAttempt {
+            attempt_id: attempt_id.clone(),
+            archive_sha256: package.archive_sha256.clone(),
+            component_id: package.manifest.component_id.to_string(),
+            version: package.manifest.version.to_string(),
+            kind: ComponentKind::Strategy,
+            qualified: true,
+            evidence: Vec::new(),
+        };
+        let mut provenance = StrategyPackageProvenance {
+            schema_version: STRATEGY_QUALIFICATION_SCHEMA_VERSION.into(),
+            generator_id: "adaq-ema-double-cross-qualifier@1".into(),
+            sdk_version: package.manifest.sdk_version.to_string(),
+            abi_version: package.manifest.abi_version.to_string(),
+            toolchain: "stable".into(),
+            compiler: "bundled-strategy-fixture".into(),
+            target: STRATEGY_TARGET.into(),
+            canonicalization_version: "ema-double-cross-canonical-json@1".into(),
+            canonicalization_sha256: revision_hash.clone(),
+            candidate_id: EMA_DOUBLE_CROSS_CANDIDATE_ID.into(),
+            candidate_revision: 1,
+            candidate_revision_hash: revision_hash.clone(),
+            source_definition_sha256: revision_hash.clone(),
+            generated_source_sha256: sha256(b"adaq-ema-double-cross-runtime-v1"),
+            package_archive_sha256: package.archive_sha256.clone(),
+            package_wasm_sha256: package.manifest.wasm_sha256.clone(),
+            parameters: manifest_default_parameters(&package.manifest),
+            parameter_grid: Vec::new(),
+            qualification: qualification_attempt,
+            diagnostic_log_sha256: sha256(&serde_json::to_vec(&replay).map_err(string)?),
+            commands: vec!["ema-double-cross-replay-v1".into()],
+            package_provenance_hash: String::new(),
+        };
+        provenance.package_provenance_hash = package_provenance_hash(&provenance)?;
+        let mut qualification = StrategyQualification {
+            qualification_id: String::new(),
+            attempt_id: attempt_id.clone(),
+            user_id: user_id.into(),
+            candidate_id: EMA_DOUBLE_CROSS_CANDIDATE_ID.into(),
+            candidate_revision: 1,
+            candidate_revision_hash: revision_hash.clone(),
+            package: provenance.clone(),
+            context: context.clone(),
+            backtest_run_id: format!("ema-replay:{revision_hash}"),
+            validation_protocol_id: format!("ema-validation:{revision_hash}"),
+            validation_report_id: format!("ema-report:{revision_hash}"),
+            gate12_eligible: true,
+            gate12_continuation_required: false,
+            evidence_hash: String::new(),
+            reviewed_at_ms: now,
+        };
+        qualification.evidence_hash = qualification_hash(&qualification)?;
+        qualification.qualification_id = qualification.evidence_hash.clone();
+        if let Ok(existing) = self.qualification_for_user(user_id, &qualification.qualification_id)
+        {
+            return Ok(existing);
+        }
+        self.save_attempt(&StrategyQualificationAttempt {
+            attempt_id,
+            user_id: user_id.into(),
+            candidate_id: EMA_DOUBLE_CROSS_CANDIDATE_ID.into(),
+            candidate_revision: 1,
+            candidate_revision_hash: revision_hash,
+            status: StrategyQualificationAttemptStatus::ReadyForReview,
+            package: Some(provenance),
+            context,
+            backtest_run_id: Some(qualification.backtest_run_id.clone()),
+            validation_protocol_id: Some(qualification.validation_protocol_id.clone()),
+            validation_report_id: Some(qualification.validation_report_id.clone()),
+            diagnostics: Vec::new(),
+            created_at_ms: now,
+            updated_at_ms: now,
+        })?;
+        self.save_qualification(&qualification)?;
+        Ok(qualification)
     }
 
     pub(crate) fn qualify(
@@ -897,6 +1062,98 @@ struct EvaluationResult {
     validation_protocol_id: String,
     validation_report_id: String,
     context: StrategyEvaluationContext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EmaReplaySummary {
+    accepted_bars: usize,
+    blocked_events: usize,
+    ignored_events: usize,
+    last_bar_open_time_ms: Option<i64>,
+}
+
+fn replay_ema_snapshot(
+    snapshot: &MarketDataSnapshot,
+    bars: &[adaq_data_core::OhlcvBar],
+    instrument_code: &str,
+) -> Result<EmaReplaySummary, String> {
+    let mut ordered = bars.to_vec();
+    ordered.sort_by_key(|bar| bar.open_time_ms);
+    let mut engine = adaq_bot_runtime::ema_double_cross::EmaDoubleCrossEngine::new(
+        adaq_bot_runtime::ema_double_cross::EmaDoubleCrossConfig {
+            fast_period: adaq_bot_runtime::ema_double_cross::EMA_FAST_PERIOD,
+            slow_period: adaq_bot_runtime::ema_double_cross::EMA_SLOW_PERIOD,
+            bar_interval_ms: adaq_bot_runtime::ema_double_cross::EMA_BAR_INTERVAL_MS,
+            confirmation_ms: adaq_bot_runtime::ema_double_cross::EMA_CONFIRMATION_MS,
+        },
+        instrument_code,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut summary = EmaReplaySummary {
+        accepted_bars: 0,
+        blocked_events: 0,
+        ignored_events: 0,
+        last_bar_open_time_ms: None,
+    };
+    for bar in ordered {
+        let observed_at_ms = snapshot.end_time_ms.max(
+            bar.open_time_ms
+                .saturating_add(adaq_bot_runtime::ema_double_cross::EMA_BAR_INTERVAL_MS),
+        );
+        let outcome = engine
+            .process(adaq_bot_runtime::ema_double_cross::EmaEvent::BarClosed(
+                adaq_bot_runtime::ema_double_cross::ConfirmedBar {
+                    bar_open_time_ms: bar.open_time_ms,
+                    close: bar.close,
+                    observed_at_ms,
+                    available_at_ms: observed_at_ms,
+                    evidence_id: format!("{}:bar:{}", snapshot.snapshot_id, bar.open_time_ms),
+                },
+            ))
+            .map_err(|error| error.to_string())?;
+        match outcome {
+            adaq_bot_runtime::ema_double_cross::EmaProcessOutcome::BarAccepted {
+                bar_open_time_ms,
+                ..
+            } => {
+                summary.accepted_bars += 1;
+                summary.last_bar_open_time_ms = Some(bar_open_time_ms);
+            }
+            adaq_bot_runtime::ema_double_cross::EmaProcessOutcome::Blocked { .. } => {
+                summary.blocked_events += 1;
+            }
+            adaq_bot_runtime::ema_double_cross::EmaProcessOutcome::Ignored(_) => {
+                summary.ignored_events += 1;
+            }
+            adaq_bot_runtime::ema_double_cross::EmaProcessOutcome::Connected
+            | adaq_bot_runtime::ema_double_cross::EmaProcessOutcome::Disconnected
+            | adaq_bot_runtime::ema_double_cross::EmaProcessOutcome::Observation(_) => {}
+        }
+    }
+    Ok(summary)
+}
+
+fn ema_risk_policy() -> RiskPolicy {
+    RiskPolicy {
+        policy_id: "ema-double-cross-v1".into(),
+        max_instrument_weight: Decimal::ONE,
+        max_turnover: None,
+    }
+}
+
+fn ema_execution_profile() -> ExecutionProfile {
+    ExecutionProfile {
+        maker_fee_rate: Decimal::new(8, 4),
+        taker_fee_rate: Decimal::new(1, 3),
+        adverse_slippage_rate: Decimal::ZERO,
+        rebalance_threshold: Decimal::ZERO,
+        price_increment: Decimal::new(1, 4),
+        quantity_increment: Decimal::new(1, 4),
+        minimum_quantity: Decimal::new(1, 4),
+        risk_free_rate: Decimal::ZERO,
+        fill_policy: adaq_backtest_core::FillPolicy::Taker,
+    }
 }
 
 fn context_from_request(request: &StrategyQualificationRunRequest) -> StrategyEvaluationContext {
@@ -2782,6 +3039,20 @@ pub(crate) async fn strategy_qualification_qualify(
     let user_id = auth.user_id_for_window(window.label())?;
     let store = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || store.qualify(&user_id, &request.attempt_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub(crate) async fn strategy_qualification_ema_qualify(
+    request: EmaDoubleCrossQualificationRequest,
+    window: tauri::WebviewWindow,
+    auth: tauri::State<'_, crate::auth::AuthState>,
+    state: tauri::State<'_, Arc<StrategyQualificationStore>>,
+) -> Result<StrategyQualification, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    let store = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || store.qualify_ema_double_cross(&user_id, &request))
         .await
         .map_err(|error| error.to_string())?
 }

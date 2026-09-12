@@ -929,6 +929,40 @@ export function DataFoundationPage() {
 		enabled: Boolean(userId),
 		staleTime: 10_000,
 	});
+	useEffect(() => {
+		if (gateTwoRequest || !pipelineQuery.data?.length) return;
+		const datasets = pipelineQuery.data.filter(
+			(dataset) =>
+				dataset.state === "passed" &&
+				dataset.source.instrument &&
+				dataset.source.interval &&
+				dataset.source.requestedStartTimeMs != null &&
+				dataset.source.requestedEndTimeMs != null,
+		);
+		if (datasets.length < 2) return;
+		const first = datasets[0];
+		const interval = first.source.interval as OkxInterval;
+		if (
+			datasets.some(
+				(dataset) =>
+					dataset.source.interval !== interval ||
+					dataset.source.requestedStartTimeMs !==
+						first.source.requestedStartTimeMs ||
+					dataset.source.requestedEndTimeMs !== first.source.requestedEndTimeMs,
+			)
+		)
+			return;
+		setGateTwoRequest({
+			sourceIds: datasets.map((dataset) => dataset.sourceId),
+			startTimeMs: first.source.requestedStartTimeMs as number,
+			endTimeMs: first.source.requestedEndTimeMs as number,
+			interval,
+			instrumentCodes: datasets.map(
+				(dataset) => dataset.source.instrument?.code as string,
+			),
+			publicationEvidenceName: first.publicationEvidenceName,
+		});
+	}, [gateTwoRequest, pipelineQuery.data]);
 	const instrumentMasterQuery = useQuery({
 		queryKey: ["okx-instrument-master", userId],
 		queryFn: () =>
@@ -971,11 +1005,7 @@ export function DataFoundationPage() {
 		staleTime: 30_000,
 	});
 	const backfillSnapshots = [...(instrumentMasterQuery.data ?? [])]
-		.filter(
-			(snapshot) =>
-				snapshot.retrievedAtMs <= Date.parse(`${rangeEnd}T00:00:00Z`) + 86_400_000,
-		)
-		.reverse()
+		.sort((left, right) => right.retrievedAtMs - left.retrievedAtMs)
 		.slice(0, 10);
 	const selectedBackfillSnapshot =
 		backfillSnapshots.find(

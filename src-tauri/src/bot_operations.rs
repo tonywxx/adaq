@@ -1738,11 +1738,6 @@ pub(crate) async fn bot_deploy(
         let bots = app.state::<Arc<BotStore>>();
         let qualification =
             qualifications.qualification_for_user(&user_id, &request.qualification_id)?;
-        let (revision, eligible) = candidates.revision_for_user(
-            &user_id,
-            &qualification.candidate_id,
-            qualification.candidate_revision,
-        )?;
         let profile = local
             .connections
             .list(&user_id)?
@@ -1759,17 +1754,37 @@ pub(crate) async fn bot_deploy(
             );
         }
         let artifact = resolve_worker_artifact(&app)?;
-        let bundle = build_bundle(
-            &user_id,
-            &qualification,
-            &revision,
-            eligible,
-            &request.profile_id,
-            &request.account_id,
-            canonicalize_okx_schedule(request.schedule)?,
-            artifact.binding,
-            &local,
-        )?;
+        let schedule = canonicalize_okx_schedule(request.schedule)?;
+        let bundle = if qualification.candidate_id
+            == crate::strategy_qualification::EMA_DOUBLE_CROSS_CANDIDATE_ID
+        {
+            build_ema_bundle(
+                &user_id,
+                &qualification,
+                &request.profile_id,
+                &request.account_id,
+                schedule,
+                artifact.binding,
+                &local,
+            )?
+        } else {
+            let (revision, eligible) = candidates.revision_for_user(
+                &user_id,
+                &qualification.candidate_id,
+                qualification.candidate_revision,
+            )?;
+            build_bundle(
+                &user_id,
+                &qualification,
+                &revision,
+                eligible,
+                &request.profile_id,
+                &request.account_id,
+                schedule,
+                artifact.binding,
+                &local,
+            )?
+        };
         bots.deploy(&user_id, bundle)
     })
     .await
@@ -3688,6 +3703,108 @@ fn submit_target_order(
             Err("Provider order outcome is uncertain; reconciliation is required.".into())
         }
     }
+}
+
+fn build_ema_bundle(
+    user_id: &str,
+    qualification: &StrategyQualification,
+    profile_id: &str,
+    account_id: &str,
+    schedule: BotSchedule,
+    worker: WorkerArtifactBinding,
+    local: &LocalResearchState,
+) -> Result<BotDeploymentBundle, String> {
+    if qualification.user_id != user_id
+        || qualification.candidate_id
+            != crate::strategy_qualification::EMA_DOUBLE_CROSS_CANDIDATE_ID
+        || !qualification.gate12_eligible
+        || qualification.gate12_continuation_required
+    {
+        return Err("The EMA Double-Cross Qualification is not eligible.".into());
+    }
+    schedule.validate(
+        StrategyScope::SingleInstrument,
+        &qualification.context.universe_id,
+    )?;
+    let strategy_package = local
+        .components
+        .package_for_user(user_id, &qualification.package.package_archive_sha256)?;
+    if !component_kind_matches(&strategy_package, ComponentKind::Strategy)
+        || strategy_package.archive_sha256 != qualification.package.package_archive_sha256
+        || strategy_package.manifest.wasm_sha256 != qualification.package.package_wasm_sha256
+        || strategy_package.manifest.strategy_scope
+            != adaq_component_tooling::StrategyScope::SingleInstrument
+    {
+        return Err("The EMA Double-Cross package identity is no longer exact.".into());
+    }
+    let bot_id = Uuid::new_v4().to_string();
+    let strategy_feature_slots = feature_slot_names(&strategy_package)?;
+    let strategy_parameters =
+        package_parameters(&strategy_package, Some(&qualification.package.parameters))?;
+    let component_hashes = vec![strategy_package.manifest.wasm_sha256.clone()];
+    let is_ema_schedule = matches!(&schedule, BotSchedule::EmaDoubleCross { .. });
+    if !is_ema_schedule {
+        return Err("EMA Double-Cross Qualification requires its EMA schedule.".into());
+    }
+    let mut worker_policy = adaq_bot_runtime::WorkerRuntimePolicy::default();
+    worker_policy.warmup_decisions = 0;
+    let feature_plan_hash = hash_json(&serde_json::json!({
+        "decisionMode": adaq_bot_runtime::ema_double_cross::EMA_DECISION_MODE,
+        "fastPeriod": adaq_bot_runtime::ema_double_cross::EMA_FAST_PERIOD,
+        "slowPeriod": adaq_bot_runtime::ema_double_cross::EMA_SLOW_PERIOD,
+        "barIntervalMs": adaq_bot_runtime::ema_double_cross::EMA_BAR_INTERVAL_MS,
+        "confirmationMs": adaq_bot_runtime::ema_double_cross::EMA_CONFIRMATION_MS,
+    }))?;
+    let runtime_bundle = DeploymentBundle::freeze(adaq_bot_runtime::DeploymentBundleInput {
+        bot_id: bot_id.clone(),
+        strategy_id: qualification.qualification_id.clone(),
+        account_id: account_id.into(),
+        component_hashes,
+        model_hashes: Vec::new(),
+        feature_plan_hash,
+        risk_policy_hash: hash_json(&qualification.context.risk_policy)?,
+        execution_profile_hash: hash_json(&qualification.context.execution_profile)?,
+        worker_binary_hash: worker.sha256.clone(),
+        qualification_evidence_hash: qualification.evidence_hash.clone(),
+        decision_mode: Some(adaq_bot_runtime::ema_double_cross::EMA_DECISION_MODE.into()),
+        strategy: adaq_bot_runtime::WorkerStrategyBinding {
+            world: adaq_bot_runtime::StrategyWorld::Strategy,
+            component_sha256: strategy_package.manifest.wasm_sha256.clone(),
+            feature_slots: strategy_feature_slots,
+            parameters: strategy_parameters,
+        },
+        pipeline: adaq_bot_runtime::WorkerPipelineBinding::default(),
+        worker,
+        worker_policy,
+    })
+    .map_err(|error| error.to_string())?;
+    BotDeploymentBundle {
+        schema_version: BOT_SCHEMA_VERSION.into(),
+        bot_id,
+        qualification_id: qualification.qualification_id.clone(),
+        candidate_id: qualification.candidate_id.clone(),
+        candidate_revision: qualification.candidate_revision,
+        candidate_revision_hash: qualification.candidate_revision_hash.clone(),
+        universe_id: qualification.context.universe_id.clone(),
+        universe_snapshot_id: qualification.context.universe_snapshot_id.clone(),
+        market_data_snapshot_id: qualification.context.snapshot_id.clone(),
+        strategy_package_archive_sha256: qualification.package.package_archive_sha256.clone(),
+        pipeline_package_archive_sha256: Vec::new(),
+        account_id: account_id.into(),
+        connection_profile_id: profile_id.into(),
+        schedule,
+        research_risk_policy: qualification.context.risk_policy.clone(),
+        paper_risk_policy: PaperRiskPolicy {
+            max_order_notional: EMA_ENTRY_NOTIONAL_CAP_USDT,
+            reserve_cash: EMA_INITIAL_ALLOCATION_USDT - EMA_ENTRY_NOTIONAL_CAP_USDT,
+            freeze_new_risk: false,
+        },
+        execution_profile: qualification.context.execution_profile.clone(),
+        runtime_bundle,
+        created_at_ms: adaq_bot_runtime::unix_now_ms(),
+        identity: String::new(),
+    }
+    .freeze()
 }
 
 fn build_bundle(

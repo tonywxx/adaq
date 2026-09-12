@@ -129,6 +129,8 @@ beforeEach(() => {
 		if (command === "strategy_candidate_catalog")
 			return { ...catalog, operations: [] };
 		if (command === "strategy_candidate_list") return [];
+		if (command === "snapshot_list_readable") return [];
+		if (command === "snapshot_list_universe") return { items: [] };
 		if (command === "strategy_candidate_preflight")
 			return {
 				attemptId: "attempt-1",
@@ -203,6 +205,8 @@ test("keeps rejected Host diagnostics localized and retryable", async () => {
 		if (command === "strategy_candidate_catalog")
 			return { ...catalog, operations: [] };
 		if (command === "strategy_candidate_list") return [];
+		if (command === "snapshot_list_readable") return [];
+		if (command === "snapshot_list_universe") return { items: [] };
 		if (command === "strategy_candidate_preflight") {
 			preflightCalls += 1;
 			return {

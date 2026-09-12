@@ -2411,10 +2411,35 @@ impl LocalResearchState {
         publications: &[adaq_data_pipeline::PipelinePublication],
         publication_evidence_name: Option<String>,
     ) -> Result<MarketDataUniverseSnapshot, String> {
-        let universe = self
-            .okx
-            .point_in_time_universe(user_id, end_time_ms)
-            .map_err(string)?;
+        let source_universe_snapshot_ids = publications
+            .iter()
+            .filter_map(|publication| {
+                publication
+                    .source
+                    .identity
+                    .request_parameters
+                    .get("universeSnapshotId")
+                    .and_then(serde_json::Value::as_str)
+            })
+            .collect::<HashSet<_>>();
+        let universe = match source_universe_snapshot_ids.len() {
+            0 => self
+                .okx
+                .point_in_time_universe(user_id, end_time_ms)
+                .map_err(string)?,
+            1 => self
+                .okx
+                .point_in_time_universe_from_snapshot(
+                    user_id,
+                    source_universe_snapshot_ids
+                        .iter()
+                        .next()
+                        .copied()
+                        .unwrap_or_default(),
+                )
+                .map_err(string)?,
+            _ => return Err("OKX Sources use different Instrument Master snapshots".into()),
+        };
         let venue = Venue::crypto_spot("okx").map_err(string)?;
         let expected_instruments = universe
             .instruments

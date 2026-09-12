@@ -6541,6 +6541,7 @@ pub fn run() {
             strategy_candidate::strategy_candidate_get,
             strategy_qualification::strategy_qualification_run,
             strategy_qualification::strategy_qualification_qualify,
+            strategy_qualification::strategy_qualification_ema_qualify,
             strategy_qualification::strategy_qualification_attempt_list,
             strategy_qualification::strategy_qualification_attempt_get,
             strategy_qualification::strategy_qualification_list,

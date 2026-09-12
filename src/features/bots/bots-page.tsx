@@ -23,6 +23,11 @@ type Qualification = {
 	candidateRevisionHash: string;
 	gate12Eligible: boolean;
 	gate12ContinuationRequired: boolean;
+	context?: {
+		snapshotId: string;
+		universeSnapshotId: string;
+		universeId: string;
+	};
 };
 
 type ConnectionProfile = {
@@ -246,7 +251,17 @@ export function BotsPage() {
 						<select
 							id="bot-qualification"
 							value={qualificationId}
-							onChange={(event) => setQualificationId(event.target.value)}
+							onChange={(event) => {
+								const nextId = event.target.value;
+								setQualificationId(nextId);
+								const nextQualification = eligibleQualifications.find(
+									(qualification) => qualification.qualificationId === nextId,
+								);
+								if (nextQualification?.candidateId === "ema-double-cross-v1") {
+									setScheduleKind("ema-double-cross");
+									setInstrumentId("BTC-USDT");
+								}
+							}}
 							className="h-9 rounded-md border bg-background px-3 text-sm"
 						>
 							<option value="">{t("bots.selectQualification")}</option>
@@ -255,16 +270,15 @@ export function BotsPage() {
 									key={qualification.qualificationId}
 									value={qualification.qualificationId}
 								>
-									{identifierLabel(
-										qualification.qualificationId,
-										t("identifiers.qualification"),
-									)}{" "}
-									·{" "}
-									{identifierLabel(
-										qualification.candidateId,
-										t("identifiers.candidate"),
-									)}{" "}
-									r{qualification.candidateRevision}
+									{qualification.candidateId === "ema-double-cross-v1"
+										? t("bots.emaQualification")
+										: `${identifierLabel(
+												qualification.qualificationId,
+												t("identifiers.qualification"),
+											)} · ${identifierLabel(
+												qualification.candidateId,
+												t("identifiers.candidate"),
+											)} r${qualification.candidateRevision}`}
 								</option>
 							))}
 						</select>
