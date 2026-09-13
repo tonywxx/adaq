@@ -172,6 +172,7 @@ export function PaperExperimentPage() {
 	const [feedback, setFeedback] = useState("");
 	const [pendingAction, setPendingAction] = useState("");
 	const [pendingBotCommand, setPendingBotCommand] = useState("");
+	const [creatingNew, setCreatingNew] = useState(false);
 	const [streamStatus, setStreamStatus] = useState<
 		"idle" | "connected" | "error"
 	>("idle");
@@ -209,12 +210,15 @@ export function PaperExperimentPage() {
 			),
 		[qualifications.data],
 	);
-	const current = experiment.data;
+	const current = creatingNew ? null : experiment.data;
 	const experimentId = current?.experiment.experimentId;
 	const experimentIsActive =
 		current?.experiment.state === "preparing" ||
 		current?.experiment.state === "armed" ||
 		current?.experiment.state === "running";
+	const canCreateNewExperiment =
+		experiment.data?.experiment.state === "completed" ||
+		experiment.data?.experiment.state === "incomplete";
 
 	const setView = useCallback(
 		(next: ExperimentView) => {
@@ -251,6 +255,7 @@ export function PaperExperimentPage() {
 			});
 		},
 		onSuccess: (next) => {
+			setCreatingNew(false);
 			setView(next);
 			setFeedback("");
 		},
@@ -360,14 +365,27 @@ export function PaperExperimentPage() {
 
 	return (
 		<div className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
-			<header>
-				<p className="text-sm text-muted-foreground">
-					{t("paperExperiment.eyebrow")}
-				</p>
-				<h1 className="text-2xl font-semibold">{t("paperExperiment.title")}</h1>
-				<p className="text-sm text-muted-foreground">
-					{t("paperExperiment.description")}
-				</p>
+			<header className="flex items-start justify-between gap-4">
+				<div>
+					<p className="text-sm text-muted-foreground">
+						{t("paperExperiment.eyebrow")}
+					</p>
+					<h1 className="text-2xl font-semibold">{t("paperExperiment.title")}</h1>
+					<p className="text-sm text-muted-foreground">
+						{t("paperExperiment.description")}
+					</p>
+				</div>
+				{canCreateNewExperiment ? (
+					<Button
+						variant="outline"
+						onClick={() => {
+							setCreatingNew(true);
+							setFeedback("");
+						}}
+					>
+						{t("paperExperiment.newExperiment")}
+					</Button>
+				) : null}
 			</header>
 			{feedback ? (
 				<p

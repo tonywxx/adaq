@@ -980,6 +980,7 @@ const english = {
 		reporting: "Freezing…",
 		feedback: "Freeze Paper Feedback",
 		feedbacking: "Freezing feedback…",
+		newExperiment: "New experiment",
 		streamConnected: "Three-instrument trade stream is connected.",
 		streamUnavailable:
 			"Trade stream is unavailable; no new risk is authorized by this page.",
@@ -4286,6 +4287,7 @@ const simplifiedChinese = {
 		reporting: "冻结中…",
 		feedback: "冻结模拟反馈",
 		feedbacking: "正在冻结反馈…",
+		newExperiment: "新建实验",
 		streamConnected: "三标的 Trade Stream 已连接。",
 		streamUnavailable: "Trade Stream 不可用；本页面不会授权新的风险。",
 		noExperiment: "尚未配置模拟实验。",

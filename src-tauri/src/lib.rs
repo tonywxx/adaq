@@ -1237,15 +1237,14 @@ fn paper_feedback_snapshot_create(
     )?;
     let qualification =
         qualifications.qualification_for_user(&user_id, &bot.bundle.qualification_id)?;
-    let (revision, _) = candidates.revision_for_user(
+    let (research_evidence, horizon_bars) = paper_feedback_strategy_context(
+        candidates.inner().as_ref(),
         &user_id,
-        &bot.bundle.candidate_id,
-        bot.bundle.candidate_revision,
+        &bot,
+        &qualification,
     )?;
-    let research_evidence = paper_feedback_research_evidence(&bot, &qualification, &revision)?;
     let (market_snapshot, market_bars) =
         state.snapshot_for_user(&user_id, &bot.bundle.market_data_snapshot_id)?;
-    let horizon_bars = strategy_target_horizon_bars(&revision);
     let (market_evidence, realized_observations) = paper_feedback_market_evidence(
         &bot,
         &attempt,
@@ -1432,6 +1431,28 @@ fn strategy_target_horizon_bars(
             _ => None,
         })
         .min()
+}
+
+fn paper_feedback_strategy_context(
+    candidates: &strategy_candidate::StrategyCandidateStore,
+    user_id: &str,
+    bot: &bot_operations::BotView,
+    qualification: &strategy_qualification::StrategyQualification,
+) -> Result<(serde_json::Value, Option<u32>), String> {
+    if bot.bundle.candidate_id == strategy_qualification::EMA_DOUBLE_CROSS_CANDIDATE_ID {
+        return Ok((
+            paper_feedback_research_evidence(bot, qualification, None)?,
+            None,
+        ));
+    }
+    let (revision, _) = candidates.revision_for_user(
+        user_id,
+        &bot.bundle.candidate_id,
+        bot.bundle.candidate_revision,
+    )?;
+    let horizon_bars = strategy_target_horizon_bars(&revision);
+    let research_evidence = paper_feedback_research_evidence(bot, qualification, Some(&revision))?;
+    Ok((research_evidence, horizon_bars))
 }
 
 fn strategy_target_exposure(
@@ -1841,7 +1862,7 @@ fn paper_provider_evidence(outcome: &ExecutionOutcome) -> serde_json::Value {
 fn paper_feedback_research_evidence(
     bot: &bot_operations::BotView,
     qualification: &strategy_qualification::StrategyQualification,
-    revision: &strategy_candidate::StrategyCandidateRevision,
+    revision: Option<&strategy_candidate::StrategyCandidateRevision>,
 ) -> Result<serde_json::Value, String> {
     let bundle = &bot.bundle;
     if qualification.user_id != bot.user_id
@@ -1857,18 +1878,59 @@ fn paper_feedback_research_evidence(
         || qualification.evidence_hash != bundle.runtime_bundle.input.qualification_evidence_hash
         || qualification.context.risk_policy != bundle.research_risk_policy
         || qualification.context.execution_profile != bundle.execution_profile
-        || revision.candidate_id != bundle.candidate_id
-        || revision.revision != bundle.candidate_revision
-        || revision.revision_hash != bundle.candidate_revision_hash
-        || revision.semantic_context.feature_plan_hash
-            != bundle.runtime_bundle.input.feature_plan_hash
-        || revision.semantic_context.snapshot_id != qualification.context.snapshot_id
-        || revision.semantic_context.universe_id != qualification.context.universe_snapshot_id
     {
         return Err(
             "Paper Feedback research evidence does not match the exact Deployment Bundle".into(),
         );
     }
+
+    let strategy_revision = match revision {
+        Some(revision)
+            if revision.candidate_id == bundle.candidate_id
+                && revision.revision == bundle.candidate_revision
+                && revision.revision_hash == bundle.candidate_revision_hash
+                && revision.semantic_context.feature_plan_hash
+                    == bundle.runtime_bundle.input.feature_plan_hash
+                && revision.semantic_context.snapshot_id == qualification.context.snapshot_id
+                && revision.semantic_context.universe_id
+                    == qualification.context.universe_snapshot_id =>
+        {
+            serde_json::json!({
+                "candidateId": revision.candidate_id,
+                "revision": revision.revision,
+                "revisionHash": revision.revision_hash,
+                "featurePlanHash": revision.semantic_context.feature_plan_hash,
+                "researchContextHash": revision.semantic_context.research_context_hash,
+                "inputEvidenceHashes": revision.semantic_context.input_evidence_hashes,
+                "market": revision.semantic_context.market,
+                "venue": revision.semantic_context.venue,
+                "definition": revision.definition,
+            })
+        }
+        Some(_) => {
+            return Err(
+                "Paper Feedback research evidence does not match the exact Deployment Bundle"
+                    .into(),
+            );
+        }
+        None if bundle.candidate_id == strategy_qualification::EMA_DOUBLE_CROSS_CANDIDATE_ID => {
+            serde_json::json!({
+                "kind": "qualified-event-strategy",
+                "candidateId": qualification.candidate_id,
+                "revision": qualification.candidate_revision,
+                "revisionHash": qualification.candidate_revision_hash,
+                "decisionMode": bundle.runtime_bundle.input.decision_mode,
+                "strategyPackageArchiveSha256": qualification.package.package_archive_sha256,
+                "strategyPackageWasmSha256": qualification.package.package_wasm_sha256,
+                "marketDataSnapshotId": qualification.context.snapshot_id,
+                "universeSnapshotId": qualification.context.universe_snapshot_id,
+                "parameters": qualification.package.parameters,
+            })
+        }
+        None => {
+            return Err("Paper Feedback requires an exact Strategy Candidate Revision".into());
+        }
+    };
 
     Ok(serde_json::json!({
         "qualification": {
@@ -1890,19 +1952,9 @@ fn paper_feedback_research_evidence(
             "validationMethodVersion": qualification.context.validation_method_version,
             "aggregationRuleVersion": qualification.context.aggregation_rule_version,
             "forecastInputs": qualification.context.signal_instances,
-            "targetHorizonBars": strategy_target_horizon_bars(revision),
+            "targetHorizonBars": revision.and_then(strategy_target_horizon_bars),
         },
-        "strategyRevision": {
-            "candidateId": revision.candidate_id,
-            "revision": revision.revision,
-            "revisionHash": revision.revision_hash,
-            "featurePlanHash": revision.semantic_context.feature_plan_hash,
-            "researchContextHash": revision.semantic_context.research_context_hash,
-            "inputEvidenceHashes": revision.semantic_context.input_evidence_hashes,
-            "market": revision.semantic_context.market,
-            "venue": revision.semantic_context.venue,
-            "definition": revision.definition,
-        },
+        "strategyRevision": strategy_revision,
     }))
 }
 

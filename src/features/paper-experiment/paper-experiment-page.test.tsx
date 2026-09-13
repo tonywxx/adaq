@@ -343,6 +343,23 @@ test("renders report completeness and retained feedback evidence", async () => {
 	await unmount(root, container);
 });
 
+test("opens a new setup after a terminal experiment without changing its evidence", async () => {
+	view = completedView();
+	const { container, root } = await mount();
+
+	await act(async () => {
+		Array.from(container.querySelectorAll("button"))
+			.find((button) => button.textContent === "New experiment")
+			?.click();
+	});
+	await settle();
+
+	expect(container.querySelector("#experiment-profile")).not.toBeNull();
+	expect(view?.experiment.state).toBe("completed");
+	expect(view?.experiment.instruments[0].botId).toBe("bot-1");
+	await unmount(root, container);
+});
+
 test("subscribes to instrument trades while the experiment is preparing", async () => {
 	view = completedView();
 	view.experiment.state = "preparing";

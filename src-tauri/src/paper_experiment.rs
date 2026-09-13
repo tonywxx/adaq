@@ -2261,19 +2261,20 @@ fn create_experiment_feedback(
             .ok_or_else(|| format!("Bot {bot_id} Runtime Attempt is unavailable for feedback."))?;
         let qualification =
             qualifications.qualification_for_user(user_id, &binding.qualification_id)?;
-        let (revision, _) = candidates.revision_for_user(
-            user_id,
-            &bot.bundle.candidate_id,
-            bot.bundle.candidate_revision,
-        )?;
         let (market_snapshot, market_bars) =
             local.snapshot_for_user(user_id, &bot.bundle.market_data_snapshot_id)?;
+        let (research_evidence, horizon_bars) = crate::paper_feedback_strategy_context(
+            candidates.inner().as_ref(),
+            user_id,
+            &bot,
+            &qualification,
+        )?;
         let (market_evidence, realized) = crate::paper_feedback_market_evidence(
             &bot,
             &attempt,
             &market_snapshot,
             &market_bars,
-            crate::strategy_target_horizon_bars(&revision),
+            horizon_bars,
             report.observation_start_ms,
             report.observation_end_ms,
             report.generated_at_ms.max(report.observation_end_ms),
@@ -2283,7 +2284,7 @@ fn create_experiment_feedback(
             &attempt,
             account.as_ref(),
             &health,
-            crate::paper_feedback_research_evidence(&bot, &qualification, &revision)?,
+            research_evidence,
             market_evidence,
         );
         if let Some(object) = evidence.as_object_mut() {
