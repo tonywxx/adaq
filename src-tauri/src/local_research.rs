@@ -760,6 +760,9 @@ impl LocalResearchState {
             AshareDataPath::open(pipeline.clone(), AshareClient::default()).map_err(string)?;
         #[cfg(feature = "deferred-equity")]
         let us_equity = UsEquityDataPath::open(pipeline.clone()).map_err(string)?;
+        #[cfg(test)]
+        let connections = crate::connections::ConnectionManager::open_for_tests(database.clone())?;
+        #[cfg(not(test))]
         let connections = crate::connections::ConnectionManager::open_production(database.clone())?;
         let operations = OperationsStore::open(database.clone())?;
         let paper_feedback = PaperFeedbackStore::open(database.clone())?;

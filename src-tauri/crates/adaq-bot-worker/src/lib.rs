@@ -337,7 +337,9 @@ impl WorkerState {
                     let loader = WasmLoader::with_limits(limits);
                     let slots = slots
                         .into_iter()
-                        .map(|name| strategy_abi::exports::adaq::strategy::api::FeatureSlot { name })
+                        .map(
+                            |name| strategy_abi::exports::adaq::strategy::api::FeatureSlot { name },
+                        )
                         .collect();
                     loader
                         .load_strategy_bytes(&component_wasm, slots, &parameters)

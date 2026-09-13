@@ -25,6 +25,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(test)]
+use secret_store::InMemorySecretStore;
 #[cfg(not(any(debug_assertions, feature = "local-env-credentials")))]
 use secret_store::KeyringSecretStore;
 #[cfg(any(debug_assertions, feature = "local-env-credentials"))]
@@ -305,6 +307,16 @@ impl ConnectionManager {
         Self::open(
             database,
             secrets,
+            Arc::new(ReqwestExecutor::new()),
+            Arc::new(EmptyRuntimeGuard),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_for_tests(database: Arc<Mutex<Connection>>) -> Result<Self, String> {
+        Self::open(
+            database,
+            Arc::new(InMemorySecretStore::default()),
             Arc::new(ReqwestExecutor::new()),
             Arc::new(EmptyRuntimeGuard),
         )
