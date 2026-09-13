@@ -43,6 +43,11 @@ const PaperFeedbackPage = lazy(() =>
 		default: module.PaperFeedbackPage,
 	})),
 );
+const PaperExperimentPage = lazy(() =>
+	import("@/features/paper-experiment/paper-experiment-page").then((module) => ({
+		default: module.PaperExperimentPage,
+	})),
+);
 const MarketsOverviewPage = lazy(() =>
 	import("@/features/markets/markets-page").then((module) => ({
 		default: module.MarketsOverview,
@@ -146,6 +151,16 @@ const paperFeedbackRoute = createRoute({
 	component: () => (
 		<Suspense fallback={<PageLoadingSkeleton />}>
 			<PaperFeedbackPage />
+		</Suspense>
+	),
+});
+
+const paperExperimentRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/paper-experiment",
+	component: () => (
+		<Suspense fallback={<PageLoadingSkeleton />}>
+			<PaperExperimentPage />
 		</Suspense>
 	),
 });
@@ -350,6 +365,7 @@ const routeTree = rootRoute.addChildren([
 	paperTradingRoute,
 	botsRoute,
 	paperFeedbackRoute,
+	paperExperimentRoute,
 	workflowGuideRoute,
 	workflowStepRoute,
 	dataFoundationRoute,

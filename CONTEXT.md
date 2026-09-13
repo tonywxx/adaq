@@ -1330,6 +1330,10 @@ _Avoid_: Operations Dashboard, Market Data Connector, full trading terminal
 The localized GUI navigation area under `/paper-trading` for inspecting one User's OKX Demo account snapshots, reservations, positions, Orders, Fills, Risk Decisions, and reconciliation evidence. It permits only explicitly confirmed reconciliation; it is not direct order entry, Bot control, or the Operations Dashboard.
 _Avoid_: Paper Workspace, trading terminal, Bot controls, Operations Dashboard
 
+**Paper Experiment**:
+An immutable, User-launched, Host-supervised comparison of explicitly bound Paper Trading Bots over one common observation window, with equal-capital attribution, reconciliation, outcome reporting, and Paper Feedback evidence. It is not a Paper Trading Workspace, a live strategy service, or an automatic research decision.
+_Avoid_: Paper Trading Workspace, live experiment, automatic promotion
+
 **Bot Workspace**:
 The localized Operations navigation area under `/bots` for deploying and operating a User's Trading Bots. It presents the exact Bot, Deployment Bundle, Runtime Attempt, Account, Lifecycle, Health, Decision, Target, Risk, Order, Fill, and reconciliation evidence; its controls only request bounded Host operations, with Flatten separately confirmed.
 _Avoid_: Paper Trading Workspace, order-entry terminal, Worker console, Operations Dashboard

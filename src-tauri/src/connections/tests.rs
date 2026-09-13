@@ -713,6 +713,56 @@ fn okx_demo_open_orders_request_spot_type_and_parse_orders() {
 }
 
 #[test]
+fn okx_demo_order_fills_parse_trade_identity_and_fee_fields() {
+    let harness = harness(okx_ok_routes());
+    harness
+        .manager
+        .save("user-a", okx_credentials(), NOW_MS)
+        .unwrap();
+    harness.http.set_routes(vec![
+        (
+            "/api/v5/public/time".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: format!(r#"{{"code":"0","msg":"","data":[{{"ts":"{}"}}]}}"#, NOW_MS),
+            },
+        ),
+        (
+            "/api/v5/trade/fills".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: r#"{"code":"0","msg":"","data":[{"instId":"BTC-USDT","ordId":"456","tradeId":"trade-1","fillSz":"0.25","fillPx":"100.5","fee":"0.001","feeCcy":"BTC","ts":"1752000000000","execType":"T"}]}"#.to_owned(),
+            },
+        ),
+    ]);
+
+    let fills = harness
+        .manager
+        .fetch_okx_demo_order_fills("user-a", "BTC-USDT", "456", NOW_MS)
+        .unwrap();
+    assert_eq!(fills.len(), 1);
+    assert_eq!(fills[0].id.as_deref(), Some("trade-1"));
+    assert_eq!(fills[0].order.as_deref(), Some("456"));
+    assert_eq!(fills[0].amount, Some(rust_decimal::Decimal::new(25, 2)));
+    assert_eq!(fills[0].price, Some(rust_decimal::Decimal::new(1005, 1)));
+    assert_eq!(
+        fills[0]
+            .fee
+            .as_ref()
+            .and_then(|fee| fee.currency.as_deref()),
+        Some("BTC")
+    );
+    assert_eq!(
+        fills[0].fee.as_ref().and_then(|fee| fee.cost),
+        Some(rust_decimal::Decimal::new(1, 3))
+    );
+    assert_eq!(
+        harness.http.requested_paths().last().map(String::as_str),
+        Some("https://www.okx.com/api/v5/trade/fills?instType=SPOT&instId=BTC-USDT&ordId=456")
+    );
+}
+
+#[test]
 fn okx_demo_order_uses_the_full_signed_path_and_exact_body() {
     let harness = harness(okx_ok_routes());
     harness

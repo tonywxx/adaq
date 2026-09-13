@@ -1487,6 +1487,55 @@ impl OkxSpotDataPath {
             .transpose()
     }
 
+    pub fn retained_trades_for_user(
+        &self,
+        user_id: &str,
+        instrument_code: &str,
+        start_time_ms: i64,
+        end_time_ms: i64,
+    ) -> Result<Vec<MarketTrade>, PipelineError> {
+        validate_user(user_id)?;
+        if instrument_code.trim().is_empty() || start_time_ms < 0 || end_time_ms < start_time_ms {
+            return Err(PipelineError::InvalidRequest(
+                "OKX retained Trade range is invalid".into(),
+            ));
+        }
+        self.prune_trade_retention(user_id, now_ms())?;
+        let database = self.database()?;
+        let mut statement = database
+            .prepare(
+                "SELECT trade_json FROM okx_market_trades
+                 WHERE user_id = ?1 AND instrument_code = ?2
+                   AND timestamp_ms >= ?3 AND timestamp_ms <= ?4
+                 ORDER BY timestamp_ms ASC, trade_id ASC",
+            )
+            .map_err(storage)?;
+        statement
+            .query_map(
+                params![user_id, instrument_code, start_time_ms, end_time_ms],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(storage)?
+            .map(|row| {
+                let trade: MarketTrade =
+                    serde_json::from_str(&row.map_err(storage)?).map_err(storage)?;
+                if trade.src != "okx"
+                    || trade.code != instrument_code
+                    || trade.trade_id.trim().is_empty()
+                    || trade.timestamp_ms < start_time_ms
+                    || trade.timestamp_ms > end_time_ms
+                    || trade.price <= Decimal::ZERO
+                    || trade.quantity <= Decimal::ZERO
+                {
+                    return Err(PipelineError::InvalidRequest(
+                        "Retained OKX Trade range evidence is invalid".into(),
+                    ));
+                }
+                Ok(trade)
+            })
+            .collect()
+    }
+
     pub async fn stream_tickers<F>(
         &self,
         user_id: &str,
@@ -3604,6 +3653,14 @@ mod tests {
                 .trade
                 .trade_id,
             "new"
+        );
+        assert_eq!(
+            path.retained_trades_for_user("alice", "BTC-USDT", now - 1, now)
+                .unwrap()
+                .into_iter()
+                .map(|trade| trade.trade_id)
+                .collect::<Vec<_>>(),
+            vec!["new"]
         );
         assert!(
             path.retained_trade_for_user("alice", "BTC-USDT", "old")

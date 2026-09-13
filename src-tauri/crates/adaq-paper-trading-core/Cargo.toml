@@ -6,7 +6,7 @@ license = "Apache-2.0"
 description = "Host-owned paper account, order, fill, and reconciliation contracts"
 
 [dependencies]
-rust_decimal = { version = "1", features = ["serde"] }
+rust_decimal = { version = "1", features = ["serde-with-str"] }
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

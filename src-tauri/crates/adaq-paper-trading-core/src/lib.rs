@@ -133,14 +133,23 @@ impl PaperExecution {
     }
 
     pub fn approve(&self, account: &PaperLedger, side: Side, notional: Decimal) -> RiskDecision {
-        let reason = if self.blocked || self.policy.freeze_new_risk {
+        self.approve_with_policy(account, &self.policy, side, notional)
+    }
+
+    pub fn approve_with_policy(
+        &self,
+        account: &PaperLedger,
+        policy: &RiskPolicy,
+        side: Side,
+        notional: Decimal,
+    ) -> RiskDecision {
+        let reason = if self.blocked || policy.freeze_new_risk {
             "new risk is frozen"
         } else if notional <= Decimal::ZERO {
             "order notional must be positive"
-        } else if notional > self.policy.max_order_notional {
+        } else if notional > policy.max_order_notional {
             "order exceeds the Host Risk limit"
-        } else if side == Side::Buy && account.buying_power() - self.policy.reserve_cash < notional
-        {
+        } else if side == Side::Buy && account.buying_power() - policy.reserve_cash < notional {
             "order exceeds available reserved buying power"
         } else {
             "approved"
@@ -164,6 +173,30 @@ impl PaperExecution {
         limit_price: Decimal,
         now_ms: i64,
     ) -> Result<(String, RiskDecision), ExecutionError> {
+        let policy = self.policy.clone();
+        self.begin_with_policy(
+            operation_id,
+            account,
+            instrument,
+            side,
+            quantity,
+            limit_price,
+            &policy,
+            now_ms,
+        )
+    }
+
+    pub fn begin_with_policy(
+        &mut self,
+        operation_id: impl Into<String>,
+        account: &mut PaperLedger,
+        instrument: &str,
+        side: Side,
+        quantity: Decimal,
+        limit_price: Decimal,
+        policy: &RiskPolicy,
+        now_ms: i64,
+    ) -> Result<(String, RiskDecision), ExecutionError> {
         let operation_id = operation_id.into();
         if self.operations.contains_key(&operation_id) {
             return Err(ExecutionError::DuplicateOperation);
@@ -171,10 +204,13 @@ impl PaperExecution {
         if self.blocked {
             return Err(ExecutionError::ReconciliationRequired);
         }
+        if policy.max_order_notional <= Decimal::ZERO || policy.reserve_cash < Decimal::ZERO {
+            return Err(ExecutionError::InvalidRiskPolicy);
+        }
         if self.adapter != AdapterKind::OkxDemo || !instrument.contains('-') {
             return Err(ExecutionError::VenueMismatch);
         }
-        let decision = self.approve(account, side, quantity * limit_price);
+        let decision = self.approve_with_policy(account, policy, side, quantity * limit_price);
         if !decision.approved {
             return Err(ExecutionError::RiskRejected(decision));
         }
@@ -208,16 +244,19 @@ impl PaperExecution {
             .operations
             .get_mut(operation_id)
             .ok_or(ExecutionError::DuplicateOperation)?;
-        let local_order_id = match &*outcome {
+        let (local_order_id, provider_order_id) = match &*outcome {
             ExecutionOutcome::Accepted(evidence)
             | ExecutionOutcome::Rejected(evidence)
-            | ExecutionOutcome::Uncertain(evidence) => evidence.local_order_id.clone(),
+            | ExecutionOutcome::Uncertain(evidence) => (
+                evidence.local_order_id.clone(),
+                evidence.provider_order_id.clone(),
+            ),
         };
         *outcome = ExecutionOutcome::Uncertain(ProviderEvidence {
             provider: AdapterKind::OkxDemo,
             operation_id: operation_id.to_owned(),
             local_order_id,
-            provider_order_id: None,
+            provider_order_id,
             status: "unknown".to_owned(),
             error_code: Some("provider_timeout".to_owned()),
             observed_at_ms: now_ms,
@@ -243,16 +282,21 @@ impl PaperExecution {
             | ExecutionOutcome::Rejected(evidence)
             | ExecutionOutcome::Uncertain(evidence) => evidence.local_order_id.clone(),
         };
+        let status = status.into();
+        let rejected_status = matches!(
+            status.to_ascii_lowercase().as_str(),
+            "rejected" | "failed" | "error"
+        );
         let evidence = ProviderEvidence {
             provider: AdapterKind::OkxDemo,
             operation_id: operation_id.to_owned(),
             local_order_id,
             provider_order_id,
-            status: status.into(),
+            status,
             error_code,
             observed_at_ms: now_ms,
         };
-        *outcome = if evidence.error_code.is_some() {
+        *outcome = if evidence.error_code.is_some() || rejected_status {
             ExecutionOutcome::Rejected(evidence)
         } else {
             ExecutionOutcome::Accepted(evidence)
@@ -277,7 +321,11 @@ impl PaperExecution {
                 observed_at_ms: now_ms,
             }),
         );
-        self.blocked = !matches;
+        self.blocked = !matches
+            || self
+                .operations
+                .values()
+                .any(|outcome| matches!(outcome, ExecutionOutcome::Uncertain(_)));
     }
 
     pub fn record_provider_observation(
@@ -302,7 +350,11 @@ impl PaperExecution {
     }
 
     pub fn reconcile(&mut self, matches: bool) {
-        self.blocked = !matches;
+        self.blocked = !matches
+            || self
+                .operations
+                .values()
+                .any(|outcome| matches!(outcome, ExecutionOutcome::Uncertain(_)));
     }
 
     pub fn block_for_recovery(&mut self) {
@@ -449,8 +501,35 @@ pub struct Fill {
     pub quantity: Decimal,
     pub price: Decimal,
     pub fee: Decimal,
+    #[serde(default)]
+    pub fee_asset: Option<String>,
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    pub fee_quote: Option<Decimal>,
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    pub fee_amount: Option<Decimal>,
     pub evidence: FillEvidence,
     pub occurred_at_ms: i64,
+}
+
+impl Fill {
+    pub fn fee_in_base(&self, instrument: &str) -> Decimal {
+        let Some(asset) = self.fee_asset.as_deref() else {
+            return Decimal::ZERO;
+        };
+        let Some(amount) = self.fee_amount else {
+            return Decimal::ZERO;
+        };
+        let base = instrument
+            .strip_prefix("okx:")
+            .unwrap_or(instrument)
+            .split(['-', '/'])
+            .next()
+            .unwrap_or_default();
+        asset
+            .eq_ignore_ascii_case(base)
+            .then_some(amount)
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -644,7 +723,11 @@ impl PaperLedger {
     }
 
     pub fn apply_fill(&mut self, fill: Fill) -> Result<(), LedgerError> {
-        if fill.quantity <= Decimal::ZERO || fill.price <= Decimal::ZERO || fill.fee < Decimal::ZERO
+        if fill.quantity <= Decimal::ZERO
+            || fill.price <= Decimal::ZERO
+            || fill.fee < Decimal::ZERO
+            || fill.fee_quote.is_some_and(|fee| fee < Decimal::ZERO)
+            || fill.fee_amount.is_some_and(|fee| fee < Decimal::ZERO)
         {
             return Err(LedgerError::InvalidFill);
         }
@@ -665,8 +748,16 @@ impl PaperLedger {
         if order.side == Side::Sell && fill.price < order.limit_price {
             return Err(LedgerError::InvalidFill);
         }
-        let value = fill.quantity * fill.price + fill.fee;
+        let quote_fee = fill.fee_quote.unwrap_or(fill.fee);
+        let base_fee = fill.fee_in_base(&order.instrument);
+        let value = match order.side {
+            Side::Buy => fill.quantity * fill.price + quote_fee,
+            Side::Sell => fill.quantity * fill.price - quote_fee,
+        };
         if order.side == Side::Buy {
+            if base_fee >= fill.quantity {
+                return Err(LedgerError::InvalidFill);
+            }
             let reserved = (order.quantity - order.filled_quantity) * order.limit_price;
             if self.account.cash < value || self.reserved_cash < reserved {
                 return Err(LedgerError::InsufficientCash);
@@ -686,10 +777,10 @@ impl PaperLedger {
                     quantity: Decimal::ZERO,
                     sellable_quantity: Decimal::ZERO,
                 });
-            position.quantity += fill.quantity;
+            position.quantity += fill.quantity - base_fee;
             // A-share T+1: a new purchase is not sellable until reconciliation supplies eligibility.
             if self.account.market != Market::AShare {
-                position.sellable_quantity += fill.quantity;
+                position.sellable_quantity += fill.quantity - base_fee;
             }
         } else {
             let position = self
@@ -697,13 +788,14 @@ impl PaperLedger {
                 .positions
                 .get_mut(&order.instrument)
                 .ok_or(LedgerError::InsufficientPosition)?;
-            if position.sellable_quantity < fill.quantity
+            let position_debit = fill.quantity + base_fee;
+            if position.sellable_quantity < position_debit
                 || self.account.cash + value < Decimal::ZERO
             {
                 return Err(LedgerError::InsufficientPosition);
             }
-            position.quantity -= fill.quantity;
-            position.sellable_quantity -= fill.quantity;
+            position.quantity -= position_debit;
+            position.sellable_quantity -= position_debit;
             self.account.cash += value;
         }
         order.filled_quantity += fill.quantity;
@@ -805,6 +897,9 @@ mod tests {
             quantity,
             price,
             fee: Decimal::ZERO,
+            fee_asset: None,
+            fee_quote: Some(Decimal::ZERO),
+            fee_amount: None,
             evidence: FillEvidence::TradeObserved,
             occurred_at_ms: 2,
         }
@@ -838,6 +933,127 @@ mod tests {
         );
         assert_eq!(id, "order-1");
     }
+
+    #[test]
+    fn base_asset_fee_updates_quote_cash_and_position_quantity() {
+        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        ledger
+            .submit_order(
+                "alice",
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::new(2, 0),
+                Decimal::new(100, 0),
+                1,
+            )
+            .unwrap();
+        let order = ledger.orders().next().unwrap().clone();
+        ledger
+            .apply_fill(Fill {
+                fill_id: "base-fee-fill".into(),
+                order_id: order.order_id,
+                quantity: Decimal::new(2, 0),
+                price: Decimal::new(100, 0),
+                fee: Decimal::new(10, 0),
+                fee_asset: Some("BTC".into()),
+                fee_quote: Some(Decimal::new(10, 0)),
+                fee_amount: Some(Decimal::new(1, 1)),
+                evidence: FillEvidence::TradeObserved,
+                occurred_at_ms: 2,
+            })
+            .unwrap();
+        assert_eq!(ledger.account().cash, Decimal::new(999_790, 0));
+        assert_eq!(
+            ledger.account().positions["BTC-USDT"].quantity,
+            Decimal::new(19, 1)
+        );
+        assert_eq!(
+            ledger.account().positions["BTC-USDT"].sellable_quantity,
+            Decimal::new(19, 1)
+        );
+    }
+
+    #[test]
+    fn a_bot_can_use_its_frozen_policy_inside_one_account_policy() {
+        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        let mut execution = PaperExecution::okx_demo(RiskPolicy {
+            max_order_notional: Decimal::new(1_000_000, 0),
+            reserve_cash: Decimal::ZERO,
+            freeze_new_risk: false,
+        })
+        .unwrap();
+        let bot_policy = RiskPolicy {
+            max_order_notional: Decimal::new(100, 0),
+            reserve_cash: Decimal::new(10, 0),
+            freeze_new_risk: false,
+        };
+        let (_, decision) = execution
+            .begin_with_policy(
+                "bot-operation-1",
+                &mut ledger,
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::ONE,
+                Decimal::new(90, 0),
+                &bot_policy,
+                2,
+            )
+            .unwrap();
+        assert!(decision.approved);
+        assert_eq!(ledger.reserved_cash(), Decimal::new(90, 0));
+        let rejected = execution
+            .begin_with_policy(
+                "bot-operation-2",
+                &mut ledger,
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::ONE,
+                Decimal::new(101, 0),
+                &bot_policy,
+                3,
+            )
+            .unwrap_err();
+        assert!(matches!(rejected, ExecutionError::RiskRejected(_)));
+    }
+
+    #[test]
+    fn provider_rejected_status_is_not_recorded_as_accepted() {
+        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        let mut execution = PaperExecution::okx_demo(RiskPolicy {
+            max_order_notional: Decimal::new(1_000, 0),
+            reserve_cash: Decimal::ZERO,
+            freeze_new_risk: false,
+        })
+        .unwrap();
+        execution
+            .begin(
+                "operation-1",
+                &mut ledger,
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::ONE,
+                Decimal::new(100, 0),
+                1,
+            )
+            .unwrap();
+
+        execution
+            .record_provider_outcome(
+                "operation-1",
+                Some("provider-1".into()),
+                "rejected",
+                None,
+                2,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            execution.evidence().next(),
+            Some(ExecutionOutcome::Rejected(evidence))
+                if evidence.status == "rejected" && evidence.error_code.is_none()
+        ));
+    }
+
     #[test]
     fn ashare_t_plus_one_and_no_short_sales() {
         let mut l = PaperLedger::new(account(Market::AShare)).unwrap();
@@ -994,7 +1210,19 @@ mod tests {
         ));
         execution.reconcile(true);
         ledger.reconcile(ledger.account().clone()).unwrap();
-        assert!(!execution.is_blocked());
+        assert!(execution.is_blocked());
+        assert!(matches!(
+            execution.begin(
+                "op-3",
+                &mut ledger,
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::ONE,
+                Decimal::ONE,
+                5
+            ),
+            Err(ExecutionError::ReconciliationRequired)
+        ));
     }
 
     #[test]

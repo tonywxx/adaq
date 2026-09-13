@@ -4,9 +4,9 @@
 //! the fixed provider environment, checks account identity/status, native
 //! currency, permissions, provider time/clock skew, and capabilities, and
 //! records typed redacted evidence. It never submits, amends, cancels, or
-//! queries a synthetic test order: the only endpoints reached are the
-//! read-only account/clock endpoints below, and the requested paths are
-//! themselves part of the recorded evidence.
+//! queries a synthetic test order: connection validation and reconciliation
+//! use fixed provider endpoints, and every requested path is part of the
+//! Host-owned evidence boundary.
 
 use std::sync::Arc;
 
@@ -308,6 +308,19 @@ impl ConnectionTester {
     ) -> Result<serde_json::Value, TestFailure> {
         let path = format!("/api/v5/trade/order?instId={instrument}&ordId={provider_order_id}");
         self.request_okx_demo_private(credential, now_ms, "GET", &path, &serde_json::Value::Null)
+    }
+
+    pub(crate) fn fetch_okx_demo_order_fills(
+        &self,
+        credential: &TestCredential,
+        instrument: &str,
+        provider_order_id: &str,
+        now_ms: i64,
+    ) -> Result<Vec<serde_json::Value>, TestFailure> {
+        let path = format!(
+            "/api/v5/trade/fills?instType=SPOT&instId={instrument}&ordId={provider_order_id}"
+        );
+        Ok(self.fetch_okx_demo_private(credential, now_ms, &path)?.data)
     }
 
     fn fetch_okx_demo_private<T: serde::de::DeserializeOwned>(

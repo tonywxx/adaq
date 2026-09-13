@@ -21,7 +21,9 @@ use adaq_data_core::alpaca::{AlpacaClient, AlpacaCredentials};
 use adaq_trading_crypto::{Config as TradingConfig, adapters::okx::Okx};
 use rand::RngCore;
 use rusqlite::{Connection, OptionalExtension, params};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[cfg(not(feature = "local-env-credentials"))]
 use secret_store::KeyringSecretStore;
@@ -515,6 +517,23 @@ impl ConnectionManager {
         Ok(self.okx_demo_client(&credential)?.parse_order(&raw))
     }
 
+    pub(crate) fn fetch_okx_demo_order_fills(
+        &self,
+        user_id: &str,
+        instrument: &str,
+        provider_order_id: &str,
+        now_ms: i64,
+    ) -> Result<Vec<adaq_trading_crypto::Trade>, String> {
+        let credential = self.okx_demo_credential(user_id)?;
+        let raw = self
+            .tester
+            .fetch_okx_demo_order_fills(&credential, instrument, provider_order_id, now_ms)
+            .map_err(|failure| failure.redacted_message)?;
+        raw.into_iter()
+            .map(|fill| parse_okx_demo_trade(instrument, fill))
+            .collect()
+    }
+
     pub(crate) fn with_okx_demo_reconciliation<T>(
         &self,
         user_id: &str,
@@ -921,6 +940,77 @@ impl ProfileStatus {
             _ => None,
         }
     }
+}
+
+fn parse_okx_demo_trade(
+    instrument: &str,
+    raw: Value,
+) -> Result<adaq_trading_crypto::Trade, String> {
+    let id = raw_string(&raw, &["tradeId", "billId"])
+        .ok_or_else(|| "OKX returned a fill without a stable trade id.".to_owned())?;
+    let amount = raw_decimal(&raw, &["fillSz", "sz"])
+        .ok_or_else(|| "OKX returned a fill without an exact quantity.".to_owned())?;
+    let price = raw_decimal(&raw, &["fillPx", "px"])
+        .ok_or_else(|| "OKX returned a fill without an exact price.".to_owned())?;
+    let fee = match (
+        raw_decimal(&raw, &["fee", "fillFee"]),
+        raw_string(&raw, &["feeCcy", "fillFeeCcy"]),
+    ) {
+        (Some(cost), Some(currency)) => Some(adaq_trading_crypto::Fee {
+            currency: Some(currency),
+            cost: Some(cost),
+            rate: None,
+        }),
+        _ => None,
+    };
+    Ok(adaq_trading_crypto::Trade {
+        id: Some(id),
+        info: raw.clone(),
+        order: raw_string(&raw, &["ordId"]),
+        timestamp: raw_i64(&raw, &["fillTime", "ts"]),
+        symbol: Some(
+            raw_string(&raw, &["instId"])
+                .unwrap_or_else(|| instrument.to_owned())
+                .replace('-', "/"),
+        ),
+        trade_type: raw_string(&raw, &["execType"]),
+        side: raw_string(&raw, &["side"]),
+        taker_or_maker: raw_string(&raw, &["execType"]),
+        price: Some(price),
+        amount: Some(amount),
+        cost: Some(amount * price),
+        fee,
+        ..Default::default()
+    })
+}
+
+fn raw_string(raw: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        raw.get(*key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn raw_decimal(raw: &Value, keys: &[&str]) -> Option<Decimal> {
+    keys.iter().find_map(|key| {
+        raw.get(*key).and_then(|value| match value {
+            Value::String(value) => value.parse().ok(),
+            Value::Number(value) => value.to_string().parse().ok(),
+            _ => None,
+        })
+    })
+}
+
+fn raw_i64(raw: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|key| {
+        raw.get(*key).and_then(|value| match value {
+            Value::String(value) => value.parse().ok(),
+            Value::Number(value) => value.as_i64().or_else(|| value.to_string().parse().ok()),
+            _ => None,
+        })
+    })
 }
 
 fn validate_user_id(user_id: &str) -> Result<(), String> {

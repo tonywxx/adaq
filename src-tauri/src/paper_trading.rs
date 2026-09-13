@@ -18,6 +18,7 @@ const DEFAULT_MAX_ORDER_NOTIONAL: Decimal = Decimal::from_parts(100_000, 0, 0, f
 pub(crate) struct PaperTradingStore {
     database: Arc<Mutex<Connection>>,
     restarted_users: Arc<Mutex<HashSet<String>>>,
+    order_gate: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,6 +38,7 @@ pub(crate) struct PaperAccountView {
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderOpenOrder {
     pub local_order_ids: Vec<String>,
+    pub operation_ids: Vec<String>,
     pub provider_order_id: Option<String>,
     pub instrument: String,
 }
@@ -144,6 +146,7 @@ impl PaperTradingStore {
         Ok(Self {
             database,
             restarted_users: Arc::new(Mutex::new(restarted_users)),
+            order_gate: Arc::new(Mutex::new(())),
         })
     }
 
@@ -204,6 +207,11 @@ impl PaperTradingStore {
         expected_policy: Option<&RiskPolicy>,
         now_ms: i64,
     ) -> Result<PaperAccountView, String> {
+        // ponytail: one process-wide gate keeps this low-volume shared account exact; split by account if throughput becomes material.
+        let _order_gate = self
+            .order_gate
+            .lock()
+            .map_err(|error| format!("paper order lock failed: {error}"))?;
         let mut ledger;
         let mut execution;
         match self.load(&request.user_id) {
@@ -213,23 +221,22 @@ impl PaperTradingStore {
             }
             Err(_) => return Err("The OKX Demo account must be reconciled before ordering.".into()),
         }
-        if expected_policy.is_some_and(|policy| execution.policy() != policy) {
-            return Err(
-                "The frozen Bot Paper Risk Policy does not match the account policy.".into(),
-            );
-        }
+        let policy = expected_policy
+            .cloned()
+            .unwrap_or_else(|| execution.policy().clone());
         let side = match request.side.as_str() {
             "buy" | "Buy" => Side::Buy,
             "sell" | "Sell" => Side::Sell,
             _ => return Err("side must be buy or sell".into()),
         };
-        let decision = match execution.begin(
+        let decision = match execution.begin_with_policy(
             request.operation_id.clone(),
             &mut ledger,
             &request.instrument,
             side,
             request.quantity,
             request.limit_price,
+            &policy,
             now_ms,
         ) {
             Ok((_, decision)) => decision,
@@ -312,33 +319,37 @@ impl PaperTradingStore {
                 order.status,
                 OrderStatus::Accepted | OrderStatus::PartiallyFilled
             ) && instrument_scope.contains(&order.instrument)
-                && order.order_id.starts_with(operation_prefix)
         }) {
+            let bot_evidence = execution.evidence().find_map(|outcome| {
+                let evidence = match outcome {
+                    ExecutionOutcome::Accepted(evidence)
+                    | ExecutionOutcome::Rejected(evidence)
+                    | ExecutionOutcome::Uncertain(evidence) => evidence,
+                };
+                (evidence.operation_id.starts_with(operation_prefix)
+                    && evidence.local_order_id.as_deref() == Some(order.order_id.as_str()))
+                .then_some(evidence)
+            });
+            let Some(bot_evidence) = bot_evidence else {
+                continue;
+            };
+            let operation_id = bot_evidence.operation_id.clone();
             let provider_order_id = order
                 .order_id
                 .strip_prefix("provider-order-")
                 .filter(|id| !id.is_empty())
                 .map(str::to_owned)
-                .or_else(|| {
-                    execution.evidence().find_map(|outcome| {
-                        let evidence = match outcome {
-                            ExecutionOutcome::Accepted(evidence)
-                            | ExecutionOutcome::Rejected(evidence)
-                            | ExecutionOutcome::Uncertain(evidence) => evidence,
-                        };
-                        (evidence.local_order_id.as_deref() == Some(order.order_id.as_str()))
-                            .then(|| evidence.provider_order_id.clone())
-                            .flatten()
-                    })
-                });
+                .or_else(|| bot_evidence.provider_order_id.clone());
             if let Some(provider_order_id) = provider_order_id {
                 if let Some(index) = orders.iter().position(|existing| {
                     existing.provider_order_id.as_deref() == Some(provider_order_id.as_str())
                 }) {
                     orders[index].local_order_ids.push(order.order_id.clone());
+                    orders[index].operation_ids.push(operation_id);
                 } else {
                     orders.push(ProviderOpenOrder {
                         local_order_ids: vec![order.order_id.clone()],
+                        operation_ids: vec![operation_id],
                         provider_order_id: Some(provider_order_id),
                         instrument: order.instrument.clone(),
                     });
@@ -346,26 +357,13 @@ impl PaperTradingStore {
             } else {
                 orders.push(ProviderOpenOrder {
                     local_order_ids: vec![order.order_id.clone()],
+                    operation_ids: vec![operation_id],
                     provider_order_id: None,
                     instrument: order.instrument.clone(),
                 });
             }
         }
         Ok(orders)
-    }
-
-    pub(crate) fn cancel_provider_order(
-        &self,
-        user_id: &str,
-        local_order_id: &str,
-        now_ms: i64,
-    ) -> Result<PaperAccountView, String> {
-        let (mut ledger, execution) = self.load(user_id)?;
-        ledger
-            .cancel_order(local_order_id)
-            .map_err(|error| error.to_string())?;
-        self.save(user_id, &ledger, &execution, now_ms)?;
-        self.view(user_id)
     }
 
     pub(crate) fn mark_provider_order_uncertain(
@@ -391,6 +389,44 @@ impl PaperTradingStore {
             .map_err(|error| error.to_string())?;
         self.save(user_id, &ledger, &execution, now_ms)?;
         self.view(user_id)
+    }
+
+    fn provider_sync_failure(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+        provider_order_id: Option<&str>,
+        now_ms: i64,
+        error: String,
+    ) -> String {
+        let retained = match provider_order_id {
+            Some(provider_order_id) => self
+                .mark_provider_order_uncertain(user_id, provider_order_id, now_ms)
+                .map(|_| ()),
+            None => self
+                .mark_uncertain(user_id, operation_id, now_ms)
+                .map(|_| ()),
+        };
+        match retained {
+            Ok(()) => error,
+            Err(mark_error) => {
+                format!("{error}; provider sync uncertainty was not retained: {mark_error}")
+            }
+        }
+    }
+
+    fn reconciliation_failure(
+        &self,
+        user_id: &str,
+        ledger: &mut PaperLedger,
+        execution: &mut PaperExecution,
+        now_ms: i64,
+        error: String,
+    ) -> Result<PaperAccountView, String> {
+        ledger.require_reconciliation();
+        execution.block_for_recovery();
+        self.save(user_id, ledger, execution, now_ms)?;
+        Err(error)
     }
 
     pub(crate) fn require_reconciliation(
@@ -459,35 +495,313 @@ impl PaperTradingStore {
         remote: &adaq_trading_crypto::Order,
         now_ms: i64,
     ) -> Result<PaperAccountView, String> {
-        let (mut ledger, execution) = self.load(user_id)?;
+        let trades = remote.trades.as_deref().unwrap_or(&[]);
+        self.sync_provider_order_with_trades(user_id, operation_id, remote, trades, now_ms)
+    }
+
+    pub(crate) fn sync_provider_order_with_trades(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+        remote: &adaq_trading_crypto::Order,
+        trades: &[adaq_trading_crypto::Trade],
+        now_ms: i64,
+    ) -> Result<PaperAccountView, String> {
+        let (mut ledger, mut execution) = self.load(user_id)?;
         let local_order_id = execution
             .local_order_id(operation_id)
             .ok_or_else(|| "The execution operation has no local order.".to_owned())?;
+        let provider_order_id = remote
+            .id
+            .clone()
+            .or_else(|| execution.provider_order_id(operation_id));
         let local = ledger
             .orders()
             .find(|order| order.order_id == local_order_id)
             .ok_or_else(|| "The local order is missing.".to_owned())?
             .clone();
-        let delta = remote.filled.unwrap_or_default() - local.filled_quantity;
-        if delta > Decimal::ZERO {
-            ledger
-                .apply_fill(Fill {
-                    fill_id: format!(
-                        "provider-{}-{}",
+        let remote_filled = match remote.filled {
+            Some(filled) => filled,
+            None => {
+                return Err(self.provider_sync_failure(
+                    user_id,
+                    operation_id,
+                    provider_order_id.as_deref(),
+                    now_ms,
+                    "Provider order has no exact filled quantity; reconciliation is required."
+                        .into(),
+                ));
+            }
+        };
+        let delta = match remote_filled.checked_sub(local.filled_quantity) {
+            Some(delta) => delta,
+            None => {
+                return Err(self.provider_sync_failure(
+                    user_id,
+                    operation_id,
+                    provider_order_id.as_deref(),
+                    now_ms,
+                    "Provider order filled quantity could not be compared exactly; reconciliation is required."
+                        .into(),
+                ));
+            }
+        };
+        if delta < Decimal::ZERO {
+            ledger.require_reconciliation();
+            execution.block_for_recovery();
+            self.save(user_id, &ledger, &execution, now_ms)?;
+            return Err(
+                "Provider order filled quantity regressed; reconciliation is required.".into(),
+            );
+        }
+        if delta > Decimal::ZERO && trades.is_empty() {
+            ledger.require_reconciliation();
+            execution.block_for_recovery();
+            self.save(user_id, &ledger, &execution, now_ms)?;
+            return Err(
+                "Provider order reports new fills without per-trade evidence; reconciliation is required."
+                    .into(),
+            );
+        }
+        let mut applied = Decimal::ZERO;
+        for trade in trades {
+            if provider_order_id.as_deref() != trade.order.as_deref() {
+                return Err(self.provider_sync_failure(
+                    user_id,
+                    operation_id,
+                    provider_order_id.as_deref(),
+                    now_ms,
+                    "Provider fill has no exact matching order identity.".into(),
+                ));
+            }
+            let quantity = match trade.amount {
+                Some(quantity) => quantity,
+                None => {
+                    return Err(self.provider_sync_failure(
+                        user_id,
                         operation_id,
-                        remote.filled.unwrap_or_default()
-                    ),
-                    order_id: local_order_id,
-                    quantity: delta,
-                    price: remote.average.or(remote.price).unwrap_or(local.limit_price),
-                    fee: Decimal::ZERO,
-                    evidence: FillEvidence::TradeObserved,
-                    occurred_at_ms: remote.timestamp.unwrap_or(now_ms),
-                })
-                .map_err(|error| error.to_string())?;
+                        provider_order_id.as_deref(),
+                        now_ms,
+                        "Provider fill has no exact quantity.".into(),
+                    ));
+                }
+            };
+            let price = match trade.price {
+                Some(price) => price,
+                None => {
+                    return Err(self.provider_sync_failure(
+                        user_id,
+                        operation_id,
+                        provider_order_id.as_deref(),
+                        now_ms,
+                        "Provider fill has no exact price.".into(),
+                    ));
+                }
+            };
+            if quantity <= Decimal::ZERO || price <= Decimal::ZERO {
+                return Err(self.provider_sync_failure(
+                    user_id,
+                    operation_id,
+                    provider_order_id.as_deref(),
+                    now_ms,
+                    "Provider fill has invalid quantity or price.".into(),
+                ));
+            }
+            let trade_id = match trade.id.as_deref() {
+                Some(trade_id) => trade_id,
+                None => {
+                    return Err(self.provider_sync_failure(
+                        user_id,
+                        operation_id,
+                        provider_order_id.as_deref(),
+                        now_ms,
+                        "Provider fill has no stable trade id.".into(),
+                    ));
+                }
+            };
+            let fill_id = format!("provider-{operation_id}-trade-{trade_id}");
+            let (fee, fee_asset, fee_quote, fee_amount) = Self::provider_fee_quote(
+                remote.symbol.as_deref().or(trade.symbol.as_deref()),
+                price,
+                trade.fee.as_ref(),
+            );
+            if fee_amount.is_some() && fee_quote.is_none() {
+                return Err(self.provider_sync_failure(
+                    user_id,
+                    operation_id,
+                    provider_order_id.as_deref(),
+                    now_ms,
+                    "Provider fee has no exact USDT valuation; reconciliation is required.".into(),
+                ));
+            }
+            if let Some(existing) = ledger.fills().iter().find(|fill| fill.fill_id == fill_id) {
+                if existing.order_id.as_str() != local_order_id.as_str()
+                    || existing.quantity != quantity
+                    || existing.price != price
+                    || existing.fee != fee
+                    || existing.fee_asset != fee_asset
+                    || existing.fee_quote != fee_quote
+                    || existing.fee_amount != fee_amount
+                {
+                    return Err(self.provider_sync_failure(
+                        user_id,
+                        operation_id,
+                        provider_order_id.as_deref(),
+                        now_ms,
+                        "Provider fill evidence changed for an existing trade; reconciliation is required."
+                            .into(),
+                    ));
+                }
+                continue;
+            }
+            if delta == Decimal::ZERO {
+                return Err(self.provider_sync_failure(
+                    user_id,
+                    operation_id,
+                    provider_order_id.as_deref(),
+                    now_ms,
+                    "Provider reports a new fill without a filled quantity increase; reconciliation is required."
+                        .into(),
+                ));
+            }
+            let next_applied = match applied.checked_add(quantity) {
+                Some(next_applied) => next_applied,
+                None => {
+                    return Err(self.provider_sync_failure(
+                        user_id,
+                        operation_id,
+                        provider_order_id.as_deref(),
+                        now_ms,
+                        "Provider fill quantities could not be summed exactly; reconciliation is required."
+                            .into(),
+                    ));
+                }
+            };
+            if next_applied > delta {
+                return Err(self.provider_sync_failure(
+                    user_id,
+                    operation_id,
+                    provider_order_id.as_deref(),
+                    now_ms,
+                    "Provider fills exceed the order's newly reported quantity.".into(),
+                ));
+            }
+            if let Err(error) = ledger.apply_fill(Fill {
+                fill_id,
+                order_id: local_order_id.clone(),
+                quantity,
+                price,
+                fee,
+                fee_asset,
+                fee_quote,
+                fee_amount,
+                evidence: FillEvidence::TradeObserved,
+                occurred_at_ms: trade.timestamp.or(remote.timestamp).unwrap_or(now_ms),
+            }) {
+                return Err(self.provider_sync_failure(
+                    user_id,
+                    operation_id,
+                    provider_order_id.as_deref(),
+                    now_ms,
+                    error.to_string(),
+                ));
+            }
+            applied = next_applied;
+        }
+        if delta > Decimal::ZERO {
+            let remaining = match delta.checked_sub(applied) {
+                Some(remaining) => remaining,
+                None => {
+                    return Err(self.provider_sync_failure(
+                        user_id,
+                        operation_id,
+                        provider_order_id.as_deref(),
+                        now_ms,
+                        "Provider fill quantities could not be reconciled exactly; reconciliation is required."
+                            .into(),
+                    ));
+                }
+            };
+            if remaining > Decimal::ZERO {
+                ledger.require_reconciliation();
+                execution.block_for_recovery();
+                self.save(user_id, &ledger, &execution, now_ms)?;
+                return Err(
+                    "Provider order reports more fills than the retained per-trade evidence; reconciliation is required."
+                        .into(),
+                );
+            }
+        }
+        let remote_status = remote
+            .status
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if matches!(
+            remote_status.as_str(),
+            "canceled" | "cancelled" | "expired" | "rejected"
+        ) && ledger
+            .orders()
+            .find(|order| order.order_id == local_order_id)
+            .is_some_and(|order| {
+                matches!(
+                    order.status,
+                    OrderStatus::Accepted | OrderStatus::PartiallyFilled
+                )
+            })
+        {
+            if let Err(error) = ledger.cancel_order(&local_order_id) {
+                return Err(self.provider_sync_failure(
+                    user_id,
+                    operation_id,
+                    provider_order_id.as_deref(),
+                    now_ms,
+                    error.to_string(),
+                ));
+            }
         }
         self.save(user_id, &ledger, &execution, now_ms)?;
         self.view(user_id)
+    }
+
+    fn provider_fee_quote(
+        symbol: Option<&str>,
+        price: Decimal,
+        provider_fee: Option<&adaq_trading_crypto::Fee>,
+    ) -> (Decimal, Option<String>, Option<Decimal>, Option<Decimal>) {
+        let Some(provider_fee) = provider_fee else {
+            return (Decimal::ZERO, None, None, None);
+        };
+        let asset = provider_fee.currency.clone();
+        let Some(raw_amount) = provider_fee.cost else {
+            return (Decimal::ZERO, asset, None, None);
+        };
+        let amount = if raw_amount < Decimal::ZERO {
+            -raw_amount
+        } else {
+            raw_amount
+        };
+        let quote = symbol
+            .and_then(|symbol| symbol.split(['-', '/']).nth(1))
+            .map(str::to_owned);
+        let base = symbol
+            .and_then(|symbol| symbol.split(['-', '/']).next())
+            .map(str::to_owned);
+        let quote_fee = if amount.is_zero() {
+            Some(Decimal::ZERO)
+        } else {
+            match (asset.as_deref(), quote.as_deref(), base.as_deref()) {
+                (Some(asset), Some(quote), _) if asset.eq_ignore_ascii_case(quote) => Some(amount),
+                (Some(asset), _, Some(base)) if asset.eq_ignore_ascii_case(base) => {
+                    amount.checked_mul(price)
+                }
+                _ => None,
+            }
+        };
+        match quote_fee {
+            Some(quote_fee) => (quote_fee, asset, Some(quote_fee), Some(amount)),
+            None => (Decimal::ZERO, asset, None, Some(amount)),
+        }
     }
 
     fn record_open_orders(
@@ -497,27 +811,74 @@ impl PaperTradingStore {
         now_ms: i64,
     ) -> Result<PaperAccountView, String> {
         let (mut ledger, mut execution) = self.load(user_id)?;
-        let active_order_ids = orders
-            .iter()
-            .filter_map(|order| order.id.as_ref())
-            .map(|provider_order_id| format!("provider-order-{provider_order_id}"))
-            .collect::<Vec<_>>();
+        let mut active_order_ids = Vec::new();
         for (index, order) in orders.iter().enumerate() {
-            if let Some(provider_order_id) = &order.id {
-                if let Some(local_order) =
-                    Self::provider_order_to_local(ledger.account_id(), order, now_ms)?
-                {
-                    ledger
-                        .upsert_provider_order(local_order)
-                        .map_err(|error| error.to_string())?;
-                }
-                execution.record_provider_observation(
-                    format!("reconcile-order-{now_ms}-{index}"),
-                    provider_order_id.clone(),
-                    order.status.as_deref().unwrap_or("unknown").to_owned(),
+            let Some(provider_order_id) = &order.id else {
+                return self.reconciliation_failure(
+                    user_id,
+                    &mut ledger,
+                    &mut execution,
                     now_ms,
+                    "OKX Demo returned an open order without a provider identity.".into(),
+                );
+            };
+            active_order_ids.push(format!("provider-order-{provider_order_id}"));
+            if let Err(error) = Self::provider_order_quantities(order) {
+                return self.reconciliation_failure(
+                    user_id,
+                    &mut ledger,
+                    &mut execution,
+                    now_ms,
+                    error,
                 );
             }
+            let mapped_local_order_ids = execution
+                .evidence()
+                .filter_map(|outcome| {
+                    let evidence = match outcome {
+                        ExecutionOutcome::Accepted(evidence)
+                        | ExecutionOutcome::Rejected(evidence)
+                        | ExecutionOutcome::Uncertain(evidence) => evidence,
+                    };
+                    (evidence.provider_order_id.as_deref() == Some(provider_order_id.as_str()))
+                        .then(|| evidence.local_order_id.clone())
+                        .flatten()
+                })
+                .collect::<Vec<_>>();
+            if mapped_local_order_ids.is_empty() {
+                let local_order =
+                    match Self::provider_order_to_local(ledger.account_id(), order, now_ms) {
+                        Ok(local_order) => local_order,
+                        Err(error) => {
+                            return self.reconciliation_failure(
+                                user_id,
+                                &mut ledger,
+                                &mut execution,
+                                now_ms,
+                                error,
+                            );
+                        }
+                    };
+                if let Some(local_order) = local_order
+                    && let Err(error) = ledger.upsert_provider_order(local_order)
+                {
+                    return self.reconciliation_failure(
+                        user_id,
+                        &mut ledger,
+                        &mut execution,
+                        now_ms,
+                        error.to_string(),
+                    );
+                }
+            } else {
+                active_order_ids.extend(mapped_local_order_ids);
+            }
+            execution.record_provider_observation(
+                format!("reconcile-order-{now_ms}-{index}"),
+                provider_order_id.clone(),
+                order.status.as_deref().unwrap_or("unknown").to_owned(),
+                now_ms,
+            );
         }
         ledger.cancel_missing_provider_orders(&active_order_ids);
         self.save(user_id, &ledger, &execution, now_ms)?;
@@ -548,14 +909,7 @@ impl PaperTradingStore {
             Some("sell") => Side::Sell,
             _ => return Err("OKX Demo returned an open order with an invalid side.".to_owned()),
         };
-        let quantity = order
-            .amount
-            .or_else(|| match (order.filled, order.remaining) {
-                (Some(filled), Some(remaining)) => Some(filled + remaining),
-                _ => None,
-            })
-            .ok_or_else(|| "OKX Demo returned an open order without a quantity.".to_owned())?;
-        let filled_quantity = order.filled.unwrap_or_default();
+        let (quantity, filled_quantity) = Self::provider_order_quantities(order)?;
         let limit_price = order
             .price
             .or(order.average)
@@ -563,7 +917,7 @@ impl PaperTradingStore {
                 order
                     .cost
                     .filter(|_| quantity > Decimal::ZERO)
-                    .map(|cost| cost / quantity)
+                    .and_then(|cost| cost.checked_div(quantity))
             })
             .ok_or_else(|| "OKX Demo returned an open order without a price.".to_owned())?;
         let status = match order
@@ -599,6 +953,34 @@ impl PaperTradingStore {
             status,
             submitted_at_ms: order.timestamp.unwrap_or(now_ms),
         }))
+    }
+
+    fn provider_order_quantities(
+        order: &adaq_trading_crypto::Order,
+    ) -> Result<(Decimal, Decimal), String> {
+        let quantity = order
+            .amount
+            .or_else(|| match (order.filled, order.remaining) {
+                (Some(filled), Some(remaining)) => filled.checked_add(remaining),
+                _ => None,
+            })
+            .ok_or_else(|| "OKX Demo returned an open order without a quantity.".to_owned())?;
+        let filled_quantity = order
+            .filled
+            .or_else(|| match (order.amount, order.remaining) {
+                (Some(amount), Some(remaining)) => amount.checked_sub(remaining),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                "OKX Demo returned an open order without an exact filled quantity.".to_owned()
+            })?;
+        if quantity <= Decimal::ZERO
+            || filled_quantity < Decimal::ZERO
+            || filled_quantity > quantity
+        {
+            return Err("OKX Demo returned an open order with invalid quantities.".into());
+        }
+        Ok((quantity, filled_quantity))
     }
 
     pub(crate) fn reconcile(
@@ -751,7 +1133,7 @@ impl PaperTradingStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn account() -> AccountSnapshot {
         AccountSnapshot {
@@ -791,12 +1173,39 @@ mod tests {
         let view = restarted.view("alice").unwrap();
         assert_eq!(view.reconciliation, ReconciliationState::Required);
         assert_eq!(view.reserved_cash, Decimal::new(100, 0));
-        assert!(view.restart_required);
         assert_eq!(view.risk_decisions.len(), 1);
         restarted.reconcile("alice", account(), 3).unwrap();
         let reconciled = restarted.view("alice").unwrap();
         assert_eq!(reconciled.reconciliation, ReconciliationState::Reconciled);
         assert!(!reconciled.restart_required);
+    }
+
+    #[test]
+    fn insufficient_funds_reject_order_without_reservation() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        let mut snapshot = account();
+        snapshot.cash = Decimal::new(100, 0);
+        store.create_account("alice", snapshot, 1).unwrap();
+
+        let result = store.begin_order(
+            &PaperOrderRequest {
+                user_id: "alice".into(),
+                operation_id: "op-insufficient-funds".into(),
+                instrument: "BTC-USDT".into(),
+                side: "buy".into(),
+                quantity: Decimal::new(2, 0),
+                limit_price: Decimal::new(100, 0),
+            },
+            2,
+        );
+        assert!(result.is_err());
+
+        let view = store.view("alice").unwrap();
+        assert_eq!(view.orders.len(), 0);
+        assert_eq!(view.reserved_cash, Decimal::ZERO);
+        assert_eq!(view.risk_decisions.len(), 1);
+        assert!(!view.risk_decisions[0].approved);
     }
 
     #[test]
@@ -820,26 +1229,427 @@ mod tests {
         store
             .record_order_result("alice", "op-1", Some("remote-1".into()), "open", None, 3)
             .unwrap();
+        assert!(
+            store
+                .sync_provider_order(
+                    "alice",
+                    "op-1",
+                    &adaq_trading_crypto::Order {
+                        id: Some("remote-1".into()),
+                        filled: Some(Decimal::new(4, 0)),
+                        average: Some(Decimal::new(99, 0)),
+                        timestamp: Some(4),
+                        ..Default::default()
+                    },
+                    4,
+                )
+                .is_err()
+        );
+        let view = store.view("alice").unwrap();
+        assert!(view.fills.is_empty());
+        assert_eq!(
+            view.reconciliation,
+            adaq_paper_trading_core::ReconciliationState::Required
+        );
+        assert_eq!(
+            view.orders[0].status,
+            adaq_paper_trading_core::OrderStatus::Accepted
+        );
+    }
+
+    #[test]
+    fn provider_terminal_cancel_releases_local_reservation() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        store
+            .begin_order(
+                &PaperOrderRequest {
+                    user_id: "alice".into(),
+                    operation_id: "op-cancel".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: "buy".into(),
+                    quantity: Decimal::new(2, 0),
+                    limit_price: Decimal::new(100, 0),
+                },
+                2,
+            )
+            .unwrap();
+        store
+            .record_order_result(
+                "alice",
+                "op-cancel",
+                Some("remote-cancel".into()),
+                "open",
+                None,
+                3,
+            )
+            .unwrap();
+
         store
             .sync_provider_order(
                 "alice",
-                "op-1",
+                "op-cancel",
                 &adaq_trading_crypto::Order {
-                    id: Some("remote-1".into()),
-                    filled: Some(Decimal::new(4, 0)),
-                    average: Some(Decimal::new(99, 0)),
-                    timestamp: Some(4),
+                    id: Some("remote-cancel".into()),
+                    status: Some("canceled".into()),
+                    filled: Some(Decimal::ZERO),
                     ..Default::default()
                 },
                 4,
             )
             .unwrap();
+
         let view = store.view("alice").unwrap();
-        assert_eq!(view.fills.len(), 1);
-        assert_eq!(
-            view.orders[0].status,
-            adaq_paper_trading_core::OrderStatus::PartiallyFilled
+        assert_eq!(view.reserved_cash, Decimal::ZERO);
+        assert_eq!(view.orders[0].status, OrderStatus::Cancelled);
+    }
+
+    #[test]
+    fn provider_missing_filled_quantity_blocks_until_reconciled() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        store
+            .begin_order(
+                &PaperOrderRequest {
+                    user_id: "alice".into(),
+                    operation_id: "op-missing-filled".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: "buy".into(),
+                    quantity: Decimal::new(2, 0),
+                    limit_price: Decimal::new(100, 0),
+                },
+                2,
+            )
+            .unwrap();
+        store
+            .record_order_result(
+                "alice",
+                "op-missing-filled",
+                Some("remote-missing-filled".into()),
+                "open",
+                None,
+                3,
+            )
+            .unwrap();
+
+        assert!(
+            store
+                .sync_provider_order(
+                    "alice",
+                    "op-missing-filled",
+                    &adaq_trading_crypto::Order {
+                        id: Some("remote-missing-filled".into()),
+                        status: Some("canceled".into()),
+                        ..Default::default()
+                    },
+                    4,
+                )
+                .is_err()
         );
+
+        let view = store.view("alice").unwrap();
+        assert_eq!(view.reconciliation, ReconciliationState::Required);
+        assert!(view.provider_evidence.iter().any(|outcome| matches!(
+            outcome,
+            ExecutionOutcome::Uncertain(evidence)
+                if evidence.provider_order_id.as_deref() == Some("remote-missing-filled")
+        )));
+        assert_eq!(view.orders[0].status, OrderStatus::Accepted);
+    }
+
+    #[test]
+    fn provider_fill_regression_blocks_until_reconciled() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        store
+            .begin_order(
+                &PaperOrderRequest {
+                    user_id: "alice".into(),
+                    operation_id: "op-regression".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: "buy".into(),
+                    quantity: Decimal::new(2, 0),
+                    limit_price: Decimal::new(100, 0),
+                },
+                2,
+            )
+            .unwrap();
+        store
+            .record_order_result(
+                "alice",
+                "op-regression",
+                Some("remote-regression".into()),
+                "open",
+                None,
+                3,
+            )
+            .unwrap();
+        store
+            .sync_provider_order_with_trades(
+                "alice",
+                "op-regression",
+                &adaq_trading_crypto::Order {
+                    id: Some("remote-regression".into()),
+                    symbol: Some("BTC/USDT".into()),
+                    filled: Some(Decimal::ONE),
+                    ..Default::default()
+                },
+                &[adaq_trading_crypto::Trade {
+                    id: Some("trade-regression".into()),
+                    order: Some("remote-regression".into()),
+                    symbol: Some("BTC/USDT".into()),
+                    amount: Some(Decimal::ONE),
+                    price: Some(Decimal::new(100, 0)),
+                    ..Default::default()
+                }],
+                4,
+            )
+            .unwrap();
+
+        assert!(
+            store
+                .sync_provider_order(
+                    "alice",
+                    "op-regression",
+                    &adaq_trading_crypto::Order {
+                        id: Some("remote-regression".into()),
+                        filled: Some(Decimal::ZERO),
+                        ..Default::default()
+                    },
+                    5,
+                )
+                .is_err()
+        );
+        let view = store.view("alice").unwrap();
+        assert_eq!(
+            view.reconciliation,
+            adaq_paper_trading_core::ReconciliationState::Required
+        );
+    }
+
+    #[test]
+    fn provider_fill_validation_failure_is_retained_as_uncertain() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        store
+            .begin_order(
+                &PaperOrderRequest {
+                    user_id: "alice".into(),
+                    operation_id: "op-mismatch".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: "buy".into(),
+                    quantity: Decimal::new(2, 0),
+                    limit_price: Decimal::new(100, 0),
+                },
+                2,
+            )
+            .unwrap();
+        store
+            .record_order_result(
+                "alice",
+                "op-mismatch",
+                Some("remote-mismatch".into()),
+                "open",
+                None,
+                3,
+            )
+            .unwrap();
+
+        assert!(
+            store
+                .sync_provider_order_with_trades(
+                    "alice",
+                    "op-mismatch",
+                    &adaq_trading_crypto::Order {
+                        id: Some("remote-mismatch".into()),
+                        symbol: Some("BTC/USDT".into()),
+                        filled: Some(Decimal::ONE),
+                        ..Default::default()
+                    },
+                    &[adaq_trading_crypto::Trade {
+                        id: Some("trade-mismatch".into()),
+                        order: Some("different-order".into()),
+                        amount: Some(Decimal::ONE),
+                        price: Some(Decimal::new(100, 0)),
+                        ..Default::default()
+                    }],
+                    4,
+                )
+                .is_err()
+        );
+
+        let view = store.view("alice").unwrap();
+        assert_eq!(
+            view.reconciliation,
+            adaq_paper_trading_core::ReconciliationState::Required
+        );
+        assert!(view.provider_evidence.iter().any(|outcome| matches!(
+            outcome,
+            ExecutionOutcome::Uncertain(evidence)
+                if evidence.provider_order_id.as_deref() == Some("remote-mismatch")
+        )));
+    }
+
+    #[test]
+    fn bot_provider_order_mapping_preserves_local_order_identity() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        store
+            .begin_order(
+                &PaperOrderRequest {
+                    user_id: "alice".into(),
+                    operation_id: "bot-bot-a-order-1".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: "buy".into(),
+                    quantity: Decimal::ONE,
+                    limit_price: Decimal::new(100, 0),
+                },
+                2,
+            )
+            .unwrap();
+        store
+            .record_order_result(
+                "alice",
+                "bot-bot-a-order-1",
+                Some("remote-1".into()),
+                "open",
+                None,
+                3,
+            )
+            .unwrap();
+
+        let scope = BTreeSet::from(["BTC-USDT".to_owned()]);
+        let open = store
+            .provider_open_orders_for("alice", &scope, "bot-bot-a-")
+            .unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].provider_order_id.as_deref(), Some("remote-1"));
+        assert_eq!(open[0].local_order_ids, ["order-1"]);
+
+        store
+            .record_open_orders(
+                "alice",
+                &[adaq_trading_crypto::Order {
+                    id: Some("remote-1".into()),
+                    symbol: Some("BTC/USDT".into()),
+                    side: Some("buy".into()),
+                    amount: Some(Decimal::ONE),
+                    filled: Some(Decimal::ZERO),
+                    price: Some(Decimal::new(100, 0)),
+                    status: Some("open".into()),
+                    ..Default::default()
+                }],
+                4,
+            )
+            .unwrap();
+        let view = store.view("alice").unwrap();
+        assert_eq!(view.orders.len(), 1);
+        assert_eq!(view.orders[0].order_id, "order-1");
+        assert_eq!(view.reserved_cash, Decimal::new(100, 0));
+    }
+
+    #[test]
+    fn provider_trade_sync_retains_exact_per_fill_fees_without_duplication() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        store
+            .begin_order(
+                &PaperOrderRequest {
+                    user_id: "alice".into(),
+                    operation_id: "op-1".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: "buy".into(),
+                    quantity: Decimal::new(10, 0),
+                    limit_price: Decimal::new(100, 0),
+                },
+                2,
+            )
+            .unwrap();
+        store
+            .record_order_result("alice", "op-1", Some("remote-1".into()), "open", None, 3)
+            .unwrap();
+        let remote = adaq_trading_crypto::Order {
+            id: Some("remote-1".into()),
+            symbol: Some("BTC/USDT".into()),
+            filled: Some(Decimal::new(6, 0)),
+            average: Some(Decimal::new(99, 0)),
+            timestamp: Some(4),
+            ..Default::default()
+        };
+        let trades = vec![
+            adaq_trading_crypto::Trade {
+                id: Some("trade-1".into()),
+                order: Some("remote-1".into()),
+                timestamp: Some(4),
+                symbol: Some("BTC/USDT".into()),
+                price: Some(Decimal::new(99, 0)),
+                amount: Some(Decimal::new(4, 0)),
+                fee: Some(adaq_trading_crypto::Fee {
+                    currency: Some("BTC".into()),
+                    cost: Some(Decimal::new(-1, 3)),
+                    rate: None,
+                }),
+                ..Default::default()
+            },
+            adaq_trading_crypto::Trade {
+                id: Some("trade-2".into()),
+                order: Some("remote-1".into()),
+                timestamp: Some(5),
+                symbol: Some("BTC/USDT".into()),
+                price: Some(Decimal::new(98, 0)),
+                amount: Some(Decimal::new(2, 0)),
+                fee: Some(adaq_trading_crypto::Fee {
+                    currency: Some("USDT".into()),
+                    cost: Some(Decimal::new(2, 1)),
+                    rate: None,
+                }),
+                ..Default::default()
+            },
+        ];
+        store
+            .sync_provider_order_with_trades("alice", "op-1", &remote, &trades, 6)
+            .unwrap();
+        let first = store.view("alice").unwrap();
+        assert_eq!(first.fills.len(), 2);
+        assert_eq!(first.fills[0].fee, Decimal::new(99, 3));
+        assert_eq!(first.fills[0].fee_quote, Some(Decimal::new(99, 3)));
+        assert_eq!(first.fills[1].fee_quote, Some(Decimal::new(2, 1)));
+        assert_eq!(first.account.cash, Decimal::new(999_407_701, 3));
+
+        store
+            .sync_provider_order_with_trades("alice", "op-1", &remote, &trades, 7)
+            .unwrap();
+        let second = store.view("alice").unwrap();
+        assert_eq!(second.fills.len(), 2);
+        assert_eq!(second.account.cash, first.account.cash);
+
+        let unexpected_trade = adaq_trading_crypto::Trade {
+            id: Some("trade-3".into()),
+            order: Some("remote-1".into()),
+            timestamp: Some(6),
+            symbol: Some("BTC/USDT".into()),
+            price: Some(Decimal::new(97, 0)),
+            amount: Some(Decimal::ONE),
+            ..Default::default()
+        };
+        assert!(
+            store
+                .sync_provider_order_with_trades("alice", "op-1", &remote, &[unexpected_trade], 8)
+                .is_err()
+        );
+        let blocked = store.view("alice").unwrap();
+        assert_eq!(blocked.reconciliation, ReconciliationState::Required);
+        assert!(blocked.provider_evidence.iter().any(|outcome| matches!(
+            outcome,
+            ExecutionOutcome::Uncertain(evidence)
+                if evidence.provider_order_id.as_deref() == Some("remote-1")
+        )));
     }
 
     #[test]
@@ -870,6 +1680,90 @@ mod tests {
         assert_eq!(
             view.orders[0].status,
             adaq_paper_trading_core::OrderStatus::PartiallyFilled
+        );
+    }
+
+    #[test]
+    fn provider_open_order_without_exact_fill_freezes_account() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+
+        assert!(
+            store
+                .record_open_orders(
+                    "alice",
+                    &[adaq_trading_crypto::Order {
+                        id: Some("remote-incomplete".into()),
+                        symbol: Some("BTC/USDT".into()),
+                        side: Some("buy".into()),
+                        amount: Some(Decimal::new(2, 0)),
+                        price: Some(Decimal::new(100, 0)),
+                        status: Some("open".into()),
+                        ..Default::default()
+                    }],
+                    2,
+                )
+                .is_err()
+        );
+
+        let view = store.view("alice").unwrap();
+        assert_eq!(view.reconciliation, ReconciliationState::Required);
+        assert!(
+            store
+                .begin_order(
+                    &PaperOrderRequest {
+                        user_id: "alice".into(),
+                        operation_id: "blocked-after-incomplete-order".into(),
+                        instrument: "BTC-USDT".into(),
+                        side: "buy".into(),
+                        quantity: Decimal::ONE,
+                        limit_price: Decimal::new(100, 0),
+                    },
+                    3,
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn concurrent_bots_cannot_overreserve_one_shared_account() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = Arc::new(PaperTradingStore::open(database).unwrap());
+        store.create_account("alice", account(), 1).unwrap();
+        let policy = RiskPolicy {
+            max_order_notional: Decimal::new(700_000, 0),
+            reserve_cash: Decimal::ZERO,
+            freeze_new_risk: false,
+        };
+        let handles = (0..2)
+            .map(|index| {
+                let store = Arc::clone(&store);
+                let policy = policy.clone();
+                std::thread::spawn(move || {
+                    store.begin_order_with_policy(
+                        &PaperOrderRequest {
+                            user_id: "alice".into(),
+                            operation_id: format!("bot-{index}"),
+                            instrument: "BTC-USDT".into(),
+                            side: "buy".into(),
+                            quantity: Decimal::new(7_000, 0),
+                            limit_price: Decimal::new(100, 0),
+                        },
+                        Some(&policy),
+                        index + 2,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let outcomes = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+        assert_eq!(
+            store.view("alice").unwrap().reserved_cash,
+            Decimal::new(700_000, 0)
         );
     }
 }

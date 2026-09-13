@@ -13,6 +13,7 @@ mod local_research;
 mod market_data_pipeline;
 mod market_data_snapshot;
 mod operations;
+mod paper_experiment;
 mod paper_feedback;
 mod paper_trading;
 mod python_research;
@@ -6340,6 +6341,13 @@ pub fn run() {
             paper_feedback_view,
             paper_feedback_report_create,
             paper_feedback_review_decide,
+            paper_experiment::paper_experiment_view,
+            paper_experiment::paper_experiment_create,
+            paper_experiment::paper_experiment_launch,
+            paper_experiment::paper_experiment_refresh,
+            paper_experiment::paper_experiment_stop,
+            paper_experiment::paper_experiment_report_create,
+            paper_experiment::paper_experiment_feedback_create,
             paper_account_view,
             paper_account_reconcile,
             paper_order_submit,
@@ -6633,7 +6641,7 @@ fn string(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::{WasmLoader, factor_abi, has_operational_responsibility, strategy_abi};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn fixture(name: &str) -> String {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -6672,6 +6680,51 @@ mod tests {
     fn factor_loader_starts_empty() {
         let error = WasmLoader::default().describe_factor().err().unwrap();
         assert_eq!(error, "Factor component is not loaded");
+    }
+
+    #[cfg(feature = "local-env-credentials")]
+    #[test]
+    #[ignore = "explicit local-only qualification acceptance operation"]
+    fn local_env_qualifies_all_ema_demo_instruments_from_current_snapshots() -> Result<(), String> {
+        if std::env::var("ADAQ_LIVE_ACCEPTANCE").as_deref() != Ok("1") {
+            return Ok(());
+        }
+        let app_data_dir = std::env::var("ADAQ_LIVE_APP_DATA_DIR")
+            .map_err(|_| "ADAQ_LIVE_APP_DATA_DIR is required".to_owned())?;
+        let user_id = std::env::var("ADAQ_LIVE_USER_ID")
+            .map_err(|_| "ADAQ_LIVE_USER_ID is required".to_owned())?;
+        let states = super::open_workspace_states(Path::new(&app_data_dir))?;
+        let universe_snapshot_id = {
+            let database = states
+                .local_research
+                .database
+                .lock()
+                .map_err(|error| error.to_string())?;
+            database
+                .query_row(
+                    "SELECT snapshot_id FROM market_data_universe_snapshot_access
+                     WHERE user_id = ?1 ORDER BY snapshot_id LIMIT 1",
+                    [&user_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|error| error.to_string())?
+        };
+        let snapshots = states.local_research.snapshots.list_readable(&user_id)?;
+        for instrument in ["BTC-USDT", "ETH-USDT", "SOL-USDT"] {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.code == instrument)
+                .ok_or_else(|| format!("missing {instrument} snapshot"))?;
+            states.strategy_qualification.qualify_ema_double_cross(
+                &user_id,
+                &super::strategy_qualification::EmaDoubleCrossQualificationRequest {
+                    snapshot_id: snapshot.snapshot_id.clone(),
+                    universe_snapshot_id: universe_snapshot_id.clone(),
+                    instrument_id: instrument.to_owned(),
+                },
+            )?;
+        }
+        Ok(())
     }
 
     #[test]

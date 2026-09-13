@@ -66,6 +66,7 @@ use crate::{
     forecast_signal_dataset::{BacktestSignalDataset, backtest_signal_datasets},
     market_data_snapshot::{LocalSnapshotSource, MarketDataSnapshots},
     operations::OperationsStore,
+    paper_experiment::PaperExperimentStore,
     paper_feedback::PaperFeedbackStore,
     research_queue::ResearchQueue,
     user::validate_user,
@@ -93,6 +94,7 @@ pub struct LocalResearchState {
     pub(crate) connections: crate::connections::ConnectionManager,
     pub(crate) operations: OperationsStore,
     pub(crate) paper_feedback: PaperFeedbackStore,
+    pub(crate) paper_experiments: PaperExperimentStore,
     pub(crate) paper_trading: crate::paper_trading::PaperTradingStore,
     pub(crate) research_contexts: Mutex<HashMap<String, ResearchEvidenceContext>>,
     factor_context_gate: Mutex<()>,
@@ -761,6 +763,7 @@ impl LocalResearchState {
         let connections = crate::connections::ConnectionManager::open_production(database.clone())?;
         let operations = OperationsStore::open(database.clone())?;
         let paper_feedback = PaperFeedbackStore::open(database.clone())?;
+        let paper_experiments = PaperExperimentStore::open(database.clone())?;
         let paper_trading = crate::paper_trading::PaperTradingStore::open(database.clone())?;
         let snapshot_source = Arc::new(LocalSnapshotSource::new(
             database.clone(),
@@ -836,6 +839,7 @@ impl LocalResearchState {
                 connections,
                 operations,
                 paper_feedback,
+                paper_experiments,
                 paper_trading,
                 research_contexts: Mutex::new(HashMap::new()),
                 factor_context_gate: Mutex::new(()),

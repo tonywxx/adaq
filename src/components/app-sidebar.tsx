@@ -212,6 +212,12 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 								icon={<FileTextIcon aria-hidden="true" />}
 								active={location.pathname === "/paper-feedback"}
 							/>
+							<SidebarLink
+								to="/paper-experiment"
+								label={t("nav.paperExperiment")}
+								icon={<GitCompareArrows aria-hidden="true" />}
+								active={location.pathname === "/paper-experiment"}
+							/>
 						</SidebarMenu>
 					</SidebarGroupContent>
 				</SidebarGroup>
@@ -245,6 +251,7 @@ function SidebarLink({
 		| "/paper-trading"
 		| "/bots"
 		| "/paper-feedback"
+		| "/paper-experiment"
 		| "/components";
 	label: string;
 	icon: ReactNode;

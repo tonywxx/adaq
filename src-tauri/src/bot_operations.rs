@@ -157,6 +157,62 @@ fn okx_instrument_code(instrument: &str) -> &str {
     instrument.strip_prefix("okx:").unwrap_or(instrument)
 }
 
+fn bot_owned_position(
+    account: &PaperAccountView,
+    bot_id: &str,
+    instrument_id: &str,
+) -> adaq_paper_trading_core::Position {
+    let operation_prefix = format!("bot-{bot_id}-");
+    let owned_order_ids = account
+        .provider_evidence
+        .iter()
+        .filter_map(|outcome| {
+            let evidence = match outcome {
+                adaq_paper_trading_core::ExecutionOutcome::Accepted(evidence)
+                | adaq_paper_trading_core::ExecutionOutcome::Rejected(evidence)
+                | adaq_paper_trading_core::ExecutionOutcome::Uncertain(evidence) => evidence,
+            };
+            evidence
+                .operation_id
+                .starts_with(&operation_prefix)
+                .then(|| evidence.local_order_id.clone())
+                .flatten()
+        })
+        .collect::<BTreeSet<_>>();
+    let quantity = account
+        .fills
+        .iter()
+        .filter(|fill| owned_order_ids.contains(&fill.order_id))
+        .filter_map(|fill| {
+            let order = account
+                .orders
+                .iter()
+                .find(|order| order.order_id == fill.order_id)?;
+            (okx_instrument_code(&order.instrument) == okx_instrument_code(instrument_id))
+                .then_some(match order.side {
+                    adaq_paper_trading_core::Side::Buy => {
+                        fill.quantity - fill.fee_in_base(&order.instrument)
+                    }
+                    adaq_paper_trading_core::Side::Sell => {
+                        -(fill.quantity + fill.fee_in_base(&order.instrument))
+                    }
+                })
+        })
+        .sum::<Decimal>()
+        .max(Decimal::ZERO);
+    let sellable_quantity = account
+        .account
+        .positions
+        .get(okx_instrument_code(instrument_id))
+        .map(|position| position.sellable_quantity)
+        .unwrap_or_default()
+        .min(quantity);
+    adaq_paper_trading_core::Position {
+        quantity,
+        sellable_quantity,
+    }
+}
+
 fn canonicalize_okx_schedule(schedule: BotSchedule) -> Result<BotSchedule, String> {
     match schedule {
         BotSchedule::ClosedBar {
@@ -603,6 +659,53 @@ impl BotStore {
         }
         self.insert_record_locked(&mut database, &record)?;
         Ok(record.view())
+    }
+
+    pub(crate) fn deploy_many(
+        &self,
+        user_id: &str,
+        bundles: Vec<BotDeploymentBundle>,
+    ) -> Result<Vec<BotView>, String> {
+        validate_user(user_id)?;
+        if bundles.is_empty() || bundles.len() > 3 {
+            return Err("An experiment must deploy one to three Bots.".into());
+        }
+        let now = adaq_bot_runtime::unix_now_ms();
+        let records = bundles
+            .into_iter()
+            .map(|bundle| {
+                bundle.verify()?;
+                Ok(PersistedBot {
+                    bot_id: bundle.bot_id.clone(),
+                    user_id: user_id.into(),
+                    bundle,
+                    state: LifecycleState::Stopped,
+                    current_attempt_id: None,
+                    attempts: Vec::new(),
+                    created_at_ms: now,
+                    updated_at_ms: now,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let mut database = self.database.lock().map_err(|error| error.to_string())?;
+        let transaction = database.transaction().map_err(|error| error.to_string())?;
+        for record in &records {
+            if transaction
+                .query_row(
+                    "SELECT 1 FROM bots WHERE bot_id = ?1",
+                    [&record.bot_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?
+                .is_some()
+            {
+                return Err("Bot identity already exists".into());
+            }
+            self.insert_record_locked(&transaction, record)?;
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(records.into_iter().map(|record| record.view()).collect())
     }
 
     pub(crate) fn list(&self, user_id: &str) -> Result<Vec<BotView>, String> {
@@ -1308,7 +1411,7 @@ impl BotStore {
 
     fn insert_record_locked(
         &self,
-        database: &mut Connection,
+        database: &Connection,
         bot: &PersistedBot,
     ) -> Result<(), String> {
         database
@@ -1791,6 +1894,93 @@ pub(crate) async fn bot_deploy(
     .map_err(|error| error.to_string())?
 }
 
+pub(crate) fn deploy_ema_experiment(
+    app: &AppHandle,
+    user_id: &str,
+    profile_id: &str,
+    account_id: &str,
+    bindings: &[(String, String)],
+) -> Result<Vec<BotView>, String> {
+    let local = app.state::<Arc<LocalResearchState>>();
+    let qualifications = app.state::<Arc<StrategyQualificationStore>>();
+    let bots = app.state::<Arc<BotStore>>();
+    let profile = local
+        .connections
+        .list(user_id)?
+        .into_iter()
+        .find(|profile| profile.profile_id == profile_id)
+        .ok_or_else(|| "The selected connection profile was not found.".to_owned())?;
+    if profile.provider != Provider::OkxDemo
+        || profile.status != ProfileStatus::Usable
+        || profile.account_id.as_deref() != Some(account_id)
+    {
+        return Err(
+            "Select one usable, verified OKX Demo profile with the exact account identity.".into(),
+        );
+    }
+    let artifact = resolve_worker_artifact(app)?;
+    let bundles = bindings
+        .iter()
+        .map(|(instrument, qualification_id)| {
+            let qualification = qualifications.qualification_for_user(user_id, qualification_id)?;
+            build_ema_bundle(
+                user_id,
+                &qualification,
+                profile_id,
+                account_id,
+                BotSchedule::EmaDoubleCross {
+                    instrument_id: format!("okx:{instrument}"),
+                },
+                artifact.binding.clone(),
+                &local,
+            )
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    bots.deploy_many(user_id, bundles)
+}
+
+pub(crate) fn start_experiment_bot(
+    app: &AppHandle,
+    user_id: &str,
+    bot_id: &str,
+    command_id: &str,
+) -> Result<BotView, String> {
+    start_bot(
+        app,
+        user_id,
+        &BotCommandRequest {
+            bot_id: bot_id.to_owned(),
+            command_id: command_id.to_owned(),
+        },
+        false,
+    )
+}
+
+pub(crate) fn stop_experiment_bot(
+    app: &AppHandle,
+    user_id: &str,
+    bot_id: &str,
+    command_id: &str,
+) -> Result<BotView, String> {
+    let bots = app.state::<Arc<BotStore>>();
+    let view = bots.get(user_id, bot_id)?;
+    if view.state == LifecycleState::Stopped {
+        // Preparing can be canceled before every deployed Bot has started.
+        return Ok(view);
+    }
+    stop_bot(
+        app,
+        user_id,
+        BotStopRequest {
+            bot_id: bot_id.to_owned(),
+            command_id: command_id.to_owned(),
+            policy: BotStopPolicy::KeepPosition,
+            confirm_flatten: false,
+        },
+        false,
+    )
+}
+
 #[tauri::command]
 pub(crate) async fn bot_start(
     request: BotCommandRequest,
@@ -1851,7 +2041,7 @@ pub(crate) async fn bot_stop(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || stop_bot(&app, &user_id, request))
+    tauri::async_runtime::spawn_blocking(move || stop_bot(&app, &user_id, request, true))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -1888,6 +2078,21 @@ fn run_bot_decision(
                 let view = bots.get(&user_id, &request.bot_id)?;
                 if view.state != LifecycleState::Running {
                     return Err("Bot must be Running before it can accept a Decision Batch.".into());
+                }
+                if local.paper_experiments.decision_blocked_for_bot(
+                    &user_id,
+                    &request.bot_id,
+                    adaq_bot_runtime::unix_now_ms(),
+                )? {
+                    bots.record_evidence(
+                        &user_id,
+                        &request.bot_id,
+                        "experiment",
+                        "experiment-observation-blocked",
+                        "The declared Paper Experiment window did not permit this observation; no Worker or order work was authorized.",
+                        Some(&request.request_id),
+                    )?;
+                    return bots.get(&user_id, &request.bot_id);
                 }
                 let validation: Result<(), String> = if !bounded(&request.request_id, 128)
                     || !bounded(&request.dataset_id, 128)
@@ -2138,6 +2343,12 @@ fn run_bot_decision(
                             "The Worker produced its first Target after the frozen warmup policy; Host validation still gates execution.",
                             Some(decision_id),
                         )?;
+                        local.paper_experiments.arm_if_all_bots_warmed(
+                            &user_id,
+                            &request.bot_id,
+                            &bots.list(&user_id)?,
+                            adaq_bot_runtime::unix_now_ms(),
+                        )?;
                         if let Err(error) = execute_target(
                             &local,
                             bots,
@@ -2165,6 +2376,27 @@ fn run_bot_decision(
                                     .into(),
                             );
                         }
+                        bots.get(&user_id, &request.bot_id)
+                    }
+                    Ok(ref result @ WorkerDecisionResult::NoTarget {
+                        reason: adaq_bot_runtime::NoTargetReason::NoSignal,
+                        ..
+                    }) => {
+                        bots.record_decision(&user_id, &request.bot_id, Some(&clock), result)?;
+                        bots.record_evidence(
+                            &user_id,
+                            &request.bot_id,
+                            "lifecycle",
+                            "warmup-complete",
+                            "The Worker completed its frozen warmup policy with no actionable signal; common experiment readiness still gates risk.",
+                            Some(clock.decision_id()),
+                        )?;
+                        local.paper_experiments.arm_if_all_bots_warmed(
+                            &user_id,
+                            &request.bot_id,
+                            &bots.list(&user_id)?,
+                            adaq_bot_runtime::unix_now_ms(),
+                        )?;
                         bots.get(&user_id, &request.bot_id)
                     }
                     Ok(ref result @ WorkerDecisionResult::NoTarget {
@@ -2623,7 +2855,7 @@ fn host_event_input(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "The requested retained OKX Trade is unavailable.".to_owned())?;
     let trade = retained.trade;
-    let (snapshot, bars) = local
+    let (snapshot, snapshot_bars) = local
         .snapshots
         .snapshot_for_user(user_id, &bundle.market_data_snapshot_id)?;
     if okx_instrument_code(&snapshot.code) != okx_instrument_code(instrument_id)
@@ -2655,12 +2887,11 @@ fn host_event_input(
     let stream_epoch = stream_health
         .map(|health| health.reconnect_count)
         .unwrap_or_default();
-    let mut events = bars
+    let interval_ms = adaq_bot_runtime::ema_double_cross::EMA_BAR_INTERVAL_MS;
+    let mut events = snapshot_bars
         .into_iter()
         .filter_map(|bar| {
-            let close_time_ms = bar
-                .open_time_ms
-                .checked_add(adaq_bot_runtime::ema_double_cross::EMA_BAR_INTERVAL_MS)?;
+            let close_time_ms = bar.open_time_ms.checked_add(interval_ms)?;
             (close_time_ms <= trade.timestamp_ms).then(|| {
                 Ok(adaq_bot_runtime::WorkerMarketEvent::BarClosed {
                     instrument_id: instrument_id.into(),
@@ -2678,6 +2909,70 @@ fn host_event_input(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let last_snapshot_close_ms = events
+        .iter()
+        .filter_map(|event| match event {
+            adaq_bot_runtime::WorkerMarketEvent::BarClosed {
+                bar_open_time_ms, ..
+            } => bar_open_time_ms.checked_add(interval_ms),
+            adaq_bot_runtime::WorkerMarketEvent::Trade { .. } => None,
+        })
+        .max()
+        .unwrap_or_default();
+    if last_snapshot_close_ms > 0 && trade.timestamp_ms > last_snapshot_close_ms {
+        let live_trades = local
+            .okx
+            .retained_trades_for_user(
+                user_id,
+                okx_instrument_code(instrument_id),
+                last_snapshot_close_ms,
+                trade.timestamp_ms,
+            )
+            .map_err(|error| error.to_string())?;
+        let mut live_bars = BTreeMap::<i64, (i64, String, Decimal)>::new();
+        for live_trade in live_trades {
+            let bar_open_time_ms = live_trade.timestamp_ms.div_euclid(interval_ms) * interval_ms;
+            let entry = live_bars.entry(bar_open_time_ms).or_insert((
+                live_trade.timestamp_ms,
+                live_trade.trade_id.clone(),
+                live_trade.price,
+            ));
+            if (live_trade.timestamp_ms, &live_trade.trade_id) > (entry.0, &entry.1) {
+                *entry = (
+                    live_trade.timestamp_ms,
+                    live_trade.trade_id,
+                    live_trade.price,
+                );
+            }
+        }
+        events.extend(
+            live_bars
+                .into_iter()
+                .filter_map(|(bar_open_time_ms, (_, last_trade_id, close))| {
+                    let close_time_ms = bar_open_time_ms.checked_add(interval_ms)?;
+                    (close_time_ms <= trade.timestamp_ms).then(|| {
+                        Ok(adaq_bot_runtime::WorkerMarketEvent::BarClosed {
+                            instrument_id: instrument_id.into(),
+                            bar_open_time_ms,
+                            close: close.to_string(),
+                            observed_at_ms: close_time_ms,
+                            available_at_ms: close_time_ms,
+                            evidence_id: hash_json(&(
+                                "okx-trade-bar",
+                                instrument_id,
+                                bar_open_time_ms,
+                                last_trade_id,
+                            ))
+                            .unwrap_or_else(|_| {
+                                format!("trade-bar-{instrument_id}-{bar_open_time_ms}")
+                            }),
+                            replay: false,
+                        })
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+        );
+    }
     events.sort_by_key(|event| match event {
         adaq_bot_runtime::WorkerMarketEvent::BarClosed {
             bar_open_time_ms, ..
@@ -2711,16 +3006,18 @@ fn host_event_input(
     let account = local.paper_trading.view_optional(user_id)?.ok_or_else(|| {
         "A reconciled OKX Demo account is required before a Decision Batch.".to_owned()
     })?;
-    if account.account.account_id != bundle.account_id
-        || !account_is_reconciled_and_quiet(Some(&account))
-    {
+    if !account_is_reconciled_for_target(local, user_id, bundle, &account)? {
         return Err("Account state is stale, uncertain, or bound to another account.".into());
     }
-    let owned_position = account
-        .account
-        .positions
-        .get(okx_instrument_code(instrument_id))
-        .is_some_and(|position| position.quantity > Decimal::ZERO);
+    let owned_position = if matches!(&bundle.schedule, BotSchedule::EmaDoubleCross { .. }) {
+        bot_owned_position(&account, &bundle.bot_id, instrument_id).quantity > Decimal::ZERO
+    } else {
+        account
+            .account
+            .positions
+            .get(okx_instrument_code(instrument_id))
+            .is_some_and(|position| position.quantity > Decimal::ZERO)
+    };
     Ok(WorkerDecisionInput::Event {
         instrument_id: instrument_id.into(),
         events,
@@ -3008,6 +3305,10 @@ fn plan_spot_order(
     }))
 }
 
+fn ema_addition_blocked(position_quantity: Decimal, difference: Decimal) -> bool {
+    position_quantity > Decimal::ZERO && difference > Decimal::ZERO
+}
+
 fn floor_increment(value: Decimal, increment: Decimal) -> Result<Decimal, String> {
     if increment <= Decimal::ZERO {
         return Err("Execution increment must be positive.".into());
@@ -3093,6 +3394,28 @@ fn execute_target(
     if local.operations.blocks_new_risk(user_id)? {
         return Err("A Host operational safety action is active; new Bot risk is blocked.".into());
     }
+    let now_ms = adaq_bot_runtime::unix_now_ms();
+    let risk_blocked = local
+        .paper_experiments
+        .risk_blocked_for_bot(user_id, bot_id, now_ms)?;
+    let common_warmup_blocked = !risk_blocked
+        && local.paper_experiments.common_warmup_blocked_for_bot(
+            user_id,
+            bot_id,
+            &bots.list(user_id)?,
+            now_ms,
+        )?;
+    if risk_blocked || common_warmup_blocked {
+        bots.record_evidence(
+            user_id,
+            bot_id,
+            "experiment",
+            "risk-blocked-until-common-warmup",
+            "The Paper Experiment is waiting for all three Bots to complete warmup; no order was created.",
+            Some(decision_id),
+        )?;
+        return Ok(());
+    }
     let next_execution_ms = match clock {
         DecisionClock::ClosedBar {
             next_execution_ms, ..
@@ -3116,9 +3439,7 @@ fn execute_target(
         return Ok(());
     }
     let account = reconcile_account(local, user_id, bundle)?;
-    if account.account.account_id != bundle.account_id
-        || !account_is_reconciled_and_quiet(Some(&account))
-    {
+    if !account_is_reconciled_for_target(local, user_id, bundle, &account)? {
         return Err("Account evidence is stale, uncertain, or bound to another account.".into());
     }
     match target {
@@ -3189,6 +3510,17 @@ fn execute_strategy_target(
         );
     }
     let ema_schedule = matches!(&bundle.schedule, BotSchedule::EmaDoubleCross { .. });
+    if ema_schedule && bot_has_pending_order(account, bot_id, instrument_id) {
+        bots.record_evidence(
+            user_id,
+            bot_id,
+            "execution",
+            "execution-pending-order",
+            "A pending or partially filled EMA order blocks a duplicate order for this Instrument.",
+            Some(decision_id),
+        )?;
+        return Ok(());
+    }
     if account.account.positions.keys().any(|instrument| {
         let code = okx_instrument_code(instrument);
         if canonical_okx_instrument_id(instrument)
@@ -3231,15 +3563,19 @@ fn execute_strategy_target(
         Some(decision_id),
     )?;
     let price = market_price(local, user_id, instrument_id)?;
-    let position = account
-        .account
-        .positions
-        .get(okx_instrument_code(instrument_id))
-        .cloned()
-        .unwrap_or(adaq_paper_trading_core::Position {
-            quantity: Decimal::ZERO,
-            sellable_quantity: Decimal::ZERO,
-        });
+    let position = if ema_schedule {
+        bot_owned_position(account, &bundle.bot_id, instrument_id)
+    } else {
+        account
+            .account
+            .positions
+            .get(okx_instrument_code(instrument_id))
+            .cloned()
+            .unwrap_or(adaq_paper_trading_core::Position {
+                quantity: Decimal::ZERO,
+                sellable_quantity: Decimal::ZERO,
+            })
+    };
     let equity =
         account
             .account
@@ -3263,6 +3599,17 @@ fn execute_strategy_target(
     let difference = desired
         .checked_sub(current)
         .ok_or_else(|| "Strategy allocation difference overflowed the Decimal limit.".to_owned())?;
+    if ema_schedule && ema_addition_blocked(position.quantity, difference) {
+        bots.record_evidence(
+            user_id,
+            bot_id,
+            "execution",
+            "execution-addition-blocked",
+            "The EMA Strategy already owns a position; partial entry evidence cannot authorize an additional buy.",
+            Some(decision_id),
+        )?;
+        return Ok(());
+    }
     if ema_schedule && difference > Decimal::ZERO {
         let fee = match bundle.execution_profile.fill_policy {
             adaq_backtest_core::FillPolicy::Maker => bundle.execution_profile.maker_fee_rate,
@@ -4619,7 +4966,12 @@ fn resume_bot(
     })
 }
 
-fn stop_bot(app: &AppHandle, user_id: &str, request: BotStopRequest) -> Result<BotView, String> {
+fn stop_bot(
+    app: &AppHandle,
+    user_id: &str,
+    request: BotStopRequest,
+    require_quiet_account: bool,
+) -> Result<BotView, String> {
     if request.policy == BotStopPolicy::Flatten && !request.confirm_flatten {
         return Err("Stop and Flatten requires explicit confirmation.".into());
     }
@@ -4666,7 +5018,21 @@ fn stop_bot(app: &AppHandle, user_id: &str, request: BotStopRequest) -> Result<B
                 return Err("Worker stop failed; the Bot is Faulted and requires recovery.".into());
             }
             let account = match request.policy {
-                BotStopPolicy::KeepPosition => local.paper_trading.view_optional(user_id)?,
+                BotStopPolicy::KeepPosition => {
+                    let instrument_scope = bot_instrument_scope(&view.bundle);
+                    cancel_open_orders(
+                        &local,
+                        user_id,
+                        bots,
+                        &request.bot_id,
+                        &instrument_scope,
+                    )?;
+                    Some(if require_quiet_account {
+                        require_reconciled_account(&local, user_id, &view.bundle)?
+                    } else {
+                        reconcile_account(&local, user_id, &view.bundle)?
+                    })
+                }
                 BotStopPolicy::Flatten => match flatten_account(
                     &local,
                     user_id,
@@ -4692,7 +5058,11 @@ fn stop_bot(app: &AppHandle, user_id: &str, request: BotStopRequest) -> Result<B
                 .as_ref()
                 .map(|account| account_positions_in_scope(account, &instrument_scope))
                 .unwrap_or_default();
-            let reconciled = account_is_reconciled_and_quiet(account.as_ref());
+            let reconciled = if require_quiet_account {
+                account_is_reconciled_and_quiet(account.as_ref())
+            } else {
+                account_has_reconciled_evidence(account.as_ref())
+            };
             bots.complete_stop(
                 user_id,
                 &request.bot_id,
@@ -4738,15 +5108,76 @@ fn account_positions_in_scope(
         .collect()
 }
 
-fn account_is_reconciled_and_quiet(account: Option<&PaperAccountView>) -> bool {
+fn account_has_reconciled_evidence(account: Option<&PaperAccountView>) -> bool {
     account.is_some_and(|account| {
         account.reconciliation == adaq_paper_trading_core::ReconciliationState::Reconciled
-            && account.orders.iter().all(|order| {
+            && !account.restart_required
+            && !account.provider_evidence.iter().any(|outcome| {
+                matches!(
+                    outcome,
+                    adaq_paper_trading_core::ExecutionOutcome::Uncertain(_)
+                )
+            })
+    })
+}
+
+fn account_is_reconciled_and_quiet(account: Option<&PaperAccountView>) -> bool {
+    account_has_reconciled_evidence(account)
+        && account.is_some_and(|account| {
+            account.orders.iter().all(|order| {
                 !matches!(
                     order.status,
                     adaq_paper_trading_core::OrderStatus::Accepted
                         | adaq_paper_trading_core::OrderStatus::PartiallyFilled
                 )
+            })
+        })
+}
+
+fn account_is_reconciled_for_target(
+    local: &LocalResearchState,
+    user_id: &str,
+    bundle: &BotDeploymentBundle,
+    account: &PaperAccountView,
+) -> Result<bool, String> {
+    if account.account.account_id != bundle.account_id
+        || !account_has_reconciled_evidence(Some(account))
+    {
+        return Ok(false);
+    }
+    if account_is_reconciled_and_quiet(Some(account)) {
+        return Ok(true);
+    }
+    if matches!(&bundle.schedule, BotSchedule::EmaDoubleCross { .. }) {
+        return local.paper_experiments.pending_orders_are_experiment_owned(
+            user_id,
+            &bundle.bot_id,
+            account,
+        );
+    }
+    Ok(false)
+}
+
+fn bot_has_pending_order(account: &PaperAccountView, bot_id: &str, instrument_id: &str) -> bool {
+    let prefix = format!("bot-{bot_id}-");
+    account.provider_evidence.iter().any(|outcome| {
+        let evidence = match outcome {
+            adaq_paper_trading_core::ExecutionOutcome::Accepted(evidence)
+            | adaq_paper_trading_core::ExecutionOutcome::Rejected(evidence)
+            | adaq_paper_trading_core::ExecutionOutcome::Uncertain(evidence) => evidence,
+        };
+        let Some(local_order_id) = evidence.local_order_id.as_deref() else {
+            return false;
+        };
+        evidence.operation_id.starts_with(&prefix)
+            && account.orders.iter().any(|order| {
+                order.order_id == local_order_id
+                    && okx_instrument_code(&order.instrument) == okx_instrument_code(instrument_id)
+                    && matches!(
+                        order.status,
+                        adaq_paper_trading_core::OrderStatus::Accepted
+                            | adaq_paper_trading_core::OrderStatus::PartiallyFilled
+                    )
             })
     })
 }
@@ -4789,6 +5220,17 @@ fn cancel_open_orders(
             .provider_order_id
             .as_deref()
             .ok_or_else(|| "flatten-open-order-identity-missing".to_owned())?;
+        if order.local_order_ids.len() != 1 || order.operation_ids.len() != 1 {
+            retain_provider_order_uncertainty(
+                local,
+                bots,
+                user_id,
+                bot_id,
+                provider_order_id,
+                "A provider order maps to multiple local operations; Flatten is blocked.",
+            )?;
+            return Err("flatten-provider-order-mapping-ambiguous".into());
+        }
         let remote = local.connections.cancel_okx_demo_order(
             user_id,
             &order.instrument,
@@ -4808,52 +5250,122 @@ fn cancel_open_orders(
                     )?;
                     return Err("flatten-cancel-identity-mismatch".into());
                 }
-                match cancelled
+                let status = cancelled
                     .status
                     .as_deref()
                     .unwrap_or("canceled")
-                    .to_ascii_lowercase()
-                    .as_str()
-                {
-                    "canceled" | "cancelled" | "expired" => {
-                        for local_order_id in &order.local_order_ids {
-                            local.paper_trading.cancel_provider_order(
+                    .to_ascii_lowercase();
+                if !matches!(
+                    status.as_str(),
+                    "canceled" | "cancelled" | "expired" | "closed" | "filled"
+                ) {
+                    retain_provider_order_uncertainty(
+                        local,
+                        bots,
+                        user_id,
+                        bot_id,
+                        provider_order_id,
+                        "Provider cancellation did not produce a terminal order state; Flatten is blocked.",
+                    )?;
+                    return Err("flatten-cancel-outcome-uncertain".into());
+                }
+                let terminal = if matches!(status.as_str(), "canceled" | "cancelled" | "expired") {
+                    match local.connections.fetch_okx_demo_order(
+                        user_id,
+                        &order.instrument,
+                        provider_order_id,
+                        adaq_bot_runtime::unix_now_ms(),
+                    ) {
+                        Ok(order) => order,
+                        Err(_) => {
+                            retain_provider_order_uncertainty(
+                                local,
+                                bots,
                                 user_id,
-                                local_order_id,
-                                adaq_bot_runtime::unix_now_ms(),
+                                bot_id,
+                                provider_order_id,
+                                "The canceled provider order could not be fetched for exact fill reconciliation; Flatten is blocked.",
                             )?;
+                            return Err("flatten-cancel-reconciliation-failed".into());
                         }
-                        bots.record_evidence(
-                            user_id,
-                            bot_id,
-                            "execution",
-                            "open-order-canceled",
-                            "Host canceled the eligible provider order before liquidation.",
-                            Some(provider_order_id),
-                        )?;
                     }
-                    "closed" | "filled" => {
-                        bots.record_evidence(
-                            user_id,
-                            bot_id,
-                            "execution",
-                            "open-order-filled",
-                            "Provider reported the order filled while Flatten was canceling it; Host will reconcile before liquidation.",
-                            Some(provider_order_id),
-                        )?;
-                    }
-                    _ => {
+                } else {
+                    cancelled
+                };
+                if terminal.id.as_deref() != Some(provider_order_id) {
+                    retain_provider_order_uncertainty(
+                        local,
+                        bots,
+                        user_id,
+                        bot_id,
+                        provider_order_id,
+                        "The terminal provider order returned an unexpected identity; Flatten is blocked.",
+                    )?;
+                    return Err("flatten-terminal-identity-mismatch".into());
+                }
+                let fills = match local.connections.fetch_okx_demo_order_fills(
+                    user_id,
+                    &order.instrument,
+                    provider_order_id,
+                    adaq_bot_runtime::unix_now_ms(),
+                ) {
+                    Ok(fills) => fills,
+                    Err(_) => {
                         retain_provider_order_uncertainty(
                             local,
                             bots,
                             user_id,
                             bot_id,
                             provider_order_id,
-                            "Provider cancellation did not produce a terminal order state; Flatten is blocked.",
+                            "Terminal provider fills could not be fetched exactly; Flatten is blocked.",
                         )?;
-                        return Err("flatten-cancel-outcome-uncertain".into());
+                        return Err("flatten-fill-reconciliation-failed".into());
                     }
+                };
+                let trades = if fills.is_empty() {
+                    terminal.trades.as_deref().unwrap_or(&[])
+                } else {
+                    fills.as_slice()
+                };
+                if let Err(error) = local.paper_trading.sync_provider_order_with_trades(
+                    user_id,
+                    &order.operation_ids[0],
+                    &terminal,
+                    trades,
+                    adaq_bot_runtime::unix_now_ms(),
+                ) {
+                    retain_provider_order_uncertainty(
+                        local,
+                        bots,
+                        user_id,
+                        bot_id,
+                        provider_order_id,
+                        "Terminal provider fills could not be reconciled into the local ledger; Flatten is blocked.",
+                    )?;
+                    return Err(format!("flatten-fill-reconciliation-failed: {error}"));
                 }
+                let (event, detail) = if matches!(
+                    status.as_str(),
+                    "canceled" | "cancelled" | "expired"
+                ) {
+                    (
+                        "open-order-canceled",
+                        "Host canceled and reconciled the eligible provider order before liquidation.",
+                    )
+                } else {
+                    (
+                        "open-order-filled",
+                        "Provider reported the order filled while Flatten was canceling it; Host reconciled the fills before liquidation.",
+                    )
+                };
+                bots.record_evidence(
+                    user_id,
+                    bot_id,
+                    "execution",
+                    event,
+                    detail,
+                    Some(provider_order_id),
+                )?;
             }
             Err(_) => {
                 retain_provider_order_uncertainty(
@@ -4993,6 +5505,10 @@ mod tests {
         DeploymentBundleInput, StrategyWorld, WORKER_ARTIFACT_NAME, WORKER_ARTIFACT_VERSION,
         WORKER_PROTOCOL_VERSION, WORKER_RUNTIME_VERSION, WORKER_SIGNING_KEY_ID,
         WorkerArtifactBinding, WorkerPipelineBinding, WorkerRuntimePolicy, WorkerStrategyBinding,
+    };
+    use adaq_paper_trading_core::{
+        AccountSnapshot, AdapterKind, Currency, ExecutionOutcome, Fill, FillEvidence, Market,
+        Order, Position, ProviderEvidence, ReconciliationState,
     };
 
     fn hash(byte: char) -> String {
@@ -5478,6 +5994,13 @@ mod tests {
     }
 
     #[test]
+    fn ema_partial_position_cannot_trigger_additional_entry() {
+        assert!(ema_addition_blocked(Decimal::ONE, Decimal::ONE));
+        assert!(!ema_addition_blocked(Decimal::ZERO, Decimal::ONE));
+        assert!(!ema_addition_blocked(Decimal::ONE, Decimal::NEGATIVE_ONE));
+    }
+
+    #[test]
     fn bot_bundle_binds_the_exact_universe_snapshot() {
         let mut bot = bundle("bot-a", "account-a");
         assert_eq!(bot.universe_id, "universe");
@@ -5521,5 +6044,114 @@ mod tests {
         assert!(host_schedule_window(101, 100).is_err());
         assert!(host_schedule_window(100, 100 + DECISION_DEADLINE_GRACE_MS + 1).is_err());
         assert_eq!(host_schedule_window(100, 100).unwrap(), (30_100, 101));
+    }
+
+    #[test]
+    fn ema_bot_position_excludes_external_same_instrument_activity() {
+        let mut positions = BTreeMap::new();
+        positions.insert(
+            "BTC-USDT".into(),
+            Position {
+                quantity: Decimal::new(5, 0),
+                sellable_quantity: Decimal::new(5, 0),
+            },
+        );
+        let account = PaperAccountView {
+            account: AccountSnapshot {
+                account_id: "account-a".into(),
+                user_id: "user-a".into(),
+                market: Market::OkxSpot,
+                currency: Currency::Usdt,
+                cash: Decimal::new(1_000, 0),
+                positions,
+                observed_at_ms: 1,
+            },
+            reserved_cash: Decimal::ZERO,
+            buying_power: Decimal::new(1_000, 0),
+            reconciliation: ReconciliationState::Reconciled,
+            orders: vec![
+                Order {
+                    order_id: "own-order".into(),
+                    account_id: "account-a".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: adaq_paper_trading_core::Side::Buy,
+                    quantity: Decimal::new(2, 0),
+                    filled_quantity: Decimal::new(2, 0),
+                    limit_price: Decimal::new(100, 0),
+                    status: adaq_paper_trading_core::OrderStatus::Filled,
+                    submitted_at_ms: 2,
+                },
+                Order {
+                    order_id: "external-order".into(),
+                    account_id: "account-a".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: adaq_paper_trading_core::Side::Buy,
+                    quantity: Decimal::new(3, 0),
+                    filled_quantity: Decimal::new(3, 0),
+                    limit_price: Decimal::new(100, 0),
+                    status: adaq_paper_trading_core::OrderStatus::Filled,
+                    submitted_at_ms: 2,
+                },
+            ],
+            fills: vec![
+                Fill {
+                    fill_id: "own-fill".into(),
+                    order_id: "own-order".into(),
+                    quantity: Decimal::new(2, 0),
+                    price: Decimal::new(100, 0),
+                    fee: Decimal::ZERO,
+                    fee_asset: Some("BTC".into()),
+                    fee_quote: Some(Decimal::ZERO),
+                    fee_amount: Some(Decimal::new(1, 1)),
+                    evidence: FillEvidence::TradeObserved,
+                    occurred_at_ms: 2,
+                },
+                Fill {
+                    fill_id: "external-fill".into(),
+                    order_id: "external-order".into(),
+                    quantity: Decimal::new(3, 0),
+                    price: Decimal::new(100, 0),
+                    fee: Decimal::ZERO,
+                    fee_asset: Some("USDT".into()),
+                    fee_quote: Some(Decimal::ZERO),
+                    fee_amount: Some(Decimal::ZERO),
+                    evidence: FillEvidence::TradeObserved,
+                    occurred_at_ms: 2,
+                },
+            ],
+            provider_evidence: vec![ExecutionOutcome::Accepted(ProviderEvidence {
+                provider: AdapterKind::OkxDemo,
+                operation_id: "bot-bot-a-order-1".into(),
+                local_order_id: Some("own-order".into()),
+                provider_order_id: Some("provider-own".into()),
+                status: "filled".into(),
+                error_code: None,
+                observed_at_ms: 2,
+            })],
+            risk_decisions: Vec::new(),
+            restart_required: false,
+        };
+
+        let position = bot_owned_position(&account, "bot-a", "okx:BTC-USDT");
+        assert_eq!(position.quantity, Decimal::new(19, 1));
+        assert_eq!(position.sellable_quantity, Decimal::new(19, 1));
+
+        assert!(account_is_reconciled_and_quiet(Some(&account)));
+        let mut uncertain = account.clone();
+        uncertain
+            .provider_evidence
+            .push(ExecutionOutcome::Uncertain(ProviderEvidence {
+                provider: AdapterKind::OkxDemo,
+                operation_id: "uncertain-operation".into(),
+                local_order_id: None,
+                provider_order_id: None,
+                status: "unknown".into(),
+                error_code: Some("provider-timeout".into()),
+                observed_at_ms: 3,
+            }));
+        assert!(!account_is_reconciled_and_quiet(Some(&uncertain)));
+        let mut restarted = account;
+        restarted.restart_required = true;
+        assert!(!account_is_reconciled_and_quiet(Some(&restarted)));
     }
 }
