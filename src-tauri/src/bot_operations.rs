@@ -4696,6 +4696,23 @@ fn start_bot(
                 "OKX Demo account evidence was refreshed before risk became available.",
                 Some(&bundle.account_id),
             )?;
+            if let Err(error) = observe_worker_recovery(
+                &local,
+                user_id,
+                &request.bot_id,
+                &bundle,
+                &attempt_id,
+            ) {
+                return fail_active(
+                    &supervisor,
+                    bots,
+                    user_id,
+                    &request.bot_id,
+                    &attempt_id,
+                    "worker-recovery-evidence-failed",
+                    &error,
+                );
+            }
             if let Err(error) = local.operations.observe(crate::operations::HealthObservation {
                 user_id: user_id.to_owned(),
                 entity_id: request.bot_id.clone(),
@@ -4939,6 +4956,23 @@ fn resume_bot(
                 &error,
             );
         }
+        if let Err(error) = observe_worker_recovery(
+            &local,
+            user_id,
+            &request.bot_id,
+            &bundle,
+            view.current_attempt_id.as_deref().unwrap_or("resume"),
+        ) {
+            return fail_active(
+                &supervisor,
+                bots,
+                user_id,
+                &request.bot_id,
+                view.current_attempt_id.as_deref().unwrap_or("resume"),
+                "worker-recovery-evidence-failed",
+                &error,
+            );
+        }
         transition_pair(
             &supervisor,
             bots,
@@ -4964,6 +4998,41 @@ fn resume_bot(
             None,
         ))
     })
+}
+
+fn observe_worker_recovery(
+    local: &LocalResearchState,
+    user_id: &str,
+    bot_id: &str,
+    bundle: &BotDeploymentBundle,
+    attempt_id: &str,
+) -> Result<(), String> {
+    local
+        .operations
+        .observe(crate::operations::HealthObservation {
+            user_id: user_id.to_owned(),
+            entity_id: bot_id.to_owned(),
+            dimension: crate::operations::HealthDimension::Worker,
+            state: crate::operations::HealthState::Healthy,
+            condition: "worker_fault".into(),
+            evidence: serde_json::json!({
+                "botId": bot_id,
+                "attemptId": attempt_id,
+                "bundleId": bundle.identity,
+                "recovery": "worker-restarted-and-account-reconciled",
+            }),
+            required: true,
+            observed_at_ms: adaq_bot_runtime::unix_now_ms(),
+            event_kind: Some("worker.fault-recovered".into()),
+            evidence_id: Some(attempt_id.to_owned()),
+            correlation_id: Some(bundle.identity.clone()),
+            causation_id: Some(bundle.market_data_snapshot_id.clone()),
+            diagnostic: Some(
+                "A new Worker completed account reconciliation before risk enablement.".into(),
+            ),
+            metrics: BTreeMap::new(),
+        })
+        .map(|_| ())
 }
 
 fn stop_bot(

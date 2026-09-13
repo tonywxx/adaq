@@ -4,8 +4,9 @@
 //! macOS Keychain, Windows Credential Manager, or the Linux Secret Service
 //! depending on the platform. Tests use the in-memory store; both implement
 //! the same `SecretStore` trait, so no test path ever touches the OS store.
-//! The opt-in `local-env-credentials` build reads only the repository `.env`
-//! for local OKX Demo tests and never falls back to the OS store.
+//! Debug local builds and the explicit `local-env-credentials` build read only
+//! the repository `.env` for local OKX Demo tests and never fall back to the
+//! OS store.
 //!
 //! Keep the `apple-native`/`windows-native`/`sync-secret-service` features
 //! in Cargo.toml: without a matching platform feature, keyring silently
@@ -14,14 +15,14 @@
 #[cfg(all(feature = "local-env-credentials", not(debug_assertions)))]
 compile_error!("local-env-credentials is restricted to Debug local tests");
 
-#[cfg(any(test, feature = "local-env-credentials"))]
+#[cfg(any(test, debug_assertions, feature = "local-env-credentials"))]
 use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::Mutex;
-#[cfg(feature = "local-env-credentials")]
+#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
 use std::{env, fs, path::Path};
 
-#[cfg(not(feature = "local-env-credentials"))]
+#[cfg(not(any(debug_assertions, feature = "local-env-credentials")))]
 const KEYRING_SERVICE: &str = "adaq";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,12 +39,12 @@ pub(crate) trait SecretStore: Send + Sync {
     fn delete(&self, entry: &str) -> Result<(), SecretStoreError>;
 }
 
-#[cfg(feature = "local-env-credentials")]
+#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
 pub(crate) struct LocalEnvSecretStore {
     credential_json: String,
 }
 
-#[cfg(feature = "local-env-credentials")]
+#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
 impl LocalEnvSecretStore {
     pub(crate) fn load() -> Result<Self, String> {
         let values = load_local_env()?;
@@ -53,7 +54,7 @@ impl LocalEnvSecretStore {
     }
 }
 
-#[cfg(feature = "local-env-credentials")]
+#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
 impl SecretStore for LocalEnvSecretStore {
     fn set(&self, _entry: &str, _value: &str) -> Result<(), SecretStoreError> {
         Err(SecretStoreError::Unavailable(
@@ -72,7 +73,7 @@ impl SecretStore for LocalEnvSecretStore {
     }
 }
 
-#[cfg(feature = "local-env-credentials")]
+#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
 fn load_local_env() -> Result<HashMap<String, String>, String> {
     let mut locations = Vec::new();
     if let Ok(current_dir) = env::current_dir() {
@@ -93,14 +94,14 @@ fn load_local_env() -> Result<HashMap<String, String>, String> {
     Err("Local OKX Demo test requires a repository root".to_owned())
 }
 
-#[cfg(feature = "local-env-credentials")]
+#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
 fn read_env_file(path: &Path) -> Result<HashMap<String, String>, String> {
     let content = fs::read_to_string(path)
         .map_err(|_| "Local OKX Demo test requires a readable .env file".to_owned())?;
     Ok(parse_local_env(&content))
 }
 
-#[cfg(feature = "local-env-credentials")]
+#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
 fn parse_local_env(content: &str) -> HashMap<String, String> {
     content
         .lines()
@@ -130,7 +131,7 @@ fn parse_local_env(content: &str) -> HashMap<String, String> {
         .collect()
 }
 
-#[cfg(feature = "local-env-credentials")]
+#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
 fn credential_json_from_values(values: &HashMap<String, String>) -> Result<String, String> {
     let required = |name: &str| {
         values
@@ -149,10 +150,10 @@ fn credential_json_from_values(values: &HashMap<String, String>) -> Result<Strin
 }
 
 /// macOS Keychain / Windows Credential Manager / Linux Secret Service.
-#[cfg(not(feature = "local-env-credentials"))]
+#[cfg(not(any(debug_assertions, feature = "local-env-credentials")))]
 pub(crate) struct KeyringSecretStore;
 
-#[cfg(not(feature = "local-env-credentials"))]
+#[cfg(not(any(debug_assertions, feature = "local-env-credentials")))]
 impl SecretStore for KeyringSecretStore {
     fn set(&self, entry: &str, value: &str) -> Result<(), SecretStoreError> {
         let credential = keyring::Entry::new(KEYRING_SERVICE, entry)

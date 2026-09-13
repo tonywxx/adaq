@@ -2099,6 +2099,7 @@ type WatchTask<E> =
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashSet,
         io::{Read, Write},
         net::TcpListener,
         sync::mpsc,
@@ -2282,15 +2283,17 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mut tx = Some(tx);
         let handle = tokio::spawn(async move {
-            let _ = client.stream_trades(&["BTC-USDT".to_owned()], |event| match event {
-                TradeStreamEvent::Snapshot(trade) => {
-                    if let Some(tx) = tx.take() {
-                        let _ = tx.send(trade);
+            let _ = client
+                .stream_trades(&["BTC-USDT".to_owned()], |event| match event {
+                    TradeStreamEvent::Snapshot(trade) => {
+                        if let Some(tx) = tx.take() {
+                            let _ = tx.send(trade);
+                        }
+                        false
                     }
-                    false
-                }
-                _ => true,
-            });
+                    _ => true,
+                })
+                .await;
         });
         let trade = tokio::time::timeout(std::time::Duration::from_secs(20), rx)
             .await
@@ -2299,6 +2302,46 @@ mod tests {
         handle.abort();
         assert_eq!(trade.code, "BTC-USDT");
         assert!(trade.price > Decimal::ZERO);
+    }
+
+    // Live integration test: validates the exact three-symbol subscription
+    // used by the paper experiment trade stream.
+    #[tokio::test]
+    #[ignore]
+    async fn okx_client_streams_market_trades_for_three_symbols() {
+        let codes = [
+            "BTC-USDT".to_owned(),
+            "ETH-USDT".to_owned(),
+            "SOL-USDT".to_owned(),
+        ];
+        let expected = codes.iter().cloned().collect::<HashSet<_>>();
+        let client = OkxClient::new("https://www.okx.com");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut tx = Some(tx);
+        let handle = tokio::spawn(async move {
+            let mut seen = HashSet::new();
+            let _ = client
+                .stream_trades(&codes, |event| match event {
+                    TradeStreamEvent::Snapshot(trade) => {
+                        seen.insert(trade.code.clone());
+                        if seen == expected {
+                            let _ = tx.take().map(|tx| tx.send(seen.clone()));
+                            return false;
+                        }
+                        true
+                    }
+                    TradeStreamEvent::Error(error) => {
+                        eprintln!("trade stream error: {error}");
+                        true
+                    }
+                    _ => true,
+                })
+                .await;
+        });
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(20), rx)
+            .await
+            .expect("timed out waiting for live OKX trades");
+        handle.abort();
     }
 
     // Live integration test: see note on the ticker variant above.

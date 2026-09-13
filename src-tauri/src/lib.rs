@@ -582,6 +582,7 @@ fn system_dashboard_for_user(
     let local = app.state::<Arc<LocalResearchState>>();
     let bots_store = app.state::<Arc<bot_operations::BotStore>>();
     let mut unavailable = Vec::new();
+    recover_inactive_market_contexts(app, user_id, local.as_ref())?;
 
     let health = match local.operations.health_for_user(user_id) {
         Ok(value) => value,
@@ -1160,6 +1161,54 @@ fn observe_operational_inputs(app: &AppHandle, user_id: &str) -> Result<(), Stri
             .map(|alert| alert.alert_id)
             .ok_or_else(|| "Local System Freeze All alert was not retained".to_owned())?;
         let _ = apply_freeze_all_for_event(app, user_id, event.event_id, alert_id)?;
+    }
+    recover_inactive_market_contexts(app, user_id, local.as_ref())?;
+    Ok(())
+}
+
+fn recover_inactive_market_contexts(
+    app: &AppHandle,
+    user_id: &str,
+    local: &LocalResearchState,
+) -> Result<(), String> {
+    let bots = app.state::<Arc<bot_operations::BotStore>>();
+    let running_contexts = bots
+        .list(user_id)?
+        .into_iter()
+        .filter(|bot| bot.state == adaq_bot_runtime::LifecycleState::Running)
+        .map(|bot| bot.bundle.market_data_snapshot_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let now_ms = unix_now_ms();
+    for alert in local.operations.alerts_for_user(user_id)? {
+        if alert.state == operations::AlertState::Resolved
+            || alert.dimension != operations::HealthDimension::MarketData
+            || alert.condition != "market_data_context"
+            || alert.safety_action != operations::SafetyAction::SkipDecision
+            || running_contexts.contains(&alert.entity_id)
+        {
+            continue;
+        }
+        local.operations.observe(operations::HealthObservation {
+            user_id: user_id.to_owned(),
+            entity_id: alert.entity_id.clone(),
+            dimension: operations::HealthDimension::MarketData,
+            state: operations::HealthState::Healthy,
+            condition: "market_data_context".into(),
+            evidence: serde_json::json!({
+                "entityId": alert.entity_id,
+                "recovery": "no-running-bot-requires-context",
+            }),
+            required: false,
+            observed_at_ms: now_ms,
+            event_kind: Some("market.data-context-recovered".into()),
+            evidence_id: Some(format!("inactive-market-context-{}", alert.alert_id)),
+            correlation_id: Some(alert.alert_id),
+            causation_id: Some(alert.last_event_id),
+            diagnostic: Some(
+                "Host confirmed no Running Bot retains this Market Data context; the stale risk gate was released.".into(),
+            ),
+            metrics: BTreeMap::new(),
+        })?;
     }
     Ok(())
 }
@@ -5271,6 +5320,7 @@ struct MarketSubscribeTickersRequest {
 #[serde(rename_all = "camelCase")]
 struct MarketSubscribeRealtimeRequest {
     src: String,
+    #[serde(default)]
     user_id: String,
     codes: Vec<String>,
     subscription_id: String,
@@ -5343,6 +5393,78 @@ struct ActiveTradeStream {
 
 #[derive(Default)]
 struct TradeStreamState(Mutex<Option<ActiveTradeStream>>);
+
+#[derive(Default)]
+struct TradeDispatchQueue {
+    pending: BTreeMap<String, String>,
+    running: bool,
+}
+
+#[derive(Default)]
+struct TradeDispatchState(Arc<Mutex<BTreeMap<String, TradeDispatchQueue>>>);
+
+fn enqueue_trade_dispatch(
+    app: &AppHandle,
+    dispatches: &Arc<Mutex<BTreeMap<String, TradeDispatchQueue>>>,
+    user_id: &str,
+    instrument_code: &str,
+    trade_id: &str,
+) -> Result<(), String> {
+    let should_spawn = {
+        let mut queues = dispatches.lock().map_err(|error| error.to_string())?;
+        let queue = queues.entry(user_id.to_owned()).or_default();
+        queue
+            .pending
+            .insert(instrument_code.to_owned(), trade_id.to_owned());
+        if queue.running {
+            false
+        } else {
+            queue.running = true;
+            true
+        }
+    };
+    if !should_spawn {
+        return Ok(());
+    }
+
+    let dispatches = Arc::clone(dispatches);
+    let task_app = app.clone();
+    let task_user_id = user_id.to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        loop {
+            let next = {
+                let mut queues = match dispatches.lock() {
+                    Ok(queues) => queues,
+                    Err(_) => return,
+                };
+                let Some(queue) = queues.get_mut(&task_user_id) else {
+                    return;
+                };
+                let next = queue
+                    .pending
+                    .iter()
+                    .next()
+                    .map(|(instrument_code, trade_id)| (instrument_code.clone(), trade_id.clone()));
+                if let Some((instrument_code, _)) = &next {
+                    queue.pending.remove(instrument_code);
+                } else {
+                    queue.running = false;
+                }
+                next
+            };
+            let Some((instrument_code, trade_id)) = next else {
+                break;
+            };
+            let _ = bot_operations::dispatch_trade_event(
+                &task_app,
+                &task_user_id,
+                &instrument_code,
+                &trade_id,
+            );
+        }
+    });
+    Ok(())
+}
 
 struct ActiveLevel2Stream {
     user_id: String,
@@ -5693,6 +5815,7 @@ fn market_subscribe_trades(
     auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
     streams: State<'_, TradeStreamState>,
+    dispatches: State<'_, TradeDispatchState>,
 ) -> Result<(), DataError> {
     request.user_id = auth
         .user_id_for_window(window.label())
@@ -5710,6 +5833,7 @@ fn market_subscribe_trades(
     let task_path = app.state::<Arc<LocalResearchState>>().okx.clone();
     let task_channel = on_event.clone();
     let task_app = app.clone();
+    let task_dispatches = dispatches.0.clone();
     let user_id = request.user_id;
     let stream_user_id = user_id.clone();
     let codes = request.codes;
@@ -5724,16 +5848,17 @@ fn market_subscribe_trades(
                 };
                 let delivered = task_channel.send(event).is_ok();
                 if let Some((instrument_code, trade_id)) = trade_identity {
-                    let dispatch_app = task_app.clone();
-                    let dispatch_user_id = user_id.clone();
-                    tauri::async_runtime::spawn_blocking(move || {
-                        let _ = bot_operations::dispatch_trade_event(
-                            &dispatch_app,
-                            &dispatch_user_id,
-                            &instrument_code,
-                            &trade_id,
-                        );
-                    });
+                    if enqueue_trade_dispatch(
+                        &task_app,
+                        &task_dispatches,
+                        &user_id,
+                        &instrument_code,
+                        &trade_id,
+                    )
+                    .is_err()
+                    {
+                        return false;
+                    }
                 }
                 delivered
             })
@@ -6303,6 +6428,7 @@ pub fn run() {
             app.manage(TickerStreamState::default());
             app.manage(BarStreamState::default());
             app.manage(TradeStreamState::default());
+            app.manage(TradeDispatchState::default());
             app.manage(Level2StreamState::default());
             let app_data_dir = app.path().app_data_dir()?;
             app.manage(auth::AuthState::from_environment());
@@ -6692,7 +6818,10 @@ fn string(error: impl std::fmt::Display) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{WasmLoader, factor_abi, has_operational_responsibility, strategy_abi};
+    use super::{
+        MarketSubscribeRealtimeRequest, WasmLoader, factor_abi, has_operational_responsibility,
+        strategy_abi,
+    };
     use std::path::{Path, PathBuf};
 
     fn fixture(name: &str) -> String {
@@ -6785,6 +6914,32 @@ mod tests {
         assert!(has_operational_responsibility(1, false, false));
         assert!(has_operational_responsibility(0, true, false));
         assert!(has_operational_responsibility(0, false, true));
+    }
+
+    #[test]
+    fn realtime_subscription_request_allows_auth_to_supply_user_id() {
+        let request: MarketSubscribeRealtimeRequest = serde_json::from_value(serde_json::json!({
+            "src": "okx",
+            "codes": ["BTC-USDT", "ETH-USDT", "SOL-USDT"],
+            "subscriptionId": "subscription"
+        }))
+        .unwrap();
+
+        assert!(request.user_id.is_empty());
+    }
+
+    #[test]
+    fn trade_dispatch_queue_keeps_only_the_latest_trade_per_instrument() {
+        let mut queue = super::TradeDispatchQueue::default();
+        queue.pending.insert("BTC-USDT".into(), "trade-1".into());
+        queue.pending.insert("ETH-USDT".into(), "trade-2".into());
+        queue.pending.insert("BTC-USDT".into(), "trade-3".into());
+
+        assert_eq!(queue.pending.len(), 2);
+        assert_eq!(
+            queue.pending.get("BTC-USDT").map(String::as_str),
+            Some("trade-3")
+        );
     }
 
     #[test]

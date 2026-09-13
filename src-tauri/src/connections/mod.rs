@@ -25,9 +25,9 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[cfg(not(feature = "local-env-credentials"))]
+#[cfg(not(any(debug_assertions, feature = "local-env-credentials")))]
 use secret_store::KeyringSecretStore;
-#[cfg(feature = "local-env-credentials")]
+#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
 use secret_store::LocalEnvSecretStore;
 use secret_store::SecretStore;
 use tester::{
@@ -293,13 +293,13 @@ pub(crate) struct ConnectionManager {
 }
 
 impl ConnectionManager {
-    /// Opens the Connection domain with production dependencies. Default
-    /// builds use the OS secret store; the Debug-only local acceptance build
-    /// uses the read-only repository `.env` store for OKX Demo tests.
+    /// Opens the Connection domain with production dependencies. Release
+    /// builds use the OS secret store; Debug local builds use the read-only
+    /// repository `.env` store for OKX Demo tests.
     pub(crate) fn open_production(database: Arc<Mutex<Connection>>) -> Result<Self, String> {
-        #[cfg(feature = "local-env-credentials")]
+        #[cfg(any(debug_assertions, feature = "local-env-credentials"))]
         let secrets: Arc<dyn SecretStore> = Arc::new(LocalEnvSecretStore::load()?);
-        #[cfg(not(feature = "local-env-credentials"))]
+        #[cfg(not(any(debug_assertions, feature = "local-env-credentials")))]
         let secrets: Arc<dyn SecretStore> = Arc::new(KeyringSecretStore);
 
         Self::open(
