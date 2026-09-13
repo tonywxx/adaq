@@ -875,10 +875,11 @@ fn validate_profile(
 }
 
 fn qualification_identity(qualification: &StrategyQualification) -> serde_json::Value {
+    // EMA qualification hashes include instrument-specific snapshot/replay evidence;
+    // compare the frozen Strategy contract instead of that per-instrument evidence hash.
     json!({
         "candidateId": qualification.candidate_id,
         "candidateRevision": qualification.candidate_revision,
-        "candidateRevisionHash": qualification.candidate_revision_hash,
         "packageArchiveSha256": qualification.package.package_archive_sha256,
         "packageWasmSha256": qualification.package.package_wasm_sha256,
         "parameters": qualification.package.parameters,
