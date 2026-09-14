@@ -183,6 +183,32 @@ impl BotSupervisor {
         Ok(())
     }
 
+    pub(crate) fn fault(
+        &self,
+        user_id: &str,
+        entity_id: &str,
+        bot_id: &str,
+        code: &str,
+        detail: &str,
+    ) -> Result<(), String> {
+        if let Ok(mut workers) = self.workers.lock()
+            && let Some(mut managed) = workers.remove(bot_id)
+        {
+            managed.worker.terminate_for_fault(code);
+        }
+        self.observe(
+            user_id,
+            entity_id,
+            HealthState::Critical,
+            "worker_lifecycle_faulted",
+            json!({
+                "botId": bot_id,
+                "code": crate::bot_operations::safe_detail(code),
+                "detail": crate::bot_operations::safe_detail(detail),
+            }),
+        )
+    }
+
     pub(crate) fn decision(
         &self,
         user_id: &str,

@@ -2397,6 +2397,21 @@ pub enum LifecycleState {
     Faulted,
 }
 
+impl LifecycleState {
+    pub fn permits_transition_to(self, to: Self) -> bool {
+        matches!(
+            (self, to),
+            (Self::Starting, Self::Reconciling | Self::Faulted)
+                | (Self::Reconciling, Self::WarmingUp | Self::Faulted)
+                | (Self::WarmingUp, Self::Running | Self::Faulted)
+                | (Self::Running, Self::Pausing | Self::Stopping | Self::Faulted)
+                | (Self::Pausing, Self::Paused | Self::Faulted)
+                | (Self::Paused, Self::Reconciling | Self::Stopping | Self::Faulted)
+                | (Self::Stopping, Self::Stopped | Self::Faulted)
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum StopPolicy {
     KeepPosition,
@@ -2446,32 +2461,7 @@ impl RuntimeAttempt {
         actor: impl Into<String>,
         reason: impl Into<String>,
     ) -> Result<(), RuntimeError> {
-        let valid = matches!(
-            (self.state, to),
-            (
-                LifecycleState::Starting,
-                LifecycleState::Reconciling | LifecycleState::Faulted
-            ) | (
-                LifecycleState::Reconciling,
-                LifecycleState::WarmingUp | LifecycleState::Faulted
-            ) | (
-                LifecycleState::WarmingUp,
-                LifecycleState::Running | LifecycleState::Faulted
-            ) | (
-                LifecycleState::Running,
-                LifecycleState::Pausing | LifecycleState::Stopping | LifecycleState::Faulted
-            ) | (
-                LifecycleState::Pausing,
-                LifecycleState::Paused | LifecycleState::Faulted
-            ) | (
-                LifecycleState::Paused,
-                LifecycleState::Reconciling | LifecycleState::Stopping | LifecycleState::Faulted
-            ) | (
-                LifecycleState::Stopping,
-                LifecycleState::Stopped | LifecycleState::Faulted
-            )
-        );
-        if !valid {
+        if !self.state.permits_transition_to(to) {
             return Err(RuntimeError::InvalidTransition);
         }
         self.events.push(RuntimeEvent {
@@ -2604,6 +2594,12 @@ mod tests {
             attempt.authorize_target(&clock, "bar-1", 111),
             Err(RuntimeError::DeadlineMissed)
         );
+    }
+
+    #[test]
+    fn lifecycle_transition_rules_are_shared_with_the_host() {
+        assert!(LifecycleState::Running.permits_transition_to(LifecycleState::Pausing));
+        assert!(!LifecycleState::Running.permits_transition_to(LifecycleState::Reconciling));
     }
 
     #[test]

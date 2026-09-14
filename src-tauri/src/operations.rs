@@ -651,6 +651,12 @@ impl OperationsStore {
             .map_err(|e| e.to_string())
     }
 
+    pub fn blocks_new_risk_except_worker(&self, user_id: &str) -> Result<bool, String> {
+        Ok(self.alerts_for_user(user_id)?.iter().any(|alert| {
+            alert.dimension != HealthDimension::Worker && alert.safety_action != SafetyAction::None
+        }))
+    }
+
     pub fn alert_history_for_user(
         &self,
         user_id: &str,
@@ -1749,6 +1755,7 @@ mod tests {
         let (_, a, action) = s.observe(obs(HealthState::Critical, true)).unwrap();
         assert_eq!(action, SafetyAction::FaultAndReconcile);
         assert!(s.blocks_new_risk("u").unwrap());
+        assert!(!s.blocks_new_risk_except_worker("u").unwrap());
         assert_eq!(a.unwrap().severity, AlertSeverity::Critical);
         let event = s.health_for_user("u").unwrap();
         assert_eq!(event.len(), 1);

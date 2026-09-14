@@ -740,6 +740,19 @@ impl BotStore {
             .collect()
     }
 
+    pub(crate) fn account_blocks_new_risk(
+        &self,
+        user_id: &str,
+        account_id: &str,
+    ) -> Result<bool, String> {
+        Ok(self.list(user_id)?.iter().any(|bot| {
+            bot.bundle.account_id == account_id
+                && bot.attempts.last().is_some_and(|attempt| {
+                    attempt.state == LifecycleState::Faulted || attempt.reconciliation_required
+                })
+        }))
+    }
+
     pub(crate) fn get(&self, user_id: &str, bot_id: &str) -> Result<BotView, String> {
         validate_user(user_id)?;
         self.load_record(user_id, bot_id).map(|bot| bot.view())
@@ -964,7 +977,7 @@ impl BotStore {
     ) -> Result<BotView, String> {
         self.mutate(user_id, bot_id, |bot| {
             let attempt = current_attempt_mut(bot)?;
-            if !valid_transition(attempt.state, to) {
+            if !attempt.state.permits_transition_to(to) {
                 return Err(format!(
                     "Invalid Bot lifecycle transition {:?} -> {to:?}",
                     attempt.state
@@ -1247,7 +1260,7 @@ impl BotStore {
             let now = adaq_bot_runtime::unix_now_ms();
             if is_active_state(attempt.state) && attempt.state != LifecycleState::Stopping {
                 let from = attempt.state;
-                if !valid_transition(from, LifecycleState::Stopping) {
+                if !from.permits_transition_to(LifecycleState::Stopping) {
                     return Err("Bot cannot enter Stopping from its current state".into());
                 }
                 attempt.events.push(RuntimeEvent {
@@ -1551,34 +1564,6 @@ fn controls_for(state: LifecycleState) -> BotControlView {
         can_stop: is_active_state(state) || state == LifecycleState::Faulted,
         can_flatten: is_active_state(state) || state == LifecycleState::Faulted,
     }
-}
-
-fn valid_transition(from: LifecycleState, to: LifecycleState) -> bool {
-    matches!(
-        (from, to),
-        (
-            LifecycleState::Starting,
-            LifecycleState::Reconciling | LifecycleState::Faulted
-        ) | (
-            LifecycleState::Reconciling,
-            LifecycleState::WarmingUp | LifecycleState::Faulted
-        ) | (
-            LifecycleState::WarmingUp,
-            LifecycleState::Running | LifecycleState::Faulted
-        ) | (
-            LifecycleState::Running,
-            LifecycleState::Pausing | LifecycleState::Stopping | LifecycleState::Faulted
-        ) | (
-            LifecycleState::Pausing,
-            LifecycleState::Paused | LifecycleState::Faulted
-        ) | (
-            LifecycleState::Paused,
-            LifecycleState::Reconciling | LifecycleState::Stopping | LifecycleState::Faulted
-        ) | (
-            LifecycleState::Stopping,
-            LifecycleState::Stopped | LifecycleState::Faulted
-        )
-    )
 }
 
 fn is_active_state(state: LifecycleState) -> bool {
@@ -2173,7 +2158,10 @@ fn run_bot_decision(
                         metrics: BTreeMap::new(),
                     })?;
                 }
-                if host_batch.is_ok() && local.operations.blocks_new_risk(&user_id)? {
+                if host_batch.is_ok()
+                    && (local.operations.blocks_new_risk_except_worker(&user_id)?
+                        || bots.account_blocks_new_risk(&user_id, &view.bundle.account_id)?)
+                {
                     bots.record_evidence(
                         &user_id,
                         &request.bot_id,
@@ -3391,7 +3379,9 @@ fn execute_target(
     decision_id: &str,
     target: &WorkerTarget,
 ) -> Result<(), String> {
-    if local.operations.blocks_new_risk(user_id)? {
+    if local.operations.blocks_new_risk_except_worker(user_id)?
+        || bots.account_blocks_new_risk(user_id, &bundle.account_id)?
+    {
         return Err("A Host operational safety action is active; new Bot risk is blocked.".into());
     }
     let now_ms = adaq_bot_runtime::unix_now_ms();
@@ -4596,9 +4586,34 @@ fn transition_pair(
     to: LifecycleState,
     reason: &str,
 ) -> Result<(), String> {
-    supervisor.transition(user_id, bot_id, bot_id, to, "host", reason)?;
-    bots.transition(user_id, bot_id, to, "host", reason)?;
+    if let Err(error) = supervisor.transition(user_id, bot_id, bot_id, to, "host", reason) {
+        return fail_transition(supervisor, bots, user_id, bot_id, &error);
+    }
+    if let Err(error) = bots.transition(user_id, bot_id, to, "host", reason) {
+        return fail_transition(supervisor, bots, user_id, bot_id, &error);
+    }
     Ok(())
+}
+
+fn fail_transition(
+    supervisor: &crate::bot_supervisor::BotSupervisor,
+    bots: &BotStore,
+    user_id: &str,
+    bot_id: &str,
+    detail: &str,
+) -> Result<(), String> {
+    let _ = supervisor.fault(
+        user_id,
+        bot_id,
+        bot_id,
+        "lifecycle-transition-failed",
+        detail,
+    );
+    let _ = bots.fault(user_id, bot_id, "lifecycle-transition-failed", detail);
+    Err(format!(
+        "lifecycle-transition-failed: {}",
+        safe_detail(detail)
+    ))
 }
 
 fn fail_active(
@@ -4606,11 +4621,10 @@ fn fail_active(
     bots: &BotStore,
     user_id: &str,
     bot_id: &str,
-    attempt_id: &str,
     code: &str,
     detail: &str,
 ) -> Result<BotView, String> {
-    let _ = supervisor.stop(user_id, bot_id, bot_id, &format!("{attempt_id}:fault"));
+    let _ = supervisor.fault(user_id, bot_id, bot_id, code, detail);
     let _ = bots.fault(user_id, bot_id, code, detail);
     Err(format!("{code}: {}", safe_detail(detail)))
 }
@@ -4642,7 +4656,6 @@ fn start_bot(
                         bots,
                         user_id,
                         &request.bot_id,
-                        &attempt_id,
                         "worker-identity-invalid",
                         &error,
                     );
@@ -4654,7 +4667,6 @@ fn start_bot(
                     bots,
                     user_id,
                     &request.bot_id,
-                    &attempt_id,
                     "worker-start-failed",
                     &error,
                 );
@@ -4672,7 +4684,6 @@ fn start_bot(
                     bots,
                     user_id,
                     &request.bot_id,
-                    &attempt_id,
                     "reconcile-transition-failed",
                     &error,
                 );
@@ -4683,7 +4694,6 @@ fn start_bot(
                     bots,
                     user_id,
                     &request.bot_id,
-                    &attempt_id,
                     "account-reconciliation-required",
                     &error,
                 );
@@ -4708,7 +4718,6 @@ fn start_bot(
                     bots,
                     user_id,
                     &request.bot_id,
-                    &attempt_id,
                     "worker-recovery-evidence-failed",
                     &error,
                 );
@@ -4745,7 +4754,6 @@ fn start_bot(
                     bots,
                     user_id,
                     &request.bot_id,
-                    &attempt_id,
                     "bundle-health-evidence-failed",
                     &error,
                 );
@@ -4763,7 +4771,6 @@ fn start_bot(
                     bots,
                     user_id,
                     &request.bot_id,
-                    &attempt_id,
                     "warmup-transition-failed",
                     &error,
                 );
@@ -4789,7 +4796,6 @@ fn start_bot(
                     bots,
                     user_id,
                     &request.bot_id,
-                    &attempt_id,
                     "running-transition-failed",
                     &error,
                 );
@@ -4826,29 +4832,22 @@ fn pause_bot(
                 LifecycleState::Pausing,
                 "pause-requested",
             )?;
-            if require_reconciled_account(&local, user_id, &bundle).is_err() {
-                let _ = supervisor.transition(
+            if let Err(error) = require_reconciled_account(&local, user_id, &bundle) {
+                let scope = bot_instrument_scope(&bundle);
+                let detail =
+                    match cancel_open_orders(&local, user_id, bots, &request.bot_id, &scope) {
+                        Ok(()) => error,
+                        Err(cancel_error) => format!(
+                            "{error}; pending-order cancellation is unresolved: {cancel_error}"
+                        ),
+                    };
+                return fail_active(
+                    &supervisor,
+                    bots,
                     user_id,
                     &request.bot_id,
-                    &request.bot_id,
-                    LifecycleState::Faulted,
-                    "host",
                     "pause-reconciliation-required",
-                );
-                let _ = bots.fault(
-                    user_id,
-                    &request.bot_id,
-                    "pause-reconciliation-required",
-                    "Pending or unreconciled account evidence prevents a safe Pause.",
-                );
-                let _ = supervisor.stop(
-                    user_id,
-                    &request.bot_id,
-                    &request.bot_id,
-                    &request.command_id,
-                );
-                return Err(
-                    "Pause requires reconciled account evidence and no pending orders.".into(),
+                    &detail,
                 );
             }
             transition_pair(
@@ -4896,8 +4895,7 @@ fn resume_bot(
                     bots,
                     user_id,
                     &request.bot_id,
-                    view.current_attempt_id.as_deref().unwrap_or("resume"),
-                    "worker-identity-invalid",
+                "worker-identity-invalid",
                     &error,
                 );
             }
@@ -4913,7 +4911,6 @@ fn resume_bot(
                 bots,
                 user_id,
                 &request.bot_id,
-                view.current_attempt_id.as_deref().unwrap_or("resume"),
                 "worker-stop-failed",
                 &error,
             );
@@ -4924,7 +4921,6 @@ fn resume_bot(
                 bots,
                 user_id,
                 &request.bot_id,
-                view.current_attempt_id.as_deref().unwrap_or("resume"),
                 "worker-start-failed",
                 &error,
             );
@@ -4951,7 +4947,6 @@ fn resume_bot(
                 bots,
                 user_id,
                 &request.bot_id,
-                view.current_attempt_id.as_deref().unwrap_or("resume"),
                 "resume-reconciliation-required",
                 &error,
             );
@@ -4968,7 +4963,6 @@ fn resume_bot(
                 bots,
                 user_id,
                 &request.bot_id,
-                view.current_attempt_id.as_deref().unwrap_or("resume"),
                 "worker-recovery-evidence-failed",
                 &error,
             );
@@ -5078,13 +5072,27 @@ fn stop_bot(
                     &request.command_id,
                 )
             {
-                let _ = bots.fault(
+                let scope = bot_instrument_scope(&view.bundle);
+                let detail = match cancel_open_orders(
+                    &local,
+                    user_id,
+                    bots,
+                    &request.bot_id,
+                    &scope,
+                ) {
+                    Ok(()) => error,
+                    Err(cancel_error) => format!(
+                        "{error}; pending-order cancellation is unresolved: {cancel_error}"
+                    ),
+                };
+                return fail_active(
+                    &supervisor,
+                    bots,
                     user_id,
                     &request.bot_id,
                     "worker-stop-failed",
-                    &error,
+                    &detail,
                 );
-                return Err("Worker stop failed; the Bot is Faulted and requires recovery.".into());
             }
             let account = match request.policy {
                 BotStopPolicy::KeepPosition => {
@@ -5842,6 +5850,31 @@ mod tests {
             .unwrap();
         assert_eq!(first.current_attempt_id, second.current_attempt_id);
         assert_eq!(second.state, LifecycleState::Running);
+    }
+
+    #[test]
+    fn faulted_attempt_blocks_new_risk_for_its_account_only() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = store(database);
+        store
+            .deploy("user-a", bundle("bot-a", "account-a"))
+            .unwrap();
+        store
+            .deploy("user-a", bundle("bot-b", "account-b"))
+            .unwrap();
+        store.begin_attempt("user-a", "bot-a", false).unwrap();
+        store.fault("user-a", "bot-a", "test", "test").unwrap();
+
+        assert!(
+            store
+                .account_blocks_new_risk("user-a", "account-a")
+                .unwrap()
+        );
+        assert!(
+            !store
+                .account_blocks_new_risk("user-a", "account-b")
+                .unwrap()
+        );
     }
 
     #[test]
