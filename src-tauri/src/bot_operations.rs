@@ -1974,9 +1974,13 @@ pub(crate) async fn bot_start(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || start_bot(&app, &user_id, &request, false))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let view = start_bot(&app, &user_id, &request, false)?;
+        crate::refresh_bot_trade_stream(&app, &user_id)?;
+        Ok(view)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1987,9 +1991,13 @@ pub(crate) async fn bot_retry(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || start_bot(&app, &user_id, &request, true))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let view = start_bot(&app, &user_id, &request, true)?;
+        crate::refresh_bot_trade_stream(&app, &user_id)?;
+        Ok(view)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2000,9 +2008,13 @@ pub(crate) async fn bot_pause(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || pause_bot(&app, &user_id, &request))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let view = pause_bot(&app, &user_id, &request)?;
+        crate::refresh_bot_trade_stream(&app, &user_id)?;
+        Ok(view)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2013,9 +2025,13 @@ pub(crate) async fn bot_resume(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || resume_bot(&app, &user_id, &request))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let view = resume_bot(&app, &user_id, &request)?;
+        crate::refresh_bot_trade_stream(&app, &user_id)?;
+        Ok(view)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2026,9 +2042,13 @@ pub(crate) async fn bot_stop(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || stop_bot(&app, &user_id, request, true))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let view = stop_bot(&app, &user_id, request, true)?;
+        crate::refresh_bot_trade_stream(&app, &user_id)?;
+        Ok(view)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 // The Webview may request a Host decision, but it cannot provide feature
@@ -2113,7 +2133,17 @@ fn run_bot_decision(
                     request.trade_id.as_deref(),
                 );
                 if let Err(error) = &host_batch {
-                    local.operations.observe(crate::operations::HealthObservation {
+                    if error == "The retained OKX Trade is stale." {
+                        bots.record_evidence(
+                            &user_id,
+                            &request.bot_id,
+                            "market-data",
+                            "stale-trade-skipped",
+                            "A replayed Trade arrived after the decision deadline; no Worker or order work was authorized.",
+                            Some(&request.request_id),
+                        )?;
+                    } else {
+                        local.operations.observe(crate::operations::HealthObservation {
                         user_id: user_id.into(),
                         entity_id: view.bundle.market_data_snapshot_id.clone(),
                         dimension: crate::operations::HealthDimension::MarketData,
@@ -2134,7 +2164,8 @@ fn run_bot_decision(
                         causation_id: Some(view.bundle.identity.clone()),
                         diagnostic: Some(safe_detail(error)),
                         metrics: BTreeMap::new(),
-                    })?;
+                        })?;
+                    }
                 } else {
                     local.operations.observe(crate::operations::HealthObservation {
                         user_id: user_id.into(),
@@ -2618,9 +2649,11 @@ fn host_event_clock(
         || retained.received_at_ms > now
         || retained.available_at_ms < trade.timestamp_ms
         || retained.available_at_ms > retained.received_at_ms
-        || now.saturating_sub(retained.received_at_ms) > DECISION_DEADLINE_GRACE_MS
     {
-        return Err("The retained OKX Trade is stale or has invalid availability metadata.".into());
+        return Err("The retained OKX Trade has invalid availability metadata.".into());
+    }
+    if now.saturating_sub(retained.received_at_ms) > DECISION_DEADLINE_GRACE_MS {
+        return Err("The retained OKX Trade is stale.".into());
     }
     let (deadline_ms, next_execution_ms) = host_schedule_window(retained.received_at_ms, now)?;
     Ok(DecisionClock::TradeEvent {

@@ -368,7 +368,10 @@ impl PaperExperimentStore {
         validate_user(user_id)?;
         let database = self.database.lock().map_err(|error| error.to_string())?;
         let mut statement = database
-            .prepare("SELECT payload_json FROM paper_experiments WHERE user_id=?1")
+            .prepare(
+                "SELECT payload_json FROM paper_experiments
+                 WHERE user_id=?1 AND state IN ('preparing', 'armed', 'running', 'stopping')",
+            )
             .map_err(|error| error.to_string())?;
         for row in statement
             .query_map([user_id], |row| row.get::<_, String>(0))
@@ -567,31 +570,14 @@ impl PaperExperimentStore {
         bot_id: &str,
         now_ms: i64,
     ) -> Result<bool, String> {
-        validate_user(user_id)?;
-        let database = self.database.lock().map_err(|error| error.to_string())?;
-        let mut statement = database
-            .prepare("SELECT payload_json FROM paper_experiments WHERE user_id=?1")
-            .map_err(|error| error.to_string())?;
-        for row in statement
-            .query_map([user_id], |row| row.get::<_, String>(0))
-            .map_err(|error| error.to_string())?
-        {
-            let payload = row.map_err(|error| error.to_string())?;
-            let experiment: PaperExperiment =
-                serde_json::from_str(&payload).map_err(|error| error.to_string())?;
-            if experiment
-                .instruments
-                .iter()
-                .any(|binding| binding.bot_id.as_deref() == Some(bot_id))
-            {
-                let risk_window_open = experiment.state == PaperExperimentState::Running
-                    && experiment.started_at_ms.is_some()
-                    && now_ms >= experiment.observation_start_ms
-                    && now_ms < experiment.observation_end_ms;
-                return Ok(!risk_window_open);
-            }
-        }
-        Ok(false)
+        let Some(experiment) = self.for_bot(user_id, bot_id)? else {
+            return Ok(false);
+        };
+        let risk_window_open = experiment.state == PaperExperimentState::Running
+            && experiment.started_at_ms.is_some()
+            && now_ms >= experiment.observation_start_ms
+            && now_ms < experiment.observation_end_ms;
+        Ok(!risk_window_open)
     }
 
     pub(crate) fn common_warmup_blocked_for_bot(
@@ -2738,6 +2724,22 @@ mod tests {
                 .decision_blocked_for_bot("alice", "bot-1", 200)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn completed_experiment_does_not_block_a_reused_bot() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperExperimentStore::open(database).unwrap();
+        let mut experiment = experiment();
+        experiment.state = PaperExperimentState::Completed;
+        store.create(&experiment).unwrap();
+
+        assert!(
+            !store
+                .decision_blocked_for_bot("alice", "bot-1", 400)
+                .unwrap()
+        );
+        assert!(!store.risk_blocked_for_bot("alice", "bot-1", 400).unwrap());
     }
 
     #[test]

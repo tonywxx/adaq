@@ -42,7 +42,7 @@ use adaq_paper_trading_core::ExecutionOutcome;
 use rust_decimal::Decimal;
 use serde::Serialize;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
 };
@@ -5394,6 +5394,14 @@ struct ActiveTradeStream {
 #[derive(Default)]
 struct TradeStreamState(Mutex<Option<ActiveTradeStream>>);
 
+struct ActiveBotTradeStream {
+    codes: BTreeSet<String>,
+    task: tauri::async_runtime::JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct BotTradeStreamState(Mutex<BTreeMap<String, ActiveBotTradeStream>>);
+
 #[derive(Default)]
 struct TradeDispatchQueue {
     pending: BTreeMap<String, String>,
@@ -5402,6 +5410,77 @@ struct TradeDispatchQueue {
 
 #[derive(Default)]
 struct TradeDispatchState(Arc<Mutex<BTreeMap<String, TradeDispatchQueue>>>);
+
+fn running_ema_trade_codes(views: &[bot_operations::BotView]) -> BTreeSet<String> {
+    views
+        .iter()
+        .filter_map(|view| running_ema_trade_code(view.state, &view.bundle.schedule))
+        .collect()
+}
+
+fn running_ema_trade_code(
+    state: adaq_bot_runtime::LifecycleState,
+    schedule: &bot_operations::BotSchedule,
+) -> Option<String> {
+    (state == adaq_bot_runtime::LifecycleState::Running)
+        .then(|| match schedule {
+            bot_operations::BotSchedule::EmaDoubleCross { instrument_id } => Some(
+                instrument_id
+                    .strip_prefix("okx:")
+                    .unwrap_or(instrument_id)
+                    .to_owned(),
+            ),
+            _ => None,
+        })
+        .flatten()
+}
+
+pub(crate) fn refresh_bot_trade_stream(app: &AppHandle, user_id: &str) -> Result<(), String> {
+    let bots = app.state::<Arc<bot_operations::BotStore>>();
+    let codes = running_ema_trade_codes(&bots.list(user_id)?);
+    let streams = app.state::<BotTradeStreamState>();
+    let mut active = streams.0.lock().map_err(|error| error.to_string())?;
+    if active
+        .get(user_id)
+        .is_some_and(|stream| stream.codes == codes)
+    {
+        return Ok(());
+    }
+    if let Some(previous) = active.remove(user_id) {
+        previous.task.abort();
+    }
+    if codes.is_empty() {
+        return Ok(());
+    }
+
+    let local = Arc::clone(&app.state::<Arc<LocalResearchState>>());
+    let dispatches = Arc::clone(&app.state::<TradeDispatchState>().0);
+    let task_app = AppHandle::clone(app);
+    let task_user_id = user_id.to_owned();
+    let task_codes = codes.clone();
+    let task = tauri::async_runtime::spawn(async move {
+        let stream_codes = task_codes.iter().cloned().collect::<Vec<_>>();
+        let _ = local
+            .okx
+            .stream_trades(&task_user_id, &stream_codes, |event| {
+                if let TradeStreamEvent::Snapshot(trade) = event {
+                    enqueue_trade_dispatch(
+                        &task_app,
+                        &dispatches,
+                        &task_user_id,
+                        &trade.code,
+                        &trade.trade_id,
+                    )
+                    .is_ok()
+                } else {
+                    true
+                }
+            })
+            .await;
+    });
+    active.insert(user_id.to_owned(), ActiveBotTradeStream { codes, task });
+    Ok(())
+}
 
 fn enqueue_trade_dispatch(
     app: &AppHandle,
@@ -6428,6 +6507,7 @@ pub fn run() {
             app.manage(TickerStreamState::default());
             app.manage(BarStreamState::default());
             app.manage(TradeStreamState::default());
+            app.manage(BotTradeStreamState::default());
             app.manage(TradeDispatchState::default());
             app.manage(Level2StreamState::default());
             let app_data_dir = app.path().app_data_dir()?;
@@ -6820,8 +6900,10 @@ fn string(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::{
         MarketSubscribeRealtimeRequest, WasmLoader, factor_abi, has_operational_responsibility,
-        strategy_abi,
+        running_ema_trade_code, strategy_abi,
     };
+    use crate::bot_operations::BotSchedule;
+    use adaq_bot_runtime::LifecycleState;
     use std::path::{Path, PathBuf};
 
     fn fixture(name: &str) -> String {
@@ -6861,6 +6943,28 @@ mod tests {
     fn factor_loader_starts_empty() {
         let error = WasmLoader::default().describe_factor().err().unwrap();
         assert_eq!(error, "Factor component is not loaded");
+    }
+
+    #[test]
+    fn running_ema_schedule_owns_its_okx_trade_subscription() {
+        assert_eq!(
+            running_ema_trade_code(
+                LifecycleState::Running,
+                &BotSchedule::EmaDoubleCross {
+                    instrument_id: "okx:BTC-USDT".into(),
+                },
+            ),
+            Some("BTC-USDT".into()),
+        );
+        assert_eq!(
+            running_ema_trade_code(
+                LifecycleState::Paused,
+                &BotSchedule::EmaDoubleCross {
+                    instrument_id: "okx:BTC-USDT".into(),
+                },
+            ),
+            None,
+        );
     }
 
     #[cfg(feature = "local-env-credentials")]
