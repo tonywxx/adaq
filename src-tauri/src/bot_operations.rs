@@ -76,6 +76,35 @@ pub(crate) enum BotSchedule {
 }
 
 impl BotSchedule {
+    pub(crate) fn operational_name(&self) -> String {
+        match self {
+            Self::ClosedBar {
+                instrument_id,
+                interval,
+            } => format!(
+                "OKX-DEMO-BOT_Closed-Bar_{}_{interval}",
+                okx_instrument_code(instrument_id)
+            ),
+            Self::ScheduledCrossSection {
+                universe_id,
+                instruments,
+            } => format!(
+                "OKX-DEMO-BOT_Cross-Section_{universe_id}_{}",
+                instruments
+                    .iter()
+                    .map(|instrument| okx_instrument_code(instrument))
+                    .collect::<Vec<_>>()
+                    .join("-")
+            ),
+            Self::EmaDoubleCross { instrument_id } => {
+                format!(
+                    "OKX-DEMO-BOT_EMA-Double-Cross_{}",
+                    okx_instrument_code(instrument_id)
+                )
+            }
+        }
+    }
+
     fn validate(&self, scope: StrategyScope, expected_universe_id: &str) -> Result<(), String> {
         match self {
             Self::ClosedBar {
@@ -2191,7 +2220,7 @@ fn run_bot_decision(
                 }
                 if host_batch.is_ok()
                     && (local.operations.blocks_new_risk_except_worker(&user_id)?
-                        || bots.account_blocks_new_risk(&user_id, &view.bundle.account_id)?)
+                        || faulted_attempt_still_blocks_new_risk(&local, bots, &user_id, &view.bundle)?)
                 {
                     bots.record_evidence(
                         &user_id,
@@ -3413,7 +3442,7 @@ fn execute_target(
     target: &WorkerTarget,
 ) -> Result<(), String> {
     if local.operations.blocks_new_risk_except_worker(user_id)?
-        || bots.account_blocks_new_risk(user_id, &bundle.account_id)?
+        || faulted_attempt_still_blocks_new_risk(local, bots, user_id, bundle)?
     {
         return Err("A Host operational safety action is active; new Bot risk is blocked.".into());
     }
@@ -5244,6 +5273,30 @@ fn account_is_reconciled_and_quiet(account: Option<&PaperAccountView>) -> bool {
         })
 }
 
+fn reconciliation_resolves_fault_gate(
+    account: Option<&PaperAccountView>,
+    account_id: &str,
+) -> bool {
+    account.is_some_and(|account| {
+        account.account.account_id == account_id && account_is_reconciled_and_quiet(Some(account))
+    })
+}
+
+fn faulted_attempt_still_blocks_new_risk(
+    local: &LocalResearchState,
+    bots: &BotStore,
+    user_id: &str,
+    bundle: &BotDeploymentBundle,
+) -> Result<bool, String> {
+    if !bots.account_blocks_new_risk(user_id, &bundle.account_id)? {
+        return Ok(false);
+    }
+    Ok(!reconciliation_resolves_fault_gate(
+        local.paper_trading.view_optional(user_id)?.as_ref(),
+        &bundle.account_id,
+    ))
+}
+
 fn account_is_reconciled_for_target(
     local: &LocalResearchState,
     user_id: &str,
@@ -5623,6 +5676,17 @@ mod tests {
 
     fn hash(byte: char) -> String {
         std::iter::repeat(byte).take(64).collect()
+    }
+
+    #[test]
+    fn ema_bot_operational_name_includes_strategy_and_instrument() {
+        assert_eq!(
+            BotSchedule::EmaDoubleCross {
+                instrument_id: "okx:ETH-USDT".into(),
+            }
+            .operational_name(),
+            "OKX-DEMO-BOT_EMA-Double-Cross_ETH-USDT"
+        );
     }
 
     fn bundle(bot_id: &str, account_id: &str) -> BotDeploymentBundle {
@@ -6272,6 +6336,15 @@ mod tests {
         assert_eq!(position.sellable_quantity, Decimal::new(19, 1));
 
         assert!(account_is_reconciled_and_quiet(Some(&account)));
+        assert!(reconciliation_resolves_fault_gate(
+            Some(&account),
+            "account-a"
+        ));
+        assert!(!reconciliation_resolves_fault_gate(
+            Some(&account),
+            "account-b"
+        ));
+        assert!(!reconciliation_resolves_fault_gate(None, "account-a"));
         let mut uncertain = account.clone();
         uncertain
             .provider_evidence
@@ -6285,8 +6358,80 @@ mod tests {
                 observed_at_ms: 3,
             }));
         assert!(!account_is_reconciled_and_quiet(Some(&uncertain)));
+        assert!(!reconciliation_resolves_fault_gate(
+            Some(&uncertain),
+            "account-a"
+        ));
         let mut restarted = account;
         restarted.restart_required = true;
         assert!(!account_is_reconciled_and_quiet(Some(&restarted)));
+    }
+
+    #[cfg(feature = "local-env-credentials")]
+    #[test]
+    #[ignore = "explicit local-only OKX Demo Bot execution acceptance operation"]
+    fn local_env_executes_frozen_ema_target_against_demo_account() -> Result<(), String> {
+        if std::env::var("ADAQ_LIVE_ACCEPTANCE").as_deref() != Ok("1") {
+            return Ok(());
+        }
+        let app_data_dir = std::env::var("ADAQ_LIVE_APP_DATA_DIR")
+            .map_err(|_| "ADAQ_LIVE_APP_DATA_DIR is required".to_owned())?;
+        let user_id = std::env::var("ADAQ_LIVE_USER_ID")
+            .map_err(|_| "ADAQ_LIVE_USER_ID is required".to_owned())?;
+        let local = LocalResearchState::open(std::path::Path::new(&app_data_dir))?;
+        let bots = BotStore::open(local.database.clone())?;
+        let bot = bots
+            .list(&user_id)?
+            .into_iter()
+            .find(|bot| {
+                bot.state == LifecycleState::Faulted
+                    && matches!(bot.bundle.schedule, BotSchedule::EmaDoubleCross { .. })
+            })
+            .ok_or_else(|| "No EMA Bot is available".to_owned())?;
+        let instrument_id = match &bot.bundle.schedule {
+            BotSchedule::EmaDoubleCross { instrument_id } => instrument_id.clone(),
+            _ => unreachable!(),
+        };
+        require_reconciled_account(&local, &user_id, &bot.bundle)?;
+        let before = local
+            .paper_trading
+            .view_optional(&user_id)?
+            .map(|account| account.provider_evidence.len())
+            .unwrap_or_default();
+        let now_ms = adaq_bot_runtime::unix_now_ms();
+        let decision_id = format!("local-demo-acceptance-{now_ms}");
+        execute_target(
+            &local,
+            &bots,
+            &user_id,
+            &bot.bot_id,
+            &bot.bundle,
+            &DecisionClock::TradeEvent {
+                decision_id: decision_id.clone(),
+                instrument_id: instrument_id.clone(),
+                observation_time_ms: now_ms.saturating_sub(1),
+                decision_time_ms: now_ms,
+                available_at_ms: now_ms,
+                deadline_ms: now_ms.saturating_add(1_000),
+                next_execution_ms: now_ms.saturating_sub(1),
+            },
+            &decision_id,
+            &adaq_bot_runtime::WorkerTarget::Strategy {
+                instrument_id: instrument_id.clone(),
+                exposures: vec![adaq_bot_runtime::WorkerExposure {
+                    instrument_id,
+                    exposure: "1".into(),
+                }],
+            },
+        )?;
+        let account = local
+            .paper_trading
+            .view_optional(&user_id)?
+            .ok_or_else(|| "The Demo account was not retained".to_owned())?;
+        assert!(account.provider_evidence.len() > before);
+        assert!(account.provider_evidence.iter().any(|outcome| {
+            matches!(outcome, ExecutionOutcome::Accepted(evidence) if evidence.provider_order_id.is_some())
+        }));
+        Ok(())
     }
 }

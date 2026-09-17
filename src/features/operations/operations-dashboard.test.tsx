@@ -215,6 +215,7 @@ const responsibleProjection: SystemDashboardProjection = {
 	bots: [
 		{
 			botId: "bot-a",
+			name: "OKX-DEMO-BOT_EMA-Double-Cross_ETH-USDT",
 			state: "running",
 			currentAttemptId: "attempt-a",
 			currentAttemptState: "running",
@@ -292,6 +293,7 @@ test("renders the authorized global projection without cross-currency totals", a
 	await settle();
 
 	expect(container.textContent).toContain("System Dashboard");
+	expect(container.textContent).toContain("OKX-DEMO-BOT_EMA-Double-Cross_ETH-USDT");
 	expect(container.textContent).toContain("USDT");
 	expect(container.textContent).toContain("Orders / Fills");
 	expect(container.textContent).not.toContain("USD 1990");

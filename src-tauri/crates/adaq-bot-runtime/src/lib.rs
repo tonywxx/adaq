@@ -38,6 +38,9 @@ const MAX_WORKER_FUEL: u64 = 1_000_000_000;
 const MAX_WORKER_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_WORKER_TIMEOUT_MS: u64 = 60_000;
 const MAX_WORKER_HEARTBEAT_TIMEOUT_MS: u64 = 120_000;
+const LEGACY_HEARTBEAT_INTERVAL_MS: u64 = 1_000;
+const LEGACY_HEARTBEAT_TIMEOUT_MS: u64 = 3_000;
+const HOST_HEARTBEAT_GRACE_MS: u64 = 10_000;
 
 // Generated once for the dedicated Worker signing root. Only the public key is
 // in the repository; the matching private key belongs in the release secret.
@@ -126,6 +129,15 @@ impl WorkerRuntimePolicy {
     pub fn max_output_bytes_usize(&self) -> Result<usize, RuntimeError> {
         usize::try_from(self.max_output_bytes).map_err(|_| RuntimeError::InvalidPolicy)
     }
+}
+
+fn host_runtime_policy(mut policy: WorkerRuntimePolicy) -> WorkerRuntimePolicy {
+    if policy.heartbeat_interval_ms == LEGACY_HEARTBEAT_INTERVAL_MS
+        && policy.heartbeat_timeout_ms == LEGACY_HEARTBEAT_TIMEOUT_MS
+    {
+        policy.heartbeat_timeout_ms = HOST_HEARTBEAT_GRACE_MS;
+    }
+    policy
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1747,7 +1759,7 @@ impl WorkerSupervisor {
         verifier: WorkerArtifactVerifier,
     ) -> Result<Self, String> {
         request.bundle.verify().map_err(|error| error.to_string())?;
-        let policy = request.bundle.input.worker_policy.clone();
+        let policy = host_runtime_policy(request.bundle.input.worker_policy.clone());
         if request.bundle.input.worker.platform != current_platform_tag() {
             return Err("worker-platform-mismatch".into());
         }
@@ -2508,6 +2520,23 @@ mod tests {
         0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae,
         0x7f, 0x60,
     ];
+
+    #[test]
+    fn host_gives_legacy_default_heartbeat_a_scheduler_grace_period() {
+        assert_eq!(
+            host_runtime_policy(WorkerRuntimePolicy::default()).heartbeat_timeout_ms,
+            HOST_HEARTBEAT_GRACE_MS
+        );
+        assert_eq!(
+            host_runtime_policy(WorkerRuntimePolicy {
+                heartbeat_interval_ms: 10,
+                heartbeat_timeout_ms: 30,
+                ..WorkerRuntimePolicy::default()
+            })
+            .heartbeat_timeout_ms,
+            30
+        );
+    }
 
     fn worker() -> WorkerArtifactBinding {
         let signature =

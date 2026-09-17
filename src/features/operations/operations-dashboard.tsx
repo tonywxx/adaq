@@ -75,6 +75,7 @@ export type SystemDashboardProjection = {
 	events: Event[];
 	bots: Array<{
 		botId: string;
+		name: string;
 		state: string;
 		currentAttemptId?: string;
 		currentAttemptState?: string;
@@ -255,6 +256,8 @@ export function OperationsDashboard() {
 				alert.entityId.toLowerCase().includes(entityFilter.toLowerCase())),
 	);
 	const label = (key: string) => t(key, { defaultValue: key.split(".").at(-1) });
+	const entityName = (_entityId: string, dimension: string, condition: string) =>
+		`${label(`operations.dimensions.${dimension}`)} · ${condition}`;
 	const dimensions = [
 		"marketData",
 		"worker",
@@ -359,6 +362,7 @@ export function OperationsDashboard() {
 											<IdentifierDisplay
 												id={item.entityId}
 												label={t("identifiers.entity")}
+												name={entityName(item.entityId, item.dimension, item.condition)}
 											/>
 											{item.required ? ` · ${t("operations.required")}` : ""}
 										</p>
@@ -459,6 +463,7 @@ export function OperationsDashboard() {
 										<IdentifierDisplay
 											id={alert.entityId}
 											label={t("identifiers.entity")}
+											name={entityName(alert.entityId, alert.dimension, alert.condition)}
 										/>{" "}
 										· {label(`operations.actions.${alert.safetyAction}`)} ·{" "}
 										{t("operations.occurrences", { count: alert.occurrenceCount })}
@@ -590,6 +595,7 @@ export function OperationsDashboard() {
 								<IdentifierDisplay
 									id={event.entityId}
 									label={t("identifiers.entity")}
+									name={entityName(event.entityId, event.dimension, event.kind)}
 								/>
 							</p>
 							{event.diagnostic ? (
@@ -626,6 +632,9 @@ export function SystemDashboard({
 		projection.unavailable.includes(section);
 	const stateLabel = (group: string, value: string) =>
 		t(`operations.${group}.${value}`, { defaultValue: value });
+	const entityName = (entityId: string, dimension: string, condition: string) =>
+		projection.bots.find((bot) => bot.botId === entityId)?.name ??
+		`${stateLabel("dimensions", dimension)} · ${condition}`;
 	const unresolvedAlerts = projection.alerts.filter(
 		(alert) => alert.state !== "resolved",
 	);
@@ -703,6 +712,7 @@ export function SystemDashboard({
 											<IdentifierDisplay
 												id={item.entityId}
 												label={t("identifiers.entity")}
+												name={entityName(item.entityId, item.dimension, item.condition)}
 											/>
 											{item.required ? ` · ${t("operations.required")}` : ""}
 										</p>
@@ -763,6 +773,7 @@ export function SystemDashboard({
 										<IdentifierDisplay
 											id={alert.entityId}
 											label={t("identifiers.entity")}
+											name={entityName(alert.entityId, alert.dimension, alert.condition)}
 										/>{" "}
 										· {stateLabel("alertStates", alert.state)}
 									</p>
@@ -798,7 +809,11 @@ export function SystemDashboard({
 								<div className="rounded-md border p-3" key={bot.botId}>
 									<div className="flex flex-wrap items-center justify-between gap-2">
 										<span className="font-medium">
-											<IdentifierDisplay id={bot.botId} label={t("identifiers.bot")} />
+											<IdentifierDisplay
+												id={bot.botId}
+												label={t("identifiers.bot")}
+												name={bot.name}
+											/>
 										</span>
 										<Badge variant={bot.state === "faulted" ? "destructive" : "outline"}>
 											{stateLabel("lifecycleStates", bot.state)}
@@ -996,6 +1011,7 @@ export function SystemDashboard({
 									<IdentifierDisplay
 										id={event.entityId}
 										label={t("identifiers.entity")}
+										name={entityName(event.entityId, event.dimension, event.kind)}
 									/>
 								</p>
 							</div>

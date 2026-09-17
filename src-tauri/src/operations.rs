@@ -653,7 +653,9 @@ impl OperationsStore {
 
     pub fn blocks_new_risk_except_worker(&self, user_id: &str) -> Result<bool, String> {
         Ok(self.alerts_for_user(user_id)?.iter().any(|alert| {
-            alert.dimension != HealthDimension::Worker && alert.safety_action != SafetyAction::None
+            alert.state != AlertState::Resolved
+                && alert.dimension != HealthDimension::Worker
+                && alert.safety_action != SafetyAction::None
         }))
     }
 
@@ -1815,6 +1817,46 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn resolved_non_worker_alert_does_not_block_new_risk() {
+        let s = store();
+        let mut critical = obs(HealthState::Critical, true);
+        critical.dimension = HealthDimension::MarketData;
+        s.observe(critical).unwrap();
+        assert!(s.blocks_new_risk_except_worker("u").unwrap());
+
+        let mut recovery = obs(HealthState::Healthy, true);
+        recovery.dimension = HealthDimension::MarketData;
+        recovery.observed_at_ms = 2;
+        s.observe(recovery).unwrap();
+        assert!(!s.blocks_new_risk_except_worker("u").unwrap());
+    }
+
+    #[test]
+    fn correlation_id_takes_precedence_over_a_worker_request_id() {
+        let observation = HealthObservation {
+            user_id: "u".into(),
+            entity_id: "bot".into(),
+            dimension: HealthDimension::Worker,
+            state: HealthState::Healthy,
+            condition: "worker_decision".into(),
+            evidence: serde_json::json!({
+                "botId": "bot",
+                "correlationId": "bundle",
+                "requestId": "decision-request",
+            }),
+            required: true,
+            observed_at_ms: 1,
+            event_kind: None,
+            evidence_id: None,
+            correlation_id: Some("bundle".into()),
+            causation_id: None,
+            diagnostic: None,
+            metrics: BTreeMap::new(),
+        };
+        assert!(validate_evidence_identity(&observation, &observation.evidence).is_ok());
     }
 
     #[test]

@@ -115,7 +115,15 @@ impl BotSupervisor {
             .lock()
             .map_err(|_| "worker registry lock failed".to_owned())?;
         if workers.contains_key(&bot_id) {
-            return Err("worker bot is already active".into());
+            let state = self.bots.get(user_id, &bot_id)?.state;
+            if worker_registry_entry_is_active(state) {
+                return Err("worker bot is already active".into());
+            }
+            if let Some(mut stale) = workers.remove(&bot_id) {
+                stale
+                    .worker
+                    .terminate_for_fault("stale-worker-registry-entry");
+            }
         }
         let worker = WorkerSupervisor::launch(request).map_err(|error| {
             let _ = self.observe(
@@ -417,6 +425,7 @@ impl BotSupervisor {
             }
             if let Some(bundle_id) = &bundle_id {
                 object.insert("bundleId".into(), json!(bundle_id));
+                object.insert("correlationId".into(), json!(bundle_id));
             }
         }
         self.operations
@@ -437,5 +446,30 @@ impl BotSupervisor {
                 metrics: std::collections::BTreeMap::new(),
             })
             .map(|_| ())
+    }
+}
+
+fn worker_registry_entry_is_active(state: LifecycleState) -> bool {
+    matches!(
+        state,
+        LifecycleState::Starting
+            | LifecycleState::Reconciling
+            | LifecycleState::WarmingUp
+            | LifecycleState::Running
+            | LifecycleState::Pausing
+            | LifecycleState::Paused
+            | LifecycleState::Stopping
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn faulted_bot_reclaims_a_stale_worker_registry_entry() {
+        assert!(!worker_registry_entry_is_active(LifecycleState::Faulted));
+        assert!(!worker_registry_entry_is_active(LifecycleState::Stopped));
+        assert!(worker_registry_entry_is_active(LifecycleState::Running));
     }
 }

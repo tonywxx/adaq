@@ -515,6 +515,7 @@ fn unix_now_ms() -> i64 {
 #[serde(rename_all = "camelCase")]
 struct SystemDashboardBotSummary {
     bot_id: String,
+    name: String,
     state: adaq_bot_runtime::LifecycleState,
     current_attempt_id: Option<String>,
     current_attempt_state: Option<adaq_bot_runtime::LifecycleState>,
@@ -616,6 +617,7 @@ fn system_dashboard_for_user(
                 });
                 SystemDashboardBotSummary {
                     bot_id: bot.bot_id,
+                    name: bot.bundle.schedule.operational_name(),
                     state: bot.state,
                     current_attempt_id: bot.current_attempt_id,
                     current_attempt_state: current_attempt.map(|attempt| attempt.state),

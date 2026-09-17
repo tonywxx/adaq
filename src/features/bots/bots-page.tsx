@@ -107,6 +107,30 @@ type ScheduleKind =
 
 const commandId = () => globalThis.crypto.randomUUID();
 
+export function botDisplayName(schedule: BotView["bundle"]["schedule"]) {
+	const instrument = (value: string) => value.replace(/^okx:/, "");
+	switch (schedule.type) {
+		case "ema-double-cross":
+			return `EMA Double-Cross · ${instrument(schedule.instrumentId)}`;
+		case "closed-bar":
+			return `Closed Bar · ${instrument(schedule.instrumentId)} · ${schedule.interval}`;
+		case "scheduled-cross-section":
+			return `Cross-Section · ${schedule.instruments.map(instrument).join(", ")}`;
+	}
+}
+
+export function botOperationalName(schedule: BotView["bundle"]["schedule"]) {
+	const instrument = (value: string) => value.replace(/^okx:/, "");
+	switch (schedule.type) {
+		case "ema-double-cross":
+			return `OKX-DEMO-BOT_EMA-Double-Cross_${instrument(schedule.instrumentId)}`;
+		case "closed-bar":
+			return `OKX-DEMO-BOT_Closed-Bar_${instrument(schedule.instrumentId)}_${schedule.interval}`;
+		case "scheduled-cross-section":
+			return `OKX-DEMO-BOT_Cross-Section_${schedule.instruments.map(instrument).join("-")}`;
+	}
+}
+
 export function BotsPage() {
 	const { t } = useTranslation();
 	const userId = useAuthenticatedUserId();
@@ -422,11 +446,19 @@ export function BotsPage() {
 						<Card key={bot.botId}>
 							<CardHeader className="flex flex-row items-start justify-between gap-3">
 								<div>
-									<CardTitle>
-										<IdentifierDisplay id={bot.botId} label={t("identifiers.bot")} />
-									</CardTitle>
+									<CardTitle>{botDisplayName(bot.bundle.schedule)}</CardTitle>
 									<CardDescription>
-										{t("bots.bundle")}: {bot.bundle.identity}
+										{t("identifiers.bot")}: {" "}
+										<IdentifierDisplay
+											id={bot.botId}
+											label={t("identifiers.bot")}
+											name={botOperationalName(bot.bundle.schedule)}
+										/>
+										{" · "}{t("bots.bundle")}: {" "}
+										<IdentifierDisplay
+											id={bot.bundle.identity}
+											label={t("bots.bundle")}
+										/>
 									</CardDescription>
 								</div>
 								<Badge variant={bot.state === "running" ? "default" : "outline"}>
