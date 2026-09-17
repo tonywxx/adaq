@@ -364,7 +364,7 @@ impl PaperExperimentStore {
         Ok(false)
     }
 
-    fn for_bot(&self, user_id: &str, bot_id: &str) -> Result<Option<PaperExperiment>, String> {
+    pub(crate) fn for_bot(&self, user_id: &str, bot_id: &str) -> Result<Option<PaperExperiment>, String> {
         validate_user(user_id)?;
         let database = self.database.lock().map_err(|error| error.to_string())?;
         let mut statement = database
@@ -389,27 +389,6 @@ impl PaperExperimentStore {
             }
         }
         Ok(None)
-    }
-
-    pub(crate) fn decision_blocked_for_bot(
-        &self,
-        user_id: &str,
-        bot_id: &str,
-        now_ms: i64,
-    ) -> Result<bool, String> {
-        let Some(experiment) = self.for_bot(user_id, bot_id)? else {
-            return Ok(false);
-        };
-        let accepts_observation = experiment.started_at_ms.is_some()
-            && now_ms >= experiment.observation_start_ms
-            && now_ms < experiment.observation_end_ms
-            && matches!(
-                experiment.state,
-                PaperExperimentState::Preparing
-                    | PaperExperimentState::Armed
-                    | PaperExperimentState::Running
-            );
-        Ok(!accepts_observation)
     }
 
     pub(crate) fn arm_if_all_bots_warmed(
@@ -564,47 +543,6 @@ impl PaperExperimentStore {
         serde_json::from_str(&payload).map_err(|error| error.to_string())
     }
 
-    pub(crate) fn risk_blocked_for_bot(
-        &self,
-        user_id: &str,
-        bot_id: &str,
-        now_ms: i64,
-    ) -> Result<bool, String> {
-        let Some(experiment) = self.for_bot(user_id, bot_id)? else {
-            return Ok(false);
-        };
-        let risk_window_open = experiment.state == PaperExperimentState::Running
-            && experiment.started_at_ms.is_some()
-            && now_ms >= experiment.observation_start_ms
-            && now_ms < experiment.observation_end_ms;
-        Ok(!risk_window_open)
-    }
-
-    pub(crate) fn common_warmup_blocked_for_bot(
-        &self,
-        user_id: &str,
-        bot_id: &str,
-        bots: &[BotView],
-        now_ms: i64,
-    ) -> Result<bool, String> {
-        let Some(experiment) = self.for_bot(user_id, bot_id)? else {
-            return Ok(false);
-        };
-        if experiment.state != PaperExperimentState::Running
-            || experiment.started_at_ms.is_none()
-            || now_ms < experiment.observation_start_ms
-            || now_ms >= experiment.observation_end_ms
-        {
-            return Ok(false);
-        }
-        let warmed_bot_ids = bots
-            .iter()
-            .filter(|bot| bot_is_warmed(bot))
-            .map(|bot| bot.bot_id.clone())
-            .collect::<BTreeSet<_>>();
-        Ok(!all_experiment_bots_warmed(&experiment, &warmed_bot_ids))
-    }
-
     pub(crate) fn pending_orders_are_experiment_owned(
         &self,
         user_id: &str,
@@ -689,7 +627,7 @@ fn persist_incomplete(
     local.paper_experiments.save(experiment)
 }
 
-fn bot_is_warmed(bot: &BotView) -> bool {
+pub(crate) fn bot_is_warmed(bot: &BotView) -> bool {
     bot.state == adaq_bot_runtime::LifecycleState::Running
         && bot
             .current_attempt_id
@@ -702,7 +640,7 @@ fn bot_is_warmed(bot: &BotView) -> bool {
             .is_some_and(attempt_is_warmed)
 }
 
-fn all_experiment_bots_warmed(
+pub(crate) fn all_experiment_bots_warmed(
     experiment: &PaperExperiment,
     warmed_bot_ids: &BTreeSet<String>,
 ) -> bool {
@@ -2637,24 +2575,6 @@ mod tests {
     }
 
     #[test]
-    fn stopping_experiment_blocks_new_bot_risk() {
-        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
-        let store = PaperExperimentStore::open(database).unwrap();
-        let mut experiment = experiment();
-        experiment.state = PaperExperimentState::Armed;
-        store.create(&experiment).unwrap();
-        assert!(store.risk_blocked_for_bot("alice", "bot-1", 200).unwrap());
-        experiment.state = PaperExperimentState::Running;
-        store.save(&experiment).unwrap();
-        assert!(store.risk_blocked_for_bot("alice", "bot-1", 99).unwrap());
-        assert!(!store.risk_blocked_for_bot("alice", "bot-1", 200).unwrap());
-        assert!(store.risk_blocked_for_bot("alice", "bot-1", 300).unwrap());
-        experiment.state = PaperExperimentState::Stopping;
-        store.save(&experiment).unwrap();
-        assert!(store.risk_blocked_for_bot("alice", "bot-1", 200).unwrap());
-    }
-
-    #[test]
     fn preparing_experiment_reserves_account_before_arm() {
         let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
         let store = PaperExperimentStore::open(database).unwrap();
@@ -2663,12 +2583,6 @@ mod tests {
         store.create(&experiment).unwrap();
 
         assert!(store.active_for_account("alice", "account-1").unwrap());
-        assert!(store.risk_blocked_for_bot("alice", "bot-1", 200).unwrap());
-        assert!(
-            !store
-                .decision_blocked_for_bot("alice", "bot-1", 200)
-                .unwrap()
-        );
     }
 
     #[test]
@@ -2703,43 +2617,6 @@ mod tests {
                 .pending_orders_are_experiment_owned("alice", "bot-1", &account)
                 .unwrap()
         );
-    }
-
-    #[test]
-    fn terminal_experiment_states_block_decisions_after_preparing() {
-        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
-        let store = PaperExperimentStore::open(database).unwrap();
-        let mut experiment = experiment();
-        experiment.state = PaperExperimentState::Preparing;
-        store.create(&experiment).unwrap();
-        assert!(
-            !store
-                .decision_blocked_for_bot("alice", "bot-1", 200)
-                .unwrap()
-        );
-        experiment.state = PaperExperimentState::Stopping;
-        store.save(&experiment).unwrap();
-        assert!(
-            store
-                .decision_blocked_for_bot("alice", "bot-1", 200)
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn completed_experiment_does_not_block_a_reused_bot() {
-        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
-        let store = PaperExperimentStore::open(database).unwrap();
-        let mut experiment = experiment();
-        experiment.state = PaperExperimentState::Completed;
-        store.create(&experiment).unwrap();
-
-        assert!(
-            !store
-                .decision_blocked_for_bot("alice", "bot-1", 400)
-                .unwrap()
-        );
-        assert!(!store.risk_blocked_for_bot("alice", "bot-1", 400).unwrap());
     }
 
     #[test]

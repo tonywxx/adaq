@@ -12,6 +12,7 @@ mod forecast_signal_dataset;
 mod local_research;
 mod market_data_pipeline;
 mod market_data_snapshot;
+mod new_risk_gate;
 mod operations;
 mod paper_experiment;
 mod paper_feedback;
@@ -21,6 +22,7 @@ mod research_queue;
 mod run_engine;
 mod strategy_candidate;
 mod strategy_qualification;
+mod trade_bridge;
 mod user;
 mod validation;
 mod watchlist;
@@ -136,6 +138,26 @@ impl WorkspaceInitialization {
                     let states = states
                         .take()
                         .ok_or_else(|| "workspace states were already consumed".to_owned())?;
+                    let trade_bridge = Arc::new(trade_bridge::BotTradeBridge::new(
+                        Arc::new(trade_bridge::OkxBotTradeSource::new(
+                            states.local_research.okx.clone(),
+                        )),
+                        {
+                            let ctx = bot_operations::BotContext {
+                                local: states.local_research.clone(),
+                                bots: states.bot_store.clone(),
+                                supervisor: states.bot_supervisor.clone(),
+                            };
+                            Arc::new(move |user_id, instrument_code, trade_id| {
+                                bot_operations::dispatch_trade_event(
+                                    &ctx,
+                                    user_id,
+                                    instrument_code,
+                                    trade_id,
+                                )
+                            })
+                        },
+                    ));
                     app.manage(states.local_research);
                     app.manage(states.bot_store);
                     app.manage(states.bot_supervisor);
@@ -143,6 +165,7 @@ impl WorkspaceInitialization {
                     app.manage(states.strategy_candidates);
                     app.manage(states.strategy_qualification);
                     app.manage(states.watchlist);
+                    app.manage(trade_bridge);
                     *status = WorkspaceInitStatus::Managed;
                     return Ok(());
                 }
@@ -189,7 +212,7 @@ fn open_workspace_states(app_data_dir: &Path) -> Result<WorkspaceStates, String>
     let bot_supervisor = Arc::new(bot_supervisor::BotSupervisor::new(
         local_research.operations.clone(),
         bot_store.as_ref().clone(),
-    ));
+    )?);
     bot_supervisor.start_monitor();
     Ok(WorkspaceStates {
         bot_store,
@@ -5396,23 +5419,6 @@ struct ActiveTradeStream {
 #[derive(Default)]
 struct TradeStreamState(Mutex<Option<ActiveTradeStream>>);
 
-struct ActiveBotTradeStream {
-    codes: BTreeSet<String>,
-    task: tauri::async_runtime::JoinHandle<()>,
-}
-
-#[derive(Default)]
-struct BotTradeStreamState(Mutex<BTreeMap<String, ActiveBotTradeStream>>);
-
-#[derive(Default)]
-struct TradeDispatchQueue {
-    pending: BTreeMap<String, String>,
-    running: bool,
-}
-
-#[derive(Default)]
-struct TradeDispatchState(Arc<Mutex<BTreeMap<String, TradeDispatchQueue>>>);
-
 fn running_ema_trade_codes(views: &[bot_operations::BotView]) -> BTreeSet<String> {
     views
         .iter()
@@ -5440,111 +5446,8 @@ fn running_ema_trade_code(
 pub(crate) fn refresh_bot_trade_stream(app: &AppHandle, user_id: &str) -> Result<(), String> {
     let bots = app.state::<Arc<bot_operations::BotStore>>();
     let codes = running_ema_trade_codes(&bots.list(user_id)?);
-    let streams = app.state::<BotTradeStreamState>();
-    let mut active = streams.0.lock().map_err(|error| error.to_string())?;
-    if active
-        .get(user_id)
-        .is_some_and(|stream| stream.codes == codes)
-    {
-        return Ok(());
-    }
-    if let Some(previous) = active.remove(user_id) {
-        previous.task.abort();
-    }
-    if codes.is_empty() {
-        return Ok(());
-    }
-
-    let local = Arc::clone(&app.state::<Arc<LocalResearchState>>());
-    let dispatches = Arc::clone(&app.state::<TradeDispatchState>().0);
-    let task_app = AppHandle::clone(app);
-    let task_user_id = user_id.to_owned();
-    let task_codes = codes.clone();
-    let task = tauri::async_runtime::spawn(async move {
-        let stream_codes = task_codes.iter().cloned().collect::<Vec<_>>();
-        let _ = local
-            .okx
-            .stream_trades(&task_user_id, &stream_codes, |event| {
-                if let TradeStreamEvent::Snapshot(trade) = event {
-                    enqueue_trade_dispatch(
-                        &task_app,
-                        &dispatches,
-                        &task_user_id,
-                        &trade.code,
-                        &trade.trade_id,
-                    )
-                    .is_ok()
-                } else {
-                    true
-                }
-            })
-            .await;
-    });
-    active.insert(user_id.to_owned(), ActiveBotTradeStream { codes, task });
-    Ok(())
-}
-
-fn enqueue_trade_dispatch(
-    app: &AppHandle,
-    dispatches: &Arc<Mutex<BTreeMap<String, TradeDispatchQueue>>>,
-    user_id: &str,
-    instrument_code: &str,
-    trade_id: &str,
-) -> Result<(), String> {
-    let should_spawn = {
-        let mut queues = dispatches.lock().map_err(|error| error.to_string())?;
-        let queue = queues.entry(user_id.to_owned()).or_default();
-        queue
-            .pending
-            .insert(instrument_code.to_owned(), trade_id.to_owned());
-        if queue.running {
-            false
-        } else {
-            queue.running = true;
-            true
-        }
-    };
-    if !should_spawn {
-        return Ok(());
-    }
-
-    let dispatches = Arc::clone(dispatches);
-    let task_app = app.clone();
-    let task_user_id = user_id.to_owned();
-    tauri::async_runtime::spawn_blocking(move || {
-        loop {
-            let next = {
-                let mut queues = match dispatches.lock() {
-                    Ok(queues) => queues,
-                    Err(_) => return,
-                };
-                let Some(queue) = queues.get_mut(&task_user_id) else {
-                    return;
-                };
-                let next = queue
-                    .pending
-                    .iter()
-                    .next()
-                    .map(|(instrument_code, trade_id)| (instrument_code.clone(), trade_id.clone()));
-                if let Some((instrument_code, _)) = &next {
-                    queue.pending.remove(instrument_code);
-                } else {
-                    queue.running = false;
-                }
-                next
-            };
-            let Some((instrument_code, trade_id)) = next else {
-                break;
-            };
-            let _ = bot_operations::dispatch_trade_event(
-                &task_app,
-                &task_user_id,
-                &instrument_code,
-                &trade_id,
-            );
-        }
-    });
-    Ok(())
+    let bridge = app.state::<Arc<trade_bridge::BotTradeBridge>>();
+    bridge.refresh(user_id, codes)
 }
 
 struct ActiveLevel2Stream {
@@ -5896,7 +5799,6 @@ fn market_subscribe_trades(
     auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
     streams: State<'_, TradeStreamState>,
-    dispatches: State<'_, TradeDispatchState>,
 ) -> Result<(), DataError> {
     request.user_id = auth
         .user_id_for_window(window.label())
@@ -5912,9 +5814,11 @@ fn market_subscribe_trades(
         .lock()
         .map_err(|error| DataError::new("okx", "internal", error.to_string()))?;
     let task_path = app.state::<Arc<LocalResearchState>>().okx.clone();
+    let task_bridge = app
+        .state::<Arc<trade_bridge::BotTradeBridge>>()
+        .inner()
+        .clone();
     let task_channel = on_event.clone();
-    let task_app = app.clone();
-    let task_dispatches = dispatches.0.clone();
     let user_id = request.user_id;
     let stream_user_id = user_id.clone();
     let codes = request.codes;
@@ -5929,14 +5833,9 @@ fn market_subscribe_trades(
                 };
                 let delivered = task_channel.send(event).is_ok();
                 if let Some((instrument_code, trade_id)) = trade_identity {
-                    if enqueue_trade_dispatch(
-                        &task_app,
-                        &task_dispatches,
-                        &user_id,
-                        &instrument_code,
-                        &trade_id,
-                    )
-                    .is_err()
+                    if task_bridge
+                        .enqueue(&user_id, &instrument_code, &trade_id)
+                        .is_err()
                     {
                         return false;
                     }
@@ -6509,8 +6408,6 @@ pub fn run() {
             app.manage(TickerStreamState::default());
             app.manage(BarStreamState::default());
             app.manage(TradeStreamState::default());
-            app.manage(BotTradeStreamState::default());
-            app.manage(TradeDispatchState::default());
             app.manage(Level2StreamState::default());
             let app_data_dir = app.path().app_data_dir()?;
             app.manage(auth::AuthState::from_environment());
@@ -7032,20 +6929,6 @@ mod tests {
         .unwrap();
 
         assert!(request.user_id.is_empty());
-    }
-
-    #[test]
-    fn trade_dispatch_queue_keeps_only_the_latest_trade_per_instrument() {
-        let mut queue = super::TradeDispatchQueue::default();
-        queue.pending.insert("BTC-USDT".into(), "trade-1".into());
-        queue.pending.insert("ETH-USDT".into(), "trade-2".into());
-        queue.pending.insert("BTC-USDT".into(), "trade-3".into());
-
-        assert_eq!(queue.pending.len(), 2);
-        assert_eq!(
-            queue.pending.get("BTC-USDT").map(String::as_str),
-            Some("trade-3")
-        );
     }
 
     #[test]

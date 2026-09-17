@@ -651,14 +651,6 @@ impl OperationsStore {
             .map_err(|e| e.to_string())
     }
 
-    pub fn blocks_new_risk_except_worker(&self, user_id: &str) -> Result<bool, String> {
-        Ok(self.alerts_for_user(user_id)?.iter().any(|alert| {
-            alert.state != AlertState::Resolved
-                && alert.dimension != HealthDimension::Worker
-                && alert.safety_action != SafetyAction::None
-        }))
-    }
-
     pub fn alert_history_for_user(
         &self,
         user_id: &str,
@@ -1757,7 +1749,6 @@ mod tests {
         let (_, a, action) = s.observe(obs(HealthState::Critical, true)).unwrap();
         assert_eq!(action, SafetyAction::FaultAndReconcile);
         assert!(s.blocks_new_risk("u").unwrap());
-        assert!(!s.blocks_new_risk_except_worker("u").unwrap());
         assert_eq!(a.unwrap().severity, AlertSeverity::Critical);
         let event = s.health_for_user("u").unwrap();
         assert_eq!(event.len(), 1);
@@ -1817,21 +1808,6 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn resolved_non_worker_alert_does_not_block_new_risk() {
-        let s = store();
-        let mut critical = obs(HealthState::Critical, true);
-        critical.dimension = HealthDimension::MarketData;
-        s.observe(critical).unwrap();
-        assert!(s.blocks_new_risk_except_worker("u").unwrap());
-
-        let mut recovery = obs(HealthState::Healthy, true);
-        recovery.dimension = HealthDimension::MarketData;
-        recovery.observed_at_ms = 2;
-        s.observe(recovery).unwrap();
-        assert!(!s.blocks_new_risk_except_worker("u").unwrap());
     }
 
     #[test]

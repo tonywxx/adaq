@@ -588,11 +588,10 @@ impl BotStore {
                 );",
             )
             .map_err(|error| error.to_string())?;
-        store.recover_after_restart()?;
         Ok(store)
     }
 
-    fn recover_after_restart(&self) -> Result<(), String> {
+    pub(crate) fn recover_after_restart(&self) -> Result<(), String> {
         let now = adaq_bot_runtime::unix_now_ms();
         let mut database = self.database.lock().map_err(|error| error.to_string())?;
         let rows = {
@@ -2090,19 +2089,44 @@ pub(crate) async fn bot_decision(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || run_bot_decision(&app, &user_id, request))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let ctx = BotContext::from_app(&app);
+        run_bot_decision(&ctx, &user_id, request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Injected decision-pipeline context: everything `run_bot_decision` and
+/// `dispatch_trade_event` need from the Host, without an `AppHandle`. The
+/// narrow Bot-operation seam over the `LocalResearchState` god-struct.
+pub(crate) struct BotContext {
+    pub(crate) local: Arc<LocalResearchState>,
+    pub(crate) bots: Arc<BotStore>,
+    pub(crate) supervisor: Arc<crate::bot_supervisor::BotSupervisor>,
+}
+
+impl BotContext {
+    pub(crate) fn from_app(app: &AppHandle) -> Self {
+        Self {
+            local: app.state::<Arc<LocalResearchState>>().inner().clone(),
+            bots: app.state::<Arc<BotStore>>().inner().clone(),
+            supervisor: app
+                .state::<Arc<crate::bot_supervisor::BotSupervisor>>()
+                .inner()
+                .clone(),
+        }
+    }
 }
 
 fn run_bot_decision(
-    app: &AppHandle,
+    ctx: &BotContext,
     user_id: &str,
     request: BotDecisionRequest,
 ) -> Result<BotView, String> {
-    let local = app.state::<Arc<LocalResearchState>>();
-    let bots = app.state::<Arc<BotStore>>();
-    let supervisor = app.state::<Arc<crate::bot_supervisor::BotSupervisor>>();
+    let local = &ctx.local;
+    let bots = &ctx.bots;
+    let supervisor = &ctx.supervisor;
     bots.command(
             &user_id,
             &request.bot_id,
@@ -2113,17 +2137,21 @@ fn run_bot_decision(
                 if view.state != LifecycleState::Running {
                     return Err("Bot must be Running before it can accept a Decision Batch.".into());
                 }
-                if local.paper_experiments.decision_blocked_for_bot(
-                    &user_id,
-                    &request.bot_id,
-                    adaq_bot_runtime::unix_now_ms(),
-                )? {
+                let gate_ctx = crate::new_risk_gate::NewRiskContext {
+                    user_id: &user_id,
+                    bot_id: &request.bot_id,
+                    account_id: &view.bundle.account_id,
+                    now_ms: adaq_bot_runtime::unix_now_ms(),
+                };
+                if let crate::new_risk_gate::NewRiskOutcome::Blocked(block) =
+                    crate::new_risk_gate::decision_blocked(&gate_ctx, &local.paper_experiments)?
+                {
                     bots.record_evidence(
                         &user_id,
                         &request.bot_id,
                         "experiment",
                         "experiment-observation-blocked",
-                        "The declared Paper Experiment window did not permit this observation; no Worker or order work was authorized.",
+                        &block.message,
                         Some(&request.request_id),
                     )?;
                     return bots.get(&user_id, &request.bot_id);
@@ -2218,19 +2246,33 @@ fn run_bot_decision(
                         metrics: BTreeMap::new(),
                     })?;
                 }
-                if host_batch.is_ok()
-                    && (local.operations.blocks_new_risk_except_worker(&user_id)?
-                        || faulted_attempt_still_blocks_new_risk(&local, bots, &user_id, &view.bundle)?)
-                {
-                    bots.record_evidence(
-                        &user_id,
-                        &request.bot_id,
-                        "decision",
-                        "decision-skipped-by-operations",
-                        "An unresolved Host safety action blocked this Decision Batch; no Worker Target or order was authorized.",
-                        Some(&request.request_id),
-                    )?;
-                    return bots.get(&user_id, &request.bot_id);
+                if host_batch.is_ok() {
+                    let gate_ctx = crate::new_risk_gate::NewRiskContext {
+                        user_id: &user_id,
+                        bot_id: &request.bot_id,
+                        account_id: &view.bundle.account_id,
+                        now_ms: adaq_bot_runtime::unix_now_ms(),
+                    };
+                    if let crate::new_risk_gate::NewRiskOutcome::Blocked(block) =
+                        crate::new_risk_gate::new_risk_blocked(
+                            &gate_ctx,
+                            &local.operations,
+                            bots,
+                            &local.paper_trading,
+                            &local.paper_experiments,
+                            crate::new_risk_gate::Phase::Decision,
+                        )?
+                    {
+                        bots.record_evidence(
+                            &user_id,
+                            &request.bot_id,
+                            "decision",
+                            "decision-skipped-by-operations",
+                            &block.message,
+                            Some(&request.request_id),
+                        )?;
+                        return bots.get(&user_id, &request.bot_id);
+                    }
                 }
                 let decision_id = match &host_batch {
                     Ok(batch) => batch.clock.decision_id().to_owned(),
@@ -2363,15 +2405,16 @@ fn run_bot_decision(
                     worker_input,
                 );
                 match result {
-                    Ok(ref result @ WorkerDecisionResult::Target {
-                        ref target,
-                        ref decision_id,
-                        ref produced_at_ms,
-                        ..
-                    }) => {
+                Ok(ref result @ WorkerDecisionResult::Target {
+                    request_id: _,
+                    ref target,
+                    ref decision_id,
+                    ref produced_at_ms,
+                    ref evaluation,
+                }) => {
                         if let Err(error) = clock.accepts_target(decision_id, *produced_at_ms)
                         {
-                            let _ = bots.fault(
+                            let _ = supervisor.fail_decision(
                                 &user_id,
                                 &request.bot_id,
                                 "target-identity-invalid",
@@ -2391,29 +2434,45 @@ fn run_bot_decision(
                             "The Worker produced its first Target after the frozen warmup policy; Host validation still gates execution.",
                             Some(decision_id),
                         )?;
-                        local.paper_experiments.arm_if_all_bots_warmed(
-                            &user_id,
-                            &request.bot_id,
-                            &bots.list(&user_id)?,
-                            adaq_bot_runtime::unix_now_ms(),
-                        )?;
-                        if let Err(error) = execute_target(
-                            &local,
-                            bots,
-                            &user_id,
-                            &request.bot_id,
-                            &view.bundle,
-                            &clock,
-                            decision_id,
-                            target,
-                        ) {
+                    local.paper_experiments.arm_if_all_bots_warmed(
+                        &user_id,
+                        &request.bot_id,
+                        &bots.list(&user_id)?,
+                        adaq_bot_runtime::unix_now_ms(),
+                    )?;
+                    // Seam: the Strategy Target becomes an observable, persistable step
+                    // before execution. The decide → execute carry is now a typed object
+                    // rather than two loose arguments.
+                    let approved = ApprovedTarget {
+                        target: target.clone(),
+                        decision_id: decision_id.clone(),
+                        produced_at_ms: *produced_at_ms,
+                        evaluation: evaluation.clone(),
+                    };
+                    bots.record_evidence(
+                        &user_id,
+                        &request.bot_id,
+                        "decision",
+                        "decision-strategy-target",
+                        &serde_json::to_string(&approved).map_err(|error| error.to_string())?,
+                        Some(decision_id),
+                    )?;
+                    if let Err(error) = execute_target(
+                        &local,
+                        bots,
+                        &user_id,
+                        &request.bot_id,
+                        &view.bundle,
+                        &clock,
+                        &approved,
+                    ) {
                             let _ = supervisor.stop(
                                 &user_id,
                                 &request.bot_id,
                                 &request.bot_id,
                                 &request.command_id,
                             );
-                            let _ = bots.fault(
+                            let _ = supervisor.fail_active(
                                 &user_id,
                                 &request.bot_id,
                                 "target-execution-failed",
@@ -2452,7 +2511,7 @@ fn run_bot_decision(
                         ..
                     }) => {
                         bots.record_decision(&user_id, &request.bot_id, Some(&clock), result)?;
-                        let _ = bots.fault(
+                        let _ = supervisor.fail_active(
                             &user_id,
                             &request.bot_id,
                             "decision-deadline-missed",
@@ -2479,8 +2538,12 @@ fn run_bot_decision(
                     }
                     Ok(result) => bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result),
                     Err(error) => {
-                        let _ =
-                            bots.fault(&user_id, &request.bot_id, "worker-decision-failed", &error);
+                        let _ = supervisor.fail_active(
+                            &user_id,
+                            &request.bot_id,
+                            "worker-decision-failed",
+                            &error,
+                        );
                         Err(
                             "Worker Decision failed; the Bot is Faulted and requires recovery."
                                 .into(),
@@ -2492,7 +2555,7 @@ fn run_bot_decision(
 }
 
 pub(crate) fn dispatch_trade_event(
-    app: &AppHandle,
+    ctx: &BotContext,
     user_id: &str,
     instrument_code: &str,
     trade_id: &str,
@@ -2501,7 +2564,7 @@ pub(crate) fn dispatch_trade_event(
     if !bounded(instrument_code, 128) || !bounded(trade_id, 256) {
         return Err("Trade event identity exceeds the Host limit.".into());
     }
-    let bots = app.state::<Arc<BotStore>>();
+    let bots = &ctx.bots;
     let views = bots.list(user_id)?;
     let mut first_error = None;
     for view in views {
@@ -2522,7 +2585,7 @@ pub(crate) fn dispatch_trade_event(
             dataset_id: instrument_code.into(),
             trade_id: Some(trade_id.into()),
         };
-        if let Err(error) = run_bot_decision(app, user_id, request) {
+        if let Err(error) = run_bot_decision(ctx, user_id, request) {
             first_error.get_or_insert(error);
         }
     }
@@ -3431,6 +3494,22 @@ fn authoritative_decision_input(
     })
 }
 
+/// Typed handoff across the decide → execute seam.
+///
+/// `supervisor.decision()` produces a `WorkerTarget`; this struct carries it
+/// (plus its decision identity and evaluation evidence) as an observable,
+/// persistable step before `execute_target` consumes it. It makes the
+/// Strategy Target → Approved Target boundary explicit instead of two loose
+/// arguments, and the seam records it as a `decision-strategy-target` evidence
+/// step so research intent is distinguishable from enforced execution.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ApprovedTarget {
+    pub target: WorkerTarget,
+    pub decision_id: String,
+    pub produced_at_ms: i64,
+    pub evaluation: WorkerEvaluationEvidence,
+}
+
 fn execute_target(
     local: &LocalResearchState,
     bots: &BotStore,
@@ -3438,35 +3517,41 @@ fn execute_target(
     bot_id: &str,
     bundle: &BotDeploymentBundle,
     clock: &DecisionClock,
-    decision_id: &str,
-    target: &WorkerTarget,
+    approved: &ApprovedTarget,
 ) -> Result<(), String> {
-    if local.operations.blocks_new_risk_except_worker(user_id)?
-        || faulted_attempt_still_blocks_new_risk(local, bots, user_id, bundle)?
-    {
-        return Err("A Host operational safety action is active; new Bot risk is blocked.".into());
-    }
-    let now_ms = adaq_bot_runtime::unix_now_ms();
-    let risk_blocked = local
-        .paper_experiments
-        .risk_blocked_for_bot(user_id, bot_id, now_ms)?;
-    let common_warmup_blocked = !risk_blocked
-        && local.paper_experiments.common_warmup_blocked_for_bot(
-            user_id,
-            bot_id,
-            &bots.list(user_id)?,
-            now_ms,
-        )?;
-    if risk_blocked || common_warmup_blocked {
-        bots.record_evidence(
-            user_id,
-            bot_id,
-            "experiment",
-            "risk-blocked-until-common-warmup",
-            "The Paper Experiment is waiting for all three Bots to complete warmup; no order was created.",
-            Some(decision_id),
-        )?;
-        return Ok(());
+    let decision_id = &approved.decision_id;
+    let target = &approved.target;
+    let gate_ctx = crate::new_risk_gate::NewRiskContext {
+        user_id,
+        bot_id,
+        account_id: &bundle.account_id,
+        now_ms: adaq_bot_runtime::unix_now_ms(),
+    };
+    match crate::new_risk_gate::new_risk_blocked(
+        &gate_ctx,
+        &local.operations,
+        bots,
+        &local.paper_trading,
+        &local.paper_experiments,
+        crate::new_risk_gate::Phase::Execution,
+    )? {
+        crate::new_risk_gate::NewRiskOutcome::Permitted => {}
+        crate::new_risk_gate::NewRiskOutcome::Blocked(block) => match block.effect {
+            crate::new_risk_gate::BlockEffect::HardErr => {
+                return Err(block.message);
+            }
+            crate::new_risk_gate::BlockEffect::SoftSkip => {
+                bots.record_evidence(
+                    user_id,
+                    bot_id,
+                    "experiment",
+                    "risk-blocked-until-common-warmup",
+                    &block.message,
+                    Some(decision_id),
+                )?;
+                return Ok(());
+            }
+        },
     }
     let next_execution_ms = match clock {
         DecisionClock::ClosedBar {
@@ -4659,19 +4744,12 @@ fn transition_pair(
 
 fn fail_transition(
     supervisor: &crate::bot_supervisor::BotSupervisor,
-    bots: &BotStore,
+    _bots: &BotStore,
     user_id: &str,
     bot_id: &str,
     detail: &str,
 ) -> Result<(), String> {
-    let _ = supervisor.fault(
-        user_id,
-        bot_id,
-        bot_id,
-        "lifecycle-transition-failed",
-        detail,
-    );
-    let _ = bots.fault(user_id, bot_id, "lifecycle-transition-failed", detail);
+    supervisor.fail_transition(user_id, bot_id, detail)?;
     Err(format!(
         "lifecycle-transition-failed: {}",
         safe_detail(detail)
@@ -4680,14 +4758,13 @@ fn fail_transition(
 
 fn fail_active(
     supervisor: &crate::bot_supervisor::BotSupervisor,
-    bots: &BotStore,
+    _bots: &BotStore,
     user_id: &str,
     bot_id: &str,
     code: &str,
     detail: &str,
 ) -> Result<BotView, String> {
-    let _ = supervisor.fault(user_id, bot_id, bot_id, code, detail);
-    let _ = bots.fault(user_id, bot_id, code, detail);
+    supervisor.fail_active(user_id, bot_id, code, detail)?;
     Err(format!("{code}: {}", safe_detail(detail)))
 }
 
@@ -5260,7 +5337,7 @@ fn account_has_reconciled_evidence(account: Option<&PaperAccountView>) -> bool {
     })
 }
 
-fn account_is_reconciled_and_quiet(account: Option<&PaperAccountView>) -> bool {
+pub(crate) fn account_is_reconciled_and_quiet(account: Option<&PaperAccountView>) -> bool {
     account_has_reconciled_evidence(account)
         && account.is_some_and(|account| {
             account.orders.iter().all(|order| {
@@ -5273,28 +5350,13 @@ fn account_is_reconciled_and_quiet(account: Option<&PaperAccountView>) -> bool {
         })
 }
 
-fn reconciliation_resolves_fault_gate(
+pub(crate) fn reconciliation_resolves_fault_gate(
     account: Option<&PaperAccountView>,
     account_id: &str,
 ) -> bool {
     account.is_some_and(|account| {
         account.account.account_id == account_id && account_is_reconciled_and_quiet(Some(account))
     })
-}
-
-fn faulted_attempt_still_blocks_new_risk(
-    local: &LocalResearchState,
-    bots: &BotStore,
-    user_id: &str,
-    bundle: &BotDeploymentBundle,
-) -> Result<bool, String> {
-    if !bots.account_blocks_new_risk(user_id, &bundle.account_id)? {
-        return Ok(false);
-    }
-    Ok(!reconciliation_resolves_fault_gate(
-        local.paper_trading.view_optional(user_id)?.as_ref(),
-        &bundle.account_id,
-    ))
 }
 
 fn account_is_reconciled_for_target(
@@ -6036,16 +6098,17 @@ mod tests {
     }
 
     #[test]
-    fn restart_faults_active_attempt_and_requires_recovery() {
+    fn supervisor_recovery_on_construction_faults_active_attempt() {
         let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
-        let first = store(database.clone());
-        first
-            .deploy("user-a", bundle("bot-a", "account-a"))
-            .unwrap();
-        first.begin_attempt("user-a", "bot-a", false).unwrap();
-        drop(first);
-        let recovered = store(database);
-        let view = recovered.get("user-a", "bot-a").unwrap();
+        let bots = BotStore::open(database.clone()).unwrap();
+        bots.deploy("user-a", bundle("bot-a", "account-a")).unwrap();
+        bots.begin_attempt("user-a", "bot-a", false).unwrap();
+        let operations = crate::operations::OperationsStore::open(database.clone()).unwrap();
+        // `new` triggers host-restart recovery through the Supervisor (ADR-0048),
+        // not through `BotStore::open`. The cloned handle shares the same DB so we
+        // can assert on the durable state afterwards.
+        let supervisor = crate::bot_supervisor::BotSupervisor::new(operations, bots.clone()).unwrap();
+        let view = bots.get("user-a", "bot-a").unwrap();
         assert_eq!(view.state, LifecycleState::Faulted);
         assert!(view.attempts[0].reconciliation_required);
         assert!(
@@ -6053,6 +6116,38 @@ mod tests {
                 .evidence
                 .iter()
                 .any(|item| item.code == "host-restart")
+        );
+        let _ = supervisor;
+    }
+
+    #[test]
+    fn supervisor_fail_active_faults_running_bot_with_code() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let bots = BotStore::open(database.clone()).unwrap();
+        bots.deploy("user-a", bundle("bot-b", "account-a")).unwrap();
+        let operations = crate::operations::OperationsStore::open(database.clone()).unwrap();
+        // No active attempt at construction, so recovery is a no-op here.
+        let supervisor = crate::bot_supervisor::BotSupervisor::new(operations, bots.clone()).unwrap();
+        // An active attempt is created and started outside the Supervisor registry,
+        // following the canonical lifecycle transition table.
+        bots.begin_attempt("user-a", "bot-b", false).unwrap();
+        bots.transition("user-a", "bot-b", LifecycleState::Reconciling, "host", "reconcile")
+            .unwrap();
+        bots.transition("user-a", "bot-b", LifecycleState::WarmingUp, "host", "warmup")
+            .unwrap();
+        bots.transition("user-a", "bot-b", LifecycleState::Running, "host", "test")
+            .unwrap();
+        supervisor
+            .fail_active("user-a", "bot-b", "decision-deadline-missed", "missed window")
+            .unwrap();
+        let view = bots.get("user-a", "bot-b").unwrap();
+        assert_eq!(view.state, LifecycleState::Faulted);
+        assert!(view.attempts[0].reconciliation_required);
+        assert!(
+            view.attempts[0]
+                .evidence
+                .iter()
+                .any(|item| item.code == "decision-deadline-missed")
         );
     }
 
@@ -6400,6 +6495,21 @@ mod tests {
             .unwrap_or_default();
         let now_ms = adaq_bot_runtime::unix_now_ms();
         let decision_id = format!("local-demo-acceptance-{now_ms}");
+        let approved = ApprovedTarget {
+            target: adaq_bot_runtime::WorkerTarget::Strategy {
+                instrument_id: instrument_id.clone(),
+                exposures: vec![adaq_bot_runtime::WorkerExposure {
+                    instrument_id: instrument_id.clone(),
+                    exposure: "1".into(),
+                }],
+            },
+            decision_id: decision_id.clone(),
+            produced_at_ms: now_ms,
+            evaluation: adaq_bot_runtime::WorkerEvaluationEvidence {
+                rows: vec![],
+                events: vec![],
+            },
+        };
         execute_target(
             &local,
             &bots,
@@ -6415,14 +6525,7 @@ mod tests {
                 deadline_ms: now_ms.saturating_add(1_000),
                 next_execution_ms: now_ms.saturating_sub(1),
             },
-            &decision_id,
-            &adaq_bot_runtime::WorkerTarget::Strategy {
-                instrument_id: instrument_id.clone(),
-                exposures: vec![adaq_bot_runtime::WorkerExposure {
-                    instrument_id,
-                    exposure: "1".into(),
-                }],
-            },
+            &approved,
         )?;
         let account = local
             .paper_trading
@@ -6433,5 +6536,145 @@ mod tests {
             matches!(outcome, ExecutionOutcome::Accepted(evidence) if evidence.provider_order_id.is_some())
         }));
         Ok(())
+    }
+
+    // --- BotContext: the AppHandle-free decision pipeline ---
+
+    fn temp_workspace(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("adaq-botctx-{tag}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn running_bot_context(tag: &str) -> (BotContext, std::path::PathBuf) {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let bots = BotStore::open(database.clone()).unwrap();
+        bots.deploy("user-a", bundle("bot-a", "account-a")).unwrap();
+        // The Supervisor is constructed while the Bot is still Stopped so its
+        // host-restart recovery is a no-op; the active attempt starts after.
+        let operations = crate::operations::OperationsStore::open(database).unwrap();
+        let bots = Arc::new(bots);
+        let supervisor = Arc::new(
+            crate::bot_supervisor::BotSupervisor::new(operations, (*bots).clone())
+                .expect("supervisor construction must not fail for a fresh store"),
+        );
+        bots.begin_attempt("user-a", "bot-a", false).unwrap();
+        bots.transition("user-a", "bot-a", LifecycleState::Reconciling, "host", "reconcile")
+            .unwrap();
+        bots.transition("user-a", "bot-a", LifecycleState::WarmingUp, "host", "warmup")
+            .unwrap();
+        bots.transition("user-a", "bot-a", LifecycleState::Running, "host", "test")
+            .unwrap();
+        let dir = temp_workspace(tag);
+        let local = LocalResearchState::open(&dir).unwrap();
+        (
+            BotContext {
+                local,
+                bots,
+                supervisor,
+            },
+            dir,
+        )
+    }
+
+    fn closed_window_experiment(
+        bot_id: &str,
+    ) -> crate::paper_experiment::PaperExperiment {
+        let instruments = vec![crate::paper_experiment::PaperExperimentInstrument {
+            instrument: "BTC-USDT".into(),
+            qualification_id: "q".into(),
+            bot_id: Some(bot_id.into()),
+            allocation_usdt: Decimal::ZERO,
+            entry_notional_cap_usdt: Decimal::ZERO,
+            reserved_cash_usdt: Decimal::ZERO,
+        }];
+        crate::paper_experiment::PaperExperiment {
+            experiment_id: format!("exp-{bot_id}"),
+            user_id: "user-a".into(),
+            profile_id: "prof".into(),
+            account_id: "account-a".into(),
+            observation_start_ms: 100,
+            observation_end_ms: 300,
+            allocation_total_usdt: Decimal::ZERO,
+            unallocated_remainder_usdt: Decimal::ZERO,
+            starting_account_cash: None,
+            started_at_ms: Some(50),
+            instruments,
+            state: crate::paper_experiment::PaperExperimentState::Running,
+            report_id: None,
+            feedback_snapshot_ids: Vec::new(),
+            feedback_report_ids: Vec::new(),
+            limitations: Vec::new(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn decision_blocked_by_experiment_observation_stays_running_without_worker() {
+        let (ctx, dir) = running_bot_context("gate");
+        ctx.local
+            .paper_experiments
+            .create(&closed_window_experiment("bot-a"))
+            .unwrap();
+
+        let view = run_bot_decision(
+            &ctx,
+            "user-a",
+            BotDecisionRequest {
+                bot_id: "bot-a".into(),
+                command_id: "cmd-1".into(),
+                request_id: "req-1".into(),
+                dataset_id: "dataset".into(),
+                trade_id: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(view.state, LifecycleState::Running);
+        assert!(
+            view.attempts[0]
+                .evidence
+                .iter()
+                .any(|item| item.code == "experiment-observation-blocked")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn decision_request_replay_is_idempotent_without_worker() {
+        let (ctx, dir) = running_bot_context("replay");
+        let request = |command_id: &str| BotDecisionRequest {
+            bot_id: "bot-a".into(),
+            command_id: command_id.into(),
+            request_id: "req-1".into(),
+            dataset_id: "dataset".into(),
+            trade_id: None,
+        };
+
+        // First decision: no frozen feature context is available, so the Host
+        // records the unavailable batch and leaves the Bot untouched.
+        let first = run_bot_decision(&ctx, "user-a", request("cmd-1")).unwrap();
+        assert_eq!(first.state, LifecycleState::Running);
+        assert!(
+            first
+                .attempts[0]
+                .evidence
+                .iter()
+                .any(|item| item.code == "decision-batch-unavailable")
+        );
+
+        // Replayed request identity under a new command: the claim layer
+        // short-circuits instead of repeating any risk work.
+        let replay = run_bot_decision(&ctx, "user-a", request("cmd-2")).unwrap();
+        assert_eq!(replay.state, LifecycleState::Running);
+        assert!(
+            replay
+                .attempts[0]
+                .evidence
+                .iter()
+                .any(|item| item.code == "duplicate-decision")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

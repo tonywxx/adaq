@@ -30,13 +30,15 @@ struct ManagedWorker {
 }
 
 impl BotSupervisor {
-    pub(crate) fn new(operations: OperationsStore, bots: BotStore) -> Self {
-        Self {
+    pub(crate) fn new(operations: OperationsStore, bots: BotStore) -> Result<Self, String> {
+        let this = Self {
             workers: Mutex::new(HashMap::new()),
             operations,
             bots,
             monitor_started: AtomicBool::new(false),
-        }
+        };
+        this.recover_all()?;
+        Ok(this)
     }
 
     pub(crate) fn start_monitor(self: &Arc<Self>) {
@@ -215,6 +217,53 @@ impl BotSupervisor {
                 "detail": crate::bot_operations::safe_detail(detail),
             }),
         )
+    }
+
+    /// Host-owned recovery: terminate the Worker and persist `Faulted` under the
+    /// given `code`, with no separate prior transition. ADR-0048 grants the
+    /// Supervisor sole authority over recovery, so decision and command failures
+    /// reach this (not `BotStore`) as the single recovery entry point.
+    pub(crate) fn fail_active(
+        &self,
+        user_id: &str,
+        bot_id: &str,
+        code: &str,
+        detail: &str,
+    ) -> Result<(), String> {
+        self.fault(user_id, bot_id, bot_id, code, detail)?;
+        self.bots.fault(user_id, bot_id, code, detail)?;
+        Ok(())
+    }
+
+    /// Recovery for a failed lifecycle transition: the same Worker termination
+    /// plus durable `Faulted`, surfaced under `lifecycle-transition-failed`.
+    pub(crate) fn fail_transition(
+        &self,
+        user_id: &str,
+        bot_id: &str,
+        detail: &str,
+    ) -> Result<(), String> {
+        self.fail_active(user_id, bot_id, "lifecycle-transition-failed", detail)
+    }
+
+    /// Recovery for a failed Worker decision outcome, preserving the original
+    /// `code` (e.g. `target-identity-invalid`, `decision-deadline-missed`,
+    /// `worker-decision-failed`, `target-execution-failed`).
+    pub(crate) fn fail_decision(
+        &self,
+        user_id: &str,
+        bot_id: &str,
+        code: &str,
+        detail: &str,
+    ) -> Result<(), String> {
+        self.fail_active(user_id, bot_id, code, detail)
+    }
+
+    /// Host-restart recovery: every still-active Runtime Attempt is moved to
+    /// `Faulted` with `reconciliation_required`. Delegated to the persistence
+    /// primitive in `BotStore`; the Supervisor owns the trigger (see `new`).
+    pub(crate) fn recover_all(&self) -> Result<(), String> {
+        self.bots.recover_after_restart()
     }
 
     pub(crate) fn decision(

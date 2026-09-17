@@ -1224,6 +1224,10 @@ _Avoid_: Strategy stop logic, Execution Profile, hidden guardrail
 The recorded Approve, Constrain, or Reject outcome of applying one exact Risk Policy to one Strategy Target and Portfolio State, including machine-readable reasons. Constrain produces only a lower-risk target; Reject authorizes no risk-increasing order from the rejected intent.
 _Avoid_: silent target mutation, Validation Report, trading recommendation
 
+**New Risk Gate (新风险闸门)**:
+The Host-owned fail-closed gate answering whether one Bot or account may take on new risk right now. It composes the operational/fault layer (an Active Operational Alert carrying a Safety Action, or a faulted Bot Runtime Attempt whose account has not reconciled) with the Paper Experiment layer (closed observation window or incomplete warmup) behind one interface. At the Decision phase it evaluates only the operational/fault layer, preserving prior decision-path behaviour; at the Execution phase it adds the full experiment gate. Both phases re-evaluate fresh state so the gate stays fail-closed when decision and execution are separated in time (ADR-0049, ADR-0050).
+_Avoid_: redundant per-store predicates, decision-only gate, silent risk authorization
+
 **Approved Target**:
 The scope-correct Strategy Target retained or reduced by one Risk Decision and permitted to enter Execution. It always preserves the original Strategy Target and constraint reasons as separate evidence.
 _Avoid_: Strategy Target, order basket, unrecorded clipped weight
