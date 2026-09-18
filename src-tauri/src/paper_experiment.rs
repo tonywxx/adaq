@@ -364,7 +364,11 @@ impl PaperExperimentStore {
         Ok(false)
     }
 
-    pub(crate) fn for_bot(&self, user_id: &str, bot_id: &str) -> Result<Option<PaperExperiment>, String> {
+    pub(crate) fn for_bot(
+        &self,
+        user_id: &str,
+        bot_id: &str,
+    ) -> Result<Option<PaperExperiment>, String> {
         validate_user(user_id)?;
         let database = self.database.lock().map_err(|error| error.to_string())?;
         let mut statement = database

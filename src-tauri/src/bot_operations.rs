@@ -6107,7 +6107,8 @@ mod tests {
         // `new` triggers host-restart recovery through the Supervisor (ADR-0048),
         // not through `BotStore::open`. The cloned handle shares the same DB so we
         // can assert on the durable state afterwards.
-        let supervisor = crate::bot_supervisor::BotSupervisor::new(operations, bots.clone()).unwrap();
+        let supervisor =
+            crate::bot_supervisor::BotSupervisor::new(operations, bots.clone()).unwrap();
         let view = bots.get("user-a", "bot-a").unwrap();
         assert_eq!(view.state, LifecycleState::Faulted);
         assert!(view.attempts[0].reconciliation_required);
@@ -6127,18 +6128,36 @@ mod tests {
         bots.deploy("user-a", bundle("bot-b", "account-a")).unwrap();
         let operations = crate::operations::OperationsStore::open(database.clone()).unwrap();
         // No active attempt at construction, so recovery is a no-op here.
-        let supervisor = crate::bot_supervisor::BotSupervisor::new(operations, bots.clone()).unwrap();
+        let supervisor =
+            crate::bot_supervisor::BotSupervisor::new(operations, bots.clone()).unwrap();
         // An active attempt is created and started outside the Supervisor registry,
         // following the canonical lifecycle transition table.
         bots.begin_attempt("user-a", "bot-b", false).unwrap();
-        bots.transition("user-a", "bot-b", LifecycleState::Reconciling, "host", "reconcile")
-            .unwrap();
-        bots.transition("user-a", "bot-b", LifecycleState::WarmingUp, "host", "warmup")
-            .unwrap();
+        bots.transition(
+            "user-a",
+            "bot-b",
+            LifecycleState::Reconciling,
+            "host",
+            "reconcile",
+        )
+        .unwrap();
+        bots.transition(
+            "user-a",
+            "bot-b",
+            LifecycleState::WarmingUp,
+            "host",
+            "warmup",
+        )
+        .unwrap();
         bots.transition("user-a", "bot-b", LifecycleState::Running, "host", "test")
             .unwrap();
         supervisor
-            .fail_active("user-a", "bot-b", "decision-deadline-missed", "missed window")
+            .fail_active(
+                "user-a",
+                "bot-b",
+                "decision-deadline-missed",
+                "missed window",
+            )
             .unwrap();
         let view = bots.get("user-a", "bot-b").unwrap();
         assert_eq!(view.state, LifecycleState::Faulted);
@@ -6559,10 +6578,22 @@ mod tests {
                 .expect("supervisor construction must not fail for a fresh store"),
         );
         bots.begin_attempt("user-a", "bot-a", false).unwrap();
-        bots.transition("user-a", "bot-a", LifecycleState::Reconciling, "host", "reconcile")
-            .unwrap();
-        bots.transition("user-a", "bot-a", LifecycleState::WarmingUp, "host", "warmup")
-            .unwrap();
+        bots.transition(
+            "user-a",
+            "bot-a",
+            LifecycleState::Reconciling,
+            "host",
+            "reconcile",
+        )
+        .unwrap();
+        bots.transition(
+            "user-a",
+            "bot-a",
+            LifecycleState::WarmingUp,
+            "host",
+            "warmup",
+        )
+        .unwrap();
         bots.transition("user-a", "bot-a", LifecycleState::Running, "host", "test")
             .unwrap();
         let dir = temp_workspace(tag);
@@ -6577,9 +6608,7 @@ mod tests {
         )
     }
 
-    fn closed_window_experiment(
-        bot_id: &str,
-    ) -> crate::paper_experiment::PaperExperiment {
+    fn closed_window_experiment(bot_id: &str) -> crate::paper_experiment::PaperExperiment {
         let instruments = vec![crate::paper_experiment::PaperExperimentInstrument {
             instrument: "BTC-USDT".into(),
             qualification_id: "q".into(),
@@ -6657,8 +6686,7 @@ mod tests {
         let first = run_bot_decision(&ctx, "user-a", request("cmd-1")).unwrap();
         assert_eq!(first.state, LifecycleState::Running);
         assert!(
-            first
-                .attempts[0]
+            first.attempts[0]
                 .evidence
                 .iter()
                 .any(|item| item.code == "decision-batch-unavailable")
@@ -6669,8 +6697,7 @@ mod tests {
         let replay = run_bot_decision(&ctx, "user-a", request("cmd-2")).unwrap();
         assert_eq!(replay.state, LifecycleState::Running);
         assert!(
-            replay
-                .attempts[0]
+            replay.attempts[0]
                 .evidence
                 .iter()
                 .any(|item| item.code == "duplicate-decision")

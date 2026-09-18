@@ -120,14 +120,8 @@ impl BotTradeBridge {
         let sink = Arc::clone(&self.sink);
         let task_user_id = user_id.to_owned();
         let on_trade: OnTrade = Arc::new(move |instrument_code, trade_id| {
-            enqueue_trade_dispatch(
-                &dispatches,
-                &sink,
-                &task_user_id,
-                instrument_code,
-                trade_id,
-            )
-            .is_ok()
+            enqueue_trade_dispatch(&dispatches, &sink, &task_user_id, instrument_code, trade_id)
+                .is_ok()
         });
         let stream_codes = codes.iter().cloned().collect::<Vec<_>>();
         let task = self.source.start(user_id, &stream_codes, on_trade);
@@ -143,7 +137,13 @@ impl BotTradeBridge {
         instrument_code: &str,
         trade_id: &str,
     ) -> Result<(), String> {
-        enqueue_trade_dispatch(&self.dispatches, &self.sink, user_id, instrument_code, trade_id)
+        enqueue_trade_dispatch(
+            &self.dispatches,
+            &self.sink,
+            user_id,
+            instrument_code,
+            trade_id,
+        )
     }
 }
 
@@ -176,31 +176,33 @@ fn enqueue_trade_dispatch(
     let dispatches = Arc::clone(dispatches);
     let sink = Arc::clone(sink);
     let task_user_id = user_id.to_owned();
-    tauri::async_runtime::spawn_blocking(move || loop {
-        let next = {
-            let mut queues = match dispatches.lock() {
-                Ok(queues) => queues,
-                Err(_) => return,
+    tauri::async_runtime::spawn_blocking(move || {
+        loop {
+            let next = {
+                let mut queues = match dispatches.lock() {
+                    Ok(queues) => queues,
+                    Err(_) => return,
+                };
+                let Some(queue) = queues.get_mut(&task_user_id) else {
+                    return;
+                };
+                let next = queue
+                    .pending
+                    .iter()
+                    .next()
+                    .map(|(instrument_code, trade_id)| (instrument_code.clone(), trade_id.clone()));
+                if let Some((instrument_code, _)) = &next {
+                    queue.pending.remove(instrument_code);
+                } else {
+                    queue.running = false;
+                }
+                next
             };
-            let Some(queue) = queues.get_mut(&task_user_id) else {
-                return;
+            let Some((instrument_code, trade_id)) = next else {
+                break;
             };
-            let next = queue
-                .pending
-                .iter()
-                .next()
-                .map(|(instrument_code, trade_id)| (instrument_code.clone(), trade_id.clone()));
-            if let Some((instrument_code, _)) = &next {
-                queue.pending.remove(instrument_code);
-            } else {
-                queue.running = false;
-            }
-            next
-        };
-        let Some((instrument_code, trade_id)) = next else {
-            break;
-        };
-        let _ = sink(&task_user_id, &instrument_code, &trade_id);
+            let _ = sink(&task_user_id, &instrument_code, &trade_id);
+        }
     });
     Ok(())
 }
@@ -303,9 +305,13 @@ mod tests {
                     instrument_code.to_owned(),
                     trade_id.to_owned(),
                 ));
-                log.in_flight.lock().unwrap().entry(user_id.to_owned()).and_modify(|count| {
-                    *count -= 1;
-                });
+                log.in_flight
+                    .lock()
+                    .unwrap()
+                    .entry(user_id.to_owned())
+                    .and_modify(|count| {
+                        *count -= 1;
+                    });
                 Ok(())
             })
         }
@@ -372,7 +378,9 @@ mod tests {
         let bridge = BotTradeBridge::new(source.clone(), SinkLog::default().sink());
 
         bridge.refresh("user-a", codes(&["BTC-USDT"])).unwrap();
-        bridge.refresh("user-a", codes(&["BTC-USDT", "ETH-USDT"])).unwrap();
+        bridge
+            .refresh("user-a", codes(&["BTC-USDT", "ETH-USDT"]))
+            .unwrap();
 
         assert_eq!(
             source.starts(),
@@ -421,10 +429,7 @@ mod tests {
                 ("user-a".into(), "ETH-USDT".into(), "trade-2".into()),
             ]
         );
-        assert_eq!(
-            log.max_in_flight.lock().unwrap().get("user-a"),
-            Some(&1)
-        );
+        assert_eq!(log.max_in_flight.lock().unwrap().get("user-a"), Some(&1));
 
         // The queue re-arms after the drain loop retires.
         enqueue_trade_dispatch(&dispatches, &log.sink(), "user-a", "SOL-USDT", "trade-4").unwrap();

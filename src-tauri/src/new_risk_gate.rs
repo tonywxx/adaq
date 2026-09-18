@@ -16,8 +16,8 @@ use std::collections::BTreeSet;
 use crate::bot_operations::BotStore;
 use crate::operations::{AlertState, HealthDimension, OperationsStore, SafetyAction};
 use crate::paper_experiment::{
-    all_experiment_bots_warmed, bot_is_warmed, PaperExperiment, PaperExperimentState,
-    PaperExperimentStore,
+    PaperExperiment, PaperExperimentState, PaperExperimentStore, all_experiment_bots_warmed,
+    bot_is_warmed,
 };
 use crate::paper_trading::PaperTradingStore;
 
@@ -170,7 +170,9 @@ pub fn new_risk_blocked(
         return Ok(NewRiskOutcome::Blocked(NewRiskBlock {
             reason: NewRiskBlockReason::FaultedAttemptUnreconciled,
             effect: BlockEffect::HardErr,
-            message: "A faulted Bot Runtime Attempt is pending reconciliation; new Bot risk is blocked.".into(),
+            message:
+                "A faulted Bot Runtime Attempt is pending reconciliation; new Bot risk is blocked."
+                    .into(),
         }));
     }
 
@@ -180,7 +182,8 @@ pub fn new_risk_blocked(
                 return Ok(NewRiskOutcome::Blocked(NewRiskBlock {
                     reason: NewRiskBlockReason::ExperimentWindowClosed,
                     effect: BlockEffect::SoftSkip,
-                    message: "The Paper Experiment risk window is closed; no order was created.".into(),
+                    message: "The Paper Experiment risk window is closed; no order was created."
+                        .into(),
                 }));
             }
             let warmed_bot_ids = bots
@@ -207,11 +210,11 @@ mod tests {
     use super::*;
     use crate::operations::{HealthDimension, HealthObservation, HealthState};
     use crate::paper_experiment::PaperExperimentInstrument;
+    use rusqlite::Connection;
     use rust_decimal::Decimal;
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
-    use rusqlite::Connection;
 
     fn in_memory() -> Arc<Mutex<Connection>> {
         Arc::new(Mutex::new(Connection::open_in_memory().unwrap()))
@@ -353,10 +356,19 @@ mod tests {
         // Window [100, 300); now = 200 sits inside the window.
         // Disjoint instrument bot-ids so `for_bot` resolves each query to a
         // single experiment unambiguously (preparing -> bot-1, running -> bot-2).
-        let preparing = experiment("exp-1", PaperExperimentState::Preparing, (100, 300), &["bot-1"]);
+        let preparing = experiment(
+            "exp-1",
+            PaperExperimentState::Preparing,
+            (100, 300),
+            &["bot-1"],
+        );
         experiments.create(&preparing).unwrap();
-        let running =
-            experiment("exp-2", PaperExperimentState::Running, (100, 300), &["bot-2", "bot-3"]);
+        let running = experiment(
+            "exp-2",
+            PaperExperimentState::Running,
+            (100, 300),
+            &["bot-2", "bot-3"],
+        );
         experiments.create(&running).unwrap();
 
         // Decision phase ignores the experiment entirely.

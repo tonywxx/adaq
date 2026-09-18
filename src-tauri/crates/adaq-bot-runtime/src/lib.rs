@@ -2416,9 +2416,15 @@ impl LifecycleState {
             (Self::Starting, Self::Reconciling | Self::Faulted)
                 | (Self::Reconciling, Self::WarmingUp | Self::Faulted)
                 | (Self::WarmingUp, Self::Running | Self::Faulted)
-                | (Self::Running, Self::Pausing | Self::Stopping | Self::Faulted)
+                | (
+                    Self::Running,
+                    Self::Pausing | Self::Stopping | Self::Faulted
+                )
                 | (Self::Pausing, Self::Paused | Self::Faulted)
-                | (Self::Paused, Self::Reconciling | Self::Stopping | Self::Faulted)
+                | (
+                    Self::Paused,
+                    Self::Reconciling | Self::Stopping | Self::Faulted
+                )
                 | (Self::Stopping, Self::Stopped | Self::Faulted)
         )
     }
