@@ -754,35 +754,43 @@ impl PaperLedger {
             Side::Buy => fill.quantity * fill.price + quote_fee,
             Side::Sell => fill.quantity * fill.price - quote_fee,
         };
+        // A provider-backed market's cash and positions are authoritative at the
+        // provider and arrive through reconciliation. ADAQ must not re-simulate
+        // the fill's economic effect over them; only the reservation
+        // bookkeeping is ADAQ's own. The A-share simulator owns its account
+        // locally and keeps the full effect.
+        let locally_authoritative = self.account.market == Market::AShare;
         if order.side == Side::Buy {
             if base_fee >= fill.quantity {
                 return Err(LedgerError::InvalidFill);
             }
             let reserved = (order.quantity - order.filled_quantity) * order.limit_price;
-            if self.account.cash < value || self.reserved_cash < reserved {
+            if locally_authoritative && (self.account.cash < value || self.reserved_cash < reserved)
+            {
                 return Err(LedgerError::InsufficientCash);
             }
             self.reserved_cash -= reserved.min(self.reserved_cash);
-            if self.account.cash < value {
-                return Err(LedgerError::InsufficientCash);
+            if locally_authoritative {
+                self.account.cash -= value;
             }
-            self.account.cash -= value;
             self.reserved_cash +=
                 (order.quantity - order.filled_quantity - fill.quantity) * order.limit_price;
-            let position = self
-                .account
-                .positions
-                .entry(order.instrument.clone())
-                .or_insert(Position {
-                    quantity: Decimal::ZERO,
-                    sellable_quantity: Decimal::ZERO,
-                });
-            position.quantity += fill.quantity - base_fee;
-            // A-share T+1: a new purchase is not sellable until reconciliation supplies eligibility.
-            if self.account.market != Market::AShare {
-                position.sellable_quantity += fill.quantity - base_fee;
+            if locally_authoritative {
+                let position = self
+                    .account
+                    .positions
+                    .entry(order.instrument.clone())
+                    .or_insert(Position {
+                        quantity: Decimal::ZERO,
+                        sellable_quantity: Decimal::ZERO,
+                    });
+                position.quantity += fill.quantity - base_fee;
+                // A-share T+1: a new purchase is not sellable until reconciliation supplies eligibility.
+                if self.account.market != Market::AShare {
+                    position.sellable_quantity += fill.quantity - base_fee;
+                }
             }
-        } else {
+        } else if locally_authoritative {
             let position = self
                 .account
                 .positions
@@ -823,6 +831,41 @@ impl PaperLedger {
             self.reserved_cash -= (order.quantity - order.filled_quantity) * order.limit_price;
         }
         order.status = OrderStatus::Cancelled;
+        Ok(())
+    }
+
+    /// Reinstates an order that received a terminal status from its absence in
+    /// the provider's open-order set rather than from observed terminal evidence,
+    /// so terminal provider evidence observed afterwards can still be recorded.
+    /// `apply_fill` refuses a terminal order, so without this the provider's Fill
+    /// could never enter the ledger.
+    ///
+    /// This reverses an inferred local status; it never rewrites evidence. An
+    /// order that already retains a Fill, or that recorded any filled quantity,
+    /// is refused because its history is already populated. A provider-backed
+    /// market's cash and positions belong to the provider, so only the
+    /// reservation that the inferred cancellation released is taken back.
+    pub fn reinstate_order_for_terminal_evidence(
+        &mut self,
+        order_id: &str,
+    ) -> Result<(), LedgerError> {
+        if self.account.market == Market::AShare {
+            return Err(LedgerError::InvalidTransition);
+        }
+        if self.fills.iter().any(|fill| fill.order_id == order_id) {
+            return Err(LedgerError::InvalidTransition);
+        }
+        let order = self
+            .orders
+            .get_mut(order_id)
+            .ok_or(LedgerError::UnknownOrder)?;
+        if order.status != OrderStatus::Cancelled || order.filled_quantity != Decimal::ZERO {
+            return Err(LedgerError::InvalidTransition);
+        }
+        if order.side == Side::Buy {
+            self.reserved_cash += order.quantity * order.limit_price;
+        }
+        order.status = OrderStatus::Accepted;
         Ok(())
     }
 
@@ -926,7 +969,12 @@ mod tests {
             l.orders().next().unwrap().status,
             OrderStatus::PartiallyFilled
         );
-        assert_eq!(l.buying_power(), Decimal::new(999004, 0));
+        // Only ADAQ's own reservation is settled locally; the provider account's
+        // cash moves through reconciliation, so buying power here is the
+        // provider-reported cash less the retained reservation.
+        assert_eq!(l.reserved_cash(), Decimal::new(600, 0));
+        assert_eq!(l.account().cash, Decimal::new(1_000_000, 0));
+        assert_eq!(l.buying_power(), Decimal::new(999_400, 0));
         assert!(
             l.apply_fill(fill(&order, Decimal::new(7, 0), Decimal::new(99, 0)))
                 .is_err()
@@ -936,11 +984,13 @@ mod tests {
 
     #[test]
     fn base_asset_fee_updates_quote_cash_and_position_quantity() {
-        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        // Only a locally authoritative account owns its balances, so that is
+        // where the base-asset fee's cash and position effect is asserted.
+        let mut ledger = PaperLedger::new(account(Market::AShare)).unwrap();
         ledger
             .submit_order(
                 "alice",
-                "BTC-USDT",
+                "600519",
                 Side::Buy,
                 Decimal::new(2, 0),
                 Decimal::new(100, 0),
@@ -955,7 +1005,7 @@ mod tests {
                 quantity: Decimal::new(2, 0),
                 price: Decimal::new(100, 0),
                 fee: Decimal::new(10, 0),
-                fee_asset: Some("BTC".into()),
+                fee_asset: Some("600519".into()),
                 fee_quote: Some(Decimal::new(10, 0)),
                 fee_amount: Some(Decimal::new(1, 1)),
                 evidence: FillEvidence::TradeObserved,
@@ -964,13 +1014,168 @@ mod tests {
             .unwrap();
         assert_eq!(ledger.account().cash, Decimal::new(999_790, 0));
         assert_eq!(
-            ledger.account().positions["BTC-USDT"].quantity,
+            ledger.account().positions["600519"].quantity,
             Decimal::new(19, 1)
         );
+        // A-share T+1 holds a new purchase until reconciliation supplies eligibility.
         assert_eq!(
-            ledger.account().positions["BTC-USDT"].sellable_quantity,
-            Decimal::new(19, 1)
+            ledger.account().positions["600519"].sellable_quantity,
+            Decimal::ZERO
         );
+    }
+
+    #[test]
+    fn provider_fill_records_evidence_without_touching_provider_balances() {
+        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        ledger
+            .submit_order(
+                "alice",
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::new(2, 0),
+                Decimal::new(100, 0),
+                1,
+            )
+            .unwrap();
+        let order = ledger.orders().next().unwrap().clone();
+        ledger
+            .apply_fill(Fill {
+                fill_id: "provider-fill".into(),
+                order_id: order.order_id,
+                quantity: Decimal::new(2, 0),
+                price: Decimal::new(100, 0),
+                fee: Decimal::ZERO,
+                fee_asset: None,
+                fee_quote: None,
+                fee_amount: None,
+                evidence: FillEvidence::TradeObserved,
+                occurred_at_ms: 2,
+            })
+            .unwrap();
+
+        assert_eq!(ledger.fills().len(), 1);
+        let settled = ledger.orders().next().unwrap();
+        assert_eq!(settled.status, OrderStatus::Filled);
+        assert_eq!(settled.filled_quantity, Decimal::new(2, 0));
+        assert_eq!(ledger.reserved_cash(), Decimal::ZERO);
+        // The provider snapshot is authoritative: a Fill never re-applies its
+        // economic effect over balances the provider already reported.
+        assert_eq!(ledger.account().cash, Decimal::new(1_000_000, 0));
+        assert!(ledger.account().positions.is_empty());
+    }
+
+    #[test]
+    fn an_absent_cancellation_is_reinstated_so_a_provider_fill_can_still_be_recorded() {
+        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        ledger
+            .submit_order(
+                "alice",
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::new(2, 0),
+                Decimal::new(100, 0),
+                1,
+            )
+            .unwrap();
+        let order = ledger.orders().next().unwrap().clone();
+        // The order left the provider's open-order set, so reconciliation inferred
+        // a cancellation and released the reservation without recording a Fill.
+        ledger.cancel_missing_provider_orders(&[]);
+        assert_eq!(ledger.reserved_cash(), Decimal::ZERO);
+        assert!(ledger.fills().is_empty());
+
+        ledger
+            .reinstate_order_for_terminal_evidence(&order.order_id)
+            .unwrap();
+        assert_eq!(
+            ledger.orders().next().unwrap().status,
+            OrderStatus::Accepted
+        );
+        assert_eq!(ledger.reserved_cash(), Decimal::new(200, 0));
+
+        ledger
+            .apply_fill(fill(&order, Decimal::new(2, 0), Decimal::new(100, 0)))
+            .unwrap();
+        assert_eq!(ledger.orders().next().unwrap().status, OrderStatus::Filled);
+        assert_eq!(ledger.fills().len(), 1);
+        assert_eq!(ledger.reserved_cash(), Decimal::ZERO);
+        assert_eq!(ledger.account().cash, Decimal::new(1_000_000, 0));
+    }
+
+    #[test]
+    fn reinstating_refuses_any_order_whose_history_is_already_populated() {
+        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        ledger
+            .submit_order(
+                "alice",
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::new(2, 0),
+                Decimal::new(100, 0),
+                1,
+            )
+            .unwrap();
+        let order = ledger.orders().next().unwrap().clone();
+        ledger
+            .apply_fill(fill(&order, Decimal::new(1, 0), Decimal::new(100, 0)))
+            .unwrap();
+        ledger.cancel_order(&order.order_id).unwrap();
+        // The Fill is already evidence; a reinstatement cannot rewrite it.
+        assert!(matches!(
+            ledger.reinstate_order_for_terminal_evidence(&order.order_id),
+            Err(LedgerError::InvalidTransition)
+        ));
+
+        // A quantity the provider reported without per-trade evidence is also
+        // refused, so it can never be counted twice.
+        let mut imported = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        imported
+            .upsert_provider_order(Order {
+                order_id: "provider-order-1".into(),
+                account_id: "acct".into(),
+                instrument: "BTC-USDT".into(),
+                side: Side::Buy,
+                quantity: Decimal::new(10, 0),
+                filled_quantity: Decimal::new(8, 0),
+                limit_price: Decimal::new(100, 0),
+                status: OrderStatus::PartiallyFilled,
+                submitted_at_ms: 1,
+            })
+            .unwrap();
+        imported.cancel_missing_provider_orders(&[]);
+        assert!(matches!(
+            imported.reinstate_order_for_terminal_evidence("provider-order-1"),
+            Err(LedgerError::InvalidTransition)
+        ));
+
+        assert!(matches!(
+            ledger.reinstate_order_for_terminal_evidence("order-404"),
+            Err(LedgerError::UnknownOrder)
+        ));
+    }
+
+    #[test]
+    fn a_locally_authoritative_account_never_reinstates_an_inferred_cancellation() {
+        // An A-share terminal status is ADAQ's own decision, so reinstating it
+        // would rewrite ADAQ's history instead of capturing provider evidence.
+        let mut ledger = PaperLedger::new(account(Market::AShare)).unwrap();
+        ledger
+            .submit_order(
+                "alice",
+                "600519",
+                Side::Buy,
+                Decimal::new(1, 0),
+                Decimal::new(100, 0),
+                1,
+            )
+            .unwrap();
+        let order = ledger.orders().next().unwrap().clone();
+        ledger.cancel_order(&order.order_id).unwrap();
+        assert!(matches!(
+            ledger.reinstate_order_for_terminal_evidence(&order.order_id),
+            Err(LedgerError::InvalidTransition)
+        ));
+        assert_eq!(ledger.reserved_cash(), Decimal::ZERO);
     }
 
     #[test]

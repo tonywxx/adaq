@@ -187,6 +187,60 @@ fn crashed_worker_faults_the_supervisor() -> Result<(), String> {
 }
 
 #[test]
+fn an_idle_host_does_not_mistake_its_own_backlog_for_worker_silence() -> Result<(), String> {
+    let (temp_dir, mut supervisor) = launch_probe(
+        "heartbeats-while-idle",
+        WorkerRuntimePolicy {
+            heartbeat_interval_ms: 10,
+            heartbeat_timeout_ms: 30,
+            decision_timeout_ms: 60,
+            ..WorkerRuntimePolicy::default()
+        },
+    )?;
+    for state in [
+        LifecycleState::Reconciling,
+        LifecycleState::WarmingUp,
+        LifecycleState::Running,
+    ] {
+        supervisor.transition(state, "test", "failure probe")?;
+    }
+    // The Host consumes nothing for many timeouts, so frames pile up in the
+    // mailbox. This is what starved the consumer in the live runs, where the
+    // Worker's own send clock stayed at a clean 1s cadence throughout.
+    thread::sleep(Duration::from_millis(200));
+
+    let now = unix_now_ms();
+    let error = supervisor
+        .decision(
+            "idle-request".into(),
+            DecisionClock::ClosedBar {
+                decision_id: "idle-decision".into(),
+                instrument_id: "BTC-USDT".into(),
+                decision_time_ms: now,
+                available_at_ms: now,
+                deadline_ms: now + 5_000,
+                next_execution_ms: now + 5_001,
+            },
+            WorkerDecisionInput::Strategy {
+                instrument_id: "BTC-USDT".into(),
+                frames: vec![WorkerFeatureFrame {
+                    instrument_id: "BTC-USDT".into(),
+                    open_time_ms: now,
+                    available_at_ms: now,
+                    values: vec![Some(1.0)],
+                }],
+            },
+        )
+        .expect_err("the probe never answers a decision");
+    assert_eq!(
+        error, "worker-deadline-missed",
+        "a Host that was behind on its mailbox must not report a missed Worker heartbeat"
+    );
+    remove_temp_dir(temp_dir, supervisor);
+    Ok(())
+}
+
+#[test]
 fn missed_heartbeat_faults_the_supervisor() -> Result<(), String> {
     let (temp_dir, supervisor) = launch_probe(
         "missed-heartbeat",

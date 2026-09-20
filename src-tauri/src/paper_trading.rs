@@ -43,6 +43,16 @@ pub(crate) struct ProviderOpenOrder {
     pub instrument: String,
 }
 
+/// One local Paper Order that the provider no longer reports as open and whose
+/// terminal provider evidence has not yet been captured. It exists so that the
+/// order's absence from the open-order set is never read as a terminal state.
+pub(crate) struct VanishedProviderOrder {
+    pub(crate) local_order_id: String,
+    pub(crate) operation_id: String,
+    pub(crate) instrument: String,
+    pub(crate) provider_order_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RetainedRiskDecision {
@@ -301,6 +311,30 @@ impl PaperTradingStore {
             .ok_or_else(|| "The execution operation has no local order.".to_owned())?;
         ledger
             .cancel_order(&order_id)
+            .map_err(|error| error.to_string())?;
+        self.save(user_id, &ledger, &execution, now_ms)?;
+        self.view(user_id)
+    }
+
+    /// Reinstates a local order whose terminal status reconciliation inferred
+    /// from the provider's open-order set instead of from observed terminal
+    /// evidence, so terminal provider evidence observed afterwards can still be
+    /// recorded through [`Self::sync_provider_order_with_trades`].
+    ///
+    /// This is a one-shot historical repair, deliberately not part of
+    /// reconciliation: a genuine cancellation would otherwise be re-fetched on
+    /// every pass. The caller must have resolved the order's terminal provider
+    /// state first; the ledger refuses any order that already retains a Fill.
+    #[cfg(all(test, feature = "local-env-credentials"))]
+    pub(crate) fn reinstate_order_for_terminal_evidence(
+        &self,
+        user_id: &str,
+        order_id: &str,
+        now_ms: i64,
+    ) -> Result<PaperAccountView, String> {
+        let (mut ledger, execution) = self.load(user_id)?;
+        ledger
+            .reinstate_order_for_terminal_evidence(order_id)
             .map_err(|error| error.to_string())?;
         self.save(user_id, &ledger, &execution, now_ms)?;
         self.view(user_id)
@@ -804,10 +838,59 @@ impl PaperTradingStore {
         }
     }
 
+    /// Lists local Paper Orders that hold an exact provider identity but are
+    /// absent from the provider's current open-order set. Their terminal state
+    /// must be resolved from the provider before any terminal local status is
+    /// written.
+    fn vanished_provider_orders(
+        &self,
+        user_id: &str,
+        open_orders: &[adaq_trading_crypto::Order],
+    ) -> Result<Vec<VanishedProviderOrder>, String> {
+        let (ledger, execution) = self.load(user_id)?;
+        let mut vanished = Vec::new();
+        for order in ledger.orders().filter(|order| {
+            matches!(
+                order.status,
+                OrderStatus::Accepted | OrderStatus::PartiallyFilled
+            )
+        }) {
+            let evidence = execution.evidence().find_map(|outcome| {
+                let evidence = match outcome {
+                    ExecutionOutcome::Accepted(evidence)
+                    | ExecutionOutcome::Rejected(evidence)
+                    | ExecutionOutcome::Uncertain(evidence) => evidence,
+                };
+                (evidence.local_order_id.as_deref() == Some(order.order_id.as_str()))
+                    .then_some(evidence)
+            });
+            let Some(evidence) = evidence else {
+                continue;
+            };
+            let Some(provider_order_id) = evidence.provider_order_id.clone() else {
+                continue;
+            };
+            if open_orders
+                .iter()
+                .any(|open| open.id.as_deref() == Some(provider_order_id.as_str()))
+            {
+                continue;
+            }
+            vanished.push(VanishedProviderOrder {
+                local_order_id: order.order_id.clone(),
+                operation_id: evidence.operation_id.clone(),
+                instrument: order.instrument.clone(),
+                provider_order_id,
+            });
+        }
+        Ok(vanished)
+    }
+
     fn record_open_orders(
         &self,
         user_id: &str,
         orders: &[adaq_trading_crypto::Order],
+        protected_order_ids: &[String],
         now_ms: i64,
     ) -> Result<PaperAccountView, String> {
         let (mut ledger, mut execution) = self.load(user_id)?;
@@ -880,6 +963,10 @@ impl PaperTradingStore {
                 now_ms,
             );
         }
+        // Orders whose terminal provider evidence could not be captured stay
+        // unresolved rather than assumed cancelled: they are withheld from the
+        // absence-based sweep, and the account is already blocked for recovery.
+        active_order_ids.extend(protected_order_ids.iter().cloned());
         ledger.cancel_missing_provider_orders(&active_order_ids);
         self.save(user_id, &ledger, &execution, now_ms)?;
         self.view(user_id)
@@ -1544,6 +1631,7 @@ mod tests {
                     status: Some("open".into()),
                     ..Default::default()
                 }],
+                &[],
                 4,
             )
             .unwrap();
@@ -1620,7 +1708,10 @@ mod tests {
         assert_eq!(first.fills[0].fee, Decimal::new(99, 3));
         assert_eq!(first.fills[0].fee_quote, Some(Decimal::new(99, 3)));
         assert_eq!(first.fills[1].fee_quote, Some(Decimal::new(2, 1)));
-        assert_eq!(first.account.cash, Decimal::new(999_407_701, 3));
+        // A provider account's cash is provider-authoritative, so exact per-fill
+        // fees are retained as evidence without moving the local balance.
+        assert_eq!(first.account.cash, Decimal::new(1_000_000, 0));
+        assert_eq!(first.reserved_cash, Decimal::new(400, 0));
 
         store
             .sync_provider_order_with_trades("alice", "op-1", &remote, &trades, 7)
@@ -1628,6 +1719,7 @@ mod tests {
         let second = store.view("alice").unwrap();
         assert_eq!(second.fills.len(), 2);
         assert_eq!(second.account.cash, first.account.cash);
+        assert_eq!(second.reserved_cash, Decimal::new(400, 0));
 
         let unexpected_trade = adaq_trading_crypto::Trade {
             id: Some("trade-3".into()),
@@ -1670,6 +1762,7 @@ mod tests {
                     status: Some("open".into()),
                     ..Default::default()
                 }],
+                &[],
                 2,
             )
             .unwrap();
@@ -1702,6 +1795,7 @@ mod tests {
                         status: Some("open".into()),
                         ..Default::default()
                     }],
+                    &[],
                     2,
                 )
                 .is_err()
@@ -1723,6 +1817,226 @@ mod tests {
                     3,
                 )
                 .is_err()
+        );
+    }
+
+    fn balances(usdt: Decimal, base: Option<Decimal>) -> adaq_trading_crypto::Balances {
+        let mut accounts = std::collections::HashMap::from([(
+            "USDT".to_owned(),
+            adaq_trading_crypto::Balance {
+                total: Some(usdt),
+                free: Some(usdt),
+                ..Default::default()
+            },
+        )]);
+        if let Some(base) = base {
+            accounts.insert(
+                "BTC".to_owned(),
+                adaq_trading_crypto::Balance {
+                    total: Some(base),
+                    free: Some(base),
+                    ..Default::default()
+                },
+            );
+        }
+        adaq_trading_crypto::Balances {
+            accounts,
+            ..Default::default()
+        }
+    }
+
+    /// A filled provider order leaves the provider's open-order set. That
+    /// absence must not be read as cancellation: the terminal state and the
+    /// exact Fill are captured from the provider instead.
+    #[test]
+    fn vanished_filled_provider_order_is_recorded_from_terminal_evidence() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        store
+            .begin_order(
+                &PaperOrderRequest {
+                    user_id: "alice".into(),
+                    operation_id: "op-1".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: "buy".into(),
+                    quantity: Decimal::ONE,
+                    limit_price: Decimal::new(100, 0),
+                },
+                2,
+            )
+            .unwrap();
+        store
+            .record_order_result("alice", "op-1", Some("remote-1".into()), "live", None, 3)
+            .unwrap();
+
+        let view = store
+            .provider_balance(
+                "alice",
+                "okx-demo-account".into(),
+                &[],
+                &balances(Decimal::new(999_900, 0), Some(Decimal::ONE)),
+                4,
+                |_instrument, provider_order_id, _now_ms| {
+                    Ok((
+                        adaq_trading_crypto::Order {
+                            id: Some(provider_order_id.to_owned()),
+                            symbol: Some("BTC/USDT".into()),
+                            filled: Some(Decimal::ONE),
+                            status: Some("filled".into()),
+                            ..Default::default()
+                        },
+                        vec![adaq_trading_crypto::Trade {
+                            id: Some("trade-1".into()),
+                            order: Some(provider_order_id.to_owned()),
+                            symbol: Some("BTC/USDT".into()),
+                            amount: Some(Decimal::ONE),
+                            price: Some(Decimal::new(100, 0)),
+                            ..Default::default()
+                        }],
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(view.orders.len(), 1);
+        assert_eq!(view.orders[0].status, OrderStatus::Filled);
+        assert_eq!(view.orders[0].filled_quantity, Decimal::ONE);
+        assert_eq!(view.fills.len(), 1);
+        assert_eq!(view.fills[0].evidence, FillEvidence::TradeObserved);
+        assert_eq!(view.reserved_cash, Decimal::ZERO);
+        // The provider snapshot is authoritative for balances; the captured
+        // Fill is order and reservation evidence rather than a second movement.
+        assert_eq!(view.account.cash, Decimal::new(999_900, 0));
+        assert_eq!(
+            view.account.positions.get("BTC-USDT").map(|p| p.quantity),
+            Some(Decimal::ONE)
+        );
+
+        // The captured Fill makes the account consistent again on the next
+        // provider observation rather than hiding a divergence.
+        let settled = store
+            .provider_balance(
+                "alice",
+                "okx-demo-account".into(),
+                &[],
+                &balances(Decimal::new(999_900, 0), Some(Decimal::ONE)),
+                5,
+                |_instrument, _provider_order_id, _now_ms| {
+                    Err("no unresolved provider order is expected".into())
+                },
+            )
+            .unwrap();
+        assert_eq!(settled.reconciliation, ReconciliationState::Reconciled);
+        assert_eq!(settled.fills.len(), 1);
+    }
+
+    /// When terminal provider evidence cannot be captured, the order stays
+    /// unresolved and the account blocks new risk instead of assuming a cancel.
+    #[test]
+    fn vanished_provider_order_without_terminal_evidence_blocks_instead_of_cancelling() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        store
+            .begin_order(
+                &PaperOrderRequest {
+                    user_id: "alice".into(),
+                    operation_id: "op-1".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: "buy".into(),
+                    quantity: Decimal::ONE,
+                    limit_price: Decimal::new(100, 0),
+                },
+                2,
+            )
+            .unwrap();
+        store
+            .record_order_result("alice", "op-1", Some("remote-1".into()), "live", None, 3)
+            .unwrap();
+
+        let view = store
+            .provider_balance(
+                "alice",
+                "okx-demo-account".into(),
+                &[],
+                &balances(Decimal::new(1_000_000, 0), None),
+                4,
+                |_instrument, _provider_order_id, _now_ms| {
+                    Err("provider terminal evidence is unavailable".into())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(view.orders[0].status, OrderStatus::Accepted);
+        assert!(view.fills.is_empty());
+        assert_eq!(view.reconciliation, ReconciliationState::Required);
+        assert_eq!(view.reserved_cash, Decimal::new(100, 0));
+    }
+
+    /// The adopted provider snapshot already carries a Fill's economic effect.
+    /// Resolving that order must not apply the same effect a second time.
+    ///
+    /// This is the normal provider sequence: an order fills between two
+    /// reconciliations, so the next snapshot already reports the post-fill
+    /// cash and position.
+    #[test]
+    fn resolving_a_filled_provider_order_does_not_double_count_the_snapshot() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        store
+            .begin_order(
+                &PaperOrderRequest {
+                    user_id: "alice".into(),
+                    operation_id: "op-1".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: "buy".into(),
+                    quantity: Decimal::ONE,
+                    limit_price: Decimal::new(100, 0),
+                },
+                2,
+            )
+            .unwrap();
+        store
+            .record_order_result("alice", "op-1", Some("remote-1".into()), "live", None, 3)
+            .unwrap();
+
+        let view = store
+            .provider_balance(
+                "alice",
+                "okx-demo-account".into(),
+                &[],
+                // The provider already reports the post-fill balance.
+                &balances(Decimal::new(999_900, 0), Some(Decimal::ONE)),
+                4,
+                |_instrument, provider_order_id, _now_ms| {
+                    Ok((
+                        adaq_trading_crypto::Order {
+                            id: Some(provider_order_id.to_owned()),
+                            symbol: Some("BTC/USDT".into()),
+                            filled: Some(Decimal::ONE),
+                            status: Some("filled".into()),
+                            ..Default::default()
+                        },
+                        vec![adaq_trading_crypto::Trade {
+                            id: Some("trade-1".into()),
+                            order: Some(provider_order_id.to_owned()),
+                            symbol: Some("BTC/USDT".into()),
+                            amount: Some(Decimal::ONE),
+                            price: Some(Decimal::new(100, 0)),
+                            ..Default::default()
+                        }],
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(view.fills.len(), 1);
+        assert_eq!(view.account.cash, Decimal::new(999_900, 0));
+        assert_eq!(
+            view.account.positions.get("BTC-USDT").map(|p| p.quantity),
+            Some(Decimal::ONE)
         );
     }
 
@@ -1776,14 +2090,47 @@ impl PaperTradingStore {
         open_orders: &[adaq_trading_crypto::Order],
         balances: &adaq_trading_crypto::Balances,
         now_ms: i64,
+        resolve_terminal: impl Fn(
+            &str,
+            &str,
+            i64,
+        ) -> Result<
+            (adaq_trading_crypto::Order, Vec<adaq_trading_crypto::Trade>),
+            String,
+        >,
     ) -> Result<PaperAccountView, String> {
         let snapshot = Self::snapshot_from_balance(user_id, account_id, balances, now_ms)?;
         if self.has_account(user_id)? {
             self.reconcile(user_id, snapshot, now_ms)?;
-            self.record_open_orders(user_id, &open_orders, now_ms)
         } else {
             self.create_account(user_id, snapshot, now_ms)?;
-            self.record_open_orders(user_id, &open_orders, now_ms)
         }
+        // An order that left the provider's open-order set is not evidence of
+        // cancellation. Resolve its terminal provider state and exact Fills
+        // before any terminal local status is written.
+        let mut protected_order_ids = Vec::new();
+        for order in self.vanished_provider_orders(user_id, open_orders)? {
+            match resolve_terminal(&order.instrument, &order.provider_order_id, now_ms) {
+                Ok((remote, trades)) => {
+                    if self
+                        .sync_provider_order_with_trades(
+                            user_id,
+                            &order.operation_id,
+                            &remote,
+                            &trades,
+                            now_ms,
+                        )
+                        .is_err()
+                    {
+                        protected_order_ids.push(order.local_order_id);
+                    }
+                }
+                Err(_) => {
+                    self.mark_provider_order_uncertain(user_id, &order.provider_order_id, now_ms)?;
+                    protected_order_ids.push(order.local_order_id);
+                }
+            }
+        }
+        self.record_open_orders(user_id, &open_orders, &protected_order_ids, now_ms)
     }
 }

@@ -225,23 +225,192 @@ fn local_env_paper_reconcile_against_demo_account() -> Result<(), String> {
         .clone()
         .ok_or_else(|| "The OKX Demo profile has no account identity".to_owned())?;
     let paper_trading = crate::paper_trading::PaperTradingStore::open(database)?;
-    let now_ms = crate::unix_now_ms();
-    let account =
-        manager.with_okx_demo_reconciliation(&user_id, now_ms, |open_orders, balances| {
-            paper_trading.provider_balance(
-                &user_id,
-                account_id.clone(),
-                open_orders,
-                balances,
-                now_ms,
-            )
-        })??;
+    // Reconciliation is a *settling* pass, not a single round trip: the first
+    // pass against a provider snapshot that moved since ADAQ last stored one is
+    // `Required` by design, and the next pass over an unchanged snapshot is what
+    // must reach `Reconciled`. Asserting `Reconciled` after exactly one pass only
+    // holds when nothing moved, which is not what this operation verifies.
+    let mut account = None;
+    for _ in 0..2 {
+        let now_ms = crate::unix_now_ms();
+        account = Some(manager.with_okx_demo_reconciliation(
+            &user_id,
+            now_ms,
+            |open_orders, balances| {
+                paper_trading.provider_balance(
+                    &user_id,
+                    account_id.clone(),
+                    open_orders,
+                    balances,
+                    now_ms,
+                    |instrument, provider_order_id, resolve_ms| {
+                        manager.resolve_okx_demo_terminal_order(
+                            &user_id,
+                            instrument,
+                            provider_order_id,
+                            resolve_ms,
+                        )
+                    },
+                )
+            },
+        )??);
+    }
+    let account = account.expect("reconciled at least once");
 
     assert_eq!(account.account.account_id, account_id);
     assert_eq!(
         account.reconciliation,
-        adaq_paper_trading_core::ReconciliationState::Reconciled
+        adaq_paper_trading_core::ReconciliationState::Reconciled,
+        "a second reconcile over a provider snapshot ADAQ already stored must settle"
     );
+    Ok(())
+}
+
+#[cfg(feature = "local-env-credentials")]
+#[test]
+#[ignore = "explicit local-only OKX Demo historical Fill repair operation"]
+fn local_env_records_provider_fills_on_orders_cancelled_from_absence() -> Result<(), String> {
+    use adaq_paper_trading_core::{ExecutionOutcome, OrderStatus, Side};
+    use rust_decimal::Decimal;
+
+    if std::env::var("ADAQ_LIVE_ACCEPTANCE").as_deref() != Ok("1") {
+        return Ok(());
+    }
+    let app_data_dir = std::env::var("ADAQ_LIVE_APP_DATA_DIR")
+        .map_err(|_| "ADAQ_LIVE_APP_DATA_DIR is required".to_owned())?;
+    let user_id = std::env::var("ADAQ_LIVE_USER_ID")
+        .map_err(|_| "ADAQ_LIVE_USER_ID is required".to_owned())?;
+    let database = Arc::new(Mutex::new(
+        Connection::open(std::path::Path::new(&app_data_dir).join("adaq.db"))
+            .map_err(|error| error.to_string())?,
+    ));
+    let manager = ConnectionManager::open_production(database.clone())?;
+    let profile = manager
+        .list(&user_id)?
+        .into_iter()
+        .find(|profile| profile.provider == Provider::OkxDemo)
+        .ok_or_else(|| "No OKX Demo profile is available".to_owned())?;
+    if profile.status != ProfileStatus::Usable {
+        return Err("The OKX Demo profile is unusable".to_owned());
+    }
+    let paper_trading = crate::paper_trading::PaperTradingStore::open(database)?;
+    let before = paper_trading
+        .view_optional(&user_id)?
+        .ok_or_else(|| "The OKX Demo account is not retained".to_owned())?;
+    // A local order qualifies only when its terminal status was inferred from the
+    // provider's open-order set: it is Cancelled, recorded no Fill, and its exact
+    // provider identity is still retained.
+    let provider_identity = |order_id: &str| -> Option<(String, String)> {
+        before.provider_evidence.iter().find_map(|outcome| {
+            let evidence = match outcome {
+                ExecutionOutcome::Accepted(evidence)
+                | ExecutionOutcome::Rejected(evidence)
+                | ExecutionOutcome::Uncertain(evidence) => evidence,
+            };
+            if evidence.local_order_id.as_deref() != Some(order_id) {
+                return None;
+            }
+            let provider_order_id = evidence.provider_order_id.clone()?;
+            Some((provider_order_id, evidence.operation_id.clone()))
+        })
+    };
+    let mut repaired = Vec::new();
+    for order in before.orders.iter() {
+        if order.status != OrderStatus::Cancelled
+            || before
+                .fills
+                .iter()
+                .any(|fill| fill.order_id == order.order_id)
+        {
+            continue;
+        }
+        let Some((provider_order_id, operation_id)) = provider_identity(&order.order_id) else {
+            continue;
+        };
+        let now_ms = crate::unix_now_ms();
+        let (remote, trades) = manager.resolve_okx_demo_terminal_order(
+            &user_id,
+            &order.instrument,
+            &provider_order_id,
+            now_ms,
+        )?;
+        // Only provider evidence that contradicts the inferred cancellation and
+        // carries a real Fill may move the order. A genuine cancellation stays as
+        // it is.
+        let provider_filled = remote.filled.unwrap_or(Decimal::ZERO) > Decimal::ZERO
+            && !matches!(
+                remote
+                    .status
+                    .as_deref()
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("canceled" | "cancelled" | "expired" | "rejected")
+            );
+        if !provider_filled {
+            continue;
+        }
+        let expected_quantity = remote.filled.unwrap_or(Decimal::ZERO);
+        paper_trading.reinstate_order_for_terminal_evidence(&user_id, &order.order_id, now_ms)?;
+        let account = paper_trading.sync_provider_order_with_trades(
+            &user_id,
+            &operation_id,
+            &remote,
+            &trades,
+            now_ms,
+        )?;
+        let repaired_order = account
+            .orders
+            .iter()
+            .find(|candidate| candidate.order_id == order.order_id)
+            .ok_or_else(|| "The repaired order disappeared from the ledger".to_owned())?;
+        assert_eq!(
+            repaired_order.status,
+            OrderStatus::Filled,
+            "{} reports an exact provider Fill and must be Filled",
+            order.order_id
+        );
+        assert_eq!(repaired_order.filled_quantity, expected_quantity);
+        repaired.push(order.order_id.clone());
+    }
+    assert!(
+        !repaired.is_empty(),
+        "No order was left with an unrecorded provider Fill; this repair was already applied"
+    );
+
+    // A repaired Fill is evidence, never a re-simulation of the provider's
+    // account: the provider owns cash and positions (ADR 0100), and the
+    // reservation the inferred cancellation released must be taken back exactly.
+    let after = paper_trading
+        .view_optional(&user_id)?
+        .ok_or_else(|| "The OKX Demo account was not retained".to_owned())?;
+    assert_eq!(after.account.cash, before.account.cash);
+    assert_eq!(after.account.positions, before.account.positions);
+    let expected_reserved: Decimal = after
+        .orders
+        .iter()
+        .filter(|order| {
+            order.side == Side::Buy
+                && matches!(
+                    order.status,
+                    OrderStatus::Accepted | OrderStatus::PartiallyFilled
+                )
+        })
+        .map(|order| (order.quantity - order.filled_quantity) * order.limit_price)
+        .sum();
+    assert_eq!(after.reserved_cash, expected_reserved);
+    for order in after.orders.iter() {
+        let recorded: Decimal = after
+            .fills
+            .iter()
+            .filter(|fill| fill.order_id == order.order_id)
+            .map(|fill| fill.quantity)
+            .sum();
+        assert_eq!(
+            recorded, order.filled_quantity,
+            "{} must have every filled quantity backed by per-trade evidence",
+            order.order_id
+        );
+    }
     Ok(())
 }
 
@@ -728,7 +897,7 @@ fn okx_demo_order_fills_parse_trade_identity_and_fee_fields() {
             },
         ),
         (
-            "/api/v5/trade/fills".to_owned(),
+            "/api/v5/trade/fills-history".to_owned(),
             MockResponse::Ok {
                 status: 200,
                 body: r#"{"code":"0","msg":"","data":[{"instId":"BTC-USDT","ordId":"456","tradeId":"trade-1","fillSz":"0.25","fillPx":"100.5","fee":"0.001","feeCcy":"BTC","ts":"1752000000000","execType":"T"}]}"#.to_owned(),
@@ -758,7 +927,9 @@ fn okx_demo_order_fills_parse_trade_identity_and_fee_fields() {
     );
     assert_eq!(
         harness.http.requested_paths().last().map(String::as_str),
-        Some("https://www.okx.com/api/v5/trade/fills?instType=SPOT&instId=BTC-USDT&ordId=456")
+        Some(
+            "https://www.okx.com/api/v5/trade/fills-history?instType=SPOT&instId=BTC-USDT&ordId=456"
+        )
     );
 }
 

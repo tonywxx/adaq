@@ -348,7 +348,7 @@ impl OperationsStore {
         if evidence_json.len() > MAX_EVENT_BYTES {
             return Err("operational evidence exceeds the Host retention bound".into());
         }
-        let event = OperationalEvent {
+        let mut event = OperationalEvent {
             event_id: Uuid::new_v4().to_string(),
             user_id: observation.user_id.clone(),
             entity_id: observation.entity_id.clone(),
@@ -372,8 +372,16 @@ impl OperationsStore {
                 |row| row.get(0),
             )
             .map_err(|e| e.to_string())?;
-        if latest.is_some_and(|latest| event.observed_at_ms < latest) {
-            return Err("stale operational observation was rejected".into());
+        // The observation sequence is assigned where writes are serialized.
+        // Callers stamp `observed_at_ms` before contending for this lock, and two
+        // Host paths write the same (user, entity, dimension) — the Worker
+        // heartbeat stream and the Decision path both drain that stream — so an
+        // inversion of a few milliseconds is scheduling, not a stale
+        // observation. Rejecting that row faulted a live Attempt.
+        if let Some(latest) = latest
+            && event.observed_at_ms <= latest
+        {
+            event.observed_at_ms = latest + 1;
         }
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
         transaction
@@ -1784,6 +1792,40 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_writers_cannot_invert_the_observation_sequence() {
+        // Two Host paths write the same (user, entity, dimension) stream and stamp
+        // their observation before contending for the write lock, so the loser can
+        // arrive with an older stamp. That is scheduling, not a stale observation:
+        // both rows are retained and the sequence stays monotonic.
+        let s = store();
+        let mut first = obs(HealthState::Healthy, true);
+        first.observed_at_ms = 1_000;
+        s.observe(first).unwrap();
+
+        let mut drained_after_the_lock = obs(HealthState::Healthy, true);
+        drained_after_the_lock.observed_at_ms = 999;
+        s.observe(drained_after_the_lock).unwrap();
+
+        let mut equal_stamp = obs(HealthState::Healthy, true);
+        equal_stamp.observed_at_ms = 1_000;
+        s.observe(equal_stamp).unwrap();
+
+        let mut stamps: Vec<i64> = s
+            .events_for_user("u", 10)
+            .unwrap()
+            .iter()
+            .map(|event| event.observed_at_ms)
+            .collect();
+        // `events_for_user` returns newest first.
+        stamps.reverse();
+        assert_eq!(
+            stamps,
+            vec![1_000, 1_001, 1_002],
+            "the first observation keeps its own stamp and the late arrivals follow it"
+        );
+    }
+
+    #[test]
     fn recovery_resolves_existing_alert_and_keeps_history() {
         let s = store();
         let (event, alert, _) = s.observe(obs(HealthState::Critical, true)).unwrap();
@@ -1948,15 +1990,18 @@ mod tests {
     }
 
     #[test]
-    fn stale_observations_and_foreign_users_are_rejected() {
+    fn out_of_order_observations_are_sequenced_and_foreign_identity_is_rejected() {
         let s = store();
         let mut current = obs(HealthState::Healthy, true);
         current.observed_at_ms = 20;
         s.observe(current).unwrap();
 
-        let mut stale = obs(HealthState::Critical, true);
-        stale.observed_at_ms = 19;
-        assert!(s.observe(stale).unwrap_err().contains("stale"));
+        // An observation that lost the write race is sequenced behind the one it
+        // contended with rather than dropped: rejecting it faulted a live Attempt.
+        let mut lost_the_race = obs(HealthState::Critical, true);
+        lost_the_race.observed_at_ms = 19;
+        let (sequenced, _, _) = s.observe(lost_the_race).unwrap();
+        assert_eq!(sequenced.observed_at_ms, 21);
         assert!(s.alerts_for_user("other").unwrap().is_empty());
 
         let mut mismatched = obs(HealthState::Healthy, true);

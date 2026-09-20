@@ -317,8 +317,10 @@ impl ConnectionTester {
         provider_order_id: &str,
         now_ms: i64,
     ) -> Result<Vec<serde_json::Value>, TestFailure> {
+        // `/api/v5/trade/fills` retains only the last three days, which is too short to
+        // resolve an order that left the open-order set before reconciliation observed it.
         let path = format!(
-            "/api/v5/trade/fills?instType=SPOT&instId={instrument}&ordId={provider_order_id}"
+            "/api/v5/trade/fills-history?instType=SPOT&instId={instrument}&ordId={provider_order_id}"
         );
         Ok(self.fetch_okx_demo_private(credential, now_ms, &path)?.data)
     }

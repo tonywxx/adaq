@@ -1,7 +1,7 @@
 use adaq_bot_runtime::{
     ProtocolSequence, WORKER_ARTIFACT_NAME, WORKER_ARTIFACT_VERSION, WORKER_PROTOCOL_VERSION,
-    WORKER_RUNTIME_VERSION, WorkerMessage, current_platform_tag, decode_frame, encode_frame,
-    read_bounded_line, sha256_hex,
+    WORKER_RUNTIME_VERSION, WorkerHealthState, WorkerMessage, current_platform_tag, decode_frame,
+    encode_frame, read_bounded_line, sha256_hex, unix_now_ms,
 };
 use std::{
     fs,
@@ -93,6 +93,23 @@ fn run() -> Result<(), String> {
     }
     if mode.contains("crash") {
         return Ok(());
+    }
+    if mode.contains("heartbeats-while-idle") {
+        // Keeps talking while answering nothing, so the only thing that can look
+        // like silence is the Host's own delay in reading its mailbox.
+        loop {
+            let sequence = outbound.next();
+            write_message(
+                &mut output,
+                &WorkerMessage::Heartbeat {
+                    sequence,
+                    observed_at_ms: unix_now_ms(),
+                    state: WorkerHealthState::Ready,
+                },
+                policy.max_frame_bytes as usize,
+            )?;
+            thread::sleep(Duration::from_millis(policy.heartbeat_interval_ms));
+        }
     }
     if mode.contains("hang") || mode.contains("missed-heartbeat") {
         loop {

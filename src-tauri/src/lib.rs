@@ -16,6 +16,7 @@ mod new_risk_gate;
 mod operations;
 mod paper_experiment;
 mod paper_feedback;
+mod paper_order_dispatch;
 mod paper_trading;
 mod python_research;
 mod research_queue;
@@ -6213,6 +6214,14 @@ async fn paper_account_reconcile(
                     open_orders,
                     balances,
                     now_ms,
+                    |instrument, provider_order_id, resolve_ms| {
+                        state.connections.resolve_okx_demo_terminal_order(
+                            &user_id,
+                            instrument,
+                            provider_order_id,
+                            resolve_ms,
+                        )
+                    },
                 )
             },
         )?

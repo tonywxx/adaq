@@ -34,6 +34,7 @@ use crate::{
     auth::AuthState,
     connections::{ProfileStatus, Provider, RuntimeGuard},
     local_research::LocalResearchState,
+    paper_order_dispatch::{self, DispatchError, ProviderOrderKind},
     paper_trading::{PaperAccountView, PaperOrderRequest},
     strategy_candidate::StrategyCandidateRevision,
     strategy_candidate::{StrategyCandidateStore, StrategyInputBinding, StrategyScope},
@@ -1994,6 +1995,20 @@ pub(crate) fn stop_experiment_bot(
     )
 }
 
+async fn complete_lifecycle_command(
+    app: AppHandle,
+    user_id: String,
+    action: impl FnOnce(&AppHandle, &str) -> Result<BotView, String> + Send + 'static,
+) -> Result<BotView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let view = action(&app, &user_id)?;
+        crate::refresh_bot_trade_stream(&app, &user_id)?;
+        Ok(view)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub(crate) async fn bot_start(
     request: BotCommandRequest,
@@ -2002,13 +2017,10 @@ pub(crate) async fn bot_start(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let view = start_bot(&app, &user_id, &request, false)?;
-        crate::refresh_bot_trade_stream(&app, &user_id)?;
-        Ok(view)
+    complete_lifecycle_command(app, user_id, move |app, user_id| {
+        start_bot(app, user_id, &request, false)
     })
     .await
-    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2019,13 +2031,10 @@ pub(crate) async fn bot_retry(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let view = start_bot(&app, &user_id, &request, true)?;
-        crate::refresh_bot_trade_stream(&app, &user_id)?;
-        Ok(view)
+    complete_lifecycle_command(app, user_id, move |app, user_id| {
+        start_bot(app, user_id, &request, true)
     })
     .await
-    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2036,13 +2045,10 @@ pub(crate) async fn bot_pause(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let view = pause_bot(&app, &user_id, &request)?;
-        crate::refresh_bot_trade_stream(&app, &user_id)?;
-        Ok(view)
+    complete_lifecycle_command(app, user_id, move |app, user_id| {
+        pause_bot(app, user_id, &request)
     })
     .await
-    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2053,13 +2059,10 @@ pub(crate) async fn bot_resume(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let view = resume_bot(&app, &user_id, &request)?;
-        crate::refresh_bot_trade_stream(&app, &user_id)?;
-        Ok(view)
+    complete_lifecycle_command(app, user_id, move |app, user_id| {
+        resume_bot(app, user_id, &request)
     })
     .await
-    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2070,13 +2073,10 @@ pub(crate) async fn bot_stop(
     app: AppHandle,
 ) -> Result<BotView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let view = stop_bot(&app, &user_id, request, true)?;
-        crate::refresh_bot_trade_stream(&app, &user_id)?;
-        Ok(view)
+    complete_lifecycle_command(app, user_id, move |app, user_id| {
+        stop_bot(app, user_id, request, true)
     })
     .await
-    .map_err(|error| error.to_string())?
 }
 
 // The Webview may request a Host decision, but it cannot provide feature
@@ -4032,36 +4032,6 @@ fn market_price(
         .ok_or_else(|| "A positive post-decision market price is unavailable.".into())
 }
 
-fn retain_uncertain_order(
-    local: &LocalResearchState,
-    bots: &BotStore,
-    user_id: &str,
-    bot_id: &str,
-    operation_id: &str,
-    decision_id: Option<&str>,
-) -> Result<(), String> {
-    let now_ms = adaq_bot_runtime::unix_now_ms();
-    let paper_failed = local
-        .paper_trading
-        .mark_uncertain(user_id, operation_id, now_ms)
-        .is_err();
-    let bot_failed = bots
-        .record_order(
-            user_id,
-            bot_id,
-            operation_id,
-            decision_id,
-            "uncertain",
-            None,
-        )
-        .is_err();
-    if paper_failed || bot_failed {
-        Err("Provider uncertainty evidence could not be durably retained.".into())
-    } else {
-        Ok(())
-    }
-}
-
 fn retain_provider_order_uncertainty(
     local: &LocalResearchState,
     bots: &BotStore,
@@ -4112,12 +4082,16 @@ fn submit_target_order(
         quantity: order.quantity,
         limit_price: order.limit_price,
     };
-    if let Err(error) = local.paper_trading.begin_order_with_policy(
+    match paper_order_dispatch::submit(
+        local,
+        bots,
+        bot_id,
+        Some(decision_id),
         &request,
-        Some(&bundle.paper_risk_policy),
-        adaq_bot_runtime::unix_now_ms(),
+        &bundle.paper_risk_policy,
+        ProviderOrderKind::Limit,
     ) {
-        if error.contains("RiskRejected") {
+        Err(DispatchError::Begin(error)) if error.contains("RiskRejected") => {
             bots.record_evidence(
                 user_id,
                 bot_id,
@@ -4128,64 +4102,16 @@ fn submit_target_order(
             )?;
             return Ok(());
         }
-        return Err(error);
-    }
-    let quantity = order.quantity.to_string();
-    let price = order.limit_price.to_string();
-    let remote = local.connections.create_okx_demo_order(
-        user_id,
-        okx_instrument_code(&order.instrument),
-        "limit",
-        order.side,
-        &quantity,
-        Some(&price),
-        adaq_bot_runtime::unix_now_ms(),
-    );
-    match remote {
-        Ok(provider_order) => {
-            let Some(provider_order_id) = provider_order.id.clone() else {
-                retain_uncertain_order(
-                    local,
-                    bots,
-                    user_id,
-                    bot_id,
-                    &operation_id,
-                    Some(decision_id),
-                )?;
-                return Err(
-                    "Provider order identity is missing; reconciliation is required.".into(),
-                );
-            };
-            let status = provider_order.status.as_deref().unwrap_or("accepted");
-            local.paper_trading.record_order_result(
-                user_id,
-                &operation_id,
-                Some(provider_order_id.clone()),
-                status,
-                None,
-                adaq_bot_runtime::unix_now_ms(),
-            )?;
-            bots.record_order(
-                user_id,
-                bot_id,
-                &operation_id,
-                Some(decision_id),
-                status,
-                Some(&provider_order_id),
-            )?;
-            Ok(())
+        Err(DispatchError::ProviderOrderIdentityMissing) => {
+            Err("Provider order identity is missing; reconciliation is required.".into())
         }
-        Err(_) => {
-            retain_uncertain_order(
-                local,
-                bots,
-                user_id,
-                bot_id,
-                &operation_id,
-                Some(decision_id),
-            )?;
+        Err(DispatchError::ProviderOutcomeUncertain(_)) => {
             Err("Provider order outcome is uncertain; reconciliation is required.".into())
         }
+        Err(DispatchError::Begin(error)) | Err(DispatchError::OutcomeRetention(error)) => {
+            Err(error)
+        }
+        Ok(()) => Ok(()),
     }
 }
 
@@ -4707,6 +4633,14 @@ fn reconcile_account(
                 open_orders,
                 client,
                 now_ms,
+                |instrument, provider_order_id, resolve_ms| {
+                    local.connections.resolve_okx_demo_terminal_order(
+                        user_id,
+                        instrument,
+                        provider_order_id,
+                        resolve_ms,
+                    )
+                },
             )
         })?
 }
@@ -5656,61 +5590,27 @@ fn flatten_account(
             quantity: *quantity,
             limit_price: price,
         };
-        local.paper_trading.begin_order_with_policy(
-            &request,
-            Some(&bundle.paper_risk_policy),
-            adaq_bot_runtime::unix_now_ms(),
-        )?;
-        let amount = quantity.to_string();
-        let remote = local.connections.create_okx_demo_order(
-            user_id,
-            instrument,
-            "market",
-            "sell",
-            &amount,
+        match paper_order_dispatch::submit(
+            local,
+            bots,
+            bot_id,
             None,
-            adaq_bot_runtime::unix_now_ms(),
-        );
-        match remote {
-            Ok(order) => {
-                let Some(provider_order_id) = order.id.clone() else {
-                    let _ = local.paper_trading.mark_uncertain(
-                        user_id,
-                        &operation_id,
-                        adaq_bot_runtime::unix_now_ms(),
-                    );
-                    let _ =
-                        bots.record_order(user_id, bot_id, &operation_id, None, "uncertain", None);
-                    return Err("flatten-provider-order-identity-missing".into());
-                };
-                local.paper_trading.record_order_result(
-                    user_id,
-                    &operation_id,
-                    Some(provider_order_id.clone()),
-                    order.status.as_deref().unwrap_or("accepted"),
-                    None,
-                    adaq_bot_runtime::unix_now_ms(),
-                )?;
-                bots.record_order(
-                    user_id,
-                    bot_id,
-                    &operation_id,
-                    None,
-                    order.status.as_deref().unwrap_or("accepted"),
-                    Some(&provider_order_id),
-                )?;
+            &request,
+            &bundle.paper_risk_policy,
+            ProviderOrderKind::MarketSell,
+        ) {
+            Ok(()) => {}
+            Err(DispatchError::ProviderOrderIdentityMissing) => {
+                return Err("flatten-provider-order-identity-missing".into());
             }
-            Err(error) => {
-                let _ = local.paper_trading.mark_uncertain(
-                    user_id,
-                    &operation_id,
-                    adaq_bot_runtime::unix_now_ms(),
-                );
-                let _ = bots.record_order(user_id, bot_id, &operation_id, None, "uncertain", None);
+            Err(DispatchError::ProviderOutcomeUncertain(error)) => {
                 return Err(format!(
                     "flatten-provider-outcome-uncertain: {}",
                     bounded_text(&error, 512)
                 ));
+            }
+            Err(DispatchError::Begin(error)) | Err(DispatchError::OutcomeRetention(error)) => {
+                return Err(error);
             }
         }
     }

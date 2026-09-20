@@ -1368,6 +1368,10 @@ _Avoid_: display currency, Quote Asset, currency symbol
 A Trading Account that produces simulated rather than real-money executions, either through an external Paper Provider or an ADAQ-owned simulator. Its exact Account Snapshots remain authoritative for the paper ledger it represents.
 _Avoid_: Backtest Run, Real Trading Account, local balance preference
 
+**Locally Authoritative Account**:
+A Paper Trading Account whose cash, positions, and Fills ADAQ itself owns and simulates, so a recorded Fill changes that account's balances directly. Only the A-share simulator is locally authoritative in V1. A provider-backed Paper Trading Account takes its cash and positions from provider Account Snapshots instead and never re-simulates a Fill's economic effect over them; a provider Fill remains order and reservation evidence only.
+_Avoid_: provider balance mirror, simulated provider Fill, re-applied Fill economics
+
 **OKX Demo Account**:
 The V1 external Paper Trading Account identified by one verified OKX Demo Paper Connection Profile. It supplies provider-authoritative Account Snapshots and accepts only Host-owned Paper Execution Adapter requests; it remains distinct from ADAQ's local Paper ledger and its credentials.
 _Avoid_: Paper Connection Profile, local Paper ledger, Live account
@@ -1407,6 +1411,10 @@ _Avoid_: balance refresh, cache replacement, Backtest replay
 **Paper Order**:
 A simulated order with an append-only Submitted, Accepted, Partially Filled, Filled, Cancelled, or Rejected lifecycle under one Paper Execution Adapter. Provider-native and ADAQ identities, timestamps, requests, responses, reasons, and every partial Fill remain evidence.
 _Avoid_: Execution Plan, Backtest Simulated Order, mutable order row
+
+**Provider Order Terminal Evidence**:
+The provider-authoritative final status and exact per-trade Fill records of one provider-owned Paper Order, retrieved from the provider after that order leaves its open-order set. It is the only admissible basis for a terminal local Paper Order status or a Fill on that order; the order's absence from the open-order set is not itself terminal evidence, and no provider Fill is ever synthesized locally.
+_Avoid_: assumed cancellation, missing-order sweep as proof, inferred terminal state, locally synthesized provider Fill
 
 **Paper Fill Evidence State**:
 The provenance class of a local simulated Fill: Trade Observed is bounded by a post-acceptance trade or auction result with quantity evidence, Quote Constrained is bounded by a post-acceptance executable quote, Bar Constrained uses only a post-acceptance bar under an explicit conservative participation policy, and Unavailable permits no Fill. The State describes simulation evidence rather than claiming exchange queue position.

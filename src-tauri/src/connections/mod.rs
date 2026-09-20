@@ -546,6 +546,28 @@ impl ConnectionManager {
             .collect()
     }
 
+    /// Resolves the provider-authoritative terminal state and the exact per-trade
+    /// Fill evidence of one provider-owned order. Absolute absence of per-trade
+    /// records falls back to the order's own trade evidence rather than being
+    /// treated as an order that never filled.
+    pub(crate) fn resolve_okx_demo_terminal_order(
+        &self,
+        user_id: &str,
+        instrument: &str,
+        provider_order_id: &str,
+        now_ms: i64,
+    ) -> Result<(adaq_trading_crypto::Order, Vec<adaq_trading_crypto::Trade>), String> {
+        let remote = self.fetch_okx_demo_order(user_id, instrument, provider_order_id, now_ms)?;
+        let fills =
+            self.fetch_okx_demo_order_fills(user_id, instrument, provider_order_id, now_ms)?;
+        let trades = if fills.is_empty() {
+            remote.trades.clone().unwrap_or_default()
+        } else {
+            fills
+        };
+        Ok((remote, trades))
+    }
+
     pub(crate) fn with_okx_demo_reconciliation<T>(
         &self,
         user_id: &str,

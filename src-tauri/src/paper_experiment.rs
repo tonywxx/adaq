@@ -875,6 +875,14 @@ fn reconcile_demo(
                 open_orders,
                 balances,
                 now_ms,
+                |instrument, provider_order_id, resolve_ms| {
+                    local.connections.resolve_okx_demo_terminal_order(
+                        user_id,
+                        instrument,
+                        provider_order_id,
+                        resolve_ms,
+                    )
+                },
             )
         })?
 }

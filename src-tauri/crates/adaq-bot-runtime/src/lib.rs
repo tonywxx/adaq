@@ -15,7 +15,10 @@ use std::{
     io::{BufWriter, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -1619,7 +1622,11 @@ pub struct WorkerSupervisor {
     inbound: ProtocolSequence,
     policy: WorkerRuntimePolicy,
     attempt: RuntimeAttempt,
-    last_heartbeat: Instant,
+    /// The instant the host process received the newest frame from the Worker.
+    /// It is stamped by the reader thread, which does nothing but read, so the
+    /// heartbeat timeout measures the Worker's pacing instead of how long the
+    /// consumer took to get around to frames that had already arrived.
+    last_frame_received: Arc<Mutex<Instant>>,
     initialized: bool,
     terminated: bool,
     seen_requests: HashSet<String>,
@@ -1857,11 +1864,13 @@ impl WorkerSupervisor {
         if let Some(stderr) = child.stderr.take() {
             spawn_stderr_drain(stderr);
         }
+        let last_frame_received = Arc::new(Mutex::new(Instant::now()));
         let messages = spawn_stdout_reader(
             stdout,
             policy
                 .max_frame_bytes_usize()
                 .map_err(|error| error.to_string())?,
+            last_frame_received.clone(),
         );
         let mut supervisor = Self {
             child,
@@ -1873,7 +1882,7 @@ impl WorkerSupervisor {
             inbound: ProtocolSequence::default(),
             policy,
             attempt,
-            last_heartbeat: Instant::now(),
+            last_frame_received,
             initialized: false,
             terminated: false,
             seen_requests: HashSet::new(),
@@ -1937,7 +1946,6 @@ impl WorkerSupervisor {
                 && bundle_identity == supervisor.attempt.bundle().identity
                 && world == supervisor.attempt.bundle().input.strategy.world =>
             {
-                supervisor.last_heartbeat = Instant::now();
                 supervisor.initialized = true;
                 Ok(supervisor)
             }
@@ -2009,7 +2017,6 @@ impl WorkerSupervisor {
                     state,
                     ..
                 } => {
-                    self.last_heartbeat = Instant::now();
                     self.health_events.push(WorkerHealthEvent::Heartbeat {
                         observed_at_ms,
                         state,
@@ -2051,14 +2058,34 @@ impl WorkerSupervisor {
                 }
             }
         }
-        if !self.terminated
-            && self.initialized
-            && Instant::now().duration_since(self.last_heartbeat)
-                > Duration::from_millis(self.policy.heartbeat_timeout_ms)
-        {
+        if !self.terminated && self.worker_channel_is_silent() {
             self.terminate_for_fault("worker-heartbeat-missed");
         }
         self.take_health_events()
+    }
+
+    /// The instant the host process received the newest frame from the Worker.
+    fn last_frame_received(&self) -> Instant {
+        self.last_frame_received
+            .lock()
+            .map(|received| *received)
+            .unwrap_or_else(|poisoned| *poisoned.into_inner())
+    }
+
+    /// Whether the host has received no frame from the Worker for longer than the
+    /// heartbeat timeout.
+    ///
+    /// Judged on receipt, never on processing: a consumer that was busy is not
+    /// evidence that the Worker stopped talking, and measuring from the instant
+    /// the consumer drained a frame turned the Host's own backlog into a Worker
+    /// fault.
+    fn worker_channel_is_silent(&self) -> bool {
+        self.initialized
+            && worker_silent_since(
+                self.last_frame_received(),
+                self.policy.heartbeat_timeout_ms,
+                Instant::now(),
+            )
     }
 
     pub fn transition(
@@ -2242,10 +2269,7 @@ impl WorkerSupervisor {
     ) -> Result<WorkerMessage, String> {
         let deadline = Instant::now() + timeout;
         loop {
-            if require_heartbeat
-                && Instant::now().duration_since(self.last_heartbeat)
-                    > Duration::from_millis(self.policy.heartbeat_timeout_ms)
-            {
+            if require_heartbeat && self.worker_channel_is_silent() {
                 return self.fail("worker-heartbeat-missed");
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -2289,7 +2313,6 @@ impl WorkerSupervisor {
                     state,
                     ..
                 } => {
-                    self.last_heartbeat = Instant::now();
                     self.health_events.push(WorkerHealthEvent::Heartbeat {
                         observed_at_ms,
                         state,
@@ -2353,6 +2376,7 @@ impl Drop for WorkerSupervisor {
 fn spawn_stdout_reader(
     stdout: impl Read + Send + 'static,
     max_frame_bytes: usize,
+    last_frame_received: Arc<Mutex<Instant>>,
 ) -> Receiver<ReaderEvent> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
@@ -2360,6 +2384,13 @@ fn spawn_stdout_reader(
         loop {
             match read_bounded_line(&mut stdout, max_frame_bytes) {
                 Ok(Some(frame)) => {
+                    // Stamp receipt before the frame can wait behind the
+                    // consumer's own work: what the heartbeat timeout must
+                    // measure is whether the Worker is still talking, not how
+                    // busy the Host was.
+                    if let Ok(mut received) = last_frame_received.lock() {
+                        *received = Instant::now();
+                    }
                     if sender.send(ReaderEvent::Frame(frame)).is_err() {
                         break;
                     }
@@ -2393,6 +2424,12 @@ fn spawn_stderr_drain(stderr: impl Read + Send + 'static) {
 
 fn bound_text(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
+}
+
+/// Whether the heartbeat timeout has elapsed since the host received the newest
+/// frame from the Worker.
+fn worker_silent_since(received: Instant, timeout_ms: u64, now: Instant) -> bool {
+    now.duration_since(received) > Duration::from_millis(timeout_ms)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -2542,6 +2579,96 @@ mod tests {
             .heartbeat_timeout_ms,
             30
         );
+    }
+
+    #[test]
+    fn a_received_frame_stamps_receipt_without_being_consumed() {
+        // The regression this pins: judging a miss from the instant the consumer
+        // drained a frame turned the Host's own backlog into a Worker fault, and
+        // fired while heartbeat frames were already sitting in the mailbox.
+        let stale = Instant::now() - Duration::from_secs(60);
+        let received = Arc::new(Mutex::new(stale));
+        let messages = spawn_stdout_reader(
+            std::io::Cursor::new(heartbeat_frame(1)),
+            max_frame_bytes(),
+            received.clone(),
+        );
+
+        assert!(
+            wait_for(|| *received.lock().unwrap() > stale),
+            "the reader thread must stamp receipt as soon as the frame arrives"
+        );
+        assert!(
+            matches!(messages.try_recv(), Ok(ReaderEvent::Frame(_))),
+            "the frame must still be undrained: receipt is what was stamped, not consumption"
+        );
+    }
+
+    #[test]
+    fn eof_never_counts_as_a_received_frame() {
+        let stale = Instant::now() - Duration::from_secs(60);
+        let received = Arc::new(Mutex::new(stale));
+        let messages = spawn_stdout_reader(
+            std::io::Cursor::new(Vec::new()),
+            max_frame_bytes(),
+            received.clone(),
+        );
+
+        assert!(matches!(
+            messages.recv_timeout(Duration::from_secs(5)),
+            Ok(ReaderEvent::Eof)
+        ));
+        assert_eq!(
+            *received.lock().unwrap(),
+            stale,
+            "silence after the Worker stopped sending must still be measurable"
+        );
+    }
+
+    #[test]
+    fn the_worker_is_silent_only_after_the_timeout_since_receipt() {
+        let now = Instant::now();
+        let timeout_ms = 10_000;
+        assert!(!worker_silent_since(now, timeout_ms, now));
+        assert!(!worker_silent_since(
+            now - Duration::from_millis(timeout_ms),
+            timeout_ms,
+            now
+        ));
+        assert!(worker_silent_since(
+            now - Duration::from_millis(timeout_ms + 1),
+            timeout_ms,
+            now
+        ));
+    }
+
+    fn max_frame_bytes() -> usize {
+        WorkerRuntimePolicy::default()
+            .max_frame_bytes_usize()
+            .unwrap()
+    }
+
+    fn heartbeat_frame(sequence: u64) -> Vec<u8> {
+        encode_frame(
+            &WorkerMessage::Heartbeat {
+                sequence,
+                observed_at_ms: 1,
+                state: WorkerHealthState::Ready,
+            },
+            max_frame_bytes(),
+        )
+        .unwrap()
+    }
+
+    fn wait_for(mut condition: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if condition() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        condition()
     }
 
     fn worker() -> WorkerArtifactBinding {
