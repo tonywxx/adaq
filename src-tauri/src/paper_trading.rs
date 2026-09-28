@@ -720,7 +720,7 @@ impl PaperTradingStore {
                     "Provider fills exceed the order's newly reported quantity.".into(),
                 ));
             }
-            if let Err(error) = ledger.apply_fill(Fill {
+            let fill = Fill {
                 fill_id,
                 order_id: local_order_id.clone(),
                 quantity,
@@ -731,7 +731,13 @@ impl PaperTradingStore {
                 fee_amount,
                 evidence: FillEvidence::TradeObserved,
                 occurred_at_ms: trade.timestamp.or(remote.timestamp).unwrap_or(now_ms),
-            }) {
+            };
+            let fill_result = if remote.order_type.as_deref() == Some("market") {
+                ledger.apply_provider_market_fill(fill)
+            } else {
+                ledger.apply_fill(fill)
+            };
+            if let Err(error) = fill_result {
                 return Err(self.provider_sync_failure(
                     user_id,
                     operation_id,
@@ -794,6 +800,14 @@ impl PaperTradingStore {
                 ));
             }
         }
+        if matches!(
+            remote_status.as_str(),
+            "closed" | "filled" | "canceled" | "cancelled" | "expired" | "rejected"
+        ) {
+            if let Some(provider_order_id) = provider_order_id.as_deref() {
+                execution.resolve_provider_uncertainty(provider_order_id, now_ms);
+            }
+        }
         self.save(user_id, &ledger, &execution, now_ms)?;
         self.view(user_id)
     }
@@ -849,12 +863,7 @@ impl PaperTradingStore {
     ) -> Result<Vec<VanishedProviderOrder>, String> {
         let (ledger, execution) = self.load(user_id)?;
         let mut vanished = Vec::new();
-        for order in ledger.orders().filter(|order| {
-            matches!(
-                order.status,
-                OrderStatus::Accepted | OrderStatus::PartiallyFilled
-            )
-        }) {
+        for order in ledger.orders() {
             let evidence = execution.evidence().find_map(|outcome| {
                 let evidence = match outcome {
                     ExecutionOutcome::Accepted(evidence)
@@ -870,6 +879,17 @@ impl PaperTradingStore {
             let Some(provider_order_id) = evidence.provider_order_id.clone() else {
                 continue;
             };
+            let unresolved = execution.evidence().any(|outcome| {
+                matches!(outcome, ExecutionOutcome::Uncertain(uncertain)
+                    if uncertain.provider_order_id.as_deref() == Some(provider_order_id.as_str()))
+            });
+            if !matches!(
+                order.status,
+                OrderStatus::Accepted | OrderStatus::PartiallyFilled
+            ) && !unresolved
+            {
+                continue;
+            }
             if open_orders
                 .iter()
                 .any(|open| open.id.as_deref() == Some(provider_order_id.as_str()))
@@ -1217,6 +1237,16 @@ impl PaperTradingStore {
     }
 }
 
+pub(crate) fn settle_reconciliation(
+    mut reconcile: impl FnMut() -> Result<PaperAccountView, String>,
+) -> Result<PaperAccountView, String> {
+    let mut account = reconcile()?;
+    if account.reconciliation == adaq_paper_trading_core::ReconciliationState::Required {
+        account = reconcile()?;
+    }
+    Ok(account)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1232,6 +1262,41 @@ mod tests {
             positions: BTreeMap::new(),
             observed_at_ms: 1,
         }
+    }
+
+    #[test]
+    fn changed_provider_balance_settles_with_one_fresh_retry() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        let mut changed = account();
+        changed.cash -= Decimal::ONE;
+        let mut calls = 0;
+        let settled = settle_reconciliation(|| {
+            calls += 1;
+            store.reconcile("alice", changed.clone(), calls + 1)
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(
+            settled.reconciliation,
+            adaq_paper_trading_core::ReconciliationState::Reconciled
+        );
+        assert_eq!(settled.account.cash, changed.cash);
+
+        let mut calls = 0;
+        let unsettled = settle_reconciliation(|| {
+            calls += 1;
+            let mut moving = changed.clone();
+            moving.cash -= Decimal::from(calls);
+            store.reconcile("alice", moving, calls + 3)
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(
+            unsettled.reconciliation,
+            adaq_paper_trading_core::ReconciliationState::Required
+        );
     }
 
     #[test]

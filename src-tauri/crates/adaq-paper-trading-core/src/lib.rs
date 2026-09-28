@@ -349,6 +349,24 @@ impl PaperExecution {
         );
     }
 
+    pub fn resolve_provider_uncertainty(&mut self, provider_order_id: &str, now_ms: i64) {
+        for outcome in self.operations.values_mut() {
+            if let ExecutionOutcome::Uncertain(evidence) = outcome {
+                if evidence.provider_order_id.as_deref() == Some(provider_order_id) {
+                    *outcome = ExecutionOutcome::Accepted(ProviderEvidence {
+                        provider: evidence.provider,
+                        operation_id: evidence.operation_id.clone(),
+                        local_order_id: evidence.local_order_id.clone(),
+                        provider_order_id: evidence.provider_order_id.clone(),
+                        status: "resolved-terminal".into(),
+                        error_code: None,
+                        observed_at_ms: now_ms,
+                    });
+                }
+            }
+        }
+    }
+
     pub fn reconcile(&mut self, matches: bool) {
         self.blocked = !matches
             || self
@@ -723,6 +741,18 @@ impl PaperLedger {
     }
 
     pub fn apply_fill(&mut self, fill: Fill) -> Result<(), LedgerError> {
+        self.apply_fill_with_price_limit(fill, true)
+    }
+
+    pub fn apply_provider_market_fill(&mut self, fill: Fill) -> Result<(), LedgerError> {
+        self.apply_fill_with_price_limit(fill, false)
+    }
+
+    fn apply_fill_with_price_limit(
+        &mut self,
+        fill: Fill,
+        enforce_price_limit: bool,
+    ) -> Result<(), LedgerError> {
         if fill.quantity <= Decimal::ZERO
             || fill.price <= Decimal::ZERO
             || fill.fee < Decimal::ZERO
@@ -742,10 +772,10 @@ impl PaperLedger {
         {
             return Err(LedgerError::InvalidTransition);
         }
-        if order.side == Side::Buy && fill.price > order.limit_price {
+        if enforce_price_limit && order.side == Side::Buy && fill.price > order.limit_price {
             return Err(LedgerError::InvalidFill);
         }
-        if order.side == Side::Sell && fill.price < order.limit_price {
+        if enforce_price_limit && order.side == Side::Sell && fill.price < order.limit_price {
             return Err(LedgerError::InvalidFill);
         }
         let quote_fee = fill.fee_quote.unwrap_or(fill.fee);
@@ -946,6 +976,52 @@ mod tests {
             evidence: FillEvidence::TradeObserved,
             occurred_at_ms: 2,
         }
+    }
+
+    #[test]
+    fn provider_market_sell_accepts_execution_below_estimated_bid() {
+        let mut snapshot = account(Market::OkxSpot);
+        snapshot.positions.insert(
+            "ETH-USDT".into(),
+            Position {
+                quantity: Decimal::new(2, 0),
+                sellable_quantity: Decimal::new(2, 0),
+            },
+        );
+        let mut ledger = PaperLedger::new(snapshot).unwrap();
+        ledger
+            .submit_order(
+                "alice",
+                "ETH-USDT",
+                Side::Sell,
+                Decimal::new(1, 0),
+                Decimal::new(2640, 0),
+                1,
+            )
+            .unwrap();
+        let order = ledger.orders().next().unwrap().clone();
+        let observed = fill(&order, Decimal::ONE, Decimal::new(2639, 0));
+        assert_eq!(ledger.apply_fill(observed.clone()), Err(LedgerError::InvalidFill));
+        ledger.apply_provider_market_fill(observed).unwrap();
+        assert_eq!(ledger.orders().next().unwrap().status, OrderStatus::Filled);
+    }
+
+    #[test]
+    fn exact_terminal_observation_resolves_matching_provider_uncertainty() {
+        let mut execution = PaperExecution::okx_demo(RiskPolicy {
+            max_order_notional: Decimal::new(1000, 0),
+            reserve_cash: Decimal::ZERO,
+            freeze_new_risk: false,
+        })
+        .unwrap();
+        execution.record_provider_observation("uncertain".into(), "order-1".into(), "unknown".into(), 1);
+        execution.mark_uncertain("uncertain", 1).unwrap();
+        execution.record_reconciliation("before".into(), true, 2);
+        assert!(execution.is_blocked());
+        execution.resolve_provider_uncertainty("order-1", 3);
+        execution.record_reconciliation("after".into(), true, 3);
+        assert!(!execution.is_blocked());
+        assert!(execution.evidence().all(|outcome| !matches!(outcome, ExecutionOutcome::Uncertain(_))));
     }
 
     #[test]

@@ -4650,7 +4650,8 @@ fn require_reconciled_account(
     user_id: &str,
     bundle: &BotDeploymentBundle,
 ) -> Result<PaperAccountView, String> {
-    let account = reconcile_account(local, user_id, bundle)?;
+    let account =
+        crate::paper_trading::settle_reconciliation(|| reconcile_account(local, user_id, bundle))?;
     if account.account.account_id != bundle.account_id
         || !account_is_reconciled_and_quiet(Some(&account))
     {
@@ -5551,7 +5552,8 @@ fn flatten_account(
     bot_id: &str,
 ) -> Result<PaperAccountView, String> {
     let instrument_scope = bot_instrument_scope(bundle);
-    let account = reconcile_account(local, user_id, bundle)?;
+    let account =
+        crate::paper_trading::settle_reconciliation(|| reconcile_account(local, user_id, bundle))?;
     if account.reconciliation != adaq_paper_trading_core::ReconciliationState::Reconciled {
         return Err("Flatten requires reconciled account evidence".into());
     }
@@ -5567,60 +5569,108 @@ fn flatten_account(
         })
         .map(|(instrument, position)| (instrument.clone(), position.sellable_quantity))
         .collect::<Vec<_>>();
-    for (index, (instrument, quantity)) in positions.iter().enumerate() {
-        let ticker = local
-            .connections
-            .with_okx_demo_client(user_id, |client| {
-                tauri::async_runtime::block_on(
-                    client.fetch_ticker(instrument, adaq_trading_crypto::Params::new()),
-                )
-            })?
-            .map_err(|_| "flatten-price-unavailable".to_owned())?;
-        let price = ticker
-            .bid
-            .or(ticker.last)
-            .or(ticker.close)
-            .ok_or_else(|| "flatten-price-unavailable".to_owned())?;
-        let operation_id = format!("bot-{bot_id}-flatten-{attempt_id}:{index}");
-        let request = PaperOrderRequest {
-            user_id: user_id.into(),
-            operation_id: operation_id.clone(),
-            instrument: instrument.clone(),
-            side: "sell".into(),
-            quantity: *quantity,
-            limit_price: price,
-        };
-        match paper_order_dispatch::submit(
-            local,
-            bots,
-            bot_id,
-            None,
-            &request,
-            &bundle.paper_risk_policy,
-            ProviderOrderKind::MarketSell,
-        ) {
-            Ok(()) => {}
-            Err(DispatchError::ProviderOrderIdentityMissing) => {
-                return Err("flatten-provider-order-identity-missing".into());
+    for (index, (instrument, _)) in positions.iter().enumerate() {
+        let mut part = 0;
+        loop {
+            let account = require_reconciled_account(local, user_id, bundle)?;
+            let quantity = account
+                .account
+                .positions
+                .get(instrument)
+                .map(|position| position.sellable_quantity)
+                .unwrap_or_default();
+            if quantity <= Decimal::ZERO {
+                break;
             }
-            Err(DispatchError::ProviderOutcomeUncertain(error)) => {
-                return Err(format!(
-                    "flatten-provider-outcome-uncertain: {}",
-                    bounded_text(&error, 512)
-                ));
+            let ticker = local
+                .connections
+                .with_okx_demo_client(user_id, |client| {
+                    tauri::async_runtime::block_on(
+                        client.fetch_ticker(instrument, adaq_trading_crypto::Params::new()),
+                    )
+                })?
+                .map_err(|_| "flatten-price-unavailable".to_owned())?;
+            let price = ticker
+                .bid
+                .or(ticker.last)
+                .or(ticker.close)
+                .ok_or_else(|| "flatten-price-unavailable".to_owned())?;
+            let order_quantity = flatten_order_quantity(
+                quantity,
+                price,
+                bundle.paper_risk_policy.max_order_notional,
+                bundle.execution_profile.quantity_increment,
+                bundle.execution_profile.minimum_quantity,
+            )?;
+            let operation_id = format!("bot-{bot_id}-flatten-{attempt_id}:{index}:{part}");
+            let request = PaperOrderRequest {
+                user_id: user_id.into(),
+                operation_id: operation_id.clone(),
+                instrument: instrument.clone(),
+                side: "sell".into(),
+                quantity: order_quantity,
+                limit_price: price,
+            };
+            match paper_order_dispatch::submit(
+                local,
+                bots,
+                bot_id,
+                None,
+                &request,
+                &bundle.paper_risk_policy,
+                ProviderOrderKind::MarketSell,
+            ) {
+                Ok(()) => {}
+                Err(DispatchError::ProviderOrderIdentityMissing) => {
+                    return Err("flatten-provider-order-identity-missing".into());
+                }
+                Err(DispatchError::ProviderOutcomeUncertain(error)) => {
+                    return Err(format!(
+                        "flatten-provider-outcome-uncertain: {}",
+                        bounded_text(&error, 512)
+                    ));
+                }
+                Err(DispatchError::Begin(error)) | Err(DispatchError::OutcomeRetention(error)) => {
+                    return Err(error);
+                }
             }
-            Err(DispatchError::Begin(error)) | Err(DispatchError::OutcomeRetention(error)) => {
-                return Err(error);
+            let remaining = require_reconciled_account(local, user_id, bundle)?
+                .account
+                .positions
+                .get(instrument)
+                .map(|position| position.sellable_quantity)
+                .unwrap_or_default();
+            if remaining >= quantity {
+                return Err("flatten-fill-not-observed".into());
             }
+            part += 1;
         }
     }
-    let final_account = reconcile_account(local, user_id, bundle)?;
+    let final_account = require_reconciled_account(local, user_id, bundle)?;
     if !account_positions_in_scope(&final_account, &instrument_scope).is_empty()
         || !account_is_reconciled_and_quiet(Some(&final_account))
     {
         return Err("flatten-not-proven".into());
     }
     Ok(final_account)
+}
+
+fn flatten_order_quantity(
+    sellable: Decimal,
+    price: Decimal,
+    max_order_notional: Decimal,
+    quantity_increment: Decimal,
+    minimum_quantity: Decimal,
+) -> Result<Decimal, String> {
+    if price <= Decimal::ZERO || max_order_notional <= Decimal::ZERO {
+        return Err("flatten-price-or-risk-limit-invalid".into());
+    }
+    let cap = max_order_notional * Decimal::new(9, 1) / price;
+    let quantity = floor_increment(sellable.min(cap), quantity_increment)?;
+    if quantity <= Decimal::ZERO || quantity < minimum_quantity {
+        return Err("flatten-position-below-minimum-quantity".into());
+    }
+    Ok(quantity)
 }
 
 #[cfg(test)]
@@ -5635,6 +5685,43 @@ mod tests {
         AccountSnapshot, AdapterKind, Currency, ExecutionOutcome, Fill, FillEvidence, Market,
         Order, Position, ProviderEvidence, ReconciliationState,
     };
+
+    #[test]
+    fn flatten_splits_position_below_existing_order_limit() {
+        let sellable = Decimal::new(12_303_113_700, 9);
+        let price = Decimal::new(2_644_500, 3);
+        let limit = Decimal::new(3_236_781, 2);
+        let quantity = flatten_order_quantity(
+            sellable,
+            price,
+            limit,
+            Decimal::new(1, 4),
+            Decimal::new(1, 4),
+        )
+        .unwrap();
+        assert!(quantity < sellable);
+        assert!(quantity * price < limit);
+        assert!(
+            flatten_order_quantity(
+                sellable - quantity,
+                price,
+                limit,
+                Decimal::new(1, 4),
+                Decimal::new(1, 4),
+            )
+            .is_ok()
+        );
+        assert!(
+            flatten_order_quantity(
+                Decimal::new(7, 7),
+                price,
+                limit,
+                Decimal::new(1, 4),
+                Decimal::new(1, 4),
+            )
+            .is_err()
+        );
+    }
 
     fn hash(byte: char) -> String {
         std::iter::repeat(byte).take(64).collect()

@@ -1781,7 +1781,9 @@ fn launch_experiment(
         &experiment.account_id,
     )?;
     validate_qualifications(local.as_ref(), &qualifications, user_id, &experiment)?;
-    let account = reconcile_demo(local.as_ref(), user_id, &experiment.account_id)?;
+    let account = crate::paper_trading::settle_reconciliation(|| {
+        reconcile_demo(local.as_ref(), user_id, &experiment.account_id)
+    })?;
     if account.account.account_id != experiment.account_id
         || account.reconciliation != adaq_paper_trading_core::ReconciliationState::Reconciled
         || account.restart_required
