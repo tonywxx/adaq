@@ -455,21 +455,21 @@ export function PythonFactorLabPanel({ userId }: { userId: string }) {
 															id={report.firstAttemptId}
 															label={t("identifiers.attempt")}
 														/>{" "}
-													/ <IdentifierDisplay id={report.replayAttemptId} />;{" "}
-													<IdentifierDisplay
-														id={report.processContractSha256}
-														label={t("identifiers.protocol")}
-													/>{" "}
-													/ <IdentifierDisplay id={report.replayInputSha256} />;{" "}
-													<IdentifierDisplay
-														id={report.firstInputSha256}
-														label={t("identifiers.fingerprint")}
-													/>{" "}
-													/ <IdentifierDisplay id={report.replayProcessSha256} />;{" "}
-													<IdentifierDisplay
-														id={report.firstProcessSha256}
-														label={t("identifiers.fingerprint")}
-													/>
+														/ <IdentifierDisplay id={report.replayAttemptId} />;{" "}
+														<IdentifierDisplay
+															id={report.processContractSha256}
+															label={t("identifiers.protocol")}
+														/>{" "}
+														/ <IdentifierDisplay id={report.replayInputSha256} />;{" "}
+														<IdentifierDisplay
+															id={report.firstInputSha256}
+															label={t("identifiers.fingerprint")}
+														/>{" "}
+														/ <IdentifierDisplay id={report.replayProcessSha256} />;{" "}
+														<IdentifierDisplay
+															id={report.firstProcessSha256}
+															label={t("identifiers.fingerprint")}
+														/>
 													</p>
 												),
 											)}

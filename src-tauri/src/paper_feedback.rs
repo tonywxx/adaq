@@ -166,6 +166,7 @@ impl PaperFeedbackStore {
         Ok(Self { database })
     }
 
+    #[cfg(test)]
     pub fn create_snapshot(
         &self,
         input: FeedbackSnapshotInput,
@@ -230,6 +231,7 @@ impl PaperFeedbackStore {
         Ok(snapshot)
     }
 
+    #[cfg(test)]
     pub fn create_report(
         &self,
         input: FeedbackReportInput,
@@ -416,6 +418,59 @@ impl PaperFeedbackStore {
         })
     }
 
+    pub(crate) fn recover_reviewed_reports(
+        &self,
+        operations: &crate::operations::OperationsStore,
+        user_id: &str,
+    ) -> Result<(), String> {
+        let view = self.view(user_id)?;
+        for alert in operations.alerts_for_user(user_id)? {
+            if alert.dimension != crate::operations::HealthDimension::ResearchFeedback
+                || alert.condition != "Research Review Required"
+                || alert.state == crate::operations::AlertState::Resolved
+            {
+                continue;
+            }
+            let Some(decision) = view
+                .decisions
+                .iter()
+                .find(|decision| decision.input.report_ids.contains(&alert.entity_id))
+            else {
+                continue;
+            };
+            let Some(report) = view
+                .reports
+                .iter()
+                .find(|report| report.report_id == alert.entity_id)
+            else {
+                continue;
+            };
+            operations.observe(crate::operations::HealthObservation {
+                user_id: user_id.into(),
+                entity_id: report.report_id.clone(),
+                dimension: crate::operations::HealthDimension::ResearchFeedback,
+                state: crate::operations::HealthState::Healthy,
+                condition: alert.condition,
+                evidence: serde_json::json!({
+                    "reportId": report.report_id,
+                    "snapshotId": report.input.snapshot_id,
+                    "reviewDecisionId": decision.decision_id,
+                    "action": decision.input.action,
+                    "evidenceState": report.evidence_state,
+                }),
+                required: false,
+                observed_at_ms: crate::unix_now_ms(),
+                event_kind: Some("research.review-completed".into()),
+                evidence_id: Some(report.report_id.clone()),
+                correlation_id: Some(report.input.snapshot_id.clone()),
+                causation_id: Some(alert.last_event_id),
+                diagnostic: Some("A recorded Research Review Decision addressed this Report; its original evidence state remains unchanged.".into()),
+                metrics: Default::default(),
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn record_review_decision(
         &self,
         input: ReviewDecisionInput,
@@ -510,6 +565,107 @@ mod tests {
             evidence: serde_json::json!({"orders": 2}),
         }
     }
+    #[test]
+    fn recorded_review_resolves_only_its_owned_report_without_changing_evidence() {
+        let s = store();
+        let operations = crate::operations::OperationsStore::open(s.database.clone()).unwrap();
+        let snapshot = s.create_snapshot(snapshot_input(), 1).unwrap();
+        let mut reports = Vec::new();
+        for lens in [FeedbackLens::Factor, FeedbackLens::Model] {
+            let report = s
+                .create_report(
+                    FeedbackReportInput {
+                        user_id: "user".into(),
+                        snapshot_id: snapshot.snapshot_id.clone(),
+                        lens,
+                        metrics: serde_json::json!({}),
+                        comparable_evidence_id: None,
+                    },
+                    2,
+                )
+                .unwrap();
+            operations
+                .observe(crate::operations::HealthObservation {
+                    user_id: "user".into(),
+                    entity_id: report.report_id.clone(),
+                    dimension: crate::operations::HealthDimension::ResearchFeedback,
+                    state: crate::operations::HealthState::Degraded,
+                    condition: "Research Review Required".into(),
+                    evidence: serde_json::json!({"reportId": report.report_id}),
+                    required: true,
+                    observed_at_ms: 2,
+                    event_kind: None,
+                    evidence_id: Some(report.report_id.clone()),
+                    correlation_id: None,
+                    causation_id: None,
+                    diagnostic: None,
+                    metrics: Default::default(),
+                })
+                .unwrap();
+            reports.push(report);
+        }
+        s.recover_reviewed_reports(&operations, "user").unwrap();
+        assert!(
+            operations
+                .alerts_for_user("user")
+                .unwrap()
+                .iter()
+                .all(|a| a.state == crate::operations::AlertState::Active)
+        );
+        assert!(
+            s.record_review_decision(ReviewDecisionInput {
+                user_id: "foreign".into(),
+                report_ids: vec![reports[0].report_id.clone()],
+                action: ReviewAction::InvestigateOperations,
+                rationale: "Unavailable evidence requires investigation.".into(),
+                decided_at_ms: 3,
+            })
+            .is_err()
+        );
+        let decision = s
+            .record_review_decision(ReviewDecisionInput {
+                user_id: "user".into(),
+                report_ids: vec![reports[0].report_id.clone()],
+                action: ReviewAction::InvestigateOperations,
+                rationale: "Unavailable evidence requires investigation.".into(),
+                decided_at_ms: 3,
+            })
+            .unwrap();
+        s.recover_reviewed_reports(&operations, "user").unwrap();
+        s.recover_reviewed_reports(&operations, "user").unwrap();
+        let alerts = operations.alerts_for_user("user").unwrap();
+        let resolved = alerts
+            .iter()
+            .find(|a| a.entity_id == reports[0].report_id)
+            .unwrap();
+        assert_eq!(resolved.state, crate::operations::AlertState::Resolved);
+        assert_eq!(
+            operations
+                .alert_history_for_user("user", &resolved.alert_id)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            alerts
+                .iter()
+                .find(|a| a.entity_id == reports[1].report_id)
+                .unwrap()
+                .state,
+            crate::operations::AlertState::Active
+        );
+        let view = s.view("user").unwrap();
+        assert!(
+            view.reports
+                .iter()
+                .all(|r| r.evidence_state == EvidenceState::InsufficientEvidence)
+        );
+        assert_eq!(
+            operations.events_for_user("user", 1).unwrap()[0].evidence["reviewDecisionId"],
+            decision.decision_id
+        );
+    }
+
     #[test]
     fn snapshots_gate_unrealized_and_insufficient_evidence() {
         let s = store();

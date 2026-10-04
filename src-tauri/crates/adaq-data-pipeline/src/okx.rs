@@ -166,7 +166,12 @@ pub struct OkxSourcePublicationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "event", content = "data")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "event",
+    content = "data"
+)]
 pub enum OkxBackfillEvent {
     UniverseLoaded {
         snapshot_id: String,
@@ -1751,7 +1756,8 @@ impl OkxSpotDataPath {
             })
             .transpose()?;
         if fetched.is_none() {
-            for gap_retry in 0..=request.max_gap_retries {
+            let prior_retry_count = checkpoint.retry_count;
+            for _ in 0..=request.max_gap_retries {
                 let mut checkpoint_error = None;
                 let result = self
                     .client
@@ -1802,8 +1808,29 @@ impl OkxSpotDataPath {
                     return Err(PipelineError::Storage(error));
                 }
                 match result {
-                    Ok(acquisition) => {
-                        checkpoint.retry_count += acquisition.diagnostics.retry_count;
+                    Ok(mut acquisition) => {
+                        if let Some(mut previous) = fetched.take() {
+                            acquisition.diagnostics.request_count +=
+                                previous.diagnostics.request_count;
+                            acquisition.diagnostics.retry_count +=
+                                previous.diagnostics.retry_count + 1;
+                            acquisition.diagnostics.backoff_ms = acquisition
+                                .diagnostics
+                                .backoff_ms
+                                .max(previous.diagnostics.backoff_ms);
+                            previous
+                                .diagnostics
+                                .response_statuses
+                                .append(&mut acquisition.diagnostics.response_statuses);
+                            acquisition.diagnostics.response_statuses =
+                                previous.diagnostics.response_statuses;
+                            previous
+                                .response_sha256s
+                                .append(&mut acquisition.response_sha256s);
+                            acquisition.response_sha256s = previous.response_sha256s;
+                        }
+                        checkpoint.retry_count =
+                            prior_retry_count + acquisition.diagnostics.retry_count;
                         checkpoint.next_cursor_ms = None;
                         fetched = Some(acquisition);
                         if fetched
@@ -1814,7 +1841,6 @@ impl OkxSpotDataPath {
                         }
                         checkpoint.gap_count =
                             fetched.as_ref().map_or(0, |value| value.series.gaps.len());
-                        checkpoint.retry_count += u32::from(gap_retry > 0);
                     }
                     Err(error) if error.code == "cancelled" => {
                         checkpoint.state = OkxAcquisitionState::Cancelled;
@@ -2555,7 +2581,10 @@ fn validate_backfill_request(request: &OkxBackfillRequest) -> Result<(), Pipelin
     Ok(())
 }
 
-fn latest_closed_bar_boundary_ms(now_ms: i64, interval: BarInterval) -> Result<i64, PipelineError> {
+pub fn latest_closed_bar_boundary_ms(
+    now_ms: i64,
+    interval: BarInterval,
+) -> Result<i64, PipelineError> {
     if now_ms < 0 {
         return Err(PipelineError::InvalidRequest(
             "OKX current time must be non-negative".into(),
@@ -2813,6 +2842,31 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn backfill_progress_serializes_fields_for_the_desktop_channel() {
+        let universe = serde_json::to_value(OkxBackfillEvent::UniverseLoaded {
+            snapshot_id: "universe".into(),
+            instrument_count: 5,
+        })
+        .unwrap();
+        assert_eq!(
+            universe,
+            serde_json::json!({
+                "event": "universeLoaded",
+                "data": { "snapshotId": "universe", "instrumentCount": 5 }
+            })
+        );
+        let page = serde_json::to_value(OkxBackfillEvent::Page {
+            instrument: InstrumentId::new(Venue::crypto_spot("okx").unwrap(), "BTC-USDT").unwrap(),
+            downloaded_records: 200,
+            next_cursor_ms: 1000,
+        })
+        .unwrap();
+        assert_eq!(page["data"]["downloadedRecords"], 200);
+        assert_eq!(page["data"]["nextCursorMs"], 1000);
+        assert!(page["data"].get("downloaded_records").is_none());
+    }
+
     fn spot(code: &str, status: InstrumentStatus) -> SpotInstrument {
         SpotInstrument {
             src: "okx".into(),
@@ -3060,6 +3114,49 @@ mod tests {
             requests.recv().unwrap().split('?').next().unwrap(),
             "GET /api/v5/market/history-candles"
         );
+    }
+
+    #[tokio::test]
+    async fn requested_tail_gap_uses_existing_retry_budget_and_retains_provider_attempts() {
+        let (_root, path, requests) = data_path(vec![bar_row(0, "1.5"), bar_page(0, 2, "1.5")]);
+        path.record_instrument_master("alice", master(1, "master"))
+            .unwrap();
+        let publications = path
+            .backfill(
+                &OkxBackfillRequest {
+                    task_id: "tail-gap-retry".into(),
+                    user_id: "alice".into(),
+                    start_time_ms: 0,
+                    end_time_ms: 120_000,
+                    interval: BarInterval::OneMinute,
+                    instrument_codes: vec![],
+                    universe_snapshot_id: None,
+                    checkpoint_operation_id: None,
+                    max_gap_retries: 1,
+                    publication_evidence_name: None,
+                },
+                CancellationToken::new(),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        let publication = &publications[0];
+        assert_eq!(publication.quality.state, DataQualityState::Passed);
+        assert_eq!(publication.quality.gap_count, 0);
+        assert_eq!(publication.source.records.len(), 2);
+        let diagnostics = &publication.source.identity.acquisition_diagnostics;
+        assert_eq!(diagnostics.request_count, 2);
+        assert_eq!(diagnostics.retry_count, 1);
+        assert_eq!(diagnostics.response_statuses, [200, 200]);
+        assert_eq!(
+            diagnostics
+                .notes
+                .iter()
+                .filter(|note| note.starts_with("response-sha256:"))
+                .count(),
+            2
+        );
+        assert_eq!(requests.recv().unwrap(), requests.recv().unwrap());
     }
 
     #[tokio::test]

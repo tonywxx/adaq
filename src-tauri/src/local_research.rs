@@ -74,6 +74,9 @@ use crate::{
     watchlist::insert_default_watchlist,
 };
 
+pub(crate) const RUNTIME_BARS_INCOMPLETE: &str =
+    "Runtime observations require complete, gap-free Canonical OKX bars";
+
 pub struct LocalResearchState {
     pub(crate) root: PathBuf,
     pub(crate) database: Arc<Mutex<Connection>>,
@@ -628,6 +631,35 @@ impl ComponentPackageSource for LocalBacktestSource {
 impl BacktestSource for LocalBacktestSource {
     fn database(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
         self.database.lock().map_err(string)
+    }
+
+    fn accepted_factor_feature_dataset(
+        &self,
+        user_id: &str,
+        archive_sha256: &str,
+    ) -> Result<adaq_factor_research::CompletedFeatureDataset, String> {
+        let state = self.state()?;
+        let input = state
+            .factor
+            .accepted_component_inputs(user_id)?
+            .into_iter()
+            .find(|input| input.package_archive_sha256 == archive_sha256)
+            .ok_or("Factor Package has no accepted current qualification")?;
+        let binding = state
+            .factor
+            .model_input_binding(user_id, &input.decision_hash)?;
+        let dataset = Features::completed_dataset_from_store(
+            &state.features.materialization_store(),
+            user_id,
+            &binding.feature_dataset_id,
+        )?;
+        if dataset.feature_plan_hash != input.feature_plan_hash
+            || dataset.market_data_snapshot_id != input.snapshot_id
+            || dataset.point_in_time_universe_id != input.universe_id
+        {
+            return Err("Factor Feature Dataset differs from its accepted qualification".into());
+        }
+        Ok(dataset)
     }
 
     fn signal_datasets(
@@ -1232,6 +1264,7 @@ impl LocalResearchState {
             evidence_id: request.dataset_id.clone(),
         })?;
         let manifest = dataset.manifest.clone();
+        validate_factor_evaluation_engine(&manifest.engine_identity)?;
         if manifest.feature_dataset_id != context_feature_dataset.dataset_id {
             return Err("factor-context-mismatch".into());
         }
@@ -1310,24 +1343,9 @@ impl LocalResearchState {
         if manifest.market_context.bar_interval != snapshot.interval.as_str() {
             return Err("factor-context-interval-mismatch".into());
         }
-        let midpoint = range
-            .end_time_ms
-            .checked_sub(range.start_time_ms)
-            .and_then(|width| range.start_time_ms.checked_add(width / 2))
-            .ok_or_else(|| "factor-context-range-mismatch".to_owned())?;
-        if midpoint <= range.start_time_ms || midpoint >= range.end_time_ms {
-            return Err("factor-context-range-mismatch".into());
-        }
-        let selection = adaq_factor_research::ObservationRange {
-            start_time_ms: range.start_time_ms,
-            end_time_ms: midpoint,
-        };
-        let evaluation = adaq_factor_research::ObservationRange {
-            start_time_ms: midpoint,
-            end_time_ms: range.end_time_ms,
-        };
+        let windows = factor_context_evaluation_windows(&range)?;
         let family_id = user_uuid(&format!(
-            "factor-evaluation-family:{}:{}:{}:{}:{}",
+            "factor-evaluation-family:v2:{}:{}:{}:{}:{}",
             request.user_id,
             request.candidate_hash,
             request.dataset_id,
@@ -1335,7 +1353,7 @@ impl LocalResearchState {
             request.seed
         ));
         let trial_id = user_uuid(&format!(
-            "factor-evaluation-trial:{}:{}:{}:{}:{}",
+            "factor-evaluation-trial:v2:{}:{}:{}:{}:{}",
             request.user_id,
             request.candidate_hash,
             request.dataset_id,
@@ -1344,7 +1362,7 @@ impl LocalResearchState {
         ));
         let protocol = FactorEvaluationProtocol::freeze(FactorEvaluationProtocolDraft {
             protocol_id: user_uuid(&format!(
-                "factor-evaluation-protocol:{}:{}:{}:{}:{}",
+                "factor-evaluation-protocol:v2:{}:{}:{}:{}:{}",
                 request.user_id,
                 request.candidate_hash,
                 request.dataset_id,
@@ -1365,15 +1383,7 @@ impl LocalResearchState {
             market_context: manifest.market_context.clone(),
             engine_identity: manifest.engine_identity.clone(),
             orientation: FactorOrientation::Positive,
-            windows: vec![EvaluationWindow {
-                fold_id: "host-selection-evaluation-1".into(),
-                selection: selection.clone(),
-                evaluation,
-                training: Some(selection.clone()),
-                fitting: Some(selection.clone()),
-                normalization: Some(selection.clone()),
-                target_construction: Some(selection),
-            }],
+            windows,
             purge_bars: 0,
             embargo_bars: 0,
             lenses: FactorLens::required(candidate.candidate.scope).to_vec(),
@@ -1390,8 +1400,12 @@ impl LocalResearchState {
             seed: request.seed,
         })
         .map_err(string)?;
-        let market_series =
-            self.factor_market_series_for_context(&request.user_id, &protocol, &universe)?;
+        let market_series = self.factor_market_series_for_context(
+            &request.user_id,
+            &protocol.market_data_snapshot_id,
+            &protocol.market_context,
+            &universe,
+        )?;
         let frozen = self.freeze_research_context(
             &request.user_id,
             request.operation_id.clone(),
@@ -1416,10 +1430,11 @@ impl LocalResearchState {
         Ok(attempt)
     }
 
-    fn factor_market_series_for_context(
+    pub(crate) fn factor_market_series_for_context(
         &self,
         user_id: &str,
-        protocol: &FactorEvaluationProtocol,
+        snapshot_id: &str,
+        market_context: &adaq_factor_research::FactorMarketContext,
         universe: &MarketDataUniverseSnapshot,
     ) -> Result<Vec<FactorMarketSeries>, String> {
         if universe.universe.evidence_state == "unknown" {
@@ -1475,8 +1490,8 @@ impl LocalResearchState {
                 };
                 Ok(FactorMarketSeries {
                     instrument_id: format!("{}:{}", instrument.venue.id, instrument.code),
-                    snapshot_id: protocol.market_data_snapshot_id.clone(),
-                    market_context: protocol.market_context.clone(),
+                    snapshot_id: snapshot_id.into(),
+                    market_context: market_context.clone(),
                     bars,
                     gaps,
                     corporate_action_evidence,
@@ -1492,6 +1507,7 @@ impl LocalResearchState {
             .map_err(|error| factor_context_dataset_error(&error))
     }
 
+    #[cfg(test)]
     pub(crate) fn require_factor_context_for_request(
         &self,
         user_id: &str,
@@ -2407,6 +2423,66 @@ impl LocalResearchState {
         Ok((snapshot, quality))
     }
 
+    pub(crate) fn acquire_runtime_universe(
+        &self,
+        user_id: &str,
+        instruments: &[String],
+        interval: BarInterval,
+        start_time_ms: i64,
+        end_time_ms: i64,
+    ) -> Result<MarketDataUniverseSnapshot, String> {
+        let codes = instruments
+            .iter()
+            .map(|instrument| {
+                instrument
+                    .strip_prefix("okx:")
+                    .filter(|code| !code.is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        "Runtime observations require canonical OKX instruments".to_owned()
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let cancellation = CancellationToken::new();
+        let request = adaq_data_pipeline::okx::OkxBackfillRequest {
+            task_id: format!("bot-observation-{}", uuid::Uuid::new_v4()),
+            user_id: user_id.into(),
+            start_time_ms,
+            end_time_ms,
+            interval,
+            instrument_codes: codes.clone(),
+            universe_snapshot_id: None,
+            checkpoint_operation_id: None,
+            max_gap_retries: 2,
+            publication_evidence_name: Some("Bot closed-bar observations".into()),
+        };
+        let publications = tauri::async_runtime::block_on(self.okx.backfill(
+            &request,
+            cancellation.clone(),
+            |_| {},
+        ))
+        .map_err(string)?;
+        if publications.len() != instruments.len()
+            || publications.iter().any(|publication| {
+                publication.quality.state != adaq_data_pipeline::DataQualityState::Passed
+                    || publication.quality.gap_count != 0
+                    || publication.canonical.is_none()
+            })
+        {
+            return Err(RUNTIME_BARS_INCOMPLETE.into());
+        }
+        self.publish_okx_backfill(
+            user_id,
+            start_time_ms,
+            end_time_ms,
+            interval,
+            &codes,
+            &cancellation,
+            &publications,
+            request.publication_evidence_name,
+        )
+    }
+
     pub(crate) fn publish_okx_backfill(
         &self,
         user_id: &str,
@@ -3175,7 +3251,7 @@ fn factor_native_engine_identity(
         engine_version: env!("CARGO_PKG_VERSION").into(),
         adapter: "native-factor-materializer".into(),
         target_triple: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
-        build_id: env!("CARGO_PKG_VERSION").into(),
+        build_id: factor_native_build_id(),
         environment: BTreeMap::new(),
         parameters,
         input_identities: vec![
@@ -3190,6 +3266,56 @@ fn factor_native_engine_identity(
             context.universe_id.clone().unwrap_or_default(),
         ],
     }
+}
+
+fn factor_native_build_id() -> String {
+    format!(
+        "{}:{}",
+        env!("CARGO_PKG_VERSION"),
+        adaq_factor_research::native_engine_source_sha256()
+    )
+}
+
+fn factor_context_evaluation_windows(
+    range: &adaq_factor_research::ObservationRange,
+) -> Result<Vec<EvaluationWindow>, String> {
+    let width = range
+        .end_time_ms
+        .checked_sub(range.start_time_ms)
+        .filter(|width| *width >= 4)
+        .ok_or_else(|| "factor-context-range-mismatch".to_owned())?;
+    let midpoint = range.start_time_ms + width / 2;
+    let subperiod = midpoint + (range.end_time_ms - midpoint) / 2;
+    let selection = adaq_factor_research::ObservationRange {
+        start_time_ms: range.start_time_ms,
+        end_time_ms: midpoint,
+    };
+    // Keep selection fixed so neither held-out subperiod influences the other.
+    Ok([(midpoint, subperiod), (subperiod, range.end_time_ms)]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (start_time_ms, end_time_ms))| EvaluationWindow {
+            fold_id: format!("host-selection-evaluation-{}", index + 1),
+            selection: selection.clone(),
+            evaluation: adaq_factor_research::ObservationRange {
+                start_time_ms,
+                end_time_ms,
+            },
+            training: Some(selection.clone()),
+            fitting: Some(selection.clone()),
+            normalization: Some(selection.clone()),
+            target_construction: Some(selection.clone()),
+        })
+        .collect())
+}
+
+fn validate_factor_evaluation_engine(
+    engine: &adaq_factor_research::ResearchEngineProvenance,
+) -> Result<(), String> {
+    if engine.engine_id == "adaq-native-factor" && engine.build_id != factor_native_build_id() {
+        return Err("factor-context-dataset-engine-stale".into());
+    }
+    Ok(())
 }
 
 fn feature_slot_lookback(feature_plan: &FeaturePlan, slot_name: &str) -> Option<u32> {
@@ -3257,6 +3383,59 @@ mod tests {
         collections::HashMap,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn factor_context_evaluation_keeps_two_disjoint_holdouts_after_selection() {
+        let range = adaq_factor_research::ObservationRange {
+            start_time_ms: 100,
+            end_time_ms: 501,
+        };
+        let windows = factor_context_evaluation_windows(&range).unwrap();
+        assert_eq!(windows, factor_context_evaluation_windows(&range).unwrap());
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].selection, windows[1].selection);
+        assert_eq!(windows[0].evaluation.start_time_ms, 300);
+        assert_eq!(
+            windows[0].evaluation.end_time_ms,
+            windows[1].evaluation.start_time_ms
+        );
+        assert_eq!(windows[1].evaluation.end_time_ms, range.end_time_ms);
+        for window in windows {
+            window.validate().unwrap();
+            assert!(window.selection.end_time_ms <= window.evaluation.start_time_ms);
+        }
+        for (start_time_ms, end_time_ms) in [(0, 3), (5, 4), (i64::MIN, i64::MAX)] {
+            assert!(
+                factor_context_evaluation_windows(&adaq_factor_research::ObservationRange {
+                    start_time_ms,
+                    end_time_ms,
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn factor_evaluation_rejects_version_only_native_dataset_identity() {
+        let mut engine = adaq_factor_research::ResearchEngineProvenance {
+            engine_id: "adaq-native-factor".into(),
+            engine_version: env!("CARGO_PKG_VERSION").into(),
+            adapter: "native-factor-materializer".into(),
+            target_triple: "test".into(),
+            build_id: env!("CARGO_PKG_VERSION").into(),
+            environment: BTreeMap::new(),
+            parameters: BTreeMap::new(),
+            input_identities: vec!["dataset".into()],
+        };
+        assert_eq!(
+            validate_factor_evaluation_engine(&engine).unwrap_err(),
+            "factor-context-dataset-engine-stale"
+        );
+        engine.build_id = factor_native_build_id();
+        assert!(validate_factor_evaluation_engine(&engine).is_ok());
+        engine.build_id.push('0');
+        assert!(validate_factor_evaluation_engine(&engine).is_err());
+    }
 
     fn local_data_state(name: &str) -> (PathBuf, Arc<LocalResearchState>, WatchlistDb) {
         let root = std::env::temp_dir().join(format!(

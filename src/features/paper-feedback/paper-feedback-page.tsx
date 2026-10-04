@@ -477,15 +477,15 @@ export function PaperFeedbackPage() {
 										<StateBadge state={item.evidenceState} t={t} />
 									</span>
 									<span className="text-xs text-muted-foreground">
-									<IdentifierDisplay
-										id={item.reportId}
-										label={t("identifiers.feedbackReport")}
-									/>{" "}
-									·{" "}
-									<IdentifierDisplay
-										id={item.input.snapshotId}
-										label={t("identifiers.feedbackSnapshot")}
-									/>
+										<IdentifierDisplay
+											id={item.reportId}
+											label={t("identifiers.feedbackReport")}
+										/>{" "}
+										·{" "}
+										<IdentifierDisplay
+											id={item.input.snapshotId}
+											label={t("identifiers.feedbackSnapshot")}
+										/>
 									</span>
 									{item.input.metrics.directionalConclusion === false ? (
 										<span className="text-xs text-muted-foreground">

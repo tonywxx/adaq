@@ -2065,6 +2065,23 @@ mod tests {
     }
 
     #[test]
+    fn jcs_preserves_metric_float_roundtrips() {
+        for encoded in [
+            "0.33333333333299997",
+            "0.19999999999999998",
+            "0.7999999999999999",
+            "0.39999999999999997",
+            "0.96313420916",
+        ] {
+            let expected: f64 = encoded.parse().unwrap();
+            let canonical = canonicalize_json(encoded.as_bytes()).unwrap();
+            let actual: f64 = serde_json::from_slice(&canonical).unwrap();
+            assert_eq!(actual.to_bits(), expected.to_bits(), "{encoded}");
+            assert_eq!(canonicalize_json(&canonical).unwrap(), canonical);
+        }
+    }
+
+    #[test]
     fn jcs_uses_ecmascript_number_shape_for_common_boundaries() {
         assert_eq!(
             canonicalize_json(br#"{"a":1.0,"b":1e16,"c":1e20,"d":1e21,"e":-0.0}"#).unwrap(),

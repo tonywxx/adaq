@@ -159,6 +159,16 @@ impl WorkspaceInitialization {
                             })
                         },
                     ));
+                    trade_bridge.start_clock({
+                        let ctx = bot_operations::BotContext {
+                            local: states.local_research.clone(),
+                            bots: states.bot_store.clone(),
+                            supervisor: states.bot_supervisor.clone(),
+                        };
+                        Arc::new(move |user_id| {
+                            bot_operations::dispatch_closed_bar_tick(&ctx, user_id)
+                        })
+                    });
                     app.manage(states.local_research);
                     app.manage(states.bot_store);
                     app.manage(states.bot_supervisor);
@@ -607,7 +617,7 @@ fn system_dashboard_for_user(
     let local = app.state::<Arc<LocalResearchState>>();
     let bots_store = app.state::<Arc<bot_operations::BotStore>>();
     let mut unavailable = Vec::new();
-    recover_inactive_market_contexts(app, user_id, local.as_ref())?;
+    recover_inactive_operational_conditions(app, user_id, local.as_ref())?;
 
     let health = match local.operations.health_for_user(user_id) {
         Ok(value) => value,
@@ -1024,6 +1034,52 @@ fn recover_host_freeze_for_user(app: &AppHandle, user_id: &str) -> Result<(), St
     local.operations.recover_host_freeze(user_id, now_ms)
 }
 
+fn paper_account_health_observation(
+    user_id: &str,
+    account: Option<&paper_trading::PaperAccountView>,
+    now_ms: i64,
+) -> operations::HealthObservation {
+    let account_ready = account.as_ref().is_some_and(|account| {
+        account.reconciliation == adaq_paper_trading_core::ReconciliationState::Reconciled
+            && !account.restart_required
+    });
+    let account_id = account
+        .as_ref()
+        .map(|account| account.account.account_id.clone());
+    operations::HealthObservation {
+        user_id: user_id.to_owned(),
+        entity_id: account_id.clone().unwrap_or_else(|| "paper-account".into()),
+        dimension: operations::HealthDimension::PaperAccount,
+        state: if account_ready {
+            operations::HealthState::Healthy
+        } else {
+            operations::HealthState::Unknown
+        },
+        condition: "paper_account_reconciliation".into(),
+        evidence: serde_json::json!({
+            "accountId": account_id,
+            "reconciliation": account.as_ref().map(|account| format!("{:?}", account.reconciliation)),
+            "restartRequired": account.as_ref().map(|account| account.restart_required),
+        }),
+        required: account.is_some(),
+        observed_at_ms: now_ms,
+        event_kind: Some("paper.account-health".into()),
+        evidence_id: account
+            .as_ref()
+            .map(|account| account.account.account_id.clone()),
+        correlation_id: account
+            .as_ref()
+            .map(|account| account.account.observed_at_ms.to_string()),
+        causation_id: None,
+        diagnostic: Some(if account_ready {
+            "Paper Account reconciliation is current.".into()
+        } else {
+            "Paper Account evidence is missing or requires reconciliation.".into()
+        }),
+        metrics: std::collections::BTreeMap::new(),
+    }
+}
+
 fn observe_operational_inputs(app: &AppHandle, user_id: &str) -> Result<(), String> {
     let local = app.state::<Arc<LocalResearchState>>();
     let account = local.paper_trading.view_optional(user_id)?;
@@ -1040,36 +1096,9 @@ fn observe_operational_inputs(app: &AppHandle, user_id: &str) -> Result<(), Stri
     let account_id = account
         .as_ref()
         .map(|account| account.account.account_id.clone());
-    let (account_event, _, account_action) = local.operations.observe(operations::HealthObservation {
-        user_id: user_id.to_owned(),
-        entity_id: "paper-account".into(),
-        dimension: operations::HealthDimension::PaperAccount,
-        state: if account_ready {
-            operations::HealthState::Healthy
-        } else {
-            operations::HealthState::Unknown
-        },
-        condition: "paper_account_reconciliation".into(),
-        evidence: serde_json::json!({
-            "accountId": account_id,
-            "reconciliation": account.as_ref().map(|account| format!("{:?}", account.reconciliation)),
-            "restartRequired": account.as_ref().map(|account| account.restart_required),
-        }),
-        required: account.is_some(),
-        observed_at_ms: now_ms,
-        event_kind: Some("paper.account-health".into()),
-        evidence_id: account.as_ref().map(|account| account.account.account_id.clone()),
-        correlation_id: account
-            .as_ref()
-            .map(|account| account.account.observed_at_ms.to_string()),
-        causation_id: None,
-        diagnostic: Some(if account_ready {
-            "Paper Account reconciliation is current.".into()
-        } else {
-            "Paper Account evidence is missing or requires reconciliation.".into()
-        }),
-        metrics: std::collections::BTreeMap::new(),
-    })?;
+    let (account_event, _, account_action) = local.operations.observe(
+        paper_account_health_observation(user_id, account.as_ref(), now_ms),
+    )?;
     let (risk_event, _, risk_action) = local.operations.observe(operations::HealthObservation {
         user_id: user_id.to_owned(),
         entity_id: "paper-risk".into(),
@@ -1188,11 +1217,11 @@ fn observe_operational_inputs(app: &AppHandle, user_id: &str) -> Result<(), Stri
             .ok_or_else(|| "Local System Freeze All alert was not retained".to_owned())?;
         let _ = apply_freeze_all_for_event(app, user_id, event.event_id, alert_id)?;
     }
-    recover_inactive_market_contexts(app, user_id, local.as_ref())?;
+    recover_inactive_operational_conditions(app, user_id, local.as_ref())?;
     Ok(())
 }
 
-fn recover_inactive_market_contexts(
+fn recover_inactive_operational_conditions(
     app: &AppHandle,
     user_id: &str,
     local: &LocalResearchState,
@@ -1236,6 +1265,15 @@ fn recover_inactive_market_contexts(
             metrics: BTreeMap::new(),
         })?;
     }
+    bots.recover_stopped_workers(
+        &app.state::<Arc<bot_supervisor::BotSupervisor>>(),
+        &local.operations,
+        user_id,
+        local.paper_trading.view_optional(user_id)?.as_ref(),
+    )?;
+    local
+        .paper_feedback
+        .recover_reviewed_reports(&local.operations, user_id)?;
     Ok(())
 }
 
@@ -1290,7 +1328,7 @@ fn pause_bots_for_user(app: &AppHandle, user_id: &str, reason: &str) -> Result<(
 }
 
 #[tauri::command]
-fn paper_feedback_snapshot_create(
+async fn paper_feedback_snapshot_create(
     request: paper_feedback::FeedbackSnapshotRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
@@ -1300,75 +1338,157 @@ fn paper_feedback_snapshot_create(
     candidates: State<'_, Arc<strategy_candidate::StrategyCandidateStore>>,
 ) -> Result<paper_feedback::FeedbackSnapshot, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    let now_ms = unix_now_ms();
-    let (bot, attempt) = bots.feedback_binding(
-        &user_id,
-        &request.bot_id,
-        &request.bundle_id,
-        &request.attempt_id,
-        request.observation_start_ms,
-        request.observation_end_ms,
-        now_ms,
-    )?;
-    let qualification =
-        qualifications.qualification_for_user(&user_id, &bot.bundle.qualification_id)?;
-    let (research_evidence, horizon_bars) = paper_feedback_strategy_context(
-        candidates.inner().as_ref(),
-        &user_id,
-        &bot,
-        &qualification,
-    )?;
-    let (market_snapshot, market_bars) =
-        state.snapshot_for_user(&user_id, &bot.bundle.market_data_snapshot_id)?;
-    let (market_evidence, realized_observations) = paper_feedback_market_evidence(
-        &bot,
-        &attempt,
-        &market_snapshot,
-        &market_bars,
-        horizon_bars,
-        request.observation_start_ms,
-        request.observation_end_ms,
-        request.realization_cutoff_ms,
-    );
-    let account = state.paper_trading.view_optional(&user_id)?;
-    if account
-        .as_ref()
-        .is_some_and(|account| account.account.account_id != bot.bundle.account_id)
-    {
-        return Err("Paper account evidence does not match the Deployment Bundle".into());
-    }
-    let health = state.operations.health_for_user(&user_id)?;
-    let evidence = paper_feedback_evidence(
-        &bot,
-        &attempt,
-        account.as_ref(),
-        &health,
-        research_evidence,
-        market_evidence,
-    );
-    let host_state = paper_feedback_state(
-        attempt.state,
-        realized_observations,
-        request.required_observations,
-    );
-    state.paper_feedback.create_snapshot_with_state(
-        paper_feedback::FeedbackSnapshotInput {
-            user_id,
-            bundle_id: request.bundle_id,
-            bot_id: request.bot_id,
-            attempt_id: request.attempt_id,
-            observation_start_ms: request.observation_start_ms,
-            observation_end_ms: request.observation_end_ms,
-            realization_cutoff_ms: request.realization_cutoff_ms,
+    let state = state.inner().clone();
+    let bots = bots.inner().clone();
+    let qualifications = qualifications.inner().clone();
+    let candidates = candidates.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let now_ms = unix_now_ms();
+        let (bot, attempt) = bots.feedback_binding(
+            &user_id,
+            &request.bot_id,
+            &request.bundle_id,
+            &request.attempt_id,
+            request.observation_start_ms,
+            request.observation_end_ms,
+            now_ms,
+        )?;
+        let qualification =
+            qualifications.qualification_for_user(&user_id, &bot.bundle.qualification_id)?;
+        let (research_evidence, horizon_bars) =
+            paper_feedback_strategy_context(candidates.as_ref(), &user_id, &bot, &qualification)?;
+        let markets = if attempt
+            .decisions
+            .iter()
+            .any(|decision| decision.market_data_universe_snapshot_id.is_some())
+        {
+            let frozen = state
+                .snapshots
+                .universe_snapshot_for_user(&user_id, &bot.bundle.universe_snapshot_id)?;
+            let instruments = match &bot.bundle.schedule {
+                bot_operations::BotSchedule::ScheduledCrossSection { instruments, .. } => {
+                    instruments.clone()
+                }
+                bot_operations::BotSchedule::ClosedBar { instrument_id, .. } => {
+                    vec![instrument_id.clone()]
+                }
+                bot_operations::BotSchedule::EmaDoubleCross { .. } => {
+                    return Err(
+                        "Trade Event Feedback cannot use closed-bar observation bindings".into(),
+                    );
+                }
+            };
+            for decision in &attempt.decisions {
+                if let Some(id) = &decision.market_data_universe_snapshot_id {
+                    let observation = state.snapshots.universe_snapshot_for_user(&user_id, id)?;
+                    let members = observation
+                        .components
+                        .iter()
+                        .map(|component| {
+                            format!(
+                                "{}:{}",
+                                component.dataset.instrument.venue.id,
+                                component.dataset.instrument.code
+                            )
+                        })
+                        .collect::<BTreeSet<_>>();
+                    if observation.interval != frozen.interval
+                        || members != instruments.iter().cloned().collect()
+                    {
+                        return Err(
+                            "Feedback observation identity does not match the frozen Bot Universe"
+                                .into(),
+                        );
+                    }
+                }
+            }
+            let first_observation = attempt
+                .decisions
+                .iter()
+                .filter_map(|decision| decision.clock.as_ref())
+                .map(adaq_bot_runtime::DecisionClock::decision_time_ms)
+                .filter(|time| {
+                    (request.observation_start_ms..=request.observation_end_ms).contains(time)
+                })
+                .min()
+                .ok_or_else(|| {
+                    "Feedback has no decisions in the requested observation window".to_owned()
+                })?;
+            let start = adaq_data_pipeline::okx::latest_closed_bar_boundary_ms(
+                first_observation - 1,
+                frozen.interval,
+            )
+            .map_err(|error| error.to_string())?;
+            let end = adaq_data_pipeline::okx::latest_closed_bar_boundary_ms(
+                request.realization_cutoff_ms.min(now_ms),
+                frozen.interval,
+            )
+            .map_err(|error| error.to_string())?;
+            let observation = state.acquire_runtime_universe(
+                &user_id,
+                &instruments,
+                frozen.interval,
+                start,
+                end,
+            )?;
+            observation
+                .components
+                .iter()
+                .map(|component| state.snapshot_for_user(&user_id, &component.snapshot_id))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            vec![state.snapshot_for_user(&user_id, &bot.bundle.market_data_snapshot_id)?]
+        };
+        let (market_evidence, realized_observations) = paper_feedback_market_evidence(
+            &bot,
+            &attempt,
+            &markets,
+            horizon_bars,
+            request.observation_start_ms,
+            request.observation_end_ms,
+            request.realization_cutoff_ms,
+        );
+        let account = state.paper_trading.view_optional(&user_id)?;
+        if account
+            .as_ref()
+            .is_some_and(|account| account.account.account_id != bot.bundle.account_id)
+        {
+            return Err("Paper account evidence does not match the Deployment Bundle".into());
+        }
+        let health = state.operations.health_for_user(&user_id)?;
+        let evidence = paper_feedback_evidence(
+            &bot,
+            &attempt,
+            account.as_ref(),
+            &health,
+            research_evidence,
+            market_evidence,
+        );
+        let host_state = paper_feedback_state(
+            attempt.state,
             realized_observations,
-            required_observations: request.required_observations,
-            evidence,
-        },
-        now_ms,
-        Some(host_state),
-    )
+            request.required_observations,
+        );
+        state.paper_feedback.create_snapshot_with_state(
+            paper_feedback::FeedbackSnapshotInput {
+                user_id,
+                bundle_id: request.bundle_id,
+                bot_id: request.bot_id,
+                attempt_id: request.attempt_id,
+                observation_start_ms: request.observation_start_ms,
+                observation_end_ms: request.observation_end_ms,
+                realization_cutoff_ms: request.realization_cutoff_ms,
+                realized_observations,
+                required_observations: request.required_observations,
+                evidence,
+            },
+            now_ms,
+            Some(host_state),
+        )
+    })
+    .await
+    .map_err(|error| format!("Feedback observation task failed: {error}"))?
 }
-
 #[tauri::command]
 fn paper_feedback_view(
     window: WebviewWindow,
@@ -1437,15 +1557,20 @@ fn paper_feedback_review_decide(
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<paper_feedback::ReviewDecision, String> {
     let user_id = auth.user_id_for_window(window.label())?;
+    let decision =
+        state
+            .paper_feedback
+            .record_review_decision(paper_feedback::ReviewDecisionInput {
+                user_id: user_id.clone(),
+                report_ids: request.report_ids,
+                action: request.action,
+                rationale: request.rationale,
+                decided_at_ms: unix_now_ms(),
+            })?;
     state
         .paper_feedback
-        .record_review_decision(paper_feedback::ReviewDecisionInput {
-            user_id,
-            report_ids: request.report_ids,
-            action: request.action,
-            rationale: request.rationale,
-            decided_at_ms: unix_now_ms(),
-        })
+        .recover_reviewed_reports(&state.operations, &user_id)?;
+    Ok(decision)
 }
 
 fn paper_feedback_state(
@@ -1546,26 +1671,69 @@ fn strategy_target_exposure(
     }
 }
 
+fn closed_bar_target_return(
+    snapshot: &MarketDataSnapshot,
+    bars: &[OhlcvBar],
+    observation_time_ms: i64,
+    horizon_bars: u32,
+    realization_cutoff_ms: i64,
+) -> Result<(Decimal, i64), &'static str> {
+    let current = bars
+        .iter()
+        .find(|bar| {
+            adaq_data_core::next_bar_open_time_ms(bar.open_time_ms, snapshot.interval).ok()
+                == Some(observation_time_ms)
+        })
+        .ok_or("observation-not-aligned")?;
+    let mut future_open = current.open_time_ms;
+    let mut required_opens = vec![future_open];
+    for _ in 0..horizon_bars {
+        future_open = adaq_data_core::next_bar_open_time_ms(future_open, snapshot.interval)
+            .map_err(|_| "target-horizon-overflow")?;
+        required_opens.push(future_open);
+    }
+    let realized_at_ms = adaq_data_core::next_bar_open_time_ms(future_open, snapshot.interval)
+        .map_err(|_| "target-horizon-overflow")?;
+    if realized_at_ms > realization_cutoff_ms {
+        return Err("target-horizon-not-matured");
+    }
+    for time in required_opens {
+        if snapshot
+            .gaps
+            .iter()
+            .any(|gap| time >= gap.start_time_ms && time < gap.end_time_ms)
+        {
+            return Err("market-data-gap");
+        }
+        if !bars.iter().any(|bar| bar.open_time_ms == time) {
+            return Err("market-data-unavailable");
+        }
+    }
+    let future = bars
+        .iter()
+        .find(|bar| bar.open_time_ms == future_open)
+        .ok_or("market-data-unavailable")?;
+    let target_return = future
+        .close
+        .checked_div(current.close)
+        .and_then(|value| value.checked_sub(Decimal::ONE))
+        .ok_or("target-return-invalid")?;
+    Ok((target_return, realized_at_ms))
+}
+
 fn paper_feedback_market_evidence(
     bot: &bot_operations::BotView,
     attempt: &bot_operations::BotRuntimeAttempt,
-    snapshot: &MarketDataSnapshot,
-    bars: &[OhlcvBar],
+    markets: &[(MarketDataSnapshot, Vec<OhlcvBar>)],
     horizon_bars: Option<u32>,
     observation_start_ms: i64,
     observation_end_ms: i64,
     realization_cutoff_ms: i64,
 ) -> (serde_json::Value, u64) {
-    let interval = snapshot.interval;
     let mut rows = Vec::new();
     let mut candidate_rows = 0_u64;
     let mut realized_observations = 0_u64;
     let mut excluded_rows = 0_u64;
-    let schedule_allows = |instrument: &str| {
-        instrument_in_scope(&bot.bundle.schedule, instrument)
-            && (instrument == snapshot.code
-                || instrument == format!("{}:{}", snapshot.src, snapshot.code))
-    };
     for decision in &attempt.decisions {
         let Some(clock) = decision.clock.as_ref() else {
             retain_feedback_excluded_row(
@@ -1618,7 +1786,12 @@ fn paper_feedback_market_evidence(
                 "targetOutcomeAvailable": false,
                 "targetExposure": serde_json::Value::Null,
             });
-            let reason = if !schedule_allows(&row.instrument_id) {
+            let market = markets.iter().find(|(snapshot, _)| {
+                instrument_in_scope(&bot.bundle.schedule, &row.instrument_id)
+                    && (row.instrument_id == snapshot.code
+                        || row.instrument_id == format!("{}:{}", snapshot.src, snapshot.code))
+            });
+            let reason = if market.is_none() {
                 Some("instrument-not-in-frozen-snapshot")
             } else if horizon_bars.is_none() {
                 Some("target-horizon-unbound")
@@ -1626,15 +1799,6 @@ fn paper_feedback_market_evidence(
                 .contains(&row.observation_time_ms)
             {
                 Some("observation-outside-requested-window")
-            } else if !matches!(
-                &bot.bundle.schedule,
-                bot_operations::BotSchedule::ClosedBar { .. }
-            ) && matches!(
-                &bot.bundle.schedule,
-                bot_operations::BotSchedule::ScheduledCrossSection { instruments, .. }
-                    if instruments.len() > 1
-            ) {
-                Some("portfolio-realization-requires-universe-snapshot")
             } else if row.observation_time_ms > realization_cutoff_ms {
                 Some("observation-after-realization-cutoff")
             } else {
@@ -1645,83 +1809,25 @@ fn paper_feedback_market_evidence(
                 retain_feedback_excluded_row(&mut rows, &mut excluded_rows, evidence);
                 continue;
             }
-            let current_open = bars.iter().find_map(|bar| {
-                if bar.open_time_ms == row.observation_time_ms {
-                    Some(bar.open_time_ms)
-                } else {
-                    adaq_data_core::next_bar_open_time_ms(bar.open_time_ms, interval)
-                        .ok()
-                        .filter(|close| *close == row.observation_time_ms)
-                        .map(|_| bar.open_time_ms)
+            let (snapshot, bars) = market.expect("market identity checked above");
+            evidence["marketSnapshotId"] = serde_json::Value::String(snapshot.snapshot_id.clone());
+            let (target_return, realized_at_ms) = match closed_bar_target_return(
+                snapshot,
+                bars,
+                row.observation_time_ms,
+                horizon_bars.unwrap_or_default(),
+                realization_cutoff_ms,
+            ) {
+                Ok(realized) => realized,
+                Err(reason) => {
+                    evidence["reason"] = serde_json::Value::String(reason.into());
+                    retain_feedback_excluded_row(&mut rows, &mut excluded_rows, evidence);
+                    continue;
                 }
-            });
-            let Some(current_open) = current_open else {
-                evidence["reason"] = serde_json::Value::String("observation-not-aligned".into());
-                retain_feedback_excluded_row(&mut rows, &mut excluded_rows, evidence);
-                continue;
-            };
-            let mut future_open = current_open;
-            let mut unavailable_reason = None;
-            for _ in 0..horizon_bars.unwrap_or_default() {
-                future_open = match adaq_data_core::next_bar_open_time_ms(future_open, interval) {
-                    Ok(next) => next,
-                    Err(_) => {
-                        unavailable_reason = Some("target-horizon-overflow");
-                        break;
-                    }
-                };
-            }
-            let future_close_time_ms = if unavailable_reason.is_none() {
-                match adaq_data_core::next_bar_open_time_ms(future_open, interval) {
-                    Ok(close) => Some(close),
-                    Err(_) => {
-                        unavailable_reason = Some("target-horizon-overflow");
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            if unavailable_reason.is_none()
-                && future_close_time_ms.is_some_and(|close| close > realization_cutoff_ms)
-            {
-                unavailable_reason = Some("target-horizon-not-matured");
-            }
-            let current_bar = bars.iter().find(|bar| bar.open_time_ms == current_open);
-            let future_bar = bars.iter().find(|bar| bar.open_time_ms == future_open);
-            if unavailable_reason.is_none() && (current_bar.is_none() || future_bar.is_none()) {
-                unavailable_reason = Some(
-                    if snapshot.gaps.iter().any(|gap| {
-                        future_open >= gap.start_time_ms && future_open < gap.end_time_ms
-                    }) {
-                        "market-data-gap"
-                    } else {
-                        "market-data-unavailable"
-                    },
-                );
-            }
-            if let Some(reason) = unavailable_reason {
-                evidence["reason"] = serde_json::Value::String(reason.into());
-                retain_feedback_excluded_row(&mut rows, &mut excluded_rows, evidence);
-                continue;
-            }
-            let current_close = current_bar.expect("checked above").close;
-            let future_close = future_bar.expect("checked above").close;
-            let Some(target_return) = future_close
-                .checked_div(current_close)
-                .and_then(|value| value.checked_sub(Decimal::ONE))
-            else {
-                evidence["reason"] = serde_json::Value::String("target-return-invalid".into());
-                retain_feedback_excluded_row(&mut rows, &mut excluded_rows, evidence);
-                continue;
             };
             evidence["targetAvailable"] = serde_json::Value::Bool(true);
             evidence["targetReturn"] = serde_json::Value::String(target_return.to_string());
-            evidence["targetRealizedAtMs"] = serde_json::Value::Number(
-                future_close_time_ms
-                    .expect("horizon maturity checked above")
-                    .into(),
-            );
+            evidence["targetRealizedAtMs"] = serde_json::Value::Number(realized_at_ms.into());
             if let Some(exposure) =
                 strategy_target_exposure(decision.target.as_ref(), &row.instrument_id)
             {
@@ -1741,14 +1847,13 @@ fn paper_feedback_market_evidence(
     }
     (
         serde_json::json!({
-            "snapshotId": snapshot.snapshot_id,
-            "src": snapshot.src,
-            "code": snapshot.code,
-            "interval": snapshot.interval.as_str(),
-            "startTimeMs": snapshot.start_time_ms,
-            "endTimeMs": snapshot.end_time_ms,
-            "barCount": snapshot.bar_count,
-            "gaps": snapshot.gaps,
+            "snapshotId": bot.bundle.market_data_snapshot_id,
+            "observationSnapshotIds": markets.iter().map(|(snapshot, _)| &snapshot.snapshot_id).collect::<Vec<_>>(),
+            "src": "okx",
+            "interval": markets.first().map(|(snapshot, _)| snapshot.interval.as_str()),
+            "startTimeMs": markets.iter().map(|(snapshot, _)| snapshot.start_time_ms).min(),
+            "endTimeMs": markets.iter().map(|(snapshot, _)| snapshot.end_time_ms).max(),
+            "barCount": markets.iter().map(|(snapshot, _)| snapshot.bar_count).sum::<usize>(),
             "horizonBars": horizon_bars,
             "candidateRowCount": candidate_rows,
             "realizedObservationCount": realized_observations,
@@ -2372,6 +2477,70 @@ fn paper_feedback_metrics(
 #[cfg(test)]
 mod paper_feedback_metric_tests {
     use super::*;
+
+    #[test]
+    fn closed_bar_realization_uses_each_instrument_and_complete_mature_horizon() {
+        let hour = 3_600_000;
+        let bars = [10, 20, 30]
+            .into_iter()
+            .enumerate()
+            .map(|(index, price)| OhlcvBar {
+                open_time_ms: index as i64 * hour,
+                open: Decimal::from(price),
+                high: Decimal::from(price),
+                low: Decimal::from(price),
+                close: Decimal::from(price),
+                base_volume: Decimal::ONE,
+                quote_volume: Decimal::from(price),
+            })
+            .collect::<Vec<_>>();
+        let market = MarketDataSnapshot {
+            snapshot_id: "btc-observation".into(),
+            src: "okx".into(),
+            code: "BTC-USDT".into(),
+            interval: BarInterval::OneHour,
+            start_time_ms: 0,
+            end_time_ms: 2 * hour,
+            bar_count: 3,
+            gaps: vec![],
+            parquet_path: PathBuf::new(),
+            provenance: None,
+            publication_evidence_name: None,
+        };
+        // At HOUR the known close is 10, not the next bar's close of 20.
+        assert_eq!(
+            closed_bar_target_return(&market, &bars, hour, 1, 2 * hour),
+            Ok((Decimal::ONE, 2 * hour))
+        );
+        assert_eq!(
+            closed_bar_target_return(&market, &bars, hour, 2, 2 * hour),
+            Err("target-horizon-not-matured")
+        );
+        assert_eq!(
+            closed_bar_target_return(&market, &bars, hour, 2, 3 * hour),
+            Ok((Decimal::from(2), 3 * hour))
+        );
+        assert_eq!(
+            closed_bar_target_return(
+                &market,
+                &[bars[0].clone(), bars[2].clone()],
+                hour,
+                2,
+                3 * hour
+            ),
+            Err("market-data-unavailable")
+        );
+        let mut other = bars.clone();
+        other[0].close = Decimal::from(50);
+        other[1].close = Decimal::from(25);
+        let mut eth = market.clone();
+        eth.snapshot_id = "eth-observation".into();
+        eth.code = "ETH-USDT".into();
+        assert_eq!(
+            closed_bar_target_return(&eth, &other, hour, 1, 2 * hour),
+            Ok((Decimal::new(-5, 1), 2 * hour))
+        );
+    }
 
     fn snapshot(evidence: serde_json::Value) -> paper_feedback::FeedbackSnapshot {
         paper_feedback::FeedbackSnapshot {
@@ -5305,7 +5474,8 @@ struct MarketGetBarSeriesRequest {
 struct MarketWorkspaceBarsRequest {
     user_id: String,
     instrument: InstrumentId,
-    interval: BarInterval,
+    #[serde(rename = "interval")]
+    _interval: BarInterval,
     start_time_ms: i64,
     end_time_ms: i64,
 }
@@ -5420,33 +5590,41 @@ struct ActiveTradeStream {
 #[derive(Default)]
 struct TradeStreamState(Mutex<Option<ActiveTradeStream>>);
 
-fn running_ema_trade_codes(views: &[bot_operations::BotView]) -> BTreeSet<String> {
+fn running_bot_trade_codes(views: &[bot_operations::BotView]) -> BTreeSet<String> {
     views
         .iter()
-        .filter_map(|view| running_ema_trade_code(view.state, &view.bundle.schedule))
+        .filter_map(|view| running_bot_trade_code(view.state, &view.bundle.schedule))
         .collect()
 }
 
-fn running_ema_trade_code(
+fn running_bot_trade_code(
     state: adaq_bot_runtime::LifecycleState,
     schedule: &bot_operations::BotSchedule,
 ) -> Option<String> {
     (state == adaq_bot_runtime::LifecycleState::Running)
         .then(|| match schedule {
-            bot_operations::BotSchedule::EmaDoubleCross { instrument_id } => Some(
+            bot_operations::BotSchedule::EmaDoubleCross { instrument_id }
+            | bot_operations::BotSchedule::ClosedBar { instrument_id, .. } => Some(
                 instrument_id
                     .strip_prefix("okx:")
                     .unwrap_or(instrument_id)
                     .to_owned(),
             ),
-            _ => None,
+            bot_operations::BotSchedule::ScheduledCrossSection { instruments, .. } => {
+                instruments.first().map(|instrument| {
+                    instrument
+                        .strip_prefix("okx:")
+                        .unwrap_or(instrument)
+                        .to_owned()
+                })
+            }
         })
         .flatten()
 }
 
 pub(crate) fn refresh_bot_trade_stream(app: &AppHandle, user_id: &str) -> Result<(), String> {
     let bots = app.state::<Arc<bot_operations::BotStore>>();
-    let codes = running_ema_trade_codes(&bots.list(user_id)?);
+    let codes = running_bot_trade_codes(&bots.list(user_id)?);
     let bridge = app.state::<Arc<trade_bridge::BotTradeBridge>>();
     bridge.refresh(user_id, codes)
 }
@@ -5505,13 +5683,15 @@ async fn market_workspace_get_bars(
     mut request: MarketWorkspaceBarsRequest,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
 ) -> Result<MarketWorkspaceBarsView, String> {
     request.user_id = auth.user_id_for_window(window.label())?;
     if request.start_time_ms >= request.end_time_ms {
         return Err("Market Bar range must be increasing".to_owned());
     }
+    #[cfg(feature = "deferred-equity")]
     let retrieved_at_ms = unix_now_ms();
+    #[cfg(feature = "deferred-equity")]
     let range = HistoricalBarRange {
         start_time_ms: request.start_time_ms,
         end_time_ms: request.end_time_ms,
@@ -5519,13 +5699,13 @@ async fn market_workspace_get_bars(
     match request.instrument.venue.kind {
         #[cfg(feature = "deferred-equity")]
         VenueKind::ChinaAShareEquity => {
-            let client = app
+            let client = _app
                 .state::<Arc<LocalResearchState>>()
                 .ashare
                 .client()
                 .clone();
             let instrument = request.instrument.clone();
-            let interval = request.interval;
+            let interval = request._interval;
             let acquisition = tauri::async_runtime::spawn_blocking(move || {
                 tauri::async_runtime::block_on(client.acquire_bars(
                     instrument,
@@ -5559,7 +5739,7 @@ async fn market_workspace_get_bars(
         #[cfg(feature = "deferred-equity")]
         VenueKind::UsEquity => {
             let instrument = request.instrument;
-            let interval = request.interval;
+            let interval = request._interval;
             tauri::async_runtime::spawn_blocking(move || {
                 let client = adaq_data_core::stock_us::StockUsClient::new()
                     .map_err(|error| error.to_string())?;
@@ -5635,6 +5815,7 @@ fn alpaca_bars(bars: Vec<adaq_data_core::alpaca::AlpacaBar>) -> Result<Vec<Ohlcv
         .collect()
 }
 
+#[cfg(feature = "deferred-equity")]
 fn decimal_bar(open_time_ms: i64, values: [Option<&str>; 6]) -> Result<OhlcvBar, String> {
     let [open, high, low, close, base_volume, quote_volume] = values;
     Ok(OhlcvBar {
@@ -5654,6 +5835,7 @@ fn decimal_bar(open_time_ms: i64, values: [Option<&str>; 6]) -> Result<OhlcvBar,
     })
 }
 
+#[cfg(feature = "deferred-equity")]
 fn direct_bar_limitations(mut limitations: Vec<String>) -> Vec<String> {
     limitations.push(
         "Direct provider observations are not canonical Data Quality publication evidence."
@@ -6204,7 +6386,7 @@ async fn paper_account_reconcile(
             "The OKX Demo connection has no validated account identity.".to_owned()
         })?;
         let now_ms = unix_now_ms();
-        state.connections.with_okx_demo_reconciliation(
+        let account = state.connections.with_okx_demo_reconciliation(
             &user_id,
             now_ms,
             |open_orders, balances| {
@@ -6222,9 +6404,29 @@ async fn paper_account_reconcile(
                             resolve_ms,
                         )
                     },
+                )?;
+                state.paper_trading.recover_uncertain_order_absence(
+                    &user_id,
+                    now_ms,
+                    |instrument, window_start_ms, checked_at_ms| {
+                        state.connections.confirm_okx_demo_order_absence(
+                            &user_id,
+                            instrument,
+                            window_start_ms,
+                            checked_at_ms,
+                        )
+                    },
                 )
             },
-        )?
+        )??;
+        app.state::<Arc<bot_operations::BotStore>>()
+            .recover_stopped_workers(
+                &app.state::<Arc<bot_supervisor::BotSupervisor>>(),
+                &state.operations,
+                &user_id,
+                Some(&account),
+            )?;
+        Ok(account)
     })
     .await
     .map_err(|error| serialize_paper_account_error(error.to_string()))?;
@@ -6808,11 +7010,13 @@ fn string(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::{
         MarketSubscribeRealtimeRequest, WasmLoader, factor_abi, has_operational_responsibility,
-        running_ema_trade_code, strategy_abi,
+        running_bot_trade_code, strategy_abi,
     };
     use crate::bot_operations::BotSchedule;
     use adaq_bot_runtime::LifecycleState;
-    use std::path::{Path, PathBuf};
+    #[cfg(feature = "local-env-credentials")]
+    use std::path::Path;
+    use std::path::PathBuf;
 
     fn fixture(name: &str) -> String {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -6854,9 +7058,63 @@ mod tests {
     }
 
     #[test]
-    fn running_ema_schedule_owns_its_okx_trade_subscription() {
+    fn paper_account_probe_keeps_authoritative_identity() {
+        use crate::operations::{HealthState, OperationsStore, SafetyAction};
+        use adaq_paper_trading_core::{AccountSnapshot, Market, ReconciliationState};
+        use rust_decimal::Decimal;
+        use std::sync::{Arc, Mutex};
+
+        let operations = OperationsStore::open(Arc::new(Mutex::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+        )))
+        .unwrap();
+        let mut account = crate::paper_trading::PaperAccountView {
+            account: AccountSnapshot {
+                account_id: "demo-provider-account".into(),
+                user_id: "u".into(),
+                market: Market::OkxSpot,
+                currency: Market::OkxSpot.currency(),
+                cash: Decimal::new(1000, 0),
+                positions: Default::default(),
+                observed_at_ms: 1,
+            },
+            reserved_cash: Decimal::ZERO,
+            buying_power: Decimal::new(1000, 0),
+            reconciliation: ReconciliationState::Reconciled,
+            orders: Vec::new(),
+            fills: Vec::new(),
+            provider_evidence: Vec::new(),
+            order_absence_recoveries: Vec::new(),
+            risk_decisions: Vec::new(),
+            restart_required: false,
+        };
+        let observation = super::paper_account_health_observation("u", Some(&account), 2);
+        let (event, alert, action) = operations.observe(observation).unwrap();
+        assert_eq!(event.entity_id, "demo-provider-account");
+        assert_eq!(event.evidence["accountId"], "demo-provider-account");
+        assert!(alert.is_none());
+        assert_eq!(action, SafetyAction::None);
+
+        let mut foreign = super::paper_account_health_observation("u", Some(&account), 3);
+        foreign.evidence["accountId"] = serde_json::json!("another-demo-account");
+        assert!(operations.observe(foreign).unwrap_err().contains("entity"));
+
+        account.restart_required = true;
+        let restart = super::paper_account_health_observation("u", Some(&account), 4);
+        assert_eq!(restart.state, HealthState::Unknown);
+        assert!(restart.required);
+        assert_eq!(operations.observe(restart).unwrap().2, SafetyAction::Pause);
+
+        let missing = super::paper_account_health_observation("u", None, 5);
+        assert_eq!(missing.state, HealthState::Unknown);
+        assert!(!missing.required);
+        assert_eq!(operations.observe(missing).unwrap().2, SafetyAction::None);
+    }
+
+    #[test]
+    fn running_schedules_own_their_okx_trade_trigger_subscription() {
         assert_eq!(
-            running_ema_trade_code(
+            running_bot_trade_code(
                 LifecycleState::Running,
                 &BotSchedule::EmaDoubleCross {
                     instrument_id: "okx:BTC-USDT".into(),
@@ -6865,13 +7123,35 @@ mod tests {
             Some("BTC-USDT".into()),
         );
         assert_eq!(
-            running_ema_trade_code(
+            running_bot_trade_code(
                 LifecycleState::Paused,
                 &BotSchedule::EmaDoubleCross {
                     instrument_id: "okx:BTC-USDT".into(),
                 },
             ),
             None,
+        );
+        assert_eq!(
+            running_bot_trade_code(
+                LifecycleState::Running,
+                &BotSchedule::ClosedBar {
+                    instrument_id: "okx:ETH-USDT".into(),
+                    interval: "15m".into(),
+                }
+            ),
+            Some("ETH-USDT".into())
+        );
+        let portfolio = BotSchedule::ScheduledCrossSection {
+            universe_id: "frozen-universe".into(),
+            instruments: vec!["okx:BTC-USDT".into(), "okx:ETH-USDT".into()],
+        };
+        assert_eq!(
+            running_bot_trade_code(LifecycleState::Running, &portfolio),
+            Some("BTC-USDT".into())
+        );
+        assert_eq!(
+            running_bot_trade_code(LifecycleState::Stopped, &portfolio),
+            None
         );
     }
 

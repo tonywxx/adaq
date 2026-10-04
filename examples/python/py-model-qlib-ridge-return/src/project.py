@@ -61,6 +61,7 @@ class QlibRidgeReturn:
             transformation_sha256=str(payload["transformation_sha256"]),
         )
         target_window_end = context.inputs.get("targetWindowEnd")
+        target_interval_ms = context.inputs.get("targetIntervalMs", 1)
         return [
             Forecast(
                 instrument_id=str(row["instrument"]),
@@ -68,7 +69,8 @@ class QlibRidgeReturn:
                 value=(
                     Unavailable(reason="target-window-boundary")
                     if isinstance(target_window_end, int)
-                    and int(row["datetime"]) + 5 > target_window_end
+                    and int(row["datetime"]) + self.target.horizon_bars * target_interval_ms
+                    > target_window_end
                     else finite(float(row["value"]))
                 ),
             )

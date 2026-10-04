@@ -1079,6 +1079,20 @@ fn materialize_custom_cross_sectional(
                     })
                     .collect()
             });
+            // ABI None has no reason; retain the unavailable input evidence.
+            let input = members[&factor_result.instrument_id];
+            if values.is_none()
+                && let Some(reason) = slots
+                    .iter()
+                    .filter_map(|slot| match input.values.get(slot) {
+                        Some(FeatureDatasetCell::Unavailable { reason }) => Some(*reason),
+                        _ => None,
+                    })
+                    .min_by_key(|reason| reason.code())
+            {
+                result.push(unavailable_row(input, outputs, map_feature_reason(reason)));
+                continue;
+            }
             result.push(result_row(
                 &(
                     factor_result.instrument_id.clone(),
@@ -1909,39 +1923,55 @@ mod tests {
             vec![row("a", 1, 2.0)],
         )
         .unwrap();
-        let protocol = crate::FactorMaterializationProtocol::freeze(
-            crate::FactorMaterializationProtocolDraft {
-                protocol_id: Uuid::new_v4(),
-                user_id,
-                candidate_hash: candidate.candidate_hash.clone(),
-                feature_dataset_id: feature_dataset.dataset_id.clone(),
-                feature_plan_hash: feature_dataset.feature_plan_hash.clone(),
-                parameters: vec![],
-                market_data_snapshot_id: "snapshot".into(),
-                point_in_time_universe_id: "universe".into(),
-                observation_range: crate::ObservationRange {
-                    start_time_ms: 0,
-                    end_time_ms: 2,
-                },
-                market_context: context(),
-                engine_identity: engine(),
-                seed: 1,
+        let draft = crate::FactorMaterializationProtocolDraft {
+            protocol_id: Uuid::new_v4(),
+            user_id,
+            candidate_hash: candidate.candidate_hash.clone(),
+            feature_dataset_id: feature_dataset.dataset_id.clone(),
+            feature_plan_hash: feature_dataset.feature_plan_hash.clone(),
+            parameters: vec![],
+            market_data_snapshot_id: "snapshot".into(),
+            point_in_time_universe_id: "universe".into(),
+            observation_range: crate::ObservationRange {
+                start_time_ms: 0,
+                end_time_ms: 2,
             },
-        )
-        .unwrap();
-        let dataset = FactorMaterializer::materialize(FactorMaterializationInput {
+            market_context: context(),
+            engine_identity: engine(),
+            seed: 1,
+        };
+        let protocol = crate::FactorMaterializationProtocol::freeze(draft.clone()).unwrap();
+        let input = FactorMaterializationInput {
             candidate: &candidate,
             protocol: &protocol,
             feature_dataset: &feature_dataset,
             point_in_time_universe: &["a".into()],
             custom_package: None,
-        })
-        .unwrap();
+        };
+        let dataset = FactorMaterializer::materialize(input).unwrap();
         assert_eq!(dataset.rows[0].instrument_id, "a");
         assert!(matches!(
             dataset.rows[0].values["score"],
             FactorObservationValue::Available { value: 2.0, .. }
         ));
+        let mut rebuilt_draft = draft;
+        rebuilt_draft.engine_identity.build_id = crate::native_engine_source_sha256();
+        let rebuilt_protocol = crate::FactorMaterializationProtocol::freeze(rebuilt_draft).unwrap();
+        let rebuilt = FactorMaterializer::materialize(FactorMaterializationInput {
+            protocol: &rebuilt_protocol,
+            ..input
+        })
+        .unwrap();
+        assert_eq!(dataset.rows, rebuilt.rows);
+        assert_ne!(dataset.manifest.dataset_id, rebuilt.manifest.dataset_id);
+        assert_eq!(
+            rebuilt,
+            FactorMaterializer::materialize(FactorMaterializationInput {
+                protocol: &rebuilt_protocol,
+                ..input
+            })
+            .unwrap()
+        );
     }
 
     #[test]
@@ -2032,7 +2062,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_sectional_materialization_requires_and_orders_the_universe() {
+    fn cross_sectional_component_replay_preserves_upstream_unavailability() {
         let user_id = Uuid::new_v4();
         let plan = test_plan();
         let plan_hash = plan.plan_hash().to_owned();
@@ -2074,8 +2104,12 @@ mod tests {
             "universe",
             vec!["signal".into()],
             vec![
-                row("a", 1, 2.0),
-                unavailable_row("b", 1, FeatureUnavailabilityReason::MissingMarketInput),
+                unavailable_row("a", 1, FeatureUnavailabilityReason::Warmup),
+                row("a", 2, 2.0),
+                unavailable_row("a", 3, FeatureUnavailabilityReason::BarGap),
+                unavailable_row("b", 1, FeatureUnavailabilityReason::Warmup),
+                unavailable_row("b", 2, FeatureUnavailabilityReason::MissingMarketInput),
+                row("b", 3, 3.0),
             ],
         )
         .unwrap();
@@ -2091,7 +2125,7 @@ mod tests {
                 point_in_time_universe_id: "universe".into(),
                 observation_range: crate::ObservationRange {
                     start_time_ms: 0,
-                    end_time_ms: 2,
+                    end_time_ms: 4,
                 },
                 market_context: context(),
                 engine_identity: engine(),
@@ -2113,14 +2147,40 @@ mod tests {
                 .iter()
                 .map(|row| row.instrument_id.as_str())
                 .collect::<Vec<_>>(),
-            ["a", "b"]
+            ["a", "a", "a", "b", "b", "b"]
         );
         assert!(matches!(
-            dataset.rows[1].values["score"],
+            dataset.rows[4].values["score"],
             FactorObservationValue::Unavailable {
                 reason: FactorUnavailabilityReason::MissingInput
             }
         ));
+        let generated = crate::generate_declarative_candidate_package(
+            Uuid::new_v4(),
+            user_id,
+            &candidate,
+            "cross-sectional-replay",
+            &plan.to_json(),
+            &plan.engine_identity(),
+            crate::FactorResourcePolicy {
+                fuel_per_call: 1_000_000,
+                memory_bytes: 64 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+        let replayed = FactorMaterializer::replay_component_package(
+            FactorMaterializationInput {
+                candidate: &candidate,
+                protocol: &protocol,
+                feature_dataset: &feature_dataset,
+                point_in_time_universe: &["b".into(), "a".into()],
+                custom_package: Some(&generated.package),
+            },
+            &generated.package,
+            &generated.provenance,
+        )
+        .unwrap();
+        assert_eq!(replayed, dataset.rows);
     }
 
     #[test]

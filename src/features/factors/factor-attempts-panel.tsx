@@ -1,5 +1,5 @@
 import { IdentifierDisplay } from "@/components/identifier-display";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,11 +31,13 @@ export function AttemptsPanel({
 	adapter,
 	kind,
 	refreshKey = 0,
+	onAttemptTerminal,
 }: {
 	userId: string;
 	adapter: FactorAdapter;
 	kind: string;
 	refreshKey?: number;
+	onAttemptTerminal?: () => void;
 }) {
 	const { t } = useTranslation();
 	const listAttempts = useCallback(
@@ -46,9 +48,28 @@ export function AttemptsPanel({
 	const attempts = useFactorPage(userId, `attempts:${kind}`, listAttempts);
 	const [feedback, setFeedback] = useState(undefined as string | undefined);
 	const [actionKey, setActionKey] = useState(undefined as string | undefined);
+	const previousStatuses = useRef(
+		new Map<string, FactorAttemptView["status"]>(),
+	);
 	useEffect(() => {
 		if (refreshKey > 0) void attempts.load();
 	}, [attempts.load, refreshKey]);
+	useEffect(() => {
+		let terminalAttemptObserved = false;
+		for (const attempt of attempts.data?.items ?? []) {
+			if (attempt.kind !== kind) continue;
+			const previousStatus = previousStatuses.current.get(attempt.attemptId);
+			if (
+				(previousStatus !== undefined &&
+					!isTerminalFactorAttempt(previousStatus)) ||
+				(previousStatus === undefined && refreshKey > 0)
+			) {
+				terminalAttemptObserved ||= isTerminalFactorAttempt(attempt.status);
+			}
+			previousStatuses.current.set(attempt.attemptId, attempt.status);
+		}
+		if (terminalAttemptObserved) onAttemptTerminal?.();
+	}, [attempts.data, kind, onAttemptTerminal, refreshKey]);
 	useEffect(() => {
 		if (
 			!attempts.data?.items.some(
@@ -206,9 +227,9 @@ export function AttemptsPanel({
 											<dt className="inline font-medium">
 												{t("factors.attempts.requestHash")}:{" "}
 											</dt>
-										<dd className="inline font-mono">
-											<IdentifierDisplay id={attempt.requestHash} />
-										</dd>
+											<dd className="inline font-mono">
+												<IdentifierDisplay id={attempt.requestHash} />
+											</dd>
 										</div>
 										{attempt.sourceAttemptId ? (
 											<div>

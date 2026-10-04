@@ -207,7 +207,6 @@ export function FittingView({
 				},
 				emptyPlanDraft([stored]),
 			);
-			setActionFeedback({ kind: "ok", text: t("features.fitting.started") });
 			await load();
 		} catch (error) {
 			setActionFeedback({ kind: "error", text: formatFeatureError(error) });
@@ -325,29 +324,29 @@ export function FittingView({
 											<dt className="inline font-medium">
 												{t("features.fitting.protocolHash")}:{" "}
 											</dt>
-										<dd className="inline font-mono">
-											<IdentifierDisplay id={attempt.protocolHash} />
-										</dd>
+											<dd className="inline font-mono">
+												<IdentifierDisplay id={attempt.protocolHash} />
+											</dd>
 										</div>
 										<div>
 											<dt className="inline font-medium">
 												{t("features.fitting.planHash")}:{" "}
 											</dt>
-										<dd className="inline font-mono">
-											<IdentifierDisplay id={attempt.planHash} />
-										</dd>
+											<dd className="inline font-mono">
+												<IdentifierDisplay id={attempt.planHash} />
+											</dd>
 										</div>
 										{attempt.sourceAttemptId && (
 											<div>
 												<dt className="inline font-medium">
 													{t("features.fitting.sourceAttempt")}:{" "}
 												</dt>
-											<dd className="inline font-mono">
-												<IdentifierDisplay id={attempt.sourceAttemptId} />
-											</dd>
-										</div>
-									)}
-									{attempt.artifactId && (
+												<dd className="inline font-mono">
+													<IdentifierDisplay id={attempt.sourceAttemptId} />
+												</dd>
+											</div>
+										)}
+										{attempt.artifactId && (
 											<div>
 												<dt className="inline font-medium">
 													{t("features.fitting.artifact")}:{" "}
@@ -668,10 +667,6 @@ export function MaterializationView({
 				},
 				plan,
 			);
-			setActionFeedback({
-				kind: "ok",
-				text: t("features.materialization.started"),
-			});
 			await load();
 		} catch (error) {
 			setActionFeedback({ kind: "error", text: formatFeatureError(error) });
@@ -798,19 +793,19 @@ export function MaterializationView({
 												<dt className="inline font-medium">
 													{t("features.materialization.sourceAttempt")}:{" "}
 												</dt>
-											<dd className="inline font-mono">
-												<IdentifierDisplay id={attempt.sourceAttemptId} />
-											</dd>
-										</div>
-									)}
-									{attempt.datasetId && (
+												<dd className="inline font-mono">
+													<IdentifierDisplay id={attempt.sourceAttemptId} />
+												</dd>
+											</div>
+										)}
+										{attempt.datasetId && (
 											<div>
 												<dt className="inline font-medium">
 													{t("features.materialization.dataset")}:{" "}
 												</dt>
-											<dd className="inline font-mono">
-												<IdentifierDisplay id={attempt.datasetId} />
-											</dd>
+												<dd className="inline font-mono">
+													<IdentifierDisplay id={attempt.datasetId} />
+												</dd>
 											</div>
 										)}
 									</dl>

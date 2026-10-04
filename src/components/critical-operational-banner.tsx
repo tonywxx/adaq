@@ -40,7 +40,7 @@ export function CriticalOperationalBanner() {
 		<div
 			role="alert"
 			aria-live="assertive"
-			className="sticky top-0 z-20 border-b border-destructive bg-destructive/10 px-4 py-3 text-destructive md:px-6"
+			className="sticky top-0 z-20 border-b border-destructive bg-background px-4 py-3 text-destructive md:px-6"
 		>
 			<div className="flex flex-wrap items-center justify-between gap-2">
 				<div>

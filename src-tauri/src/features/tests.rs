@@ -748,6 +748,47 @@ fn cross_sectional_preview_fitting_and_materialization_bind_complete_pit_batches
         .unwrap();
     assert_eq!(preview.event_count, 3);
     assert_eq!(preview.observations.len(), 6);
+    let runtime = state
+        .features
+        .runtime_observations(
+            "alice",
+            &plan,
+            &universe_id,
+            &ObservationRange {
+                start_time_ms: HOUR,
+                end_time_ms: 4 * HOUR,
+            },
+        )
+        .unwrap();
+    assert_eq!(runtime, preview.observations);
+    assert!(
+        state
+            .features
+            .runtime_observations(
+                "bob",
+                &plan,
+                &universe_id,
+                &ObservationRange {
+                    start_time_ms: HOUR,
+                    end_time_ms: 4 * HOUR
+                }
+            )
+            .is_err()
+    );
+    let causal = state
+        .features
+        .runtime_observations(
+            "alice",
+            &plan,
+            &universe_id,
+            &ObservationRange {
+                start_time_ms: HOUR,
+                end_time_ms: 2 * HOUR + 1,
+            },
+        )
+        .unwrap();
+    assert_eq!(causal.len(), 4);
+    assert!(causal.iter().all(|row| row.observation_time_ms <= 2 * HOUR));
     assert!(
         preview
             .observations

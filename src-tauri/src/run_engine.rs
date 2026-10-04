@@ -68,6 +68,8 @@ pub(crate) enum MaterializedFeatureRow {
     Present(Vec<f64>),
 }
 
+pub(crate) type FactorValues = HashMap<String, Vec<Option<HashMap<String, f64>>>>;
+
 pub(crate) fn materialize_feature_segment(
     plan: &FrozenFeaturePlan,
     factors: &[FactorRunRequest<'_>],
@@ -84,6 +86,24 @@ pub(crate) fn materialize_feature_segment_with_signals(
     bars: &[OhlcvBar],
     limits: RunLimits,
 ) -> Result<Vec<MaterializedFeatureRow>, RunError> {
+    materialize_feature_segment_with_factor_values(
+        plan,
+        factors,
+        signals,
+        bars,
+        limits,
+        &FactorValues::new(),
+    )
+}
+
+pub(crate) fn materialize_feature_segment_with_factor_values(
+    plan: &FrozenFeaturePlan,
+    factors: &[FactorRunRequest<'_>],
+    signals: &[SignalRunRequest<'_>],
+    bars: &[OhlcvBar],
+    limits: RunLimits,
+    factor_values: &FactorValues,
+) -> Result<Vec<MaterializedFeatureRow>, RunError> {
     let request = RunRequest {
         strategy_path: "",
         strategy_parameters: &[],
@@ -95,7 +115,7 @@ pub(crate) fn materialize_feature_segment_with_signals(
         position_mode: PositionMode::LongOnly,
         limits,
     };
-    evaluate_feature_rows(&request, bars)
+    evaluate_feature_rows_with_factor_values(&request, bars, factor_values)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -318,7 +338,15 @@ fn evaluate_feature_rows(
     request: &RunRequest<'_>,
     bars: &[OhlcvBar],
 ) -> Result<Vec<MaterializedFeatureRow>, RunError> {
-    let factor_values = evaluate_factors(request, bars)
+    evaluate_feature_rows_with_factor_values(request, bars, &FactorValues::new())
+}
+
+fn evaluate_feature_rows_with_factor_values(
+    request: &RunRequest<'_>,
+    bars: &[OhlcvBar],
+    precomputed: &FactorValues,
+) -> Result<Vec<MaterializedFeatureRow>, RunError> {
+    let factor_values = evaluate_factors(request, bars, precomputed)
         .map_err(|error| RunError::host("factor-evaluation-failed", RunStage::Factor, error))?;
     let feature_plan = request.plan.feature_plan();
     let mut evaluator = FeatureEngine::new(feature_plan.engine_identity())
@@ -495,7 +523,14 @@ fn feature_evaluation_error(
 fn evaluate_factors(
     request: &RunRequest<'_>,
     bars: &[OhlcvBar],
+    precomputed: &FactorValues,
 ) -> Result<HashMap<String, Vec<Option<HashMap<String, f64>>>>, String> {
+    if precomputed
+        .keys()
+        .any(|alias| !request.plan.factors().any(|factor| factor.alias == alias))
+    {
+        return Err("Precomputed Factor values contain an unbound alias".into());
+    }
     let builtin_values = evaluate_factor_builtins(request, bars)?;
     let paths = request
         .factors
@@ -539,6 +574,21 @@ fn evaluate_factors(
         );
     let mut evaluated = HashMap::new();
     for factor in request.plan.factors() {
+        if let Some(rows) = precomputed.get(factor.alias) {
+            if rows.len() != bars.len()
+                || rows.iter().flatten().any(|row| {
+                    row.len() != factor.output_names.len()
+                        || factor
+                            .output_names
+                            .iter()
+                            .any(|name| !row.get(name).is_some_and(|value| value.is_finite()))
+                })
+            {
+                return Err("Precomputed Factor values do not match the frozen contract".into());
+            }
+            evaluated.insert(factor.alias.to_owned(), rows.clone());
+            continue;
+        }
         let factor_request = request
             .factors
             .iter()

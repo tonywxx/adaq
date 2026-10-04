@@ -435,11 +435,11 @@ export function CandidatesWorkspace({
 																/>
 															</div>
 															<div className="font-mono text-xs text-muted-foreground">
-															r{item.predecessor.contextRevision} ·{" "}
-															<IdentifierDisplay
-																id={item.predecessor.contextHash}
-																label={t("identifiers.researchContext")}
-															/>
+																r{item.predecessor.contextRevision} ·{" "}
+																<IdentifierDisplay
+																	id={item.predecessor.contextHash}
+																	label={t("identifiers.researchContext")}
+																/>
 															</div>
 														</>
 													) : (

@@ -19,7 +19,10 @@ compile_error!("local-env-credentials is restricted to Debug local tests");
 use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::Mutex;
-#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
+#[cfg(all(
+    any(debug_assertions, feature = "local-env-credentials"),
+    any(not(test), feature = "local-env-credentials")
+))]
 use std::{env, fs, path::Path};
 
 #[cfg(not(any(debug_assertions, feature = "local-env-credentials")))]
@@ -28,8 +31,16 @@ const KEYRING_SERVICE: &str = "adaq";
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SecretStoreError {
     /// The referenced entry does not exist.
+    #[cfg(any(test, not(any(debug_assertions, feature = "local-env-credentials"))))]
     Missing,
     /// The OS store could not be reached or rejected the operation.
+    #[cfg_attr(
+        all(test, debug_assertions, not(feature = "local-env-credentials")),
+        expect(
+            dead_code,
+            reason = "default unit tests inject only the in-memory store"
+        )
+    )]
     Unavailable(String),
 }
 
@@ -39,12 +50,18 @@ pub(crate) trait SecretStore: Send + Sync {
     fn delete(&self, entry: &str) -> Result<(), SecretStoreError>;
 }
 
-#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
+#[cfg(all(
+    any(debug_assertions, feature = "local-env-credentials"),
+    any(not(test), feature = "local-env-credentials")
+))]
 pub(crate) struct LocalEnvSecretStore {
     credential_json: String,
 }
 
-#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
+#[cfg(all(
+    any(debug_assertions, feature = "local-env-credentials"),
+    any(not(test), feature = "local-env-credentials")
+))]
 impl LocalEnvSecretStore {
     pub(crate) fn load() -> Result<Self, String> {
         let values = load_local_env()?;
@@ -54,7 +71,10 @@ impl LocalEnvSecretStore {
     }
 }
 
-#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
+#[cfg(all(
+    any(debug_assertions, feature = "local-env-credentials"),
+    any(not(test), feature = "local-env-credentials")
+))]
 impl SecretStore for LocalEnvSecretStore {
     fn set(&self, _entry: &str, _value: &str) -> Result<(), SecretStoreError> {
         Err(SecretStoreError::Unavailable(
@@ -73,7 +93,10 @@ impl SecretStore for LocalEnvSecretStore {
     }
 }
 
-#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
+#[cfg(all(
+    any(debug_assertions, feature = "local-env-credentials"),
+    any(not(test), feature = "local-env-credentials")
+))]
 fn load_local_env() -> Result<HashMap<String, String>, String> {
     let mut locations = Vec::new();
     if let Ok(current_dir) = env::current_dir() {
@@ -94,14 +117,20 @@ fn load_local_env() -> Result<HashMap<String, String>, String> {
     Err("Local OKX Demo test requires a repository root".to_owned())
 }
 
-#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
+#[cfg(all(
+    any(debug_assertions, feature = "local-env-credentials"),
+    any(not(test), feature = "local-env-credentials")
+))]
 fn read_env_file(path: &Path) -> Result<HashMap<String, String>, String> {
     let content = fs::read_to_string(path)
         .map_err(|_| "Local OKX Demo test requires a readable .env file".to_owned())?;
     Ok(parse_local_env(&content))
 }
 
-#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
+#[cfg(all(
+    any(debug_assertions, feature = "local-env-credentials"),
+    any(not(test), feature = "local-env-credentials")
+))]
 fn parse_local_env(content: &str) -> HashMap<String, String> {
     content
         .lines()
@@ -131,7 +160,10 @@ fn parse_local_env(content: &str) -> HashMap<String, String> {
         .collect()
 }
 
-#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
+#[cfg(all(
+    any(debug_assertions, feature = "local-env-credentials"),
+    any(not(test), feature = "local-env-credentials")
+))]
 fn credential_json_from_values(values: &HashMap<String, String>) -> Result<String, String> {
     let required = |name: &str| {
         values

@@ -826,8 +826,8 @@ export function SystemDashboard({
 										})}
 									</p>
 									{bot.reconciliationRequired ? (
-										<p role="alert" className="mt-1 text-xs text-destructive">
-											{t("operations.reconciliationRequired")}
+										<p role="status" className="mt-1 text-xs text-muted-foreground">
+											{t("bots.reconciliationRequired")}
 										</p>
 									) : null}
 								</div>
@@ -903,7 +903,7 @@ export function SystemDashboard({
 									/>
 								</div>
 								{projection.paperAccount.restartRequired ? (
-									<p role="alert" className="text-xs text-destructive">
+									<p role="status" className="text-xs text-muted-foreground">
 										{t("operations.restartRequired")}
 									</p>
 								) : null}

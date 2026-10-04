@@ -12,11 +12,9 @@ pub(crate) mod tester;
 #[cfg(test)]
 mod tests;
 
-use std::{
-    sync::{Arc, Mutex, RwLock},
-    time::Instant,
-};
+use std::sync::{Arc, Mutex, RwLock};
 
+#[cfg(any(test, feature = "deferred-equity"))]
 use adaq_data_core::alpaca::{AlpacaClient, AlpacaCredentials};
 use adaq_trading_crypto::{Config as TradingConfig, adapters::okx::Okx};
 use rand::RngCore;
@@ -24,12 +22,18 @@ use rusqlite::{Connection, OptionalExtension, params};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(any(test, feature = "deferred-equity"))]
+use std::time::Instant;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "local-env-credentials")))]
 use secret_store::InMemorySecretStore;
+
 #[cfg(not(any(debug_assertions, feature = "local-env-credentials")))]
 use secret_store::KeyringSecretStore;
-#[cfg(any(debug_assertions, feature = "local-env-credentials"))]
+#[cfg(all(
+    any(debug_assertions, feature = "local-env-credentials"),
+    any(not(test), feature = "local-env-credentials")
+))]
 use secret_store::LocalEnvSecretStore;
 use secret_store::SecretStore;
 use tester::{
@@ -291,6 +295,7 @@ pub(crate) struct ConnectionManager {
     tester: ConnectionTester,
     runtime_guard: Arc<RwLock<Arc<dyn RuntimeGuard>>>,
     device_id: String,
+    #[cfg(any(test, feature = "deferred-equity"))]
     alpaca_rate_gate: Arc<Mutex<Instant>>,
 }
 
@@ -298,6 +303,7 @@ impl ConnectionManager {
     /// Opens the Connection domain with production dependencies. Release
     /// builds use the OS secret store; Debug local builds use the read-only
     /// repository `.env` store for OKX Demo tests.
+    #[cfg(any(not(test), feature = "local-env-credentials"))]
     pub(crate) fn open_production(database: Arc<Mutex<Connection>>) -> Result<Self, String> {
         #[cfg(any(debug_assertions, feature = "local-env-credentials"))]
         let secrets: Arc<dyn SecretStore> = Arc::new(LocalEnvSecretStore::load()?);
@@ -312,7 +318,7 @@ impl ConnectionManager {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "local-env-credentials")))]
     pub(crate) fn open_for_tests(database: Arc<Mutex<Connection>>) -> Result<Self, String> {
         Self::open(
             database,
@@ -383,6 +389,7 @@ impl ConnectionManager {
             tester: ConnectionTester::new(http),
             runtime_guard: Arc::new(RwLock::new(runtime_guard)),
             device_id,
+            #[cfg(any(test, feature = "deferred-equity"))]
             alpaca_rate_gate: Arc::new(Mutex::new(Instant::now())),
         })
     }
@@ -413,6 +420,7 @@ impl ConnectionManager {
 
     /// Resolves one saved Alpaca Paper Profile inside the Host and keeps the
     /// credential inside the caller's Host-side operation.
+    #[cfg(any(test, feature = "deferred-equity"))]
     pub(crate) fn with_alpaca_client<T>(
         &self,
         user_id: &str,
@@ -432,6 +440,7 @@ impl ConnectionManager {
             .secrets
             .get(&row.os_store_entry())
             .map_err(|error| match error {
+                #[cfg(any(test, not(any(debug_assertions, feature = "local-env-credentials"))))]
                 secret_store::SecretStoreError::Missing => {
                     "The stored Alpaca credential is missing; re-save the connection.".to_owned()
                 }
@@ -464,6 +473,7 @@ impl ConnectionManager {
         Ok(operation(client))
     }
 
+    #[cfg(test)]
     pub(crate) fn fetch_okx_demo_open_orders(
         &self,
         user_id: &str,
@@ -483,20 +493,51 @@ impl ConnectionManager {
         price: Option<&str>,
         now_ms: i64,
     ) -> Result<adaq_trading_crypto::Order, String> {
+        self.create_okx_demo_order_outcome(
+            user_id, instrument, order_type, side, amount, price, now_ms,
+        )
+        .map_err(|failure| failure.redacted_message)
+    }
+
+    pub(crate) fn create_okx_demo_order_outcome(
+        &self,
+        user_id: &str,
+        instrument: &str,
+        order_type: &str,
+        side: &str,
+        amount: &str,
+        price: Option<&str>,
+        now_ms: i64,
+    ) -> Result<adaq_trading_crypto::Order, TestFailure> {
+        let credential = self
+            .okx_demo_credential(user_id)
+            .map_err(|error| TestFailure::new("request_failed", error))?;
+        let raw = self.tester.create_okx_demo_order(
+            &credential,
+            instrument,
+            order_type,
+            side,
+            amount,
+            price,
+            now_ms,
+        )?;
+        Ok(self
+            .okx_demo_client(&credential)
+            .map_err(|error| TestFailure::new("request_failed", error))?
+            .parse_order(&raw))
+    }
+
+    pub(crate) fn confirm_okx_demo_order_absence(
+        &self,
+        user_id: &str,
+        instrument: &str,
+        window_start_ms: i64,
+        now_ms: i64,
+    ) -> Result<adaq_paper_trading_core::OrderAbsenceEvidence, String> {
         let credential = self.okx_demo_credential(user_id)?;
-        let raw = self
-            .tester
-            .create_okx_demo_order(
-                &credential,
-                instrument,
-                order_type,
-                side,
-                amount,
-                price,
-                now_ms,
-            )
-            .map_err(|failure| failure.redacted_message)?;
-        Ok(self.okx_demo_client(&credential)?.parse_order(&raw))
+        self.tester
+            .confirm_okx_demo_order_absence(&credential, instrument, window_start_ms, now_ms)
+            .map_err(|failure| failure.redacted_message)
     }
 
     pub(crate) fn cancel_okx_demo_order(
@@ -615,6 +656,7 @@ impl ConnectionManager {
             .secrets
             .get(&row.os_store_entry())
             .map_err(|error| match error {
+                #[cfg(any(test, not(any(debug_assertions, feature = "local-env-credentials"))))]
                 secret_store::SecretStoreError::Missing => {
                     "The stored OKX credential is missing; re-save the connection.".to_owned()
                 }
@@ -814,8 +856,11 @@ impl ConnectionManager {
                 .ok_or_else(|| ConnectionError::new("invalid_profile", "Profile not found."))?
         };
 
-        let stored = self.secrets.get(&row.os_store_entry()).map_err(|error| {
-            let missing = matches!(error, secret_store::SecretStoreError::Missing);
+        let stored = self.secrets.get(&row.os_store_entry()).map_err(|_error| {
+            #[cfg(any(test, not(any(debug_assertions, feature = "local-env-credentials"))))]
+            let missing = matches!(_error, secret_store::SecretStoreError::Missing);
+            #[cfg(all(not(test), any(debug_assertions, feature = "local-env-credentials")))]
+            let missing = false;
             let (code, message) = if missing {
                 (
                     "missing_reference",
@@ -1074,6 +1119,7 @@ fn os_entry(user_id: &str, reference: &SecretReference) -> String {
 
 fn describe_secret_error(error: secret_store::SecretStoreError) -> String {
     match error {
+        #[cfg(any(test, not(any(debug_assertions, feature = "local-env-credentials"))))]
         secret_store::SecretStoreError::Missing => {
             "The operating-system secret store has no such entry.".to_owned()
         }

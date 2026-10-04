@@ -305,6 +305,7 @@ invokeMock.mockImplementation(
 					},
 					qualified: true,
 					importedComponentArchiveSha256: "package-archive-sha",
+					evidenceWindowsComplete: true,
 					diagnostics: [],
 					createdAtMs: 3,
 				};
@@ -332,7 +333,12 @@ invokeMock.mockImplementation(
 					persistedDeploymentReports = [...persistedDeploymentReports, failure];
 					return failure;
 				}
-				persistedDeploymentReports = [...persistedDeploymentReports, deployment];
+				persistedDeploymentReports = [
+					...persistedDeploymentReports.filter(
+						(report) => report.reportId !== deployment.reportId,
+					),
+					deployment,
+				];
 				return deployment;
 			}
 			case "component_list":
@@ -384,7 +390,7 @@ async function prepareGrid(root: Root, container: HTMLDivElement) {
 	await settle();
 
 	const runButton = [...container.querySelectorAll("button")].find(
-		(button) => button.textContent === "Run α=1 demo",
+		(button) => button.textContent === "Run α=1 model",
 	);
 	if (!runButton) throw new Error("run button did not render");
 	await act(async () => {
@@ -397,6 +403,7 @@ async function prepareGrid(root: Root, container: HTMLDivElement) {
 	const registerButton = [...container.querySelectorAll("button")].find(
 		(button) => button.textContent === "Register α grid",
 	);
+	expect(container.textContent).not.toContain("Synthetic Demonstration");
 	if (!registerButton) throw new Error("register button did not render");
 	await act(async () => {
 		registerButton.click();
@@ -589,7 +596,7 @@ test("ignores an older Trial completion after Retry starts", async () => {
 	await prepareGrid(root, container);
 
 	const completeButton = [...container.querySelectorAll("button")].find(
-		(button) => button.textContent === "Complete trial",
+		(button) => button.textContent === "Run and complete trial",
 	);
 	if (!completeButton)
 		throw new Error("initial completion button did not render");
@@ -689,7 +696,7 @@ test("keeps concurrent Trial completions from overwriting each other", async () 
 	await prepareGrid(root, container);
 
 	const completeButtons = [...container.querySelectorAll("button")].filter(
-		(button) => button.textContent === "Complete trial",
+		(button) => button.textContent === "Run and complete trial",
 	);
 	expect(completeButtons).toHaveLength(3);
 	await act(async () => {
@@ -891,6 +898,26 @@ test("qualifies the selected artifact and refreshes the Component Library", asyn
 		"Component Library imported package-archive-sha",
 	);
 	expect(container.textContent).toContain("Qlib Ridge WASI Model v1.0.0");
+	const refreshButton = [...container.querySelectorAll("button")].find(
+		(button) => button.textContent === "Refresh Forecast publication",
+	);
+	if (!refreshButton)
+		throw new Error("forecast publication refresh did not render");
+	expect(refreshButton.hasAttribute("disabled")).toBe(false);
+	await act(async () => {
+		refreshButton.click();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	await settle();
+	expect(
+		invokeMock.mock.calls.filter(
+			([command]) => command === "model_qualify_deployment",
+		),
+	).toHaveLength(2);
+	expect(container.querySelectorAll('[data-status="qualified"]')).toHaveLength(
+		1,
+	);
 
 	await act(async () => root.unmount());
 });

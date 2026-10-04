@@ -293,7 +293,9 @@ test("renders the authorized global projection without cross-currency totals", a
 	await settle();
 
 	expect(container.textContent).toContain("System Dashboard");
-	expect(container.textContent).toContain("OKX-DEMO-BOT_EMA-Double-Cross_ETH-USDT");
+	expect(container.textContent).toContain(
+		"OKX-DEMO-BOT_EMA-Double-Cross_ETH-USDT",
+	);
 	expect(container.textContent).toContain("USDT");
 	expect(container.textContent).toContain("Orders / Fills");
 	expect(container.textContent).not.toContain("USD 1990");
@@ -311,4 +313,52 @@ test("renders the authorized global projection without cross-currency totals", a
 
 	await act(async () => root.unmount());
 	container.remove();
+});
+
+test("explains automatic reconciliation for Bot Start and Retry as a status", async () => {
+	const previousLanguage = i18n.language;
+	await act(async () => {
+		await i18n.changeLanguage("en-US");
+	});
+	const paperAccount = responsibleProjection.paperAccount;
+	if (!paperAccount) throw new Error("test projection requires a paper account");
+	const container = document.createElement("div");
+	const root = createRoot(container);
+	document.body.append(container);
+	const projection = {
+		...responsibleProjection,
+		paperAccount: {
+			...paperAccount,
+			reconciliation: "required",
+			restartRequired: true,
+		},
+		bots: responsibleProjection.bots.map((bot) => ({
+			...bot,
+			reconciliationRequired: true,
+		})),
+	};
+	await act(async () =>
+		root.render(<SystemDashboard projection={projection} />),
+	);
+	await settle();
+
+	const status = () =>
+		Array.from(container.querySelectorAll('[role="status"]')).find(
+			(element) => element.textContent === i18n.t("bots.reconciliationRequired"),
+		);
+	expect(status()?.textContent).toContain(
+		"Start or Retry automatically reconciles",
+	);
+	expect(container.textContent).toContain(i18n.t("operations.restartRequired"));
+	expect(container.querySelector('[role="alert"]')).toBeNull();
+
+	await act(async () => {
+		await i18n.changeLanguage("zh-CN");
+	});
+	expect(status()?.textContent).toContain("启动或重试时，Host 会自动对账并校验");
+	expect(container.textContent).toContain(i18n.t("operations.restartRequired"));
+
+	await act(async () => root.unmount());
+	container.remove();
+	await i18n.changeLanguage(previousLanguage);
 });

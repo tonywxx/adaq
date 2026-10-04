@@ -872,6 +872,16 @@ impl Features {
         self.inner.materialization.clone()
     }
 
+    pub(crate) fn runtime_observations(
+        &self,
+        user_id: &str,
+        plan: &FeaturePlan,
+        universe_snapshot_id: &str,
+        range: &adaq_feature_engine::ObservationRange,
+    ) -> Result<Vec<adaq_feature_engine::FeatureObservation>, String> {
+        runner::runtime_observations(&self.inner, user_id, plan, universe_snapshot_id, range)
+    }
+
     pub(crate) fn completed_dataset_from_store(
         store: &FeatureMaterializationStore,
         user_id: &str,

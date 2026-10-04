@@ -5,10 +5,11 @@
 //! processes stay behind their existing Host-only seams.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use adaq_backtest_core::{
@@ -22,6 +23,7 @@ use adaq_bot_runtime::{
     WorkerLaunchRequest, WorkerTarget,
 };
 use adaq_component_tooling::{ComponentKind, ComponentPackage, FactorScope, ParameterType};
+use adaq_data_core::{MarketTrade, OhlcvBar};
 use adaq_paper_trading_core::RiskPolicy as PaperRiskPolicy;
 use adaq_trading_crypto::Exchange;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -431,6 +433,10 @@ pub(crate) struct BotDecisionEvidence {
     pub request_id: String,
     pub decision_id: String,
     pub outcome: String,
+    #[serde(default)]
+    pub no_target_reason: Option<adaq_bot_runtime::NoTargetReason>,
+    #[serde(default)]
+    pub no_target_detail: Option<String>,
     pub target_hash: Option<String>,
     #[serde(default)]
     pub target: Option<WorkerTarget>,
@@ -438,7 +444,57 @@ pub(crate) struct BotDecisionEvidence {
     pub clock: Option<DecisionClock>,
     #[serde(default)]
     pub evaluation: Option<WorkerEvaluationEvidence>,
+    #[serde(default)]
+    pub market_data_universe_snapshot_id: Option<String>,
     pub observed_at_ms: i64,
+}
+
+#[cfg(test)]
+mod bot_decision_evidence_tests {
+    use super::BotDecisionEvidence;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_decisions_deserialize_without_no_target_diagnostics() {
+        let evidence: BotDecisionEvidence = serde_json::from_value(json!({
+            "requestId": "request-1",
+            "decisionId": "decision-1",
+            "outcome": "no-target",
+            "targetHash": null,
+            "target": null,
+            "clock": null,
+            "evaluation": null,
+            "observedAtMs": 1
+        }))
+        .unwrap();
+
+        assert_eq!(evidence.no_target_reason, None);
+        assert_eq!(evidence.no_target_detail, None);
+    }
+
+    #[test]
+    fn decision_diagnostics_serialize_as_kebab_case_evidence() {
+        let evidence: BotDecisionEvidence = serde_json::from_value(json!({
+            "requestId": "request-1",
+            "decisionId": "decision-1",
+            "outcome": "no-target",
+            "noTargetReason": "missing-input",
+            "noTargetDetail": "one or more feature values are missing",
+            "targetHash": null,
+            "target": null,
+            "clock": null,
+            "evaluation": null,
+            "observedAtMs": 1
+        }))
+        .unwrap();
+
+        let serialized = serde_json::to_value(evidence).unwrap();
+        assert_eq!(serialized["noTargetReason"], "missing-input");
+        assert_eq!(
+            serialized["noTargetDetail"],
+            "one or more feature values are missing"
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -466,6 +522,8 @@ pub(crate) struct BotRuntimeAttempt {
     pub unmanaged_positions: Vec<String>,
     pub reconciliation_required: bool,
     pub last_decision_time_ms: Option<i64>,
+    #[serde(default)]
+    pub last_event_stream_epoch: Option<u32>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -527,6 +585,12 @@ pub(crate) struct BotStore {
     control: Arc<Mutex<()>>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DecisionCommandResult {
+    error: Option<String>,
+}
+
 impl BotStore {
     pub(crate) fn open(database: Arc<Mutex<Connection>>) -> Result<Self, String> {
         let store = Self {
@@ -586,10 +650,78 @@ impl BotStore {
                     created_at_ms INTEGER NOT NULL,
                     PRIMARY KEY(user_id, bot_id, attempt_id, decision_id),
                     UNIQUE(user_id, bot_id, attempt_id, request_id)
+                );
+                CREATE TABLE IF NOT EXISTS bot_runtime_attempts (
+                    user_id TEXT NOT NULL,
+                    bot_id TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    attempt_json TEXT NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY(user_id, bot_id, attempt_id)
                 );",
             )
             .map_err(|error| error.to_string())?;
+        store.migrate_legacy_attempts()?;
         Ok(store)
+    }
+
+    fn migrate_legacy_attempts(&self) -> Result<(), String> {
+        let mut database = self.database.lock().map_err(|error| error.to_string())?;
+        let rows = {
+            let mut statement = database
+                .prepare(
+                    "SELECT bot_id, user_id, attempts_json FROM bots
+                     WHERE attempts_json <> '[]'",
+                )
+                .map_err(|error| error.to_string())?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?
+        };
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let transaction = database.transaction().map_err(|error| error.to_string())?;
+        for (bot_id, user_id, attempts_json) in rows {
+            let attempts: Vec<BotRuntimeAttempt> =
+                serde_json::from_str(&attempts_json).map_err(|error| error.to_string())?;
+            for (position, attempt) in attempts.iter().enumerate() {
+                transaction
+                    .execute(
+                        "INSERT INTO bot_runtime_attempts
+                         (user_id, bot_id, attempt_id, position, attempt_json, updated_at_ms)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                         ON CONFLICT(user_id, bot_id, attempt_id) DO UPDATE SET
+                            position=excluded.position, attempt_json=excluded.attempt_json,
+                            updated_at_ms=excluded.updated_at_ms",
+                        params![
+                            user_id,
+                            bot_id,
+                            attempt.attempt_id,
+                            i64::try_from(position).map_err(|error| error.to_string())?,
+                            serde_json::to_string(attempt).map_err(|error| error.to_string())?,
+                            attempt.updated_at_ms,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            transaction
+                .execute(
+                    "UPDATE bots SET attempts_json='[]' WHERE user_id=?1 AND bot_id=?2",
+                    params![user_id, bot_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())
     }
 
     pub(crate) fn recover_after_restart(&self) -> Result<(), String> {
@@ -621,7 +753,7 @@ impl BotStore {
                 .map_err(|error| error.to_string())?
         };
         for row in rows {
-            let mut bot = row.decode()?;
+            let mut bot = row.decode(&database)?;
             let mut changed = false;
             for attempt in &mut bot.attempts {
                 if is_active_state(attempt.state) {
@@ -748,7 +880,7 @@ impl BotStore {
                  ORDER BY updated_at_ms DESC, bot_id DESC",
             )
             .map_err(|error| error.to_string())?;
-        statement
+        let rows = statement
             .query_map([user_id], |row| {
                 Ok(PersistedRow {
                     bot_id: row.get(0)?,
@@ -762,10 +894,11 @@ impl BotStore {
                 })
             })
             .map_err(|error| error.to_string())?
-            .map(|row| {
-                row.map_err(|error| error.to_string())
-                    .and_then(|row| row.decode().map(|bot| bot.view()))
-            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        drop(statement);
+        rows.into_iter()
+            .map(|row| row.decode(&database).map(|bot| bot.view()))
             .collect()
     }
 
@@ -825,6 +958,56 @@ impl BotStore {
         Ok((bot, attempt))
     }
 
+    pub(crate) fn recover_stopped_workers(
+        &self,
+        supervisor: &crate::bot_supervisor::BotSupervisor,
+        operations: &crate::operations::OperationsStore,
+        user_id: &str,
+        account: Option<&PaperAccountView>,
+    ) -> Result<(), String> {
+        let _control = self.control.lock().map_err(|error| error.to_string())?;
+        let bot_ids = operations
+            .alerts_for_user(user_id)?
+            .into_iter()
+            .filter(|alert| {
+                alert.dimension == crate::operations::HealthDimension::Worker
+                    && alert.state != crate::operations::AlertState::Resolved
+            })
+            .map(|alert| alert.entity_id)
+            .collect::<BTreeSet<_>>();
+        for bot_id in bot_ids {
+            let Ok(bot) = self.get(user_id, &bot_id) else {
+                continue;
+            };
+            let Some(attempt) = bot
+                .attempts
+                .iter()
+                .find(|attempt| Some(&attempt.attempt_id) == bot.current_attempt_id.as_ref())
+            else {
+                continue;
+            };
+            if bot.state != LifecycleState::Stopped
+                || attempt.state != LifecycleState::Stopped
+                || attempt.reconciliation_required
+                || !reconciliation_resolves_fault_gate(account, &bot.bundle.account_id)
+                || account
+                    .is_none_or(|account| account.account.observed_at_ms < attempt.updated_at_ms)
+                || supervisor.has_worker(&bot_id)?
+            {
+                continue;
+            }
+            observe_worker_recovery(
+                operations,
+                user_id,
+                &bot_id,
+                &bot.bundle,
+                &attempt.attempt_id,
+                true,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn command(
         &self,
         user_id: &str,
@@ -857,11 +1040,26 @@ impl BotStore {
             if kind != command_kind {
                 return Err("Command identity was already used for another operation".into());
             }
+            if command_kind == "decision"
+                && let Ok(result) = serde_json::from_str::<DecisionCommandResult>(&result_json)
+            {
+                return match result.error {
+                    Some(error) => Err(error),
+                    None => self.get(user_id, bot_id),
+                };
+            }
             return serde_json::from_str(&result_json).map_err(|error| error.to_string())?;
         }
         self.load_record(user_id, bot_id)?;
         let result = action(self);
-        let result_json = serde_json::to_string(&result).map_err(|error| error.to_string())?;
+        let result_json = if command_kind == "decision" {
+            serde_json::to_string(&DecisionCommandResult {
+                error: result.as_ref().err().cloned(),
+            })
+        } else {
+            serde_json::to_string(&result)
+        }
+        .map_err(|error| error.to_string())?;
         self.database
             .lock()
             .map_err(|error| error.to_string())?
@@ -973,6 +1171,7 @@ impl BotStore {
             unmanaged_positions: Vec::new(),
             reconciliation_required: true,
             last_decision_time_ms: None,
+            last_event_stream_epoch: None,
             created_at_ms: now,
             updated_at_ms: now,
         };
@@ -1120,10 +1319,21 @@ impl BotStore {
         bot_id: &str,
         clock: Option<&DecisionClock>,
         result: &WorkerDecisionResult,
+        stream_epoch: Option<u32>,
+        market_data_universe_snapshot_id: Option<&str>,
     ) -> Result<BotView, String> {
         self.mutate(user_id, bot_id, |bot| {
             let attempt = current_attempt_mut(bot)?;
-            let (request_id, decision_id, outcome, target_hash, target, evaluation) = match result {
+            let (
+                request_id,
+                decision_id,
+                outcome,
+                target_hash,
+                target,
+                evaluation,
+                no_target_reason,
+                no_target_detail,
+            ) = match result {
                 WorkerDecisionResult::Target {
                     request_id,
                     decision_id,
@@ -1137,12 +1347,15 @@ impl BotStore {
                     Some(hash_json(target)?),
                     Some(target.clone()),
                     Some(evaluation.clone()),
+                    None,
+                    None,
                 ),
                 WorkerDecisionResult::NoTarget {
                     request_id,
                     decision_id,
+                    reason,
+                    detail,
                     evaluation,
-                    ..
                 } => (
                     request_id,
                     decision_id,
@@ -1150,16 +1363,27 @@ impl BotStore {
                     None,
                     None,
                     evaluation.clone(),
+                    Some(reason.clone()),
+                    Some(bounded_text(detail, 512)),
                 ),
             };
+            if evaluation.is_some()
+                && let Some(stream_epoch) = stream_epoch
+            {
+                attempt.last_event_stream_epoch = Some(stream_epoch);
+            }
             attempt.decisions.push(BotDecisionEvidence {
                 request_id: bounded_text(request_id, 128),
                 decision_id: bounded_text(decision_id, 128),
                 outcome: outcome.into(),
+                no_target_reason,
+                no_target_detail,
                 target_hash,
                 target,
                 clock: clock.cloned(),
                 evaluation,
+                market_data_universe_snapshot_id: market_data_universe_snapshot_id
+                    .map(str::to_owned),
                 observed_at_ms: adaq_bot_runtime::unix_now_ms(),
             });
             if attempt.decisions.len() > MAX_DECISIONS {
@@ -1242,6 +1466,7 @@ impl BotStore {
             let mut bot = bot;
             let attempt = current_attempt_mut(&mut bot)?;
             attempt.last_decision_time_ms = Some(decision_time_ms);
+            attempt.updated_at_ms = now.max(attempt.updated_at_ms.saturating_add(1));
             bot.updated_at_ms = now;
             self.save_record_locked(&mut database, &bot)?;
         }
@@ -1412,7 +1637,34 @@ impl BotStore {
     ) -> Result<BotView, String> {
         let mut database = self.database.lock().map_err(|error| error.to_string())?;
         let mut bot = self.load_record_locked(&database, user_id, bot_id)?;
+        let previous_bot_updated_at_ms = bot.updated_at_ms;
+        let current_attempt_id = bot.current_attempt_id.clone();
+        let previous_attempt_updated_at_ms = current_attempt_id
+            .as_deref()
+            .and_then(|attempt_id| {
+                bot.attempts
+                    .iter()
+                    .find(|attempt| attempt.attempt_id == attempt_id)
+            })
+            .map(|attempt| attempt.updated_at_ms);
         action(&mut bot)?;
+        if let Some(attempt) = current_attempt_id.as_deref().and_then(|attempt_id| {
+            bot.attempts
+                .iter_mut()
+                .find(|attempt| attempt.attempt_id == attempt_id)
+        }) {
+            attempt.updated_at_ms = adaq_bot_runtime::unix_now_ms()
+                .max(attempt.updated_at_ms)
+                .max(
+                    previous_attempt_updated_at_ms
+                        .unwrap_or_default()
+                        .saturating_add(1),
+                );
+            bot.updated_at_ms = adaq_bot_runtime::unix_now_ms()
+                .max(bot.updated_at_ms)
+                .max(previous_bot_updated_at_ms.saturating_add(1))
+                .max(attempt.updated_at_ms);
+        }
         self.save_record_locked_with_runtime_validation(&mut database, &bot, validate_runtime)?;
         Ok(bot.view())
     }
@@ -1448,7 +1700,7 @@ impl BotStore {
                 },
             )
             .map_err(|_| "Bot was not found for this User".to_owned())?
-            .decode()
+            .decode(database)
     }
 
     fn insert_record_locked(
@@ -1468,7 +1720,7 @@ impl BotStore {
                     serde_json::to_string(&bot.bundle).map_err(|error| error.to_string())?,
                     state_json(bot.state)?,
                     bot.current_attempt_id,
-                    serde_json::to_string(&bot.attempts).map_err(|error| error.to_string())?,
+                    "[]",
                     bot.created_at_ms,
                     bot.updated_at_ms,
                 ],
@@ -1505,23 +1757,108 @@ impl BotStore {
         {
             return Err("Bot evidence exceeds the bounded retention limit".into());
         }
-        database
+        let transaction = database.transaction().map_err(|error| error.to_string())?;
+        let existing = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT attempt_id, position, updated_at_ms FROM bot_runtime_attempts
+                     WHERE user_id = ?1 AND bot_id = ?2",
+                )
+                .map_err(|error| error.to_string())?;
+            statement
+                .query_map(params![bot.user_id, bot.bot_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        (row.get::<_, i64>(1)?, row.get::<_, i64>(2)?),
+                    ))
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<Result<HashMap<_, _>, _>>()
+                .map_err(|error| error.to_string())?
+        };
+        let retained = bot
+            .attempts
+            .iter()
+            .map(|attempt| attempt.attempt_id.as_str())
+            .collect::<HashSet<_>>();
+        for attempt_id in existing.keys() {
+            if !retained.contains(attempt_id.as_str()) {
+                transaction
+                    .execute(
+                        "DELETE FROM bot_runtime_attempts
+                         WHERE user_id = ?1 AND bot_id = ?2 AND attempt_id = ?3",
+                        params![bot.user_id, bot.bot_id, attempt_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        for (position, attempt) in bot.attempts.iter().enumerate() {
+            let position = i64::try_from(position).map_err(|error| error.to_string())?;
+            match existing.get(&attempt.attempt_id) {
+                None => {
+                    transaction
+                        .execute(
+                            "INSERT INTO bot_runtime_attempts
+                             (user_id, bot_id, attempt_id, position, attempt_json, updated_at_ms)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            params![
+                                bot.user_id,
+                                bot.bot_id,
+                                attempt.attempt_id,
+                                position,
+                                serde_json::to_string(attempt).map_err(|error| error.to_string())?,
+                                attempt.updated_at_ms,
+                            ],
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                Some((_, previous_updated_at_ms))
+                    if *previous_updated_at_ms != attempt.updated_at_ms =>
+                {
+                    transaction
+                        .execute(
+                            "UPDATE bot_runtime_attempts SET position = ?1, attempt_json = ?2,
+                                updated_at_ms = ?3
+                             WHERE user_id = ?4 AND bot_id = ?5 AND attempt_id = ?6",
+                            params![
+                                position,
+                                serde_json::to_string(attempt).map_err(|error| error.to_string())?,
+                                attempt.updated_at_ms,
+                                bot.user_id,
+                                bot.bot_id,
+                                attempt.attempt_id,
+                            ],
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                Some((previous_position, _)) if *previous_position != position => {
+                    transaction
+                        .execute(
+                            "UPDATE bot_runtime_attempts SET position = ?1
+                             WHERE user_id = ?2 AND bot_id = ?3 AND attempt_id = ?4",
+                            params![position, bot.user_id, bot.bot_id, attempt.attempt_id],
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(_) => {}
+            }
+        }
+        transaction
             .execute(
                 "UPDATE bots SET bundle_json = ?1, state = ?2, current_attempt_id = ?3,
-                    attempts_json = ?4, updated_at_ms = ?5
-                 WHERE user_id = ?6 AND bot_id = ?7",
+                    attempts_json = '[]', updated_at_ms = ?4
+                 WHERE user_id = ?5 AND bot_id = ?6",
                 params![
                     serde_json::to_string(&bot.bundle).map_err(|error| error.to_string())?,
                     state_json(bot.state)?,
                     bot.current_attempt_id,
-                    serde_json::to_string(&bot.attempts).map_err(|error| error.to_string())?,
                     bot.updated_at_ms,
                     bot.user_id,
                     bot.bot_id,
                 ],
             )
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())
     }
 }
 
@@ -1558,15 +1895,37 @@ struct PersistedRow {
 }
 
 impl PersistedRow {
-    fn decode(self) -> Result<PersistedBot, String> {
+    fn decode(self, database: &Connection) -> Result<PersistedBot, String> {
+        let attempts = {
+            let mut statement = database
+                .prepare(
+                    "SELECT attempt_json FROM bot_runtime_attempts
+                     WHERE user_id = ?1 AND bot_id = ?2 ORDER BY position ASC",
+                )
+                .map_err(|error| error.to_string())?;
+            statement
+                .query_map(params![self.user_id, self.bot_id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|error| error.to_string())?
+                .map(|json| {
+                    json.map_err(|error| error.to_string()).and_then(|json| {
+                        serde_json::from_str(&json).map_err(|error| error.to_string())
+                    })
+                })
+                .collect::<Result<Vec<BotRuntimeAttempt>, _>>()?
+        };
         Ok(PersistedBot {
             bot_id: self.bot_id,
             user_id: self.user_id,
             bundle: serde_json::from_str(&self.bundle_json).map_err(|error| error.to_string())?,
             state: serde_json::from_str(&self.state).map_err(|error| error.to_string())?,
             current_attempt_id: self.current_attempt_id,
-            attempts: serde_json::from_str(&self.attempts_json)
-                .map_err(|error| error.to_string())?,
+            attempts: if attempts.is_empty() {
+                serde_json::from_str(&self.attempts_json).map_err(|error| error.to_string())?
+            } else {
+                attempts
+            },
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
         })
@@ -1813,6 +2172,7 @@ pub(crate) struct BotDecisionRequest {
 struct HostDecisionBatch {
     clock: DecisionClock,
     input: WorkerDecisionInput,
+    market_data_universe_snapshot_id: Option<String>,
 }
 
 struct WorkerArtifactFiles {
@@ -2182,12 +2542,32 @@ fn run_bot_decision(
                     .current_attempt_id
                     .as_deref()
                     .ok_or_else(|| "Bot has no active Runtime Attempt.".to_owned())?;
+                let previous_event_cursor = view
+                    .attempts
+                    .iter()
+                    .find(|attempt| attempt.attempt_id == attempt_id)
+                    .and_then(|attempt| {
+                        let stream_epoch = attempt.last_event_stream_epoch?;
+                        attempt.decisions.iter().rev().find_map(|decision| {
+                            if decision.evaluation.is_none() {
+                                return None;
+                            }
+                            match decision.clock.as_ref() {
+                                Some(DecisionClock::TradeEvent {
+                                    observation_time_ms,
+                                    ..
+                                }) => Some((*observation_time_ms, stream_epoch)),
+                                _ => None,
+                            }
+                        })
+                    });
                 let host_batch = host_decision_batch(
                     &local,
                     &user_id,
                     &view.bundle,
                     &request.dataset_id,
                     request.trade_id.as_deref(),
+                    previous_event_cursor,
                 );
                 if let Err(error) = &host_batch {
                     if error == "The retained OKX Trade is stale." {
@@ -2328,7 +2708,7 @@ fn run_bot_decision(
                         return bots.get(&user_id, &request.bot_id);
                     }
                 }
-                let HostDecisionBatch { clock, input: host_input } = match host_batch {
+                let HostDecisionBatch { clock, input: host_input, market_data_universe_snapshot_id } = match host_batch {
                     Ok(batch) => batch,
                     Err(error) => {
                         let result = WorkerDecisionResult::NoTarget {
@@ -2338,7 +2718,7 @@ fn run_bot_decision(
                             detail: safe_detail(&error),
                             evaluation: None,
                         };
-                        bots.record_decision(&user_id, &request.bot_id, None, &result)?;
+                        bots.record_decision(&user_id, &request.bot_id, None, &result, None, None)?;
                         bots.record_evidence(
                             &user_id,
                             &request.bot_id,
@@ -2358,7 +2738,7 @@ fn run_bot_decision(
                         detail: safe_detail(&error),
                         evaluation: None,
                     };
-                    bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result)?;
+                    bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result, None, market_data_universe_snapshot_id.as_deref())?;
                     bots.record_evidence(
                         &user_id,
                         &request.bot_id,
@@ -2384,7 +2764,7 @@ fn run_bot_decision(
                             detail: safe_detail(&error),
                             evaluation: None,
                         };
-                        bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result)?;
+                        bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result, None, market_data_universe_snapshot_id.as_deref())?;
                         bots.record_evidence(
                             &user_id,
                             &request.bot_id,
@@ -2395,6 +2775,10 @@ fn run_bot_decision(
                         )?;
                         return bots.get(&user_id, &request.bot_id);
                     }
+                };
+                let worker_stream_epoch = match &worker_input {
+                    WorkerDecisionInput::Event { stream_epoch, .. } => Some(*stream_epoch),
+                    _ => None,
                 };
                 let result = supervisor.decision(
                     &user_id,
@@ -2425,7 +2809,14 @@ fn run_bot_decision(
                                     .into(),
                             );
                         }
-                        bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result)?;
+                        bots.record_decision(
+                            &user_id,
+                            &request.bot_id,
+                            Some(&clock),
+                            &result,
+                            worker_stream_epoch,
+                            market_data_universe_snapshot_id.as_deref(),
+                        )?;
                         bots.record_evidence(
                             &user_id,
                             &request.bot_id,
@@ -2489,7 +2880,14 @@ fn run_bot_decision(
                         reason: adaq_bot_runtime::NoTargetReason::NoSignal,
                         ..
                     }) => {
-                        bots.record_decision(&user_id, &request.bot_id, Some(&clock), result)?;
+                        bots.record_decision(
+                            &user_id,
+                            &request.bot_id,
+                            Some(&clock),
+                            result,
+                            worker_stream_epoch,
+                            market_data_universe_snapshot_id.as_deref(),
+                        )?;
                         bots.record_evidence(
                             &user_id,
                             &request.bot_id,
@@ -2510,7 +2908,14 @@ fn run_bot_decision(
                         reason: adaq_bot_runtime::NoTargetReason::DeadlineMissed,
                         ..
                     }) => {
-                        bots.record_decision(&user_id, &request.bot_id, Some(&clock), result)?;
+                        bots.record_decision(
+                            &user_id,
+                            &request.bot_id,
+                            Some(&clock),
+                            result,
+                            worker_stream_epoch,
+                            market_data_universe_snapshot_id.as_deref(),
+                        )?;
                         let _ = supervisor.fail_active(
                             &user_id,
                             &request.bot_id,
@@ -2526,7 +2931,14 @@ fn run_bot_decision(
                         reason: adaq_bot_runtime::NoTargetReason::Warmup,
                         ..
                     }) => {
-                        bots.record_decision(&user_id, &request.bot_id, Some(&clock), result)?;
+                        bots.record_decision(
+                            &user_id,
+                            &request.bot_id,
+                            Some(&clock),
+                            result,
+                            worker_stream_epoch,
+                            market_data_universe_snapshot_id.as_deref(),
+                        )?;
                         bots.record_evidence(
                             &user_id,
                             &request.bot_id,
@@ -2536,7 +2948,14 @@ fn run_bot_decision(
                             Some(clock.decision_id()),
                         )
                     }
-                    Ok(result) => bots.record_decision(&user_id, &request.bot_id, Some(&clock), &result),
+                    Ok(result) => bots.record_decision(
+                        &user_id,
+                        &request.bot_id,
+                        Some(&clock),
+                        &result,
+                        worker_stream_epoch,
+                        market_data_universe_snapshot_id.as_deref(),
+                    ),
                     Err(error) => {
                         let _ = supervisor.fail_active(
                             &user_id,
@@ -2554,6 +2973,70 @@ fn run_bot_decision(
         )
 }
 
+pub(crate) fn dispatch_closed_bar_tick(ctx: &BotContext, user_id: &str) -> Result<(), String> {
+    validate_user(user_id)?;
+    let mut first_error = None;
+    for view in ctx.bots.list(user_id)? {
+        if view.state != LifecycleState::Running {
+            continue;
+        }
+        let interval = match &view.bundle.schedule {
+            BotSchedule::ClosedBar { .. } => bundle_interval(&view.bundle)?,
+            BotSchedule::ScheduledCrossSection { .. } => {
+                ctx.local
+                    .snapshots
+                    .universe_snapshot_for_user(user_id, &view.bundle.universe_snapshot_id)?
+                    .interval
+            }
+            BotSchedule::EmaDoubleCross { .. } => continue,
+        };
+        if let Some(request) =
+            closed_bar_tick_request(&view, interval, adaq_bot_runtime::unix_now_ms())?
+        {
+            if let Err(error) = run_bot_decision(ctx, user_id, request) {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn closed_bar_tick_request(
+    view: &BotView,
+    interval: adaq_data_core::BarInterval,
+    now_ms: i64,
+) -> Result<Option<BotDecisionRequest>, String> {
+    if view.state != LifecycleState::Running
+        || matches!(view.bundle.schedule, BotSchedule::EmaDoubleCross { .. })
+    {
+        return Ok(None);
+    }
+    let time = adaq_data_pipeline::okx::latest_closed_bar_boundary_ms(now_ms, interval)
+        .map_err(|error| error.to_string())?;
+    if host_schedule_window(time, now_ms).is_err()
+        || view
+            .attempts
+            .iter()
+            .find(|attempt| Some(&attempt.attempt_id) == view.current_attempt_id.as_ref())
+            .and_then(|attempt| attempt.last_decision_time_ms)
+            .is_some_and(|last| last >= time)
+    {
+        return Ok(None);
+    }
+    let identity = hash_json(&(
+        view.bot_id.as_str(),
+        view.current_attempt_id.as_deref(),
+        time.to_string(),
+    ))?;
+    Ok(Some(BotDecisionRequest {
+        bot_id: view.bot_id.clone(),
+        command_id: format!("stream-decision-{identity}"),
+        request_id: format!("stream-request-{identity}"),
+        dataset_id: format!("closed-bar:{time}"),
+        trade_id: None,
+    }))
+}
+
 pub(crate) fn dispatch_trade_event(
     ctx: &BotContext,
     user_id: &str,
@@ -2568,22 +3051,71 @@ pub(crate) fn dispatch_trade_event(
     let views = bots.list(user_id)?;
     let mut first_error = None;
     for view in views {
-        if view.state != LifecycleState::Running
-            || !matches!(
-                &view.bundle.schedule,
-                BotSchedule::EmaDoubleCross { instrument_id }
-                    if okx_instrument_code(instrument_id) == instrument_code
-            )
-        {
+        if view.state != LifecycleState::Running {
             continue;
         }
-        let identity = hash_json(&(view.bot_id.as_str(), trade_id))?;
+        let (dataset_id, event_id, retained_trade_id) = match &view.bundle.schedule {
+            BotSchedule::EmaDoubleCross { instrument_id }
+                if okx_instrument_code(instrument_id) == instrument_code =>
+            {
+                (
+                    instrument_code.to_owned(),
+                    trade_id.to_owned(),
+                    Some(trade_id.to_owned()),
+                )
+            }
+            BotSchedule::ClosedBar { instrument_id, .. }
+                if okx_instrument_code(instrument_id) == instrument_code =>
+            {
+                let time = adaq_data_pipeline::okx::latest_closed_bar_boundary_ms(
+                    adaq_bot_runtime::unix_now_ms(),
+                    bundle_interval(&view.bundle)?,
+                )
+                .map_err(|error| error.to_string())?;
+                (format!("closed-bar:{time}"), time.to_string(), None)
+            }
+            BotSchedule::ScheduledCrossSection { instruments, .. }
+                if instruments.first().is_some_and(|instrument| {
+                    okx_instrument_code(instrument) == instrument_code
+                }) =>
+            {
+                let frozen = ctx
+                    .local
+                    .snapshots
+                    .universe_snapshot_for_user(user_id, &view.bundle.universe_snapshot_id)?;
+                let time = adaq_data_pipeline::okx::latest_closed_bar_boundary_ms(
+                    adaq_bot_runtime::unix_now_ms(),
+                    frozen.interval,
+                )
+                .map_err(|error| error.to_string())?;
+                (format!("closed-bar:{time}"), time.to_string(), None)
+            }
+            _ => continue,
+        };
+        if retained_trade_id.is_none() {
+            let time = event_id.parse::<i64>().map_err(|error| error.to_string())?;
+            if host_schedule_window(time, adaq_bot_runtime::unix_now_ms()).is_err()
+                || view
+                    .attempts
+                    .iter()
+                    .find(|attempt| Some(&attempt.attempt_id) == view.current_attempt_id.as_ref())
+                    .and_then(|attempt| attempt.last_decision_time_ms)
+                    .is_some_and(|last| last >= time)
+            {
+                continue;
+            }
+        }
+        let identity = hash_json(&(
+            view.bot_id.as_str(),
+            view.current_attempt_id.as_deref(),
+            event_id,
+        ))?;
         let request = BotDecisionRequest {
             bot_id: view.bot_id,
             command_id: format!("stream-decision-{identity}"),
             request_id: format!("stream-request-{identity}"),
-            dataset_id: instrument_code.into(),
-            trade_id: Some(trade_id.into()),
+            dataset_id,
+            trade_id: retained_trade_id,
         };
         if let Err(error) = run_bot_decision(ctx, user_id, request) {
             first_error.get_or_insert(error);
@@ -2598,10 +3130,295 @@ fn host_decision_batch(
     bundle: &BotDeploymentBundle,
     dataset_id: &str,
     trade_id: Option<&str>,
+    previous_event_cursor: Option<(i64, u32)>,
 ) -> Result<HostDecisionBatch, String> {
+    if let Some(time) = dataset_id.strip_prefix("closed-bar:") {
+        let decision_time_ms = time
+            .parse::<i64>()
+            .map_err(|_| "Closed-bar observation identity is invalid".to_owned())?;
+        return host_live_closed_bar_batch(local, user_id, bundle, decision_time_ms);
+    }
     let clock = host_schedule_clock(local, user_id, bundle, dataset_id, trade_id)?;
-    let input = host_decision_input(local, user_id, bundle, dataset_id, trade_id, &clock)?;
-    Ok(HostDecisionBatch { clock, input })
+    let input = host_decision_input(
+        local,
+        user_id,
+        bundle,
+        dataset_id,
+        trade_id,
+        &clock,
+        previous_event_cursor,
+    )?;
+    Ok(HostDecisionBatch {
+        clock,
+        input,
+        market_data_universe_snapshot_id: None,
+    })
+}
+
+fn host_live_closed_bar_batch(
+    local: &LocalResearchState,
+    user_id: &str,
+    bundle: &BotDeploymentBundle,
+    decision_time_ms: i64,
+) -> Result<HostDecisionBatch, String> {
+    bundle.verify()?;
+    let frozen = local
+        .snapshots
+        .universe_snapshot_for_user(user_id, &bundle.universe_snapshot_id)?;
+    let (instruments, interval) = match &bundle.schedule {
+        BotSchedule::ClosedBar { instrument_id, .. } => {
+            (vec![instrument_id.clone()], bundle_interval(bundle)?)
+        }
+        BotSchedule::ScheduledCrossSection { instruments, .. } => {
+            (instruments.clone(), frozen.interval)
+        }
+        BotSchedule::EmaDoubleCross { .. } => {
+            return Err("Trade Event Bots do not accept closed-bar observations".into());
+        }
+    };
+    let expected = frozen
+        .components
+        .iter()
+        .map(|component| {
+            format!(
+                "{}:{}",
+                component.dataset.instrument.venue.id, component.dataset.instrument.code
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    if interval != frozen.interval
+        || !instruments
+            .iter()
+            .all(|instrument| expected.contains(instrument))
+        || matches!(bundle.schedule, BotSchedule::ScheduledCrossSection { .. })
+            && expected != instruments.iter().cloned().collect()
+    {
+        return Err("Runtime observations do not match the frozen Bot Universe".into());
+    }
+    let now = adaq_bot_runtime::unix_now_ms();
+    if adaq_data_pipeline::okx::latest_closed_bar_boundary_ms(now, interval)
+        .map_err(|error| error.to_string())?
+        != decision_time_ms
+    {
+        return Err("Runtime observations must use the latest closed-bar boundary".into());
+    }
+    let (deadline_ms, _) = host_schedule_window(decision_time_ms, now)?;
+    let dataset = local
+        .features
+        .list_datasets(crate::features::FeatureUserRequest {
+            user_id: user_id.into(),
+        })?
+        .into_iter()
+        .find(|dataset| {
+            is_exact_feature_context(
+                bundle,
+                &dataset.manifest.request.feature_plan_hash,
+                &dataset.manifest.request.snapshot_id,
+                &dataset.manifest.request.point_in_time_universe_id,
+            )
+        })
+        .ok_or_else(|| "The exact qualified Bot Feature Plan is unavailable".to_owned())?;
+    let plan = adaq_feature_engine::FeaturePlan::load_for_engine(
+        &serde_json::to_vec(&dataset.manifest.plan_json).map_err(|error| error.to_string())?,
+        &dataset.manifest.engine_identity,
+    )
+    .map_err(|error| error.to_string())?;
+    let required_bars = plan
+        .effective_warmup_bars()
+        .checked_add(1)
+        .ok_or_else(|| "Runtime Feature warmup exceeds the Host limit".to_owned())?;
+    if u64::from(required_bars)
+        > bundle
+            .runtime_bundle
+            .input
+            .worker_policy
+            .max_decision_frames
+    {
+        return Err("Runtime Feature warmup exceeds the frozen Worker frame limit".into());
+    }
+    let required_bars = if matches!(bundle.schedule, BotSchedule::ClosedBar { .. }) {
+        u32::try_from(
+            bundle
+                .runtime_bundle
+                .input
+                .worker_policy
+                .max_decision_frames,
+        )
+        .map_err(|_| "Worker frame limit exceeds the Host allocation limit".to_owned())?
+    } else {
+        required_bars
+    };
+    let mut start_time_ms = decision_time_ms;
+    for _ in 0..required_bars {
+        start_time_ms =
+            adaq_data_pipeline::okx::latest_closed_bar_boundary_ms(start_time_ms - 1, interval)
+                .map_err(|error| error.to_string())?;
+    }
+    let read_deadline_ms = deadline_ms.saturating_sub(
+        i64::try_from(
+            bundle
+                .runtime_bundle
+                .input
+                .worker_policy
+                .decision_timeout_ms,
+        )
+        .map_err(|_| "Worker decision timeout exceeds the Host time limit".to_owned())?,
+    );
+    let observation = acquire_closed_bar_with_retry(
+        read_deadline_ms,
+        || {
+            local.acquire_runtime_universe(
+                user_id,
+                &instruments,
+                interval,
+                start_time_ms,
+                decision_time_ms,
+            )
+        },
+        adaq_bot_runtime::unix_now_ms,
+        std::thread::sleep,
+    )?;
+    let observations = local.features.runtime_observations(
+        user_id,
+        &plan,
+        &observation.snapshot_id,
+        &adaq_feature_engine::ObservationRange {
+            start_time_ms,
+            end_time_ms: decision_time_ms + 1,
+        },
+    )?;
+    let slots = if bundle.runtime_bundle.input.pipeline.factors.is_empty()
+        && bundle.runtime_bundle.input.pipeline.models.is_empty()
+    {
+        &bundle.runtime_bundle.input.strategy.feature_slots
+    } else {
+        &bundle.runtime_bundle.input.pipeline.input_slots
+    };
+    let values_for = |instrument_id: &str, time: i64| {
+        slots
+            .iter()
+            .map(|slot| {
+                observations
+                    .iter()
+                    .find(|row| {
+                        row.instrument_id == instrument_id
+                            && row.output_name == *slot
+                            && row.observation_time_ms == time
+                    })
+                    .and_then(|row| match row.value {
+                        adaq_feature_engine::FeatureObservationValue::Available {
+                            value,
+                            available_at_ms,
+                        } if value.is_finite() && available_at_ms <= time => Some(value),
+                        _ => None,
+                    })
+            })
+            .collect::<Vec<_>>()
+    };
+    let rows = instruments
+        .iter()
+        .map(|instrument_id| {
+            let values = values_for(instrument_id, decision_time_ms);
+            if values.iter().any(Option::is_none) {
+                return Err(format!(
+                    "Runtime Features are unavailable for {instrument_id}"
+                ));
+            }
+            Ok(adaq_bot_runtime::WorkerFeatureRow {
+                instrument_id: instrument_id.clone(),
+                available_at_ms: decision_time_ms,
+                values,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let (deadline_ms, next_execution_ms) =
+        host_schedule_window(decision_time_ms, adaq_bot_runtime::unix_now_ms())?;
+    let (clock, input) = match &bundle.schedule {
+        BotSchedule::ScheduledCrossSection { .. } => (
+            DecisionClock::ScheduledCrossSection {
+                decision_id: host_decision_id(bundle, "scheduled-cross-section", decision_time_ms)?,
+                decision_time_ms,
+                deadline_ms,
+                next_execution_ms,
+                universe: instruments.clone(),
+                available_instruments: instruments,
+            },
+            WorkerDecisionInput::Portfolio {
+                universe_id: bundle.universe_id.clone(),
+                rows,
+                state: adaq_bot_runtime::WorkerPortfolioState {
+                    cash: "0".into(),
+                    positions: Vec::new(),
+                },
+            },
+        ),
+        BotSchedule::ClosedBar { instrument_id, .. } => (
+            DecisionClock::ClosedBar {
+                decision_id: host_decision_id(bundle, "closed-bar", decision_time_ms)?,
+                instrument_id: instrument_id.clone(),
+                decision_time_ms,
+                available_at_ms: decision_time_ms,
+                deadline_ms,
+                next_execution_ms,
+            },
+            WorkerDecisionInput::Strategy {
+                instrument_id: instrument_id.clone(),
+                frames: observations
+                    .iter()
+                    .filter(|row| row.instrument_id == *instrument_id)
+                    .map(|row| row.observation_time_ms)
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .map(|time| {
+                        Ok(adaq_bot_runtime::WorkerFeatureFrame {
+                            instrument_id: instrument_id.clone(),
+                            open_time_ms: adaq_data_pipeline::okx::latest_closed_bar_boundary_ms(
+                                time - 1,
+                                interval,
+                            )
+                            .map_err(|error| error.to_string())?,
+                            available_at_ms: time,
+                            values: values_for(instrument_id, time),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+            },
+        ),
+        BotSchedule::EmaDoubleCross { .. } => unreachable!(),
+    };
+    Ok(HostDecisionBatch {
+        clock,
+        input,
+        market_data_universe_snapshot_id: Some(observation.snapshot_id),
+    })
+}
+
+fn acquire_closed_bar_with_retry<T>(
+    deadline_ms: i64,
+    mut acquire: impl FnMut() -> Result<T, String>,
+    mut now_ms: impl FnMut() -> i64,
+    mut wait: impl FnMut(Duration),
+) -> Result<T, String> {
+    if now_ms() >= deadline_ms {
+        return Err(
+            "Runtime Canonical OKX bars were not ready before the decision deadline".into(),
+        );
+    }
+    let mut result = acquire();
+    // OKX can confirm the just-closed bar after the boundary. Retry data reads
+    // before the one idempotent Decision result, within its original deadline.
+    while result
+        .as_ref()
+        .is_err_and(|error| error == crate::local_research::RUNTIME_BARS_INCOMPLETE)
+        && now_ms().saturating_add(1_000) < deadline_ms
+    {
+        wait(Duration::from_secs(1));
+        if now_ms() >= deadline_ms {
+            break;
+        }
+        result = acquire();
+    }
+    result
 }
 
 fn is_exact_feature_context(
@@ -2801,10 +3618,19 @@ fn host_decision_input(
     dataset_id: &str,
     trade_id: Option<&str>,
     clock: &DecisionClock,
+    previous_event_cursor: Option<(i64, u32)>,
 ) -> Result<WorkerDecisionInput, String> {
     if let BotSchedule::EmaDoubleCross { instrument_id } = &bundle.schedule {
         let trade_id = trade_id.unwrap_or(dataset_id);
-        return host_event_input(local, user_id, bundle, instrument_id, trade_id, clock);
+        return host_event_input(
+            local,
+            user_id,
+            bundle,
+            instrument_id,
+            trade_id,
+            clock,
+            previous_event_cursor,
+        );
     }
     let store = local.features.materialization_store();
     let dataset =
@@ -2953,6 +3779,7 @@ fn host_event_input(
     instrument_id: &str,
     trade_id: &str,
     clock: &DecisionClock,
+    previous_event_cursor: Option<(i64, u32)>,
 ) -> Result<WorkerDecisionInput, String> {
     let DecisionClock::TradeEvent {
         decision_time_ms,
@@ -3001,97 +3828,41 @@ fn host_event_input(
         .map(|health| health.reconnect_count)
         .unwrap_or_default();
     let interval_ms = adaq_bot_runtime::ema_double_cross::EMA_BAR_INTERVAL_MS;
-    let mut events = snapshot_bars
-        .into_iter()
-        .filter_map(|bar| {
-            let close_time_ms = bar.open_time_ms.checked_add(interval_ms)?;
-            (close_time_ms <= trade.timestamp_ms).then(|| {
-                Ok(adaq_bot_runtime::WorkerMarketEvent::BarClosed {
-                    instrument_id: instrument_id.into(),
-                    bar_open_time_ms: bar.open_time_ms,
-                    close: bar.close.to_string(),
-                    observed_at_ms: close_time_ms,
-                    available_at_ms: close_time_ms,
-                    evidence_id: hash_json(&(
-                        bundle.market_data_snapshot_id.as_str(),
-                        bar.open_time_ms,
-                    ))
-                    .unwrap_or_else(|_| format!("bar-{}", bar.open_time_ms)),
-                    replay: true,
-                })
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let last_snapshot_close_ms = events
+    let previous_observation_time_ms =
+        host_event_replay_after_ms(previous_event_cursor, stream_epoch);
+    let last_snapshot_close_ms = snapshot_bars
         .iter()
-        .filter_map(|event| match event {
-            adaq_bot_runtime::WorkerMarketEvent::BarClosed {
-                bar_open_time_ms, ..
-            } => bar_open_time_ms.checked_add(interval_ms),
-            adaq_bot_runtime::WorkerMarketEvent::Trade { .. } => None,
-        })
+        .filter_map(|bar| bar.open_time_ms.checked_add(interval_ms))
+        .filter(|close_time_ms| *close_time_ms <= trade.timestamp_ms)
         .max()
         .unwrap_or_default();
-    if last_snapshot_close_ms > 0 && trade.timestamp_ms > last_snapshot_close_ms {
-        let live_trades = local
+    let live_trade_start_ms = last_snapshot_close_ms.max(
+        previous_observation_time_ms
+            .map(|time_ms| time_ms.div_euclid(interval_ms) * interval_ms)
+            .unwrap_or_default(),
+    );
+    let live_trades = if trade.timestamp_ms > live_trade_start_ms {
+        local
             .okx
             .retained_trades_for_user(
                 user_id,
                 okx_instrument_code(instrument_id),
-                last_snapshot_close_ms,
+                live_trade_start_ms,
                 trade.timestamp_ms,
             )
-            .map_err(|error| error.to_string())?;
-        let mut live_bars = BTreeMap::<i64, (i64, String, Decimal)>::new();
-        for live_trade in live_trades {
-            let bar_open_time_ms = live_trade.timestamp_ms.div_euclid(interval_ms) * interval_ms;
-            let entry = live_bars.entry(bar_open_time_ms).or_insert((
-                live_trade.timestamp_ms,
-                live_trade.trade_id.clone(),
-                live_trade.price,
-            ));
-            if (live_trade.timestamp_ms, &live_trade.trade_id) > (entry.0, &entry.1) {
-                *entry = (
-                    live_trade.timestamp_ms,
-                    live_trade.trade_id,
-                    live_trade.price,
-                );
-            }
-        }
-        events.extend(
-            live_bars
-                .into_iter()
-                .filter_map(|(bar_open_time_ms, (_, last_trade_id, close))| {
-                    let close_time_ms = bar_open_time_ms.checked_add(interval_ms)?;
-                    (close_time_ms <= trade.timestamp_ms).then(|| {
-                        Ok(adaq_bot_runtime::WorkerMarketEvent::BarClosed {
-                            instrument_id: instrument_id.into(),
-                            bar_open_time_ms,
-                            close: close.to_string(),
-                            observed_at_ms: close_time_ms,
-                            available_at_ms: close_time_ms,
-                            evidence_id: hash_json(&(
-                                "okx-trade-bar",
-                                instrument_id,
-                                bar_open_time_ms,
-                                last_trade_id,
-                            ))
-                            .unwrap_or_else(|_| {
-                                format!("trade-bar-{instrument_id}-{bar_open_time_ms}")
-                            }),
-                            replay: false,
-                        })
-                    })
-                })
-                .collect::<Result<Vec<_>, String>>()?,
-        );
-    }
-    events.sort_by_key(|event| match event {
-        adaq_bot_runtime::WorkerMarketEvent::BarClosed {
-            bar_open_time_ms, ..
-        } => *bar_open_time_ms,
-        adaq_bot_runtime::WorkerMarketEvent::Trade { .. } => i64::MAX,
-    });
+            .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+    let mut events = host_event_bar_events(
+        instrument_id,
+        &bundle.market_data_snapshot_id,
+        snapshot_bars,
+        live_trades,
+        trade.timestamp_ms,
+        previous_observation_time_ms,
+        interval_ms,
+    );
     let max_events = usize::try_from(
         bundle
             .runtime_bundle
@@ -3137,6 +3908,88 @@ fn host_event_input(
         owned_position,
         stream_epoch,
     })
+}
+
+fn host_event_bar_events(
+    instrument_id: &str,
+    snapshot_id: &str,
+    snapshot_bars: Vec<OhlcvBar>,
+    live_trades: Vec<MarketTrade>,
+    trade_timestamp_ms: i64,
+    previous_observation_time_ms: Option<i64>,
+    interval_ms: i64,
+) -> Vec<adaq_bot_runtime::WorkerMarketEvent> {
+    let mut events = snapshot_bars
+        .into_iter()
+        .filter_map(|bar| {
+            let close_time_ms = bar.open_time_ms.checked_add(interval_ms)?;
+            (close_time_ms <= trade_timestamp_ms
+                && previous_observation_time_ms
+                    .is_none_or(|previous_time_ms| close_time_ms > previous_time_ms))
+            .then(|| adaq_bot_runtime::WorkerMarketEvent::BarClosed {
+                instrument_id: instrument_id.into(),
+                bar_open_time_ms: bar.open_time_ms,
+                close: bar.close.to_string(),
+                observed_at_ms: close_time_ms,
+                available_at_ms: close_time_ms,
+                evidence_id: hash_json(&(snapshot_id, bar.open_time_ms))
+                    .unwrap_or_else(|_| format!("bar-{}", bar.open_time_ms)),
+                replay: true,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut live_bars = BTreeMap::<i64, (i64, String, Decimal)>::new();
+    for live_trade in live_trades {
+        let bar_open_time_ms = live_trade.timestamp_ms.div_euclid(interval_ms) * interval_ms;
+        let entry = live_bars.entry(bar_open_time_ms).or_insert((
+            live_trade.timestamp_ms,
+            live_trade.trade_id.clone(),
+            live_trade.price,
+        ));
+        if (live_trade.timestamp_ms, &live_trade.trade_id) > (entry.0, &entry.1) {
+            *entry = (
+                live_trade.timestamp_ms,
+                live_trade.trade_id,
+                live_trade.price,
+            );
+        }
+    }
+    events.extend(live_bars.into_iter().filter_map(
+        |(bar_open_time_ms, (_, last_trade_id, close))| {
+            let close_time_ms = bar_open_time_ms.checked_add(interval_ms)?;
+            (close_time_ms <= trade_timestamp_ms
+                && previous_observation_time_ms
+                    .is_none_or(|previous_time_ms| close_time_ms > previous_time_ms))
+            .then(|| adaq_bot_runtime::WorkerMarketEvent::BarClosed {
+                instrument_id: instrument_id.into(),
+                bar_open_time_ms,
+                close: close.to_string(),
+                observed_at_ms: close_time_ms,
+                available_at_ms: close_time_ms,
+                evidence_id: hash_json(&(
+                    "okx-trade-bar",
+                    instrument_id,
+                    bar_open_time_ms,
+                    last_trade_id,
+                ))
+                .unwrap_or_else(|_| format!("trade-bar-{instrument_id}-{bar_open_time_ms}")),
+                replay: false,
+            })
+        },
+    ));
+    events.sort_by_key(|event| match event {
+        adaq_bot_runtime::WorkerMarketEvent::BarClosed {
+            bar_open_time_ms, ..
+        } => *bar_open_time_ms,
+        adaq_bot_runtime::WorkerMarketEvent::Trade { .. } => i64::MAX,
+    });
+    events
+}
+
+fn host_event_replay_after_ms(cursor: Option<(i64, u32)>, stream_epoch: u32) -> Option<i64> {
+    cursor
+        .filter(|(_, previous_epoch)| *previous_epoch == stream_epoch)
+        .map(|(observation_time_ms, _)| observation_time_ms)
 }
 
 fn host_schedule_window(decision_time_ms: i64, now_ms: i64) -> Result<(i64, i64), String> {
@@ -3457,9 +4310,8 @@ fn authoritative_decision_input(
     let BotSchedule::ScheduledCrossSection { instruments, .. } = &bundle.schedule else {
         return Err("Portfolio state is unavailable for a non-Portfolio Bot.".into());
     };
-    let account = local.paper_trading.view_optional(user_id)?.ok_or_else(|| {
-        "A reconciled OKX Demo account is required before a Decision Batch.".to_owned()
-    })?;
+    // Accepted intents must settle against the provider before the next portfolio snapshot.
+    let account = require_reconciled_account(local, user_id, bundle)?;
     if account.account.account_id != bundle.account_id
         || !account_is_reconciled_and_quiet(Some(&account))
     {
@@ -4070,10 +4922,8 @@ fn submit_target_order(
     order: &PlannedSpotOrder,
     decision_id: &str,
 ) -> Result<(), String> {
-    let operation_id = format!(
-        "bot-{bot_id}-order-{}",
-        hash_json(&(decision_id, order.instrument.as_str(), order.side))?
-    );
+    let operation_id =
+        target_order_operation_id(bot_id, decision_id, &order.instrument, order.side)?;
     let request = PaperOrderRequest {
         user_id: user_id.into(),
         operation_id: operation_id.clone(),
@@ -4089,7 +4939,7 @@ fn submit_target_order(
         Some(decision_id),
         &request,
         &bundle.paper_risk_policy,
-        ProviderOrderKind::Limit,
+        ProviderOrderKind::for_fill_policy(bundle.execution_profile.fill_policy),
     ) {
         Err(DispatchError::Begin(error)) if error.contains("RiskRejected") => {
             bots.record_evidence(
@@ -4105,14 +4955,28 @@ fn submit_target_order(
         Err(DispatchError::ProviderOrderIdentityMissing) => {
             Err("Provider order identity is missing; reconciliation is required.".into())
         }
-        Err(DispatchError::ProviderOutcomeUncertain(_)) => {
-            Err("Provider order outcome is uncertain; reconciliation is required.".into())
-        }
+        Err(DispatchError::ProviderRejected(_)) => Ok(()),
+        Err(DispatchError::ProviderOutcomeUncertain(error)) => Err(format!(
+            "Provider order outcome is uncertain; reconciliation is required: {}",
+            bounded_text(&error, 512)
+        )),
         Err(DispatchError::Begin(error)) | Err(DispatchError::OutcomeRetention(error)) => {
             Err(error)
         }
         Ok(()) => Ok(()),
     }
+}
+
+pub(crate) fn target_order_operation_id(
+    bot_id: &str,
+    decision_id: &str,
+    instrument: &str,
+    side: &str,
+) -> Result<String, String> {
+    Ok(format!(
+        "bot-{bot_id}-order-{}",
+        hash_json(&(decision_id, instrument, side))?
+    ))
 }
 
 fn build_ema_bundle(
@@ -4641,6 +5505,18 @@ fn reconcile_account(
                         resolve_ms,
                     )
                 },
+            )?;
+            local.paper_trading.recover_uncertain_order_absence(
+                user_id,
+                now_ms,
+                |instrument, window_start_ms, checked_at_ms| {
+                    local.connections.confirm_okx_demo_order_absence(
+                        user_id,
+                        instrument,
+                        window_start_ms,
+                        checked_at_ms,
+                    )
+                },
             )
         })?
 }
@@ -4781,11 +5657,12 @@ fn start_bot(
                 Some(&bundle.account_id),
             )?;
             if let Err(error) = observe_worker_recovery(
-                &local,
+                &local.operations,
                 user_id,
                 &request.bot_id,
                 &bundle,
                 &attempt_id,
+                false,
             ) {
                 return fail_active(
                     &supervisor,
@@ -5026,11 +5903,12 @@ fn resume_bot(
             );
         }
         if let Err(error) = observe_worker_recovery(
-            &local,
+            &local.operations,
             user_id,
             &request.bot_id,
             &bundle,
             view.current_attempt_id.as_deref().unwrap_or("resume"),
+            false,
         ) {
             return fail_active(
                 &supervisor,
@@ -5069,38 +5947,50 @@ fn resume_bot(
 }
 
 fn observe_worker_recovery(
-    local: &LocalResearchState,
+    operations: &crate::operations::OperationsStore,
     user_id: &str,
     bot_id: &str,
     bundle: &BotDeploymentBundle,
     attempt_id: &str,
+    worker_stopped: bool,
 ) -> Result<(), String> {
-    local
-        .operations
-        .observe(crate::operations::HealthObservation {
+    for (condition, event_kind) in [
+        ("worker_fault", "worker.fault-recovered"),
+        ("worker_lifecycle_faulted", "worker.lifecycle-recovered"),
+        ("worker_decision_failed", "worker.decision-recovered"),
+        ("worker_diagnostic", "worker.diagnostic-recovered"),
+    ] {
+        operations.observe(crate::operations::HealthObservation {
             user_id: user_id.to_owned(),
             entity_id: bot_id.to_owned(),
             dimension: crate::operations::HealthDimension::Worker,
             state: crate::operations::HealthState::Healthy,
-            condition: "worker_fault".into(),
+            condition: condition.into(),
             evidence: serde_json::json!({
                 "botId": bot_id,
                 "attemptId": attempt_id,
                 "bundleId": bundle.identity,
-                "recovery": "worker-restarted-and-account-reconciled",
+                "recovery": if worker_stopped {
+                    "worker-stopped-and-account-reconciled"
+                } else {
+                    "worker-restarted-and-account-reconciled"
+                },
             }),
-            required: true,
+            required: !worker_stopped,
             observed_at_ms: adaq_bot_runtime::unix_now_ms(),
-            event_kind: Some("worker.fault-recovered".into()),
+            event_kind: Some(event_kind.into()),
             evidence_id: Some(attempt_id.to_owned()),
             correlation_id: Some(bundle.identity.clone()),
             causation_id: Some(bundle.market_data_snapshot_id.clone()),
-            diagnostic: Some(
-                "A new Worker completed account reconciliation before risk enablement.".into(),
-            ),
+            diagnostic: Some(if worker_stopped {
+                format!("Host verified the Worker is absent and the stopped Attempt's exact account is reconciled; {condition} is no longer required.")
+            } else {
+                format!("A new Worker completed account reconciliation; {condition} recovered before risk enablement.")
+            }),
             metrics: BTreeMap::new(),
-        })
-        .map(|_| ())
+        })?;
+    }
+    Ok(())
 }
 
 fn stop_bot(
@@ -5115,7 +6005,7 @@ fn stop_bot(
     let bots = app.state::<Arc<BotStore>>();
     let supervisor = app.state::<Arc<crate::bot_supervisor::BotSupervisor>>();
     let local = app.state::<Arc<LocalResearchState>>();
-    bots.command(
+    let stopped = bots.command(
         user_id,
         &request.bot_id,
         &request.command_id,
@@ -5222,7 +6112,14 @@ fn stop_bot(
                 reconciled,
             )
         },
-    )
+    )?;
+    bots.recover_stopped_workers(
+        &supervisor,
+        &local.operations,
+        user_id,
+        local.paper_trading.view_optional(user_id)?.as_ref(),
+    )?;
+    Ok(stopped)
 }
 
 fn bot_instrument_scope(bundle: &BotDeploymentBundle) -> BTreeSet<String> {
@@ -5618,7 +6515,7 @@ fn flatten_account(
                 None,
                 &request,
                 &bundle.paper_risk_policy,
-                ProviderOrderKind::MarketSell,
+                ProviderOrderKind::Market,
             ) {
                 Ok(()) => {}
                 Err(DispatchError::ProviderOrderIdentityMissing) => {
@@ -5627,6 +6524,12 @@ fn flatten_account(
                 Err(DispatchError::ProviderOutcomeUncertain(error)) => {
                     return Err(format!(
                         "flatten-provider-outcome-uncertain: {}",
+                        bounded_text(&error, 512)
+                    ));
+                }
+                Err(DispatchError::ProviderRejected(error)) => {
+                    return Err(format!(
+                        "flatten-provider-rejected: {}",
                         bounded_text(&error, 512)
                     ));
                 }
@@ -5738,6 +6641,88 @@ mod tests {
         );
     }
 
+    #[test]
+    fn host_event_bar_batches_replay_warmup_once_and_emit_only_new_closed_bars() {
+        let interval_ms = adaq_bot_runtime::ema_double_cross::EMA_BAR_INTERVAL_MS;
+        assert_eq!(
+            host_event_replay_after_ms(Some((interval_ms, 2)), 2),
+            Some(interval_ms)
+        );
+        assert_eq!(host_event_replay_after_ms(Some((interval_ms, 2)), 3), None);
+        let bar = |open_time_ms, close| OhlcvBar {
+            open_time_ms,
+            open: Decimal::from(close),
+            high: Decimal::from(close),
+            low: Decimal::from(close),
+            close: Decimal::from(close),
+            base_volume: Decimal::ZERO,
+            quote_volume: Decimal::ZERO,
+        };
+        let trade = |trade_id: &str, timestamp_ms, price| MarketTrade {
+            src: "okx".into(),
+            code: "BTC-USDT".into(),
+            trade_id: trade_id.into(),
+            price: Decimal::from(price),
+            quantity: Decimal::ONE,
+            side: adaq_data_core::MarketTradeSide::Unknown,
+            timestamp_ms,
+        };
+        let snapshot_bars = vec![bar(0, 10), bar(interval_ms, 11)];
+        let instrument_id = "okx:BTC-USDT";
+        let snapshot_id = "snapshot";
+
+        let warmup = host_event_bar_events(
+            instrument_id,
+            snapshot_id,
+            snapshot_bars.clone(),
+            vec![
+                trade("trade-1", interval_ms * 2 + 1, 12),
+                trade("trade-2", interval_ms * 3 - 1, 13),
+                trade("trade-3", interval_ms * 3, 14),
+            ],
+            interval_ms * 3,
+            None,
+            interval_ms,
+        );
+        assert_eq!(warmup.len(), 3);
+
+        let no_closed_bar = host_event_bar_events(
+            instrument_id,
+            snapshot_id,
+            snapshot_bars.clone(),
+            vec![trade("trade-3", interval_ms * 3, 14)],
+            interval_ms * 3 + 1,
+            Some(interval_ms * 3),
+            interval_ms,
+        );
+        assert!(no_closed_bar.is_empty());
+
+        let next_bar = host_event_bar_events(
+            instrument_id,
+            snapshot_id,
+            snapshot_bars.clone(),
+            vec![
+                trade("trade-3", interval_ms * 3, 14),
+                trade("trade-4", interval_ms * 3 + 1, 15),
+                trade("trade-5", interval_ms * 4 - 1, 16),
+                trade("trade-6", interval_ms * 4, 17),
+            ],
+            interval_ms * 4,
+            Some(interval_ms * 3 + 1),
+            interval_ms,
+        );
+        assert_eq!(next_bar.len(), 1);
+        assert!(matches!(
+            &next_bar[0],
+            adaq_bot_runtime::WorkerMarketEvent::BarClosed {
+                bar_open_time_ms,
+                close,
+                replay: false,
+                ..
+            } if *bar_open_time_ms == interval_ms * 3 && close == "16"
+        ));
+    }
+
     fn bundle(bot_id: &str, account_id: &str) -> BotDeploymentBundle {
         let research_risk_policy = ResearchRiskPolicy {
             policy_id: "risk".into(),
@@ -5823,6 +6808,316 @@ mod tests {
 
     fn store(database: Arc<Mutex<Connection>>) -> BotStore {
         BotStore::open(database).unwrap()
+    }
+
+    #[test]
+    fn decision_commands_store_compact_idempotency_results() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let bots = store(database.clone());
+        bots.deploy("user-a", bundle("bot-a", "account-a")).unwrap();
+        bots.begin_attempt("user-a", "bot-a", false).unwrap();
+        let mut action_count = 0;
+
+        let first = bots
+            .command("user-a", "bot-a", "decision-1", "decision", |store| {
+                action_count += 1;
+                store.record_evidence(
+                    "user-a",
+                    "bot-a",
+                    "decision",
+                    "evaluation-history",
+                    &"x".repeat(20_000),
+                    None,
+                )
+            })
+            .unwrap();
+        let result_bytes = database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT length(result_json) FROM bot_commands
+                 WHERE user_id = 'user-a' AND bot_id = 'bot-a' AND command_id = 'decision-1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert!(
+            result_bytes < 64,
+            "stored decision result used {result_bytes} bytes"
+        );
+
+        let duplicate = bots
+            .command("user-a", "bot-a", "decision-1", "decision", |_| {
+                panic!("a duplicate decision command must not run again")
+            })
+            .unwrap();
+        assert_eq!(action_count, 1);
+        assert_eq!(
+            first.attempts[0].evidence.len(),
+            duplicate.attempts[0].evidence.len()
+        );
+    }
+
+    #[test]
+    fn legacy_attempts_migrate_without_losing_evidence() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let bots = store(database.clone());
+        bots.deploy("user-a", bundle("bot-a", "account-a")).unwrap();
+        bots.begin_attempt("user-a", "bot-a", false).unwrap();
+        let original = bots
+            .record_evidence(
+                "user-a",
+                "bot-a",
+                "runtime",
+                "migration-check",
+                &"retained evidence ".repeat(2_000),
+                None,
+            )
+            .unwrap();
+        let legacy_json = serde_json::to_string(&original.attempts).unwrap();
+        {
+            let database = database.lock().unwrap();
+            database
+                .execute(
+                    "UPDATE bots SET attempts_json = ?1 WHERE user_id = ?2 AND bot_id = ?3",
+                    params![legacy_json, "user-a", "bot-a"],
+                )
+                .unwrap();
+            database
+                .execute(
+                    "DELETE FROM bot_runtime_attempts WHERE user_id = ?1 AND bot_id = ?2",
+                    params!["user-a", "bot-a"],
+                )
+                .unwrap();
+        }
+
+        let reopened = store(database.clone());
+        let migrated = reopened.get("user-a", "bot-a").unwrap();
+        assert_eq!(
+            serde_json::to_value(migrated.attempts).unwrap(),
+            serde_json::to_value(original.attempts).unwrap()
+        );
+        let database = database.lock().unwrap();
+        let stored_parent_json = database
+            .query_row(
+                "SELECT attempts_json FROM bots WHERE user_id = ?1 AND bot_id = ?2",
+                params!["user-a", "bot-a"],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        let attempt_rows = database
+            .query_row(
+                "SELECT COUNT(*) FROM bot_runtime_attempts
+                 WHERE user_id = ?1 AND bot_id = ?2",
+                params!["user-a", "bot-a"],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(stored_parent_json, "[]");
+        assert_eq!(attempt_rows, 1);
+    }
+
+    #[test]
+    fn worker_recovery_resolves_prior_bot_alerts_and_keeps_other_bots_active() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let operations = crate::operations::OperationsStore::open(database).unwrap();
+        let conditions = [
+            "worker_fault",
+            "worker_lifecycle_faulted",
+            "worker_decision_failed",
+            "worker_diagnostic",
+        ];
+        for (index, bot_id) in ["bot-a", "bot-b"].into_iter().enumerate() {
+            for (condition_index, condition) in conditions.iter().enumerate() {
+                operations
+                    .observe(crate::operations::HealthObservation {
+                        user_id: "user-a".into(),
+                        entity_id: bot_id.into(),
+                        dimension: crate::operations::HealthDimension::Worker,
+                        state: if *condition == "worker_diagnostic" {
+                            crate::operations::HealthState::Degraded
+                        } else {
+                            crate::operations::HealthState::Critical
+                        },
+                        condition: (*condition).into(),
+                        evidence: serde_json::json!({
+                            "botId": bot_id,
+                            "attemptId": "attempt-old",
+                        }),
+                        required: true,
+                        observed_at_ms: (index * conditions.len() + condition_index + 1) as i64,
+                        event_kind: None,
+                        evidence_id: Some("attempt-old".into()),
+                        correlation_id: None,
+                        causation_id: None,
+                        diagnostic: Some("prior worker condition".into()),
+                        metrics: BTreeMap::new(),
+                    })
+                    .unwrap();
+            }
+        }
+
+        let bot_bundle = bundle("bot-a", "account-a");
+        observe_worker_recovery(
+            &operations,
+            "user-a",
+            "bot-a",
+            &bot_bundle,
+            "attempt-new",
+            false,
+        )
+        .unwrap();
+
+        let alerts = operations.alerts_for_user("user-a").unwrap();
+        let recovered = alerts
+            .iter()
+            .filter(|alert| alert.entity_id == "bot-a")
+            .collect::<Vec<_>>();
+        assert_eq!(recovered.len(), conditions.len());
+        assert!(
+            recovered
+                .iter()
+                .all(|alert| { alert.state == crate::operations::AlertState::Resolved })
+        );
+        for alert in recovered {
+            let history = operations
+                .alert_history_for_user("user-a", &alert.alert_id)
+                .unwrap();
+            assert_eq!(history.len(), 2);
+            assert_eq!(history[1].state, crate::operations::AlertState::Resolved);
+        }
+        assert!(alerts.iter().any(|alert| {
+            alert.entity_id == "bot-b"
+                && alert.condition == "worker_fault"
+                && alert.state == crate::operations::AlertState::Active
+        }));
+    }
+
+    #[test]
+    fn stopped_worker_recovery_requires_exact_fresh_quiet_account_and_stopped_attempt() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let bots = store(database.clone());
+        let operations = crate::operations::OperationsStore::open(database).unwrap();
+        let supervisor =
+            crate::bot_supervisor::BotSupervisor::new(operations.clone(), bots.clone()).unwrap();
+        for bot_id in ["bot-a", "bot-b"] {
+            bots.deploy("user-a", bundle(bot_id, bot_id)).unwrap();
+            bots.begin_attempt("user-a", bot_id, false).unwrap();
+            bots.fault("user-a", bot_id, "worker-fault", "failed")
+                .unwrap();
+            operations
+                .observe(crate::operations::HealthObservation {
+                    user_id: "user-a".into(),
+                    entity_id: bot_id.into(),
+                    dimension: crate::operations::HealthDimension::Worker,
+                    state: crate::operations::HealthState::Critical,
+                    condition: "worker_fault".into(),
+                    evidence: serde_json::json!({"botId": bot_id}),
+                    required: true,
+                    observed_at_ms: 1,
+                    event_kind: None,
+                    evidence_id: Some(bot_id.into()),
+                    correlation_id: None,
+                    causation_id: None,
+                    diagnostic: None,
+                    metrics: BTreeMap::new(),
+                })
+                .unwrap();
+        }
+        let mut account = PaperAccountView {
+            account: AccountSnapshot {
+                account_id: "bot-a".into(),
+                user_id: "user-a".into(),
+                market: Market::OkxSpot,
+                currency: Currency::Usdt,
+                cash: Decimal::ONE,
+                positions: BTreeMap::new(),
+                observed_at_ms: adaq_bot_runtime::unix_now_ms() + 1,
+            },
+            reserved_cash: Decimal::ZERO,
+            buying_power: Decimal::ONE,
+            reconciliation: ReconciliationState::Reconciled,
+            orders: vec![],
+            fills: vec![],
+            provider_evidence: vec![],
+            order_absence_recoveries: vec![],
+            risk_decisions: vec![],
+            restart_required: false,
+        };
+        bots.recover_stopped_workers(&supervisor, &operations, "user-a", Some(&account))
+            .unwrap();
+        assert!(
+            operations
+                .alerts_for_user("user-a")
+                .unwrap()
+                .iter()
+                .all(|a| a.state == crate::operations::AlertState::Active)
+        );
+        bots.complete_stop(
+            "user-a",
+            "bot-a",
+            BotStopPolicy::KeepPosition,
+            vec![],
+            false,
+        )
+        .unwrap();
+        bots.recover_stopped_workers(&supervisor, &operations, "user-a", Some(&account))
+            .unwrap();
+        assert!(
+            operations
+                .alerts_for_user("user-a")
+                .unwrap()
+                .iter()
+                .all(|a| a.state == crate::operations::AlertState::Active)
+        );
+        bots.complete_stop("user-a", "bot-a", BotStopPolicy::KeepPosition, vec![], true)
+            .unwrap();
+        account.account.observed_at_ms = adaq_bot_runtime::unix_now_ms() + 1;
+        for case in 0..4 {
+            let mut invalid = account.clone();
+            match case {
+                0 => invalid.account.account_id = "foreign".into(),
+                1 => invalid.account.observed_at_ms = 1,
+                2 => invalid.restart_required = true,
+                _ => invalid.reconciliation = ReconciliationState::Required,
+            }
+            bots.recover_stopped_workers(&supervisor, &operations, "user-a", Some(&invalid))
+                .unwrap();
+            assert!(
+                operations
+                    .alerts_for_user("user-a")
+                    .unwrap()
+                    .iter()
+                    .all(|a| a.state == crate::operations::AlertState::Active)
+            );
+        }
+        bots.recover_stopped_workers(&supervisor, &operations, "user-a", Some(&account))
+            .unwrap();
+        let alerts = operations.alerts_for_user("user-a").unwrap();
+        assert_eq!(
+            alerts
+                .iter()
+                .find(|a| a.entity_id == "bot-b")
+                .unwrap()
+                .state,
+            crate::operations::AlertState::Active
+        );
+        let resolved = alerts.iter().find(|a| a.entity_id == "bot-a").unwrap();
+        assert_eq!(resolved.state, crate::operations::AlertState::Resolved);
+        bots.recover_stopped_workers(&supervisor, &operations, "user-a", Some(&account))
+            .unwrap();
+        assert_eq!(
+            operations
+                .alert_history_for_user("user-a", &resolved.alert_id)
+                .unwrap()
+                .len(),
+            2
+        );
+        let recovery = operations.events_for_user("user-a", 1).unwrap();
+        assert_eq!(
+            recovery[0].evidence["recovery"],
+            "worker-stopped-and-account-reconciled"
+        );
     }
 
     #[test]
@@ -6291,6 +7586,58 @@ mod tests {
         .unwrap();
         assert_eq!(sell.side, "sell");
         assert_eq!(sell.quantity, Decimal::from(10));
+        assert_eq!(
+            ProviderOrderKind::for_fill_policy(bot.execution_profile.fill_policy),
+            ProviderOrderKind::Market
+        );
+        assert_eq!(
+            ProviderOrderKind::for_fill_policy(adaq_backtest_core::FillPolicy::Maker),
+            ProviderOrderKind::PostOnly
+        );
+    }
+
+    #[test]
+    fn portfolio_decision_cannot_fall_back_to_cached_account_without_provider_reconciliation() {
+        let directory =
+            std::env::temp_dir().join(format!("adaq-portfolio-account-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let local = LocalResearchState::open(&directory).unwrap();
+        let snapshot = AccountSnapshot {
+            account_id: "account-a".into(),
+            user_id: "user-a".into(),
+            market: Market::OkxSpot,
+            currency: Currency::Usdt,
+            cash: Decimal::from(1_000),
+            positions: BTreeMap::new(),
+            observed_at_ms: 1,
+        };
+        local
+            .paper_trading
+            .create_account("user-a", snapshot.clone(), 1)
+            .unwrap();
+        let cached = local
+            .paper_trading
+            .reconcile("user-a", snapshot, 2)
+            .unwrap();
+        assert!(account_is_reconciled_and_quiet(Some(&cached)));
+        let mut bot = bundle("bot-a", "account-a");
+        bot.schedule = BotSchedule::ScheduledCrossSection {
+            universe_id: "universe".into(),
+            instruments: vec!["okx:BTC-USDT".into()],
+        };
+        let input = WorkerDecisionInput::Portfolio {
+            universe_id: "universe".into(),
+            rows: vec![],
+            state: adaq_bot_runtime::WorkerPortfolioState {
+                cash: "0".into(),
+                positions: vec![],
+            },
+        };
+        let result = authoritative_decision_input(&local, "user-a", &bot, &input);
+        assert!(
+            result
+                .is_err_and(|error| error == "The bound OKX Demo profile is no longer available.")
+        );
     }
 
     #[test]
@@ -6337,6 +7684,133 @@ mod tests {
 
         assert!(legacy.verify().is_ok());
         assert!(legacy.universe_snapshot_id.is_empty());
+    }
+
+    #[test]
+    fn closed_bar_clock_keeps_deadline_cursor_and_request_identity() {
+        let (ctx, dir) = running_bot_context("closed-bar-clock");
+        let mut view = ctx.bots.get("user-a", "bot-a").unwrap();
+        let interval = adaq_data_core::BarInterval::OneMinute;
+        let first = closed_bar_tick_request(&view, interval, 60_000)
+            .unwrap()
+            .unwrap();
+        let repeated = closed_bar_tick_request(&view, interval, 60_250)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.dataset_id, "closed-bar:60000");
+        assert!(first.trade_id.is_none());
+        assert_eq!(first.command_id, repeated.command_id);
+        assert_eq!(first.request_id, repeated.request_id);
+
+        view.attempts.last_mut().unwrap().last_decision_time_ms = Some(60_000);
+        assert!(
+            closed_bar_tick_request(&view, interval, 60_250)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            closed_bar_tick_request(&view, interval, 90_001)
+                .unwrap()
+                .is_none()
+        );
+        let next = closed_bar_tick_request(&view, interval, 120_000)
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.request_id, next.request_id);
+        view.state = LifecycleState::Paused;
+        assert!(
+            closed_bar_tick_request(&view, interval, 120_000)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cross_section_clock_does_not_require_a_trade_event() {
+        let (ctx, dir) = running_bot_context("cross-section-clock");
+        let mut view = ctx.bots.get("user-a", "bot-a").unwrap();
+        view.bundle.schedule = BotSchedule::ScheduledCrossSection {
+            universe_id: "universe".into(),
+            instruments: vec!["okx:ADA-USDT".into(), "okx:BTC-USDT".into()],
+        };
+        let request =
+            closed_bar_tick_request(&view, adaq_data_core::BarInterval::FifteenMinutes, 900_100)
+                .unwrap()
+                .unwrap();
+        assert_eq!(request.dataset_id, "closed-bar:900000");
+        assert!(request.trade_id.is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn closed_bar_read_retry_waits_for_complete_provider_confirmation() {
+        let now = std::cell::Cell::new(100);
+        let reads = std::cell::Cell::new(0);
+        let result = acquire_closed_bar_with_retry(
+            29_000,
+            || {
+                reads.set(reads.get() + 1);
+                if reads.get() < 3 {
+                    Err(crate::local_research::RUNTIME_BARS_INCOMPLETE.into())
+                } else {
+                    Ok("complete-five-asset-universe")
+                }
+            },
+            || now.get(),
+            |delay| now.set(now.get() + delay.as_millis() as i64),
+        );
+        assert_eq!(result.unwrap(), "complete-five-asset-universe");
+        assert_eq!(reads.get(), 3);
+        assert_eq!(now.get(), 2_100);
+    }
+
+    #[test]
+    fn closed_bar_read_retry_preserves_deadline_and_permanent_failures() {
+        let now = std::cell::Cell::new(100);
+        let reads = std::cell::Cell::new(0);
+        let result: Result<(), String> = acquire_closed_bar_with_retry(
+            2_500,
+            || {
+                reads.set(reads.get() + 1);
+                Err(crate::local_research::RUNTIME_BARS_INCOMPLETE.into())
+            },
+            || now.get(),
+            |delay| now.set(now.get() + delay.as_millis() as i64),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            crate::local_research::RUNTIME_BARS_INCOMPLETE
+        );
+        assert_eq!(reads.get(), 3);
+        assert_eq!(now.get(), 2_100);
+        let result: Result<(), String> = acquire_closed_bar_with_retry(
+            29_000,
+            || Err("foreign Universe".into()),
+            || 100,
+            |_| panic!("permanent validation failures must not be retried"),
+        );
+        assert_eq!(result.unwrap_err(), "foreign Universe");
+    }
+
+    #[test]
+    fn closed_bar_read_retry_does_not_read_after_a_late_wakeup() {
+        let now = std::cell::Cell::new(100);
+        let reads = std::cell::Cell::new(0);
+        let result: Result<(), String> = acquire_closed_bar_with_retry(
+            29_000,
+            || {
+                reads.set(reads.get() + 1);
+                Err(crate::local_research::RUNTIME_BARS_INCOMPLETE.into())
+            },
+            || now.get(),
+            |_| now.set(30_001),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            crate::local_research::RUNTIME_BARS_INCOMPLETE
+        );
+        assert_eq!(reads.get(), 1);
     }
 
     #[test]
@@ -6419,6 +7893,7 @@ mod tests {
                     occurred_at_ms: 2,
                 },
             ],
+            order_absence_recoveries: vec![],
             provider_evidence: vec![ExecutionOutcome::Accepted(ProviderEvidence {
                 provider: AdapterKind::OkxDemo,
                 operation_id: "bot-bot-a-order-1".into(),

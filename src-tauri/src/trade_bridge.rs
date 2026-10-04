@@ -9,6 +9,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use adaq_data_core::TradeStreamEvent;
@@ -18,6 +19,8 @@ use adaq_data_pipeline::okx::OkxSpotDataPath;
 /// through the return value and ignored by the dispatch loop, matching the
 /// previous `let _ = dispatch_trade_event(...)` behaviour at the call site.
 pub(crate) type TradeSink = Arc<dyn Fn(&str, &str, &str) -> Result<(), String> + Send + Sync>;
+
+pub(crate) type ClockSink = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
 /// Continuation callback invoked by the stream source for every snapshot
 /// trade; returning `false` asks the source to stop streaming.
@@ -96,6 +99,24 @@ impl BotTradeBridge {
             streams: Mutex::new(BTreeMap::new()),
             dispatches: Arc::new(Mutex::new(BTreeMap::new())),
         }
+    }
+
+    pub(crate) fn start_clock(self: &Arc<Self>, sink: ClockSink) {
+        let bridge = Arc::downgrade(self);
+        std::thread::spawn(move || {
+            while let Some(bridge) = bridge.upgrade() {
+                let users = match bridge.streams.lock() {
+                    Ok(streams) => streams.keys().cloned().collect::<Vec<_>>(),
+                    Err(_) => return,
+                };
+                // Closed-bar schedules must advance even when no trade arrives.
+                for user_id in users {
+                    let _ = sink(&user_id);
+                }
+                drop(bridge);
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        });
     }
 
     /// Reconcile the active trade stream for `user_id` with the desired
@@ -348,6 +369,24 @@ mod tests {
     }
 
     #[test]
+    fn host_clock_dispatches_when_trade_source_is_silent() {
+        let source = Arc::new(RecordingSource::new());
+        let bridge = Arc::new(BotTradeBridge::new(source, SinkLog::default().sink()));
+        let (sent, received) = std::sync::mpsc::channel();
+        bridge.start_clock(Arc::new(move |user_id| {
+            sent.send(user_id.to_owned())
+                .map_err(|error| error.to_string())
+        }));
+        bridge.refresh("user-a", codes(&["ADA-USDT"])).unwrap();
+
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "user-a"
+        );
+        bridge.refresh("user-a", codes(&[])).unwrap();
+    }
+
+    #[test]
     fn trade_dispatch_queue_keeps_only_the_latest_trade_per_instrument() {
         let mut queue = TradeDispatchQueue::default();
         queue.pending.insert("BTC-USDT".into(), "trade-1".into());
@@ -414,17 +453,37 @@ mod tests {
     fn dispatch_keeps_latest_trade_per_instrument_and_drains_serially() {
         let log = SinkLog::default();
         let source = Arc::new(RecordingSource::new());
-        let bridge = BotTradeBridge::new(source, log.sink());
+        let (entered, started) = std::sync::mpsc::channel();
+        let (resume, released) = std::sync::mpsc::channel();
+        let released = Mutex::new(released);
+        let record = log.sink();
+        let sink: TradeSink = Arc::new(move |user, instrument, trade| {
+            if trade == "trade-0" {
+                entered.send(()).map_err(|error| error.to_string())?;
+                released
+                    .lock()
+                    .map_err(|error| error.to_string())?
+                    .recv_timeout(Duration::from_secs(10))
+                    .map_err(|error| error.to_string())?;
+            }
+            record(user, instrument, trade)
+        });
+        let bridge = BotTradeBridge::new(source, sink.clone());
         let dispatches = Arc::clone(&bridge.dispatches);
 
-        enqueue_trade_dispatch(&dispatches, &log.sink(), "user-a", "BTC-USDT", "trade-1").unwrap();
-        enqueue_trade_dispatch(&dispatches, &log.sink(), "user-a", "ETH-USDT", "trade-2").unwrap();
-        enqueue_trade_dispatch(&dispatches, &log.sink(), "user-a", "BTC-USDT", "trade-3").unwrap();
+        // Keep the drain occupied so only pending trades compete for latest-wins.
+        enqueue_trade_dispatch(&dispatches, &sink, "user-a", "BTC-USDT", "trade-0").unwrap();
+        started.recv_timeout(Duration::from_secs(10)).unwrap();
+        enqueue_trade_dispatch(&dispatches, &sink, "user-a", "BTC-USDT", "trade-1").unwrap();
+        enqueue_trade_dispatch(&dispatches, &sink, "user-a", "ETH-USDT", "trade-2").unwrap();
+        enqueue_trade_dispatch(&dispatches, &sink, "user-a", "BTC-USDT", "trade-3").unwrap();
+        resume.send(()).unwrap();
 
-        let entries = log.wait_for_entries(2);
+        let entries = log.wait_for_entries(3);
         assert_eq!(
             entries,
             vec![
+                ("user-a".into(), "BTC-USDT".into(), "trade-0".into()),
                 ("user-a".into(), "BTC-USDT".into(), "trade-3".into()),
                 ("user-a".into(), "ETH-USDT".into(), "trade-2".into()),
             ]
@@ -432,10 +491,10 @@ mod tests {
         assert_eq!(log.max_in_flight.lock().unwrap().get("user-a"), Some(&1));
 
         // The queue re-arms after the drain loop retires.
-        enqueue_trade_dispatch(&dispatches, &log.sink(), "user-a", "SOL-USDT", "trade-4").unwrap();
-        let entries = log.wait_for_entries(3);
+        enqueue_trade_dispatch(&dispatches, &sink, "user-a", "SOL-USDT", "trade-4").unwrap();
+        let entries = log.wait_for_entries(4);
         assert_eq!(
-            entries[2],
+            entries[3],
             ("user-a".into(), "SOL-USDT".into(), "trade-4".into())
         );
     }

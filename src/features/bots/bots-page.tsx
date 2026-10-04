@@ -79,6 +79,8 @@ type BotView = {
 			requestId: string;
 			decisionId: string;
 			outcome: string;
+			noTargetReason?: string | null;
+			noTargetDetail?: string | null;
 			targetHash?: string | null;
 			observedAtMs: number;
 		}>;
@@ -152,6 +154,7 @@ export function BotsPage() {
 		queryKey: ["bots", userId],
 		queryFn: () => invoke<BotView[]>("bot_list"),
 		retry: false,
+		refetchInterval: 15_000,
 	});
 	const qualifications = useQuery({
 		queryKey: ["bot-qualifications", userId],
@@ -448,13 +451,14 @@ export function BotsPage() {
 								<div>
 									<CardTitle>{botDisplayName(bot.bundle.schedule)}</CardTitle>
 									<CardDescription>
-										{t("identifiers.bot")}: {" "}
+										{t("identifiers.bot")}:{" "}
 										<IdentifierDisplay
 											id={bot.botId}
 											label={t("identifiers.bot")}
 											name={botOperationalName(bot.bundle.schedule)}
 										/>
-										{" · "}{t("bots.bundle")}: {" "}
+										{" · "}
+										{t("bots.bundle")}:{" "}
 										<IdentifierDisplay
 											id={bot.bundle.identity}
 											label={t("bots.bundle")}
@@ -504,8 +508,8 @@ export function BotsPage() {
 								</div>
 								{attempt?.reconciliationRequired ? (
 									<p
-										role="alert"
-										className="rounded-md border border-amber-500/50 bg-amber-500/5 p-2"
+										role="status"
+										className="rounded-md border bg-muted/30 p-2 text-sm text-muted-foreground"
 									>
 										{t("bots.reconciliationRequired")}
 									</p>
@@ -543,7 +547,11 @@ export function BotsPage() {
 											<p className="font-medium">{t("bots.decisions")}</p>
 											{attempt?.decisions.slice(-8).map((decision) => (
 												<p key={decision.decisionId} className="text-muted-foreground">
-													{decision.outcome} ·{" "}
+													{decision.outcome}
+													{decision.noTargetReason
+														? ` · ${decision.noTargetReason}${decision.noTargetDetail ? `: ${decision.noTargetDetail}` : ""}`
+														: ""}
+													{" · "}
 													<IdentifierDisplay
 														id={decision.decisionId}
 														label={t("identifiers.decision")}

@@ -220,7 +220,9 @@ test("renders localized evidence and persisted operation history", async () => {
 			</QueryClientProvider>,
 		);
 	});
-	await new Promise((resolve) => setTimeout(resolve, 20));
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	});
 	await act(async () => {
 		await Promise.resolve();
 	});
@@ -423,7 +425,9 @@ test("renders localized evidence and persisted operation history", async () => {
 			onEvent: expect.anything(),
 		}),
 	);
-	await new Promise((resolve) => setTimeout(resolve, 20));
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	});
 	expect(mockInvoke).toHaveBeenCalledWith("market_data_pipeline_quality", {
 		request: { userId: "user-1", evidenceId: "report-1" },
 	});
@@ -473,7 +477,9 @@ test("renders source provenance in Chinese", async () => {
 			</QueryClientProvider>,
 		);
 	});
-	await new Promise((resolve) => setTimeout(resolve, 20));
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	});
 	await act(async () => {
 		await Promise.resolve();
 	});
@@ -550,7 +556,9 @@ test("publishes research data from retained Source evidence", async () => {
 			</QueryClientProvider>,
 		);
 	});
-	await new Promise((resolve) => setTimeout(resolve, 20));
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	});
 
 	const assessQualityButton = Array.from(
 		container.querySelectorAll("button"),
@@ -595,4 +603,70 @@ test("publishes research data from retained Source evidence", async () => {
 	);
 	expect(container.textContent).toContain("universe-gate-two");
 	await act(async () => root.unmount());
+});
+
+test("counts cumulative native page progress once per instrument", async () => {
+	let finish: (sources: unknown[]) => void = () => {};
+	mockInvoke.mockImplementation((command: string, args: unknown) => {
+		if (command === "okx_backfill_source") {
+			return new Promise((resolve) => {
+				finish = resolve;
+			});
+		}
+		return defaultInvokeImplementation?.(command, args);
+	});
+	const container = document.createElement("div");
+	document.body.append(container);
+	const root = createRoot(container);
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	await act(async () => {
+		root.render(
+			<QueryClientProvider client={queryClient}>
+				<DataFoundationPage />
+			</QueryClientProvider>,
+		);
+	});
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	});
+	const start = Array.from(container.querySelectorAll("button")).find(
+		(button) => button.textContent === i18n.t("dataFoundation.okxBackfillStart"),
+	);
+	expect(start).toBeDefined();
+	await act(async () => {
+		start?.click();
+	});
+	const call = mockInvoke.mock.calls.find(
+		([command]) => command === "okx_backfill_source",
+	);
+	expect(call).toBeDefined();
+	const channel = call?.[1].onEvent;
+	await act(async () => {
+		channel.onmessage({ event: "universeLoaded", data: { instrumentCount: 2 } });
+		channel.onmessage({
+			event: "instrumentStarted",
+			data: { instrument: { code: "BTC-USDT" } },
+		});
+		channel.onmessage({ event: "page", data: { downloadedRecords: 100 } });
+		channel.onmessage({ event: "page", data: { downloadedRecords: 200 } });
+		channel.onmessage({ event: "instrumentCompleted" });
+		channel.onmessage({
+			event: "instrumentStarted",
+			data: { instrument: { code: "ETH-USDT" } },
+		});
+		channel.onmessage({ event: "page", data: { downloadedRecords: 100 } });
+	});
+	expect(container.textContent).toContain("1/2 instruments");
+	expect(container.textContent).toContain(
+		`${i18n.t("dataFoundation.backfillRecords")}300`,
+	);
+	await act(async () => {
+		finish([]);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	});
+	await act(async () => root.unmount());
+	queryClient.clear();
+	container.remove();
 });

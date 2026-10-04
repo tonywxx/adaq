@@ -394,7 +394,7 @@ fn qualified_factor_publication_is_atomic_idempotent_and_user_scoped() {
     };
 
     {
-        let mut database = harness.source.database.lock().unwrap();
+        let database = harness.source.database.lock().unwrap();
         let transaction = database.unchecked_transaction().unwrap();
         harness
             .components
@@ -423,7 +423,7 @@ fn qualified_factor_publication_is_atomic_idempotent_and_user_scoped() {
     );
 
     {
-        let mut database = harness.source.database.lock().unwrap();
+        let database = harness.source.database.lock().unwrap();
         let transaction = database.unchecked_transaction().unwrap();
         harness
             .components
@@ -461,7 +461,7 @@ fn qualified_factor_publication_is_atomic_idempotent_and_user_scoped() {
     // Replaying the same qualified archive is idempotent and does not create
     // a second content or entitlement row.
     {
-        let mut database = harness.source.database.lock().unwrap();
+        let database = harness.source.database.lock().unwrap();
         let transaction = database.unchecked_transaction().unwrap();
         harness
             .components
@@ -490,7 +490,7 @@ fn qualified_factor_publication_is_atomic_idempotent_and_user_scoped() {
         qualified: true,
         evidence: vec![],
     };
-    let mut database = harness.source.database.lock().unwrap();
+    let database = harness.source.database.lock().unwrap();
     let transaction = database.unchecked_transaction().unwrap();
     assert_eq!(
         harness

@@ -223,6 +223,9 @@ pub enum FeatureSlotSource {
         #[serde(default)]
         parameters: BTreeMap<String, serde_json::Value>,
     },
+    Definition {
+        definition: adaq_feature_engine::FeatureDefinition,
+    },
     External {
         dependency_alias: String,
         output: String,
@@ -531,6 +534,22 @@ fn validate_manifest(manifest: &ComponentManifest, wasm: &[u8]) -> Result<(), Pa
         .collect::<std::collections::HashSet<_>>();
     let mut referenced_dependencies = std::collections::HashSet::new();
     for slot in &manifest.feature_slots {
+        if let FeatureSlotSource::Definition { definition } = &slot.source {
+            let value = serde_json::to_value(definition).map_err(error)?;
+            let bytes = serde_json::to_vec(&value).map_err(error)?;
+            adaq_feature_engine::FeatureDefinition::load(&bytes)
+                .map_err(|error| PackageError(format!("Invalid Feature Definition: {error}")))?;
+            if manifest.kind != ComponentKind::Factor
+                || !definition
+                    .outputs()
+                    .iter()
+                    .any(|output| output.name == slot.name)
+            {
+                return Err(PackageError(
+                    "Factor Feature Definition must contain its exact Slot output".into(),
+                ));
+            }
+        }
         if let FeatureSlotSource::External {
             dependency_alias,
             output,

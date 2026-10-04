@@ -7,6 +7,23 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
 	plugins: [react(), tailwindcss()],
+	build: {
+		rolldownOptions: {
+			checks: { pluginTimings: false },
+			output: {
+				codeSplitting: {
+					groups: [
+						{
+							name: "infographic",
+							test: /node_modules[\\/]@antv[\\/]infographic[\\/]/,
+							entriesAware: true,
+							maxSize: 400 * 1024,
+						},
+					],
+				},
+			},
+		},
+	},
 	resolve: {
 		alias: {
 			"@": "/src",

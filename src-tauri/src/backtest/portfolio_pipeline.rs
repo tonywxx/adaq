@@ -8,11 +8,11 @@ use adaq_backtest_core::{
     PortfolioState, RiskPolicy, StrategyTarget, TopNForecastStrategy,
     apply_portfolio_market_decision, execute_portfolio_backtest, mark_portfolio_to_market,
 };
-use adaq_component_sdk::host::portfolio_strategy_abi;
+use adaq_component_sdk::host::{factor_cross_sectional_abi, portfolio_strategy_abi};
 use adaq_component_tooling::{
     ComponentKind, ComponentPackage, ComponentParameterValue, FactorInstancePlanInput,
     FeatureSlotSource, ModelOutput, RunLimits, SignalPlanInput, StrategyScope, WasmLoader,
-    component_parameters, native_engine_identity,
+    component_parameters, native_engine_identity, validate_and_freeze_feature_plan,
     validate_and_freeze_feature_plan_with_bindings_and_parameters,
 };
 use adaq_data_core::OhlcvBar;
@@ -28,8 +28,8 @@ use super::{
     PortfolioSignalLock, RunPauseRecord, string,
 };
 use crate::run_engine::{
-    FactorRunRequest, MaterializedFeatureRow, SignalRunRequest, SignalRunRow,
-    materialize_feature_segment_with_signals,
+    FactorRunRequest, FactorValues, MaterializedFeatureRow, SignalRunRequest, SignalRunRow,
+    materialize_feature_segment, materialize_feature_segment_with_factor_values,
 };
 
 struct QualifiedFactor {
@@ -456,10 +456,8 @@ pub(super) fn execute_qualified(
         if package.manifest.kind != ComponentKind::Factor {
             return Err("Portfolio external inputs require Factor Components".into());
         }
-        if package.manifest.factor_scope != Some(adaq_component_tooling::FactorScope::TimeSeries) {
-            return Err(
-                "Portfolio Backtest currently requires time-series Factor Components".into(),
-            );
+        if package.manifest.factor_scope.is_none() {
+            return Err("Portfolio Factor Component requires a declared scope".into());
         }
         let overrides = super::pipeline::resolve_factor_parameters(
             &strategy.manifest,
@@ -489,6 +487,46 @@ pub(super) fn execute_qualified(
         .map(|factor| factor.path.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     let engine_identity = native_engine_identity().map_err(string)?;
+    let mut cross_sectional = HashMap::<String, FactorValues>::new();
+    for factor in &factors {
+        if factor.package.manifest.factor_scope
+            == Some(adaq_component_tooling::FactorScope::CrossSectional)
+        {
+            let dataset = if factor
+                .package
+                .manifest
+                .feature_slots
+                .iter()
+                .any(|slot| matches!(slot.source, FeatureSlotSource::Definition { .. }))
+            {
+                let dataset = source.accepted_factor_feature_dataset(
+                    &request.user_id,
+                    &factor.package.archive_sha256,
+                )?;
+                if dataset.market_data_snapshot_id != request.snapshot_id
+                    || dataset.point_in_time_universe_id != universe_snapshot_id
+                {
+                    return Err(
+                        "Factor Definition Feature Dataset is outside the frozen Context".into(),
+                    );
+                }
+                Some(dataset)
+            } else {
+                None
+            };
+            for (instrument, values) in cross_sectional_factor_values(
+                factor,
+                &instruments,
+                universe.interval,
+                dataset.as_ref(),
+            )? {
+                cross_sectional
+                    .entry(instrument)
+                    .or_default()
+                    .insert(factor.request.alias.clone(), values);
+            }
+        }
+    }
     let mut feature_plans = BTreeMap::new();
     let mut materialized = Vec::with_capacity(instruments.len());
     for (instrument_id, _, bars) in &instruments {
@@ -555,12 +593,15 @@ pub(super) fn execute_qualified(
                 rows: &signal.rows,
             })
             .collect::<Vec<_>>();
-        let rows = materialize_feature_segment_with_signals(
+        let rows = materialize_feature_segment_with_factor_values(
             &plan,
             &factor_runs,
             &signal_runs,
             bars,
             RunLimits::default(),
+            cross_sectional
+                .get(instrument_id)
+                .unwrap_or(&FactorValues::new()),
         )
         .map_err(|error| error.to_string())?;
         let bars = bars
@@ -625,6 +666,8 @@ pub(super) fn execute_qualified(
     let mut decisions = Vec::new();
     let mut pauses = Vec::new();
     for time in times {
+        let decision_time_ms =
+            adaq_data_core::next_bar_open_time_ms(time, universe.interval).map_err(string)?;
         let mut rows = Vec::with_capacity(materialized.len());
         let mut prices = BTreeMap::new();
         let mut pause = None;
@@ -633,13 +676,14 @@ pub(super) fn execute_qualified(
                 .bars
                 .get(&time)
                 .ok_or_else(|| format!("Portfolio price alignment failed for {time}"))?;
-            if bar.open <= Decimal::ZERO {
+            if bar.close <= Decimal::ZERO {
                 return Err(format!(
                     "Portfolio price is invalid for {}",
                     instrument.instrument_id
                 ));
             }
-            prices.insert(instrument.instrument_id.clone(), bar.open);
+            // The complete Feature Frame is available only when this Bar closes.
+            prices.insert(instrument.instrument_id.clone(), bar.close);
             match instrument
                 .rows
                 .get(&time)
@@ -671,7 +715,7 @@ pub(super) fn execute_qualified(
         mark_portfolio_to_market(&mut state, &prices).map_err(string)?;
         let frame =
             portfolio_strategy_abi::exports::adaq::strategy::portfolio_api::PortfolioFrame {
-                decision_time_ms: time,
+                decision_time_ms,
                 universe_id: universe_id.clone(),
                 rows,
                 state: portfolio_state(&state),
@@ -686,7 +730,7 @@ pub(super) fn execute_qualified(
         }
         target.validate(&instrument_ids).map_err(string)?;
         let market = PortfolioMarketDecision {
-            time_ms: time,
+            time_ms: decision_time_ms,
             prices,
             strategy_target: StrategyTarget {
                 target,
@@ -788,11 +832,17 @@ pub(super) fn execute_qualified(
         execution_profile: request.execution_profile,
         seed: request.seed,
     };
-    let request_hash =
-        Sha256::digest(serde_json::to_vec(&(&request.user_id, &provenance)).map_err(string)?)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+    let request_hash = Sha256::digest(
+        serde_json::to_vec(&(
+            "qualified-portfolio-closed-bar@2",
+            &request.user_id,
+            &provenance,
+        ))
+        .map_err(string)?,
+    )
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect::<String>();
     if let Some(stored) = load_qualified_existing(backtests, &request.user_id, &request_hash)? {
         return Ok(PortfolioBacktestView {
             run_id: format!("portfolio-{request_hash}"),
@@ -926,6 +976,169 @@ fn core_portfolio_target(
     })
 }
 
+fn cross_sectional_factor_values(
+    factor: &QualifiedFactor,
+    instruments: &[(String, String, Vec<OhlcvBar>)],
+    interval: adaq_data_core::BarInterval,
+    feature_dataset: Option<&adaq_factor_research::CompletedFeatureDataset>,
+) -> Result<HashMap<String, Vec<Option<HashMap<String, f64>>>>, String> {
+    use factor_cross_sectional_abi::exports::adaq::factor::cross_sectional_api::{
+        CrossSectionalRow, FeatureCell, FeatureValue, UnavailabilityReason,
+    };
+    let times = instruments
+        .first()
+        .ok_or("Cross-Sectional Factor requires a complete Universe")?
+        .2
+        .iter()
+        .map(|bar| bar.open_time_ms)
+        .collect::<Vec<_>>();
+    if instruments.iter().any(|(_, _, bars)| {
+        bars.iter()
+            .map(|bar| bar.open_time_ms)
+            .ne(times.iter().copied())
+    }) {
+        return Err("Cross-Sectional Factor requires aligned complete Universe Bars".into());
+    }
+    let inputs = if let Some(dataset) = feature_dataset {
+        accepted_factor_input_rows(factor, instruments, interval, dataset)?
+    } else {
+        let identity = native_engine_identity().map_err(string)?;
+        // Compile the Factor's input Slots as a consumer; its immutable Package and ABI stay unchanged.
+        let mut input_consumer = factor.package.manifest.clone();
+        input_consumer.kind = ComponentKind::Strategy;
+        let plan = validate_and_freeze_feature_plan(
+            &input_consumer,
+            &factor.package.archive_sha256,
+            &identity,
+        )
+        .map_err(|error| {
+            format!(
+                "Cross-Sectional Factor inputs are invalid: {:?}",
+                error.issues
+            )
+        })?;
+        instruments
+            .iter()
+            .map(|(_, _, bars)| {
+                materialize_feature_segment(&plan, &[], bars, RunLimits::default())
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let loader = WasmLoader::with_limits(RunLimits::default());
+    loader.load_factor_cross_sectional_bytes(
+        &factor.package.wasm,
+        Vec::new(),
+        &factor.parameters,
+    )?;
+    let universe = instruments
+        .iter()
+        .map(|(instrument, _, _)| instrument.clone())
+        .collect::<Vec<_>>();
+    let mut values = universe
+        .iter()
+        .map(|instrument| (instrument.clone(), Vec::with_capacity(times.len())))
+        .collect::<HashMap<_, _>>();
+    for (index, time) in times.into_iter().enumerate() {
+        let time = adaq_data_core::next_bar_open_time_ms(time, interval).map_err(string)?;
+        let rows = universe
+            .iter()
+            .enumerate()
+            .map(|(instrument_index, instrument)| {
+                let slots = match &inputs[instrument_index][index] {
+                    MaterializedFeatureRow::Present(values) => values
+                        .iter()
+                        .map(|value| {
+                            FeatureCell::Available(FeatureValue {
+                                value: *value,
+                                available_at_ms: time,
+                            })
+                        })
+                        .collect(),
+                    MaterializedFeatureRow::Warmup => {
+                        vec![
+                            FeatureCell::Unavailable(UnavailabilityReason::Warmup);
+                            factor.package.manifest.feature_slots.len()
+                        ]
+                    }
+                    MaterializedFeatureRow::MissingInput { .. } => {
+                        vec![
+                            FeatureCell::Unavailable(UnavailabilityReason::MissingInput);
+                            factor.package.manifest.feature_slots.len()
+                        ]
+                    }
+                };
+                CrossSectionalRow {
+                    instrument_id: instrument.clone(),
+                    observation_time_ms: time,
+                    slots,
+                }
+            })
+            .collect();
+        for result in loader.process_cross_sectional_factor(rows, &universe)? {
+            values
+                .get_mut(&result.instrument_id)
+                .ok_or("Cross-Sectional Factor returned an unknown Instrument")?
+                .push(result.values.map(|outputs| {
+                    outputs
+                        .into_iter()
+                        .map(|output| (output.name, output.value))
+                        .collect()
+                }));
+        }
+    }
+    Ok(values)
+}
+
+fn accepted_factor_input_rows(
+    factor: &QualifiedFactor,
+    instruments: &[(String, String, Vec<OhlcvBar>)],
+    interval: adaq_data_core::BarInterval,
+    dataset: &adaq_factor_research::CompletedFeatureDataset,
+) -> Result<Vec<Vec<MaterializedFeatureRow>>, String> {
+    use adaq_feature_engine::{FeatureDatasetCell, FeaturePlan, FeatureUnavailabilityReason};
+    dataset.validate().map_err(string)?;
+    let plan = FeaturePlan::load_for_engine(&dataset.plan_json, &dataset.engine_identity)
+        .map_err(string)?;
+    for slot in &factor.package.manifest.feature_slots {
+        if !dataset.output_names.contains(&slot.name)
+            || matches!(&slot.source, FeatureSlotSource::Definition { definition }
+                if !plan.definitions().contains(definition)
+                    || !definition.outputs().iter().any(|output| output.name == slot.name))
+        {
+            return Err("Factor input Definition differs from the accepted Feature Plan".into());
+        }
+    }
+    let rows = dataset
+        .rows
+        .iter()
+        .map(|row| ((row.instrument_id.as_str(), row.observation_time_ms), row))
+        .collect::<HashMap<_, _>>();
+    instruments.iter().map(|(instrument, _, bars)| {
+        bars.iter().map(|bar| {
+            let time = adaq_data_core::next_bar_open_time_ms(bar.open_time_ms, interval)
+                .map_err(string)?;
+            let row = rows.get(&(instrument.as_str(), time))
+                .ok_or("Accepted Factor Feature Dataset is missing a Universe row")?;
+            let mut values = Vec::new();
+            for slot in &factor.package.manifest.feature_slots {
+                match row.values.get(&slot.name) {
+                    Some(FeatureDatasetCell::Available { value, available_at_ms })
+                        if value.is_finite() && *available_at_ms <= time => values.push(*value),
+                    Some(FeatureDatasetCell::Unavailable { reason: FeatureUnavailabilityReason::Warmup }) =>
+                        return Ok(MaterializedFeatureRow::Warmup),
+                    Some(FeatureDatasetCell::Unavailable { reason }) =>
+                        return Ok(MaterializedFeatureRow::MissingInput {
+                            slot: slot.name.clone(), source: reason.code().into(),
+                        }),
+                    _ => return Err("Accepted Factor Feature input is missing or not causally available".into()),
+                }
+            }
+            Ok(MaterializedFeatureRow::Present(values))
+        }).collect()
+    }).collect()
+}
+
 fn feature_plan_hash(feature_plans: &BTreeMap<String, String>) -> Result<String, String> {
     Ok(
         Sha256::digest(serde_json::to_vec(feature_plans).map_err(string)?)
@@ -965,4 +1178,244 @@ fn decimal(value: &str, field: &str) -> Result<Decimal, String> {
     value
         .parse::<Decimal>()
         .map_err(|_| format!("Portfolio Backtest {field} is invalid"))
+}
+
+#[cfg(test)]
+mod cross_sectional_tests {
+    use super::*;
+    use adaq_component_tooling::{ComponentManifest, FeatureSlotDefinition};
+
+    #[test]
+    fn native_cross_sectional_factor_preserves_universe_warmup_and_feature_values() {
+        let mut manifest: ComponentManifest = serde_json::from_str(include_str!(
+            "../../fixtures/cross-sectional-factor/manifest.json"
+        ))
+        .unwrap();
+        manifest.feature_slots[0].source = FeatureSlotSource::BuiltIn {
+            indicator: "ema".into(),
+            output: "value".into(),
+            inputs: BTreeMap::from([("real-0".into(), serde_json::json!("close"))]),
+            parameters: BTreeMap::from([("time-period".into(), serde_json::json!(2))]),
+        };
+        let wasm = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/cross-sectional-factor/target/wasm32-unknown-unknown/debug/m11_cross_sectional_factor_fixture.wasm")).unwrap();
+        let mut factor = QualifiedFactor {
+            request: FactorInstanceRequest {
+                alias: "cross".into(),
+                archive_sha256: "a".repeat(64),
+                parameters: HashMap::new(),
+            },
+            package: ComponentPackage {
+                manifest,
+                wasm,
+                archive_sha256: "a".repeat(64),
+            },
+            parameters: vec![],
+            path: PathBuf::new(),
+        };
+        let bar = |time, close| OhlcvBar {
+            open_time_ms: time,
+            open: Decimal::from(close),
+            high: Decimal::from(close),
+            low: Decimal::from(close),
+            close: Decimal::from(close),
+            base_volume: Decimal::ONE,
+            quote_volume: Decimal::ONE,
+        };
+        let mut instruments = vec![
+            (
+                "okx:BTC-USDT".into(),
+                "btc-snapshot".into(),
+                vec![bar(0, 10), bar(3_600_000, 20)],
+            ),
+            (
+                "okx:ETH-USDT".into(),
+                "eth-snapshot".into(),
+                vec![bar(0, 40), bar(3_600_000, 60)],
+            ),
+        ];
+        let values = cross_sectional_factor_values(
+            &factor,
+            &instruments,
+            adaq_data_core::BarInterval::OneHour,
+            None,
+        )
+        .unwrap();
+        assert_eq!(values["okx:BTC-USDT"][0], None);
+        assert_eq!(values["okx:ETH-USDT"][0], None);
+        assert_eq!(
+            values["okx:BTC-USDT"][1].as_ref().unwrap()["cross-sectional-score"],
+            15.0
+        );
+        assert_eq!(
+            values["okx:ETH-USDT"][1].as_ref().unwrap()["cross-sectional-score"],
+            50.0
+        );
+
+        let mut strategy: ComponentManifest = serde_json::from_str(include_str!(
+            "../../fixtures/external-strategy/manifest.json"
+        ))
+        .unwrap();
+        strategy.dependencies[0].alias = "cross".into();
+        strategy.dependencies[0].component_id = factor.package.manifest.component_id;
+        strategy.feature_slots = vec![FeatureSlotDefinition {
+            name: "cross-score".into(),
+            source: FeatureSlotSource::External {
+                dependency_alias: "cross".into(),
+                output: "cross-sectional-score".into(),
+            },
+        }];
+        let inputs = [FactorInstancePlanInput {
+            alias: "cross",
+            manifest: &factor.package.manifest,
+            parameters: vec![],
+        }];
+        let plan = adaq_component_tooling::validate_and_freeze_feature_plan_with_factors(
+            &strategy,
+            &"b".repeat(64),
+            &native_engine_identity().unwrap(),
+            &inputs,
+        )
+        .unwrap();
+        let bindings = [FactorRunRequest {
+            alias: "cross",
+            path: "unused-native-cross-sectional-path",
+            manifest_feature_slots: &factor.package.manifest.feature_slots,
+        }];
+        let mut computed = FactorValues::from([("cross".into(), values["okx:BTC-USDT"].clone())]);
+        let rows = materialize_feature_segment_with_factor_values(
+            &plan,
+            &bindings,
+            &[],
+            &instruments[0].2,
+            RunLimits::default(),
+            &computed,
+        )
+        .unwrap();
+        assert!(matches!(
+            &rows[0],
+            MaterializedFeatureRow::MissingInput { .. }
+        ));
+        assert_eq!(rows[1], MaterializedFeatureRow::Present(vec![15.0]));
+        computed.get_mut("cross").unwrap().pop();
+        assert!(
+            materialize_feature_segment_with_factor_values(
+                &plan,
+                &bindings,
+                &[],
+                &instruments[0].2,
+                RunLimits::default(),
+                &computed
+            )
+            .is_err()
+        );
+        use adaq_feature_engine::{
+            DefinitionDraft, FeatureDatasetCell, FeatureDatasetRow, FeatureDefinition,
+            FeatureInput, FeatureNode, FeatureOperator, FeatureOutput, FeaturePlan,
+            FeaturePlanDraft, FeatureScope, FeatureUnavailabilityReason,
+        };
+        let definition = FeatureDefinition::freeze(DefinitionDraft {
+            definition_id: uuid::Uuid::new_v4(),
+            revision: 1,
+            scope: FeatureScope::TimeSeries,
+            nodes: vec![FeatureNode {
+                id: "return".into(),
+                operator: FeatureOperator::BackwardSimpleReturn,
+                scope: FeatureScope::TimeSeries,
+                inputs: vec![FeatureInput::Market {
+                    field: adaq_feature_engine::MarketField::Close,
+                }],
+                parameters: BTreeMap::from([("period".into(), serde_json::json!(1))]),
+                warmup_bars: 1,
+            }],
+            outputs: vec![FeatureOutput {
+                name: "close".into(),
+                node_id: "return".into(),
+            }],
+        })
+        .unwrap();
+        let plan = FeaturePlan::freeze(FeaturePlanDraft {
+            definitions: vec![definition.clone()],
+            engine_identity: (&native_engine_identity().unwrap()).into(),
+            ..FeaturePlanDraft::default()
+        })
+        .unwrap();
+        let rows = instruments
+            .iter()
+            .enumerate()
+            .flat_map(|(index, (instrument, _, bars))| {
+                bars.iter().enumerate().map(move |(bar_index, bar)| {
+                    let time = bar.open_time_ms + 3_600_000;
+                    FeatureDatasetRow {
+                        instrument_id: instrument.clone(),
+                        observation_time_ms: time,
+                        values: BTreeMap::from([(
+                            "close".into(),
+                            if bar_index == 0 {
+                                FeatureDatasetCell::Unavailable {
+                                    reason: FeatureUnavailabilityReason::Warmup,
+                                }
+                            } else {
+                                FeatureDatasetCell::Available {
+                                    value: [15.0, 50.0][index],
+                                    available_at_ms: time,
+                                }
+                            },
+                        )]),
+                    }
+                })
+            })
+            .collect();
+        let mut dataset = adaq_factor_research::CompletedFeatureDataset::new(
+            "user-a",
+            "accepted-features",
+            plan.plan_hash(),
+            plan.to_json(),
+            plan.engine_identity(),
+            "btc-snapshot",
+            "frozen-universe",
+            vec!["close".into()],
+            rows,
+        )
+        .unwrap();
+        factor.package.manifest.feature_slots[0].source =
+            FeatureSlotSource::Definition { definition };
+        let from_dataset = cross_sectional_factor_values(
+            &factor,
+            &instruments,
+            adaq_data_core::BarInterval::OneHour,
+            Some(&dataset),
+        )
+        .unwrap();
+        assert_eq!(from_dataset, values);
+        assert!(
+            cross_sectional_factor_values(
+                &factor,
+                &instruments,
+                adaq_data_core::BarInterval::OneHour,
+                None,
+            )
+            .is_err()
+        );
+        dataset.rows.pop();
+        assert!(
+            cross_sectional_factor_values(
+                &factor,
+                &instruments,
+                adaq_data_core::BarInterval::OneHour,
+                Some(&dataset),
+            )
+            .is_err()
+        );
+        instruments[1].2.pop();
+        assert!(
+            cross_sectional_factor_values(
+                &factor,
+                &instruments,
+                adaq_data_core::BarInterval::OneHour,
+                None
+            )
+            .unwrap_err()
+            .contains("aligned complete Universe")
+        );
+    }
 }

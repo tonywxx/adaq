@@ -1287,13 +1287,6 @@ impl OkxClient {
             let page = self
                 .fetch_bar_page(code, interval, Some(cursor), 100)
                 .await?;
-            let Some(oldest_open_time_ms) = page.oldest_open_time_ms else {
-                break;
-            };
-            let page_bars = page.bars;
-            let page_payloads = page.raw_payloads;
-            bars.extend(page_bars.iter().cloned());
-            raw_payloads.extend(page_payloads.iter().cloned());
             response_sha256s.push(page.response_sha256);
             diagnostics.request_count += page.diagnostics.request_count;
             diagnostics.retry_count += page.diagnostics.retry_count;
@@ -1301,6 +1294,13 @@ impl OkxClient {
             diagnostics
                 .response_statuses
                 .extend(page.diagnostics.response_statuses);
+            let Some(oldest_open_time_ms) = page.oldest_open_time_ms else {
+                break;
+            };
+            let page_bars = page.bars;
+            let page_payloads = page.raw_payloads;
+            bars.extend(page_bars.iter().cloned());
+            raw_payloads.extend(page_payloads.iter().cloned());
             if !on_page(&page_bars, &page_payloads, bars.len(), oldest_open_time_ms) {
                 return Err(DataError::okx(
                     "cancelled",
@@ -1330,7 +1330,33 @@ impl OkxClient {
                 bar.open_time_ms >= range.start_time_ms && bar.open_time_ms < range.end_time_ms
             })
             .collect::<Vec<_>>();
-        let series = build_bar_series(code, interval, bars)?;
+        let mut series = build_bar_series(code, interval, bars)?;
+        if bar_time_aligned(interval, range.start_time_ms)
+            && bar_time_aligned(interval, range.end_time_ms)
+        {
+            let first = series
+                .bars
+                .first()
+                .map_or(range.end_time_ms, |bar| bar.open_time_ms);
+            if first > range.start_time_ms {
+                series.gaps.insert(
+                    0,
+                    BarGap {
+                        start_time_ms: range.start_time_ms,
+                        end_time_ms: first,
+                    },
+                );
+            }
+            if let Some(last) = series.bars.last() {
+                let next = next_bar_open_time_ms(last.open_time_ms, interval)?;
+                if next < range.end_time_ms {
+                    series.gaps.push(BarGap {
+                        start_time_ms: next,
+                        end_time_ms: range.end_time_ms,
+                    });
+                }
+            }
+        }
         let raw_payloads = series
             .bars
             .iter()
@@ -2647,6 +2673,13 @@ mod tests {
                 .map(|bar| bar.open_time_ms)
                 .collect::<Vec<_>>(),
             vec![1_704_067_200_000, 1_704_153_600_000]
+        );
+        assert_eq!(
+            series.gaps,
+            vec![super::BarGap {
+                start_time_ms: 1_704_240_000_000,
+                end_time_ms: range.end_time_ms,
+            }]
         );
         assert_eq!(
             request_line.recv().unwrap(),

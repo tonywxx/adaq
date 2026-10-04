@@ -1,7 +1,10 @@
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { abbreviateIdentifier, identifierLabel } from "@/lib/identifier-display";
+import {
+	abbreviateIdentifier,
+	identifierLabel,
+} from "@/lib/identifier-display";
 import { Input } from "@/components/ui/input";
 import { LoadingState } from "@/components/loading-state";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -1448,7 +1451,8 @@ function Feedback({
 	);
 }
 function percent(value: string) {
-	return `${formatDecimal(value)}%`;
+	const number = Number(value);
+	return Number.isFinite(number) ? `${(number * 100).toFixed(2)}%` : value;
 }
 
 function formatDraftError(error: DraftError, exactEvidenceLoading: string) {

@@ -59,6 +59,31 @@ pub enum ExecutionOutcome {
     Uncertain(ProviderEvidence),
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LocalOrderBindingRecovery {
+    pub operation_id: String,
+    pub provider_order_id: String,
+    pub previous_local_order_id: String,
+    pub local_order_id: String,
+    pub decision_id: String,
+    pub recovered_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OrderAbsenceEvidence {
+    pub instrument: String,
+    pub window_start_ms: i64,
+    pub checked_at_ms: i64,
+    pub history_order_count: usize,
+    pub history_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OrderAbsenceRecovery {
+    pub original_uncertainty: ProviderEvidence,
+    pub confirmation: OrderAbsenceEvidence,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecutionError {
     InvalidRiskPolicy,
@@ -84,6 +109,10 @@ pub struct PaperExecution {
     policy: RiskPolicy,
     blocked: bool,
     operations: BTreeMap<String, ExecutionOutcome>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    local_order_binding_recoveries: Vec<LocalOrderBindingRecovery>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    order_absence_recoveries: Vec<OrderAbsenceRecovery>,
 }
 
 impl PaperExecution {
@@ -96,6 +125,8 @@ impl PaperExecution {
             policy,
             blocked: false,
             operations: BTreeMap::new(),
+            local_order_binding_recoveries: Vec::new(),
+            order_absence_recoveries: Vec::new(),
         })
     }
 
@@ -110,6 +141,56 @@ impl PaperExecution {
     }
     pub fn evidence(&self) -> impl Iterator<Item = &ExecutionOutcome> {
         self.operations.values()
+    }
+
+    pub fn order_absence_recoveries(&self) -> &[OrderAbsenceRecovery] {
+        &self.order_absence_recoveries
+    }
+
+    pub fn resolve_order_absence(
+        &mut self,
+        operation_id: &str,
+        confirmation: OrderAbsenceEvidence,
+    ) -> Result<(), ExecutionError> {
+        let Some(ExecutionOutcome::Uncertain(original)) = self.operations.get(operation_id) else {
+            return Err(ExecutionError::UncertainOutcome);
+        };
+        if original.provider_order_id.is_some()
+            || original.local_order_id.is_none()
+            || confirmation
+                .checked_at_ms
+                .saturating_sub(original.observed_at_ms)
+                < 60_000
+            || confirmation.window_start_ms > original.observed_at_ms
+            || confirmation.window_start_ms
+                < confirmation.checked_at_ms.saturating_sub(90 * 60 * 1_000)
+            || confirmation.history_order_count >= 100
+            || confirmation.history_sha256.len() != 64
+            || !confirmation
+                .history_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(ExecutionError::UncertainOutcome);
+        }
+        let original = original.clone();
+        self.operations.insert(
+            operation_id.to_owned(),
+            ExecutionOutcome::Accepted(ProviderEvidence {
+                provider: original.provider,
+                operation_id: original.operation_id.clone(),
+                local_order_id: original.local_order_id.clone(),
+                provider_order_id: None,
+                status: "resolved-absent".into(),
+                error_code: None,
+                observed_at_ms: confirmation.checked_at_ms,
+            }),
+        );
+        self.order_absence_recoveries.push(OrderAbsenceRecovery {
+            original_uncertainty: original,
+            confirmation,
+        });
+        Ok(())
     }
 
     pub fn provider_order_id(&self, operation_id: &str) -> Option<String> {
@@ -130,6 +211,59 @@ impl PaperExecution {
                 | ExecutionOutcome::Rejected(evidence)
                 | ExecutionOutcome::Uncertain(evidence) => evidence.local_order_id.clone(),
             })
+    }
+
+    /// The Host must first prove the original Decision/intent identity. Preserve
+    /// the superseded binding rather than erase the faulty execution history.
+    pub fn recover_local_order_binding(
+        &mut self,
+        operation_id: &str,
+        local_order_id: &str,
+        decision_id: &str,
+        now_ms: i64,
+    ) -> Result<(), ExecutionError> {
+        if self.operations.iter().any(|(id, outcome)| {
+            let evidence = match outcome {
+                ExecutionOutcome::Accepted(evidence)
+                | ExecutionOutcome::Rejected(evidence)
+                | ExecutionOutcome::Uncertain(evidence) => evidence,
+            };
+            id != operation_id && evidence.local_order_id.as_deref() == Some(local_order_id)
+        }) {
+            return Err(ExecutionError::ReconciliationRequired);
+        }
+        let outcome = self
+            .operations
+            .get_mut(operation_id)
+            .ok_or(ExecutionError::ReconciliationRequired)?;
+        let evidence = match outcome {
+            ExecutionOutcome::Accepted(evidence)
+            | ExecutionOutcome::Rejected(evidence)
+            | ExecutionOutcome::Uncertain(evidence) => evidence,
+        };
+        if evidence.local_order_id.as_deref() == Some(local_order_id) {
+            return Ok(());
+        }
+        let previous_local_order_id = evidence
+            .local_order_id
+            .clone()
+            .ok_or(ExecutionError::ReconciliationRequired)?;
+        let provider_order_id = evidence
+            .provider_order_id
+            .clone()
+            .ok_or(ExecutionError::ReconciliationRequired)?;
+        self.local_order_binding_recoveries
+            .push(LocalOrderBindingRecovery {
+                operation_id: operation_id.into(),
+                provider_order_id,
+                previous_local_order_id,
+                local_order_id: local_order_id.into(),
+                decision_id: decision_id.into(),
+                recovered_at_ms: now_ms,
+            });
+        evidence.local_order_id = Some(local_order_id.into());
+        self.blocked = true;
+        Ok(())
     }
 
     pub fn approve(&self, account: &PaperLedger, side: Side, notional: Decimal) -> RiskDecision {
@@ -215,17 +349,16 @@ impl PaperExecution {
             return Err(ExecutionError::RiskRejected(decision));
         }
         let user_id = account.account().user_id.clone();
-        account
+        let local_order_id = account
             .submit_order(&user_id, instrument, side, quantity, limit_price, now_ms)
             .map_err(|_| ExecutionError::ReconciliationRequired)?;
-        let local_order_id = account.orders().last().map(|order| order.order_id.clone());
         let order_id = operation_id.clone();
         self.operations.insert(
             operation_id,
             ExecutionOutcome::Accepted(ProviderEvidence {
                 provider: AdapterKind::OkxDemo,
                 operation_id: order_id.clone(),
-                local_order_id,
+                local_order_id: Some(local_order_id),
                 provider_order_id: None,
                 status: format!("intent_{:?}", side).to_lowercase(),
                 error_code: None,
@@ -1001,7 +1134,10 @@ mod tests {
             .unwrap();
         let order = ledger.orders().next().unwrap().clone();
         let observed = fill(&order, Decimal::ONE, Decimal::new(2639, 0));
-        assert_eq!(ledger.apply_fill(observed.clone()), Err(LedgerError::InvalidFill));
+        assert_eq!(
+            ledger.apply_fill(observed.clone()),
+            Err(LedgerError::InvalidFill)
+        );
         ledger.apply_provider_market_fill(observed).unwrap();
         assert_eq!(ledger.orders().next().unwrap().status, OrderStatus::Filled);
     }
@@ -1014,14 +1150,23 @@ mod tests {
             freeze_new_risk: false,
         })
         .unwrap();
-        execution.record_provider_observation("uncertain".into(), "order-1".into(), "unknown".into(), 1);
+        execution.record_provider_observation(
+            "uncertain".into(),
+            "order-1".into(),
+            "unknown".into(),
+            1,
+        );
         execution.mark_uncertain("uncertain", 1).unwrap();
         execution.record_reconciliation("before".into(), true, 2);
         assert!(execution.is_blocked());
         execution.resolve_provider_uncertainty("order-1", 3);
         execution.record_reconciliation("after".into(), true, 3);
         assert!(!execution.is_blocked());
-        assert!(execution.evidence().all(|outcome| !matches!(outcome, ExecutionOutcome::Uncertain(_))));
+        assert!(
+            execution
+                .evidence()
+                .all(|outcome| !matches!(outcome, ExecutionOutcome::Uncertain(_)))
+        );
     }
 
     #[test]
@@ -1252,6 +1397,42 @@ mod tests {
             Err(LedgerError::InvalidTransition)
         ));
         assert_eq!(ledger.reserved_cash(), Decimal::ZERO);
+    }
+
+    #[test]
+    fn execution_keeps_exact_local_order_identity_after_nine_orders() {
+        let mut ledger = PaperLedger::new(account(Market::OkxSpot)).unwrap();
+        let mut execution = PaperExecution::okx_demo(RiskPolicy {
+            max_order_notional: Decimal::new(1_000_000, 0),
+            reserve_cash: Decimal::ZERO,
+            freeze_new_risk: false,
+        })
+        .unwrap();
+        for index in 1..=12 {
+            let operation_id = format!("operation-{index}");
+            execution
+                .begin(
+                    &operation_id,
+                    &mut ledger,
+                    "BTC-USDT",
+                    Side::Buy,
+                    Decimal::ONE,
+                    Decimal::ONE,
+                    index,
+                )
+                .unwrap();
+            assert_eq!(
+                execution.local_order_id(&operation_id),
+                Some(format!("order-{index}"))
+            );
+        }
+        let restored: PaperExecution =
+            serde_json::from_slice(&serde_json::to_vec(&execution).unwrap()).unwrap();
+        assert_eq!(
+            restored.local_order_id("operation-12").as_deref(),
+            Some("order-12")
+        );
+        assert_eq!(ledger.orders().count(), 12);
     }
 
     #[test]

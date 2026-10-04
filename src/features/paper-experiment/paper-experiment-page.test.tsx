@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 
-import { i18n } from "@/lib/i18n";
+import { i18n, resources } from "@/lib/i18n";
 import { AuthenticatedUserContext } from "@/authenticated-user";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -393,6 +393,32 @@ test("keeps per-instrument supervision available during warmup", async () => {
 		request: { botId: "bot-1", commandId: expect.any(String) },
 	});
 	await unmount(root, container);
+});
+
+test("explains that Bot Start and Retry reconcile automatically", async () => {
+	const previousLanguage = i18n.language;
+	await act(async () => {
+		await i18n.changeLanguage("en-US");
+	});
+	view = completedView();
+	view.experiment.state = "preparing";
+	view.report = null;
+	view.bots[0].attempts[0].reconciliationRequired = true;
+	const { container, root } = await mount();
+
+	expect(container.querySelector('[role="status"]')?.textContent).toBe(
+		resources["en-US"].translation.paperExperiment.reconciliationRequired,
+	);
+	expect(container.querySelector('[role="alert"]')).toBeNull();
+	await act(async () => {
+		await i18n.changeLanguage("zh-CN");
+	});
+	expect(container.querySelector('[role="status"]')?.textContent).toBe(
+		resources["zh-CN"].translation.paperExperiment.reconciliationRequired,
+	);
+
+	await unmount(root, container);
+	await i18n.changeLanguage(previousLanguage);
 });
 
 test("does not display stale warmup evidence after a Worker resume", async () => {

@@ -15,7 +15,7 @@
       "datasetId": "ea0f9abf7034d47f0a5797e7faac8fdb47612466c257ef763a9e8221b6bed581",
       "protocolHash": "748c734d11368842f8665b779ba589527b22340653104896e8f2fab196354da1",
       "evidenceState": "out-of-sample",
-      "metricDigest": "04dd042c2700f24f22d03694b1ec96a0b3db710738de585c572284583e9f1d5a",
+      "metricDigest": "9cc5e90576681b8582025f49c83558ef05aa00a942c7c140bb4e20b37443c72a",
       "targetUnavailable": [
         {
           "instrumentId": "600000.SH",
@@ -106,8 +106,8 @@
           "lens": "economic",
           "metric": "economic",
           "value": null,
-          "undefinedReason": "no-eligible-observations",
-          "sampleCount": 0
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 3
         },
         {
           "foldId": "fold-1",
@@ -116,8 +116,8 @@
           "lens": "economic",
           "metric": "economic",
           "value": null,
-          "undefinedReason": "no-eligible-observations",
-          "sampleCount": 0
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 3
         },
         {
           "foldId": "fold-1",
@@ -186,8 +186,8 @@
           "lens": "economic",
           "metric": "economic",
           "value": null,
-          "undefinedReason": "no-eligible-observations",
-          "sampleCount": 0
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 2
         },
         {
           "foldId": "fold-1",
@@ -196,8 +196,8 @@
           "lens": "economic",
           "metric": "economic",
           "value": null,
-          "undefinedReason": "no-eligible-observations",
-          "sampleCount": 0
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 2
         },
         {
           "foldId": "fold-1",
@@ -276,7 +276,7 @@
       "datasetId": "261a7cb0637e96041ad184e38881ca112e56701db66e03abd47d9fae9424ccd9",
       "protocolHash": "d76f10e690c094a539bfd6d6c19adbad646321df769d54086ee786607fd533ed",
       "evidenceState": "out-of-sample",
-      "metricDigest": "a7db98062841464f35a0db03a4881521200a684d6706f8657783a2134c27a8bf",
+      "metricDigest": "b00ccee36a7d4f3ae71bc237e9da8ea4a24e4efa468ee83ff18b17a5e9fff45a",
       "targetUnavailable": [
         {
           "instrumentId": "BTC-USDT",
@@ -531,8 +531,8 @@
           "lens": "economic",
           "metric": "economic",
           "value": null,
-          "undefinedReason": "no-eligible-observations",
-          "sampleCount": 0
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 4
         },
         {
           "foldId": "fold-1",
@@ -541,8 +541,8 @@
           "lens": "economic",
           "metric": "economic",
           "value": null,
-          "undefinedReason": "no-eligible-observations",
-          "sampleCount": 0
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 4
         },
         {
           "foldId": "fold-1",
@@ -611,8 +611,8 @@
           "lens": "economic",
           "metric": "economic",
           "value": null,
-          "undefinedReason": "no-eligible-observations",
-          "sampleCount": 0
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 3
         },
         {
           "foldId": "fold-1",
@@ -621,8 +621,8 @@
           "lens": "economic",
           "metric": "economic",
           "value": null,
-          "undefinedReason": "no-eligible-observations",
-          "sampleCount": 0
+          "undefinedReason": "insufficient-samples",
+          "sampleCount": 3
         },
         {
           "foldId": "fold-1",
@@ -720,7 +720,7 @@
       "datasetId": "5017609cf39d91247591ed0b885ebbdad1aec70b6114d777a95cda2b2723a08b",
       "protocolHash": "095887051b04ff39e0e24df4e73cee144b5bcbe29ab1da307aa699f1bdc7277f",
       "evidenceState": "out-of-sample",
-      "metricDigest": "27e86d0360dd4973539bf18242b748a57de32554b7ac0c0d4e28912d13d0c872",
+      "metricDigest": "56ae8d18519c63a3cfab978bc5da6e22112694e1119580ae6b73fccc2e02b30a",
       "targetUnavailable": [
         {
           "instrumentId": "AAA",

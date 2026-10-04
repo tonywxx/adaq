@@ -6,11 +6,11 @@
 
 > **AdaQ** (Ada Quant) is an AI-powered quantitative trading platform for equities and digital crypto assets.
 
-## V1 status: engineering acceptance passed
+## V1 status: end-to-end acceptance incomplete
 
-**AdaQ V1 engineering acceptance has succeeded** — code, build, tests, components, the research chain, Desktop, Paper Reconcile, and the Bot safety lifecycle have passed acceptance. The latest automated acceptance run is [green on macOS ARM64 and Windows x86_64](https://github.com/tonywxx/adaq/actions/runs/34547508572), and [release v0.9.8](https://github.com/tonywxx/adaq/releases/tag/v0.9.8) is published.
+**AdaQ V1 is not fully accepted.** The current local Desktop has completed the five-asset OKX data → Feature → Factor evaluation segment, but Momentum fails the unchanged Holm significance gate. The same-context Factor → Model → Strategy → Bot → natural Fill → post-order reconciliation → Feedback chain and full bilingual workflows remain unverified. Build and focused test results do not establish completion of that chain.
 
-This statement is explicitly scoped: it does **not** mean strategies are profitable, and it does **not** authorize Live Trading. The current Demo Bot still has zero fills and no realized feedback samples. AdaQ V1 is a local-first research, backtesting, and simulation desktop app; it never executes real account orders, and live trading remains a separate future supervised, host-controlled milestone. Details and evidence: [V1 acceptance summary](V1自动验收文档.md) and the [V1 Demo Bot analysis report](V1模拟盘Bot分析报告.md).
+Six critical operational conditions and four pending research-review warnings remain unresolved. V1 supports OKX Demo execution; Live Trading remains prohibited. See the [current acceptance evidence and manual verification steps](docs/research/v1-end-to-end-manual-acceptance.md) for exact identities, limitations and recovery requirements.
 
 ## The V1 workflow
 
@@ -152,7 +152,7 @@ Start with the [executable Factor and Strategy examples](examples/components/REA
 
 ## Documentation
 
-Guides are organized by the user workflow. Root-level status records: [V1 acceptance summary](V1自动验收文档.md) and the [V1 Demo Bot analysis report](V1模拟盘Bot分析报告.md) (0 fills, not a profitability statement).
+Guides are organized by the user workflow. The [current V1 acceptance record](docs/research/v1-end-to-end-manual-acceptance.md) includes manual verification steps and distinguishes completed evidence from outstanding work.
 
 | English | 简体中文 | Description |
 | --------- | ---------- | ------------- |

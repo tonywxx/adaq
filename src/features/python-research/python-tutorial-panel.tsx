@@ -159,54 +159,60 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 	const trustWasOpen = useRef(false);
 	const trustDialog = useRef<HTMLDivElement>(null);
 
-	const refresh = useCallback(async () => {
-		if (!isTauriRuntime()) {
-			setLoading(false);
-			return;
-		}
-		const version = ++refreshVersion.current;
-		setLoading(true);
-		setError("");
-		await afterPaint();
-		try {
-			const [nextProjects, nextRuntime] = await Promise.all([
-				invoke<WorkingCopy[]>("project_list", { userId }),
-				invoke<RuntimeProfile>("runtime_profile", { request: { userId } }),
-			]);
-			if (version !== refreshVersion.current) return;
-			setProjects(nextProjects);
-			setRuntime(nextRuntime);
-			const nextPreviews: Record<string, AttemptPreview> = {};
-			await Promise.all(
-				EXECUTABLE_PROJECTS.map(async ({ id }) => {
-					const project = nextProjects.find((item) => item.projectId === id);
-					if (!project?.revisionSha256) return;
-					const environment = await invoke<{ environmentSha256: string } | null>(
-						"environment_for_project",
-						{ request: { userId, projectId: id } },
-					);
-					if (!environment) return;
-					try {
-						nextPreviews[id] = await invoke<AttemptPreview>("attempt_preview", {
-							request: {
-								userId,
-								projectId: id,
-								revisionSha256: project.revisionSha256,
-								seed: 0,
-							},
-						});
-					} catch {
-						// A missing Runtime or invalid Environment is shown by the owning card.
-					}
-				}),
-			);
-			if (version === refreshVersion.current) setPreviews(nextPreviews);
-		} catch (reason) {
-			if (version === refreshVersion.current) setError(String(reason));
-		} finally {
-			if (version === refreshVersion.current) setLoading(false);
-		}
-	}, [userId]);
+	const refresh = useCallback(
+		async (notify = false) => {
+			if (!isTauriRuntime()) {
+				setLoading(false);
+				return;
+			}
+			const version = ++refreshVersion.current;
+			setLoading(true);
+			setError("");
+			await afterPaint();
+			try {
+				const [nextProjects, nextRuntime] = await Promise.all([
+					invoke<WorkingCopy[]>("project_list", { userId }),
+					invoke<RuntimeProfile>("runtime_profile", { request: { userId } }),
+				]);
+				if (version !== refreshVersion.current) return;
+				setProjects(nextProjects);
+				setRuntime(nextRuntime);
+				const nextPreviews: Record<string, AttemptPreview> = {};
+				await Promise.all(
+					EXECUTABLE_PROJECTS.map(async ({ id }) => {
+						const project = nextProjects.find((item) => item.projectId === id);
+						if (!project?.revisionSha256) return;
+						const environment = await invoke<{ environmentSha256: string } | null>(
+							"environment_for_project",
+							{ request: { userId, projectId: id } },
+						);
+						if (!environment) return;
+						try {
+							nextPreviews[id] = await invoke<AttemptPreview>("attempt_preview", {
+								request: {
+									userId,
+									projectId: id,
+									revisionSha256: project.revisionSha256,
+									seed: 0,
+								},
+							});
+						} catch {
+							// A missing Runtime or invalid Environment is shown by the owning card.
+						}
+					}),
+				);
+				if (version === refreshVersion.current) {
+					setPreviews(nextPreviews);
+					if (notify) window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
+				}
+			} catch (reason) {
+				if (version === refreshVersion.current) setError(String(reason));
+			} finally {
+				if (version === refreshVersion.current) setLoading(false);
+			}
+		},
+		[userId],
+	);
 
 	useEffect(() => {
 		void refresh();
@@ -253,7 +259,7 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 		await afterPaint();
 		try {
 			await invoke("project_create", { request: { userId, example } });
-			await refresh();
+			await refresh(true);
 		} catch (reason) {
 			setError(String(reason));
 		} finally {
@@ -295,7 +301,7 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 			await invoke("environment_prepare_managed", {
 				request: { userId, projectId },
 			});
-			await refresh();
+			await refresh(true);
 		} catch (reason) {
 			setError(String(reason));
 		} finally {
@@ -319,7 +325,7 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 				}
 				await prepareProjectWithoutState(project.id);
 			}
-			await refresh();
+			await refresh(true);
 		} catch (reason) {
 			setError(String(reason));
 		} finally {
@@ -381,7 +387,7 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 				}
 			}
 			setTrustOpen(false);
-			await refresh();
+			await refresh(true);
 		} catch (reason) {
 			setError(String(reason));
 		} finally {
@@ -459,22 +465,26 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 								{runtime.expectedVersion} · {runtime.platform ?? "—"} · {runtime.source}
 							</p>
 							<p className="break-all font-mono text-xs text-muted-foreground">
-								{runtime.artifactSha256
-									? <IdentifierDisplay
-											id={runtime.artifactSha256}
-											label={t("identifiers.pythonRuntime")}
-										/>
-									: "—"}{" "}
+								{runtime.artifactSha256 ? (
+									<IdentifierDisplay
+										id={runtime.artifactSha256}
+										label={t("identifiers.pythonRuntime")}
+									/>
+								) : (
+									"—"
+								)}{" "}
 								· {bytes(runtime.downloadBytes)} download ·{" "}
 								{bytes(runtime.installedBytes)} installed · {runtime.license ?? "—"}
 							</p>
 							<p className="break-all font-mono text-xs text-muted-foreground">
-								{runtime.wheelhouseIdentity
-									? <IdentifierDisplay
-											id={runtime.wheelhouseIdentity}
-											label={t("identifiers.wheelhouse")}
-										/>
-									: "—"}{" "}
+								{runtime.wheelhouseIdentity ? (
+									<IdentifierDisplay
+										id={runtime.wheelhouseIdentity}
+										label={t("identifiers.wheelhouse")}
+									/>
+								) : (
+									"—"
+								)}{" "}
 								· {runtime.wheelhouseStatus} · {runtime.wheelhouseWheelCount} wheels ·{" "}
 								{bytes(runtime.wheelhouseDiskBytes)} wheelhouse ·{" "}
 								{bytes(runtime.environmentCacheBytes)} environments ·{" "}
@@ -670,12 +680,14 @@ export function PythonTutorialPanel({ userId }: { userId: string }) {
 							{EXECUTABLE_PROJECTS.map(({ id }) => (
 								<p key={id} className="break-all font-mono">
 									{id}:{" "}
-									{previews[id]?.revisionSha256
-										? <IdentifierDisplay
-												id={previews[id]?.revisionSha256 ?? ""}
-												label={t("identifiers.revision")}
-											/>
-										: "—"}
+									{previews[id]?.revisionSha256 ? (
+										<IdentifierDisplay
+											id={previews[id]?.revisionSha256 ?? ""}
+											label={t("identifiers.revision")}
+										/>
+									) : (
+										"—"
+									)}
 								</p>
 							))}
 						</div>

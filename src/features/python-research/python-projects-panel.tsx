@@ -165,12 +165,11 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 	);
 
 	useEffect(() => {
-		let active = true;
-		void refresh().finally(() => {
-			if (!active) return;
-		});
+		void refresh();
+		const notify = () => void refresh();
+		window.addEventListener(PROJECTS_CHANGED_EVENT, notify);
 		return () => {
-			active = false;
+			window.removeEventListener(PROJECTS_CHANGED_EVENT, notify);
 		};
 	}, [refresh]);
 
@@ -314,16 +313,17 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 					},
 				});
 			}
-			await invoke("attempt_start", {
-				request: {
-					userId,
-					projectId: value.projectId,
-					revisionSha256: value.revisionSha256,
-					environmentSha256: value.environmentSha256,
-					resourcePolicy: value.resourcePolicy,
-					seed: value.seed,
-				},
-			});
+			if (kind !== "model")
+				await invoke("attempt_start", {
+					request: {
+						userId,
+						projectId: value.projectId,
+						revisionSha256: value.revisionSha256,
+						environmentSha256: value.environmentSha256,
+						resourcePolicy: value.resourcePolicy,
+						seed: value.seed,
+					},
+				});
 			setPreview(null);
 			await refresh(true);
 		} catch (reason) {
@@ -543,7 +543,11 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 										disabled={!revisions[project.projectId] || project.state !== "clean"}
 										loading={busy === `${project.projectId}:preview`}
 									>
-										{t("pythonResearch.projects.reviewTrust")}
+										{t(
+											kind === "model"
+												? "pythonResearch.projects.reviewModelTrust"
+												: "pythonResearch.projects.reviewTrust",
+										)}
 									</Button>
 									<Button
 										type="button"
@@ -565,16 +569,18 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 									>
 										{t("pythonResearch.projects.prepareEnvironment")}
 									</Button>
-									<Button
-										type="button"
-										size="sm"
-										variant="outline"
-										onClick={() => void openPreview(project)}
-										disabled={!revisions[project.projectId] || project.state !== "clean"}
-										loading={busy === `${project.projectId}:preview`}
-									>
-										{t("pythonResearch.projects.start")}
-									</Button>
+									{kind !== "model" && (
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={() => void openPreview(project)}
+											disabled={!revisions[project.projectId] || project.state !== "clean"}
+											loading={busy === `${project.projectId}:preview`}
+										>
+											{t("pythonResearch.projects.start")}
+										</Button>
+									)}
 								</div>
 							</div>
 							<p className="break-all text-xs text-muted-foreground">{project.path}</p>
@@ -620,17 +626,18 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 											{t("pythonResearch.projects.cancel")}
 										</Button>
 									)}
-									{(attempt.status === "failed" || attempt.status === "cancelled") && (
-										<Button
-											type="button"
-											size="sm"
-											variant="outline"
-											onClick={() => void updateAttempt(attempt.attemptId, "retry")}
-											loading={busy === `${attempt.attemptId}:retry`}
-										>
-											{t("pythonResearch.projects.retry")}
-										</Button>
-									)}
+									{kind !== "model" &&
+										(attempt.status === "failed" || attempt.status === "cancelled") && (
+											<Button
+												type="button"
+												size="sm"
+												variant="outline"
+												onClick={() => void updateAttempt(attempt.attemptId, "retry")}
+												loading={busy === `${attempt.attemptId}:retry`}
+											>
+												{t("pythonResearch.projects.retry")}
+											</Button>
+										)}
 								</div>
 							</div>
 							{attempt.progressTotal ? (
@@ -664,10 +671,18 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 					<Card className="max-h-[90vh] w-full max-w-3xl overflow-y-auto">
 						<CardHeader>
 							<CardTitle id="python-research-preview-title">
-								{t("pythonResearch.projects.review.title")}
+								{t(
+									kind === "model"
+										? "pythonResearch.projects.reviewModelTrust"
+										: "pythonResearch.projects.review.title",
+								)}
 							</CardTitle>
 							<CardDescription>
-								{t("pythonResearch.projects.review.description")}
+								{t(
+									kind === "model"
+										? "pythonResearch.projects.review.modelDescription"
+										: "pythonResearch.projects.review.description",
+								)}
 							</CardDescription>
 						</CardHeader>
 						<CardContent className="grid gap-3 text-sm">
@@ -741,9 +756,11 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 								className="rounded border border-destructive/50 p-3 text-destructive"
 								role="alert"
 							>
-								{preview.value.trustDecision
-									? t("pythonResearch.projects.review.alreadyTrusted")
-									: preview.value.trustedCodeWarning}
+								{kind === "model"
+									? t("pythonResearch.projects.review.modelDescription")
+									: preview.value.trustDecision
+										? t("pythonResearch.projects.review.alreadyTrusted")
+										: preview.value.trustedCodeWarning}
 							</p>
 							<div className="flex justify-end gap-2">
 								<Button
@@ -758,9 +775,11 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 									onClick={() => void confirmPreview()}
 									loading={busy === `${preview.project.projectId}:start`}
 								>
-									{preview.value.trustDecision
-										? t("pythonResearch.projects.start")
-										: t("pythonResearch.projects.review.trustAndRun")}
+									{kind === "model"
+										? t("pythonResearch.projects.trust")
+										: preview.value.trustDecision
+											? t("pythonResearch.projects.start")
+											: t("pythonResearch.projects.review.trustAndRun")}
 								</Button>
 							</div>
 						</CardContent>

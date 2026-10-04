@@ -291,11 +291,19 @@ pub struct ModelRunnerInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fitted_model: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_window_end: Option<u32>,
+    pub target_window_end: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_interval_ms: Option<i64>,
 }
 
 impl ModelRunnerInput {
     pub fn validate(&self) -> Result<(), PythonResearchError> {
+        if self
+            .target_interval_ms
+            .is_some_and(|interval| interval <= 0)
+        {
+            return Err(invalid("model-target-interval-invalid"));
+        }
         let dataset = DatasetH::new(vec![
             HostPartition {
                 name: PartitionName::Train,

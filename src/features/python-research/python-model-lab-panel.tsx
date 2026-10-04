@@ -75,7 +75,7 @@ type ModelRun = {
 	featurePlanHash: string;
 	snapshotId: string;
 	universeId: string;
-	factorLookback: number;
+	factorLookback: number | null;
 	windows: {
 		trainStart: number;
 		trainEnd: number;
@@ -688,7 +688,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 
 	const qualifyDeployment = async () => {
 		const version = beginRequest("deployment");
-		if (!deploymentReady || deploymentAlreadyQualified || !decision) return;
+		if (!deploymentReady || !decision) return;
 		setBusy("deployment");
 		setError("");
 		await afterPaint();
@@ -699,7 +699,10 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 				{ request: { userId, decisionId: decision.decisionId } },
 			);
 			if (!isCurrentRequest(version)) return;
-			setDeploymentReports((current) => [...current, nextReport]);
+			setDeploymentReports((current) => [
+				...current.filter((report) => report.reportId !== nextReport.reportId),
+				nextReport,
+			]);
 			if (nextReport.qualified && nextReport.importedComponentArchiveSha256) {
 				const components = await invoke<LibraryComponent[]>("component_list", {
 					request: { userId },
@@ -1058,9 +1061,6 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 				{run ? (
 					<div className="grid gap-1 rounded-md border p-3">
 						<div className="flex flex-wrap items-center gap-2">
-							<Badge variant="secondary">
-								{t("pythonResearch.modelLab.synthetic")}
-							</Badge>
 							<span>
 								<IdentifierDisplay id={run.adapterId} /> · α={run.alpha}
 							</span>
@@ -1132,7 +1132,7 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							Factor <IdentifierDisplay id={run.factorDecisionHash} /> · Dataset{" "}
 							<IdentifierDisplay id={run.factorDatasetId} /> · Feature{" "}
 							<IdentifierDisplay id={run.featureDatasetId} /> · lookback{" "}
-							{run.factorLookback}
+							{run.factorLookback ?? "—"}
 						</p>
 					</div>
 				) : null}
@@ -1402,12 +1402,12 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 							type="button"
 							size="sm"
 							onClick={() => void qualifyDeployment()}
-							disabled={!deploymentReady || deploymentAlreadyQualified}
+							disabled={!deploymentReady}
 							loading={busy === "deployment"}
 						>
 							{latestDeploymentReport
 								? deploymentAlreadyQualified
-									? t("pythonResearch.modelLab.qualified")
+									? t("pythonResearch.modelLab.refreshForecastPublication")
 									: t("pythonResearch.modelLab.retryQualification")
 								: t("pythonResearch.modelLab.qualifyDeployment")}
 						</Button>

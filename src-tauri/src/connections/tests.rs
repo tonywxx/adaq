@@ -32,7 +32,16 @@ fn iso(ms: i64) -> String {
 
 #[derive(Clone, Debug)]
 enum MockResponse {
-    Ok { status: u16, body: String },
+    Ok {
+        status: u16,
+        body: String,
+    },
+    FirstThen {
+        first_status: u16,
+        first_body: String,
+        next_status: u16,
+        next_body: String,
+    },
 }
 
 struct MockHttp {
@@ -80,12 +89,40 @@ impl HttpExecutor for MockHttp {
         let routes = self.routes.lock().expect("mock poisoned");
         for (prefix, response) in routes.iter() {
             if request.url.contains(prefix.as_str()) {
-                return match response {
-                    MockResponse::Ok { status, body } => Ok(HttpResponse {
+                let occurrence = self
+                    .requests
+                    .lock()
+                    .expect("mock poisoned")
+                    .iter()
+                    .filter(|past_request| {
+                        past_request.method == request.method
+                            && past_request.url.contains(prefix.as_str())
+                    })
+                    .count();
+                return Ok(match response {
+                    MockResponse::Ok { status, body } => HttpResponse {
                         status: *status,
                         body: body.clone(),
-                    }),
-                };
+                    },
+                    MockResponse::FirstThen {
+                        first_status,
+                        first_body,
+                        next_status,
+                        next_body,
+                    } => HttpResponse {
+                        status: if occurrence == 1 {
+                            *first_status
+                        } else {
+                            *next_status
+                        },
+                        body: if occurrence == 1 {
+                            first_body
+                        } else {
+                            next_body
+                        }
+                        .clone(),
+                    },
+                });
             }
         }
         Err(format!("no mock route for {}", request.url))
@@ -882,6 +919,176 @@ fn okx_demo_open_orders_request_spot_type_and_parse_orders() {
 }
 
 #[test]
+fn okx_demo_reconciliation_retries_one_transient_503_read_but_never_replays_order_writes() {
+    let harness = harness(okx_ok_routes());
+    harness
+        .manager
+        .save("user-a", okx_credentials(), NOW_MS)
+        .unwrap();
+    harness.http.set_routes(vec![
+        (
+            "/api/v5/public/time".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: format!(
+                    r#"{{"code":"0","msg":"","data":[{{"ts":"{}"}}]}}"#,
+                    NOW_MS + 5_000
+                ),
+            },
+        ),
+        (
+            "/api/v5/trade/orders-pending".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: r#"{"code":"0","msg":"","data":[]}"#.to_owned(),
+            },
+        ),
+        (
+            "/api/v5/account/balance".to_owned(),
+            MockResponse::FirstThen {
+                first_status: 503,
+                first_body: "temporarily unavailable".to_owned(),
+                next_status: 200,
+                next_body: r#"{"code":"0","msg":"","data":[{"details":[{"ccy":"USDT","availBal":"100","cashBal":"100"}]}]}"#.to_owned(),
+            },
+        ),
+        (
+            "/api/v5/trade/order".to_owned(),
+            MockResponse::FirstThen {
+                first_status: 503,
+                first_body: "temporarily unavailable".to_owned(),
+                next_status: 200,
+                next_body: r#"{"code":"0","msg":"","data":[{"ordId":"duplicate-risk"}]}"#.to_owned(),
+            },
+        ),
+    ]);
+
+    let cash = harness
+        .manager
+        .with_okx_demo_reconciliation("user-a", NOW_MS, |_, balances| {
+            balances.accounts["USDT"].total.unwrap().to_string()
+        })
+        .unwrap();
+    assert_eq!(cash, "100");
+    assert_eq!(
+        harness
+            .http
+            .requested_paths()
+            .iter()
+            .filter(|path| path.ends_with("/api/v5/account/balance"))
+            .count(),
+        2
+    );
+
+    assert!(
+        harness
+            .manager
+            .create_okx_demo_order("user-a", "BTC-USDT", "market", "buy", "0.001", None, NOW_MS,)
+            .is_err()
+    );
+    assert_eq!(
+        harness
+            .http
+            .requested_paths()
+            .iter()
+            .filter(|path| path.ends_with("/api/v5/trade/order"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn okx_demo_terminal_order_uses_exact_history_and_recent_fills_without_replaying_writes() {
+    let harness = harness(okx_ok_routes());
+    harness
+        .manager
+        .save("user-a", okx_credentials(), NOW_MS)
+        .unwrap();
+    let routes = |history: &str, details: &str| {
+        vec![
+            (
+                "/api/v5/public/time".to_owned(),
+                MockResponse::Ok {
+                    status: 200,
+                    body: format!(r#"{{"code":"0","msg":"","data":[{{"ts":"{NOW_MS}"}}]}}"#),
+                },
+            ),
+            (
+                "/api/v5/trade/order?".to_owned(),
+                MockResponse::Ok { status: 200, body: details.to_owned() },
+            ),
+            (
+                "/api/v5/trade/orders-history?".to_owned(),
+                MockResponse::Ok { status: 200, body: history.to_owned() },
+            ),
+            (
+                "/api/v5/trade/fills-history?".to_owned(),
+                MockResponse::Ok {
+                    status: 200,
+                    body: r#"{"code":"0","msg":"","data":[{"instId":"ETH-USDT","ordId":"456"}]}"#.to_owned(),
+                },
+            ),
+            (
+                "/api/v5/trade/fills?".to_owned(),
+                MockResponse::Ok {
+                    status: 200,
+                    body: r#"{"code":"0","msg":"","data":[{"instId":"BTC-USDT","ordId":"other","tradeId":"foreign"},{"instId":"BTC-USDT","ordId":"456","tradeId":"trade-1","fillSz":"0.25","fillPx":"100.5","fee":"0.001","feeCcy":"BTC","ts":"1752000000000"}]}"#.to_owned(),
+                },
+            ),
+        ]
+    };
+    let not_found = r#"{"code":"51603","msg":"Order does not exist","data":[]}"#;
+    let history = r#"{"code":"0","msg":"","data":[{"instId":"ETH-USDT","ordId":"456"},{"instId":"BTC-USDT","ordId":"other"},{"instId":"BTC-USDT","ordId":"456","state":"filled","sz":"0.25","accFillSz":"0.25"}]}"#;
+    harness.http.set_routes(routes(history, not_found));
+    let (order, trades) = harness
+        .manager
+        .resolve_okx_demo_terminal_order("user-a", "BTC-USDT", "456", NOW_MS)
+        .unwrap();
+    assert_eq!(order.id.as_deref(), Some("456"));
+    assert_eq!(order.status.as_deref(), Some("closed"));
+    assert_eq!(trades.len(), 1);
+    assert_eq!(trades[0].id.as_deref(), Some("trade-1"));
+    assert!(
+        harness
+            .http
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|request| request.method == "GET")
+    );
+
+    for history in [
+        r#"{"code":"0","msg":"","data":[{"instId":"ETH-USDT","ordId":"456"},{"instId":"BTC-USDT","ordId":"other"}]}"#,
+        r#"{"code":"0","msg":"","data":[{"instId":"BTC-USDT","ordId":"456"},{"instId":"BTC-USDT","ordId":"456"}]}"#,
+    ] {
+        harness.http.set_routes(routes(history, not_found));
+        assert!(
+            harness
+                .manager
+                .fetch_okx_demo_order("user-a", "BTC-USDT", "456", NOW_MS)
+                .is_err()
+        );
+    }
+    let before = harness.http.requested_paths().len();
+    harness.http.set_routes(routes(
+        history,
+        r#"{"code":"50111","msg":"Invalid key","data":[]}"#,
+    ));
+    assert!(
+        harness
+            .manager
+            .fetch_okx_demo_order("user-a", "BTC-USDT", "456", NOW_MS)
+            .is_err()
+    );
+    assert!(
+        harness.http.requested_paths()[before..]
+            .iter()
+            .all(|path| !path.contains("orders-history"))
+    );
+}
+
+#[test]
 fn okx_demo_order_fills_parse_trade_identity_and_fee_fields() {
     let harness = harness(okx_ok_routes());
     harness
@@ -968,7 +1175,7 @@ fn okx_demo_order_uses_the_full_signed_path_and_exact_body() {
     assert_eq!(request.url, "https://www.okx.com/api/v5/trade/order");
     assert_eq!(
         request.body,
-        r#"{"instId":"BTC-USDT","ordType":"market","side":"sell","sz":"1","tdMode":"cash"}"#
+        r#"{"banAmend":true,"instId":"BTC-USDT","ordType":"market","side":"sell","sz":"1","tdMode":"cash","tgtCcy":"base_ccy"}"#
     );
     assert!(
         request
@@ -976,6 +1183,175 @@ fn okx_demo_order_uses_the_full_signed_path_and_exact_body() {
             .iter()
             .any(|(name, value)| name == "OK-ACCESS-SIGN" && !value.is_empty())
     );
+
+    harness
+        .manager
+        .create_okx_demo_order("user-a", "BTC-USDT", "market", "buy", "0.001", None, NOW_MS)
+        .unwrap();
+    assert_eq!(
+        harness.http.last_request().body,
+        r#"{"banAmend":true,"instId":"BTC-USDT","ordType":"market","side":"buy","sz":"0.001","tdMode":"cash","tgtCcy":"base_ccy"}"#
+    );
+
+    harness
+        .manager
+        .create_okx_demo_order(
+            "user-a",
+            "BTC-USDT",
+            "post_only",
+            "buy",
+            "0.001",
+            Some("100"),
+            NOW_MS,
+        )
+        .unwrap();
+    assert_eq!(
+        harness.http.last_request().body,
+        r#"{"instId":"BTC-USDT","ordType":"post_only","px":"100","side":"buy","sz":"0.001","tdMode":"cash"}"#
+    );
+}
+
+#[test]
+fn okx_demo_order_distinguishes_definitive_rejection_from_uncertainty() {
+    let harness = harness(okx_ok_routes());
+    harness
+        .manager
+        .save("user-a", okx_credentials(), NOW_MS)
+        .unwrap();
+    for (http_status, code, order_id, expected) in [
+        (200, "51020", "", "provider_rejected"),
+        (200, "51008", "", "provider_rejected"),
+        (200, "51121", "", "provider_rejected"),
+        (200, "54092", "", "provider_rejected"),
+        (200, "50004", "", "request_failed"),
+        (200, "50011", "", "request_failed"),
+        (200, "51020", "456", "request_failed"),
+        (200, "54092", "456", "request_failed"),
+        (503, "51020", "", "request_failed"),
+        (503, "54092", "", "request_failed"),
+    ] {
+        let previous_posts = harness
+            .http
+            .requested_paths()
+            .iter()
+            .filter(|path| path.ends_with("/api/v5/trade/order"))
+            .count();
+        harness.http.set_routes(vec![
+            ("/api/v5/public/time".into(), MockResponse::Ok { status: 200, body: format!(r#"{{"code":"0","msg":"","data":[{{"ts":"{NOW_MS}"}}]}}"#) }),
+            ("/api/v5/trade/order".into(), MockResponse::Ok { status: http_status, body: serde_json::json!({"code":"1","msg":"All operations failed","data":[{"sCode":code,"sMsg":"Order validation failed","ordId":order_id}]}).to_string() }),
+        ]);
+        let error = harness
+            .manager
+            .create_okx_demo_order_outcome(
+                "user-a", "ETH-USDT", "market", "buy", "0.0005", None, NOW_MS,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.code, expected,
+            "HTTP {http_status}, code {code}, ID {order_id}"
+        );
+        if expected == "provider_rejected" {
+            assert!(error.redacted_message.contains(code));
+        }
+        assert_eq!(
+            harness
+                .http
+                .requested_paths()
+                .iter()
+                .filter(|path| path.ends_with("/api/v5/trade/order"))
+                .count(),
+            previous_posts + 1,
+            "POST must not be replayed"
+        );
+    }
+}
+
+#[test]
+fn okx_demo_absence_requires_complete_recent_history_and_empty_pending() {
+    let harness = harness(okx_ok_routes());
+    harness
+        .manager
+        .save("user-a", okx_credentials(), NOW_MS)
+        .unwrap();
+    let start = NOW_MS - 300_000;
+    let old = serde_json::json!({"instId":"ETH-USDT","ordId":"old-1","state":"filled","cTime":(start - 1).to_string()});
+    let recent = serde_json::json!({"instId":"ETH-USDT","ordId":"maybe-1","state":"filled","cTime":start.to_string()});
+    for (history, pending, window, expected) in [
+        (vec![old.clone()], vec![], start, true),
+        (vec![], vec![], start, true),
+        (vec![recent.clone()], vec![], start, false),
+        (vec![old.clone(); 100], vec![], start, false),
+        (
+            vec![serde_json::json!({"instId":"ETH-USDT","ordId":"bad"})],
+            vec![],
+            start,
+            false,
+        ),
+        (vec![old.clone()], vec![recent], start, false),
+        (vec![], vec![], NOW_MS - 91 * 60_000, false),
+    ] {
+        harness.http.set_routes(vec![
+            (
+                "/api/v5/public/time".into(),
+                MockResponse::Ok {
+                    status: 200,
+                    body: format!(r#"{{"code":"0","msg":"","data":[{{"ts":"{NOW_MS}"}}]}}"#),
+                },
+            ),
+            (
+                "/api/v5/trade/orders-history?instType=SPOT&instId=ETH-USDT&limit=100".into(),
+                MockResponse::Ok {
+                    status: 200,
+                    body: serde_json::json!({"code":"0","msg":"","data":history}).to_string(),
+                },
+            ),
+            (
+                "/api/v5/trade/orders-pending?instType=SPOT&instId=ETH-USDT&limit=100".into(),
+                MockResponse::Ok {
+                    status: 200,
+                    body: serde_json::json!({"code":"0","msg":"","data":pending}).to_string(),
+                },
+            ),
+        ]);
+        let result = harness
+            .manager
+            .confirm_okx_demo_order_absence("user-a", "ETH-USDT", window, NOW_MS);
+        assert_eq!(result.is_ok(), expected);
+        if let Ok(proof) = result {
+            assert_eq!(proof.history_sha256.len(), 64);
+            assert_eq!(proof.instrument, "ETH-USDT");
+        }
+    }
+}
+
+#[test]
+fn okx_demo_absence_does_not_treat_missing_data_as_an_empty_order_list() {
+    let harness = harness(okx_ok_routes());
+    harness
+        .manager
+        .save("user-a", okx_credentials(), NOW_MS)
+        .unwrap();
+    harness.http.set_routes(vec![
+        (
+            "/api/v5/public/time".into(),
+            MockResponse::Ok {
+                status: 200,
+                body: format!(r#"{{"code":"0","msg":"","data":[{{"ts":"{NOW_MS}"}}]}}"#),
+            },
+        ),
+        (
+            "/api/v5/trade/orders-history?instType=SPOT&instId=ETH-USDT&limit=100".into(),
+            MockResponse::Ok {
+                status: 200,
+                body: r#"{"code":"0","msg":""}"#.into(),
+            },
+        ),
+    ]);
+    let error = harness
+        .manager
+        .confirm_okx_demo_order_absence("user-a", "ETH-USDT", NOW_MS - 300_000, NOW_MS)
+        .unwrap_err();
+    assert!(error.contains("no authoritative order list"));
 }
 
 #[test]

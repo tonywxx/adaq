@@ -263,6 +263,53 @@ test("keeps failed Attempt identity, recovery code, and retry feedback accessibl
 	await unmount(mounted.root, mounted.container);
 });
 
+test("notifies when a completed Factor Attempt appears after refresh", async () => {
+	jest.useFakeTimers();
+	const attempt: FactorAttemptView = {
+		attemptId: "attempt-1234567890",
+		userId: "user-1",
+		kind: "factor-evaluation",
+		requestHash: "r".repeat(64),
+		status: "completed",
+		sourceAttemptId: null,
+		resultId: null,
+		completedUnits: 0,
+		progressTotal: 1,
+		failureCode: null,
+		diagnostic: null,
+		createdAtMs: 1,
+		updatedAtMs: 1,
+	};
+	const listAttempts = jest.fn(async () => page([attempt]));
+	const onAttemptTerminal = jest.fn();
+	const mounted = mount(makeAdapter({ listAttempts }));
+	const render = () => (
+		<QueryClientProvider client={mounted.queryClient}>
+			<AttemptsPanel
+				userId="user-1"
+				adapter={mounted.adapter}
+				kind="factor-evaluation"
+				refreshKey={1}
+				onAttemptTerminal={onAttemptTerminal}
+			/>
+		</QueryClientProvider>
+	);
+
+	await act(async () => {
+		mounted.root.render(render());
+	});
+	await settle();
+	await act(async () => {
+		await jest.advanceTimersByTimeAsync(100);
+	});
+	await settle();
+
+	expect(listAttempts).toHaveBeenCalled();
+	expect(onAttemptTerminal).toHaveBeenCalledTimes(1);
+
+	await unmount(mounted.root, mounted.container);
+});
+
 test("localizes transient Factor failure categories", async () => {
 	const translate = (key: string, options?: Record<string, unknown>) =>
 		i18n.t(key, options);
@@ -277,7 +324,32 @@ test("localizes transient Factor failure categories", async () => {
 	expect(
 		localizedFactorError("dataset publication cannot be published", translate),
 	).toBe(i18n.t("factors.codes.factor-publication-failed"));
+	expect(
+		localizedFactorError(
+			"system eligibility must pass before a positive Decision",
+			translate,
+		),
+	).toBe(i18n.t("factors.codes.factor-decision-ineligible"));
 	await i18n.changeLanguage(previousLocale);
+});
+
+test("explains the current Decision prerequisite in both locales", async () => {
+	const previousLocale = i18n.language;
+	try {
+		for (const locale of ["en-US", "zh-CN"]) {
+			await i18n.changeLanguage(locale);
+			for (const error of [
+				"Promotion Protocol is stale for the current Decision",
+				"no current Promotion Decision exists for this output",
+			]) {
+				expect(localizedFactorError(error, (key) => i18n.t(key))).toBe(
+					i18n.t("factors.decisions.currentDecisionRequired"),
+				);
+			}
+		}
+	} finally {
+		await i18n.changeLanguage(previousLocale);
+	}
 });
 
 test("applies the selected context to Factor protocol identity and range", () => {
@@ -518,14 +590,52 @@ test("starts evaluation from Host-owned Candidate and Dataset selections", async
 		lockedBy: [],
 		createdAtMs: 1,
 	};
-	const startEvaluationFromContext = jest.fn(
-		async () => ({}) as FactorAttemptView,
-	);
+	const completedAttempt: FactorAttemptView = {
+		attemptId: "attempt-1",
+		userId: "user-1",
+		kind: "factor-evaluation",
+		requestHash: "request-hash",
+		status: "completed",
+		completedUnits: 1,
+		progressTotal: 1,
+		createdAtMs: 1,
+		updatedAtMs: 1,
+	};
+	const startEvaluationFromContext = jest.fn(async () => completedAttempt);
+	let materialized = false;
+	const newDataset = {
+		...dataset,
+		manifest: { ...dataset.manifest, datasetId: "fresh-dataset" },
+	};
+	const report = {
+		lockedBy: [],
+		createdAtMs: 1,
+		report: {
+			reportHash: "report-1",
+			metrics: [
+				{
+					metric: "coverage",
+					observation: { available: { value: 1, sample_count: 4317 } },
+				},
+			],
+		},
+	} as FactorReportView;
 	const adapter = {
 		...makeAdapter(),
 		listCandidates: async () => page([candidate]),
-		listDatasets: async () => page([dataset]),
-		listReports: async () => page([]),
+		listDatasets: async () => page(materialized ? [newDataset] : [dataset]),
+		startMaterializationFromContext: async () => {
+			materialized = true;
+			return { ...completedAttempt, kind: "factor-materialization" };
+		},
+		listAttempts: async () =>
+			page(
+				materialized
+					? [{ ...completedAttempt, kind: "factor-materialization" }]
+					: [],
+			),
+		listReports: async () => page([report]),
+		getReport: async () => report,
 		metricCatalog: async () => ({ definitions: [] }),
 		startEvaluationFromContext,
 	} as unknown as FactorAdapter;
@@ -572,6 +682,39 @@ test("starts evaluation from Host-owned Candidate and Dataset selections", async
 	);
 	expect(mounted.container.textContent).toContain(
 		i18n.t("factors.evaluations.hostOwnsEvidence"),
+	);
+	const inspectReport = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find(
+		(button) => button.textContent === i18n.t("factors.evaluations.inspect"),
+	);
+	await act(async () => (inspectReport as HTMLElement).click());
+	await settle();
+	expect(mounted.container.textContent).toContain("4317");
+	expect(mounted.container.textContent).not.toContain("factors.codes.");
+
+	const datasetsTab = Array.from(
+		mounted.container.querySelectorAll('[role="tab"]'),
+	).find((tab) => tab.textContent === i18n.t("factors.tabs.datasets"));
+	await act(async () => {
+		(datasetsTab as HTMLElement).click();
+	});
+	await settle();
+	const materializeButton = Array.from(
+		mounted.container.querySelectorAll("button"),
+	).find(
+		(button) =>
+			button.textContent === i18n.t("factors.datasets.materializationStart"),
+	);
+	await act(async () => {
+		(materializeButton as HTMLElement).click();
+	});
+	await settle();
+	expect(mounted.container.textContent).toContain(
+		abbreviateIdentifier("fresh-dataset"),
+	);
+	expect(mounted.container.textContent).not.toContain(
+		i18n.t("factors.datasets.materializationStarted"),
 	);
 
 	await unmount(mounted.root, mounted.container);

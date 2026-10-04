@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const env = { ...process.env };
 
@@ -13,6 +14,20 @@ for (const [key, value] of Object.entries(dotenv)) {
 }
 
 if (process.platform === "darwin") {
+	if (!env.SDKROOT) {
+		const selectedDeveloperDir = spawnSync("xcode-select", ["-p"], {
+			encoding: "utf8",
+		});
+		if (selectedDeveloperDir.status === 0) {
+			const developerDir = selectedDeveloperDir.stdout.trim();
+			const sdkRoot = [
+				join(developerDir, "Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"),
+				join(developerDir, "SDKs/MacOSX.sdk"),
+			].find(existsSync);
+			if (sdkRoot) env.SDKROOT = sdkRoot;
+		}
+	}
+
 	const brewPrefix = spawnSync("brew", ["--prefix", "curl-impersonate"], {
 		encoding: "utf8",
 	});

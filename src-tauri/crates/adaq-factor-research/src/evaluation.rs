@@ -46,6 +46,11 @@ pub struct FactorMarketSeries {
 }
 
 impl FactorMarketSeries {
+    pub fn future_close_return(&self, time_ms: i64, horizon: u32) -> Option<(f64, i64)> {
+        let target = target_for(self, time_ms, horizon);
+        target.value.zip(target.target_time_ms)
+    }
+
     fn validate(&self, protocol: &FactorEvaluationProtocol) -> Result<(), EvaluationError> {
         if self.instrument_id.trim().is_empty()
             || self.snapshot_id != protocol.market_data_snapshot_id
@@ -1229,7 +1234,7 @@ fn economic_observations(
         };
     }
     let groups = quantile_groups(pairs);
-    let top = groups.last().filter(|group| !group.is_empty());
+    let top = groups.iter().rev().find(|group| !group.is_empty());
     let bottom = groups.first().filter(|group| !group.is_empty());
     let top_only = top.map_or_else(
         || MetricObservation::unavailable(MetricUndefinedReason::NoEligibleObservations, 0),
@@ -1328,7 +1333,7 @@ fn cross_sectional_economic(
         .map(|pair| (pair.0, pair.1))
         .collect::<Vec<_>>();
     let groups = quantile_groups(&simple);
-    let top = groups.last().filter(|group| !group.is_empty());
+    let top = groups.iter().rev().find(|group| !group.is_empty());
     let bottom = groups.first().filter(|group| !group.is_empty());
     let top_weights = top.map(|group| {
         group
@@ -1860,6 +1865,44 @@ mod tests {
                 .any(|evidence| evidence.reason == TargetUnavailableReason::BarGap)
         );
         assert!(report.validate().is_ok());
+    }
+
+    #[test]
+    fn cross_sectional_economic_uses_highest_populated_bucket_for_three_assets() {
+        let protocol = protocol(FactorScope::CrossSectional, vec![window()]);
+        let observations = [
+            Observation {
+                instrument_id: "A".into(),
+                time_ms: 200,
+                factor: Some(0.0),
+                target: Some(0.01),
+                target_time_ms: Some(300),
+            },
+            Observation {
+                instrument_id: "B".into(),
+                time_ms: 200,
+                factor: Some(1.0),
+                target: Some(0.02),
+                target_time_ms: Some(300),
+            },
+            Observation {
+                instrument_id: "C".into(),
+                time_ms: 200,
+                factor: Some(2.0),
+                target: Some(0.03),
+                target_time_ms: Some(300),
+            },
+        ];
+        let rows = observations.iter().collect::<Vec<_>>();
+
+        let result = cross_sectional_economic(&rows, &protocol);
+
+        assert!(result.top_only.value().is_some());
+        assert!(result.top_minus_bottom.value().is_some());
+        assert_eq!(
+            result.top_weights,
+            Some(BTreeMap::from([("C".into(), 1.0)]))
+        );
     }
 
     #[test]

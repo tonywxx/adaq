@@ -906,10 +906,6 @@ impl CancellationToken {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
-
-    pub(crate) fn is_same(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
 }
 
 impl Default for CancellationToken {
@@ -1042,10 +1038,12 @@ impl DataPipeline {
         Self::open(root, Arc::new(Mutex::new(connection)))
     }
 
+    #[cfg(feature = "deferred-equity")]
     pub(crate) fn root_dir(&self) -> &Path {
         &self.0.root
     }
 
+    #[cfg(any(feature = "deferred-equity", test))]
     pub(crate) fn database(&self) -> Arc<Mutex<Connection>> {
         self.0.database.clone()
     }

@@ -653,10 +653,19 @@ fn plan_slot_source(plan: &FeaturePlan, slot_name: &str) -> Result<FeatureSlotSo
         .find(|node| node.id == output.node_id)
         .ok_or_else(|| format!("Declarative Factor Feature Slot {slot_name} has no frozen node"))?;
     let FeatureOperator::Indicator { id } = &node.operator else {
-        return Err(format!(
-            "Declarative Factor Feature Slot {slot_name} is not a directly reproducible indicator"
-        ));
+        return Ok(FeatureSlotSource::Definition {
+            definition: definition.clone(),
+        });
     };
+    if node
+        .inputs
+        .iter()
+        .any(|input| !matches!(input, FeatureInput::Market { .. }))
+    {
+        return Ok(FeatureSlotSource::Definition {
+            definition: definition.clone(),
+        });
+    }
     let inputs = node
         .inputs
         .iter()
@@ -1194,6 +1203,114 @@ mod tests {
                 .commands
                 .iter()
                 .any(|command| command.contains("cargo component build"))
+        );
+    }
+
+    #[test]
+    fn declarative_generator_preserves_composed_feature_definition() {
+        use adaq_feature_engine::{DefinitionDraft, FeatureNode, FeatureOutput, FeatureScope};
+        let definition = adaq_feature_engine::FeatureDefinition::freeze(DefinitionDraft {
+            definition_id: Uuid::new_v4(),
+            revision: 1,
+            scope: FeatureScope::CrossSectional,
+            nodes: vec![
+                FeatureNode {
+                    id: "return".into(),
+                    operator: FeatureOperator::BackwardSimpleReturn,
+                    scope: FeatureScope::TimeSeries,
+                    inputs: vec![FeatureInput::Market {
+                        field: adaq_feature_engine::MarketField::Close,
+                    }],
+                    parameters: BTreeMap::from([("period".into(), serde_json::json!(1))]),
+                    warmup_bars: 1,
+                },
+                FeatureNode {
+                    id: "percentile".into(),
+                    operator: FeatureOperator::CrossSectionalPercentile,
+                    scope: FeatureScope::CrossSectional,
+                    inputs: vec![FeatureInput::Node {
+                        node_id: "return".into(),
+                        definition_hash: None,
+                    }],
+                    parameters: BTreeMap::new(),
+                    warmup_bars: 1,
+                },
+            ],
+            outputs: vec![FeatureOutput {
+                name: "momentum-score".into(),
+                node_id: "percentile".into(),
+            }],
+        })
+        .unwrap();
+        let engine = FeatureEngineIdentity::for_tests();
+        let plan = FeaturePlan::freeze(adaq_feature_engine::FeaturePlanDraft {
+            definitions: vec![definition.clone()],
+            engine_identity: engine.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+        let candidate = FactorCandidate::freeze(FactorCandidateDraft {
+            candidate_id: Uuid::new_v4(),
+            revision: 1,
+            scope: FactorScope::CrossSectional,
+            feature_slots: vec![FactorFeatureSlot {
+                name: "momentum-score".into(),
+            }],
+            parameters: vec![],
+            outputs: vec![FactorOutput {
+                name: "factor-value".into(),
+            }],
+            source: FactorCandidateSource::Declarative {
+                definition: DeclarativeFactorDefinition {
+                    feature_plan_hash: plan.plan_hash().into(),
+                    operator_catalog_version: adaq_feature_engine::FEATURE_OPERATOR_CATALOG_VERSION
+                        .into(),
+                    outputs: vec![crate::DeclarativeFactorOutputBinding {
+                        output_name: "factor-value".into(),
+                        feature_slot: "momentum-score".into(),
+                    }],
+                },
+            },
+        })
+        .unwrap();
+        let result = generate_declarative_candidate_package(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            &candidate,
+            "composed-factor",
+            &plan.to_json(),
+            &engine,
+            FactorResourcePolicy {
+                fuel_per_call: 1_000_000,
+                memory_bytes: 64 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            result.package.manifest.feature_slots[0].source,
+            FeatureSlotSource::Definition {
+                definition: definition.clone()
+            }
+        );
+        assert_eq!(result.package.manifest.output_names, vec!["factor-value"]);
+        let mut invalid = result.package.manifest;
+        invalid.feature_slots[0].name = "missing-output".into();
+        assert!(
+            adaq_component_tooling::pack_component(invalid.clone(), &result.package.wasm).is_err()
+        );
+        invalid.feature_slots[0].name = "momentum-score".into();
+        invalid.kind = ComponentKind::Strategy;
+        assert!(
+            adaq_component_tooling::pack_component(invalid.clone(), &result.package.wasm).is_err()
+        );
+        invalid.kind = ComponentKind::Factor;
+        let mut tampered = serde_json::to_value(&definition).unwrap();
+        tampered["nodes"][0]["parameters"]["period"] = serde_json::json!(2);
+        invalid.feature_slots[0].source = FeatureSlotSource::Definition {
+            definition: serde_json::from_value(tampered).unwrap(),
+        };
+        assert!(
+            adaq_component_tooling::pack_component(invalid.clone(), &result.package.wasm).is_err()
         );
     }
 

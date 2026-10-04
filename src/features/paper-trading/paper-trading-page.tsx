@@ -88,6 +88,14 @@ export function PaperTradingPage() {
 						? { ...current, account: next, connection: { state: "connected" } }
 						: current,
 			);
+			for (const key of [
+				"operations-health",
+				"operations-alerts",
+				"operations-events",
+				"operations-alert-history",
+			]) {
+				void queryClient.invalidateQueries({ queryKey: [key, userId] });
+			}
 			dialog.current?.close();
 		} catch (reason) {
 			setReconcileError(reconcileFailureMessage(t, reason));

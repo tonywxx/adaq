@@ -739,6 +739,7 @@ pub(crate) fn publish_python_model_signal_dataset(
     user_id: &str,
     dataset_id: &str,
     snapshot_id: &str,
+    universe_snapshot_id: Option<&str>,
     feature_plan_hash: &str,
     factor_dataset_id: &str,
     feature_dataset_id: &str,
@@ -751,6 +752,75 @@ pub(crate) fn publish_python_model_signal_dataset(
     rows: &[adaq_python_research::model::ForecastRow],
 ) -> Result<serde_json::Value, String> {
     validate_user(user_id)?;
+    let snapshots = if let Some(universe_id) = universe_snapshot_id {
+        let universe = state
+            .snapshots
+            .universe_snapshot_for_user(user_id, universe_id)?;
+        if !universe
+            .components
+            .iter()
+            .any(|component| component.snapshot_id == snapshot_id)
+        {
+            return Err("python-model-signal-primary-snapshot-outside-universe".into());
+        }
+        universe
+            .components
+            .into_iter()
+            .map(|component| component.snapshot_id)
+            .collect::<Vec<_>>()
+    } else {
+        vec![snapshot_id.to_owned()]
+    };
+    let mut primary = None;
+    for component_snapshot_id in snapshots {
+        let component_dataset_id = hash(
+            &serde_json::to_vec(&(
+                "python-model-signal@2",
+                dataset_id,
+                &component_snapshot_id,
+                artifact_provenance,
+            ))
+            .map_err(string)?,
+        );
+        let metadata = publish_python_model_component_signal_dataset(
+            state,
+            user_id,
+            &component_dataset_id,
+            &component_snapshot_id,
+            feature_plan_hash,
+            factor_dataset_id,
+            feature_dataset_id,
+            artifact_sha256,
+            artifact_provenance,
+            adapter_id,
+            alpha,
+            seed,
+            forecast_contract,
+            rows,
+        )?;
+        if component_snapshot_id == snapshot_id {
+            primary = Some(metadata);
+        }
+    }
+    primary.ok_or_else(|| "python-model-signal-primary-snapshot-missing".into())
+}
+
+fn publish_python_model_component_signal_dataset(
+    state: &LocalResearchState,
+    user_id: &str,
+    dataset_id: &str,
+    snapshot_id: &str,
+    feature_plan_hash: &str,
+    factor_dataset_id: &str,
+    feature_dataset_id: &str,
+    artifact_sha256: &str,
+    artifact_provenance: &BTreeMap<String, String>,
+    adapter_id: &str,
+    alpha: f64,
+    seed: u64,
+    forecast_contract: &str,
+    rows: &[adaq_python_research::model::ForecastRow],
+) -> Result<serde_json::Value, String> {
     if dataset_id.is_empty()
         || snapshot_id.is_empty()
         || feature_plan_hash.is_empty()
@@ -822,8 +892,14 @@ pub(crate) fn publish_python_model_signal_dataset(
         provenance: artifact_provenance.clone(),
     };
     let producer_segments = vec![ModelProducerSegment {
-        start_prediction_time_ms: published_rows.first().map(|row| row.1),
-        end_prediction_time_ms: published_rows.last().map(|row| row.1),
+        start_prediction_time_ms: published_rows
+            .iter()
+            .find(|row| row.4.as_deref() != Some("model-window-outside-final"))
+            .map(|row| row.1),
+        end_prediction_time_ms: published_rows
+            .iter()
+            .rfind(|row| row.4.as_deref() != Some("model-window-outside-final"))
+            .map(|row| row.1),
         model_archive_sha256: artifact_sha256.into(),
         model_artifact: Some(model_artifact.clone()),
         model_parameters: model_parameters.clone(),
@@ -1097,6 +1173,11 @@ pub(crate) fn string(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod python_model_tests {
     use super::*;
+    use adaq_backtest_core::{
+        MarketDataUniverseSnapshot, SnapshotDatasetBinding, SnapshotProvenance,
+        SnapshotUniverseBinding, UniverseSnapshotComponent,
+    };
+    use adaq_data_core::market::{InstrumentId, Venue};
     use adaq_data_core::{BarInterval, BarSeries, OhlcvBar};
     use rust_decimal::Decimal;
 
@@ -1111,34 +1192,96 @@ mod python_model_tests {
                 .as_nanos()
         ));
         let state = LocalResearchState::open(&root).unwrap();
-        let snapshot = state
-            .persist_snapshot_for_user(
+        let venue = Venue::crypto_spot("okx").unwrap();
+        let component = |code: &str| {
+            let instrument = InstrumentId::new(venue.clone(), code).unwrap();
+            let dataset = SnapshotDatasetBinding {
+                instrument: instrument.clone(),
+                source_id: format!("source-{code}"),
+                source_revision: 1,
+                canonical_id: Some(format!("canonical-{code}")),
+                derived_id: None,
+                quality_report_id: format!("quality-{code}"),
+                content_sha256: format!("hash-{code}"),
+            };
+            let snapshot = state
+                .snapshots
+                .persist_for_user_with_provenance(
+                    "alice",
+                    &BarSeries {
+                        src: "okx".into(),
+                        code: code.into(),
+                        interval: BarInterval::OneHour,
+                        bars: vec![
+                            OhlcvBar {
+                                open_time_ms: 0,
+                                open: Decimal::ONE,
+                                high: Decimal::ONE,
+                                low: Decimal::ONE,
+                                close: Decimal::ONE,
+                                base_volume: Decimal::ONE,
+                                quote_volume: Decimal::ONE,
+                            },
+                            OhlcvBar {
+                                open_time_ms: 3_600_000,
+                                open: Decimal::ONE,
+                                high: Decimal::ONE,
+                                low: Decimal::ONE,
+                                close: Decimal::ONE,
+                                base_volume: Decimal::ONE,
+                                quote_volume: Decimal::ONE,
+                            },
+                        ],
+                        gaps: vec![],
+                    },
+                    Some(SnapshotProvenance {
+                        venue: venue.clone(),
+                        datasets: vec![dataset.clone()],
+                        quality_report_ids: vec![dataset.quality_report_id.clone()],
+                        calendar_snapshot_ids: vec!["calendar-1".into()],
+                        provider_capability_snapshots: vec![],
+                        universe: None,
+                        derivation_algorithm_version: None,
+                    }),
+                )
+                .unwrap();
+            (snapshot, dataset, instrument)
+        };
+        let (snapshot, btc_dataset, btc) = component("BTC-USDT");
+        let (eth_snapshot, eth_dataset, eth) = component("ETH-USDT");
+        let universe = state
+            .snapshots
+            .persist_universe_for_user(
                 "alice",
-                &BarSeries {
-                    src: "okx".into(),
-                    code: "BTC-USDT".into(),
+                MarketDataUniverseSnapshot {
+                    snapshot_id: String::new(),
+                    venue,
                     interval: BarInterval::OneHour,
-                    bars: vec![
-                        OhlcvBar {
-                            open_time_ms: 0,
-                            open: Decimal::ONE,
-                            high: Decimal::ONE,
-                            low: Decimal::ONE,
-                            close: Decimal::ONE,
-                            base_volume: Decimal::ONE,
-                            quote_volume: Decimal::ONE,
+                    start_time_ms: 0,
+                    end_time_ms: 3_600_000,
+                    universe: SnapshotUniverseBinding {
+                        universe_id: "universe-1".into(),
+                        as_of_ms: 0,
+                        evidence_state: "observed".into(),
+                        evidence_reasons: vec!["instrument-master-observed-at-as-of".into()],
+                        coverage_start_ms: Some(0),
+                        coverage_end_ms: None,
+                        instruments: vec![btc, eth],
+                    },
+                    components: vec![
+                        UniverseSnapshotComponent {
+                            snapshot_id: snapshot.snapshot_id.clone(),
+                            dataset: btc_dataset,
                         },
-                        OhlcvBar {
-                            open_time_ms: 3_600_000,
-                            open: Decimal::ONE,
-                            high: Decimal::ONE,
-                            low: Decimal::ONE,
-                            close: Decimal::ONE,
-                            base_volume: Decimal::ONE,
-                            quote_volume: Decimal::ONE,
+                        UniverseSnapshotComponent {
+                            snapshot_id: eth_snapshot.snapshot_id.clone(),
+                            dataset: eth_dataset,
                         },
                     ],
-                    gaps: vec![],
+                    quality_report_ids: vec!["quality-BTC-USDT".into(), "quality-ETH-USDT".into()],
+                    calendar_snapshot_ids: vec!["calendar-1".into()],
+                    provider_capability_snapshots: vec![],
+                    content_sha256: String::new(),
                 },
             )
             .unwrap();
@@ -1150,33 +1293,85 @@ mod python_model_tests {
                 unavailable_reason: None,
             },
             adaq_python_research::model::ForecastRow {
+                datetime: 0,
+                instrument: "ETH-USDT".into(),
+                value: Some(0.75),
+                unavailable_reason: None,
+            },
+            adaq_python_research::model::ForecastRow {
                 datetime: 3_600_000,
                 instrument: "BTC-USDT".into(),
                 value: None,
                 unavailable_reason: Some("target-window-boundary".into()),
             },
+            adaq_python_research::model::ForecastRow {
+                datetime: 3_600_000,
+                instrument: "ETH-USDT".into(),
+                value: None,
+                unavailable_reason: Some("target-window-boundary".into()),
+            },
         ];
-        let metadata = publish_python_model_signal_dataset(
-            &state,
-            "alice",
-            "python-model-forecast",
-            &snapshot.snapshot_id,
-            "feature-plan",
-            "factor-dataset",
-            "feature-dataset",
-            &"b".repeat(64),
-            &BTreeMap::from([(String::from("resourcePolicy"), String::from("policy"))]),
-            "qlib-linear-ridge@1",
-            1.0,
-            7,
-            "forecast:continuous-future-close-return:native@1",
-            &rows,
-        )
-        .unwrap();
+        let provenance = BTreeMap::from([
+            ("trainingWindow".into(), "-100..-1".into()),
+            ("fittingWindow".into(), "-100..-1".into()),
+            ("normalizationWindow".into(), "-100..-1".into()),
+        ]);
+        let publish = |user_id: &str| {
+            publish_python_model_signal_dataset(
+                &state,
+                user_id,
+                "python-model-forecast",
+                &snapshot.snapshot_id,
+                Some(&universe.snapshot_id),
+                "feature-plan",
+                "factor-dataset",
+                "feature-dataset",
+                &"b".repeat(64),
+                &provenance,
+                "qlib-linear-ridge@1",
+                1.0,
+                7,
+                "forecast:continuous-future-close-return:native@1",
+                &rows,
+            )
+        };
+        let metadata = publish("alice").unwrap();
+        assert_eq!(publish("alice").unwrap(), metadata);
+        assert!(publish("bob").is_err());
         assert_eq!(metadata["predictionSource"], "adaq-python-model@1");
         assert_eq!(metadata["rowCount"], 2);
         assert_eq!(metadata["unavailableCount"], 1);
-        let page = signal_rows_page(&state, "alice", "python-model-forecast", 1).unwrap();
+        let eth_id = hash(
+            &serde_json::to_vec(&(
+                "python-model-signal@2",
+                "python-model-forecast",
+                &eth_snapshot.snapshot_id,
+                &provenance,
+            ))
+            .unwrap(),
+        );
+        let eth_page = signal_rows_page(&state, "alice", &eth_id, 1).unwrap();
+        assert_eq!(eth_page["total"], 2);
+        assert_eq!(eth_page["items"][0]["values"][0], 0.75);
+        assert_eq!(
+            eth_page["items"][1]["unavailableReason"],
+            "target-window-boundary"
+        );
+        let primary_id = metadata["datasetId"].as_str().unwrap();
+        let datasets = backtest_signal_datasets(
+            &state,
+            "alice",
+            false,
+            Some(&[primary_id.into(), eth_id.clone()]),
+        )
+        .unwrap();
+        assert_eq!(datasets.len(), 2);
+        assert!(
+            datasets
+                .iter()
+                .all(|dataset| dataset.evidence_state == "out-of-sample")
+        );
+        let page = signal_rows_page(&state, "alice", primary_id, 1).unwrap();
         assert_eq!(page["total"], 2);
         assert_eq!(page["items"][0]["availableAtMs"], 3_600_000);
         assert_eq!(page["items"][1]["status"], "unavailable");
@@ -1185,7 +1380,7 @@ mod python_model_tests {
             "target-window-boundary"
         );
         assert!(
-            signal_rows_page(&state, "bob", "python-model-forecast", 1)
+            signal_rows_page(&state, "bob", primary_id, 1)
                 .unwrap_err()
                 .contains("not available")
         );

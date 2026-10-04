@@ -333,6 +333,14 @@ impl BotSupervisor {
         result
     }
 
+    pub(crate) fn has_worker(&self, bot_id: &str) -> Result<bool, String> {
+        Ok(self
+            .workers
+            .lock()
+            .map_err(|error| error.to_string())?
+            .contains_key(bot_id))
+    }
+
     pub(crate) fn stop(
         &self,
         user_id: &str,
@@ -416,20 +424,7 @@ impl BotSupervisor {
         event: WorkerHealthEvent,
     ) -> Result<(), String> {
         let (state, condition, code, detail, evidence) = match event {
-            WorkerHealthEvent::Heartbeat {
-                observed_at_ms,
-                state,
-            } => (
-                HealthState::Healthy,
-                "worker_heartbeat",
-                "worker-heartbeat",
-                format!("Worker heartbeat observed in state {state:?}."),
-                json!({
-                    "botId": bot_id,
-                    "state": format!("{state:?}"),
-                    "observedAtMs": observed_at_ms,
-                }),
-            ),
+            WorkerHealthEvent::Heartbeat { .. } => return Ok(()),
             WorkerHealthEvent::Diagnostic { code, detail } => (
                 HealthState::Degraded,
                 "worker_diagnostic",
@@ -509,6 +504,33 @@ fn worker_registry_entry_is_active(state: LifecycleState) -> bool {
             | LifecycleState::Paused
             | LifecycleState::Stopping
     )
+}
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::*;
+
+    #[test]
+    fn worker_heartbeats_are_checked_without_persisting_every_frame() {
+        let database = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
+        let operations = OperationsStore::open(database.clone()).unwrap();
+        let bots = BotStore::open(database).unwrap();
+        let supervisor = BotSupervisor::new(operations.clone(), bots).unwrap();
+
+        supervisor
+            .observe_worker_event(
+                "user-a",
+                "bot-a",
+                "bot-a",
+                WorkerHealthEvent::Heartbeat {
+                    observed_at_ms: 1,
+                    state: adaq_bot_runtime::WorkerHealthState::Ready,
+                },
+            )
+            .unwrap();
+
+        assert!(operations.events_for_user("user-a", 1).unwrap().is_empty());
+    }
 }
 
 #[cfg(test)]

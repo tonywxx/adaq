@@ -2210,8 +2210,7 @@ fn create_experiment_feedback(
         let (market_evidence, realized) = crate::paper_feedback_market_evidence(
             &bot,
             &attempt,
-            &market_snapshot,
-            &market_bars,
+            &[(market_snapshot, market_bars)],
             horizon_bars,
             report.observation_start_ms,
             report.observation_end_ms,
@@ -2430,6 +2429,7 @@ mod tests {
                     occurred_at_ms: 200,
                 },
             ],
+            order_absence_recoveries: vec![],
             provider_evidence: vec![
                 ExecutionOutcome::Accepted(ProviderEvidence {
                     provider: AdapterKind::OkxDemo,
@@ -2710,6 +2710,7 @@ mod tests {
             unmanaged_positions: Vec::new(),
             reconciliation_required: false,
             last_decision_time_ms: None,
+            last_event_stream_epoch: None,
             created_at_ms: 1,
             updated_at_ms: 30,
         };

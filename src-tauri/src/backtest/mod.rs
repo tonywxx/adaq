@@ -78,6 +78,13 @@ pub(crate) trait BacktestSource:
     SnapshotReadSource + ComponentPackageSource + Send + Sync
 {
     fn database(&self) -> Result<MutexGuard<'_, Connection>, String>;
+    fn accepted_factor_feature_dataset(
+        &self,
+        _user_id: &str,
+        _archive_sha256: &str,
+    ) -> Result<adaq_factor_research::CompletedFeatureDataset, String> {
+        Err("Factor Definition inputs require the accepted Feature Dataset".into())
+    }
     fn signal_datasets(
         &self,
         user_id: &str,

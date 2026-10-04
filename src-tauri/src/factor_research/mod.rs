@@ -424,7 +424,7 @@ pub(crate) struct FactorModelInputBinding {
     pub snapshot_id: String,
     pub universe_id: String,
     pub output_name: String,
-    pub lookback: u32,
+    pub lookback: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -6763,8 +6763,8 @@ impl<'a> ResearchStore<'a> {
             .engine_identity
             .parameters
             .get("lookback")
-            .ok_or_else(|| "Promotion Factor lookback is not bound".to_owned())?
-            .parse::<u32>()
+            .map(|value| value.parse::<u32>())
+            .transpose()
             .map_err(|_| "Promotion Factor lookback is invalid".to_owned())?;
         Ok(FactorModelInputBinding {
             decision_hash: record.decision.decision_hash,

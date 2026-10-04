@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import pathlib
+import sys
 import tomllib
 import zipfile
 
@@ -50,7 +52,38 @@ def assert_true(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def check_model_timestamp_boundary() -> None:
+    sys.dont_write_bytecode = True
+    sys.path[:0] = [str(ROOT / "python/adaq-research-sdk/src"),
+                    str(ROOT / "python/adaq-qlib-ridge-adapter/src")]
+    from adaq import ModelArtifact, ModelContext, Unavailable
+    from adaq.qlib import DatasetH
+
+    spec = importlib.util.spec_from_file_location("ridge_project", EXAMPLES / "py-model-qlib-ridge-return/src/project.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    start, step = 1_775_001_600_000, 900_000
+    row = lambda index: {"datetime": start + index * step, "instrument": "okx:BTC-USDT", "factor-value": 3.0}
+    dataset = DatasetH.from_records((row(-20), row(-19)), (row(-10),),
+                                   tuple(row(index) for index in range(11)), (0.1, 0.2), (0.3,))
+    transformation = {"featureNames": ["factor-value"], "means": [0.0], "scales": [1.0],
+                      "transformationSha256": "a" * 64}
+    artifact = ModelArtifact("adaq:linear-model:candidate@1", {
+        "alpha": 1.0, "coefficients": [2.0], "intercept": 1.0,
+        "input_slots": ["factor-value"], "transformation_sha256": "a" * 64,
+    })
+    context = ModelContext((), 7, {"dataset": dataset, "transformation": transformation,
+                                  "targetWindowEnd": start + 10 * step, "targetIntervalMs": step})
+    forecasts = module.create_project().predict(context, artifact)
+    assert len(forecasts) == 11 and dataset.prepare("test").labels is None
+    assert [forecast.prediction_time_ms for forecast in forecasts] == [start + index * step for index in range(11)]
+    assert all(forecast.value == 7.0 for forecast in forecasts[:6])
+    assert all(isinstance(forecast.value, Unavailable) and forecast.value.reason == "target-window-boundary"
+               for forecast in forecasts[6:])
+
+
 def main() -> None:
+    check_model_timestamp_boundary()
     manifest = json.loads((FIXTURE / "manifest.json").read_text(encoding="utf-8"))
     assert_true(manifest == EXPECTED_FIXTURE, "fixture manifest drifted")
     fixture_readme = (FIXTURE / "README.md").read_text(encoding="utf-8").lower()

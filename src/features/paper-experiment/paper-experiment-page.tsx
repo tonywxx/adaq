@@ -80,12 +80,12 @@ type ExperimentView = {
 			canPause: boolean;
 			canResume: boolean;
 		};
-			attempts: Array<{
-				attemptId: string;
-				unmanagedPositions: string[];
-				reconciliationRequired: boolean;
-				evidence: Array<{ code: string }>;
-			}>;
+		attempts: Array<{
+			attemptId: string;
+			unmanagedPositions: string[];
+			reconciliationRequired: boolean;
+			evidence: Array<{ code: string }>;
+		}>;
 	}>;
 	valuations: Array<{
 		instrument: Instrument;
@@ -341,9 +341,9 @@ export function PaperExperimentPage() {
 		const timer = window.setInterval(() => {
 			void invoke<ExperimentView>("paper_experiment_refresh", {
 				request: { experimentId },
-				})
-					.then(setView)
-					.catch((error) => setFeedback(String(error)));
+			})
+				.then(setView)
+				.catch((error) => setFeedback(String(error)));
 		}, 30_000);
 		return () => window.clearInterval(timer);
 	}, [experimentIsActive, experimentId, setView]);
@@ -494,9 +494,9 @@ export function PaperExperimentPage() {
 				<ExperimentEvidence
 					current={current}
 					streamStatus={streamStatus}
-				onAction={runAction}
-				pendingAction={pendingAction}
-				onBotControl={controlBot}
+					onAction={runAction}
+					pendingAction={pendingAction}
+					onBotControl={controlBot}
 					pendingBotCommand={pendingBotCommand}
 					t={t}
 				/>
@@ -686,8 +686,7 @@ function ExperimentEvidence({
 					const warmupComplete =
 						instrumentAttempt?.evidence.some(
 							(evidence, index) =>
-								evidence.code === "warmup-complete" &&
-								index > latestWarmupReset,
+								evidence.code === "warmup-complete" && index > latestWarmupReset,
 						) ?? false;
 					return (
 						<Card key={binding.instrument}>
@@ -703,16 +702,17 @@ function ExperimentEvidence({
 									{formatDecimal(binding.allocationUsdt)} USDT
 								</div>
 								<div>
-									{t("paperExperiment.entryCap")}: {" "}
-									{formatDecimal(binding.entryNotionalCapUsdt)} USDT · {" "}
-									{t("paperExperiment.reservedCash")}: {" "}
+									{t("paperExperiment.entryCap")}:{" "}
+									{formatDecimal(binding.entryNotionalCapUsdt)} USDT ·{" "}
+									{t("paperExperiment.reservedCash")}:{" "}
 									{formatDecimal(binding.reservedCashUsdt)} USDT
 								</div>
 								<div>
 									{t("paperExperiment.qualification")}: {binding.qualificationId}
 								</div>
 								<div>
-									{t("paperExperiment.warmup")}: {warmupComplete
+									{t("paperExperiment.warmup")}:{" "}
+									{warmupComplete
 										? t("paperExperiment.warmupComplete")
 										: t("paperExperiment.warmupPending")}
 								</div>
@@ -723,7 +723,7 @@ function ExperimentEvidence({
 									</div>
 								) : null}
 								{instrumentAttempt?.reconciliationRequired ? (
-									<p className="text-amber-600">
+									<p role="status" className="text-muted-foreground">
 										{t("paperExperiment.reconciliationRequired")}
 									</p>
 								) : null}
@@ -784,12 +784,12 @@ function ExperimentEvidence({
 										<div>
 											{t("paperExperiment.position")}:{" "}
 											{formatDecimal(instrumentReport.endingPositionQuantity)} /{" "}
-										{formatOptionalDecimal(instrumentReport.endingPositionValueUsdt)}
+											{formatOptionalDecimal(instrumentReport.endingPositionValueUsdt)}
 										</div>
 										<div>
 											{t("paperExperiment.pnl")}:{" "}
 											{formatDecimal(instrumentReport.realizedPnlUsdt)} /{" "}
-										{formatOptionalDecimal(instrumentReport.unrealizedPnlUsdt)}
+											{formatOptionalDecimal(instrumentReport.unrealizedPnlUsdt)}
 										</div>
 										<div>
 											{t("paperExperiment.fees")}:{" "}
@@ -800,7 +800,7 @@ function ExperimentEvidence({
 										</div>
 										<div>
 											{t("paperExperiment.equityReturn")}:{" "}
-										{formatOptionalDecimal(instrumentReport.netEquityReturn)}
+											{formatOptionalDecimal(instrumentReport.netEquityReturn)}
 										</div>
 										<div>
 											{t("paperExperiment.exposure")}:{" "}
@@ -816,7 +816,7 @@ function ExperimentEvidence({
 										</div>
 										<div>
 											{t("paperExperiment.maxDrawdown")}:{" "}
-										{formatOptionalDecimal(instrumentReport.maxDrawdown)}
+											{formatOptionalDecimal(instrumentReport.maxDrawdown)}
 										</div>
 										<Badge variant="outline">
 											{t(`paperExperiment.states.${instrumentReport.evidenceState}`)}
@@ -861,7 +861,8 @@ function ExperimentEvidence({
 						) : null}
 						{report.rankedInstruments.length ? (
 							<p>
-								{t("paperExperiment.rankingOrder")}: {report.rankedInstruments.join(" → ")}
+								{t("paperExperiment.rankingOrder")}:{" "}
+								{report.rankedInstruments.join(" → ")}
 							</p>
 						) : null}
 						{report.commonEndValuationAtMs ? (

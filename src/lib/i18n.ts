@@ -103,6 +103,8 @@ const english = {
 				"Establish a Research Evidence Context before starting Factor research.",
 			"factor-context-stale":
 				"The selected Factor research context is stale; select the Feature Dataset again.",
+			"factor-context-dataset-engine-stale":
+				"This Factor Dataset uses an older research engine. Materialize the Candidate again and select the new Dataset before evaluation.",
 			"factor-context-feature-dataset-inaccessible":
 				"This Feature Dataset is not accessible to the current User.",
 			"factor-context-feature-dataset-incomplete":
@@ -669,7 +671,8 @@ const english = {
 		reservedCash: "Reserved cash",
 		positions: "Positions",
 		ordersAndFills: "Orders / Fills",
-		restartRequired: "Host restart recovery requires reconciliation.",
+		restartRequired:
+			"Host restart recovery needs current account reconciliation. Bot Start/Retry reconciles the OKX Demo account before enabling risk; no manual Reconcile is needed first.",
 		staleProjection:
 			"The latest owning evidence is stale; inspect the owning workspace.",
 		noEvents: "No recent operational events are retained.",
@@ -818,16 +821,16 @@ const english = {
 		loading: "Loading retained paper account evidence…",
 		emptyTitle: "No retained OKX Demo account evidence",
 		emptyDescription:
-			"Use Reconcile after confirming your OKX Demo connection. This workspace never contacts the provider on entry.",
+			"After confirming your OKX Demo connection, click Reconcile to load account evidence here. Bot Start/Retry also reconciles automatically before enabling risk, so you do not need to click Reconcile first.",
 		unavailable: "Retained paper evidence is temporarily unavailable.",
 		connectionDegraded: "Retained connection is degraded.",
 		connectionDisconnected: "No OKX Demo connection is configured.",
 		reconciliationRequired:
-			"Reconciliation Required: do not rely on this account state until Reconcile succeeds.",
+			"This saved account state is not reconciled; do not rely on it until reconciliation succeeds. Bot Start/Retry automatically reconciles before enabling risk, so no manual Reconcile is needed first.",
 		restartRequired:
-			"Restart detected: Reconciliation Required before relying on this account state.",
+			"Host restart detected; do not rely on this saved account state. Bot Start/Retry automatically reconciles the OKX Demo account before enabling risk; no manual Reconcile is needed first.",
 		uncertain:
-			"Uncertain provider evidence is retained. Reconcile before relying on account state.",
+			"Uncertain provider evidence is retained; reconcile before relying on account state. Bot Start/Retry automatically reconciles before enabling risk; no manual Reconcile is needed first.",
 		provider: "OKX Demo",
 		account: "OKX Demo account",
 		observed: "Observed",
@@ -996,7 +999,8 @@ const english = {
 		warmup: "Warmup",
 		warmupComplete: "complete",
 		warmupPending: "pending",
-		reconciliationRequired: "Reconciliation is required before further risk.",
+		reconciliationRequired:
+			"When you Start or Retry a Bot, the Host automatically reconciles the OKX Demo account before enabling risk. No manual Reconcile is needed.",
 		valuations: "Valuations",
 		reconciliation: "Reconciliation",
 		instrument: "Instrument",
@@ -1082,7 +1086,8 @@ const english = {
 		orders: "Paper orders",
 		evidence: "Correlated evidence",
 		none: "None",
-		reconciliationRequired: "Reconciliation Required before new risk is enabled.",
+		reconciliationRequired:
+			"This Attempt's account state is not confirmed yet. Start or Retry automatically reconciles the OKX Demo account and enables risk only after the check passes; no manual Reconcile is needed first.",
 		unmanaged: "Unmanaged positions",
 		start: "Start",
 		retry: "Retry",
@@ -1923,6 +1928,7 @@ const english = {
 			trust: "Trust Revision",
 			trusted: "Trusted",
 			reviewTrust: "Review Trust and Run",
+			reviewModelTrust: "Review Model Trust",
 			syncEnvironment: "Sync Environment",
 			environment: "Ready Environment SHA-256",
 			environmentHint:
@@ -1937,6 +1943,8 @@ const english = {
 			revision: "Revision",
 			review: {
 				title: "Review Python Run",
+				modelDescription:
+					"Trust this exact Model Revision, then run training in Model Lab with a selected Factor Dataset. This confirmation starts no Attempt.",
 				description:
 					"Confirm the exact immutable revision, managed environment, inputs, parameters, seed, and resource policy before execution.",
 				revision: "Exact Revision",
@@ -1966,12 +1974,13 @@ const english = {
 		modelLab: {
 			title: "Host-fed Qlib Ridge Model",
 			description:
-				"Run the synthetic default, retain the alpha grid, record your Selection decision, then evaluate once on held-out labels.",
+				"Train on the selected Factor Dataset, retain the alpha grid, record your Selection decision, then evaluate once on held-out labels.",
 			deploymentTitle: "Qualify Model Deployment",
 			gate9: "Gate 9",
 			deploymentDescription:
 				"Qualify the exact selected Model Artifact and completed Final Evaluation as an inference-only WASI Model Component.",
 			qualifyDeployment: "Qualify Model Deployment",
+			refreshForecastPublication: "Refresh Forecast publication",
 			qualified: "Qualified",
 			retryQualification: "Retry Qualification",
 			completeFinalEvaluation:
@@ -1987,9 +1996,9 @@ const english = {
 			deploymentPackage:
 				"Package {{package}} · Component {{component}} v{{version}} · WASM {{wasm}}",
 			deploymentLibraryImported: "Component Library imported {{archive}}",
-			runDefault: "Run α=1 demo",
+			runDefault: "Run α=1 model",
 			registerGrid: "Register α grid",
-			completeTrial: "Complete trial",
+			completeTrial: "Run and complete trial",
 			retainFailure: "Retain failure",
 			retryTrial: "Retry this Trial",
 			select: "Record selection",
@@ -2173,6 +2182,8 @@ const english = {
 			"factor-evaluation-failed": "Factor evaluation failed",
 			"factor-family-grid-failed": "Factor Grid registration failed",
 			"factor-research-failed": "Factor research failed",
+			"factor-decision-ineligible":
+				"All eligibility gates must pass before recording a positive Decision. Run the eligibility check to see which gates failed.",
 			"factor-compatibility-failed": "Factor compatibility check failed",
 			"factor-validation-failed": "Factor validation failed",
 			"factor-resource-failed": "Factor resource limit reached",
@@ -2375,7 +2386,7 @@ const english = {
 			marketSeriesHint: "Use canonical typed market bar objects.",
 			featureEvidenceHint: "Optional Feature Dataset or materialization evidence.",
 			noRandomSplit: "No random split: chronological walk-forward only.",
-			started: "Evaluation queued.",
+			attemptState: "Evaluation Attempt {{id}}: {{status}}.",
 			start: "Start Evaluation",
 			inspector: "Evaluation Report",
 			dataset: "Dataset",
@@ -2458,13 +2469,16 @@ const english = {
 			eligibilityHeading: "M12 eligibility check",
 			eligibilityDescription:
 				"Check the native component eligibility contract explicitly.",
-			eligibilityHint: "Provide the exact Promotion Protocol JSON.",
+			eligibilityHint:
+				"Record a Decision for the frozen evidence before checking eligibility.",
+			currentDecisionRequired:
+				"Record a Decision for this frozen Promotion Protocol, then check eligibility again.",
 			checkEligibility: "Check eligibility",
 			eligible: "Eligible evidence confirmed.",
 			ineligible: "Not eligible",
 			noReason: "No typed reason returned.",
 			currentEvidenceMissing:
-				"The completed output lacks a current frozen evidence set.",
+				"The current frozen evidence and Decision do not establish eligibility. Review the eligibility gates below.",
 			gates: "Eligibility gates",
 			passed: "Passed",
 			failed: "Failed",
@@ -2670,6 +2684,8 @@ const factorResearchSimplifiedChinese = {
 		"factor-evaluation-failed": "Factor 评估失败",
 		"factor-family-grid-failed": "Factor Grid 注册失败",
 		"factor-research-failed": "Factor 研究失败",
+		"factor-decision-ineligible":
+			"必须通过全部资格门槛才能记录正向 Decision。请运行资格检查查看未通过的门槛。",
 		"factor-compatibility-failed": "Factor 兼容性检查失败",
 		"factor-validation-failed": "Factor 校验失败",
 		"factor-resource-failed": "Factor 资源限制已触发",
@@ -2864,7 +2880,7 @@ const factorResearchSimplifiedChinese = {
 		marketSeriesHint: "使用规范化的类型化市场 Bar 对象。",
 		featureEvidenceHint: "可选的 Feature Dataset 或物化证据。",
 		noRandomSplit: "不使用随机切分：仅时间顺序 walk-forward。",
-		started: "Evaluation 已排队。",
+		attemptState: "Evaluation Attempt {{id}}：{{status}}。",
 		start: "启动 Evaluation",
 		inspector: "Evaluation Report",
 		dataset: "Dataset",
@@ -2941,12 +2957,15 @@ const factorResearchSimplifiedChinese = {
 		decisionSaved: "Decision 已记录。",
 		eligibilityHeading: "M12 Eligibility 检查",
 		eligibilityDescription: "显式检查原生 Component Eligibility 契约。",
-		eligibilityHint: "提供精确的 Promotion Protocol JSON。",
+		eligibilityHint: "请先为冻结证据记录 Decision，再检查资格。",
+		currentDecisionRequired:
+			"请先为此冻结的 Promotion Protocol 记录 Decision，再检查资格。",
 		checkEligibility: "检查 Eligibility",
 		eligible: "已确认符合条件的证据。",
 		ineligible: "不符合条件",
 		noReason: "未返回类型化原因。",
-		currentEvidenceMissing: "已完成输出缺少当前冻结的证据集合。",
+		currentEvidenceMissing:
+			"当前冻结证据与 Decision 尚未满足资格要求。请查看下方的资格门槛。",
 		gates: "Eligibility 门控",
 		passed: "通过",
 		failed: "失败",
@@ -3158,6 +3177,8 @@ const simplifiedChinese = {
 				"开始因子研究前，请先建立 Research Evidence Context。",
 			"factor-context-stale":
 				"已选择的因子研究 Context 已过期，请重新选择 Feature Dataset。",
+			"factor-context-dataset-engine-stale":
+				"此 Factor Dataset 使用旧研究引擎。请重新物化 Candidate，并选择新 Dataset 后再评估。",
 			"factor-context-feature-dataset-inaccessible":
 				"当前 User 无权访问此 Feature Dataset。",
 			"factor-context-feature-dataset-incomplete":
@@ -3459,6 +3480,7 @@ const simplifiedChinese = {
 			trust: "信任 Revision",
 			trusted: "已信任",
 			reviewTrust: "审查信任并运行",
+			reviewModelTrust: "审查 Model 信任",
 			syncEnvironment: "同步 Environment",
 			environment: "Ready Environment SHA-256",
 			environmentHint:
@@ -3473,6 +3495,8 @@ const simplifiedChinese = {
 			revision: "Revision",
 			review: {
 				title: "审查 Python 运行",
+				modelDescription:
+					"信任此精确 Model Revision，然后在 Model Lab 使用选定的 Factor Dataset 启动训练。此确认不会启动 Attempt。",
 				description:
 					"执行前确认精确的不可变 Revision、托管 Environment、输入、参数、Seed 和资源策略。",
 				revision: "精确 Revision",
@@ -3501,12 +3525,13 @@ const simplifiedChinese = {
 		modelLab: {
 			title: "Host-fed Qlib Ridge 模型",
 			description:
-				"运行合成默认值，保留 alpha 网格，记录用户选择，然后只在保留标签上进行一次最终评估。",
+				"使用选中的 Factor Dataset 训练，保留 alpha 网格，记录用户选择，然后只在保留标签上进行一次最终评估。",
 			deploymentTitle: "资格认定 Model Deployment",
 			gate9: "Gate 9",
 			deploymentDescription:
 				"将精确选中的 Model Artifact 和已完成的 Final Evaluation 资格认定为仅推理 WASI Model Component。",
 			qualifyDeployment: "资格认定 Model Deployment",
+			refreshForecastPublication: "刷新 Forecast 发布",
 			qualified: "已通过资格认定",
 			retryQualification: "重试资格认定",
 			completeFinalEvaluation:
@@ -3521,9 +3546,9 @@ const simplifiedChinese = {
 			deploymentPackage:
 				"Package {{package}} · Component {{component}} v{{version}} · WASM {{wasm}}",
 			deploymentLibraryImported: "Component Library 已导入 {{archive}}",
-			runDefault: "运行 α=1 演示",
+			runDefault: "运行 α=1 模型",
 			registerGrid: "注册 α 网格",
-			completeTrial: "完成 Trial",
+			completeTrial: "运行并完成 Trial",
 			retainFailure: "保留失败",
 			retryTrial: "重试此 Trial",
 			select: "记录选择",
@@ -4002,7 +4027,8 @@ const simplifiedChinese = {
 		reservedCash: "预留现金",
 		positions: "仓位",
 		ordersAndFills: "订单 / 成交",
-		restartRequired: "Host 重启恢复需要重新对账。",
+		restartRequired:
+			"Host 重启后的账户状态需要重新对账。启动或重试 Bot 时，Host 会先自动对账 OKX Demo 账户再启用风险，无需先手动点击“对账”。",
 		staleProjection: "最新所属证据已过期；请打开所属工作区。",
 		noEvents: "没有保留最新运行事件。",
 		openResearch: "打开策略研究",
@@ -4136,13 +4162,16 @@ const simplifiedChinese = {
 		loading: "正在加载保留的模拟账户证据…",
 		emptyTitle: "没有保留的 OKX Demo 账户证据",
 		emptyDescription:
-			"确认 OKX Demo 连接后可执行对账。本工作区进入时绝不会联系 Provider。",
+			"确认 OKX Demo 连接后，可点击“对账”在此加载账户证据。启动或重试 Bot 时也会自动对账并通过检查后再启用风险，无需提前手动点击“对账”。",
 		unavailable: "保留的模拟交易证据暂时不可用。",
 		connectionDegraded: "保留的连接已降级。",
 		connectionDisconnected: "尚未配置 OKX Demo 连接。",
-		reconciliationRequired: "需要对账：对账成功前请勿依赖当前账户状态。",
-		restartRequired: "检测到重启：依赖当前账户状态前需要先对账。",
-		uncertain: "已保留不确定的 Provider 证据；依赖账户状态前请先对账。",
+		reconciliationRequired:
+			"当前保留的账户状态尚未对账，对账成功前请勿依赖此状态。启动或重试 Bot 时，Host 会先自动对账 OKX Demo 账户再启用风险，无需先手动点击“对账”。",
+		restartRequired:
+			"检测到 Host 重启，请勿依赖当前保留的账户状态。启动或重试 Bot 时，Host 会先自动对账 OKX Demo 账户再启用风险，无需先手动点击“对账”。",
+		uncertain:
+			"已保留不确定的 Provider 证据，依赖账户状态前请先完成对账。启动或重试 Bot 时，Host 会自动对账后再启用风险，无需提前手动点击“对账”。",
 		provider: "OKX Demo",
 		account: "OKX Demo 账户",
 		observed: "观测时间",
@@ -4272,7 +4301,8 @@ const simplifiedChinese = {
 		account: "账户",
 		qualification: "Strategy Qualification",
 		selectQualification: "选择可用的 Strategy Qualification",
-		invalidConfiguration: "请选择一个连接、三个 Strategy Qualification 和有限的 UTC 时间窗。",
+		invalidConfiguration:
+			"请选择一个连接、三个 Strategy Qualification 和有限的 UTC 时间窗。",
 		observationStart: "观测开始（UTC）",
 		observationEnd: "观测结束（UTC）",
 		create: "创建实验",
@@ -4302,7 +4332,8 @@ const simplifiedChinese = {
 		warmup: "预热",
 		warmupComplete: "已完成",
 		warmupPending: "进行中",
-		reconciliationRequired: "继续承担风险前需要先完成对账。",
+		reconciliationRequired:
+			"启动或重试 Bot 时，Host 会先自动对账 OKX Demo 账户，再启用风险；无需先手动点击“对账”。",
 		valuations: "估值",
 		reconciliation: "对账状态",
 		instrument: "Instrument",
@@ -4386,7 +4417,8 @@ const simplifiedChinese = {
 		orders: "模拟订单",
 		evidence: "关联证据",
 		none: "无",
-		reconciliationRequired: "启用新风险前必须先完成对账。",
+		reconciliationRequired:
+			"当前 Attempt 的账户状态尚未确认。启动或重试时，Host 会自动对账并校验 OKX Demo 账户；只有校验通过才会启用风险，无需先手动对账。",
 		unmanaged: "无人管理的持仓",
 		start: "启动",
 		retry: "重试",

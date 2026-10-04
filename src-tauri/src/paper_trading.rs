@@ -31,6 +31,7 @@ pub(crate) struct PaperAccountView {
     pub orders: Vec<adaq_paper_trading_core::Order>,
     pub fills: Vec<adaq_paper_trading_core::Fill>,
     pub provider_evidence: Vec<ExecutionOutcome>,
+    pub order_absence_recoveries: Vec<adaq_paper_trading_core::OrderAbsenceRecovery>,
     pub risk_decisions: Vec<RetainedRiskDecision>,
     pub restart_required: bool,
 }
@@ -170,6 +171,7 @@ impl PaperTradingStore {
             orders: ledger.orders().cloned().collect(),
             fills: ledger.fills().to_vec(),
             provider_evidence: execution.evidence().cloned().collect(),
+            order_absence_recoveries: execution.order_absence_recoveries().to_vec(),
             risk_decisions: self.risk_decisions(user_id)?,
             restart_required: self
                 .restarted_users
@@ -296,6 +298,127 @@ impl PaperTradingStore {
             .mark_uncertain(operation_id, now_ms)
             .map_err(|error| error.to_string())?;
         self.save(user_id, &ledger, &execution, now_ms)?;
+        self.view(user_id)
+    }
+
+    pub(crate) fn record_confirmed_rejection(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+        error_code: &str,
+        now_ms: i64,
+    ) -> Result<PaperAccountView, String> {
+        let _gate = self.order_gate.lock().map_err(|error| error.to_string())?;
+        let (mut ledger, mut execution) = self.load(user_id)?;
+        let evidence = execution
+            .evidence()
+            .find_map(|outcome| match outcome {
+                ExecutionOutcome::Accepted(evidence) if evidence.operation_id == operation_id => {
+                    Some(evidence)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| "Only a pending local submission can be rejected.".to_owned())?;
+        let order_id = evidence
+            .local_order_id
+            .as_deref()
+            .ok_or_else(|| "The rejected submission has no local order.".to_owned())?;
+        let order = ledger
+            .orders()
+            .find(|order| order.order_id == order_id)
+            .ok_or_else(|| "The rejected submission's local order is missing.".to_owned())?;
+        if evidence.provider_order_id.is_some()
+            || order.filled_quantity != Decimal::ZERO
+            || order.status != OrderStatus::Accepted
+        {
+            return Err("A provider-owned or filled order cannot be rejected locally.".into());
+        }
+        let order_id = order_id.to_owned();
+        ledger
+            .cancel_order(&order_id)
+            .map_err(|error| error.to_string())?;
+        execution
+            .record_provider_outcome(
+                operation_id,
+                None,
+                "rejected",
+                Some(error_code.to_owned()),
+                now_ms,
+            )
+            .map_err(|error| error.to_string())?;
+        self.save(user_id, &ledger, &execution, now_ms)?;
+        self.view(user_id)
+    }
+
+    pub(crate) fn recover_uncertain_order_absence(
+        &self,
+        user_id: &str,
+        now_ms: i64,
+        confirm: impl Fn(
+            &str,
+            i64,
+            i64,
+        ) -> Result<adaq_paper_trading_core::OrderAbsenceEvidence, String>,
+    ) -> Result<PaperAccountView, String> {
+        let _gate = self.order_gate.lock().map_err(|error| error.to_string())?;
+        let (ledger, mut execution) = self.load(user_id)?;
+        if ledger.reconciliation() != ReconciliationState::Reconciled
+            || now_ms.saturating_sub(ledger.account().observed_at_ms) > 60_000
+            || ledger.account().observed_at_ms > now_ms
+            || ledger.orders().any(|order| {
+                matches!(
+                    order.status,
+                    OrderStatus::Accepted | OrderStatus::PartiallyFilled
+                )
+            })
+        {
+            return self.view(user_id);
+        }
+        let candidates = execution
+            .evidence()
+            .filter_map(|outcome| match outcome {
+                ExecutionOutcome::Uncertain(evidence) if evidence.provider_order_id.is_none() => {
+                    Some(evidence.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut recovered = false;
+        for evidence in candidates {
+            let Some(order) = ledger
+                .orders()
+                .find(|order| Some(order.order_id.as_str()) == evidence.local_order_id.as_deref())
+            else {
+                continue;
+            };
+            let window_start_ms = order.submitted_at_ms.saturating_sub(60_000);
+            if order.status != OrderStatus::Cancelled
+                || order.filled_quantity != Decimal::ZERO
+                || ledger
+                    .fills()
+                    .iter()
+                    .any(|fill| fill.order_id == order.order_id)
+                || now_ms.saturating_sub(evidence.observed_at_ms) < 60_000
+                || window_start_ms < now_ms.saturating_sub(90 * 60 * 1_000)
+            {
+                continue;
+            }
+            let proof = confirm(&order.instrument, window_start_ms, now_ms)?;
+            if proof.instrument != order.instrument
+                || proof.window_start_ms != window_start_ms
+                || proof.checked_at_ms != now_ms
+            {
+                return Err("The absence evidence does not match the local order window.".into());
+            }
+            execution
+                .resolve_order_absence(&evidence.operation_id, proof)
+                .map_err(|error| error.to_string())?;
+            recovered = true;
+        }
+        if recovered {
+            execution.reconcile(true);
+            self.save(user_id, &ledger, &execution, now_ms)?;
+        }
         self.view(user_id)
     }
 
@@ -554,6 +677,29 @@ impl PaperTradingStore {
             .find(|order| order.order_id == local_order_id)
             .ok_or_else(|| "The local order is missing.".to_owned())?
             .clone();
+        let expected_side = match local.side {
+            Side::Buy => "buy",
+            Side::Sell => "sell",
+        };
+        if remote.id != execution.provider_order_id(operation_id)
+            || remote
+                .symbol
+                .as_deref()
+                .is_some_and(|symbol| symbol.replace('/', "-") != local.instrument)
+            || remote
+                .side
+                .as_deref()
+                .is_some_and(|side| !side.eq_ignore_ascii_case(expected_side))
+        {
+            return Err(self.provider_sync_failure(
+                user_id,
+                operation_id,
+                provider_order_id.as_deref(),
+                now_ms,
+                "Provider order identity, instrument or side does not match the local intent."
+                    .into(),
+            ));
+        }
         let remote_filled = match remote.filled {
             Some(filled) => filled,
             None => {
@@ -777,6 +923,34 @@ impl PaperTradingStore {
             .as_deref()
             .unwrap_or_default()
             .to_ascii_lowercase();
+        if matches!(remote_status.as_str(), "closed" | "filled") {
+            let mut terminal = ledger
+                .orders()
+                .find(|order| order.order_id == local_order_id)
+                .cloned()
+                .ok_or_else(|| "The local order is missing.".to_owned())?;
+            if remote_filled <= Decimal::ZERO || terminal.filled_quantity != remote_filled {
+                return Err(self.provider_sync_failure(
+                    user_id,
+                    operation_id,
+                    provider_order_id.as_deref(),
+                    now_ms,
+                    "Provider terminal filled order lacks matching actual Fill evidence.".into(),
+                ));
+            }
+            // OKX can finalize a market order below its requested base size.
+            // Preserve both quantities and release the unused reservation.
+            terminal.status = OrderStatus::Filled;
+            if let Err(error) = ledger.upsert_provider_order(terminal) {
+                return Err(self.provider_sync_failure(
+                    user_id,
+                    operation_id,
+                    provider_order_id.as_deref(),
+                    now_ms,
+                    error.to_string(),
+                ));
+            }
+        }
         if matches!(
             remote_status.as_str(),
             "canceled" | "cancelled" | "expired" | "rejected"
@@ -883,10 +1057,15 @@ impl PaperTradingStore {
                 matches!(outcome, ExecutionOutcome::Uncertain(uncertain)
                     if uncertain.provider_order_id.as_deref() == Some(provider_order_id.as_str()))
             });
+            // Legacy absence sweeps could cancel an already filled market order.
+            // Re-read its exact provider terminal state without rewriting Fills.
+            let cancelled_with_fills =
+                order.status == OrderStatus::Cancelled && order.filled_quantity > Decimal::ZERO;
             if !matches!(
                 order.status,
                 OrderStatus::Accepted | OrderStatus::PartiallyFilled
             ) && !unresolved
+                && !cancelled_with_fills
             {
                 continue;
             }
@@ -1261,6 +1440,242 @@ mod tests {
             cash: Decimal::new(1_000_000, 0),
             positions: BTreeMap::new(),
             observed_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn legacy_bot_binding_recovers_from_exact_decision_and_preserves_history() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(Arc::clone(&database)).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        let (mut ledger, mut execution) = store.load("alice").unwrap();
+        let mut operation_id = String::new();
+        for index in 1..=10 {
+            operation_id = crate::bot_operations::target_order_operation_id(
+                "bot-a",
+                &format!("decision-{index}"),
+                "okx:BTC-USDT",
+                "buy",
+            )
+            .unwrap();
+            execution
+                .begin(
+                    &operation_id,
+                    &mut ledger,
+                    "BTC-USDT",
+                    Side::Buy,
+                    Decimal::ONE,
+                    Decimal::ONE,
+                    index * 10,
+                )
+                .unwrap();
+        }
+        execution
+            .record_provider_outcome(
+                &operation_id,
+                Some("provider-10".into()),
+                "accepted",
+                None,
+                101,
+            )
+            .unwrap();
+        let mut corrupted = serde_json::to_value(&execution).unwrap();
+        corrupted["operations"][&operation_id]["Accepted"]["local_order_id"] = "order-9".into();
+        execution = serde_json::from_value(corrupted).unwrap();
+        let original_fill = Fill {
+            fill_id: "original-fill-9".into(),
+            order_id: "order-9".into(),
+            quantity: Decimal::ONE,
+            price: Decimal::ONE,
+            fee: Decimal::ZERO,
+            fee_asset: None,
+            fee_quote: None,
+            fee_amount: None,
+            evidence: FillEvidence::TradeObserved,
+            occurred_at_ms: 95,
+        };
+        ledger.apply_fill(original_fill.clone()).unwrap();
+        store.save("alice", &ledger, &execution, 102).unwrap();
+        let attempt = serde_json::json!({
+            "attemptId":"attempt-a", "botId":"bot-a", "bundleIdentity":"bundle",
+            "state":"faulted", "stopPolicy":null, "events":[], "evidence":[],
+            "decisions":[{"requestId":"request-10", "decisionId":"decision-10",
+                "outcome":"target", "targetHash":"target-10", "observedAtMs":100}],
+            "orders":[{"operationId":operation_id, "decisionId":"decision-10",
+                "status":"accepted", "providerOrderId":"provider-10", "observedAtMs":101}],
+            "unmanagedPositions":[], "reconciliationRequired":true,
+            "lastDecisionTimeMs":null, "createdAtMs":1, "updatedAtMs":102,
+        });
+        {
+            let database = database.lock().unwrap();
+            database
+                .execute_batch("CREATE TABLE bot_runtime_attempts(user_id TEXT, attempt_json TEXT)")
+                .unwrap();
+            database
+                .execute(
+                    "INSERT INTO bot_runtime_attempts VALUES (?1, ?2)",
+                    params!["bob", attempt.to_string()],
+                )
+                .unwrap();
+        }
+        store.recover_bot_order_bindings("alice", 103).unwrap();
+        assert_eq!(
+            store
+                .load("alice")
+                .unwrap()
+                .1
+                .local_order_id(&operation_id)
+                .as_deref(),
+            Some("order-9")
+        );
+        database
+            .lock()
+            .unwrap()
+            .execute("UPDATE bot_runtime_attempts SET user_id='alice'", [])
+            .unwrap();
+        store.recover_bot_order_bindings("alice", 104).unwrap();
+        store.recover_bot_order_bindings("alice", 105).unwrap();
+        let (ledger, execution) = store.load("alice").unwrap();
+        assert_eq!(
+            execution.local_order_id(&operation_id).as_deref(),
+            Some("order-10")
+        );
+        assert_eq!(ledger.fills(), [original_fill]);
+        assert!(execution.is_blocked());
+        let retained = serde_json::to_value(execution).unwrap();
+        let recoveries = retained["local_order_binding_recoveries"]
+            .as_array()
+            .unwrap();
+        assert_eq!(recoveries.len(), 1);
+        assert_eq!(recoveries[0]["previous_local_order_id"], "order-9");
+        assert_eq!(recoveries[0]["local_order_id"], "order-10");
+        assert_eq!(recoveries[0]["provider_order_id"], "provider-10");
+    }
+
+    #[test]
+    fn ambiguous_bot_binding_recovery_does_not_invent_mapping() {
+        let mut ledger = PaperLedger::new(account()).unwrap();
+        let mut execution = PaperExecution::okx_demo(RiskPolicy {
+            max_order_notional: DEFAULT_MAX_ORDER_NOTIONAL,
+            reserve_cash: Decimal::ZERO,
+            freeze_new_risk: false,
+        })
+        .unwrap();
+        let operation_id = crate::bot_operations::target_order_operation_id(
+            "bot-a",
+            "decision",
+            "okx:BTC-USDT",
+            "buy",
+        )
+        .unwrap();
+        execution
+            .begin(
+                &operation_id,
+                &mut ledger,
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::ONE,
+                Decimal::ONE,
+                10,
+            )
+            .unwrap();
+        execution
+            .record_provider_outcome(&operation_id, Some("provider".into()), "accepted", None, 13)
+            .unwrap();
+        ledger
+            .submit_order(
+                "alice",
+                "BTC-USDT",
+                Side::Buy,
+                Decimal::ONE,
+                Decimal::ONE,
+                11,
+            )
+            .unwrap();
+        let mut corrupted = serde_json::to_value(&execution).unwrap();
+        corrupted["operations"][&operation_id]["Accepted"]["local_order_id"] =
+            "missing-order".into();
+        execution = serde_json::from_value(corrupted).unwrap();
+        let receipt = crate::bot_operations::BotOrderEvidence {
+            operation_id: operation_id.clone(),
+            decision_id: Some("decision".into()),
+            status: "accepted".into(),
+            provider_order_id: Some("provider".into()),
+            observed_at_ms: 13,
+        };
+        assert!(
+            PaperTradingStore::recover_bot_order_binding(
+                &ledger,
+                &mut execution,
+                "bot-a",
+                "decision",
+                10,
+                &receipt,
+                14
+            )
+            .is_err()
+        );
+        assert_eq!(
+            execution.local_order_id(&operation_id).as_deref(),
+            Some("missing-order")
+        );
+    }
+
+    #[test]
+    fn provider_sync_rejects_foreign_identity_instrument_or_side() {
+        for (provider_id, symbol, side) in [
+            ("foreign", "BTC/USDT", "buy"),
+            ("provider", "ETH/USDT", "buy"),
+            ("provider", "BTC/USDT", "sell"),
+        ] {
+            let store = PaperTradingStore::open(Arc::new(Mutex::new(
+                Connection::open_in_memory().unwrap(),
+            )))
+            .unwrap();
+            store.create_account("alice", account(), 1).unwrap();
+            store
+                .begin_order(
+                    &PaperOrderRequest {
+                        user_id: "alice".into(),
+                        operation_id: "operation".into(),
+                        instrument: "BTC-USDT".into(),
+                        side: "buy".into(),
+                        quantity: Decimal::ONE,
+                        limit_price: Decimal::ONE,
+                    },
+                    2,
+                )
+                .unwrap();
+            store
+                .record_order_result(
+                    "alice",
+                    "operation",
+                    Some("provider".into()),
+                    "accepted",
+                    None,
+                    3,
+                )
+                .unwrap();
+            assert!(
+                store
+                    .sync_provider_order(
+                        "alice",
+                        "operation",
+                        &adaq_trading_crypto::Order {
+                            id: Some(provider_id.into()),
+                            symbol: Some(symbol.into()),
+                            side: Some(side.into()),
+                            filled: Some(Decimal::ZERO),
+                            ..Default::default()
+                        },
+                        4
+                    )
+                    .is_err()
+            );
+            let view = store.view("alice").unwrap();
+            assert_eq!(view.reconciliation, ReconciliationState::Required);
+            assert!(view.fills.is_empty());
+            assert_eq!(view.orders[0].instrument, "BTC-USDT");
         }
     }
 
@@ -1707,6 +2122,100 @@ mod tests {
     }
 
     #[test]
+    fn provider_filled_market_order_releases_the_unfilled_intent_reservation() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(database).unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        let requested = Decimal::new(116452, 4);
+        let actual = Decimal::new(11644912, 6);
+        store
+            .begin_order(
+                &PaperOrderRequest {
+                    user_id: "alice".into(),
+                    operation_id: "op-terminal-market".into(),
+                    instrument: "ETH-USDT".into(),
+                    side: "buy".into(),
+                    quantity: requested,
+                    limit_price: Decimal::new(268283, 2),
+                },
+                2,
+            )
+            .unwrap();
+        store
+            .record_order_result(
+                "alice",
+                "op-terminal-market",
+                Some("remote-market".into()),
+                "open",
+                None,
+                3,
+            )
+            .unwrap();
+        let mut remote = adaq_trading_crypto::Order {
+            id: Some("remote-market".into()),
+            symbol: Some("ETH/USDT".into()),
+            side: Some("buy".into()),
+            order_type: Some("market".into()),
+            amount: Some(requested),
+            filled: Some(actual),
+            status: Some("partially_filled".into()),
+            ..Default::default()
+        };
+        let trades = [adaq_trading_crypto::Trade {
+            id: Some("actual-trade".into()),
+            order: Some("remote-market".into()),
+            symbol: Some("ETH/USDT".into()),
+            amount: Some(actual),
+            price: Some(Decimal::new(2682786, 3)),
+            timestamp: Some(4),
+            ..Default::default()
+        }];
+        let partial = store
+            .sync_provider_order_with_trades("alice", "op-terminal-market", &remote, &trades, 5)
+            .unwrap();
+        assert_eq!(partial.orders[0].status, OrderStatus::PartiallyFilled);
+        assert!(partial.reserved_cash > Decimal::ZERO);
+
+        // Reproduce the old absence sweep after an under-sized terminal fill.
+        store.record_open_orders("alice", &[], &[], 6).unwrap();
+        assert_eq!(
+            store.view("alice").unwrap().orders[0].status,
+            OrderStatus::Cancelled
+        );
+        remote.status = Some("filled".into());
+        for now_ms in [7, 8] {
+            let terminal = store
+                .provider_balance(
+                    "alice",
+                    partial.account.account_id.clone(),
+                    &[],
+                    &balances(
+                        partial.account.cash,
+                        partial
+                            .account
+                            .positions
+                            .get("BTC-USDT")
+                            .map(|position| position.quantity),
+                    ),
+                    now_ms,
+                    |instrument, provider_order_id, _| {
+                        assert_eq!(instrument, "ETH-USDT");
+                        assert_eq!(provider_order_id, "remote-market");
+                        Ok((remote.clone(), trades.to_vec()))
+                    },
+                )
+                .unwrap();
+            assert_eq!(terminal.orders[0].status, OrderStatus::Filled);
+            assert_eq!(terminal.orders[0].quantity, requested);
+            assert_eq!(terminal.orders[0].filled_quantity, actual);
+            assert_eq!(terminal.reserved_cash, Decimal::ZERO);
+            assert_eq!(terminal.fills.len(), 1);
+            assert_eq!(terminal.fills[0].quantity, actual);
+            assert_eq!(terminal.account.cash, partial.account.cash);
+        }
+    }
+
+    #[test]
     fn provider_trade_sync_retains_exact_per_fill_fees_without_duplication() {
         let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
         let store = PaperTradingStore::open(database).unwrap();
@@ -1996,6 +2505,172 @@ mod tests {
         assert_eq!(settled.fills.len(), 1);
     }
 
+    #[test]
+    fn confirmed_rejection_releases_only_its_unfilled_local_reservation() {
+        let store =
+            PaperTradingStore::open(Arc::new(Mutex::new(Connection::open_in_memory().unwrap())))
+                .unwrap();
+        store.create_account("alice", account(), 1).unwrap();
+        let request = PaperOrderRequest {
+            user_id: "alice".into(),
+            operation_id: "rejected-1".into(),
+            instrument: "BTC-USDT".into(),
+            side: "buy".into(),
+            quantity: Decimal::ONE,
+            limit_price: Decimal::new(100, 0),
+        };
+        store.begin_order(&request, 2).unwrap();
+        assert_eq!(
+            store.view("alice").unwrap().reserved_cash,
+            Decimal::new(100, 0)
+        );
+        let result = store
+            .record_confirmed_rejection("alice", "rejected-1", "provider_rejected", 3)
+            .unwrap();
+        assert_eq!(result.reserved_cash, Decimal::ZERO);
+        assert_eq!(result.orders[0].status, OrderStatus::Cancelled);
+        assert!(result.fills.is_empty());
+        assert!(result.provider_evidence.iter().any(|outcome| matches!(outcome, ExecutionOutcome::Rejected(evidence) if evidence.operation_id == "rejected-1" && evidence.error_code.as_deref() == Some("provider_rejected"))));
+        let owned = PaperOrderRequest {
+            operation_id: "provider-owned".into(),
+            ..request
+        };
+        store.begin_order(&owned, 4).unwrap();
+        store
+            .record_order_result(
+                "alice",
+                "provider-owned",
+                Some("remote-1".into()),
+                "live",
+                None,
+                5,
+            )
+            .unwrap();
+        assert!(
+            store
+                .record_confirmed_rejection("alice", "provider-owned", "provider_rejected", 6)
+                .is_err()
+        );
+        assert_eq!(
+            store.view("alice").unwrap().reserved_cash,
+            Decimal::new(100, 0)
+        );
+    }
+
+    fn cancelled_uncertain_store() -> PaperTradingStore {
+        let store =
+            PaperTradingStore::open(Arc::new(Mutex::new(Connection::open_in_memory().unwrap())))
+                .unwrap();
+        store.create_account("alice", account(), 100_000).unwrap();
+        store
+            .begin_order(
+                &PaperOrderRequest {
+                    user_id: "alice".into(),
+                    operation_id: "unknown-1".into(),
+                    instrument: "BTC-USDT".into(),
+                    side: "buy".into(),
+                    quantity: Decimal::ONE,
+                    limit_price: Decimal::new(100, 0),
+                },
+                110_000,
+            )
+            .unwrap();
+        store.mark_uncertain("alice", "unknown-1", 110_100).unwrap();
+        store
+            .cancel_local_order("alice", "unknown-1", 110_200)
+            .unwrap();
+        store
+            .provider_balance(
+                "alice",
+                "okx-demo-account".into(),
+                &[],
+                &balances(Decimal::new(1_000_000, 0), None),
+                200_000,
+                |_, _, _| Err("No provider ID".into()),
+            )
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn absent_uncertain_order_recovery_preserves_original_evidence_and_is_idempotent() {
+        let store = cancelled_uncertain_store();
+        assert!(
+            store
+                .recover_uncertain_order_absence("alice", 200_000, |_, _, _| Err(
+                    "history incomplete".into()
+                ))
+                .is_err()
+        );
+        assert!(store.load("alice").unwrap().1.is_blocked());
+        assert!(
+            store
+                .recover_uncertain_order_absence("alice", 200_000, |_, start, now| Ok(
+                    adaq_paper_trading_core::OrderAbsenceEvidence {
+                        instrument: "ETH-USDT".into(),
+                        window_start_ms: start,
+                        checked_at_ms: now,
+                        history_order_count: 0,
+                        history_sha256: "a".repeat(64)
+                    }
+                ))
+                .is_err()
+        );
+        let view = store
+            .recover_uncertain_order_absence("alice", 200_000, |instrument, start, now| {
+                Ok(adaq_paper_trading_core::OrderAbsenceEvidence {
+                    instrument: instrument.into(),
+                    window_start_ms: start,
+                    checked_at_ms: now,
+                    history_order_count: 1,
+                    history_sha256: "a".repeat(64),
+                })
+            })
+            .unwrap();
+        assert_eq!(view.order_absence_recoveries.len(), 1);
+        let original = &view.order_absence_recoveries[0].original_uncertainty;
+        assert_eq!(original.status, "unknown");
+        assert_eq!(original.error_code.as_deref(), Some("provider_timeout"));
+        assert_eq!(original.observed_at_ms, 110_100);
+        assert!(view.provider_evidence.iter().any(|outcome| matches!(outcome, ExecutionOutcome::Accepted(evidence) if evidence.operation_id == "unknown-1" && evidence.status == "resolved-absent" && evidence.provider_order_id.is_none())));
+        let (_, execution) = store.load("alice").unwrap();
+        assert!(!execution.is_blocked());
+        let restored: PaperExecution =
+            serde_json::from_str(&serde_json::to_string(&execution).unwrap()).unwrap();
+        assert_eq!(restored.order_absence_recoveries().len(), 1);
+        let repeated = store
+            .recover_uncertain_order_absence("alice", 200_000, |_, _, _| {
+                panic!("Recovery must not replay")
+            })
+            .unwrap();
+        assert_eq!(repeated.order_absence_recoveries.len(), 1);
+    }
+
+    #[test]
+    fn absent_uncertain_order_recovery_refuses_stale_account_or_truncated_history() {
+        let store = cancelled_uncertain_store();
+        let stale = store
+            .recover_uncertain_order_absence("alice", 270_000, |_, _, _| {
+                panic!("Stale account must not recover")
+            })
+            .unwrap();
+        assert!(stale.order_absence_recoveries.is_empty());
+        assert!(
+            store
+                .recover_uncertain_order_absence("alice", 200_000, |instrument, start, now| Ok(
+                    adaq_paper_trading_core::OrderAbsenceEvidence {
+                        instrument: instrument.into(),
+                        window_start_ms: start,
+                        checked_at_ms: now,
+                        history_order_count: 100,
+                        history_sha256: "a".repeat(64)
+                    }
+                ))
+                .is_err()
+        );
+        assert!(store.load("alice").unwrap().1.is_blocked());
+    }
+
     /// When terminal provider evidence cannot be captured, the order stays
     /// unresolved and the account blocks new risk instead of assuming a cancel.
     #[test]
@@ -2148,6 +2823,148 @@ mod tests {
 }
 
 impl PaperTradingStore {
+    fn recover_bot_order_bindings(&self, user_id: &str, now_ms: i64) -> Result<(), String> {
+        let attempts: Vec<crate::bot_operations::BotRuntimeAttempt> =
+            {
+                let database = self.database.lock().map_err(|error| error.to_string())?;
+                let exists: bool = database.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='bot_runtime_attempts')",
+                [],
+                |row| row.get(0),
+            ).map_err(|error| error.to_string())?;
+                if !exists {
+                    return Ok(());
+                }
+                let mut statement = database
+                    .prepare("SELECT attempt_json FROM bot_runtime_attempts WHERE user_id=?1")
+                    .map_err(|error| error.to_string())?;
+                statement
+                    .query_map([user_id], |row| row.get::<_, String>(0))
+                    .map_err(|error| error.to_string())?
+                    .map(|row| {
+                        serde_json::from_str(&row.map_err(|error| error.to_string())?)
+                            .map_err(|error| error.to_string())
+                    })
+                    .collect::<Result<_, _>>()?
+            };
+        let (mut ledger, mut execution) = self.load(user_id)?;
+        for attempt in attempts {
+            for receipt in &attempt.orders {
+                let Some(decision_id) = receipt.decision_id.as_deref() else {
+                    continue;
+                };
+                let Some(decision) = attempt
+                    .decisions
+                    .iter()
+                    .find(|d| d.decision_id == decision_id)
+                else {
+                    continue;
+                };
+                if execution.provider_order_id(&receipt.operation_id) != receipt.provider_order_id {
+                    continue;
+                }
+                if let Err(error) = Self::recover_bot_order_binding(
+                    &ledger,
+                    &mut execution,
+                    &attempt.bot_id,
+                    decision_id,
+                    decision.observed_at_ms,
+                    receipt,
+                    now_ms,
+                ) {
+                    return self
+                        .reconciliation_failure(user_id, &mut ledger, &mut execution, now_ms, error)
+                        .map(|_| ());
+                }
+            }
+        }
+        self.save(user_id, &ledger, &execution, now_ms)
+    }
+
+    fn recover_bot_order_binding(
+        ledger: &PaperLedger,
+        execution: &mut PaperExecution,
+        bot_id: &str,
+        decision_id: &str,
+        decision_observed_at_ms: i64,
+        receipt: &crate::bot_operations::BotOrderEvidence,
+        now_ms: i64,
+    ) -> Result<(), String> {
+        if let Some(current_id) = execution.local_order_id(&receipt.operation_id)
+            && let Some(current) = ledger.orders().find(|order| order.order_id == current_id)
+            && current.submitted_at_ms >= decision_observed_at_ms
+            && current.submitted_at_ms <= receipt.observed_at_ms
+        {
+            let side = match current.side {
+                Side::Buy => "buy",
+                Side::Sell => "sell",
+            };
+            for instrument in [
+                current.instrument.clone(),
+                format!("okx:{}", current.instrument),
+            ] {
+                if crate::bot_operations::target_order_operation_id(
+                    bot_id,
+                    decision_id,
+                    &instrument,
+                    side,
+                )? == receipt.operation_id
+                {
+                    return Ok(());
+                }
+            }
+        }
+        let mut matches = Vec::new();
+        for order in ledger.orders().filter(|order| {
+            order.submitted_at_ms >= decision_observed_at_ms
+                && order.submitted_at_ms <= receipt.observed_at_ms
+        }) {
+            let side = match order.side {
+                Side::Buy => "buy",
+                Side::Sell => "sell",
+            };
+            for instrument in [
+                order.instrument.clone(),
+                format!("okx:{}", order.instrument),
+            ] {
+                if crate::bot_operations::target_order_operation_id(
+                    bot_id,
+                    decision_id,
+                    &instrument,
+                    side,
+                )? == receipt.operation_id
+                {
+                    matches.push(order);
+                    break;
+                }
+            }
+        }
+        let [order] = matches.as_slice() else {
+            return Err("Bot order binding has no unique original Decision/intent proof; reconciliation is required.".into());
+        };
+        if execution.local_order_id(&receipt.operation_id).as_deref()
+            == Some(order.order_id.as_str())
+        {
+            return Ok(());
+        }
+        if order.filled_quantity != Decimal::ZERO
+            || ledger
+                .fills()
+                .iter()
+                .any(|fill| fill.order_id == order.order_id)
+        {
+            return Err("Bot order binding recovery cannot rewrite existing fill evidence.".into());
+        }
+        execution
+            .recover_local_order_binding(
+                &receipt.operation_id,
+                &order.order_id,
+                decision_id,
+                now_ms,
+            )
+            .map_err(|error| error.to_string())
+    }
+
     pub(crate) fn provider_balance(
         &self,
         user_id: &str,
@@ -2166,6 +2983,7 @@ impl PaperTradingStore {
     ) -> Result<PaperAccountView, String> {
         let snapshot = Self::snapshot_from_balance(user_id, account_id, balances, now_ms)?;
         if self.has_account(user_id)? {
+            self.recover_bot_order_bindings(user_id, now_ms)?;
             self.reconcile(user_id, snapshot, now_ms)?;
         } else {
             self.create_account(user_id, snapshot, now_ms)?;

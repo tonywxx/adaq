@@ -571,6 +571,7 @@ type OkxBackfillProgress = {
 	completedInstruments: number;
 	currentInstrument?: string;
 	downloadedRecords: number;
+	currentInstrumentRecords: number;
 	startedAtMs: number;
 };
 
@@ -1200,13 +1201,22 @@ export function DataFoundationPage() {
 					instrumentCount: 0,
 					completedInstruments: 0,
 					downloadedRecords: 0,
+					currentInstrumentRecords: 0,
 					startedAtMs: nextDraft.startedAtMs,
 				};
+				const records = event.data?.downloadedRecords;
 				return {
 					...next,
 					instrumentCount: event.data?.instrumentCount ?? next.instrumentCount,
 					downloadedRecords:
-						next.downloadedRecords + (event.data?.downloadedRecords ?? 0),
+						next.downloadedRecords +
+						(records == null
+							? 0
+							: records - Math.min(records, next.currentInstrumentRecords)),
+					currentInstrumentRecords:
+						event.event === "instrumentStarted"
+							? 0
+							: (records ?? next.currentInstrumentRecords),
 					completedInstruments:
 						event.event === "instrumentCompleted"
 							? next.completedInstruments + 1
@@ -1221,6 +1231,7 @@ export function DataFoundationPage() {
 			instrumentCount: 0,
 			completedInstruments: 0,
 			downloadedRecords: 0,
+			currentInstrumentRecords: 0,
 			startedAtMs: nextDraft.startedAtMs,
 		});
 		let completed = false;
@@ -1476,7 +1487,9 @@ export function DataFoundationPage() {
 		: 0;
 	const elapsedLabel = `${Math.floor(elapsedMs / 60_000)}m ${Math.floor((elapsedMs % 60_000) / 1_000)}s`;
 	const etaMs =
-		backfillStats && backfillStats.completedInstruments > 0
+		backfillStats &&
+		backfillStats.instrumentCount > 0 &&
+		backfillStats.completedInstruments > 0
 			? (elapsedMs / backfillStats.completedInstruments) *
 				Math.max(
 					0,

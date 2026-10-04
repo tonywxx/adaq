@@ -181,12 +181,14 @@ pub(crate) struct UniverseRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "deferred-equity")]
 pub(crate) struct AshareInstrumentMasterRequest {
     pub user_id: String,
     #[serde(default)]
     pub operation_id: String,
 }
 
+#[cfg(feature = "deferred-equity")]
 impl AshareInstrumentMasterRequest {
     pub(crate) fn operation_id(&self) -> String {
         if self.operation_id.trim().is_empty() {
@@ -199,6 +201,7 @@ impl AshareInstrumentMasterRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "deferred-equity")]
 pub(crate) struct AshareCalendarRequest {
     pub user_id: String,
     pub start_time_ms: i64,
@@ -209,12 +212,14 @@ pub(crate) struct AshareCalendarRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "deferred-equity")]
 pub(crate) struct UsEquityInstrumentMasterRequest {
     pub user_id: String,
     #[serde(default)]
     pub operation_id: String,
 }
 
+#[cfg(feature = "deferred-equity")]
 impl UsEquityInstrumentMasterRequest {
     pub(crate) fn operation_id(&self) -> String {
         if self.operation_id.trim().is_empty() {
@@ -227,6 +232,7 @@ impl UsEquityInstrumentMasterRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "deferred-equity")]
 pub(crate) struct UsEquityCalendarRequest {
     pub user_id: String,
     pub venue: adaq_data_core::market::Venue,
@@ -236,6 +242,7 @@ pub(crate) struct UsEquityCalendarRequest {
     pub operation_id: String,
 }
 
+#[cfg(feature = "deferred-equity")]
 impl UsEquityCalendarRequest {
     pub(crate) const fn range(&self) -> HistoricalBarRange {
         HistoricalBarRange {
@@ -255,6 +262,7 @@ impl UsEquityCalendarRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "deferred-equity")]
 pub(crate) struct UsEquitySnapshotRequest {
     pub user_id: String,
     pub instrument: InstrumentId,
@@ -281,6 +289,7 @@ impl UsEquityStreamRequest {
     }
 }
 
+#[cfg(feature = "deferred-equity")]
 impl AshareCalendarRequest {
     pub(crate) const fn range(&self) -> HistoricalBarRange {
         HistoricalBarRange {
@@ -300,6 +309,7 @@ impl AshareCalendarRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "deferred-equity")]
 pub(crate) struct AshareCorporateActionRequest {
     pub user_id: String,
     pub instrument: InstrumentId,
@@ -307,6 +317,7 @@ pub(crate) struct AshareCorporateActionRequest {
     pub operation_id: String,
 }
 
+#[cfg(feature = "deferred-equity")]
 impl AshareCorporateActionRequest {
     pub(crate) fn operation_id(&self) -> String {
         if self.operation_id.trim().is_empty() {

@@ -14,6 +14,7 @@ import {
 	WorkflowGuidePage,
 	WorkflowHomePage,
 } from "@/features/workflow/workflow-page";
+import { OperationsDashboard } from "@/features/operations/operations-dashboard";
 import Home from "@/layout/home";
 import { lazy, Suspense, useEffect } from "react";
 import { LAST_APP_PATH_KEY } from "@/lib/app-settings";
@@ -21,11 +22,6 @@ import { LAST_APP_PATH_KEY } from "@/lib/app-settings";
 const DataFoundationPage = lazy(() =>
 	import("@/features/data-foundation/data-foundation-page").then((module) => ({
 		default: module.DataFoundationPage,
-	})),
-);
-const OperationsDashboardPage = lazy(() =>
-	import("@/features/operations/operations-dashboard").then((module) => ({
-		default: module.OperationsDashboard,
 	})),
 );
 const PaperTradingPage = lazy(() =>
@@ -118,11 +114,7 @@ const appRoute = createRoute({
 const operationsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/operations",
-	component: () => (
-		<Suspense fallback={<PageLoadingSkeleton />}>
-			<OperationsDashboardPage />
-		</Suspense>
-	),
+	component: OperationsDashboard,
 });
 
 const paperTradingRoute = createRoute({

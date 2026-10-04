@@ -35,6 +35,27 @@ pub const MAX_FACTOR_EVALUATION_LENSES: usize = 5;
 pub const MAX_FACTOR_NUISANCE_FEATURES: usize = 16;
 pub const MAX_FACTOR_WORKERS: usize = 1;
 
+/// Binds native materialization and evaluation to the compiled research sources.
+pub fn native_engine_source_sha256() -> String {
+    adaq_feature_engine::sha256(
+        concat!(
+            include_str!("../Cargo.toml"),
+            include_str!("../../../Cargo.lock"),
+            include_str!("lib.rs"),
+            include_str!("abi.rs"),
+            include_str!("candidate.rs"),
+            include_str!("catalog.rs"),
+            include_str!("context.rs"),
+            include_str!("contracts.rs"),
+            include_str!("evaluation.rs"),
+            include_str!("materialization.rs"),
+            include_str!("promotion.rs"),
+            include_str!("research.rs"),
+        )
+        .as_bytes(),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractError {
     Invalid(String),

@@ -846,6 +846,7 @@ impl AlertRecord {
 struct ProjectionResult {
     alert: Option<AlertView>,
     action: SafetyAction,
+    #[cfg(not(test))]
     notify: bool,
 }
 
@@ -876,7 +877,7 @@ fn project_event_locked(
                     &condition,
                 )
             });
-        let (notify, projected_action) = match existing.as_ref() {
+        let (_notify, projected_action) = match existing.as_ref() {
             None => {
                 connection
                     .execute(
@@ -1017,7 +1018,8 @@ fn project_event_locked(
             .ok_or_else(|| "operational alert projection was not retained".to_string())?
             .view();
         Ok(ProjectionResult {
-            notify,
+            #[cfg(not(test))]
+            notify: _notify,
             action: projected_action,
             alert: Some(alert),
         })
@@ -1064,6 +1066,7 @@ fn project_event_locked(
         Ok(ProjectionResult {
             alert: None,
             action,
+            #[cfg(not(test))]
             notify: false,
         })
     }

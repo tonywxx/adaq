@@ -6,11 +6,11 @@
 
 > **AdaQ** (Ada Quant) 是一个 AI 驱动的量化交易平台，支持股票和数字加密资产。
 
-## V1 状态：工程自动验收已成功
+## V1 状态：完整链路尚未通过验收
 
-**AdaQ V1 工程自动验收已成功** —— 代码、构建、测试、组件、研究链路、Desktop、Paper Reconcile 与 Bot 安全生命周期已通过验收。最新一次自动化验收[在 macOS ARM64 与 Windows x86_64 上全绿](https://github.com/tonywxx/adaq/actions/runs/34547508572)，[release v0.9.8](https://github.com/tonywxx/adaq/releases/tag/v0.9.8) 已发布。
+**AdaQ V1 尚未完整验收。** 当前本地 Desktop 已完成五资产 OKX 数据 → Feature → Factor 评估，但 Momentum 未通过原有 Holm 显著性门槛。同一 Context 下的 Factor → Model → Strategy → Bot → 自然成交 → 成交后对账 → Feedback 完整链路及中英文全流程仍未验证。构建和专项测试通过不能证明该链路完成。
 
-该结论有明确边界：它**不代表**策略盈利，也**不授权** Live Trading。当前 Demo Bot 仍无成交（0 fills）与 realized feedback 样本。AdaQ V1 是本地优先的研究、回测与模拟桌面应用，绝不执行真实账户订单；真实交易属于未来独立的、由主机控制的监督式里程碑。详细证据见 [V1 自动验收摘要](V1自动验收文档.md)与 [V1 模拟盘 Bot 分析报告](V1模拟盘Bot分析报告.md)。
+六条严重运行告警及四条待研究评审警告仍未解决。V1 支持 OKX Demo 执行，禁止 Live Trading。精确证据、限制与恢复要求见[当前验收记录和人工验证步骤](docs/research/v1-end-to-end-manual-acceptance.md)。
 
 ## V1 工作流
 
@@ -152,7 +152,7 @@ adaq-component verify dist/my-factor-0.1.0.adaq --previous ../my-factor-0.1.0/ma
 
 ## 文档
 
-文档按用户工作流组织。根目录状态文件：[V1 自动验收摘要](V1自动验收文档.md)与 [V1 模拟盘 Bot 分析报告](V1模拟盘Bot分析报告.md)（0 fills，非收益证明）。
+文档按用户工作流组织。[当前 V1 验收记录](docs/research/v1-end-to-end-manual-acceptance.md)包含人工验证步骤，并区分已完成证据和待完成事项。
 
 | English | 简体中文 | 说明 |
 | --- | --- | --- |

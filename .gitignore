@@ -48,6 +48,7 @@ src-tauri/fixtures/*/target/
 src-tauri/binaries/
 .tokensave
 graphify-out/
+/docs/research/evidence/
 
 # Python Research contract-test outputs.
 __pycache__/

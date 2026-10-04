@@ -58,12 +58,18 @@ export function ResearchContextEvidence({
 			</span>
 			<span className="break-all">
 				{t("researchContext.snapshot")}:{" "}
-				<IdentifierDisplay id={query.data.snapshotId} label={t("identifiers.snapshot")} />
+				<IdentifierDisplay
+					id={query.data.snapshotId}
+					label={t("identifiers.snapshot")}
+				/>
 			</span>
 			{query.data.universeId && (
 				<span className="break-all">
 					{t("researchContext.universe")}:{" "}
-					<IdentifierDisplay id={query.data.universeId} label={t("identifiers.universe")} />
+					<IdentifierDisplay
+						id={query.data.universeId}
+						label={t("identifiers.universe")}
+					/>
 				</span>
 			)}
 			{query.data.featureDataset && (
@@ -72,7 +78,8 @@ export function ResearchContextEvidence({
 					<IdentifierDisplay
 						id={query.data.featureDataset.datasetId}
 						label={t("identifiers.featureDataset")}
-					/> · {t("researchContext.featurePlan")}:{" "}
+					/>{" "}
+					· {t("researchContext.featurePlan")}:{" "}
 					<IdentifierDisplay
 						id={query.data.featureDataset.featurePlanHash}
 						label={t("identifiers.featurePlan")}

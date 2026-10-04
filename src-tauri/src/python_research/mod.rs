@@ -931,6 +931,50 @@ impl ModelLabStore {
             .ok_or_else(|| PythonResearchError("model-run-not-found".into()))
     }
 
+    fn deployment_forecasts(
+        &self,
+        user_id: &str,
+        run: &ModelRunView,
+        replay: &[adaq_python_research::model::ForecastRow],
+    ) -> Result<Vec<adaq_python_research::model::ForecastRow>, PythonResearchError> {
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| PythonResearchError("model-lab-store-lock-poisoned".into()))?;
+        let dataset = database
+            .forecast_datasets
+            .get(&model_key(user_id, &run.forecast_sha256))
+            .ok_or_else(|| PythonResearchError("model-final-forecast-dataset-missing".into()))?;
+        if dataset.schema != "adaq:forecast-signal-dataset@1"
+            || dataset.dataset_sha256 != run.forecast_sha256
+            || dataset.producer_id != MODEL_PROJECT_ID
+            || dataset.producer_adapter_id != run.adapter_id
+            || dataset.producer_artifact_sha256 != run.artifact_sha256
+            || dataset.input_evidence_sha256 != run.input_evidence_sha256
+            || dataset.signal_id != "forecast"
+            || dataset.target_id != run.target_id
+            || dataset.horizon_bars != run.target_horizon_bars
+            || dataset.forecast_contract != run.forecast_contract
+            || dataset.provenance_hashes != model_run_provenance(run)?
+            || dataset.snapshot_id != run.snapshot_id
+            || dataset.universe_id != run.universe_id
+            || model_forecast_sha256(
+                &run.artifact_sha256,
+                &run.input_evidence_sha256,
+                &run.snapshot_id,
+                &run.universe_id,
+                &dataset.rows,
+            )? != run.forecast_sha256
+        {
+            return Err(PythonResearchError(
+                "model-final-forecast-dataset-binding-invalid".into(),
+            ));
+        }
+        // Retain the evaluated Python rows; native replay uses the declared numeric tolerance.
+        compare_repeatability(&[], &[], &dataset.rows, replay)?;
+        Ok(dataset.rows.clone())
+    }
+
     fn artifact(
         &self,
         user_id: &str,
@@ -1700,6 +1744,7 @@ impl ModelLabStore {
         Ok(())
     }
 
+    #[cfg(test)]
     fn save_final(
         &self,
         user_id: &str,
@@ -1963,7 +2008,10 @@ fn model_run_provenance(
         ("featureDataset".into(), view.feature_dataset_id.clone()),
         ("featurePlan".into(), view.feature_plan_hash.clone()),
         ("snapshot".into(), view.snapshot_id.clone()),
-        ("universe".into(), view.universe_id.clone()),
+        (
+            "universe".into(),
+            model_universe_fingerprint(&view.universe_id),
+        ),
     ]))
 }
 
@@ -2047,7 +2095,7 @@ pub struct ModelRunView {
     pub feature_plan_hash: String,
     pub snapshot_id: String,
     pub universe_id: String,
-    pub factor_lookback: u32,
+    pub factor_lookback: Option<u32>,
     pub seed: u64,
     pub fixture_sha256: String,
     pub artifact_sha256: String,
@@ -2067,7 +2115,7 @@ pub struct ModelRunView {
     pub evidence_state: EvidenceState,
     #[serde(default)]
     pub diagnostics: Vec<String>,
-    pub windows: TutorialWindows,
+    pub windows: ModelWindows,
     #[serde(default = "default_model_resource_policy")]
     pub resource_policy: HostResourcePolicy,
     #[serde(default)]
@@ -2171,11 +2219,50 @@ struct ModelInputEvidence {
     snapshot_id: String,
     universe_id: String,
     output_name: String,
-    lookback: u32,
+    lookback: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelWindows {
+    train_start: i64,
+    train_end: i64,
+    purge_start: i64,
+    purge_end: i64,
+    selection_start: i64,
+    selection_end: i64,
+    embargo_start: i64,
+    embargo_end: i64,
+    final_start: i64,
+    final_end: i64,
+}
+
+impl From<TutorialWindows> for ModelWindows {
+    fn from(windows: TutorialWindows) -> Self {
+        Self {
+            train_start: windows.train_start.into(),
+            train_end: windows.train_end.into(),
+            purge_start: windows.purge_start.into(),
+            purge_end: windows.purge_end.into(),
+            selection_start: windows.selection_start.into(),
+            selection_end: windows.selection_end.into(),
+            embargo_start: windows.embargo_start.into(),
+            embargo_end: windows.embargo_end.into(),
+            final_start: windows.final_start.into(),
+            final_end: windows.final_end.into(),
+        }
+    }
+}
+
+struct BoundModelData {
+    dataset: FactorDataset,
+    market_series: Option<Vec<FactorMarketSeries>>,
 }
 
 struct ModelEvidenceData {
-    fixture: SyntheticTutorialFixture,
+    content_sha256: String,
+    windows: ModelWindows,
+    bar_interval_ms: i64,
     dataset: DatasetH,
     transformation: FittedTransformation,
     final_labels: Vec<(i64, String, f64)>,
@@ -2225,8 +2312,19 @@ fn model_provenance(
         ("featureDataset".into(), input.feature_dataset_id.clone()),
         ("featurePlan".into(), input.feature_plan_hash.clone()),
         ("snapshot".into(), input.snapshot_id.clone()),
-        ("universe".into(), input.universe_id.clone()),
+        (
+            "universe".into(),
+            model_universe_fingerprint(&input.universe_id),
+        ),
     ])
+}
+
+fn model_universe_fingerprint(universe_id: &str) -> String {
+    // Universe IDs prefix the content fingerprint; Artifact provenance stores hashes.
+    universe_id
+        .strip_prefix("universe-")
+        .unwrap_or(universe_id)
+        .into()
 }
 
 fn resource_policy_identity(
@@ -2242,10 +2340,14 @@ fn model_run_limits(resource_policy: &HostResourcePolicy) -> Result<RunLimits, S
     let defaults = RunLimits::default();
     Ok(RunLimits {
         fuel_per_call: defaults.fuel_per_call,
-        memory_bytes: usize::try_from(resource_policy.max_memory_bytes)
-            .map_err(|_| "model-runtime-memory-limit-invalid".to_owned())?,
-        max_bars: usize::try_from(resource_policy.max_input_rows)
-            .map_err(|_| "model-runtime-input-row-limit-invalid".to_owned())?,
+        memory_bytes: defaults.memory_bytes.min(
+            usize::try_from(resource_policy.max_memory_bytes)
+                .map_err(|_| "model-runtime-memory-limit-invalid".to_owned())?,
+        ),
+        max_bars: defaults.max_bars.min(
+            usize::try_from(resource_policy.max_input_rows)
+                .map_err(|_| "model-runtime-input-row-limit-invalid".to_owned())?,
+        ),
     })
 }
 
@@ -2361,6 +2463,8 @@ fn read_model_candidate(
 fn model_prediction_input(
     mut runner_input: serde_json::Value,
     artifact: &adaq_python_research::model::LinearModelArtifact,
+    target_window_end: i64,
+    bar_interval_ms: i64,
 ) -> Result<serde_json::Value, PythonResearchError> {
     let object = runner_input
         .as_object_mut()
@@ -2384,7 +2488,11 @@ fn model_prediction_input(
     );
     object.insert(
         "targetWindowEnd".into(),
-        serde_json::json!(TutorialWindows::m12().final_end),
+        serde_json::json!(target_window_end),
+    );
+    object.insert(
+        "targetIntervalMs".into(),
+        serde_json::json!(bar_interval_ms),
     );
     Ok(runner_input)
 }
@@ -2502,6 +2610,7 @@ struct ModelDeploymentReplay {
     transformation: FittedTransformation,
     rows: Vec<HostPartitionRow>,
     expected: Vec<adaq_python_research::model::ForecastRow>,
+    forecasts: Vec<adaq_python_research::model::ForecastRow>,
     replay_identity: String,
 }
 
@@ -2686,7 +2795,6 @@ fn accepted_model_deployment_replay(
         || run.forecast_contract != adaq_python_research::model::FORECAST_CONTRACT
         || run.artifact_schema != adaq_python_research::model::LINEAR_MODEL_ARTIFACT_SCHEMA
         || run.numeric_representation != adaq_python_research::model::NUMERIC_REPRESENTATION
-        || run.windows != TutorialWindows::m12()
     {
         return Err(PythonResearchError(
             "model-final-run-evidence-binding-invalid".into(),
@@ -2760,7 +2868,8 @@ fn accepted_model_deployment_replay(
     }
     let factor_dataset = load_bound_model_factor_dataset(local_state, user_id, &input)?;
     let evidence = build_model_evidence(&input, Some(&factor_dataset))?;
-    if evidence.fixture.manifest.content_sha256 != run.fixture_sha256
+    if evidence.content_sha256 != run.fixture_sha256
+        || evidence.windows != run.windows
         || evidence.transformation != transformation
     {
         return Err(PythonResearchError(
@@ -2774,33 +2883,22 @@ fn accepted_model_deployment_replay(
         ));
     }
     let mut forecasts = forecast(&artifact, &transformation, &test)?;
-    let final_end = run.windows.final_end - TARGET_HORIZON_BARS as u32;
+    let final_end = run.windows.final_end - TARGET_HORIZON_BARS as i64 * evidence.bar_interval_ms;
     for row in &mut forecasts {
-        if row.datetime as u32 > final_end {
+        if row.datetime > final_end {
             row.value = None;
             row.unavailable_reason = Some("target-window-boundary".into());
         }
     }
-    if model_forecast_sha256(
-        &artifact.artifact_sha256,
-        &run.input_evidence_sha256,
-        &run.snapshot_id,
-        &run.universe_id,
-        &forecasts,
-    )? != run.forecast_sha256
-    {
-        return Err(PythonResearchError(
-            "model-final-forecast-replay-hash-mismatch".into(),
-        ));
-    }
+    let forecasts = store.deployment_forecasts(user_id, &run, &forecasts)?;
     let mut rows = Vec::new();
     let mut expected = Vec::new();
     for (row, forecast) in test.rows.iter().zip(forecasts.iter()) {
         if forecast.value.is_some() {
             if row.label.is_some()
                 || forecast.unavailable_reason.is_some()
-                || forecast.datetime < run.windows.final_start as i64
-                || forecast.datetime as u32 > final_end
+                || forecast.datetime < run.windows.final_start
+                || forecast.datetime > final_end
             {
                 return Err(PythonResearchError(
                     "model-final-replay-window-invalid".into(),
@@ -2838,6 +2936,7 @@ fn accepted_model_deployment_replay(
         transformation,
         rows,
         expected,
+        forecasts,
         replay_identity,
     })
 }
@@ -2986,7 +3085,14 @@ fn compare_model_component_replay(
         .collect::<Vec<_>>();
     let loader = WasmLoader::with_limits(limits);
     loader.load_model_bytes(&package.wasm, slots, parameters, replay.run.seed)?;
-    let actual = loader.process_model(rows)?;
+    if rows.len() > limits.max_bars {
+        return Err("model qualification replay exceeds the input row limit".into());
+    }
+    // Match Dataset Generation batches without increasing the per-call fuel budget.
+    let mut actual = Vec::with_capacity(rows.len());
+    for chunk in rows.chunks(256) {
+        actual.extend(loader.process_model(chunk.to_vec())?);
+    }
     if actual.len() != replay.expected.len() {
         return Err("model component replay row count diverged".into());
     }
@@ -3125,6 +3231,9 @@ fn qualify_model_deployment(
             .and_then(|package| package.manifest.model_artifact)
             .is_some_and(|artifact| has_model_evidence_windows(&artifact.provenance));
         if has_windows {
+            let replay =
+                accepted_model_deployment_replay(store, local_state, user_id, decision_id)?;
+            publish_model_deployment_forecasts(local_state, user_id, &replay)?;
             return Ok(report);
         }
     }
@@ -3144,7 +3253,7 @@ fn qualify_model_deployment(
     };
     let started = Instant::now();
     let provenance = {
-        let mut provenance = replay.artifact.provenance_hashes.clone();
+        let mut provenance = model_runtime_provenance(&replay.run, &replay.artifact);
         provenance.insert("decision".into(), replay.final_report.decision_id.clone());
         provenance.insert(
             "finalEvaluationReport".into(),
@@ -3155,16 +3264,6 @@ fn qualify_model_deployment(
             "resourcePolicy".into(),
             resource_policy_identity(&replay.run.resource_policy)?,
         );
-        // The embedded Linear Model Artifact keeps hash-only provenance; its
-        // package manifest carries the native research windows for downstream
-        // evidence classification.
-        let training_window = format!(
-            "{}..{}",
-            replay.run.windows.train_start, replay.run.windows.train_end
-        );
-        for field in ["trainingWindow", "fittingWindow", "normalizationWindow"] {
-            provenance.insert(field.into(), training_window.clone());
-        }
         provenance
     };
     let package_bytes = match export_linear_model_component(
@@ -3290,7 +3389,50 @@ fn qualify_model_deployment(
         diagnostics,
         qualified,
     )?;
+    if qualified {
+        publish_model_deployment_forecasts(local_state, user_id, &replay)?;
+    }
     store.save_qualification_report(user_id, report)
+}
+
+fn model_runtime_provenance(
+    run: &ModelRunView,
+    artifact: &LinearModelArtifact,
+) -> BTreeMap<String, String> {
+    // Keep the embedded Artifact immutable; native runtime metadata adds its frozen windows.
+    let mut provenance = artifact.provenance_hashes.clone();
+    let window = format!("{}..{}", run.windows.train_start, run.windows.train_end);
+    for field in ["trainingWindow", "fittingWindow", "normalizationWindow"] {
+        provenance.insert(field.into(), window.clone());
+    }
+    provenance
+}
+
+fn publish_model_deployment_forecasts(
+    local_state: &crate::local_research::LocalResearchState,
+    user_id: &str,
+    replay: &ModelDeploymentReplay,
+) -> Result<(), PythonResearchError> {
+    crate::forecast_signal_dataset::publish_python_model_signal_dataset(
+        local_state,
+        user_id,
+        &replay.run.forecast_sha256,
+        &replay.run.snapshot_id,
+        (replay.run.universe_id != sha256(b"python-tutorial-a-share@1:point-in-time-universe"))
+            .then_some(replay.run.universe_id.as_str()),
+        &replay.run.feature_plan_hash,
+        &replay.run.factor_dataset_id,
+        &replay.run.feature_dataset_id,
+        &replay.run.artifact_sha256,
+        &model_runtime_provenance(&replay.run, &replay.artifact),
+        &replay.run.adapter_id,
+        replay.run.alpha,
+        replay.run.seed,
+        &replay.run.forecast_contract,
+        &replay.forecasts,
+    )
+    .map_err(PythonResearchError)?;
+    Ok(())
 }
 
 impl ModelEvidenceData {
@@ -3305,14 +3447,33 @@ impl ModelEvidenceData {
             transformation: self.transformation.clone(),
             fitted_model: None,
             target_window_end: None,
+            target_interval_ms: None,
         })
     }
 }
 
 fn build_model_evidence(
     input: &ModelInputEvidence,
-    factor_dataset: Option<&FactorDataset>,
+    bound: Option<&BoundModelData>,
 ) -> Result<ModelEvidenceData, PythonResearchError> {
+    if let Some(bound) = bound {
+        let manifest = &bound.dataset.manifest;
+        if manifest.dataset_id != input.factor_dataset_id
+            || manifest.feature_dataset_id != input.feature_dataset_id
+            || manifest.feature_plan_hash != input.feature_plan_hash
+            || manifest.market_data_snapshot_id != input.snapshot_id
+            || manifest.point_in_time_universe_id != input.universe_id
+            || !manifest.output_names.contains(&input.output_name)
+        {
+            return Err(PythonResearchError(
+                "model-factor-dataset-binding-invalid".into(),
+            ));
+        }
+        if let Some(series) = &bound.market_series {
+            return build_market_model_evidence(input, &bound.dataset, series);
+        }
+    }
+    let factor_dataset = bound.map(|bound| &bound.dataset);
     let fixture = SyntheticTutorialFixture::m12()?;
     fixture.validate()?;
     let windows = TutorialWindows::m12();
@@ -3353,7 +3514,9 @@ fn build_model_evidence(
         None => materialize_momentum(
             &fixture.momentum_rows(),
             &fixture.instruments,
-            input.lookback,
+            input.lookback.ok_or_else(|| {
+                PythonResearchError("model-tutorial-factor-lookback-required".into())
+            })?,
         )?
         .into_iter()
         .filter_map(|row| {
@@ -3454,7 +3617,151 @@ fn build_model_evidence(
     let train = dataset.prepare("train")?;
     let transformation = FittedTransformation::fit(&train.rows, &train.feature_names)?;
     Ok(ModelEvidenceData {
-        fixture,
+        content_sha256: fixture.manifest.content_sha256,
+        windows: windows.into(),
+        bar_interval_ms: 1,
+        dataset,
+        transformation,
+        final_labels,
+    })
+}
+
+fn build_market_model_evidence(
+    input: &ModelInputEvidence,
+    factor_dataset: &FactorDataset,
+    series: &[FactorMarketSeries],
+) -> Result<ModelEvidenceData, PythonResearchError> {
+    let times = factor_dataset
+        .rows
+        .iter()
+        .map(|row| row.observation_time_ms)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let horizon = TARGET_HORIZON_BARS;
+    if times.len() < 8 * horizon || times[0] <= 0 {
+        return Err(PythonResearchError(
+            "model-market-partitions-too-short".into(),
+        ));
+    }
+    let bar_interval_ms = times[1] - times[0];
+    if bar_interval_ms <= 0
+        || times
+            .windows(2)
+            .any(|pair| pair[1] - pair[0] != bar_interval_ms)
+    {
+        return Err(PythonResearchError(
+            "model-market-calendar-not-continuous".into(),
+        ));
+    }
+    let train_end = times.len() / 2;
+    let selection_end = times.len() * 3 / 4;
+    let windows = ModelWindows {
+        train_start: times[0],
+        train_end: times[train_end - 1],
+        purge_start: times[train_end],
+        purge_end: times[train_end + horizon - 1],
+        selection_start: times[train_end + horizon],
+        selection_end: times[selection_end - 1],
+        embargo_start: times[selection_end],
+        embargo_end: times[selection_end + horizon - 1],
+        final_start: times[selection_end + horizon],
+        final_end: *times.last().unwrap(),
+    };
+    let market = series
+        .iter()
+        .map(|series| (series.instrument_id.as_str(), series))
+        .collect::<BTreeMap<_, _>>();
+    if market.len() != series.len()
+        || series.is_empty()
+        || series.iter().any(|series| {
+            series.snapshot_id != input.snapshot_id
+                || series.market_context != factor_dataset.manifest.market_context
+                || series
+                    .bars
+                    .windows(2)
+                    .any(|pair| pair[0].open_time_ms >= pair[1].open_time_ms)
+        })
+    {
+        return Err(PythonResearchError(
+            "model-market-evidence-binding-invalid".into(),
+        ));
+    }
+    let mut train = Vec::new();
+    let mut valid = Vec::new();
+    let mut test = Vec::new();
+    let mut final_labels = Vec::new();
+    for row in &factor_dataset.rows {
+        let series = market
+            .get(row.instrument_id.as_str())
+            .ok_or_else(|| PythonResearchError("model-market-instrument-missing".into()))?;
+        let Some(FactorObservationValue::Available {
+            value,
+            available_at_ms,
+        }) = row.values.get(&input.output_name)
+        else {
+            continue;
+        };
+        if !value.is_finite() || *available_at_ms > row.observation_time_ms {
+            return Err(PythonResearchError("model-factor-input-not-causal".into()));
+        }
+        let time = row.observation_time_ms;
+        let (partition, end, labels_visible) = if time <= windows.train_end {
+            (&mut train, windows.train_end, true)
+        } else if time >= windows.selection_start && time <= windows.selection_end {
+            (&mut valid, windows.selection_end, true)
+        } else if time >= windows.final_start && time <= windows.final_end {
+            (&mut test, windows.final_end, false)
+        } else {
+            continue;
+        };
+        let label = series
+            .future_close_return(time, horizon as u32)
+            .filter(|(_, target_time)| {
+                *target_time <= end && *target_time == time + horizon as i64 * bar_interval_ms
+            })
+            .map(|(value, _)| value);
+        if !labels_visible && let Some(label) = label {
+            final_labels.push((time, row.instrument_id.clone(), label));
+        }
+        partition.push(HostPartitionRow {
+            datetime: time,
+            instrument: row.instrument_id.clone(),
+            features: vec![*value],
+            label: labels_visible.then_some(label).flatten(),
+        });
+    }
+    final_labels.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
+    let dataset = DatasetH::new(
+        [
+            (PartitionName::Train, train, true),
+            (PartitionName::SelectionValidation, valid, true),
+            (PartitionName::Test, test, false),
+        ]
+        .into_iter()
+        .map(|(name, mut rows, labels_visible)| {
+            rows.sort_by(|left, right| {
+                (left.datetime, &left.instrument).cmp(&(right.datetime, &right.instrument))
+            });
+            HostPartition {
+                name,
+                rows,
+                labels_visible,
+                feature_names: vec![input.output_name.clone()],
+            }
+        })
+        .collect(),
+    )?;
+    let train = dataset.prepare("train")?;
+    let transformation = FittedTransformation::fit(&train.rows, &train.feature_names)?;
+    let content_sha256 = sha256(
+        &serde_json::to_vec(&(&factor_dataset.manifest.dataset_id, series, windows))
+            .map_err(|error| PythonResearchError(error.to_string()))?,
+    );
+    Ok(ModelEvidenceData {
+        content_sha256,
+        windows,
+        bar_interval_ms,
         dataset,
         transformation,
         final_labels,
@@ -3483,7 +3790,7 @@ fn load_bound_model_factor_dataset(
     local_state: &crate::local_research::LocalResearchState,
     user_id: &str,
     input: &ModelInputEvidence,
-) -> Result<FactorDataset, PythonResearchError> {
+) -> Result<BoundModelData, PythonResearchError> {
     let factor_dataset = local_state
         .factor
         .get_factor_dataset(user_id, &input.factor_dataset_id)
@@ -3509,7 +3816,29 @@ fn load_bound_model_factor_dataset(
             "model-feature-dataset-binding-invalid".into(),
         ));
     }
-    Ok(factor_dataset)
+    let market_series =
+        if input.universe_id == sha256(b"python-tutorial-a-share@1:point-in-time-universe") {
+            None
+        } else {
+            let universe = local_state
+                .snapshots
+                .universe_snapshot_for_user(user_id, &input.universe_id)
+                .map_err(PythonResearchError)?;
+            Some(
+                local_state
+                    .factor_market_series_for_context(
+                        user_id,
+                        &input.snapshot_id,
+                        &factor_dataset.manifest.market_context,
+                        &universe,
+                    )
+                    .map_err(PythonResearchError)?,
+            )
+        };
+    Ok(BoundModelData {
+        dataset: factor_dataset,
+        market_series,
+    })
 }
 
 fn validate_model_process_replay(
@@ -3587,22 +3916,23 @@ fn demo_model_run_with_evidence(
     input: ModelInputEvidence,
     resource_policy: HostResourcePolicy,
     python_artifact: Option<adaq_python_research::model::LinearModelArtifact>,
-    factor_dataset: Option<&FactorDataset>,
+    factor_dataset: Option<&BoundModelData>,
 ) -> Result<DemoModelRun, PythonResearchError> {
     let evidence = build_model_evidence(&input, factor_dataset)?;
-    let fixture = evidence.fixture;
+    let content_sha256 = evidence.content_sha256;
+    let windows = evidence.windows;
+    let final_prediction_end =
+        windows.final_end - TARGET_HORIZON_BARS as i64 * evidence.bar_interval_ms;
     let dataset = evidence.dataset;
     let transformation = evidence.transformation;
     let final_labels = evidence.final_labels;
-    let windows = TutorialWindows::m12();
-    windows.validate()?;
     let train = dataset.prepare("train")?;
     let adapter = RidgeAdapter::registered(alpha)?;
     let artifact = python_artifact.unwrap_or(adapter.fit(
         &dataset,
         &transformation,
         model_provenance(
-            &fixture.manifest.content_sha256,
+            &content_sha256,
             &project_revision_sha256,
             &environment_sha256,
             &input_evidence_sha256,
@@ -3615,7 +3945,7 @@ fn demo_model_run_with_evidence(
     let test = dataset.prepare("test")?;
     let mut forecasts = forecast(&artifact, &transformation, &test)?;
     for row in &mut forecasts {
-        if row.datetime as u32 > windows.final_end - TARGET_HORIZON_BARS as u32 {
+        if row.datetime > final_prediction_end {
             row.value = None;
             row.unavailable_reason = Some("target-window-boundary".into());
         }
@@ -3669,7 +3999,7 @@ fn demo_model_run_with_evidence(
         universe_id: input.universe_id,
         factor_lookback: input.lookback,
         seed: 7,
-        fixture_sha256: fixture.manifest.content_sha256,
+        fixture_sha256: content_sha256,
         artifact_sha256: artifact.artifact_sha256.clone(),
         transformation_sha256: transformation.transformation_sha256.clone(),
         forecast_sha256,
@@ -4811,6 +5141,11 @@ impl PythonResearchState {
             &request.revision_sha256,
             Some(&request.environment_sha256),
         )?;
+        if context.manifest.kind == ProjectKind::Model {
+            return Err(PythonResearchError(
+                "model-input-required-use-model-lab".into(),
+            ));
+        }
         if self
             .trust_store
             .get(
@@ -4875,6 +5210,11 @@ impl PythonResearchState {
         let attempt = self.attempt_store.get(attempt_id)?;
         if attempt.user_id != user_id {
             return Err(PythonResearchError("research-attempt-not-found".into()));
+        }
+        if attempt.project_id == MODEL_PROJECT_ID && attempt.execution.input.is_none() {
+            return Err(PythonResearchError(
+                "model-input-required-use-model-lab".into(),
+            ));
         }
         let attempt = self.attempt_store.retry(attempt_id)?;
         drop(resetting);
@@ -6118,15 +6458,17 @@ fn validate_model_source(
     manifest: &ProjectManifest,
 ) -> Result<(), PythonResearchError> {
     const CANONICAL_PROJECT_ID: &str = MODEL_PROJECT_ID;
-    const CANONICAL_SOURCE_SHA256: &str =
-        "293f7a0b144b05d653defd616d7aa1894f8eeeef1c0e4f21e04a70eeda9351e2";
+    const CANONICAL_SOURCE_SHA256: [&str; 2] = [
+        "293f7a0b144b05d653defd616d7aa1894f8eeeef1c0e4f21e04a70eeda9351e2",
+        "0b86069ddf46460d59a98f3ed628531c7fce11eef7ef9fce3d887ce0b1ff4f26",
+    ];
     if manifest.project_id != CANONICAL_PROJECT_ID
         || manifest.source_files != vec!["src/project.py".to_owned()]
     {
         return Err(PythonResearchError("model-project-not-registered".into()));
     }
     let source = fs::read(project_root.join("src/project.py"))?;
-    if sha256(&source) != CANONICAL_SOURCE_SHA256 {
+    if !CANONICAL_SOURCE_SHA256.contains(&sha256(&source).as_str()) {
         return Err(PythonResearchError(
             "model-source-revision-not-canonical:src/project.py".into(),
         ));
@@ -7130,7 +7472,7 @@ pub async fn model_demo_run(
             &execution,
             alpha,
             &evidence.transformation,
-            &evidence.fixture.manifest.content_sha256,
+            &evidence.content_sha256,
             &project_revision_sha256,
             &environment_sha256,
             &input_evidence_sha256,
@@ -7143,7 +7485,7 @@ pub async fn model_demo_run(
             &replay_execution,
             alpha,
             &evidence.transformation,
-            &evidence.fixture.manifest.content_sha256,
+            &evidence.content_sha256,
             &project_revision_sha256,
             &environment_sha256,
             &input_evidence_sha256,
@@ -7166,8 +7508,13 @@ pub async fn model_demo_run(
             Some(&factor_dataset),
         )
         .map_err(map_error)?;
-        let prediction_input =
-            model_prediction_input(runner_input, &first_artifact).map_err(map_error)?;
+        let prediction_input = model_prediction_input(
+            runner_input,
+            &first_artifact,
+            evidence.windows.final_end,
+            evidence.bar_interval_ms,
+        )
+        .map_err(map_error)?;
         let (prediction_execution, _) = research_state
             .run_trusted_project_verification(
                 &request.user_id,
@@ -8248,7 +8595,7 @@ pub async fn model_final_evaluate(
                 &execution,
                 decision.selected_alpha,
                 &evidence.transformation,
-                &evidence.fixture.manifest.content_sha256,
+                &evidence.content_sha256,
                 &trial.project_revision_sha256,
                 &trial.environment_sha256,
                 &trial.input_evidence_sha256,
@@ -8261,7 +8608,7 @@ pub async fn model_final_evaluate(
                 &replay_execution,
                 decision.selected_alpha,
                 &evidence.transformation,
-                &evidence.fixture.manifest.content_sha256,
+                &evidence.content_sha256,
                 &trial.project_revision_sha256,
                 &trial.environment_sha256,
                 &trial.input_evidence_sha256,
@@ -8289,8 +8636,13 @@ pub async fn model_final_evaluate(
                 Some(&factor_dataset),
             )
             .map_err(map_error)?;
-            let prediction_input =
-                model_prediction_input(runner_input, &candidate_artifact).map_err(map_error)?;
+            let prediction_input = model_prediction_input(
+                runner_input,
+                &candidate_artifact,
+                evidence.windows.final_end,
+                evidence.bar_interval_ms,
+            )
+            .map_err(map_error)?;
             let (prediction_execution, _) = research_state
                 .run_trusted_project_verification(
                     &request.user_id,
@@ -8356,11 +8708,14 @@ pub async fn model_final_evaluate(
                 &request.user_id,
                 &run.view.forecast_sha256,
                 &run.view.snapshot_id,
+                (run.view.universe_id
+                    != sha256(b"python-tutorial-a-share@1:point-in-time-universe"))
+                .then_some(run.view.universe_id.as_str()),
                 &run.view.feature_plan_hash,
                 &run.view.factor_dataset_id,
                 &run.view.feature_dataset_id,
                 &run.view.artifact_sha256,
-                &run.artifact.provenance_hashes,
+                &model_runtime_provenance(&run.view, &run.artifact),
                 &run.view.adapter_id,
                 run.view.alpha,
                 run.view.seed,
@@ -8368,15 +8723,14 @@ pub async fn model_final_evaluate(
                 &run.forecasts,
             )
             .map_err(|error| PythonResearchError(error).to_string())?;
-            let final_start = run.view.windows.final_start as i64;
-            let final_end = run.view.windows.final_end - TARGET_HORIZON_BARS as u32;
+            let final_start = run.view.windows.final_start;
+            let final_end =
+                run.view.windows.final_end - TARGET_HORIZON_BARS as i64 * evidence.bar_interval_ms;
             let forecasts = run
                 .forecasts
                 .iter()
                 .filter(|row| {
-                    row.datetime >= final_start
-                        && row.datetime as u32 <= final_end
-                        && row.value.is_some()
+                    row.datetime >= final_start && row.datetime <= final_end && row.value.is_some()
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -9376,6 +9730,257 @@ mod tests {
     }
 
     #[test]
+    fn model_market_evidence_preserves_real_timestamps_and_withholds_final_labels() {
+        let start = 1_775_001_600_000;
+        let step = 900_000;
+        let input = ModelInputEvidence {
+            decision_hash: sha256(b"decision"),
+            promotion_protocol_hash: sha256(b"promotion"),
+            factor_dataset_id: sha256(b"factor-dataset"),
+            feature_dataset_id: sha256(b"features"),
+            feature_plan_hash: sha256(b"plan"),
+            snapshot_id: sha256(b"snapshot"),
+            universe_id: format!("universe-{}", sha256(b"universe")),
+            output_name: "factor-value".into(),
+            lookback: None,
+        };
+        let context = FactorMarketContext {
+            venue: "okx".into(),
+            asset_class: "crypto".into(),
+            bar_interval: "15m".into(),
+            price_basis: "close".into(),
+            valuation_currency: "USDT".into(),
+            point_in_time_universe_id: input.universe_id.clone(),
+        };
+        let rows = ["okx:BTC-USDT", "okx:ETH-USDT"]
+            .into_iter()
+            .flat_map(|instrument| {
+                (0..120).map(move |index| FactorDatasetRow {
+                    instrument_id: instrument.into(),
+                    observation_time_ms: start + index * step,
+                    values: BTreeMap::from([(
+                        "factor-value".into(),
+                        FactorObservationValue::Available {
+                            value: index as f64,
+                            available_at_ms: start + index * step,
+                        },
+                    )]),
+                })
+            })
+            .collect::<Vec<_>>();
+        let manifest = FactorDatasetManifest {
+            schema_version: adaq_factor_research::FACTOR_RESEARCH_SCHEMA_VERSION.into(),
+            dataset_id: input.factor_dataset_id.clone(),
+            protocol_hash: sha256(b"protocol"),
+            candidate_hash: sha256(b"candidate"),
+            scope: FactorScope::CrossSectional,
+            feature_dataset_id: input.feature_dataset_id.clone(),
+            feature_plan_hash: input.feature_plan_hash.clone(),
+            market_data_snapshot_id: input.snapshot_id.clone(),
+            point_in_time_universe_id: input.universe_id.clone(),
+            observation_range: Some(adaq_factor_research::ObservationRange {
+                start_time_ms: start,
+                end_time_ms: start + 120 * step,
+            }),
+            market_context: context.clone(),
+            output_names: vec![input.output_name.clone()],
+            observation_count: rows.len() as u64,
+            payload_sha256: sha256(b"payload"),
+            engine_identity: factor_engine_identity(
+                &sha256(b"revision"),
+                &sha256(b"environment"),
+                &sha256(b"fixture"),
+                1,
+            ),
+        };
+        let series = ["okx:BTC-USDT", "okx:ETH-USDT"]
+            .into_iter()
+            .map(|instrument| FactorMarketSeries {
+                instrument_id: instrument.into(),
+                snapshot_id: input.snapshot_id.clone(),
+                market_context: context.clone(),
+                gaps: Vec::new(),
+                corporate_action_evidence: CorporateActionEvidence::Verified,
+                bars: (0..120)
+                    .map(|index| {
+                        let close = Decimal::from(100 + index);
+                        OhlcvBar {
+                            open_time_ms: start + index * step,
+                            open: close,
+                            high: close,
+                            low: close,
+                            close,
+                            base_volume: Decimal::ONE,
+                            quote_volume: close,
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+        let mut bound = BoundModelData {
+            dataset: FactorDataset { manifest, rows },
+            market_series: Some(series),
+        };
+        let evidence = build_model_evidence(&input, Some(&bound)).unwrap();
+        assert_eq!(
+            build_model_evidence(&input, None).err().unwrap().0,
+            "model-tutorial-factor-lookback-required"
+        );
+        let runner = evidence.runner_input().unwrap();
+        runner.validate().unwrap();
+        assert_eq!(evidence.windows.train_end, start + 59 * step);
+        assert_eq!(evidence.windows.selection_start, start + 65 * step);
+        assert_eq!(evidence.windows.final_start, start + 95 * step);
+        assert_eq!(evidence.bar_interval_ms, step);
+        assert_eq!(evidence.dataset.prepare("train").unwrap().rows.len(), 110);
+        assert_eq!(evidence.dataset.prepare("valid").unwrap().rows.len(), 40);
+        assert_eq!(runner.test.len(), 50);
+        assert!(runner.test.iter().all(|row| row.label.is_none()));
+        assert!(evidence.dataset.target_labels("test").is_err());
+        assert_eq!(runner.train[0].label, Some(105.0 / 100.0 - 1.0));
+        assert_eq!(evidence.final_labels.len(), 40);
+        let run = demo_model_run_with_evidence(
+            1.0,
+            sha256(b"revision"),
+            sha256(b"environment"),
+            sha256(b"input"),
+            input.clone(),
+            HostResourcePolicy::m12_default(),
+            None,
+            Some(&bound),
+        )
+        .unwrap();
+        assert_eq!(
+            run.artifact.provenance_hashes["universe"],
+            sha256(b"universe")
+        );
+        assert_eq!(
+            run.artifact.provenance_hashes,
+            model_run_provenance(&run.view).unwrap()
+        );
+        assert_eq!(
+            run.forecasts
+                .iter()
+                .filter(|row| row.value.is_none())
+                .count(),
+            10
+        );
+        let prediction = model_prediction_input(
+            serde_json::to_value(runner).unwrap(),
+            &run.artifact,
+            evidence.windows.final_end,
+            evidence.bar_interval_ms,
+        )
+        .unwrap();
+        assert_eq!(prediction["targetWindowEnd"], evidence.windows.final_end);
+        assert_eq!(prediction["targetIntervalMs"], step);
+        let rows = evidence
+            .dataset
+            .prepare("test")
+            .unwrap()
+            .rows
+            .into_iter()
+            .cycle()
+            .take(10_750)
+            .enumerate()
+            .map(|(index, mut row)| {
+                row.datetime = start + index as i64 * step;
+                row
+            })
+            .collect::<Vec<_>>();
+        let expected = rows
+            .iter()
+            .map(|row| adaq_python_research::model::ForecastRow {
+                datetime: row.datetime,
+                instrument: row.instrument.clone(),
+                value: Some(
+                    run.artifact
+                        .predict(&run.transformation, &row.features)
+                        .unwrap(),
+                ),
+                unavailable_reason: None,
+            })
+            .collect();
+        let replay = ModelDeploymentReplay {
+            final_report: FinalEvaluationReport {
+                report_id: sha256(b"final-report"),
+                decision_id: sha256(b"selection-decision"),
+                forecast_sha256: sha256(b"evaluated-forecast"),
+                target_sha256: sha256(b"target"),
+                mean_squared_error: 0.0,
+                mean_absolute_error: 0.0,
+                evidence_state: EvidenceState::OutOfSample,
+                artifact_sha256: run.view.artifact_sha256.clone(),
+                forecast_dataset_sha256: run.view.forecast_sha256.clone(),
+            },
+            run: run.view.clone(),
+            artifact: run.artifact.clone(),
+            transformation: run.transformation.clone(),
+            forecasts: run.forecasts.clone(),
+            rows,
+            expected,
+            replay_identity: sha256(b"large-replay"),
+        };
+        let mut provenance = replay.artifact.provenance_hashes.clone();
+        provenance.insert("decision".into(), replay.final_report.decision_id.clone());
+        provenance.insert(
+            "finalEvaluationReport".into(),
+            replay.final_report.report_id.clone(),
+        );
+        provenance.insert("replay".into(), replay.replay_identity.clone());
+        let package = ComponentPackage::read(
+            &export_linear_model_component(
+                &replay.artifact.artifact_sha256,
+                &replay.transformation.transformation_sha256,
+                &replay.run.input_slots,
+                &replay.transformation.means,
+                &replay.transformation.scales,
+                &replay.artifact.coefficients,
+                replay.artifact.intercept,
+                provenance,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let parameters =
+            adaq_component_tooling::component_parameters(&package.manifest, None).unwrap();
+        let limits = model_run_limits(&replay.run.resource_policy).unwrap();
+        assert_eq!(limits.memory_bytes, RunLimits::default().memory_bytes);
+        assert_eq!(limits.max_bars, RunLimits::default().max_bars);
+        assert_eq!(
+            compare_model_component_replay(&package, &parameters, &replay, limits),
+            Ok(())
+        );
+        assert_eq!(
+            compare_model_component_replay(
+                &package,
+                &parameters,
+                &replay,
+                RunLimits {
+                    max_bars: replay.rows.len() - 1,
+                    ..limits
+                }
+            ),
+            Err("model qualification replay exceeds the input row limit".into())
+        );
+        let tutorial = TutorialWindows::m12();
+        assert_eq!(
+            serde_json::to_value(ModelWindows::from(tutorial)).unwrap(),
+            serde_json::to_value(tutorial).unwrap()
+        );
+        bound.market_series.as_mut().unwrap()[0].bars[100].close = Decimal::from(999);
+        let changed = build_model_evidence(&input, Some(&bound)).unwrap();
+        assert_eq!(changed.transformation, evidence.transformation);
+        assert_ne!(changed.final_labels, evidence.final_labels);
+        assert_ne!(changed.content_sha256, evidence.content_sha256);
+        bound.dataset.manifest.feature_plan_hash = sha256(b"wrong-plan");
+        assert_eq!(
+            build_model_evidence(&input, Some(&bound)).err().unwrap().0,
+            "model-factor-dataset-binding-invalid"
+        );
+    }
+
+    #[test]
     fn tutorial_golden_contracts_cover_fixture_windows_and_model_boundaries() {
         let fixture = SyntheticTutorialFixture::m12().unwrap();
         fixture.validate().unwrap();
@@ -9429,14 +10034,14 @@ mod tests {
                 snapshot_id: sha256(b"snapshot"),
                 universe_id: sha256(b"universe"),
                 output_name: "momentum-score".into(),
-                lookback: 20,
+                lookback: Some(20),
             },
             HostResourcePolicy::m12_default(),
             None,
             None,
         )
         .unwrap();
-        assert_eq!(model.view.windows, windows);
+        assert_eq!(model.view.windows, windows.into());
         assert_eq!(model.view.train_rows, 900);
         assert_eq!(model.view.selection_rows, 360);
         assert_eq!(model.view.final_rows, 420);
@@ -9465,7 +10070,7 @@ mod tests {
                 snapshot_id: sha256(b"snapshot"),
                 universe_id: sha256(b"universe"),
                 output_name: "momentum-score".into(),
-                lookback: 20,
+                lookback: Some(20),
             },
             HostResourcePolicy::m12_default(),
             None,
@@ -9538,7 +10143,7 @@ mod tests {
                 snapshot_id: sha256(b"snapshot"),
                 universe_id: sha256(b"universe"),
                 output_name: "momentum-score".into(),
-                lookback: 20,
+                lookback: Some(20),
             },
             HostResourcePolicy::m12_default(),
             None,
@@ -9589,6 +10194,60 @@ mod tests {
             adaq_python_research::model::FORECAST_CONTRACT
         );
         drop(database);
+        let replay = demo.forecasts.clone();
+        for row in &mut demo.forecasts {
+            if let Some(value) = &mut row.value {
+                *value += 1e-16;
+            }
+        }
+        demo.view.forecast_sha256 = model_forecast_sha256(
+            &demo.view.artifact_sha256,
+            &demo.view.input_evidence_sha256,
+            &demo.view.snapshot_id,
+            &demo.view.universe_id,
+            &demo.forecasts,
+        )
+        .unwrap();
+        store.save_demo_run("user-a", &demo, true).unwrap();
+        let reopened = ModelLabStore::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .deployment_forecasts("user-a", &demo.view, &replay)
+                .unwrap(),
+            demo.forecasts
+        );
+        assert!(
+            reopened
+                .deployment_forecasts("user-b", &demo.view, &replay)
+                .is_err()
+        );
+        let mut divergent = replay.clone();
+        *divergent[0].value.as_mut().unwrap() += 1e-5;
+        assert_eq!(
+            reopened
+                .deployment_forecasts("user-a", &demo.view, &divergent)
+                .err()
+                .unwrap()
+                .0,
+            "model-repeatability-divergent"
+        );
+        reopened
+            .database
+            .lock()
+            .unwrap()
+            .forecast_datasets
+            .get_mut(&model_key("user-a", &demo.view.forecast_sha256))
+            .unwrap()
+            .rows[0]
+            .value = Some(0.0);
+        assert_eq!(
+            reopened
+                .deployment_forecasts("user-a", &demo.view, &replay)
+                .err()
+                .unwrap()
+                .0,
+            "model-final-forecast-dataset-binding-invalid"
+        );
         std::fs::remove_file(path).unwrap();
     }
 
@@ -9614,7 +10273,7 @@ mod tests {
                     snapshot_id: sha256(b"snapshot"),
                     universe_id: sha256(b"universe"),
                     output_name: "momentum-score".into(),
-                    lookback: 20,
+                    lookback: Some(20),
                 },
                 HostResourcePolicy::m12_default(),
                 None,
@@ -10122,7 +10781,7 @@ mod tests {
             model_binding.promotion_protocol.trial_id,
             evidence.trial_ids[1]
         );
-        assert_eq!(model_binding.lookback, 20);
+        assert_eq!(model_binding.lookback, Some(20));
         let model_input = ModelInputEvidence {
             decision_hash: model_binding.decision_hash.clone(),
             promotion_protocol_hash: model_binding.promotion_protocol.protocol_hash.clone(),
@@ -10149,7 +10808,7 @@ mod tests {
             model.view.factor_dataset_id,
             model_binding.factor_dataset_id
         );
-        assert_eq!(model.view.factor_lookback, 20);
+        assert_eq!(model.view.factor_lookback, Some(20));
         assert!(model.view.test_labels_withheld);
         assert!(model.artifact.validate().is_ok());
         assert_eq!(model.forecasts.len(), 420);

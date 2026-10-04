@@ -88,6 +88,7 @@ export function localizedFactorCode(
 	code: string,
 	t: (key: string, options?: Record<string, unknown>) => string,
 ) {
+	if (!code) return "";
 	return t(`factors.codes.${code}`, { defaultValue: code });
 }
 
@@ -106,6 +107,12 @@ export function localizedFactorError(
 ) {
 	const raw = formatFactorError(error);
 	const diagnostic = raw.replace(/^Error:\s*/, "");
+	if (
+		diagnostic === "Promotion Protocol is stale for the current Decision" ||
+		diagnostic === "no current Promotion Decision exists for this output"
+	) {
+		return t("factors.decisions.currentDecisionRequired");
+	}
 	const prefix = diagnostic.split(":")[0];
 	if (prefix.startsWith("factor-context-")) {
 		return t(`researchContext.reasons.${prefix}`, { defaultValue: raw });
@@ -128,6 +135,11 @@ export function localizedFactorError(
 
 	// ponytail: map legacy string diagnostics until every invoke boundary returns typed errors.
 	const lower = diagnostic.toLowerCase();
+	if (
+		lower.includes("system eligibility must pass before a positive decision")
+	) {
+		return localizedFactorCode("factor-decision-ineligible", t);
+	}
 	const code =
 		lower.includes("hash mismatch") ||
 		lower.includes("collision") ||

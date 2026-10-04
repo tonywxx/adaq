@@ -15,7 +15,7 @@ use chrono::DateTime;
 use hmac::{Hmac, KeyInit, Mac};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 use super::{Provider, redact};
 
@@ -264,7 +264,9 @@ impl ConnectionTester {
         price: Option<&str>,
         now_ms: i64,
     ) -> Result<serde_json::Value, TestFailure> {
-        if !matches!(order_type, "limit" | "market") || !matches!(side, "buy" | "sell") {
+        if !matches!(order_type, "limit" | "post_only" | "market")
+            || !matches!(side, "buy" | "sell")
+        {
             return Err(TestFailure::new(
                 "request_failed",
                 "Unsupported OKX Demo order type or side.".to_owned(),
@@ -279,6 +281,11 @@ impl ConnectionTester {
         });
         if let Some(price) = price {
             body["px"] = serde_json::Value::String(price.to_owned());
+        }
+        if order_type == "market" {
+            // Host quantities are always base units; OKX defaults market buys to quote units.
+            body["tgtCcy"] = serde_json::Value::String("base_ccy".to_owned());
+            body["banAmend"] = serde_json::Value::Bool(true);
         }
         self.request_okx_demo_private(credential, now_ms, "POST", "/api/v5/trade/order", &body)
     }
@@ -299,6 +306,84 @@ impl ConnectionTester {
         )
     }
 
+    pub(crate) fn confirm_okx_demo_order_absence(
+        &self,
+        credential: &TestCredential,
+        instrument: &str,
+        window_start_ms: i64,
+        now_ms: i64,
+    ) -> Result<adaq_paper_trading_core::OrderAbsenceEvidence, TestFailure> {
+        // OKX retains cancelled unfilled orders for only two hours. Leave a
+        // margin and refuse truncated history rather than inferring absence.
+        let unavailable = || {
+            TestFailure::new(
+                "absence_unproven",
+                "Complete recent OKX Demo order absence could not be established.".into(),
+            )
+        };
+        if instrument.is_empty()
+            || !instrument
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            || window_start_ms < now_ms.saturating_sub(90 * 60 * 1_000)
+            || window_start_ms > now_ms.saturating_sub(60_000)
+        {
+            return Err(unavailable());
+        }
+        let history: OkxResponse<serde_json::Value> = self.request_okx_demo_private_response(
+            credential,
+            now_ms,
+            "GET",
+            &format!("/api/v5/trade/orders-history?instType=SPOT&instId={instrument}&limit=100"),
+            &serde_json::Value::Null,
+        )?;
+        if history.data.len() >= 100 {
+            return Err(unavailable());
+        }
+        for order in &history.data {
+            let created_at = order
+                .get("cTime")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| value.parse::<i64>().ok())
+                .ok_or_else(unavailable)?;
+            if order.get("instId").and_then(serde_json::Value::as_str) != Some(instrument)
+                || order
+                    .get("ordId")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(str::is_empty)
+                || !matches!(
+                    order.get("state").and_then(serde_json::Value::as_str),
+                    Some("filled" | "canceled" | "mmp_canceled")
+                )
+                || created_at <= 0
+                || created_at >= window_start_ms
+            {
+                return Err(unavailable());
+            }
+        }
+        let pending: OkxResponse<serde_json::Value> = self.request_okx_demo_private_response(
+            credential,
+            now_ms,
+            "GET",
+            &format!("/api/v5/trade/orders-pending?instType=SPOT&instId={instrument}&limit=100"),
+            &serde_json::Value::Null,
+        )?;
+        if !pending.data.is_empty() {
+            return Err(unavailable());
+        }
+        let retained = serde_json::to_vec(&history.data).map_err(|_| unavailable())?;
+        Ok(adaq_paper_trading_core::OrderAbsenceEvidence {
+            instrument: instrument.to_owned(),
+            window_start_ms,
+            checked_at_ms: now_ms,
+            history_order_count: history.data.len(),
+            history_sha256: Sha256::digest(retained)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        })
+    }
+
     pub(crate) fn fetch_okx_demo_order(
         &self,
         credential: &TestCredential,
@@ -307,7 +392,36 @@ impl ConnectionTester {
         now_ms: i64,
     ) -> Result<serde_json::Value, TestFailure> {
         let path = format!("/api/v5/trade/order?instId={instrument}&ordId={provider_order_id}");
-        self.request_okx_demo_private(credential, now_ms, "GET", &path, &serde_json::Value::Null)
+        match self.request_okx_demo_private(
+            credential,
+            now_ms,
+            "GET",
+            &path,
+            &serde_json::Value::Null,
+        ) {
+            Err(error) if error.code == "order_not_found" => {
+                // Demo can omit a completed order from details while history retains it.
+                // The history endpoint ignores ordId, so match both identities locally.
+                let path = format!(
+                    "/api/v5/trade/orders-history?instType=SPOT&instId={instrument}&limit=100"
+                );
+                let history: OkxResponse<serde_json::Value> =
+                    self.fetch_okx_demo_private(credential, now_ms, &path)?;
+                let mut matching = history.data.into_iter().filter(|order| {
+                    order["instId"].as_str() == Some(instrument)
+                        && order["ordId"].as_str() == Some(provider_order_id)
+                });
+                let order = matching.next().ok_or_else(|| error.clone())?;
+                if matching.next().is_some() {
+                    return Err(TestFailure::new(
+                        "request_failed",
+                        "OKX returned ambiguous historical order evidence.".to_owned(),
+                    ));
+                }
+                Ok(order)
+            }
+            result => result,
+        }
     }
 
     pub(crate) fn fetch_okx_demo_order_fills(
@@ -317,12 +431,26 @@ impl ConnectionTester {
         provider_order_id: &str,
         now_ms: i64,
     ) -> Result<Vec<serde_json::Value>, TestFailure> {
-        // `/api/v5/trade/fills` retains only the last three days, which is too short to
-        // resolve an order that left the open-order set before reconciliation observed it.
+        // Historical fills cover older orders; recent fills can arrive before history.
         let path = format!(
             "/api/v5/trade/fills-history?instType=SPOT&instId={instrument}&ordId={provider_order_id}"
         );
-        Ok(self.fetch_okx_demo_private(credential, now_ms, &path)?.data)
+        let history: OkxResponse<serde_json::Value> =
+            self.fetch_okx_demo_private(credential, now_ms, &path)?;
+        let exact = |fill: &serde_json::Value| {
+            fill["instId"].as_str() == Some(instrument)
+                && fill["ordId"].as_str() == Some(provider_order_id)
+        };
+        let fills = history.data.into_iter().filter(exact).collect::<Vec<_>>();
+        if !fills.is_empty() {
+            return Ok(fills);
+        }
+        let path = format!(
+            "/api/v5/trade/fills?instType=SPOT&instId={instrument}&ordId={provider_order_id}"
+        );
+        let recent: OkxResponse<serde_json::Value> =
+            self.fetch_okx_demo_private(credential, now_ms, &path)?;
+        Ok(recent.data.into_iter().filter(exact).collect())
     }
 
     fn fetch_okx_demo_private<T: serde::de::DeserializeOwned>(
@@ -396,18 +524,94 @@ impl ConnectionTester {
                 TestFailure::new("request_failed", redact(&error.to_string(), &sensitive))
             })?
         };
-        let response = self
+        let request = HttpRequest {
+            method: method.to_owned(),
+            url: format!("{OKX_DEMO_ENDPOINT}{path}"),
+            headers: okx_headers(
+                api_key, secret_key, passphrase, &timestamp, method, path, &body,
+            ),
+            body,
+        };
+        let mut response = self
             .http
-            .execute(&HttpRequest {
-                method: method.to_owned(),
-                url: format!("{OKX_DEMO_ENDPOINT}{path}"),
-                headers: okx_headers(
-                    api_key, secret_key, passphrase, &timestamp, method, path, &body,
-                ),
-                body,
-            })
+            .execute(&request)
             .map_err(|message| TestFailure::new("request_failed", redact(&message, &sensitive)))?;
+        // Retry one transient failure only for idempotent reads; order writes must never be replayed.
+        if method == "GET" && response.status == 503 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            response = self.http.execute(&request).map_err(|message| {
+                TestFailure::new("request_failed", redact(&message, &sensitive))
+            })?;
+        }
+        if method == "POST" && path == "/api/v5/trade/order" && response.status == 200 {
+            if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&response.body) {
+                if let Some(rows) = raw.get("data").and_then(serde_json::Value::as_array) {
+                    if rows.len() == 1 {
+                        let order = &rows[0];
+                        let code = order.get("sCode").and_then(serde_json::Value::as_str);
+                        let has_id = order
+                            .get("ordId")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|id| !id.is_empty());
+                        // These validation or permission failures definitively reject this
+                        // submission. Timeout/transient codes remain uncertain.
+                        if !has_id
+                            && matches!(
+                                code,
+                                Some("51000" | "51008" | "51020" | "51119" | "51121" | "54092")
+                            )
+                        {
+                            let message = order
+                                .get("sMsg")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("Order validation failed");
+                            return Err(TestFailure::new(
+                                "provider_rejected",
+                                redact(
+                                    &format!(
+                                        "OKX order rejection {}: {message}",
+                                        code.unwrap_or_default()
+                                    ),
+                                    &sensitive,
+                                ),
+                            ));
+                        }
+                        if code.is_some_and(|code| code != "0") {
+                            return Err(TestFailure::new(
+                                "request_failed",
+                                redact(
+                                    &format!(
+                                        "OKX order outcome requires reconciliation: {}",
+                                        order
+                                    ),
+                                    &sensitive,
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         let parsed = parse_okx_response(&response.body, &sensitive)?;
+        if method == "GET"
+            && (path.starts_with("/api/v5/trade/orders-history?")
+                || path.starts_with("/api/v5/trade/orders-pending?"))
+        {
+            let raw = serde_json::from_str::<serde_json::Value>(&response.body).map_err(|_| {
+                TestFailure::new("request_failed", "Malformed OKX order list.".into())
+            })?;
+            if raw.get("code").and_then(serde_json::Value::as_str) == Some("0")
+                && raw
+                    .get("data")
+                    .and_then(serde_json::Value::as_array)
+                    .is_none()
+            {
+                return Err(TestFailure::new(
+                    "request_failed",
+                    "OKX returned no authoritative order list.".into(),
+                ));
+            }
+        }
         if let Some(error) = okx_error(&response, &parsed, &sensitive) {
             return Err(error);
         }
@@ -791,6 +995,8 @@ fn okx_error<T>(
         "environment_mismatch"
     } else if matches!(parsed.code.as_str(), "50102" | "50111" | "50112") {
         "auth_failed"
+    } else if parsed.code == "51603" {
+        "order_not_found"
     } else {
         "request_failed"
     };

@@ -6,9 +6,19 @@ use crate::{
     bot_operations::BotStore, local_research::LocalResearchState, paper_trading::PaperOrderRequest,
 };
 
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ProviderOrderKind {
-    Limit,
-    MarketSell,
+    PostOnly,
+    Market,
+}
+
+impl ProviderOrderKind {
+    pub(crate) fn for_fill_policy(policy: adaq_backtest_core::FillPolicy) -> Self {
+        match policy {
+            adaq_backtest_core::FillPolicy::Maker => Self::PostOnly,
+            adaq_backtest_core::FillPolicy::Taker => Self::Market,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -16,6 +26,7 @@ pub(crate) enum DispatchError {
     Begin(String),
     ProviderOrderIdentityMissing,
     ProviderOutcomeUncertain(String),
+    ProviderRejected(String),
     OutcomeRetention(String),
 }
 
@@ -35,20 +46,20 @@ pub(crate) fn submit(
 
     let quantity = request.quantity.to_string();
     let remote = match kind {
-        ProviderOrderKind::Limit => local.connections.create_okx_demo_order(
+        ProviderOrderKind::PostOnly => local.connections.create_okx_demo_order_outcome(
             &request.user_id,
             &request.instrument,
-            "limit",
+            "post_only",
             &request.side,
             &quantity,
             Some(&request.limit_price.to_string()),
             adaq_bot_runtime::unix_now_ms(),
         ),
-        ProviderOrderKind::MarketSell => local.connections.create_okx_demo_order(
+        ProviderOrderKind::Market => local.connections.create_okx_demo_order_outcome(
             &request.user_id,
             &request.instrument,
             "market",
-            "sell",
+            &request.side,
             &quantity,
             None,
             adaq_bot_runtime::unix_now_ms(),
@@ -56,9 +67,42 @@ pub(crate) fn submit(
     };
     let provider_order = match remote {
         Ok(order) => order,
+        Err(error) if error.code == "provider_rejected" => {
+            let now_ms = adaq_bot_runtime::unix_now_ms();
+            local
+                .paper_trading
+                .record_confirmed_rejection(
+                    &request.user_id,
+                    &request.operation_id,
+                    error.code,
+                    now_ms,
+                )
+                .map_err(DispatchError::OutcomeRetention)?;
+            bots.record_order(
+                &request.user_id,
+                bot_id,
+                &request.operation_id,
+                decision_id,
+                "rejected",
+                None,
+            )
+            .map_err(DispatchError::OutcomeRetention)?;
+            bots.record_evidence(
+                &request.user_id,
+                bot_id,
+                "execution",
+                "provider-order-rejected",
+                &error.redacted_message,
+                decision_id,
+            )
+            .map_err(DispatchError::OutcomeRetention)?;
+            return Err(DispatchError::ProviderRejected(error.redacted_message));
+        }
         Err(error) => {
             retain_uncertain(local, bots, bot_id, decision_id, request)?;
-            return Err(DispatchError::ProviderOutcomeUncertain(error));
+            return Err(DispatchError::ProviderOutcomeUncertain(
+                error.redacted_message,
+            ));
         }
     };
     let Some(provider_order_id) = provider_order.id else {

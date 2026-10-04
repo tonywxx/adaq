@@ -558,6 +558,39 @@ fn set_fitting_progress(
     }
 }
 
+pub(super) fn runtime_observations(
+    inner: &FeaturesInner,
+    user_id: &str,
+    plan: &FeaturePlan,
+    universe_snapshot_id: &str,
+    range: &ObservationRange,
+) -> Result<Vec<FeatureObservation>, String> {
+    validate_user(user_id)?;
+    let events = if super::plan_has_cross_sectional_scope(plan) {
+        cross_sectional_events(inner, user_id, None, universe_snapshot_id, range, "USDT")?
+    } else {
+        let universe = inner
+            .source
+            .universe_snapshot_for_user(user_id, universe_snapshot_id)?;
+        let snapshot_id = universe
+            .components
+            .first()
+            .ok_or_else(|| "Runtime Universe has no component Snapshot".to_owned())?
+            .snapshot_id
+            .as_str();
+        time_series_universe_events(inner, user_id, snapshot_id, universe_snapshot_id, range)?
+    };
+    let artifacts = load_plan_artifacts(inner, user_id, plan).map_err(|outcome| match outcome {
+        Outcome::Failed { code, diagnostic } => format!("{code}: {diagnostic}"),
+        _ => "Runtime Feature artifacts are unavailable".into(),
+    })?;
+    FeatureEngine::new(plan.engine_identity())
+        .evaluator_with_artifacts(plan.clone(), &artifacts)
+        .map_err(string)?
+        .evaluate_batch(&events)
+        .map_err(string)
+}
+
 fn load_plan_artifacts(
     inner: &FeaturesInner,
     user_id: &str,

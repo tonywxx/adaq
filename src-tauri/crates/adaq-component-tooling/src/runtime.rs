@@ -1246,7 +1246,7 @@ fn validate_model_batch_size(rows: usize, limits: RunLimits) -> Result<(), Strin
 }
 
 fn string(error: impl std::fmt::Display) -> String {
-    error.to_string()
+    format!("{error:#}")
 }
 
 #[cfg(test)]

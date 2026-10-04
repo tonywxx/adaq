@@ -882,7 +882,6 @@ function MaterializationStart({
 				candidateHash,
 				optionalNumber(seed) ?? 0,
 			);
-			setFeedback(t("factors.datasets.materializationStarted"));
 			onStarted();
 		} catch (error) {
 			setFeedback(localizedFactorContextError(error, t));
@@ -1015,14 +1014,7 @@ function MaterializationStart({
 					>
 						{t("factors.datasets.materializationStart")}
 					</Button>
-					<Feedback
-						message={feedback}
-						tone={
-							feedback === t("factors.datasets.materializationStarted")
-								? "success"
-								: "error"
-						}
-					/>
+					<Feedback message={feedback} tone="error" />
 				</div>
 			</CardContent>
 		</Card>
@@ -1256,6 +1248,7 @@ function DatasetsWorkspace({
 				adapter={adapter}
 				kind="factor-materialization"
 				refreshKey={attemptRefresh}
+				onAttemptTerminal={() => void datasets.load()}
 			/>
 		</div>
 	);
@@ -1315,7 +1308,10 @@ function DatasetInspector({
 				<div>
 					<CardTitle>{t("factors.datasets.inspector")}</CardTitle>
 					<CardDescription className="font-mono">
-						<IdentifierDisplay id={datasetId} label={t("identifiers.factorDataset")} />
+						<IdentifierDisplay
+							id={datasetId}
+							label={t("identifiers.factorDataset")}
+						/>
 					</CardDescription>
 				</div>
 				<Button type="button" variant="outline" size="sm" onClick={onClose}>
@@ -1487,7 +1483,9 @@ function EvaluationsWorkspace({
 	const reports = useFactorPage(userId, "reports", adapter.listReports);
 	const [selected, setSelected] = useState<FactorReportView>();
 	const [metricDefinitions, setMetricDefinitions] = useState<FactorJson[]>();
-	const [feedback, setFeedback] = useState<string>();
+	const [feedback, setFeedback] = useState<
+		{ message: string; tone: "error" | "success" } | undefined
+	>();
 	const [attemptRefresh, setAttemptRefresh] = useState(0);
 	const [loadingReportId, setLoadingReportId] = useState<string>();
 	const lastFocus = useRef<HTMLElement | null>(null);
@@ -1513,8 +1511,9 @@ function EvaluationsWorkspace({
 				userId={userId}
 				adapter={adapter}
 				onStarted={() => {
-					setFeedback(t("factors.evaluations.started"));
+					setFeedback(undefined);
 					setAttemptRefresh((current) => current + 1);
+					void reports.load();
 				}}
 			/>
 			<AttemptsPanel
@@ -1522,6 +1521,7 @@ function EvaluationsWorkspace({
 				adapter={adapter}
 				kind="factor-evaluation"
 				refreshKey={attemptRefresh}
+				onAttemptTerminal={() => void reports.load()}
 			/>
 			<Card>
 				<CardHeader>
@@ -1529,7 +1529,7 @@ function EvaluationsWorkspace({
 					<CardDescription>{t("factors.evaluations.description")}</CardDescription>
 				</CardHeader>
 				<CardContent className="space-y-4">
-					<Feedback message={feedback} tone="success" />
+					<Feedback message={feedback?.message} tone={feedback?.tone} />
 					{reports.error ? (
 						<ErrorState
 							message={localizedFactorError(reports.error, t)}
@@ -1606,7 +1606,10 @@ function EvaluationsWorkspace({
 																if (request === inspectRequest.current) setSelected(details);
 															} catch (error) {
 																if (request === inspectRequest.current)
-																	setFeedback(localizedFactorError(error, t));
+																	setFeedback({
+																		message: localizedFactorError(error, t),
+																		tone: "error",
+																	});
 															} finally {
 																if (request === inspectRequest.current)
 																	setLoadingReportId(undefined);
@@ -1652,7 +1655,7 @@ function EvaluationStart({
 }: {
 	userId: string;
 	adapter: FactorAdapter;
-	onStarted: () => void;
+	onStarted: (attempt: FactorAttemptView) => void;
 }) {
 	const { t } = useTranslation();
 	const candidates = useFactorPage(userId, "candidates", adapter.listCandidates);
@@ -1755,14 +1758,14 @@ function EvaluationStart({
 			if (!candidateHash || !datasetId || !outputName) {
 				throw new Error(t("factors.evaluations.selectionRequired"));
 			}
-			await adapter.startEvaluationFromContext(
+			const attempt = await adapter.startEvaluationFromContext(
 				userId,
 				candidateHash,
 				datasetId,
 				outputName,
 			);
-			setFeedback(t("factors.evaluations.started"));
-			onStarted();
+			setFeedback(undefined);
+			onStarted(attempt);
 		} catch (error) {
 			setFeedback(localizedFactorContextError(error, t));
 		} finally {
@@ -1874,7 +1877,7 @@ function EvaluationStart({
 						</p>
 						<dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
 							<Detail
-								label={t("factors.candidates.candidateHash")}
+								label={t("factors.common.candidateHash")}
 								value={textAt(selectedCandidate.candidate, "candidateHash")}
 								identifier
 							/>
@@ -1967,10 +1970,7 @@ function EvaluationStart({
 						{t("factors.evaluations.hostOwnsEvidence")}
 					</span>
 				</div>
-				<Feedback
-					message={feedback}
-					tone={feedback === t("factors.evaluations.started") ? "success" : "error"}
-				/>
+				<Feedback message={feedback} tone="error" />
 			</CardContent>
 		</Card>
 	);
@@ -2170,14 +2170,18 @@ function metricObservation(metric: FactorJson) {
 		return {
 			value: factorString(valueAt(available, "value"), "unavailable"),
 			reason: "",
-			sampleCount: factorString(valueAt(available, "sampleCount")),
+			sampleCount: factorString(
+				valueAt(available, "sampleCount") ?? valueAt(available, "sample_count"),
+			),
 		};
 	}
 	if (unavailable && typeof unavailable === "object") {
 		return {
 			value: "unavailable",
 			reason: factorString(valueAt(unavailable, "reason")),
-			sampleCount: factorString(valueAt(unavailable, "sampleCount")),
+			sampleCount: factorString(
+				valueAt(unavailable, "sampleCount") ?? valueAt(unavailable, "sample_count"),
+			),
 		};
 	}
 	return {
@@ -3946,7 +3950,7 @@ function DecisionsWorkspace({
 								</thead>
 								<tbody>
 									{library.map((item) => (
-										<tr key={textAt(item.decision, "decisionHash")} className="border-b">
+										<tr key={textAt(item.decision, "decisionId")} className="border-b">
 											<td className="py-2 pr-4 font-mono text-xs">
 												{shortFactorHash(valueAt(item.decision, "candidateHash"))}
 											</td>

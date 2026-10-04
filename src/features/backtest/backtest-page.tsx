@@ -1,6 +1,9 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { abbreviateIdentifier, identifierLabel } from "@/lib/identifier-display";
+import {
+	abbreviateIdentifier,
+	identifierLabel,
+} from "@/lib/identifier-display";
 import { Input } from "@/components/ui/input";
 import { LoadingState } from "@/components/loading-state";
 import { Label } from "@/components/ui/label";
@@ -593,7 +596,9 @@ export function BacktestPage({
 				});
 				if (attemptId)
 					await adapter.completeStrategyAttempt(attemptId, value.runId);
-				setMessage(`Portfolio Attempt ${abbreviateIdentifier(value.runId)} completed.`);
+				setMessage(
+					`Portfolio Attempt ${abbreviateIdentifier(value.runId)} completed.`,
+				);
 				return;
 			}
 			const value = await adapter.run(runEffect.request);

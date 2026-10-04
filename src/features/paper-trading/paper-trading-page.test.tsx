@@ -1,9 +1,13 @@
 /** @jest-environment jsdom */
 
-import "@/lib/i18n";
+import { i18n } from "@/lib/i18n";
 import { AuthenticatedUserContext } from "@/authenticated-user";
 import { abbreviateIdentifier } from "@/lib/identifier-display";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	QueryClient,
+	QueryClientProvider,
+	QueryObserver,
+} from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -63,14 +67,14 @@ function button(container: HTMLElement, label: string) {
 	);
 }
 
-async function mount() {
+async function mount(client = new QueryClient()) {
 	const container = document.createElement("div");
 	const root = createRoot(container);
 	document.body.append(container);
 	await act(async () => {
 		root.render(
 			<AuthenticatedUserContext.Provider value="alice">
-				<QueryClientProvider client={new QueryClient()}>
+				<QueryClientProvider client={client}>
 					<PaperTradingPage />
 				</QueryClientProvider>
 			</AuthenticatedUserContext.Provider>,
@@ -155,4 +159,59 @@ test("keeps the retained view when Reconcile fails", async () => {
 	);
 	expect(container.textContent).toContain("Retained evidence has not changed.");
 	await unmount(root, container);
+});
+
+test("refreshes retained operational alerts after a successful reconcile", async () => {
+	const client = new QueryClient();
+	const key = ["operations-alerts", "alice"];
+	client.setQueryData(key, [{ state: "active" }]);
+	client.setQueryData(["operations-alerts", "bob"], [{ state: "active" }]);
+	const observer = new QueryObserver(client, {
+		queryKey: key,
+		staleTime: Infinity,
+		queryFn: async () => [{ state: "resolved" }],
+	});
+	const unsubscribe = observer.subscribe(() => {});
+	const { container, root } = await mount(client);
+	expect(client.getQueryData(key)).toEqual([{ state: "active" }]);
+
+	await act(async () => button(container, "Reconcile")?.click());
+	expect(client.getQueryData(key)).toEqual([{ state: "active" }]);
+	await act(async () => button(container, "Confirm Reconcile")?.click());
+	await settle();
+
+	expect(client.getQueryData(key)).toEqual([{ state: "resolved" }]);
+	expect(client.getQueryData(["operations-alerts", "bob"])).toEqual([
+		{ state: "active" },
+	]);
+	unsubscribe();
+	await unmount(root, container);
+});
+
+test("clarifies that Bot Start and Retry reconcile without a prior manual click", async () => {
+	const previousLanguage = i18n.language;
+	await act(async () => {
+		await i18n.changeLanguage("en-US");
+	});
+	const { container, root } = await mount();
+	const englishCopy = container.textContent ?? "";
+	expect(englishCopy).toContain(
+		"Bot Start/Retry automatically reconciles before enabling risk",
+	);
+	expect(englishCopy).toContain("no manual Reconcile is needed first.");
+	expect(englishCopy).toContain(i18n.t("paperTrading.restartRequired"));
+
+	await act(async () => {
+		await i18n.changeLanguage("zh-CN");
+	});
+	expect(container.textContent).toContain(
+		"启动或重试 Bot 时，Host 会先自动对账 OKX Demo 账户再启用风险",
+	);
+	expect(container.textContent).toContain("无需先手动点击“对账”。");
+	expect(container.textContent).toContain(
+		i18n.t("paperTrading.restartRequired"),
+	);
+
+	await unmount(root, container);
+	await i18n.changeLanguage(previousLanguage);
 });

@@ -2181,6 +2181,7 @@ mod tests {
             transformation,
             fitted_model: None,
             target_window_end: None,
+            target_interval_ms: None,
         };
         input.validate().unwrap();
         let spec = RunnerLaunchSpec {

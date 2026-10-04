@@ -44,7 +44,7 @@ test("routes direct workspaces and the supported OKX operations", () => {
 	);
 	expect(routerSource).toContain('path: "/help/workflow/$step"');
 	expect(routerSource).toMatch(
-		/path: "\/operations"[\s\S]*?<OperationsDashboardPage \/>/,
+		/path: "\/operations"[\s\S]*?component: OperationsDashboard/,
 	);
 	expect(routerSource).toMatch(
 		/path: "\/paper-trading"[\s\S]*?<PaperTradingPage \/>/,
@@ -54,7 +54,10 @@ test("routes direct workspaces and the supported OKX operations", () => {
 		/path: "\/paper-feedback"[\s\S]*?<PaperFeedbackPage \/>/,
 	);
 	expect(routerSource).toMatch(/const DataFoundationPage = lazy\(/);
-	expect(routerSource).toMatch(/const OperationsDashboardPage = lazy\(/);
+	expect(routerSource).toMatch(
+		/import \{ OperationsDashboard \} from "@\/features\/operations\/operations-dashboard"/,
+	);
+	expect(routerSource).not.toMatch(/OperationsDashboardPage = lazy\(/);
 	expect(routerSource).toMatch(/const MarketsOverviewPage = lazy\(/);
 	expect(routerSource).toMatch(/const CryptoMarketPage = lazy\(/);
 	expect(routerSource).toMatch(/const MarketSessionBoundary = lazy\(/);

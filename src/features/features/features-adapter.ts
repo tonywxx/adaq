@@ -102,7 +102,7 @@ export function createFeaturesAdapter(invoke: FeatureInvoke) {
 			const operationId = `feature-fitting:${crypto.randomUUID()}`;
 			await freezeContext(userId, operationId);
 			return invoke("feature_fitting_start", {
-				request: { userId, operationId, protocol, plan },
+				payload: { userId, operationId, protocol, plan },
 			}) as Promise<FittingAttemptView>;
 		},
 		async listFittingAttempts(userId: string) {

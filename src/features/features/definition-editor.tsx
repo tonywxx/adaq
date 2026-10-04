@@ -133,6 +133,29 @@ export function DefinitionEditor({
 										))}
 									</select>
 								</div>
+								<div>
+									<Label htmlFor={`node-scope-${node.id}`}>
+										{t("features.definitions.editor.scope")}
+									</Label>
+									<select
+										id={`node-scope-${node.id}`}
+										className="mt-1 w-full rounded-md border bg-transparent px-2 py-1.5 text-sm"
+										value={node.scope}
+										onChange={(event) =>
+											onChange(
+												updateNode(draft, index, {
+													scope: event.target.value as FeatureScope,
+												}),
+											)
+										}
+									>
+										{FEATURE_SCOPES.map((scope) => (
+											<option key={scope} value={scope}>
+												{scope}
+											</option>
+										))}
+									</select>
+								</div>
 								{node.operator.kind === "indicator" && (
 									<div>
 										<Label htmlFor={`indicator-${node.id}`}>

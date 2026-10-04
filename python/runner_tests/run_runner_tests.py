@@ -13,6 +13,10 @@ sys.path.insert(0, str(ROOT / "adaq-python-research-runner/src"))
 sys.path.insert(0, str(ROOT / "adaq-research-sdk/src"))
 sys.path.insert(0, str(ROOT.parent / "examples/python/py-factor-cross-sectional-momentum/src"))
 
+import adaq_runner  # noqa: E402
+
+assert "adaq_runner.__main__" not in sys.modules
+from adaq_runner import run as package_run  # noqa: E402
 from adaq_runner.__main__ import PROTOCOL, _project_payload, _read_frame, run  # noqa: E402
 from project import create_project  # noqa: E402
 
@@ -70,6 +74,7 @@ def main() -> None:
     else:
         raise AssertionError("oversized frames must fail closed")
     payload = _project_payload(create_project(), "factor")
+    assert package_run is run
     definition = payload["definition"]
     assert definition["scope"] == "cross-sectional"
     assert definition["outputs"] == ["momentum-score"]
@@ -79,7 +84,7 @@ def main() -> None:
         "cross-sectional-percentile",
         "rename",
     ]
-    print("Runner contract checks: 5 passed")
+    print("Runner contract checks: 6 passed")
 
 
 if __name__ == "__main__":

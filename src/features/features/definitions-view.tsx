@@ -1,4 +1,7 @@
-import { abbreviateIdentifier, identifierLabel } from "@/lib/identifier-display";
+import {
+	abbreviateIdentifier,
+	identifierLabel,
+} from "@/lib/identifier-display";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

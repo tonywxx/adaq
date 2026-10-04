@@ -296,6 +296,8 @@ def _execute_project(
             }
             if isinstance(input_value.get("targetWindowEnd"), int):
                 context_inputs["targetWindowEnd"] = input_value["targetWindowEnd"]
+            if isinstance(input_value.get("targetIntervalMs"), int):
+                context_inputs["targetIntervalMs"] = input_value["targetIntervalMs"]
             context = ModelContext(
                 parameters=tuple(
                     Parameter(id=key, value=value)

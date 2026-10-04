@@ -537,6 +537,12 @@ pub fn validate_and_freeze_feature_plan_with_bindings_and_parameters(
             ));
         }
         match &slot.source {
+            FeatureSlotSource::Definition { .. } => issues.push(issue(
+                "factor-definition-requires-accepted-feature-dataset",
+                Some(&slot.name),
+                Some("definition"),
+                None,
+            )),
             FeatureSlotSource::Market { field } => slots.push(FeatureSlot {
                 name: slot.name.clone(),
                 source: FeatureSource::Market { field: *field },
