@@ -7723,6 +7723,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        drop(ctx);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -7740,6 +7741,7 @@ mod tests {
                 .unwrap();
         assert_eq!(request.dataset_id, "closed-bar:900000");
         assert!(request.trade_id.is_none());
+        drop(ctx);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
