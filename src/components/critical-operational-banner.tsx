@@ -22,7 +22,7 @@ export function CriticalOperationalBanner() {
 	const [dismissedKey, setDismissedKey] = useState<string>();
 	const alerts = useQuery({
 		queryKey: ["operations-alerts", userId],
-		queryFn: () => invoke<Alert[]>("operations_alerts"),
+		queryFn: () => invoke<Alert[]>("operations_alerts", { unresolvedOnly: true }),
 		enabled: Boolean(userId),
 		refetchInterval: 15_000,
 	});

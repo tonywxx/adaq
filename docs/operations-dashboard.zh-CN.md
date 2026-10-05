@@ -57,6 +57,10 @@ Operations Dashboard /
 
 Home Route 只显示 Summary 与 Exception。选择 Bot、Account、Alert、Factor Study、Model Attempt、Component Build Attempt、Backtest 或 Validation Result 后，进入其专用页面查看完整 Evidence。Dashboard 不会变成包含全部 Domain Workflow 的无限长页面。
 
+Home 读取研究记录的数量、Paper Account 摘要，以及最近更新的十个 Bot 摘要，不为监控解析完整运行或账户历史。页面框架先显示，原生读取在后台执行。
+
+`/operations` 详情页的 Health 与 Alert 各自每页十条。告警筛选先作用于全部保留历史，再分页；变更筛选回到第一页。Host 恢复入口与全局严重告警提示仍包含当前页之外的未解决告警。较新的健康观测不会掩盖历史未解决的 Health 条件。
+
 ## Data 与 Control Flow
 
 ```mermaid

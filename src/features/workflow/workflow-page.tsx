@@ -1,5 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useAuthenticatedUserId } from "@/authenticated-user";
+import { afterPaint } from "@/features/factors/factor-workspace-data";
 import type { Infographic as InfographicInstance } from "@antv/infographic";
 import {
 	ArrowDownLeftIcon,
@@ -46,19 +47,33 @@ import {
 
 export function WorkflowHomePage() {
 	const userId = useAuthenticatedUserId();
+	const { t } = useTranslation();
 	const dashboard = useQuery({
 		queryKey: ["system-dashboard", userId],
-		queryFn: () => invoke<SystemDashboardProjection>("system_dashboard"),
+		queryFn: async ({ signal }) => {
+			await afterPaint();
+			signal.throwIfAborted();
+			return invoke<SystemDashboardProjection>("system_dashboard");
+		},
 		enabled: Boolean(userId),
 		retry: false,
-		staleTime: 0,
+		staleTime: 15_000,
 		refetchInterval: 15_000,
 	});
 
 	if (!userId || dashboard.isPending) return <SystemDashboardLoading />;
-	if (dashboard.isError) return <SystemDashboardUnavailable />;
+	if (!dashboard.data) return <SystemDashboardUnavailable />;
 	if (dashboard.data.operationalResponsibility) {
-		return <SystemDashboard projection={dashboard.data} />;
+		return (
+			<>
+				{dashboard.isError ? (
+					<p role="alert" className="px-4 pt-4 text-sm text-destructive">
+						{t("operations.loadError")}
+					</p>
+				) : null}
+				<SystemDashboard projection={dashboard.data} />
+			</>
+		);
 	}
 	return <WorkflowGuidePage />;
 }

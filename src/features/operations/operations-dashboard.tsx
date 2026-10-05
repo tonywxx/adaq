@@ -10,10 +10,16 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import { afterPaint } from "@/features/factors/factor-workspace-data";
 import { invoke } from "@tauri-apps/api/core";
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import {
+	keepPreviousData,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatDateTime, formatDecimal, formatNumber } from "@/lib/i18n";
 
@@ -47,6 +53,13 @@ export type Alert = {
 	evidenceId?: string;
 	correlationId?: string;
 	diagnostic?: string;
+};
+
+type AlertPage = {
+	items: Alert[];
+	page: number;
+	total: number;
+	hasHostFreeze: boolean;
 };
 
 export type Event = {
@@ -141,6 +154,46 @@ const evidencePathByDimension: Record<string, string> = {
 	researchFeedback: "/paper-feedback",
 };
 
+function PageControls({
+	title,
+	page,
+	total,
+	busy,
+	onChange,
+}: {
+	title: string;
+	page: number;
+	total: number;
+	busy?: boolean;
+	onChange: (page: number) => void;
+}) {
+	const { t } = useTranslation();
+	return (
+		<nav
+			aria-label={t("paperTrading.paginationLabel", { section: title })}
+			className="mt-3 flex items-center justify-center gap-2"
+		>
+			<Button
+				variant="ghost"
+				disabled={busy || page <= 1}
+				onClick={() => onChange(page - 1)}
+			>
+				{t("paperTrading.previousPage")}
+			</Button>
+			<span role="status" className="text-sm">
+				{t("paperTrading.pageOf", { current: page, total })}
+			</span>
+			<Button
+				variant="ghost"
+				disabled={busy || page >= total}
+				onClick={() => onChange(page + 1)}
+			>
+				{t("paperTrading.nextPage")}
+			</Button>
+		</nav>
+	);
+}
+
 export function OperationsDashboard() {
 	const { t } = useTranslation();
 	const userId = useAuthenticatedUserId();
@@ -151,30 +204,58 @@ export function OperationsDashboard() {
 	>("all");
 	const [dimensionFilter, setDimensionFilter] = useState("all");
 	const [entityFilter, setEntityFilter] = useState("");
+	const [alertPage, setAlertPage] = useState(1);
+	const [healthPage, setHealthPage] = useState(1);
 	const [historyAlertId, setHistoryAlertId] = useState<string | null>(null);
+	const probe = useQuery({
+		queryKey: ["operations-probe", userId],
+		queryFn: async ({ signal }) => {
+			await afterPaint();
+			signal.throwIfAborted();
+			return invoke("operations_probe");
+		},
+		enabled: Boolean(userId),
+		refetchInterval: 30_000,
+	});
 	const health = useQuery({
 		queryKey: ["operations-health", userId],
-		queryFn: () => invoke<Health[]>("operations_health"),
-		enabled: Boolean(userId),
+		queryFn: async ({ signal }) => {
+			await afterPaint();
+			signal.throwIfAborted();
+			return invoke<Health[]>("operations_health");
+		},
+		enabled: Boolean(userId) && !probe.isPending,
 		refetchInterval: 15_000,
 	});
+	const alertRequest = {
+		page: alertPage,
+		state: filter === "all" ? null : filter,
+		severity: severityFilter === "all" ? null : severityFilter,
+		dimension: dimensionFilter === "all" ? null : dimensionFilter,
+		entity: entityFilter,
+	};
 	const alerts = useQuery({
-		queryKey: ["operations-alerts", userId],
-		queryFn: () => invoke<Alert[]>("operations_alerts"),
-		enabled: Boolean(userId),
+		queryKey: ["operations-alerts", userId, "page", alertRequest],
+		queryFn: async ({ signal }) => {
+			await afterPaint();
+			signal.throwIfAborted();
+			return invoke<AlertPage>("operations_alerts_page", {
+				request: alertRequest,
+			});
+		},
+		enabled: Boolean(userId) && !probe.isPending,
+		placeholderData: keepPreviousData,
 		refetchInterval: 15_000,
 	});
 	const events = useQuery({
 		queryKey: ["operations-events", userId],
-		queryFn: () => invoke<Event[]>("operations_events", { limit: 64 }),
-		enabled: Boolean(userId),
+		queryFn: async ({ signal }) => {
+			await afterPaint();
+			signal.throwIfAborted();
+			return invoke<Event[]>("operations_events", { limit: 64 });
+		},
+		enabled: Boolean(userId) && !probe.isPending,
 		refetchInterval: 15_000,
-	});
-	const probe = useQuery({
-		queryKey: ["operations-probe", userId],
-		queryFn: () => invoke("operations_probe"),
-		enabled: Boolean(userId),
-		refetchInterval: 30_000,
 	});
 	const history = useQuery({
 		queryKey: ["operations-alert-history", userId, historyAlertId],
@@ -233,28 +314,80 @@ export function OperationsDashboard() {
 	});
 	useEffect(() => {
 		if (probe.dataUpdatedAt === 0) return;
-		void queryClient.invalidateQueries({
-			queryKey: ["operations-health", userId],
-		});
-		void queryClient.invalidateQueries({
-			queryKey: ["operations-alerts", userId],
-		});
-		void queryClient.invalidateQueries({
-			queryKey: ["operations-events", userId],
-		});
-		void queryClient.invalidateQueries({
-			queryKey: ["operations-alert-history", userId],
-		});
+		void queryClient.invalidateQueries(
+			{
+				queryKey: ["operations-health", userId],
+			},
+			{ cancelRefetch: false },
+		);
+		void queryClient.invalidateQueries(
+			{
+				queryKey: ["operations-alerts", userId],
+			},
+			{ cancelRefetch: false },
+		);
+		void queryClient.invalidateQueries(
+			{
+				queryKey: ["operations-events", userId],
+			},
+			{ cancelRefetch: false },
+		);
+		void queryClient.invalidateQueries(
+			{
+				queryKey: ["operations-alert-history", userId],
+			},
+			{ cancelRefetch: false },
+		);
 	}, [probe.dataUpdatedAt, queryClient, userId]);
-	const values = alerts.data ?? [];
-	const visible = values.filter(
-		(alert) =>
-			(filter === "all" || alert.state === filter) &&
-			(severityFilter === "all" || alert.severity === severityFilter) &&
-			(dimensionFilter === "all" || alert.dimension === dimensionFilter) &&
-			(!entityFilter ||
-				alert.entityId.toLowerCase().includes(entityFilter.toLowerCase())),
+	const retainedAlerts = useRef<AlertPage | undefined>(undefined);
+	const alertData = alerts.data ?? retainedAlerts.current;
+	const visible = alertData?.items ?? [];
+	const alertCurrent = alertData?.page ?? alertPage;
+	const alertTotalPages = Math.max(1, Math.ceil((alertData?.total ?? 0) / 10));
+	const healthTotalPages = Math.max(
+		1,
+		Math.ceil((health.data?.length ?? 0) / 10),
 	);
+	const healthCurrent = Math.min(healthPage, healthTotalPages);
+	useEffect(() => {
+		if (alerts.data && !alerts.isPlaceholderData)
+			retainedAlerts.current = alerts.data;
+		if (
+			alerts.data &&
+			!alerts.isPlaceholderData &&
+			alerts.data.page !== alertPage
+		) {
+			queryClient.setQueryData(
+				[
+					"operations-alerts",
+					userId,
+					"page",
+					{
+						page: alerts.data.page,
+						state: filter === "all" ? null : filter,
+						severity: severityFilter === "all" ? null : severityFilter,
+						dimension: dimensionFilter === "all" ? null : dimensionFilter,
+						entity: entityFilter,
+					},
+				],
+				alerts.data,
+			);
+			setAlertPage(alerts.data.page);
+		}
+	}, [
+		alerts.data,
+		alerts.isPlaceholderData,
+		alertPage,
+		filter,
+		severityFilter,
+		dimensionFilter,
+		entityFilter,
+		queryClient,
+		userId,
+	]);
+	useEffect(() => {
+		setHealthPage(healthCurrent);
+	}, [healthCurrent]);
 	const label = (key: string) => t(key, { defaultValue: key.split(".").at(-1) });
 	const entityName = (_entityId: string, dimension: string, condition: string) =>
 		`${label(`operations.dimensions.${dimension}`)} · ${condition}`;
@@ -290,10 +423,7 @@ export function OperationsDashboard() {
 						? t("operations.freezeStarted")
 						: t("operations.freezeAll")}
 				</Button>
-				{values.some(
-					(alert) =>
-						alert.safetyAction === "freezeAll" && alert.state !== "resolved",
-				) ? (
+				{alertData?.hasHostFreeze ? (
 					<Button
 						variant="outline"
 						disabled={recoverHost.isPending}
@@ -339,42 +469,54 @@ export function OperationsDashboard() {
 							<p role="status" className="text-sm text-muted-foreground">
 								{t("operations.loading")}
 							</p>
-						) : health.isError ? (
+						) : health.isError && !health.data ? (
 							<p role="alert" className="text-sm text-destructive">
 								{t("operations.loadError")}
 							</p>
 						) : health.data?.length ? (
 							<div className="grid gap-2 sm:grid-cols-2">
-								{health.data.map((item) => (
-									<div
-										className={`rounded-md border p-3 ${healthTone[item.state]}`}
-										key={`${item.entityId}-${item.dimension}`}
-									>
-										<div className="flex items-center justify-between gap-2">
-											<span className="font-medium">
-												{label(`operations.dimensions.${item.dimension}`)}
-											</span>
-											<Badge variant="outline">
-												{label(`operations.states.${item.state}`)}
-											</Badge>
+								{health.data
+									.slice((healthCurrent - 1) * 10, healthCurrent * 10)
+									.map((item) => (
+										<div
+											className={`rounded-md border p-3 ${healthTone[item.state]}`}
+											key={`${item.entityId}-${item.dimension}`}
+										>
+											<div className="flex items-center justify-between gap-2">
+												<span className="font-medium">
+													{label(`operations.dimensions.${item.dimension}`)}
+												</span>
+												<Badge variant="outline">
+													{label(`operations.states.${item.state}`)}
+												</Badge>
+											</div>
+											<p className="mt-1 text-xs text-muted-foreground">
+												<IdentifierDisplay
+													id={item.entityId}
+													label={t("identifiers.entity")}
+													name={entityName(item.entityId, item.dimension, item.condition)}
+												/>
+												{item.required ? ` · ${t("operations.required")}` : ""}
+											</p>
+											<p className="mt-1 text-xs text-muted-foreground">
+												{item.condition}
+											</p>
 										</div>
-										<p className="mt-1 text-xs text-muted-foreground">
-											<IdentifierDisplay
-												id={item.entityId}
-												label={t("identifiers.entity")}
-												name={entityName(item.entityId, item.dimension, item.condition)}
-											/>
-											{item.required ? ` · ${t("operations.required")}` : ""}
-										</p>
-										<p className="mt-1 text-xs text-muted-foreground">{item.condition}</p>
-									</div>
-								))}
+									))}
 							</div>
 						) : (
 							<p className="text-sm text-muted-foreground">
 								{t("operations.noHealth")}
 							</p>
 						)}
+						{health.data?.length ? (
+							<PageControls
+								title={t("operations.healthTitle")}
+								page={healthCurrent}
+								total={healthTotalPages}
+								onChange={setHealthPage}
+							/>
+						) : null}
 					</CardContent>
 				</Card>
 				<Card>
@@ -387,13 +529,19 @@ export function OperationsDashboard() {
 								className="w-32 rounded-md border bg-background px-2 py-1 text-sm"
 								placeholder={t("operations.entityFilter")}
 								value={entityFilter}
-								onChange={(event) => setEntityFilter(event.target.value)}
+								onChange={(event) => {
+									setEntityFilter(event.target.value);
+									setAlertPage(1);
+								}}
 							/>
 							<select
 								aria-label={t("operations.alertFilter")}
 								className="rounded-md border bg-background px-2 py-1 text-sm"
 								value={filter}
-								onChange={(event) => setFilter(event.target.value as typeof filter)}
+								onChange={(event) => {
+									setFilter(event.target.value as typeof filter);
+									setAlertPage(1);
+								}}
 							>
 								<option value="all">{t("operations.allAlerts")}</option>
 								<option value="active">{label("operations.states.active")}</option>
@@ -406,9 +554,10 @@ export function OperationsDashboard() {
 								aria-label={t("operations.severityFilter")}
 								className="rounded-md border bg-background px-2 py-1 text-sm"
 								value={severityFilter}
-								onChange={(event) =>
-									setSeverityFilter(event.target.value as typeof severityFilter)
-								}
+								onChange={(event) => {
+									setSeverityFilter(event.target.value as typeof severityFilter);
+									setAlertPage(1);
+								}}
 							>
 								<option value="all">{t("operations.allSeverities")}</option>
 								<option value="info">{label("operations.severities.info")}</option>
@@ -423,7 +572,10 @@ export function OperationsDashboard() {
 								aria-label={t("operations.dimensionFilter")}
 								className="rounded-md border bg-background px-2 py-1 text-sm"
 								value={dimensionFilter}
-								onChange={(event) => setDimensionFilter(event.target.value)}
+								onChange={(event) => {
+									setDimensionFilter(event.target.value);
+									setAlertPage(1);
+								}}
 							>
 								<option value="all">{t("operations.allDimensions")}</option>
 								{dimensions.map((dimension) => (
@@ -439,7 +591,7 @@ export function OperationsDashboard() {
 							<p role="status" className="text-sm text-muted-foreground">
 								{t("operations.loading")}
 							</p>
-						) : alerts.isError ? (
+						) : alerts.isError && !alertData ? (
 							<p role="alert" className="text-sm text-destructive">
 								{t("operations.loadError")}
 							</p>
@@ -574,6 +726,15 @@ export function OperationsDashboard() {
 								{t("operations.noAlerts")}
 							</p>
 						)}
+						{alertData ? (
+							<PageControls
+								title={t("operations.alertsTitle")}
+								page={alertCurrent}
+								total={alertTotalPages}
+								busy={alerts.isFetching}
+								onChange={setAlertPage}
+							/>
+						) : null}
 					</CardContent>
 				</Card>
 			</div>
@@ -805,7 +966,7 @@ export function SystemDashboard({
 								role="alert"
 							/>
 						) : projection.bots.length ? (
-							projection.bots.map((bot) => (
+							projection.bots.slice(0, 10).map((bot) => (
 								<div className="rounded-md border p-3" key={bot.botId}>
 									<div className="flex flex-wrap items-center justify-between gap-2">
 										<span className="font-medium">

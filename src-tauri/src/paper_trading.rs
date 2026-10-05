@@ -8,7 +8,7 @@ use adaq_paper_trading_core::{
     OrderStatus, PaperExecution, PaperLedger, Position, ReconciliationState, RiskDecision,
     RiskPolicy, Side,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,42 @@ pub(crate) struct PaperAccountView {
     pub risk_decisions: Vec<RetainedRiskDecision>,
     pub restart_required: bool,
 }
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PaperAccountSummary {
+    pub account: AccountSnapshot,
+    pub reserved_cash: Decimal,
+    pub buying_power: Decimal,
+    pub reconciliation: ReconciliationState,
+    pub restart_required: bool,
+    pub position_count: usize,
+    pub order_count: usize,
+    pub fill_count: usize,
+    pub risk_decision_count: usize,
+    pub has_uncertain: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PaperEvidenceSection {
+    Positions,
+    Orders,
+    Fills,
+    RiskDecisions,
+    ProviderEvidence,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PaperEvidencePage {
+    pub items: Vec<serde_json::Value>,
+    pub page: usize,
+    pub page_size: usize,
+    pub total: usize,
+}
+
+const EVIDENCE_PAGE_SIZE: usize = 10;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderOpenOrder {
@@ -194,6 +230,119 @@ impl PaperTradingStore {
             return Ok(None);
         }
         self.view(user_id).map(Some)
+    }
+
+    pub(crate) fn summary_optional(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<PaperAccountSummary>, String> {
+        let database = self.database.lock().map_err(|error| error.to_string())?;
+        // ponytail: project the existing JSON ledger; normalize its history if measured JSON scan time becomes material.
+        let json: Option<String> = database.query_row(
+            "SELECT json_object(
+                'account', json_set(json_extract(account_json, '$.account'), '$.positions', json('{}')),
+                'reservedCash', json_extract(account_json, '$.reserved_cash'),
+                'buyingPower', '0',
+                'reconciliation', CASE WHEN EXISTS(SELECT 1 FROM paper_reconciliations WHERE user_id=?1)
+                    THEN 'required' ELSE json_extract(account_json, '$.reconciliation') END,
+                'restartRequired', json('false'),
+                'positionCount', (SELECT COUNT(*) FROM json_each(account_json, '$.account.positions')),
+                'orderCount', (SELECT COUNT(*) FROM json_each(account_json, '$.orders')),
+                'fillCount', json_array_length(account_json, '$.fills'),
+                'riskDecisionCount', (SELECT COUNT(*) FROM paper_risk_decisions WHERE user_id=?1),
+                'hasUncertain', json(CASE WHEN EXISTS(
+                    SELECT 1 FROM json_each(execution_json, '$.operations')
+                    WHERE json_type(value, '$.Uncertain') IS NOT NULL
+                ) THEN 'true' ELSE 'false' END)
+             ) FROM paper_accounts WHERE user_id=?1",
+            [user_id], |row| row.get(0),
+        ).optional().map_err(|error| error.to_string())?;
+        drop(database);
+        json.map(|json| {
+            let mut summary: PaperAccountSummary =
+                serde_json::from_str(&json).map_err(|error| error.to_string())?;
+            summary.buying_power = summary.account.cash - summary.reserved_cash;
+            summary.restart_required = self
+                .restarted_users
+                .lock()
+                .map_err(|error| error.to_string())?
+                .contains(user_id);
+            Ok(summary)
+        })
+        .transpose()
+    }
+
+    pub(crate) fn evidence_page(
+        &self,
+        user_id: &str,
+        section: PaperEvidenceSection,
+        requested_page: usize,
+    ) -> Result<PaperEvidencePage, String> {
+        if requested_page == 0 {
+            return Err("Paper evidence pages start at 1.".into());
+        }
+        let (source, value, order) = match section {
+            PaperEvidenceSection::Positions => (
+                "paper_accounts p, json_each(p.account_json, '$.account.positions') e",
+                "json_set(e.value, '$.instrument', e.key)",
+                "e.key ASC",
+            ),
+            PaperEvidenceSection::Orders => (
+                "paper_accounts p, json_each(p.account_json, '$.orders') e",
+                "e.value",
+                "json_extract(e.value, '$.submitted_at_ms') DESC, e.key DESC",
+            ),
+            PaperEvidenceSection::Fills => (
+                "paper_accounts p, json_each(p.account_json, '$.fills') e",
+                "e.value",
+                "json_extract(e.value, '$.occurred_at_ms') DESC, e.key DESC",
+            ),
+            PaperEvidenceSection::RiskDecisions => (
+                "paper_risk_decisions p",
+                "p.decision_json",
+                "p.decided_at_ms DESC, p.rowid DESC",
+            ),
+            PaperEvidenceSection::ProviderEvidence => (
+                "paper_accounts p, json_each(p.execution_json, '$.operations') e",
+                "e.value",
+                "COALESCE(json_extract(e.value, '$.Accepted.observed_at_ms'),
+                    json_extract(e.value, '$.Rejected.observed_at_ms'),
+                    json_extract(e.value, '$.Uncertain.observed_at_ms'), 0) DESC, e.key DESC",
+            ),
+        };
+        let database = self.database.lock().map_err(|error| error.to_string())?;
+        let total: i64 = database
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {source} WHERE p.user_id=?1"),
+                [user_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let total = usize::try_from(total).map_err(|error| error.to_string())?;
+        let page = requested_page.min(total.div_ceil(EVIDENCE_PAGE_SIZE).max(1));
+        let offset =
+            i64::try_from((page - 1) * EVIDENCE_PAGE_SIZE).map_err(|error| error.to_string())?;
+        let mut statement = database.prepare(&format!(
+            "SELECT {value} FROM {source} WHERE p.user_id=?1 ORDER BY {order} LIMIT ?2 OFFSET ?3"
+        )).map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![user_id, EVIDENCE_PAGE_SIZE as i64, offset], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        drop(statement);
+        drop(database);
+        Ok(PaperEvidencePage {
+            items: rows
+                .into_iter()
+                .map(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
+                .collect::<Result<_, _>>()?,
+            page,
+            page_size: EVIDENCE_PAGE_SIZE,
+            total,
+        })
     }
 
     pub(crate) fn create_account(
@@ -1363,6 +1512,7 @@ impl PaperTradingStore {
                 },
             )
             .map_err(|error| format!("paper account is unavailable: {error}"))?;
+        drop(database);
         let ledger = serde_json::from_str(&row.0).map_err(|error| error.to_string())?;
         let execution: PaperExecution =
             serde_json::from_str(&row.1).map_err(|error| error.to_string())?;
@@ -1493,6 +1643,140 @@ mod tests {
             positions: BTreeMap::new(),
             observed_at_ms: 1,
         }
+    }
+
+    #[test]
+    fn evidence_pages_are_bounded_complete_and_user_scoped() {
+        let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = PaperTradingStore::open(Arc::clone(&database)).unwrap();
+        let mut snapshot = account();
+        for index in 0..1001 {
+            snapshot.positions.insert(
+                format!("COIN-{index:04}-USDT"),
+                Position {
+                    quantity: Decimal::ONE,
+                    sellable_quantity: Decimal::ONE,
+                },
+            );
+        }
+        let mut ledger = PaperLedger::new(snapshot).unwrap();
+        let mut execution = PaperExecution::okx_demo(RiskPolicy {
+            max_order_notional: DEFAULT_MAX_ORDER_NOTIONAL,
+            reserve_cash: Decimal::ZERO,
+            freeze_new_risk: false,
+        })
+        .unwrap();
+        for index in 0..1001 {
+            let (operation_id, decision) = execution
+                .begin(
+                    format!("operation-{index:04}"),
+                    &mut ledger,
+                    "BTC-USDT",
+                    Side::Buy,
+                    Decimal::ONE,
+                    Decimal::ONE,
+                    index,
+                )
+                .unwrap();
+            store
+                .record_risk_decision("alice", decision, index)
+                .unwrap();
+            if index > 0 {
+                ledger
+                    .apply_fill(Fill {
+                        fill_id: format!("fill-{index:04}"),
+                        order_id: execution.local_order_id(&operation_id).unwrap(),
+                        quantity: Decimal::ONE,
+                        price: Decimal::ONE,
+                        fee: Decimal::ZERO,
+                        fee_asset: None,
+                        fee_quote: None,
+                        fee_amount: None,
+                        evidence: FillEvidence::TradeObserved,
+                        occurred_at_ms: index,
+                    })
+                    .unwrap();
+            }
+        }
+        execution.mark_uncertain("operation-0000", 0).unwrap();
+        ledger.require_reconciliation();
+        store.save("alice", &ledger, &execution, 1001).unwrap();
+        let full = store.view("alice").unwrap();
+        let summary = store.summary_optional("alice").unwrap().unwrap();
+        assert_eq!(summary.account.cash, full.account.cash);
+        assert_eq!(summary.reserved_cash, full.reserved_cash);
+        assert_eq!(summary.buying_power, full.buying_power);
+        assert_eq!(summary.reconciliation, full.reconciliation);
+        assert!(summary.has_uncertain);
+        assert_eq!(summary.risk_decision_count, full.risk_decisions.len());
+        assert!(summary.account.positions.is_empty());
+        assert_eq!(
+            (
+                summary.position_count,
+                summary.order_count,
+                summary.fill_count
+            ),
+            (1001, 1001, 1000)
+        );
+        for section in [
+            PaperEvidenceSection::Positions,
+            PaperEvidenceSection::Orders,
+            PaperEvidenceSection::Fills,
+            PaperEvidenceSection::RiskDecisions,
+            PaperEvidenceSection::ProviderEvidence,
+        ] {
+            let first = store.evidence_page("alice", section, 1).unwrap();
+            let second = store.evidence_page("alice", section, 2).unwrap();
+            assert_eq!(first.items.len(), 10);
+            assert_eq!(second.items.len(), 10);
+            assert!(first.items.iter().all(|item| !second.items.contains(item)));
+            let last = store.evidence_page("alice", section, usize::MAX).unwrap();
+            assert_eq!(last.page, first.total.div_ceil(10));
+            assert_eq!(last.items.len(), (first.total - 1) % 10 + 1);
+            assert!(
+                store
+                    .evidence_page("bob", section, 1)
+                    .unwrap()
+                    .items
+                    .is_empty()
+            );
+            assert!(store.evidence_page("alice", section, 0).is_err());
+        }
+        let evidence = store
+            .evidence_page("alice", PaperEvidenceSection::ProviderEvidence, 1)
+            .unwrap();
+        assert!(
+            evidence
+                .items
+                .iter()
+                .all(|item| item.get("Uncertain").is_none())
+        );
+        let orders = store
+            .evidence_page("alice", PaperEvidenceSection::Orders, 1)
+            .unwrap();
+        assert_eq!(orders.items[0]["submitted_at_ms"], 1000);
+        let risks = store
+            .evidence_page("alice", PaperEvidenceSection::RiskDecisions, 1)
+            .unwrap();
+        assert_eq!(risks.items[0]["decidedAtMs"], 1000);
+        assert!(store.summary_optional("bob").unwrap().is_none());
+        // An in-flight reconciliation remains global, independent of the visible evidence page.
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO paper_reconciliations VALUES ('alice', 1002)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .summary_optional("alice")
+                .unwrap()
+                .unwrap()
+                .reconciliation,
+            ReconciliationState::Required
+        );
     }
 
     #[test]

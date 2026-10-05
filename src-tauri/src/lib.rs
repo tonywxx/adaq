@@ -545,7 +545,7 @@ fn unix_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, serde::Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SystemDashboardBotSummary {
     bot_id: String,
@@ -615,7 +615,6 @@ fn system_dashboard_for_user(
     user_id: &str,
 ) -> Result<SystemDashboardView, String> {
     let local = app.state::<Arc<LocalResearchState>>();
-    let bots_store = app.state::<Arc<bot_operations::BotStore>>();
     let mut unavailable = Vec::new();
     recover_inactive_operational_conditions(app, user_id, local.as_ref())?;
 
@@ -626,7 +625,7 @@ fn system_dashboard_for_user(
             Vec::new()
         }
     };
-    let alerts = match local.operations.alerts_for_user(user_id) {
+    let alerts = match local.operations.unresolved_alerts_for_user(user_id) {
         Ok(value) => value,
         Err(_) => {
             unavailable.push("alerts".to_owned());
@@ -640,49 +639,14 @@ fn system_dashboard_for_user(
             Vec::new()
         }
     };
-    let bots = match bots_store.list(user_id) {
-        Ok(value) => value
-            .into_iter()
-            .map(|bot| {
-                let current_attempt = bot.current_attempt_id.as_ref().and_then(|attempt_id| {
-                    bot.attempts
-                        .iter()
-                        .find(|attempt| &attempt.attempt_id == attempt_id)
-                });
-                SystemDashboardBotSummary {
-                    bot_id: bot.bot_id,
-                    name: bot.bundle.schedule.operational_name(),
-                    state: bot.state,
-                    current_attempt_id: bot.current_attempt_id,
-                    current_attempt_state: current_attempt.map(|attempt| attempt.state),
-                    attempt_count: bot.attempts.len() as u64,
-                    decision_count: current_attempt
-                        .map(|attempt| attempt.decisions.len() as u64)
-                        .unwrap_or(0),
-                    order_count: current_attempt
-                        .map(|attempt| attempt.orders.len() as u64)
-                        .unwrap_or(0),
-                    unmanaged_position_count: current_attempt
-                        .map(|attempt| attempt.unmanaged_positions.len() as u64)
-                        .unwrap_or(0),
-                    reconciliation_required: current_attempt
-                        .is_some_and(|attempt| attempt.reconciliation_required),
-                    last_decision_time_ms: current_attempt
-                        .and_then(|attempt| attempt.last_decision_time_ms),
-                    updated_at_ms: bot
-                        .attempts
-                        .iter()
-                        .map(|attempt| attempt.updated_at_ms)
-                        .max(),
-                }
-            })
-            .collect(),
+    let bots = match system_dashboard_bots_for_user(&local.database, user_id) {
+        Ok(value) => value,
         Err(_) => {
             unavailable.push("bots".to_owned());
             Vec::new()
         }
     };
-    let paper_account = match local.paper_trading.view_optional(user_id) {
+    let paper_account = match local.paper_trading.summary_optional(user_id) {
         Ok(value) => value.map(|account| SystemDashboardPaperSummary {
             account_id: account.account.account_id,
             market: account.account.market,
@@ -690,9 +654,9 @@ fn system_dashboard_for_user(
             cash: account.account.cash,
             reserved_cash: account.reserved_cash,
             buying_power: account.buying_power,
-            position_count: account.account.positions.len() as u64,
-            order_count: account.orders.len() as u64,
-            fill_count: account.fills.len() as u64,
+            position_count: account.position_count as u64,
+            order_count: account.order_count as u64,
+            fill_count: account.fill_count as u64,
             reconciliation: account.reconciliation,
             restart_required: account.restart_required,
             observed_at_ms: account.account.observed_at_ms,
@@ -702,32 +666,8 @@ fn system_dashboard_for_user(
             None
         }
     };
-    let feedback = match local.paper_feedback.view(user_id) {
-        Ok(value) => value,
-        Err(_) => {
-            unavailable.push("paperFeedback".to_owned());
-            paper_feedback::PaperFeedbackView {
-                snapshots: Vec::new(),
-                reports: Vec::new(),
-                decisions: Vec::new(),
-            }
-        }
-    };
-    let research = match local.local_data_summary(user_id) {
-        Ok(summary) => SystemDashboardResearchSummary {
-            watchlist_count: summary.watchlist_count,
-            snapshot_count: summary.snapshot_count,
-            component_count: summary.component_count,
-            model_artifact_count: summary.model_artifact_count,
-            signal_dataset_count: summary.signal_dataset_count,
-            generation_attempt_count: summary.generation_attempt_count,
-            backtest_run_count: summary.run_count,
-            validation_protocol_count: summary.protocol_count,
-            validation_report_count: summary.report_count,
-            feedback_snapshot_count: feedback.snapshots.len() as u64,
-            feedback_report_count: feedback.reports.len() as u64,
-            review_decision_count: feedback.decisions.len() as u64,
-        },
+    let research = match system_dashboard_research_for_user(local.as_ref(), user_id) {
+        Ok(summary) => summary,
         Err(_) => {
             unavailable.push("research".to_owned());
             SystemDashboardResearchSummary {
@@ -740,9 +680,9 @@ fn system_dashboard_for_user(
                 backtest_run_count: 0,
                 validation_protocol_count: 0,
                 validation_report_count: 0,
-                feedback_snapshot_count: feedback.snapshots.len() as u64,
-                feedback_report_count: feedback.reports.len() as u64,
-                review_decision_count: feedback.decisions.len() as u64,
+                feedback_snapshot_count: 0,
+                feedback_report_count: 0,
+                review_decision_count: 0,
             }
         }
     };
@@ -762,6 +702,91 @@ fn system_dashboard_for_user(
         bots,
         paper_account,
         research,
+    })
+}
+
+fn system_dashboard_bots_for_user(
+    database: &Arc<Mutex<rusqlite::Connection>>,
+    user_id: &str,
+) -> Result<Vec<SystemDashboardBotSummary>, String> {
+    let database = database.lock().map_err(|error| error.to_string())?;
+    let mut statement = database.prepare(
+        "WITH recent_bots AS (
+            SELECT bot_id,user_id,bundle_json,state,current_attempt_id,updated_at_ms
+            FROM bots WHERE user_id=?1 ORDER BY updated_at_ms DESC,bot_id DESC LIMIT 10
+        ) SELECT json_extract(b.bundle_json, '$.schedule'), json_object(
+            'botId', b.bot_id, 'name', '', 'state', json(b.state),
+            'currentAttemptId', b.current_attempt_id,
+            'currentAttemptState', json_extract(a.attempt_json, '$.state'),
+            'attemptCount', (SELECT COUNT(*) FROM bot_runtime_attempts WHERE user_id=b.user_id AND bot_id=b.bot_id),
+            'decisionCount', COALESCE(json_array_length(a.attempt_json, '$.decisions'), 0),
+            'orderCount', COALESCE(json_array_length(a.attempt_json, '$.orders'), 0),
+            'unmanagedPositionCount', COALESCE(json_array_length(a.attempt_json, '$.unmanagedPositions'), 0),
+            'reconciliationRequired', json(CASE WHEN json_extract(a.attempt_json, '$.reconciliationRequired')
+                THEN 'true' ELSE 'false' END),
+            'lastDecisionTimeMs', json_extract(a.attempt_json, '$.lastDecisionTimeMs'),
+            'updatedAtMs', (SELECT MAX(updated_at_ms) FROM bot_runtime_attempts WHERE user_id=b.user_id AND bot_id=b.bot_id)
+        ) FROM recent_bots b LEFT JOIN bot_runtime_attempts a
+            ON a.user_id=b.user_id AND a.bot_id=b.bot_id AND a.attempt_id=b.current_attempt_id
+          ORDER BY b.updated_at_ms DESC,b.bot_id DESC",
+    ).map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([user_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+    drop(database);
+    rows.into_iter()
+        .map(|(schedule, json)| {
+            let schedule: bot_operations::BotSchedule =
+                serde_json::from_str(&schedule).map_err(|error| error.to_string())?;
+            let mut summary: SystemDashboardBotSummary =
+                serde_json::from_str(&json).map_err(|error| error.to_string())?;
+            summary.name = schedule.operational_name();
+            Ok(summary)
+        })
+        .collect()
+}
+
+fn system_dashboard_research_for_user(
+    local: &LocalResearchState,
+    user_id: &str,
+) -> Result<SystemDashboardResearchSummary, String> {
+    let database = local.database.lock().map_err(|error| error.to_string())?;
+    let count = |sql: &str| -> Result<u64, String> {
+        database
+            .query_row(sql, [user_id], |row| row.get::<_, i64>(0))
+            .map(|value| value.max(0) as u64)
+            .map_err(|error| error.to_string())
+    };
+    Ok(SystemDashboardResearchSummary {
+        watchlist_count: count("SELECT COUNT(*) FROM watchlist_items WHERE user_id=?1")?,
+        snapshot_count: count("SELECT COUNT(*) FROM market_data_snapshot_access WHERE user_id=?1")?,
+        component_count: count("SELECT COUNT(*) FROM component_access WHERE user_id=?1")?,
+        model_artifact_count: count(
+            "SELECT COUNT(*) FROM component_content c JOIN component_access a USING(archive_sha256) WHERE a.user_id=?1 AND c.kind='model'",
+        )?,
+        signal_dataset_count: count("SELECT COUNT(*) FROM signal_dataset_access WHERE user_id=?1")?,
+        generation_attempt_count: count(
+            "SELECT COUNT(*) FROM dataset_generation_attempts WHERE user_id=?1",
+        )?,
+        backtest_run_count: count("SELECT COUNT(*) FROM backtest_runs WHERE user_id=?1")?,
+        validation_protocol_count: count(
+            "SELECT COUNT(*) FROM validation_protocols WHERE user_id=?1",
+        )?,
+        validation_report_count: count("SELECT COUNT(*) FROM validation_reports WHERE user_id=?1")?,
+        feedback_snapshot_count: count(
+            "SELECT COUNT(*) FROM paper_feedback_snapshots WHERE user_id=?1",
+        )?,
+        feedback_report_count: count(
+            "SELECT COUNT(*) FROM paper_feedback_reports WHERE user_id=?1",
+        )?,
+        review_decision_count: count(
+            "SELECT COUNT(*) FROM research_review_decisions WHERE user_id=?1",
+        )?,
     })
 }
 
@@ -823,47 +848,86 @@ fn auth_clear_session(window: WebviewWindow, state: State<'_, auth::AuthState>) 
 }
 
 #[tauri::command]
-fn operations_health(
+async fn operations_health(
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<operations::HealthView>, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    state.operations.health_for_user(&user_id)
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || state.operations.health_for_user(&user_id))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn operations_alerts(
+async fn operations_alerts(
+    unresolved_only: Option<bool>,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<operations::AlertView>, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    state.operations.alerts_for_user(&user_id)
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        if unresolved_only.unwrap_or(false) {
+            state.operations.unresolved_alerts_for_user(&user_id)
+        } else {
+            state.operations.alerts_for_user(&user_id)
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn operations_events(
+async fn operations_alerts_page(
+    request: operations::AlertPageRequest,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<operations::AlertPage, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        state.operations.alerts_page_for_user(&user_id, request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn operations_events(
     limit: Option<usize>,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<operations::OperationalEvent>, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    state
-        .operations
-        .events_for_user(&user_id, limit.unwrap_or(64))
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .operations
+            .events_for_user(&user_id, limit.unwrap_or(64))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn operations_alert_history(
+async fn operations_alert_history(
     alert_id: String,
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<Vec<operations::AlertLifecycleView>, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    state.operations.alert_history_for_user(&user_id, &alert_id)
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        state.operations.alert_history_for_user(&user_id, &alert_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1036,7 +1100,7 @@ fn recover_host_freeze_for_user(app: &AppHandle, user_id: &str) -> Result<(), St
 
 fn paper_account_health_observation(
     user_id: &str,
-    account: Option<&paper_trading::PaperAccountView>,
+    account: Option<&paper_trading::PaperAccountSummary>,
     now_ms: i64,
 ) -> operations::HealthObservation {
     let account_ready = account.as_ref().is_some_and(|account| {
@@ -1082,7 +1146,7 @@ fn paper_account_health_observation(
 
 fn observe_operational_inputs(app: &AppHandle, user_id: &str) -> Result<(), String> {
     let local = app.state::<Arc<LocalResearchState>>();
-    let account = local.paper_trading.view_optional(user_id)?;
+    let account = local.paper_trading.summary_optional(user_id)?;
     let profile = local
         .connections
         .list(user_id)?
@@ -1111,7 +1175,7 @@ fn observe_operational_inputs(app: &AppHandle, user_id: &str) -> Result<(), Stri
         condition: "paper_risk_gate".into(),
         evidence: serde_json::json!({
             "accountId": account_id,
-            "riskDecisions": account.as_ref().map(|account| account.risk_decisions.len()),
+            "riskDecisions": account.as_ref().map(|account| account.risk_decision_count),
         }),
         required: account.is_some(),
         observed_at_ms: now_ms,
@@ -1227,14 +1291,24 @@ fn recover_inactive_operational_conditions(
     local: &LocalResearchState,
 ) -> Result<(), String> {
     let bots = app.state::<Arc<bot_operations::BotStore>>();
-    let running_contexts = bots
-        .list(user_id)?
-        .into_iter()
-        .filter(|bot| bot.state == adaq_bot_runtime::LifecycleState::Running)
-        .map(|bot| bot.bundle.market_data_snapshot_id)
-        .collect::<std::collections::BTreeSet<_>>();
+    let alerts = local.operations.unresolved_alerts_for_user(user_id)?;
+    let needs_market_recovery = alerts.iter().any(|alert| {
+        alert.state != operations::AlertState::Resolved
+            && alert.dimension == operations::HealthDimension::MarketData
+            && alert.condition == "market_data_context"
+            && alert.safety_action == operations::SafetyAction::SkipDecision
+    });
+    let running_contexts = if needs_market_recovery {
+        bots.list(user_id)?
+            .into_iter()
+            .filter(|bot| bot.state == adaq_bot_runtime::LifecycleState::Running)
+            .map(|bot| bot.bundle.market_data_snapshot_id)
+            .collect::<std::collections::BTreeSet<_>>()
+    } else {
+        Default::default()
+    };
     let now_ms = unix_now_ms();
-    for alert in local.operations.alerts_for_user(user_id)? {
+    for alert in &alerts {
         if alert.state == operations::AlertState::Resolved
             || alert.dimension != operations::HealthDimension::MarketData
             || alert.condition != "market_data_context"
@@ -1257,23 +1331,34 @@ fn recover_inactive_operational_conditions(
             observed_at_ms: now_ms,
             event_kind: Some("market.data-context-recovered".into()),
             evidence_id: Some(format!("inactive-market-context-{}", alert.alert_id)),
-            correlation_id: Some(alert.alert_id),
-            causation_id: Some(alert.last_event_id),
+            correlation_id: Some(alert.alert_id.clone()),
+            causation_id: Some(alert.last_event_id.clone()),
             diagnostic: Some(
                 "Host confirmed no Running Bot retains this Market Data context; the stale risk gate was released.".into(),
             ),
             metrics: BTreeMap::new(),
         })?;
     }
-    bots.recover_stopped_workers(
-        &app.state::<Arc<bot_supervisor::BotSupervisor>>(),
-        &local.operations,
-        user_id,
-        local.paper_trading.view_optional(user_id)?.as_ref(),
-    )?;
-    local
-        .paper_feedback
-        .recover_reviewed_reports(&local.operations, user_id)?;
+    if alerts.iter().any(|alert| {
+        alert.state != operations::AlertState::Resolved
+            && alert.dimension == operations::HealthDimension::Worker
+    }) {
+        bots.recover_stopped_workers(
+            &app.state::<Arc<bot_supervisor::BotSupervisor>>(),
+            &local.operations,
+            user_id,
+            local.paper_trading.view_optional(user_id)?.as_ref(),
+        )?;
+    }
+    if alerts.iter().any(|alert| {
+        alert.state != operations::AlertState::Resolved
+            && alert.dimension == operations::HealthDimension::ResearchFeedback
+            && alert.condition == "Research Review Required"
+    }) {
+        local
+            .paper_feedback
+            .recover_reviewed_reports(&local.operations, user_id)?;
+    }
     Ok(())
 }
 
@@ -6334,37 +6419,59 @@ async fn connection_profile_delete(
 }
 
 #[tauri::command]
-fn paper_account_view(
+async fn paper_account_view(
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     state: State<'_, Arc<LocalResearchState>>,
 ) -> Result<PaperTradingWorkspaceView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
-    let profile = state
-        .connections
-        .list(&user_id)?
-        .into_iter()
-        .find(|profile| profile.provider == connections::Provider::OkxDemo);
-    let connection = match profile {
-        None => PaperConnectionView {
-            state: "disconnected",
-            evidence: None,
-        },
-        Some(profile) if profile.status == connections::ProfileStatus::Usable => {
-            PaperConnectionView {
-                state: "connected",
-                evidence: profile.last_test_evidence,
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile = state
+            .connections
+            .list(&user_id)?
+            .into_iter()
+            .find(|profile| profile.provider == connections::Provider::OkxDemo);
+        let connection = match profile {
+            None => PaperConnectionView {
+                state: "disconnected",
+                evidence: None,
+            },
+            Some(profile) if profile.status == connections::ProfileStatus::Usable => {
+                PaperConnectionView {
+                    state: "connected",
+                    evidence: profile.last_test_evidence,
+                }
             }
-        }
-        Some(profile) => PaperConnectionView {
-            state: "degraded",
-            evidence: profile.last_test_evidence,
-        },
-    };
-    Ok(PaperTradingWorkspaceView {
-        account: state.paper_trading.view_optional(&user_id)?,
-        connection,
+            Some(profile) => PaperConnectionView {
+                state: "degraded",
+                evidence: profile.last_test_evidence,
+            },
+        };
+        Ok(PaperTradingWorkspaceView {
+            account: state.paper_trading.summary_optional(&user_id)?,
+            connection,
+        })
     })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn paper_account_evidence_page(
+    section: paper_trading::PaperEvidenceSection,
+    page: usize,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<paper_trading::PaperEvidencePage, String> {
+    let user_id = auth.user_id_for_window(window.label())?;
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        state.paper_trading.evidence_page(&user_id, section, page)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -6372,7 +6479,7 @@ async fn paper_account_reconcile(
     window: WebviewWindow,
     auth: State<'_, auth::AuthState>,
     app: tauri::AppHandle,
-) -> Result<paper_trading::PaperAccountView, String> {
+) -> Result<paper_trading::PaperAccountSummary, String> {
     let user_id = auth.user_id_for_window(window.label())?;
     let result = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Arc<LocalResearchState>>();
@@ -6411,7 +6518,10 @@ async fn paper_account_reconcile(
                 &user_id,
                 Some(&account),
             )?;
-        Ok(account)
+        state
+            .paper_trading
+            .summary_optional(&user_id)?
+            .ok_or_else(|| "The reconciled Paper account is unavailable.".to_owned())
     })
     .await
     .map_err(|error| serialize_paper_account_error(error.to_string()))?;
@@ -6421,7 +6531,7 @@ async fn paper_account_reconcile(
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PaperTradingWorkspaceView {
-    account: Option<paper_trading::PaperAccountView>,
+    account: Option<paper_trading::PaperAccountSummary>,
     connection: PaperConnectionView,
 }
 
@@ -6684,6 +6794,7 @@ pub fn run() {
             system_dashboard,
             operations_health,
             operations_alerts,
+            operations_alerts_page,
             operations_events,
             operations_alert_history,
             operations_alert_acknowledge,
@@ -6702,6 +6813,7 @@ pub fn run() {
             paper_experiment::paper_experiment_report_create,
             paper_experiment::paper_experiment_feedback_create,
             paper_account_view,
+            paper_account_evidence_page,
             paper_account_reconcile,
             paper_order_submit,
             paper_order_cancel,
@@ -7043,6 +7155,69 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_bot_summary_is_bounded_and_counts_only_current_attempt() {
+        use std::sync::{Arc, Mutex};
+        let database = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
+        let _store = crate::bot_operations::BotStore::open(Arc::clone(&database)).unwrap();
+        let bundle = serde_json::json!({"schedule": {"type":"ema-double-cross", "instrumentId":"okx:ETH-USDT"}});
+        let attempts = serde_json::json!([
+            {"attemptId":"old", "updatedAtMs":9, "decisions":vec![0; 1000]},
+            {"attemptId":"current", "state":"running", "updatedAtMs":10,
+             "decisions":[0,0], "orders":[0], "unmanagedPositions":["BTC-USDT"],
+             "reconciliationRequired":true, "lastDecisionTimeMs":8}
+        ]);
+        for index in 1..=11 {
+            let bot_id = format!("bot-{index}");
+            database
+                .lock()
+                .unwrap()
+                .execute(
+                    "INSERT INTO bots VALUES (?1,'u',?2,?3,'current','[]',1,?4)",
+                    rusqlite::params![
+                        bot_id,
+                        bundle.to_string(),
+                        serde_json::to_string(&adaq_bot_runtime::LifecycleState::Running).unwrap(),
+                        index
+                    ],
+                )
+                .unwrap();
+            for (position, attempt) in attempts.as_array().unwrap().iter().enumerate() {
+                database
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "INSERT INTO bot_runtime_attempts VALUES ('u',?1,?2,?3,?4,?5)",
+                        rusqlite::params![
+                            bot_id,
+                            attempt["attemptId"].as_str().unwrap(),
+                            position as i64,
+                            attempt.to_string(),
+                            attempt["updatedAtMs"].as_i64().unwrap()
+                        ],
+                    )
+                    .unwrap();
+            }
+        }
+        let summaries = super::system_dashboard_bots_for_user(&database, "u").unwrap();
+        assert_eq!(summaries.len(), 10);
+        let latest = &summaries[0];
+        assert_eq!(latest.bot_id, "bot-11");
+        assert_eq!(latest.name, "OKX-DEMO-BOT_EMA-Double-Cross_ETH-USDT");
+        assert_eq!(latest.attempt_count, 2);
+        assert_eq!(latest.decision_count, 2);
+        assert_eq!(latest.order_count, 1);
+        assert_eq!(latest.unmanaged_position_count, 1);
+        assert!(latest.reconciliation_required);
+        assert_eq!(latest.last_decision_time_ms, Some(8));
+        assert_eq!(latest.updated_at_ms, Some(10));
+        assert!(
+            super::system_dashboard_bots_for_user(&database, "other")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn paper_account_probe_keeps_authoritative_identity() {
         use crate::operations::{HealthState, OperationsStore, SafetyAction};
         use adaq_paper_trading_core::{AccountSnapshot, Market, ReconciliationState};
@@ -7053,7 +7228,7 @@ mod tests {
             rusqlite::Connection::open_in_memory().unwrap(),
         )))
         .unwrap();
-        let mut account = crate::paper_trading::PaperAccountView {
+        let mut account = crate::paper_trading::PaperAccountSummary {
             account: AccountSnapshot {
                 account_id: "demo-provider-account".into(),
                 user_id: "u".into(),
@@ -7066,11 +7241,11 @@ mod tests {
             reserved_cash: Decimal::ZERO,
             buying_power: Decimal::new(1000, 0),
             reconciliation: ReconciliationState::Reconciled,
-            orders: Vec::new(),
-            fills: Vec::new(),
-            provider_evidence: Vec::new(),
-            order_absence_recoveries: Vec::new(),
-            risk_decisions: Vec::new(),
+            position_count: 0,
+            order_count: 0,
+            fill_count: 0,
+            risk_decision_count: 0,
+            has_uncertain: false,
             restart_required: false,
         };
         let observation = super::paper_account_health_observation("u", Some(&account), 2);

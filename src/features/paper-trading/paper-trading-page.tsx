@@ -8,11 +8,21 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import {
+	Pagination,
+	PaginationContent,
+	PaginationItem,
+} from "@/components/ui/pagination";
+import { afterPaint } from "@/features/factors/factor-workspace-data";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { formatDateTime, formatDecimal } from "@/lib/i18n";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	keepPreviousData,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 type PaperAccountView = {
@@ -54,8 +64,29 @@ type PaperAccountView = {
 	}>;
 };
 
+type PaperAccountSummary = Pick<
+	PaperAccountView,
+	| "account"
+	| "reservedCash"
+	| "buyingPower"
+	| "reconciliation"
+	| "restartRequired"
+> & { hasUncertain: boolean };
+type EvidenceSection =
+	| "positions"
+	| "orders"
+	| "fills"
+	| "riskDecisions"
+	| "providerEvidence";
+type EvidencePage<T> = {
+	items: T[];
+	page: number;
+	pageSize: number;
+	total: number;
+};
+
 type PaperTradingWorkspaceView = {
-	account: PaperAccountView | null;
+	account: PaperAccountSummary | null;
 	connection: {
 		state: "connected" | "degraded" | "disconnected";
 		evidence?: Record<string, unknown> | null;
@@ -72,7 +103,13 @@ export function PaperTradingPage() {
 	const [reconcileError, setReconcileError] = useState("");
 	const account = useQuery({
 		queryKey: paperAccountQueryKey,
-		queryFn: () => invoke<PaperTradingWorkspaceView>("paper_account_view"),
+		queryFn: async ({ signal }) => {
+			await afterPaint();
+			signal.throwIfAborted();
+			return invoke<PaperTradingWorkspaceView>("paper_account_view");
+		},
+		refetchOnMount: "always",
+		enabled: Boolean(userId),
 		retry: false,
 	});
 
@@ -80,7 +117,7 @@ export function PaperTradingPage() {
 		setReconciling(true);
 		setReconcileError("");
 		try {
-			const next = await invoke<PaperAccountView>("paper_account_reconcile");
+			const next = await invoke<PaperAccountSummary>("paper_account_reconcile");
 			queryClient.setQueryData<PaperTradingWorkspaceView>(
 				paperAccountQueryKey,
 				(current) =>
@@ -88,6 +125,9 @@ export function PaperTradingPage() {
 						? { ...current, account: next, connection: { state: "connected" } }
 						: current,
 			);
+			void queryClient.invalidateQueries({
+				queryKey: ["paper-account-evidence", userId],
+			});
 			for (const key of [
 				"operations-health",
 				"operations-alerts",
@@ -106,15 +146,13 @@ export function PaperTradingPage() {
 
 	const workspace = account.data;
 	const view = workspace?.account;
-	const uncertain =
-		view?.reconciliation === "unknown" ||
-		view?.providerEvidence.some((evidence) => "Uncertain" in evidence);
-	const providerEvidenceRows = [
-		...(workspace?.connection.evidence
-			? [JSON.stringify(workspace.connection.evidence)]
-			: []),
-		...(view?.providerEvidence.map((evidence) => JSON.stringify(evidence)) ?? []),
-	];
+	const uncertain = view?.reconciliation === "unknown" || view?.hasUncertain;
+	const refresh = () => {
+		void account.refetch();
+		void queryClient.invalidateQueries({
+			queryKey: ["paper-account-evidence", userId],
+		});
+	};
 
 	return (
 		<div className="flex min-w-0 flex-1 flex-col gap-5 p-4 lg:p-6">
@@ -128,6 +166,13 @@ export function PaperTradingPage() {
 						{t("paperTrading.description")}
 					</p>
 				</div>
+				<Button
+					variant="outline"
+					onClick={refresh}
+					disabled={account.isFetching || reconciling}
+				>
+					{t("paperTrading.refresh")}
+				</Button>
 				<Button onClick={() => dialog.current?.showModal()} disabled={reconciling}>
 					{t("paperTrading.reconcile")}
 				</Button>
@@ -238,46 +283,64 @@ export function PaperTradingPage() {
 										{t(`paperTrading.status.${view.reconciliation}`)}
 									</Badge>
 								</div>
+								{workspace?.connection.evidence ? (
+									<details>
+										<summary>{t("paperTrading.connectionEvidence")}</summary>
+										<pre className="whitespace-pre-wrap break-all text-xs">
+											{JSON.stringify(workspace.connection.evidence)}
+										</pre>
+									</details>
+								) : null}
 							</CardContent>
 						</Card>
-						<EvidenceCard
+						<EvidenceCard<{
+							instrument: string;
+							quantity: string;
+							sellable_quantity: string;
+						}>
+							key={`${userId}:positions`}
+							section="positions"
 							title={t("paperTrading.positions")}
 							empty={t("paperTrading.noPositions")}
-							rows={Object.entries(view.account.positions).map(
-								([instrument, position]) =>
-									`${instrument}: ${formatDecimal(position.quantity)} / ${formatDecimal(position.sellable_quantity)}`,
-							)}
+							formatRow={(position) =>
+								`${position.instrument}: ${formatDecimal(position.quantity)} / ${formatDecimal(position.sellable_quantity)}`
+							}
 						/>
-						<EvidenceCard
+						<EvidenceCard<PaperAccountView["riskDecisions"][number]>
+							key={`${userId}:riskDecisions`}
+							section="riskDecisions"
 							title={t("paperTrading.riskDecision")}
 							empty={t("paperTrading.noRiskDecision")}
-							rows={view.riskDecisions.map(
-								(decision) =>
-									`${decision.approved ? t("paperTrading.approved") : t("paperTrading.rejected")} · ${decision.reason} · ${formatDecimal(decision.approvedNotional)} / ${formatDecimal(decision.requestedNotional)}`,
-							)}
+							formatRow={(decision) =>
+								`${decision.approved ? t("paperTrading.approved") : t("paperTrading.rejected")} · ${decision.reason} · ${formatDecimal(decision.approvedNotional)} / ${formatDecimal(decision.requestedNotional)}`
+							}
 						/>
 					</div>
 					<div className="grid gap-4 lg:grid-cols-3">
-						<EvidenceCard
+						<EvidenceCard<PaperAccountView["orders"][number]>
+							key={`${userId}:orders`}
+							section="orders"
 							title={t("paperTrading.orders")}
 							empty={t("paperTrading.noOrders")}
-							rows={view.orders.map(
-								(order) =>
-									`${order.order_id} · ${order.instrument} · ${t(`paperTrading.orderSide.${order.side.toLowerCase()}`, { defaultValue: order.side })} · ${formatDecimal(order.filled_quantity)} / ${formatDecimal(order.quantity)} · ${t(`paperTrading.orderStatus.${order.status}`, { defaultValue: order.status })}`,
-							)}
+							formatRow={(order) =>
+								`${order.order_id} · ${order.instrument} · ${t(`paperTrading.orderSide.${order.side.toLowerCase()}`, { defaultValue: order.side })} · ${formatDecimal(order.filled_quantity)} / ${formatDecimal(order.quantity)} · ${t(`paperTrading.orderStatus.${order.status}`, { defaultValue: order.status })}`
+							}
 						/>
-						<EvidenceCard
+						<EvidenceCard<PaperAccountView["fills"][number]>
+							key={`${userId}:fills`}
+							section="fills"
 							title={t("paperTrading.fills")}
 							empty={t("paperTrading.noFills")}
-							rows={view.fills.map(
-								(fill) =>
-									`${fill.order_id} · ${formatDecimal(fill.quantity)} @ ${formatDecimal(fill.price)} · ${t("paperTrading.fee")} ${formatDecimal(fill.fee)}`,
-							)}
+							formatRow={(fill) =>
+								`${fill.order_id} · ${formatDecimal(fill.quantity)} @ ${formatDecimal(fill.price)} · ${t("paperTrading.fee")} ${formatDecimal(fill.fee)}`
+							}
 						/>
-						<EvidenceCard
+						<EvidenceCard<Record<string, unknown>>
+							key={`${userId}:providerEvidence`}
+							section="providerEvidence"
 							title={t("paperTrading.providerEvidence")}
 							empty={t("paperTrading.noProviderEvidence")}
-							rows={providerEvidenceRows}
+							formatRow={(evidence) => JSON.stringify(evidence)}
 						/>
 					</div>
 				</>
@@ -334,32 +397,128 @@ function reconcileFailureMessage(t: (key: string) => string, reason: unknown) {
 	return t("paperTrading.reconcileFailed");
 }
 
-function EvidenceCard({
+function EvidenceCard<T>({
 	title,
 	empty,
-	rows,
+	section,
+	formatRow,
 }: {
 	title: string;
 	empty: string;
-	rows: string[];
+	section: EvidenceSection;
+	formatRow: (row: T) => string;
 }) {
+	const { t } = useTranslation();
+	const userId = useAuthenticatedUserId();
+	const [page, setPage] = useState(1);
+	const queryClient = useQueryClient();
+	const retainedPage = useRef<EvidencePage<T> | undefined>(undefined);
+	const evidence = useQuery({
+		queryKey: ["paper-account-evidence", userId, section, page],
+		queryFn: async ({ signal }) => {
+			await afterPaint();
+			signal.throwIfAborted();
+			return invoke<EvidencePage<T>>("paper_account_evidence_page", {
+				section,
+				page,
+			});
+		},
+		enabled: Boolean(userId),
+		placeholderData: keepPreviousData,
+		refetchOnMount: "always",
+		retry: false,
+	});
+	useEffect(() => {
+		if (evidence.data && !evidence.isPlaceholderData) {
+			retainedPage.current = evidence.data;
+		}
+		if (
+			evidence.data &&
+			!evidence.isPlaceholderData &&
+			evidence.data.page !== page
+		) {
+			queryClient.setQueryData(
+				["paper-account-evidence", userId, section, evidence.data.page],
+				evidence.data,
+			);
+			setPage(evidence.data.page);
+		}
+	}, [
+		evidence.data,
+		evidence.isPlaceholderData,
+		page,
+		queryClient,
+		userId,
+		section,
+	]);
+	const data = evidence.data ?? retainedPage.current;
+	const current = data?.page ?? page;
+	const totalPages = Math.max(
+		1,
+		Math.ceil((data?.total ?? 0) / (data?.pageSize ?? 10)),
+	);
+	const changePage = (next: number) => {
+		if (next === page) void evidence.refetch();
+		else setPage(next);
+	};
 	return (
-		<Card>
+		<Card data-evidence-section={section}>
 			<CardHeader>
 				<CardTitle>{title}</CardTitle>
 			</CardHeader>
-			<CardContent>
-				{rows.length ? (
+			<CardContent aria-busy={evidence.isFetching} className="space-y-3">
+				{evidence.isFetching ? (
+					<p role="status" className="text-sm text-muted-foreground">
+						{t("paperTrading.loading")}
+					</p>
+				) : null}
+				{evidence.isError ? (
+					<p role="alert" className="text-sm text-destructive">
+						{t("paperTrading.unavailable")}
+					</p>
+				) : null}
+				{data?.items.length ? (
 					<ul className="grid gap-2 text-sm">
-						{rows.map((row) => (
-							<li className="rounded-md border p-2" key={row}>
-								{row}
+						{data.items.map((item, index) => (
+							<li className="rounded-md border p-2" key={`${current}:${index}`}>
+								{formatRow(item)}
 							</li>
 						))}
 					</ul>
-				) : (
+				) : !evidence.isPending && !evidence.isError ? (
 					<p className="text-sm text-muted-foreground">{empty}</p>
-				)}
+				) : null}
+				{data ? (
+					<Pagination
+						aria-label={t("paperTrading.paginationLabel", { section: title })}
+					>
+						<PaginationContent>
+							<PaginationItem>
+								<Button
+									variant="ghost"
+									disabled={evidence.isFetching || current <= 1}
+									onClick={() => changePage(current - 1)}
+								>
+									{t("paperTrading.previousPage")}
+								</Button>
+							</PaginationItem>
+							<PaginationItem>
+								<span role="status" className="px-2 text-sm">
+									{t("paperTrading.pageOf", { current, total: totalPages })}
+								</span>
+							</PaginationItem>
+							<PaginationItem>
+								<Button
+									variant="ghost"
+									disabled={evidence.isFetching || current >= totalPages}
+									onClick={() => changePage(current + 1)}
+								>
+									{t("paperTrading.nextPage")}
+								</Button>
+							</PaginationItem>
+						</PaginationContent>
+					</Pagination>
+				) : null}
 			</CardContent>
 		</Card>
 	);

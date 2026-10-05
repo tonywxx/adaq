@@ -87,6 +87,10 @@ Bots on different Paper Accounts remain operationally independent. A network or 
 
 ## Evidence users must be able to inspect
 
+The Paper Trading Workspace shows positions, Orders, Fills, Risk Decisions, and provider evidence in independently paginated lists of 10 records. Historical lists show the newest evidence first; positions use Instrument order. Changing one list's page does not reload the others. Refresh retains each page, clamps it when records shrink, and keeps successful evidence visible during a slow or failed read. Account, connection, reconciliation, and uncertainty indicators describe the whole account, including evidence outside the visible page. The latest connection-test evidence remains in the account summary.
+
+The Host returns a bounded page rather than the complete history. Reads run off the desktop UI thread; page loading leaves navigation and other controls usable.
+
 - Paper Account and provider identity without exposing credentials.
 - Paper Funding Target and observed starting Account Snapshot.
 - Valuation Currency and exact decimal balances.

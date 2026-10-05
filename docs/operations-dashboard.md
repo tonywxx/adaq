@@ -57,6 +57,10 @@ Operations Dashboard /
 
 The home route shows summaries and exceptions. Selecting a Bot, account, Alert, Factor study, Model Attempt, Component Build Attempt, Backtest, or Validation result opens its dedicated page with complete evidence. The Dashboard does not grow into one endless screen containing every domain workflow.
 
+Home reads count-only research evidence, a Paper Account summary, and the ten most recently updated Bot summaries. It does not deserialize complete runtime or account histories for monitoring. Native reads run in the background after the page shell can paint.
+
+The `/operations` detail page shows Health and Alerts in independent ten-row pages. Alert filters apply across all retained history before pagination; filtering returns to page one. Host recovery availability and the global critical banner include unresolved alerts outside the current page. Historical unresolved Health conditions remain visible even when newer healthy observations exist.
+
 ## Data and control flow
 
 ```mermaid

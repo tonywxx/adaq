@@ -15,6 +15,9 @@ import {
 	type SystemDashboardProjection,
 } from "./operations-dashboard";
 
+jest.mock("@/features/factors/factor-workspace-data", () => ({
+	afterPaint: () => Promise.resolve(),
+}));
 jest.mock("@tauri-apps/api/core", () => ({ invoke: jest.fn() }));
 jest.mock("@tanstack/react-router", () => ({
 	Link: ({ to, children }: { to: string; children: ReactNode }) => (
@@ -96,7 +99,20 @@ beforeEach(() => {
 					condition: "worker_fault",
 				},
 			];
-		if (command === "operations_alerts") return [criticalAlert, warningAlert];
+		if (command === "operations_alerts_page") {
+			const request = (
+				args as { request: { page: number; severity: string | null } }
+			).request;
+			const items = [criticalAlert, warningAlert].filter(
+				(alert) => !request.severity || alert.severity === request.severity,
+			);
+			return {
+				items,
+				page: request.page,
+				total: items.length,
+				hasHostFreeze: false,
+			};
+		}
 		if (command === "operations_events") return [];
 		if (command === "operations_probe") return null;
 		if (command === "operations_alert_history") {
@@ -191,6 +207,69 @@ test("refreshes expanded lifecycle history after acknowledgement", async () => {
 		`Acknowledged · alice · ${i18n.t("identifiers.event")}${abbreviateIdentifier("event-acknowledged")}`,
 	);
 
+	await act(async () => root.unmount());
+	container.remove();
+});
+
+test("pages alerts and health independently and keeps off-page Host recovery visible", async () => {
+	const original = mockInvoke.getMockImplementation();
+	if (!original) throw new Error("Missing Host mock");
+	mockInvoke.mockImplementation(async (command, args) => {
+		if (command === "operations_health")
+			return Array.from({ length: 21 }, (_, index) => ({
+				entityId: `bot-${index}`,
+				dimension: "worker",
+				state: "critical",
+				required: true,
+				observedAtMs: 2,
+				eventId: `event-${index}`,
+				condition: `health_${index}`,
+			}));
+		if (command === "operations_alerts_page") {
+			const page = (args as { request: { page: number } }).request.page;
+			return {
+				items: Array.from({ length: 21 }, (_, index) => ({
+					...criticalAlert,
+					alertId: `alert-${index}`,
+					condition: `alert_${index}`,
+				})).slice((page - 1) * 10, page * 10),
+				page,
+				total: 21,
+				hasHostFreeze: true,
+			};
+		}
+		return original(command, args);
+	});
+	const { container, root } = await mount();
+	const pagers = Array.from(container.querySelectorAll("nav"));
+	const alerts = pagers.find(
+		(nav) =>
+			nav.getAttribute("aria-label") ===
+			i18n.t("paperTrading.paginationLabel", {
+				section: i18n.t("operations.alertsTitle"),
+			}),
+	);
+	const health = pagers.find(
+		(nav) =>
+			nav.getAttribute("aria-label") ===
+			i18n.t("paperTrading.paginationLabel", {
+				section: i18n.t("operations.healthTitle"),
+			}),
+	);
+	if (!alerts || !health)
+		throw new Error(`Missing pagers: ${container.textContent}`);
+	expect(alerts).not.toBeNull();
+	expect(health).not.toBeNull();
+	expect(container.textContent).toContain("alert_9");
+	expect(container.textContent).not.toContain("alert_10");
+	await act(async () => {
+		alerts.querySelectorAll("button")[1].click();
+	});
+	await settle();
+	expect(container.textContent).toContain("alert_10");
+	expect(container.textContent).not.toContain("alert_0");
+	expect(health.textContent).toContain("Page 1 of 3");
+	expect(container.textContent).toContain(i18n.t("operations.recoverHost"));
 	await act(async () => root.unmount());
 	container.remove();
 });

@@ -59,6 +59,25 @@ pub enum AlertState {
     Resolved,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertPageRequest {
+    pub page: usize,
+    pub state: Option<AlertState>,
+    pub severity: Option<AlertSeverity>,
+    pub dimension: Option<HealthDimension>,
+    pub entity: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertPage {
+    pub items: Vec<AlertView>,
+    pub page: usize,
+    pub total: usize,
+    pub has_host_freeze: bool,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum SafetyAction {
@@ -422,7 +441,27 @@ impl OperationsStore {
     pub fn health_for_user(&self, user_id: &str) -> Result<Vec<HealthView>, String> {
         validate_user(user_id)?;
         let connection = self.database.lock().map_err(|e| e.to_string())?;
-        let rows = load_event_rows(&connection, Some(user_id), true)?;
+        let rows = {
+            let mut statement = connection.prepare(
+                "WITH latest AS (
+                    SELECT event_id, ROW_NUMBER() OVER (
+                        PARTITION BY entity_id,dimension,CASE
+                            WHEN json_valid(evidence_json) AND json_type(evidence_json, '$.condition')='text'
+                            THEN json_extract(evidence_json, '$.condition') ELSE kind END
+                        ORDER BY observed_at_ms DESC,recorded_at_ms DESC,event_id DESC
+                    ) AS sequence
+                    FROM operational_events WHERE user_id=?1
+                 ) SELECT event_id,user_id,entity_id,dimension,kind,observed_at_ms,evidence_json,
+                    evidence_id,correlation_id,causation_id,diagnostic,metrics_json,recorded_at_ms
+                 FROM operational_events WHERE event_id IN (SELECT event_id FROM latest WHERE sequence=1)"
+            ).map_err(|e| e.to_string())?;
+            statement
+                .query_map([user_id], EventRow::from_row)
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+        };
+        drop(connection);
         let mut latest_by_condition = BTreeMap::new();
         for row in rows {
             let event = row.event()?;
@@ -473,11 +512,14 @@ impl OperationsStore {
     ) -> Result<Vec<OperationalEvent>, String> {
         validate_user(user_id)?;
         let connection = self.database.lock().map_err(|e| e.to_string())?;
-        load_event_rows(&connection, Some(user_id), true)?
-            .into_iter()
-            .take(limit.clamp(1, MAX_EVENT_HISTORY))
-            .map(EventRow::event)
-            .collect()
+        let rows = load_event_rows(
+            &connection,
+            Some(user_id),
+            true,
+            Some(limit.clamp(1, MAX_EVENT_HISTORY)),
+        )?;
+        drop(connection);
+        rows.into_iter().map(EventRow::event).collect()
     }
 
     pub fn transition_alert(
@@ -629,6 +671,100 @@ impl OperationsStore {
         Ok(alerts)
     }
 
+    pub fn unresolved_alerts_for_user(&self, user_id: &str) -> Result<Vec<AlertView>, String> {
+        validate_user(user_id)?;
+        let connection = self.database.lock().map_err(|e| e.to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT alert_id,user_id,entity_id,dimension,condition,policy_id,severity,state,
+                    safety_action,first_event_id,first_critical_event_id,first_observed_at_ms,
+                    occurrence_count,last_observed_at_ms,last_event_id,evidence_id,
+                    correlation_id,diagnostic
+             FROM operational_alerts WHERE user_id=?1 AND state <> 'resolved'
+             ORDER BY last_observed_at_ms DESC,alert_id",
+            )
+            .map_err(|e| e.to_string())?;
+        statement
+            .query_map([user_id], decode_alert)
+            .map_err(|e| e.to_string())?
+            .map(|row| row.map(AlertRecord::view))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn alerts_page_for_user(
+        &self,
+        user_id: &str,
+        request: AlertPageRequest,
+    ) -> Result<AlertPage, String> {
+        validate_user(user_id)?;
+        if request.page == 0
+            || request
+                .entity
+                .as_ref()
+                .is_some_and(|entity| entity.len() > 256)
+        {
+            return Err("Invalid operational alert page.".into());
+        }
+        let state = request.state.as_ref().map(enum_name).transpose()?;
+        let severity = request.severity.as_ref().map(enum_name).transpose()?;
+        let dimension = request.dimension.as_ref().map(enum_name).transpose()?;
+        let entity = request.entity.unwrap_or_default();
+        let predicate = "user_id=?1 AND (?2 IS NULL OR state=?2)
+            AND (?3 IS NULL OR severity=?3) AND (?4 IS NULL OR dimension=?4)
+            AND instr(lower(entity_id), lower(?5)) > 0";
+        let connection = self.database.lock().map_err(|e| e.to_string())?;
+        let total: i64 = connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM operational_alerts WHERE {predicate}"),
+                params![user_id, state, severity, dimension, entity],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let total = total.max(0) as usize;
+        let page = request.page.min(total.div_ceil(10).max(1));
+        let has_host_freeze = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM operational_alerts WHERE user_id=?1
+             AND safety_action='freezeAll' AND state <> 'resolved')",
+                [user_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT alert_id,user_id,entity_id,dimension,condition,policy_id,severity,state,
+                    safety_action,first_event_id,first_critical_event_id,first_observed_at_ms,
+                    occurrence_count,last_observed_at_ms,last_event_id,evidence_id,
+                    correlation_id,diagnostic
+             FROM operational_alerts WHERE {predicate}
+             ORDER BY last_observed_at_ms DESC,alert_id LIMIT 10 OFFSET ?6"
+            ))
+            .map_err(|e| e.to_string())?;
+        let items = statement
+            .query_map(
+                params![
+                    user_id,
+                    state,
+                    severity,
+                    dimension,
+                    entity,
+                    ((page - 1) * 10) as i64
+                ],
+                decode_alert,
+            )
+            .map_err(|e| e.to_string())?
+            .map(|row| row.map(AlertRecord::view))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(AlertPage {
+            items,
+            page,
+            total,
+            has_host_freeze,
+        })
+    }
+
     pub fn is_user_frozen(&self, user_id: &str) -> Result<bool, String> {
         validate_user(user_id)?;
         let connection = self.database.lock().map_err(|e| e.to_string())?;
@@ -725,7 +861,7 @@ impl OperationsStore {
 
     fn rebuild_missing_alert_projection(&self) -> Result<(), String> {
         let connection = self.database.lock().map_err(|e| e.to_string())?;
-        let events = load_event_rows(&connection, None, false)?
+        let events = load_event_rows(&connection, None, false, None)?
             .into_iter()
             .map(EventRow::event)
             .collect::<Result<Vec<_>, _>>()?;
@@ -777,6 +913,24 @@ struct EventRow {
 }
 
 impl EventRow {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            event_id: row.get(0)?,
+            user_id: row.get(1)?,
+            entity_id: row.get(2)?,
+            dimension: row.get(3)?,
+            kind: row.get(4)?,
+            observed_at_ms: row.get(5)?,
+            evidence_json: row.get(6)?,
+            evidence_id: row.get(7)?,
+            correlation_id: row.get(8)?,
+            causation_id: row.get(9)?,
+            diagnostic: row.get(10)?,
+            metrics_json: row.get(11)?,
+            recorded_at_ms: row.get(12)?,
+        })
+    }
+
     fn event(self) -> Result<OperationalEvent, String> {
         Ok(OperationalEvent {
             event_id: self.event_id,
@@ -1076,13 +1230,14 @@ fn load_event_rows(
     connection: &Connection,
     user_id: Option<&str>,
     descending: bool,
+    limit: Option<usize>,
 ) -> Result<Vec<EventRow>, String> {
     let order = if descending { "DESC" } else { "ASC" };
     let sql = format!(
         "SELECT event_id,user_id,entity_id,dimension,kind,observed_at_ms,evidence_json,
                 evidence_id,correlation_id,causation_id,diagnostic,metrics_json,recorded_at_ms
          FROM operational_events {}
-         ORDER BY observed_at_ms {},recorded_at_ms {},event_id {}",
+         ORDER BY observed_at_ms {},recorded_at_ms {},event_id {} LIMIT {}",
         if user_id.is_some() {
             "WHERE user_id=?1"
         } else {
@@ -1090,35 +1245,20 @@ fn load_event_rows(
         },
         order,
         order,
-        order
+        order,
+        if user_id.is_some() { "?2" } else { "?1" },
     );
     let mut statement = connection.prepare(&sql).map_err(|e| e.to_string())?;
-    let map = |row: &Row<'_>| {
-        Ok(EventRow {
-            event_id: row.get(0)?,
-            user_id: row.get(1)?,
-            entity_id: row.get(2)?,
-            dimension: row.get(3)?,
-            kind: row.get(4)?,
-            observed_at_ms: row.get(5)?,
-            evidence_json: row.get(6)?,
-            evidence_id: row.get(7)?,
-            correlation_id: row.get(8)?,
-            causation_id: row.get(9)?,
-            diagnostic: row.get(10)?,
-            metrics_json: row.get(11)?,
-            recorded_at_ms: row.get(12)?,
-        })
-    };
+    let limit = limit.map(|value| value as i64).unwrap_or(-1);
     if let Some(user_id) = user_id {
         statement
-            .query_map([user_id], map)
+            .query_map(params![user_id, limit], EventRow::from_row)
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
     } else {
         statement
-            .query_map([], map)
+            .query_map([limit], EventRow::from_row)
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
@@ -1755,6 +1895,79 @@ mod tests {
         }
     }
     #[test]
+    fn alert_pages_filter_all_history_and_preserve_off_page_safety() {
+        let s = store();
+        for index in 1..=21 {
+            let mut observation = obs(HealthState::Critical, true);
+            observation.entity_id = format!("bot-{index}");
+            observation.observed_at_ms = index;
+            s.observe(observation).unwrap();
+        }
+        let mut freeze = obs(HealthState::Critical, true);
+        freeze.entity_id = "host".into();
+        freeze.dimension = HealthDimension::LocalSystem;
+        freeze.condition = "freeze_all_requested".into();
+        freeze.evidence = serde_json::json!({"scope":"user"});
+        freeze.observed_at_ms = 22;
+        s.observe(freeze).unwrap();
+        let request = |page| AlertPageRequest {
+            page,
+            state: None,
+            severity: None,
+            dimension: None,
+            entity: None,
+        };
+        let first = s.alerts_page_for_user("u", request(1)).unwrap();
+        let last = s.alerts_page_for_user("u", request(99)).unwrap();
+        assert_eq!(first.items.len(), 10);
+        assert_eq!(first.total, 22);
+        assert_eq!(last.page, 3);
+        assert_eq!(last.items.len(), 2);
+        assert!(last.has_host_freeze);
+        assert!(
+            last.items
+                .iter()
+                .all(|alert| alert.safety_action != SafetyAction::FreezeAll)
+        );
+        let filtered = s
+            .alerts_page_for_user(
+                "u",
+                AlertPageRequest {
+                    entity: Some("BOT-21".into()),
+                    dimension: Some(HealthDimension::Worker),
+                    severity: Some(AlertSeverity::Critical),
+                    state: Some(AlertState::Active),
+                    ..request(1)
+                },
+            )
+            .unwrap();
+        assert_eq!(filtered.total, 1);
+        assert_eq!(filtered.items[0].entity_id, "bot-21");
+        assert_eq!(
+            s.alerts_page_for_user("other", request(1)).unwrap().total,
+            0
+        );
+        assert!(s.alerts_page_for_user("u", request(0)).is_err());
+        let mut recovered = obs(HealthState::Healthy, true);
+        recovered.entity_id = "bot-21".into();
+        recovered.observed_at_ms = 23;
+        s.observe(recovered).unwrap();
+        assert_eq!(s.unresolved_alerts_for_user("u").unwrap().len(), 21);
+        assert_eq!(
+            s.alerts_page_for_user(
+                "u",
+                AlertPageRequest {
+                    state: Some(AlertState::Resolved),
+                    ..request(1)
+                }
+            )
+            .unwrap()
+            .total,
+            1
+        );
+    }
+
+    #[test]
     fn critical_worker_faults_and_redacts() {
         let s = store();
         let (_, a, action) = s.observe(obs(HealthState::Critical, true)).unwrap();
@@ -1957,10 +2170,44 @@ mod tests {
         heartbeat.observed_at_ms = 2;
         s.observe(heartbeat).unwrap();
 
+        for index in 3..1003 {
+            let mut heartbeat = obs(HealthState::Healthy, true);
+            heartbeat.condition = "worker_heartbeat".into();
+            heartbeat.observed_at_ms = index;
+            s.observe(heartbeat).unwrap();
+        }
+        let mut other_user = obs(HealthState::Critical, true);
+        other_user.user_id = "other".into();
+        s.observe(other_user).unwrap();
+
         let health = s.health_for_user("u").unwrap();
         assert_eq!(health.len(), 1);
         assert_eq!(health[0].state, HealthState::Critical);
         assert_eq!(health[0].condition, "worker_fault");
+    }
+
+    #[test]
+    fn event_history_reads_only_the_requested_recent_rows() {
+        let s = store();
+        for index in 1..1001 {
+            let mut observation = obs(HealthState::Healthy, true);
+            observation.observed_at_ms = index;
+            s.observe(observation).unwrap();
+        }
+        // A bad off-page row must not be loaded by a bounded history request.
+        s.database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE operational_events SET metrics_json=x'FF' WHERE observed_at_ms=1",
+                [],
+            )
+            .unwrap();
+        let recent = s.events_for_user("u", 12).unwrap();
+        assert_eq!(recent.len(), 12);
+        assert_eq!(recent[0].observed_at_ms, 1000);
+        assert_eq!(recent[11].observed_at_ms, 989);
+        assert!(s.events_for_user("other", 12).unwrap().is_empty());
     }
 
     #[test]

@@ -814,6 +814,12 @@ const english = {
 		},
 	},
 	paperTrading: {
+		refresh: "Refresh",
+		connectionEvidence: "Connection evidence",
+		paginationLabel: "{{section}} pagination",
+		previousPage: "Previous",
+		nextPage: "Next",
+		pageOf: "Page {{current}} of {{total}}",
 		eyebrow: "Gate 12 · OKX Demo only",
 		title: "Paper Trading Workspace",
 		description:
@@ -4156,6 +4162,12 @@ const simplifiedChinese = {
 		},
 	},
 	paperTrading: {
+		refresh: "刷新",
+		connectionEvidence: "连接证据",
+		paginationLabel: "{{section}}分页",
+		previousPage: "上一页",
+		nextPage: "下一页",
+		pageOf: "第 {{current}} / {{total}} 页",
 		eyebrow: "Gate 12 · 仅限 OKX Demo",
 		title: "模拟交易工作区",
 		description: "查看保留的、按用户隔离的账户证据；对账是唯一可用操作。",
