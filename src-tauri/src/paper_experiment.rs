@@ -867,24 +867,8 @@ fn reconcile_demo(
 ) -> Result<crate::paper_trading::PaperAccountView, String> {
     let now_ms = adaq_bot_runtime::unix_now_ms();
     local
-        .connections
-        .with_okx_demo_reconciliation(user_id, now_ms, |open_orders, balances| {
-            local.paper_trading.provider_balance(
-                user_id,
-                account_id.to_owned(),
-                open_orders,
-                balances,
-                now_ms,
-                |instrument, provider_order_id, resolve_ms| {
-                    local.connections.resolve_okx_demo_terminal_order(
-                        user_id,
-                        instrument,
-                        provider_order_id,
-                        resolve_ms,
-                    )
-                },
-            )
-        })?
+        .paper_trading
+        .reconcile_provider_account(&local.connections, user_id, account_id, now_ms)
 }
 
 #[derive(Clone, Copy)]

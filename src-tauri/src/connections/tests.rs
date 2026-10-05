@@ -8,7 +8,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use adaq_paper_trading_core::{ExecutionOutcome, OrderStatus, ReconciliationState};
 use rusqlite::Connection;
+use rust_decimal::Decimal;
+
+use crate::paper_trading::{PaperOrderRequest, PaperTradingStore};
 
 use super::{
     ALPACA_PAPER_TRADING_ENDPOINT, ConnectionError, ConnectionManager, OKX_DEMO_ENDPOINT,
@@ -47,6 +51,7 @@ enum MockResponse {
 struct MockHttp {
     routes: Mutex<Vec<(String, MockResponse)>>,
     requests: Mutex<Vec<HttpRequest>>,
+    hook: Mutex<Option<(String, Box<dyn FnOnce() + Send>)>>,
 }
 
 impl MockHttp {
@@ -54,11 +59,16 @@ impl MockHttp {
         Arc::new(Self {
             routes: Mutex::new(routes),
             requests: Mutex::new(Vec::new()),
+            hook: Mutex::new(None),
         })
     }
 
     fn set_routes(&self, routes: Vec<(String, MockResponse)>) {
         *self.routes.lock().expect("mock poisoned") = routes;
+    }
+
+    fn on_request(&self, path: &str, hook: impl FnOnce() + Send + 'static) {
+        *self.hook.lock().unwrap() = Some((path.into(), Box::new(hook)));
     }
 
     fn requested_paths(&self) -> Vec<String> {
@@ -86,6 +96,20 @@ impl HttpExecutor for MockHttp {
             .lock()
             .expect("mock poisoned")
             .push(request.clone());
+        let hook = {
+            let mut hook = self.hook.lock().unwrap();
+            if hook
+                .as_ref()
+                .is_some_and(|(path, _)| request.url.contains(path))
+            {
+                hook.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, hook)) = hook {
+            hook();
+        }
         let routes = self.routes.lock().expect("mock poisoned");
         for (prefix, response) in routes.iter() {
             if request.url.contains(prefix.as_str()) {
@@ -184,7 +208,7 @@ fn combined_ok_routes() -> Vec<(String, MockResponse)> {
 }
 
 struct Harness {
-    manager: ConnectionManager,
+    manager: Arc<ConnectionManager>,
     secrets: Arc<InMemorySecretStore>,
     http: Arc<MockHttp>,
     guard: Arc<TestRuntimeGuard>,
@@ -201,13 +225,20 @@ impl RuntimeGuard for TestRuntimeGuard {
 
 fn harness(routes: Vec<(String, MockResponse)>) -> Harness {
     let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+    harness_with_database(database, routes)
+}
+
+fn harness_with_database(
+    database: Arc<Mutex<Connection>>,
+    routes: Vec<(String, MockResponse)>,
+) -> Harness {
     let secrets = Arc::new(InMemorySecretStore::default());
     let http = MockHttp::new(routes);
     let guard = Arc::new(TestRuntimeGuard::default());
     let manager =
         ConnectionManager::open(database, secrets.clone(), http.clone(), guard.clone()).unwrap();
     Harness {
-        manager,
+        manager: Arc::new(manager),
         secrets,
         http,
         guard,
@@ -270,27 +301,12 @@ fn local_env_paper_reconcile_against_demo_account() -> Result<(), String> {
     let mut account = None;
     for _ in 0..2 {
         let now_ms = crate::unix_now_ms();
-        account = Some(manager.with_okx_demo_reconciliation(
+        account = Some(paper_trading.reconcile_provider_account(
+            &manager,
             &user_id,
+            &account_id,
             now_ms,
-            |open_orders, balances| {
-                paper_trading.provider_balance(
-                    &user_id,
-                    account_id.clone(),
-                    open_orders,
-                    balances,
-                    now_ms,
-                    |instrument, provider_order_id, resolve_ms| {
-                        manager.resolve_okx_demo_terminal_order(
-                            &user_id,
-                            instrument,
-                            provider_order_id,
-                            resolve_ms,
-                        )
-                    },
-                )
-            },
-        )??);
+        )?);
     }
     let account = account.expect("reconciled at least once");
 
@@ -965,8 +981,8 @@ fn okx_demo_reconciliation_retries_one_transient_503_read_but_never_replays_orde
 
     let cash = harness
         .manager
-        .with_okx_demo_reconciliation("user-a", NOW_MS, |_, balances| {
-            balances.accounts["USDT"].total.unwrap().to_string()
+        .with_okx_demo_reconciliation("user-a", "OKX-UID-999", NOW_MS, |_, _, balances| {
+            Ok(balances.accounts["USDT"].total.unwrap().to_string())
         })
         .unwrap();
     assert_eq!(cash, "100");
@@ -1354,6 +1370,253 @@ fn okx_demo_absence_does_not_treat_missing_data_as_an_empty_order_list() {
     assert!(error.contains("no authoritative order list"));
 }
 
+fn paper_reconciliation_harness() -> (Harness, PaperTradingStore, String) {
+    paper_reconciliation_harness_with_database(Arc::new(Mutex::new(
+        Connection::open_in_memory().unwrap(),
+    )))
+}
+
+fn paper_reconciliation_harness_with_database(
+    database: Arc<Mutex<Connection>>,
+) -> (Harness, PaperTradingStore, String) {
+    let harness = harness_with_database(database, okx_ok_routes());
+    let profile = harness
+        .manager
+        .save("user-a", okx_credentials(), NOW_MS)
+        .unwrap();
+    let account_id = profile.account_id.unwrap();
+    let store = PaperTradingStore::open(harness.manager.database()).unwrap();
+    harness.http.set_routes(paper_reconciliation_routes(
+        r#"{"code":"0","msg":"","data":[{"details":[{"ccy":"USDT","cashBal":"1000.5","availBal":"1000.5"}]}]}"#,
+        MockResponse::Ok {
+            status: 200,
+            body: r#"{"code":"0","msg":"","data":[]}"#.to_owned(),
+        },
+        r#"{"code":"0","msg":"","data":[]}"#,
+    ));
+    store
+        .reconcile_provider_account(&harness.manager, "user-a", &account_id, NOW_MS)
+        .unwrap();
+    store
+        .begin_order(
+            &PaperOrderRequest {
+                user_id: "user-a".into(),
+                operation_id: "paper-reconcile-order".into(),
+                instrument: "BTC-USDT".into(),
+                side: "buy".into(),
+                quantity: Decimal::ONE,
+                limit_price: Decimal::new(100, 0),
+            },
+            NOW_MS + 1,
+        )
+        .unwrap();
+    store
+        .record_order_result(
+            "user-a",
+            "paper-reconcile-order",
+            Some("456".into()),
+            "live",
+            None,
+            NOW_MS + 1,
+        )
+        .unwrap();
+    (harness, store, account_id)
+}
+
+fn paper_reconciliation_routes(
+    balance: &str,
+    order: MockResponse,
+    fills: &str,
+) -> Vec<(String, MockResponse)> {
+    vec![
+        (
+            "/api/v5/trade/orders-pending".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: r#"{"code":"0","msg":"","data":[]}"#.to_owned(),
+            },
+        ),
+        (
+            "/api/v5/account/balance".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: balance.to_owned(),
+            },
+        ),
+        ("/api/v5/trade/order?".to_owned(), order),
+        (
+            "/api/v5/trade/fills-history?".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: fills.to_owned(),
+            },
+        ),
+        (
+            "/api/v5/public/time".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: format!(r#"{{"code":"0","msg":"","data":[{{"ts":"{NOW_MS}"}}]}}"#),
+            },
+        ),
+    ]
+}
+
+#[test]
+fn paper_account_reconciliation_captures_terminal_fills_without_reapplying_balances() {
+    let (harness, store, account_id) = paper_reconciliation_harness();
+    let requests_before = harness.http.requested_paths().len();
+    harness.http.set_routes(paper_reconciliation_routes(
+        r#"{"code":"0","msg":"","data":[{"details":[{"ccy":"USDT","cashBal":"900.5","availBal":"900.5"},{"ccy":"BTC","cashBal":"0.999","availBal":"0.999"}]}]}"#,
+        MockResponse::Ok {
+            status: 200,
+            body: r#"{"code":"0","msg":"","data":[{"instId":"BTC-USDT","ordId":"456","side":"buy","state":"filled","sz":"1","accFillSz":"1"}]}"#.to_owned(),
+        },
+        &format!(r#"{{"code":"0","msg":"","data":[{{"instId":"BTC-USDT","ordId":"456","tradeId":"trade-1","fillSz":"1","fillPx":"100","fee":"-0.001","feeCcy":"BTC","ts":"{}"}}]}}"#, NOW_MS + 2),
+    ));
+
+    let observed = store
+        .reconcile_provider_account(&harness.manager, "user-a", &account_id, NOW_MS + 3)
+        .unwrap();
+    assert_eq!(observed.reconciliation, ReconciliationState::Required);
+    let settled = store
+        .reconcile_provider_account(&harness.manager, "user-a", &account_id, NOW_MS + 4)
+        .unwrap();
+    assert_eq!(settled.reconciliation, ReconciliationState::Reconciled);
+    assert_eq!(settled.account.cash, Decimal::new(9005, 1));
+    assert_eq!(
+        settled.account.positions["BTC-USDT"].quantity,
+        Decimal::new(999, 3)
+    );
+    assert_eq!(settled.orders[0].status, OrderStatus::Filled);
+    assert_eq!(settled.orders[0].filled_quantity, Decimal::ONE);
+    assert_eq!(settled.reserved_cash, Decimal::ZERO);
+    assert_eq!(settled.fills.len(), 1);
+    assert_eq!(settled.fills[0].fee_asset.as_deref(), Some("BTC"));
+    assert_eq!(settled.fills[0].fee_amount, Some(Decimal::new(1, 3)));
+    assert_eq!(settled.fills[0].fee_quote, Some(Decimal::new(1, 1)));
+    let requests = harness.http.requests.lock().unwrap();
+    let reads = requests[requests_before..]
+        .iter()
+        .filter(|request| !request.url.contains("/public/time"))
+        .map(|request| request.url.split('?').next().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reads,
+        vec![
+            "https://www.okx.com/api/v5/trade/orders-pending",
+            "https://www.okx.com/api/v5/account/balance",
+            "https://www.okx.com/api/v5/trade/order",
+            "https://www.okx.com/api/v5/trade/fills-history",
+            "https://www.okx.com/api/v5/trade/orders-pending",
+            "https://www.okx.com/api/v5/account/balance",
+        ]
+    );
+    assert!(
+        requests[requests_before..]
+            .iter()
+            .all(|request| request.method == "GET")
+    );
+}
+
+#[test]
+fn paper_account_reconciliation_keeps_missing_terminal_evidence_uncertain() {
+    let (harness, store, account_id) = paper_reconciliation_harness();
+    harness.http.set_routes(paper_reconciliation_routes(
+        r#"{"code":"0","msg":"","data":[{"details":[{"ccy":"USDT","cashBal":"1000.5","availBal":"1000.5"}]}]}"#,
+        MockResponse::Ok {
+            status: 500,
+            body: "terminal evidence unavailable".into(),
+        },
+        r#"{"code":"0","msg":"","data":[]}"#,
+    ));
+
+    let observed = store
+        .reconcile_provider_account(&harness.manager, "user-a", &account_id, NOW_MS + 3)
+        .unwrap();
+    assert_eq!(observed.reconciliation, ReconciliationState::Required);
+    assert_eq!(observed.orders[0].status, OrderStatus::Accepted);
+    assert_eq!(observed.orders[0].filled_quantity, Decimal::ZERO);
+    assert_eq!(observed.reserved_cash, Decimal::new(100, 0));
+    assert!(observed.fills.is_empty());
+    assert!(
+        observed
+            .provider_evidence
+            .iter()
+            .any(|outcome| matches!(outcome, ExecutionOutcome::Uncertain(_)))
+    );
+}
+
+#[test]
+fn paper_account_reconciliation_retains_partial_fill_fees_without_duplicates() {
+    let (harness, store, account_id) = paper_reconciliation_harness();
+    harness.http.set_routes(paper_reconciliation_routes(
+        r#"{"code":"0","msg":"","data":[{"details":[{"ccy":"USDT","cashBal":"975.5","availBal":"975.5"},{"ccy":"BTC","cashBal":"0.249","availBal":"0.249"}]}]}"#,
+        MockResponse::Ok {
+            status: 200,
+            body: r#"{"code":"0","msg":"","data":[{"instId":"BTC-USDT","ordId":"456","side":"buy","state":"canceled","sz":"1","accFillSz":"0.25"}]}"#.to_owned(),
+        },
+        &format!(r#"{{"code":"0","msg":"","data":[{{"instId":"BTC-USDT","ordId":"456","tradeId":"partial-1","fillSz":"0.25","fillPx":"100","fee":"-0.001","feeCcy":"BTC","ts":"{}"}}]}}"#, NOW_MS + 2),
+    ));
+
+    store
+        .reconcile_provider_account(&harness.manager, "user-a", &account_id, NOW_MS + 3)
+        .unwrap();
+    let repeated = store
+        .reconcile_provider_account(&harness.manager, "user-a", &account_id, NOW_MS + 4)
+        .unwrap();
+    assert_eq!(repeated.reconciliation, ReconciliationState::Reconciled);
+    assert_eq!(repeated.account.cash, Decimal::new(9755, 1));
+    assert_eq!(
+        repeated.account.positions["BTC-USDT"].quantity,
+        Decimal::new(249, 3)
+    );
+    assert_eq!(repeated.orders[0].status, OrderStatus::Cancelled);
+    assert_eq!(repeated.orders[0].filled_quantity, Decimal::new(25, 2));
+    assert_eq!(repeated.reserved_cash, Decimal::ZERO);
+    assert_eq!(repeated.fills.len(), 1);
+    assert_eq!(repeated.fills[0].quantity, Decimal::new(25, 2));
+    assert_eq!(repeated.fills[0].fee_quote, Some(Decimal::new(1, 1)));
+}
+
+#[test]
+fn paper_account_reconciliation_propagates_read_failure_without_updating_the_ledger() {
+    let (harness, store, account_id) = paper_reconciliation_harness();
+    let before = store.view("user-a").unwrap();
+    let requests_before = harness.http.requested_paths().len();
+    harness.http.set_routes(vec![
+        (
+            "/api/v5/public/time".to_owned(),
+            MockResponse::Ok {
+                status: 200,
+                body: format!(r#"{{"code":"0","msg":"","data":[{{"ts":"{NOW_MS}"}}]}}"#),
+            },
+        ),
+        (
+            "/api/v5/trade/orders-pending".to_owned(),
+            MockResponse::Ok {
+                status: 500,
+                body: "provider unavailable".into(),
+            },
+        ),
+    ]);
+
+    let error = store
+        .reconcile_provider_account(&harness.manager, "user-a", &account_id, NOW_MS + 3)
+        .unwrap_err();
+    assert!(!error.is_empty());
+    assert_eq!(
+        serde_json::to_value(store.view("user-a").unwrap()).unwrap(),
+        serde_json::to_value(before).unwrap()
+    );
+    let paths = harness.http.requested_paths();
+    let reads = paths[requests_before..]
+        .iter()
+        .filter(|path| !path.contains("/public/time"))
+        .collect::<Vec<_>>();
+    assert_eq!(reads.len(), 1);
+    assert!(reads[0].contains("/api/v5/trade/orders-pending"));
+}
+
 #[test]
 fn okx_demo_reconciliation_fetches_balance_through_the_signed_host_boundary() {
     let harness = harness(okx_ok_routes());
@@ -1387,8 +1650,8 @@ fn okx_demo_reconciliation_fetches_balance_through_the_signed_host_boundary() {
 
     let total = harness
         .manager
-        .with_okx_demo_reconciliation("user-a", NOW_MS, |_, balances| {
-            balances.accounts["USDT"].total
+        .with_okx_demo_reconciliation("user-a", "OKX-UID-999", NOW_MS, |_, _, balances| {
+            Ok(balances.accounts["USDT"].total)
         })
         .unwrap();
 
@@ -1432,6 +1695,202 @@ fn okx_currency_mismatch_fails_closed() {
 }
 
 #[test]
+fn paper_account_reconciliation_rejects_another_account_before_provider_reads() {
+    let (harness, store, _) = paper_reconciliation_harness();
+    let before = serde_json::to_value(store.view("user-a").unwrap()).unwrap();
+    let requests_before = harness.http.requested_paths().len();
+    let error = store
+        .reconcile_provider_account(&harness.manager, "user-a", "other-account", NOW_MS + 3)
+        .unwrap_err();
+    assert!(error.contains("does not match"));
+    assert_eq!(harness.http.requested_paths().len(), requests_before);
+    assert_eq!(
+        serde_json::to_value(store.view("user-a").unwrap()).unwrap(),
+        before
+    );
+}
+
+fn terminal_fill_routes() -> Vec<(String, MockResponse)> {
+    paper_reconciliation_routes(
+        r#"{"code":"0","msg":"","data":[{"details":[{"ccy":"USDT","cashBal":"900.5","availBal":"900.5"},{"ccy":"BTC","cashBal":"0.999","availBal":"0.999"}]}]}"#,
+        MockResponse::Ok {
+            status: 200,
+            body: r#"{"code":"0","msg":"","data":[{"instId":"BTC-USDT","ordId":"456","side":"buy","state":"filled","sz":"1","accFillSz":"1"}]}"#.into(),
+        },
+        &format!(r#"{{"code":"0","msg":"","data":[{{"instId":"BTC-USDT","ordId":"456","tradeId":"trade-1","fillSz":"1","fillPx":"100","fee":"-0.001","feeCcy":"BTC","ts":"{}"}}]}}"#, NOW_MS + 2),
+    )
+}
+
+#[test]
+fn paper_account_reconciliation_pins_credentials_and_rejects_rotation() {
+    for path in ["/trade/orders-pending", "/trade/order?"] {
+        for rotated_account in ["OKX-UID-999", "different-account"] {
+            let (harness, store, account_id) = paper_reconciliation_harness();
+            let before = serde_json::to_value(store.view("user-a").unwrap()).unwrap();
+            let profile_id = harness.manager.list("user-a").unwrap()[0]
+                .profile_id
+                .clone();
+            let mut routes = terminal_fill_routes();
+            routes.push(("/api/v5/account/config".into(), MockResponse::Ok {
+                status: 200,
+                body: format!(r#"{{"code":"0","msg":"","data":[{{"uid":"{rotated_account}","permTrade":"1","permWit":"0"}}]}}"#),
+            }));
+            harness.http.set_routes(routes);
+            let manager = harness.manager.clone();
+            harness.http.on_request(path, move || {
+                manager
+                    .save(
+                        "user-a",
+                        ProviderCredentials::OkxDemo {
+                            api_key: "rotated-api-key".into(),
+                            secret_key: "rotated-secret".into(),
+                            passphrase: "rotated-passphrase".into(),
+                        },
+                        NOW_MS + 3,
+                    )
+                    .unwrap();
+            });
+            let request_start = harness.http.requested_paths().len();
+            let error = store
+                .reconcile_provider_account(&harness.manager, "user-a", &account_id, NOW_MS + 4)
+                .unwrap_err();
+            assert!(error.contains("changed during reconciliation"));
+            let current = harness.manager.list("user-a").unwrap().remove(0);
+            assert_eq!(current.profile_id, profile_id);
+            assert_eq!(current.account_id.as_deref(), Some(rotated_account));
+            let requests = harness.http.requests.lock().unwrap();
+            let terminal_reads = requests[request_start..]
+                .iter()
+                .filter(|request| {
+                    request.url.contains("/trade/order?")
+                        || request.url.contains("/trade/fills-history?")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                terminal_reads.len(),
+                if path.contains("orders-pending") {
+                    0
+                } else {
+                    2
+                }
+            );
+            assert!(terminal_reads.iter().all(|request| {
+                request
+                    .headers
+                    .iter()
+                    .any(|(name, value)| name == "OK-ACCESS-KEY" && value == OKX_API_KEY)
+            }));
+            let view = store.view("user-a").unwrap();
+            if path.contains("orders-pending") {
+                assert_eq!(serde_json::to_value(view).unwrap(), before);
+            } else {
+                assert_eq!(view.account.account_id, account_id);
+                assert_eq!(view.reconciliation, ReconciliationState::Required);
+                assert_eq!(view.fills.len(), 1);
+                assert!(
+                    store
+                        .begin_order(
+                            &PaperOrderRequest {
+                                user_id: "user-a".into(),
+                                operation_id: "after-rotation".into(),
+                                instrument: "BTC-USDT".into(),
+                                side: "buy".into(),
+                                quantity: Decimal::ONE,
+                                limit_price: Decimal::ONE,
+                            },
+                            NOW_MS + 5
+                        )
+                        .is_err()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn paper_account_reconciliation_recovers_every_failed_write_boundary() {
+    // Balance, fill, open-order projection, and completion are independently
+    // durable stages; interruption at each must retain the risk gate.
+    for stage in 0..4 {
+        let (harness, store, account_id) = paper_reconciliation_harness();
+        harness.http.set_routes(terminal_fill_routes());
+        let database = harness.manager.database();
+        let trigger = if stage == 3 {
+            "CREATE TEMP TRIGGER reject_paper_write BEFORE DELETE ON paper_reconciliations
+             BEGIN SELECT RAISE(ABORT, 'injected completion failure'); END;"
+                .to_owned()
+        } else {
+            format!("CREATE TEMP TABLE paper_write_count(n INTEGER); INSERT INTO paper_write_count VALUES(0);
+                CREATE TEMP TRIGGER count_paper_write AFTER UPDATE ON paper_accounts
+                BEGIN UPDATE paper_write_count SET n=n+1; END;
+                CREATE TEMP TRIGGER reject_paper_write BEFORE UPDATE ON paper_accounts
+                WHEN (SELECT n FROM paper_write_count)>={stage}
+                BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END;")
+        };
+        database.lock().unwrap().execute_batch(&trigger).unwrap();
+        let error = store
+            .reconcile_provider_account(&harness.manager, "user-a", &account_id, NOW_MS + 3)
+            .unwrap_err();
+        assert!(error.contains("injected"));
+        let interrupted = store.view("user-a").unwrap();
+        assert_eq!(interrupted.reconciliation, ReconciliationState::Required);
+        assert_eq!(interrupted.fills.len(), if stage >= 2 { 1 } else { 0 });
+        assert!(
+            store
+                .begin_order(
+                    &PaperOrderRequest {
+                        user_id: "user-a".into(),
+                        operation_id: "during-interruption".into(),
+                        instrument: "BTC-USDT".into(),
+                        side: "buy".into(),
+                        quantity: Decimal::ONE,
+                        limit_price: Decimal::ONE,
+                    },
+                    NOW_MS + 4
+                )
+                .is_err()
+        );
+        database
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_paper_write;")
+            .unwrap();
+        drop(store);
+        let reopened = PaperTradingStore::open(database.clone()).unwrap();
+        let recovering = reopened.view("user-a").unwrap();
+        assert!(recovering.restart_required);
+        assert_eq!(recovering.reconciliation, ReconciliationState::Required);
+        assert_eq!(recovering.fills.len(), interrupted.fills.len());
+        for now_ms in [NOW_MS + 5, NOW_MS + 6] {
+            reopened
+                .reconcile_provider_account(&harness.manager, "user-a", &account_id, now_ms)
+                .unwrap();
+        }
+        let settled = reopened.view("user-a").unwrap();
+        assert_eq!(settled.reconciliation, ReconciliationState::Reconciled);
+        assert!(!settled.restart_required);
+        assert_eq!(settled.fills.len(), 1);
+        assert_eq!(settled.account.cash, Decimal::new(9005, 1));
+        assert_eq!(
+            settled.account.positions["BTC-USDT"].quantity,
+            Decimal::new(999, 3)
+        );
+        assert_eq!(settled.orders[0].status, OrderStatus::Filled);
+        assert_eq!(settled.reserved_cash, Decimal::ZERO);
+        let pending: bool = database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM paper_reconciliations WHERE user_id='user-a')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!pending);
+    }
+}
+
+#[test]
 fn alpaca_clock_skew_fails_closed() {
     let harness = harness(alpaca_ok_routes());
     harness.http.set_routes(vec![
@@ -1454,6 +1913,102 @@ fn alpaca_clock_skew_fails_closed() {
         error_code(harness.manager.save("user-a", alpaca_credentials(), NOW_MS)),
         "clock_skew"
     );
+}
+
+#[test]
+fn paper_account_reconciliation_checkpoint_survives_a_closed_sqlite_connection() {
+    let path = std::env::temp_dir().join(format!(
+        "adaq-reconciliation-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let (secrets, account_id) = {
+        let database = Arc::new(Mutex::new(Connection::open(&path).unwrap()));
+        let (harness, store, account_id) =
+            paper_reconciliation_harness_with_database(database.clone());
+        harness.http.set_routes(terminal_fill_routes());
+        for now_ms in [NOW_MS + 3, NOW_MS + 4] {
+            store
+                .reconcile_provider_account(&harness.manager, "user-a", &account_id, now_ms)
+                .unwrap();
+        }
+        assert_eq!(
+            store.view("user-a").unwrap().reconciliation,
+            ReconciliationState::Reconciled
+        );
+        database
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_completion BEFORE DELETE ON paper_reconciliations
+             BEGIN SELECT RAISE(ABORT, 'injected completion failure'); END;",
+            )
+            .unwrap();
+        assert!(
+            store
+                .reconcile_provider_account(&harness.manager, "user-a", &account_id, NOW_MS + 5)
+                .is_err()
+        );
+        let raw: String = database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT account_json FROM paper_accounts WHERE user_id='user-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let ledger: adaq_paper_trading_core::PaperLedger = serde_json::from_str(&raw).unwrap();
+        assert_eq!(ledger.reconciliation(), ReconciliationState::Reconciled);
+        assert_eq!(
+            store.view("user-a").unwrap().reconciliation,
+            ReconciliationState::Required
+        );
+        assert!(
+            store
+                .begin_order(
+                    &PaperOrderRequest {
+                        user_id: "user-a".into(),
+                        operation_id: "incomplete-matched-snapshot".into(),
+                        instrument: "BTC-USDT".into(),
+                        side: "buy".into(),
+                        quantity: Decimal::ONE,
+                        limit_price: Decimal::ONE,
+                    },
+                    NOW_MS + 6
+                )
+                .is_err()
+        );
+        (harness.secrets.clone(), account_id)
+    };
+    {
+        let database = Arc::new(Mutex::new(Connection::open(&path).unwrap()));
+        let pending: bool = database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM paper_reconciliations WHERE user_id='user-a')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(pending);
+        let manager = ConnectionManager::open(
+            database.clone(),
+            secrets,
+            MockHttp::new(terminal_fill_routes()),
+            Arc::new(TestRuntimeGuard::default()),
+        )
+        .unwrap();
+        let reopened = PaperTradingStore::open(database).unwrap();
+        assert!(reopened.view("user-a").unwrap().restart_required);
+        let settled = reopened
+            .reconcile_provider_account(&manager, "user-a", &account_id, NOW_MS + 7)
+            .unwrap();
+        assert_eq!(settled.reconciliation, ReconciliationState::Reconciled);
+        assert!(!settled.restart_required);
+        assert_eq!(settled.fills.len(), 1);
+    }
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

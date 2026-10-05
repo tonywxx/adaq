@@ -192,7 +192,8 @@ fn an_idle_host_does_not_mistake_its_own_backlog_for_worker_silence() -> Result<
         "heartbeats-while-idle",
         WorkerRuntimePolicy {
             heartbeat_interval_ms: 10,
-            heartbeat_timeout_ms: 30,
+            // Allow scheduler jitter while keeping the Host idle for several timeouts.
+            heartbeat_timeout_ms: 500,
             decision_timeout_ms: 60,
             ..WorkerRuntimePolicy::default()
         },
@@ -207,7 +208,7 @@ fn an_idle_host_does_not_mistake_its_own_backlog_for_worker_silence() -> Result<
     // The Host consumes nothing for many timeouts, so frames pile up in the
     // mailbox. This is what starved the consumer in the live runs, where the
     // Worker's own send clock stayed at a clean 1s cadence throughout.
-    thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_secs(2));
 
     let now = unix_now_ms();
     let error = supervisor

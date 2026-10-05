@@ -6386,39 +6386,24 @@ async fn paper_account_reconcile(
             "The OKX Demo connection has no validated account identity.".to_owned()
         })?;
         let now_ms = unix_now_ms();
-        let account = state.connections.with_okx_demo_reconciliation(
+        state.paper_trading.reconcile_provider_account(
+            &state.connections,
+            &user_id,
+            &account_id,
+            now_ms,
+        )?;
+        let account = state.paper_trading.recover_uncertain_order_absence(
             &user_id,
             now_ms,
-            |open_orders, balances| {
-                state.paper_trading.provider_balance(
+            |instrument, window_start_ms, checked_at_ms| {
+                state.connections.confirm_okx_demo_order_absence(
                     &user_id,
-                    account_id,
-                    open_orders,
-                    balances,
-                    now_ms,
-                    |instrument, provider_order_id, resolve_ms| {
-                        state.connections.resolve_okx_demo_terminal_order(
-                            &user_id,
-                            instrument,
-                            provider_order_id,
-                            resolve_ms,
-                        )
-                    },
-                )?;
-                state.paper_trading.recover_uncertain_order_absence(
-                    &user_id,
-                    now_ms,
-                    |instrument, window_start_ms, checked_at_ms| {
-                        state.connections.confirm_okx_demo_order_absence(
-                            &user_id,
-                            instrument,
-                            window_start_ms,
-                            checked_at_ms,
-                        )
-                    },
+                    instrument,
+                    window_start_ms,
+                    checked_at_ms,
                 )
             },
-        )??;
+        )?;
         app.state::<Arc<bot_operations::BotStore>>()
             .recover_stopped_workers(
                 &app.state::<Arc<bot_supervisor::BotSupervisor>>(),

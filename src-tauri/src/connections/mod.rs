@@ -299,6 +299,64 @@ pub(crate) struct ConnectionManager {
     alpaca_rate_gate: Arc<Mutex<Instant>>,
 }
 
+/// One Host-only read context. A Profile ID survives credential rotation, so
+/// the secret reference and validated account must remain part of its identity.
+pub(crate) struct OkxDemoReconciliation<'a> {
+    manager: &'a ConnectionManager,
+    user_id: &'a str,
+    profile: ProfileRow,
+    credential: TestCredential,
+}
+
+impl OkxDemoReconciliation<'_> {
+    pub(crate) fn resolve_terminal_order(
+        &self,
+        instrument: &str,
+        provider_order_id: &str,
+        now_ms: i64,
+    ) -> Result<(adaq_trading_crypto::Order, Vec<adaq_trading_crypto::Trade>), String> {
+        self.manager
+            .resolve_okx_demo_terminal_order_with_credential(
+                &self.credential,
+                instrument,
+                provider_order_id,
+                now_ms,
+            )
+    }
+
+    /// Fence the final local write against rotation without holding a database
+    /// lock during any provider request.
+    pub(crate) fn with_current_profile<T>(
+        &self,
+        operation: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let database = self
+            .manager
+            .database
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let current = query_profile(
+            &database,
+            self.user_id,
+            &self.manager.device_id,
+            Provider::OkxDemo,
+        )
+        .map_err(|error| error.to_string())?;
+        if !current.is_some_and(|current| {
+            current.profile_id == self.profile.profile_id
+                && current.secret_reference == self.profile.secret_reference
+                && current.account_id == self.profile.account_id
+                && current.environment == self.profile.environment
+                && current.status == ProfileStatus::Usable
+        }) {
+            return Err(
+                "The OKX Demo connection changed during reconciliation; reconcile again.".into(),
+            );
+        }
+        operation(&database)
+    }
+}
+
 impl ConnectionManager {
     /// Opens the Connection domain with production dependencies. Release
     /// builds use the OS secret store; Debug local builds use the read-only
@@ -591,6 +649,7 @@ impl ConnectionManager {
     /// Fill evidence of one provider-owned order. Absolute absence of per-trade
     /// records falls back to the order's own trade evidence rather than being
     /// treated as an order that never filled.
+    #[cfg(test)]
     pub(crate) fn resolve_okx_demo_terminal_order(
         &self,
         user_id: &str,
@@ -598,9 +657,36 @@ impl ConnectionManager {
         provider_order_id: &str,
         now_ms: i64,
     ) -> Result<(adaq_trading_crypto::Order, Vec<adaq_trading_crypto::Trade>), String> {
-        let remote = self.fetch_okx_demo_order(user_id, instrument, provider_order_id, now_ms)?;
-        let fills =
-            self.fetch_okx_demo_order_fills(user_id, instrument, provider_order_id, now_ms)?;
+        let credential = self.okx_demo_credential(user_id)?;
+        self.resolve_okx_demo_terminal_order_with_credential(
+            &credential,
+            instrument,
+            provider_order_id,
+            now_ms,
+        )
+    }
+
+    fn resolve_okx_demo_terminal_order_with_credential(
+        &self,
+        credential: &TestCredential,
+        instrument: &str,
+        provider_order_id: &str,
+        now_ms: i64,
+    ) -> Result<(adaq_trading_crypto::Order, Vec<adaq_trading_crypto::Trade>), String> {
+        let raw = self
+            .tester
+            .fetch_okx_demo_order(credential, instrument, provider_order_id, now_ms)
+            .map_err(|failure| failure.redacted_message)?;
+        let client = self.okx_demo_client(credential)?;
+        let remote = client.parse_order(&raw);
+        let fills = self
+            .tester
+            .fetch_okx_demo_order_fills(credential, instrument, provider_order_id, now_ms)
+            .map_err(|failure| failure.redacted_message)?;
+        let fills = fills
+            .into_iter()
+            .map(|fill| parse_okx_demo_trade(instrument, fill))
+            .collect::<Result<Vec<_>, _>>()?;
         let trades = if fills.is_empty() {
             remote.trades.clone().unwrap_or_default()
         } else {
@@ -612,16 +698,37 @@ impl ConnectionManager {
     pub(crate) fn with_okx_demo_reconciliation<T>(
         &self,
         user_id: &str,
+        account_id: &str,
         now_ms: i64,
-        operation: impl FnOnce(&[adaq_trading_crypto::Order], &adaq_trading_crypto::Balances) -> T,
+        operation: impl FnOnce(
+            &OkxDemoReconciliation<'_>,
+            &[adaq_trading_crypto::Order],
+            &adaq_trading_crypto::Balances,
+        ) -> Result<T, String>,
     ) -> Result<T, String> {
-        let credential = self.okx_demo_credential(user_id)?;
-        let open_orders = self.fetch_okx_demo_open_orders_with_credential(&credential, now_ms)?;
+        let (profile, credential) = self.okx_demo_profile_credential(user_id)?;
+        if account_id.trim().is_empty()
+            || profile.account_id.as_deref() != Some(account_id)
+            || profile.environment != Provider::OkxDemo.environment()
+        {
+            return Err(
+                "The OKX Demo connection does not match the reconciliation account.".into(),
+            );
+        }
+        let session = OkxDemoReconciliation {
+            manager: self,
+            user_id,
+            profile,
+            credential,
+        };
+        let credential = &session.credential;
+        let open_orders = self.fetch_okx_demo_open_orders_with_credential(credential, now_ms)?;
         let balances = self
             .tester
-            .fetch_okx_demo_balance(&credential, now_ms)
+            .fetch_okx_demo_balance(credential, now_ms)
             .map_err(|failure| failure.redacted_message)?;
-        Ok(operation(&open_orders, &balances))
+        session.with_current_profile(|_| Ok(()))?;
+        operation(&session, &open_orders, &balances)
     }
 
     fn fetch_okx_demo_open_orders_with_credential(
@@ -642,6 +749,14 @@ impl ConnectionManager {
     }
 
     fn okx_demo_credential(&self, user_id: &str) -> Result<TestCredential, String> {
+        self.okx_demo_profile_credential(user_id)
+            .map(|(_, credential)| credential)
+    }
+
+    fn okx_demo_profile_credential(
+        &self,
+        user_id: &str,
+    ) -> Result<(ProfileRow, TestCredential), String> {
         validate_user_id(user_id)?;
         let row = {
             let database = self.database.lock().map_err(|error| error.to_string())?;
@@ -674,11 +789,14 @@ impl ConnectionManager {
         else {
             return Err("The saved credential does not match the OKX Demo provider.".to_owned());
         };
-        Ok(TestCredential::OkxDemo {
-            api_key,
-            secret_key,
-            passphrase,
-        })
+        Ok((
+            row,
+            TestCredential::OkxDemo {
+                api_key,
+                secret_key,
+                passphrase,
+            },
+        ))
     }
 
     fn okx_demo_client(&self, credential: &TestCredential) -> Result<Okx, String> {

@@ -528,6 +528,12 @@ pub(crate) struct BotRuntimeAttempt {
     pub updated_at_ms: i64,
 }
 
+#[derive(Clone)]
+pub(crate) struct BotAttemptIdentity {
+    pub attempt_id: String,
+    pub bundle_identity: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PersistedBot {
@@ -1235,8 +1241,44 @@ impl BotStore {
         code: &str,
         detail: &str,
     ) -> Result<BotView, String> {
-        self.mutate(user_id, bot_id, |bot| {
-            let attempt = current_attempt_mut(bot)?;
+        self.fault_for_attempt(user_id, bot_id, code, detail, None)
+            .map(|(view, _)| view)
+    }
+
+    fn fault_for_attempt(
+        &self,
+        user_id: &str,
+        bot_id: &str,
+        code: &str,
+        detail: &str,
+        identity: Option<&BotAttemptIdentity>,
+    ) -> Result<(BotView, bool), String> {
+        let mut database = self.database.lock().map_err(|error| error.to_string())?;
+        let mut bot = self.load_record_locked(&database, user_id, bot_id)?;
+        let previous_updated_at_ms = bot.updated_at_ms;
+        {
+            let attempt = current_attempt_mut(&mut bot)?;
+            if identity.is_some_and(|identity| {
+                identity.attempt_id != attempt.attempt_id
+                    || identity.bundle_identity != attempt.bundle_identity
+            }) {
+                return Ok((bot.view(), false));
+            }
+            let code = safe_code(code);
+            let detail = safe_detail(detail);
+            if matches!(
+                attempt.state,
+                LifecycleState::Faulted | LifecycleState::Stopped
+            ) && attempt.reconciliation_required
+                && attempt.evidence.iter().any(|evidence| {
+                    evidence.kind == "recovery"
+                        && evidence.code == code
+                        && evidence.detail == detail
+                        && evidence.related_id.as_deref() == Some(attempt.attempt_id.as_str())
+                })
+            {
+                return Ok((bot.view(), true));
+            }
             if attempt.state != LifecycleState::Faulted && attempt.state != LifecycleState::Stopped
             {
                 let from = attempt.state;
@@ -1245,25 +1287,21 @@ impl BotStore {
                     from,
                     to: LifecycleState::Faulted,
                     actor: "host".into(),
-                    reason: safe_code(code),
+                    reason: code.clone(),
                 });
             }
             attempt.reconciliation_required = true;
-            let now = adaq_bot_runtime::unix_now_ms();
+            let now = adaq_bot_runtime::unix_now_ms()
+                .max(previous_updated_at_ms.saturating_add(1))
+                .max(attempt.updated_at_ms.saturating_add(1));
             let attempt_id = attempt.attempt_id.clone();
-            push_evidence(
-                attempt,
-                "recovery",
-                &safe_code(code),
-                &safe_detail(detail),
-                Some(&attempt_id),
-                now,
-            );
+            push_evidence(attempt, "recovery", &code, &detail, Some(&attempt_id), now);
             attempt.updated_at_ms = now;
             bot.state = attempt.state;
             bot.updated_at_ms = now;
-            Ok(())
-        })
+        }
+        self.save_record_locked(&mut database, &bot)?;
+        Ok((bot.view(), true))
     }
 
     pub(crate) fn record_worker_fault(
@@ -1272,9 +1310,10 @@ impl BotStore {
         bot_id: &str,
         code: &str,
         detail: &str,
-    ) -> Result<(), String> {
-        let _ = self.fault(user_id, bot_id, code, detail)?;
-        Ok(())
+        identity: &BotAttemptIdentity,
+    ) -> Result<bool, String> {
+        self.fault_for_attempt(user_id, bot_id, code, detail, Some(identity))
+            .map(|(_, applied)| applied)
     }
 
     pub(crate) fn freeze_all(&self, user_id: &str, detail: &str) -> Result<Vec<String>, String> {
@@ -1311,6 +1350,40 @@ impl BotStore {
             bot.updated_at_ms = now;
             Ok(())
         })
+    }
+
+    pub(crate) fn record_attempt_evidence(
+        &self,
+        user_id: &str,
+        bot_id: &str,
+        identity: &BotAttemptIdentity,
+        kind: &str,
+        code: &str,
+        detail: &str,
+    ) -> Result<BotView, String> {
+        // The general mutator advances the current Attempt's revision. Worker
+        // evidence may belong to a retired Attempt and must leave that revision intact.
+        let mut database = self.database.lock().map_err(|error| error.to_string())?;
+        let mut bot = self.load_record_locked(&database, user_id, bot_id)?;
+        let previous_updated_at_ms = bot.updated_at_ms;
+        {
+            let attempt = bot
+                .attempts
+                .iter_mut()
+                .find(|attempt| {
+                    attempt.attempt_id == identity.attempt_id
+                        && attempt.bundle_identity == identity.bundle_identity
+                })
+                .ok_or_else(|| "Worker event Runtime Attempt identity was not found.".to_owned())?;
+            let now = adaq_bot_runtime::unix_now_ms()
+                .max(previous_updated_at_ms.saturating_add(1))
+                .max(attempt.updated_at_ms.saturating_add(1));
+            push_evidence(attempt, kind, code, detail, Some(&identity.attempt_id), now);
+            attempt.updated_at_ms = now;
+            bot.updated_at_ms = now;
+        }
+        self.save_record_locked(&mut database, &bot)?;
+        Ok(bot.view())
     }
 
     pub(crate) fn record_decision(
@@ -5488,37 +5561,24 @@ fn reconcile_account(
         return Err("The bound OKX Demo profile is not usable for this account.".into());
     }
     let now_ms = adaq_bot_runtime::unix_now_ms();
-    local
-        .connections
-        .with_okx_demo_reconciliation(user_id, now_ms, |open_orders, client| {
-            local.paper_trading.provider_balance(
+    local.paper_trading.reconcile_provider_account(
+        &local.connections,
+        user_id,
+        &bundle.account_id,
+        now_ms,
+    )?;
+    local.paper_trading.recover_uncertain_order_absence(
+        user_id,
+        now_ms,
+        |instrument, window_start_ms, checked_at_ms| {
+            local.connections.confirm_okx_demo_order_absence(
                 user_id,
-                bundle.account_id.clone(),
-                open_orders,
-                client,
-                now_ms,
-                |instrument, provider_order_id, resolve_ms| {
-                    local.connections.resolve_okx_demo_terminal_order(
-                        user_id,
-                        instrument,
-                        provider_order_id,
-                        resolve_ms,
-                    )
-                },
-            )?;
-            local.paper_trading.recover_uncertain_order_absence(
-                user_id,
-                now_ms,
-                |instrument, window_start_ms, checked_at_ms| {
-                    local.connections.confirm_okx_demo_order_absence(
-                        user_id,
-                        instrument,
-                        window_start_ms,
-                        checked_at_ms,
-                    )
-                },
+                instrument,
+                window_start_ms,
+                checked_at_ms,
             )
-        })?
+        },
+    )
 }
 
 fn require_reconciled_account(
@@ -6577,7 +6637,7 @@ fn flatten_order_quantity(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use adaq_bot_runtime::{
         DeploymentBundleInput, StrategyWorld, WORKER_ARTIFACT_NAME, WORKER_ARTIFACT_VERSION,
@@ -6723,7 +6783,7 @@ mod tests {
         ));
     }
 
-    fn bundle(bot_id: &str, account_id: &str) -> BotDeploymentBundle {
+    pub(crate) fn bundle(bot_id: &str, account_id: &str) -> BotDeploymentBundle {
         let research_risk_policy = ResearchRiskPolicy {
             policy_id: "risk".into(),
             max_instrument_weight: Decimal::ONE,

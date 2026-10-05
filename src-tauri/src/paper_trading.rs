@@ -120,7 +120,11 @@ impl PaperTradingStore {
                     decided_at_ms INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS paper_risk_decisions_user_time
-                    ON paper_risk_decisions(user_id, decided_at_ms);",
+                    ON paper_risk_decisions(user_id, decided_at_ms);
+                CREATE TABLE IF NOT EXISTS paper_reconciliations (
+                    user_id TEXT PRIMARY KEY,
+                    started_at_ms INTEGER NOT NULL
+                );",
             )
             .map_err(|error| error.to_string())?;
         let rows: Vec<(String, String, String)> = {
@@ -162,12 +166,16 @@ impl PaperTradingStore {
     }
 
     pub(crate) fn view(&self, user_id: &str) -> Result<PaperAccountView, String> {
-        let (ledger, execution) = self.load(user_id)?;
+        let (ledger, execution, pending) = self.load_with_reconciliation(user_id)?;
         Ok(PaperAccountView {
             account: ledger.account().clone(),
             reserved_cash: ledger.reserved_cash(),
             buying_power: ledger.buying_power(),
-            reconciliation: ledger.reconciliation(),
+            reconciliation: if pending {
+                ReconciliationState::Required
+            } else {
+                ledger.reconciliation()
+            },
             orders: ledger.orders().cloned().collect(),
             fills: ledger.fills().to_vec(),
             provider_evidence: execution.evidence().cloned().collect(),
@@ -226,10 +234,13 @@ impl PaperTradingStore {
             .map_err(|error| format!("paper order lock failed: {error}"))?;
         let mut ledger;
         let mut execution;
-        match self.load(&request.user_id) {
-            Ok((loaded_ledger, loaded_execution)) => {
+        match self.load_with_reconciliation(&request.user_id) {
+            Ok((loaded_ledger, loaded_execution, pending)) => {
                 ledger = loaded_ledger;
                 execution = loaded_execution;
+                if pending {
+                    ledger.require_reconciliation();
+                }
             }
             Err(_) => return Err("The OKX Demo account must be reconciled before ordering.".into()),
         }
@@ -362,7 +373,8 @@ impl PaperTradingStore {
     ) -> Result<PaperAccountView, String> {
         let _gate = self.order_gate.lock().map_err(|error| error.to_string())?;
         let (ledger, mut execution) = self.load(user_id)?;
-        if ledger.reconciliation() != ReconciliationState::Reconciled
+        if self.reconciliation_pending(user_id)?
+            || ledger.reconciliation() != ReconciliationState::Reconciled
             || now_ms.saturating_sub(ledger.account().observed_at_ms) > 60_000
             || ledger.account().observed_at_ms > now_ms
             || ledger.orders().any(|order| {
@@ -1281,10 +1293,12 @@ impl PaperTradingStore {
             .map_err(|error| error.to_string())?;
         execution.record_reconciliation(format!("reconcile-{now_ms}"), matches, now_ms);
         self.save(user_id, &ledger, &execution, now_ms)?;
-        self.restarted_users
-            .lock()
-            .map_err(|error| error.to_string())?
-            .remove(user_id);
+        if !self.reconciliation_pending(user_id)? {
+            self.restarted_users
+                .lock()
+                .map_err(|error| error.to_string())?
+                .remove(user_id);
+        }
         self.view(user_id)
     }
 
@@ -1325,18 +1339,56 @@ impl PaperTradingStore {
     }
 
     fn load(&self, user_id: &str) -> Result<(PaperLedger, PaperExecution), String> {
+        self.load_with_reconciliation(user_id)
+            .map(|(ledger, execution, _)| (ledger, execution))
+    }
+
+    fn load_with_reconciliation(
+        &self,
+        user_id: &str,
+    ) -> Result<(PaperLedger, PaperExecution, bool), String> {
         let database = self.database.lock().map_err(|error| error.to_string())?;
         let row = database
             .query_row(
-                "SELECT account_json, execution_json FROM paper_accounts WHERE user_id = ?1",
+                "SELECT account_json, execution_json,
+                    EXISTS(SELECT 1 FROM paper_reconciliations WHERE user_id=?1)
+                 FROM paper_accounts WHERE user_id = ?1",
                 [user_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, bool>(2)?,
+                    ))
+                },
             )
             .map_err(|error| format!("paper account is unavailable: {error}"))?;
         let ledger = serde_json::from_str(&row.0).map_err(|error| error.to_string())?;
         let execution: PaperExecution =
             serde_json::from_str(&row.1).map_err(|error| error.to_string())?;
-        Ok((ledger, execution))
+        Ok((ledger, execution, row.2))
+    }
+
+    fn reconciliation_pending(&self, user_id: &str) -> Result<bool, String> {
+        self.database
+            .lock()
+            .map_err(|error| error.to_string())?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM paper_reconciliations WHERE user_id=?1)",
+                [user_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    fn complete_reconciliation(database: &Connection, user_id: &str) -> Result<(), String> {
+        database
+            .execute(
+                "DELETE FROM paper_reconciliations WHERE user_id=?1",
+                [user_id],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     fn has_account(&self, user_id: &str) -> Result<bool, String> {
@@ -2965,6 +3017,40 @@ impl PaperTradingStore {
             .map_err(|error| error.to_string())
     }
 
+    /// A successful observation may still require reconciliation. Recovery and
+    /// caller-specific readiness checks remain explicit.
+    pub(crate) fn reconcile_provider_account(
+        &self,
+        connections: &crate::connections::ConnectionManager,
+        user_id: &str,
+        account_id: &str,
+        now_ms: i64,
+    ) -> Result<PaperAccountView, String> {
+        connections.with_okx_demo_reconciliation(
+            user_id,
+            account_id,
+            now_ms,
+            |session, open_orders, balances| {
+                self.provider_balance_with_completion(
+                    user_id,
+                    account_id.to_owned(),
+                    open_orders,
+                    balances,
+                    now_ms,
+                    |instrument, provider_order_id, resolve_ms| {
+                        session.resolve_terminal_order(instrument, provider_order_id, resolve_ms)
+                    },
+                    || {
+                        session.with_current_profile(|database| {
+                            Self::complete_reconciliation(database, user_id)
+                        })
+                    },
+                )
+            },
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn provider_balance(
         &self,
         user_id: &str,
@@ -2981,7 +3067,54 @@ impl PaperTradingStore {
             String,
         >,
     ) -> Result<PaperAccountView, String> {
+        self.provider_balance_with_completion(
+            user_id,
+            account_id,
+            open_orders,
+            balances,
+            now_ms,
+            resolve_terminal,
+            || {
+                let database = self.database.lock().map_err(|error| error.to_string())?;
+                Self::complete_reconciliation(&database, user_id)
+            },
+        )
+    }
+
+    fn provider_balance_with_completion(
+        &self,
+        user_id: &str,
+        account_id: String,
+        open_orders: &[adaq_trading_crypto::Order],
+        balances: &adaq_trading_crypto::Balances,
+        now_ms: i64,
+        resolve_terminal: impl Fn(
+            &str,
+            &str,
+            i64,
+        ) -> Result<
+            (adaq_trading_crypto::Order, Vec<adaq_trading_crypto::Trade>),
+            String,
+        >,
+        complete: impl FnOnce() -> Result<(), String>,
+    ) -> Result<PaperAccountView, String> {
         let snapshot = Self::snapshot_from_balance(user_id, account_id, balances, now_ms)?;
+        let _gate = self
+            .order_gate
+            .try_lock()
+            .map_err(|_| "The Paper account is busy; retry reconciliation.".to_owned())?;
+        // Every intermediate write stays risk-blocked, including when its next
+        // write fails. The marker survives a Host restart and is cleared only
+        // after the final write and Connection identity fence both succeed.
+        self.database
+            .lock()
+            .map_err(|error| error.to_string())?
+            .execute(
+                "INSERT INTO paper_reconciliations(user_id, started_at_ms) VALUES (?1, ?2)
+                ON CONFLICT(user_id) DO UPDATE SET started_at_ms=excluded.started_at_ms",
+                params![user_id, now_ms],
+            )
+            .map_err(|error| error.to_string())?;
         if self.has_account(user_id)? {
             self.recover_bot_order_bindings(user_id, now_ms)?;
             self.reconcile(user_id, snapshot, now_ms)?;
@@ -2995,16 +3128,19 @@ impl PaperTradingStore {
         for order in self.vanished_provider_orders(user_id, open_orders)? {
             match resolve_terminal(&order.instrument, &order.provider_order_id, now_ms) {
                 Ok((remote, trades)) => {
-                    if self
-                        .sync_provider_order_with_trades(
-                            user_id,
-                            &order.operation_id,
-                            &remote,
-                            &trades,
-                            now_ms,
-                        )
-                        .is_err()
-                    {
+                    if let Err(error) = self.sync_provider_order_with_trades(
+                        user_id,
+                        &order.operation_id,
+                        &remote,
+                        &trades,
+                        now_ms,
+                    ) {
+                        self.require_reconciliation(user_id, now_ms)
+                            .map_err(|retention| {
+                                format!(
+                                    "{error}; reconciliation state was not retained: {retention}"
+                                )
+                            })?;
                         protected_order_ids.push(order.local_order_id);
                     }
                 }
@@ -3014,6 +3150,12 @@ impl PaperTradingStore {
                 }
             }
         }
-        self.record_open_orders(user_id, &open_orders, &protected_order_ids, now_ms)
+        self.record_open_orders(user_id, &open_orders, &protected_order_ids, now_ms)?;
+        complete()?;
+        self.restarted_users
+            .lock()
+            .map_err(|error| error.to_string())?
+            .remove(user_id);
+        self.view(user_id)
     }
 }
