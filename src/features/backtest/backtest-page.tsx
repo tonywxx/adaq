@@ -1,3 +1,4 @@
+import { PaginatedList } from "@/components/record-pagination";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -56,7 +57,7 @@ import type {
 	UniverseSnapshot,
 } from "./backtest-types";
 import { formatDecimal } from "./format-decimal";
-const EXECUTION_PAGE_SIZE = 100;
+const EXECUTION_PAGE_SIZE = 10;
 const RUN_HISTORY_PAGE_SIZE = 10;
 const SNAPSHOT_PAGE_SIZE = 10;
 const BACKTEST_STAGES = [
@@ -1534,29 +1535,22 @@ function ParameterField({
 	);
 }
 function DecisionTable({ run }: { run: BacktestRun }) {
-	const entries = [
-		...run.decisions.map((decision) => ({
-			...decision,
-			type: "Target Decision" as const,
-			description: `${
-				decision.targetExposure === "0"
-					? "Flat target exposure (not a Run Pause)"
-					: `Target exposure ${formatDecimal(decision.targetExposure)}`
-			} · ${
-				run.provenance
-					? decisionSignalEvidence(
-							run.provenance.featurePlanJson,
-							decision.openTimeMs,
-						)
-					: "Legacy Run signal evidence is unavailable."
-			}`,
-		})),
-		...run.pauses.map((pause) => ({
-			...pause,
-			type: "Run Pause" as const,
-			description: pauseDescription(pause.reason),
-		})),
-	].sort((left, right) => left.openTimeMs - right.openTimeMs);
+	const entries = useMemo(
+		() =>
+			[
+				...run.decisions.map((decision) => ({
+					openTimeMs: decision.openTimeMs,
+					decision,
+					pause: undefined,
+				})),
+				...run.pauses.map((pause) => ({
+					openTimeMs: pause.openTimeMs,
+					pause,
+					decision: undefined,
+				})),
+			].sort((left, right) => left.openTimeMs - right.openTimeMs),
+		[run],
+	);
 	return (
 		<Card>
 			<CardHeader>
@@ -1573,13 +1567,25 @@ function DecisionTable({ run }: { run: BacktestRun }) {
 							</tr>
 						</thead>
 						<tbody>
-							{entries.map((entry) => (
-								<tr key={`${entry.type}:${entry.openTimeMs}:${entry.description}`}>
-									<td>{new Date(entry.openTimeMs).toLocaleString()}</td>
-									<td>{entry.type}</td>
-									<td>{entry.description}</td>
-								</tr>
-							))}
+							<PaginatedList
+								items={entries}
+								label="recordPagination.records"
+								tableColumns={3}
+							>
+								{(entry) => {
+									const type = entry.decision ? "Target Decision" : "Run Pause";
+									const description = entry.decision
+										? `${entry.decision.targetExposure === "0" ? "Flat target exposure (not a Run Pause)" : `Target exposure ${formatDecimal(entry.decision.targetExposure)}`} · ${run.provenance ? decisionSignalEvidence(run.provenance.featurePlanJson, entry.openTimeMs) : "Legacy Run signal evidence is unavailable."}`
+										: pauseDescription(entry.pause!.reason);
+									return (
+										<tr key={`${type}:${entry.openTimeMs}:${description}`}>
+											<td>{new Date(entry.openTimeMs).toLocaleString()}</td>
+											<td>{type}</td>
+											<td>{description}</td>
+										</tr>
+									);
+								}}
+							</PaginatedList>
 						</tbody>
 					</table>
 				) : (

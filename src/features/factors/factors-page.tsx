@@ -1,3 +1,4 @@
+import { PaginatedList } from "@/components/record-pagination";
 import { invoke } from "@tauri-apps/api/core";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import {
@@ -501,43 +502,49 @@ function LineageDetails({ view }: { view: FactorLineageView }) {
 						</tr>
 					</thead>
 					<tbody>
-						{view.trials.map((trial) => (
-							<tr key={textAt(trial, "trialId")} className="border-b">
-								<td className="py-2 pr-3 font-mono">
-									{shortFactorHash(textAt(trial, "trialId"))}
-								</td>
-								<td className="py-2 pr-3">
-									<Badge
-										variant={
-											textAt(trial, "status") === "completed" ? "secondary" : "outline"
-										}
-									>
-										{localizedFactorCode(textAt(trial, "status"), t)}
-									</Badge>
-								</td>
-								<td className="py-2 pr-3 font-mono">
-									{shortFactorHash(valueAt(trial, "reportHash"))}
-								</td>
-								<td className="py-2 pr-3 font-mono">
-									{
-										metricObservation(
-											(valueAt(trial, "holmAdjusted") ?? {}) as FactorJson,
-										).value
-									}
-									<span className="ml-2 text-muted-foreground">
-										{localizedFactorReason(
+						<PaginatedList
+							items={view.trials}
+							label="recordPagination.records"
+							tableColumns={5}
+						>
+							{(trial) => (
+								<tr key={textAt(trial, "trialId")} className="border-b">
+									<td className="py-2 pr-3 font-mono">
+										{shortFactorHash(textAt(trial, "trialId"))}
+									</td>
+									<td className="py-2 pr-3">
+										<Badge
+											variant={
+												textAt(trial, "status") === "completed" ? "secondary" : "outline"
+											}
+										>
+											{localizedFactorCode(textAt(trial, "status"), t)}
+										</Badge>
+									</td>
+									<td className="py-2 pr-3 font-mono">
+										{shortFactorHash(valueAt(trial, "reportHash"))}
+									</td>
+									<td className="py-2 pr-3 font-mono">
+										{
 											metricObservation(
 												(valueAt(trial, "holmAdjusted") ?? {}) as FactorJson,
-											).reason,
-											t,
-										)}
-									</span>
-								</td>
-								<td className="py-2 text-muted-foreground">
-									{textAt(trial, "diagnostic")}
-								</td>
-							</tr>
-						))}
+											).value
+										}
+										<span className="ml-2 text-muted-foreground">
+											{localizedFactorReason(
+												metricObservation(
+													(valueAt(trial, "holmAdjusted") ?? {}) as FactorJson,
+												).reason,
+												t,
+											)}
+										</span>
+									</td>
+									<td className="py-2 text-muted-foreground">
+										{textAt(trial, "diagnostic")}
+									</td>
+								</tr>
+							)}
+						</PaginatedList>
 					</tbody>
 				</table>
 			</div>
@@ -1281,7 +1288,7 @@ function DatasetInspector({
 			setLoading(true);
 			setError(undefined);
 			try {
-				const page = await adapter.datasetRows(userId, datasetId, next, 50, filter);
+				const page = await adapter.datasetRows(userId, datasetId, next, 10, filter);
 				if (version !== requestVersion.current) return;
 				setRows(page.rows);
 				setOffset(page.offset);
@@ -1450,7 +1457,7 @@ function DatasetInspector({
 									size="sm"
 									variant="outline"
 									disabled={offset === 0}
-									onClick={() => void loadRows(Math.max(0, offset - 50), instrument)}
+									onClick={() => void loadRows(Math.max(0, offset - 10), instrument)}
 								>
 									{t("factors.datasets.previous")}
 								</Button>
@@ -3708,19 +3715,25 @@ function DecisionsWorkspace({
 										})}
 									</p>
 									<ul className="grid gap-2 sm:grid-cols-2">
-										{lineage.trials.map((trial) => (
-											<li
-												key={textAt(trial, "trialId")}
-												className="flex items-center justify-between rounded-md border px-3 py-2 text-xs"
-											>
-												<span className="font-mono">
-													{shortFactorHash(textAt(trial, "trialId"))}
-												</span>
-												<Badge variant="outline">
-													{localizedFactorCode(textAt(trial, "status"), t)}
-												</Badge>
-											</li>
-										))}
+										<PaginatedList
+											items={lineage.trials}
+											label="recordPagination.records"
+											list
+										>
+											{(trial) => (
+												<li
+													key={textAt(trial, "trialId")}
+													className="flex items-center justify-between rounded-md border px-3 py-2 text-xs"
+												>
+													<span className="font-mono">
+														{shortFactorHash(textAt(trial, "trialId"))}
+													</span>
+													<Badge variant="outline">
+														{localizedFactorCode(textAt(trial, "status"), t)}
+													</Badge>
+												</li>
+											)}
+										</PaginatedList>
 									</ul>
 									<EvidenceJson
 										label={t("factors.common.rawEvidence")}
@@ -3773,14 +3786,19 @@ function DecisionsWorkspace({
 								}}
 							>
 								<option value="">{t("factors.decisions.noPriorDecision")}</option>
-								{matchingDecisions.map((item) => {
-									const id = textAt(item.decision, "decisionId", "");
-									return (
-										<option key={id} value={id}>
-											{identifierLabel(id, t("identifiers.factorDecision"))}
-										</option>
-									);
-								})}
+								<PaginatedList
+									items={matchingDecisions}
+									label="recordPagination.records"
+								>
+									{(item) => {
+										const id = textAt(item.decision, "decisionId", "");
+										return (
+											<option key={id} value={id}>
+												{identifierLabel(id, t("identifiers.factorDecision"))}
+											</option>
+										);
+									}}
+								</PaginatedList>
 							</select>
 						</div>
 					</div>
@@ -3978,7 +3996,7 @@ function DecisionsWorkspace({
 							<PageControls
 								page={libraryPage.data?.page ?? 1}
 								total={libraryPage.data?.total ?? 0}
-								pageSize={libraryPage.data?.pageSize ?? 50}
+								pageSize={libraryPage.data?.pageSize ?? 10}
 								onPage={(page) => void libraryPage.load(page)}
 							/>
 						</div>

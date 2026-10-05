@@ -532,6 +532,13 @@ test("blocks raw materialization without context and inspects completed Dataset 
 		(inspectButton as HTMLElement).click();
 	});
 	await settle();
+	await act(async () => {
+		for (const panel of mounted.container.querySelectorAll("details")) {
+			panel.open = true;
+			panel.dispatchEvent(new Event("toggle"));
+		}
+	});
+	await settle();
 	expect(mounted.container.textContent).toContain("dataset-1");
 	expect(mounted.container.textContent).toContain("okx:BTC-USDT");
 
@@ -663,7 +670,21 @@ test("starts evaluation from Host-owned Candidate and Dataset selections", async
 	});
 	await settle();
 
+	await act(async () => {
+		for (const panel of mounted.container.querySelectorAll("details")) {
+			panel.open = true;
+			panel.dispatchEvent(new Event("toggle"));
+		}
+	});
+	await settle();
 	expect(mounted.container.textContent).toContain(candidateHash);
+	await act(async () => {
+		for (const panel of mounted.container.querySelectorAll("details")) {
+			panel.open = true;
+			panel.dispatchEvent(new Event("toggle"));
+		}
+	});
+	await settle();
 	expect(mounted.container.textContent).toContain("dataset-1");
 	const startButton = Array.from(
 		mounted.container.querySelectorAll("button"),
@@ -1135,6 +1156,13 @@ test("runs Gate 6 from a current Component Eligible Decision to Library inspecti
 	expect(mounted.container.textContent).toContain("feature-1");
 	expect(mounted.container.textContent).toContain("snapshot-1");
 	expect(mounted.container.textContent).toContain("universe-1");
+	await act(async () => {
+		for (const panel of mounted.container.querySelectorAll("details")) {
+			panel.open = true;
+			panel.dispatchEvent(new Event("toggle"));
+		}
+	});
+	await settle();
 	expect(mounted.container.textContent).toContain(secondReportHash);
 	expect(
 		mounted.container.querySelector('label[for="factor-gate6-decision"]'),
@@ -1195,6 +1223,13 @@ test("runs Gate 6 from a current Component Eligible Decision to Library inspecti
 		"user-1",
 		failedQualificationAttempt.attemptId,
 	);
+	await act(async () => {
+		for (const panel of mounted.container.querySelectorAll("details")) {
+			panel.open = true;
+			panel.dispatchEvent(new Event("toggle"));
+		}
+	});
+	await settle();
 	expect(mounted.container.textContent).toContain(packageHash);
 	expect(mounted.container.textContent).toContain("sourceSha256");
 	expect(mounted.container.textContent).toContain("inputIdentitySha256");
@@ -1210,6 +1245,13 @@ test("runs Gate 6 from a current Component Eligible Decision to Library inspecti
 	expect(mounted.container.textContent).toContain(
 		"Gate 6 · 资格认定 Factor Decision",
 	);
+	await act(async () => {
+		for (const panel of mounted.container.querySelectorAll("details")) {
+			panel.open = true;
+			panel.dispatchEvent(new Event("toggle"));
+		}
+	});
+	await settle();
 	expect(mounted.container.textContent).toContain(packageHash);
 	await act(async () => i18n.changeLanguage(previousLocale));
 

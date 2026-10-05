@@ -58,22 +58,21 @@ export function useFactorPage<T>(
 				if (totalPages > MAX_FACTOR_PAGE_REQUESTS) {
 					throw new Error("Factor page count exceeds the safe limit");
 				}
-				const next =
-					allPages && page === 1 && totalPages > 1
-						? {
-								...first,
-								items: [
-									...first.items,
-									...(
-										await Promise.all(
-											Array.from({ length: totalPages - 1 }, (_, index) =>
-												loadPage(userId, index + 2),
-											),
-										)
-									).flatMap((result) => result.items),
-								],
-							}
-						: first;
+				const items = [...first.items];
+				// Catalog selectors need complete metadata; keep their reads bounded
+				// so they cannot flood IPC or continue queuing after navigation.
+				for (let nextPage = 2; nextPage <= totalPages; nextPage += 4) {
+					if (current !== version.current) return;
+					const batch = await Promise.all(
+						Array.from(
+							{ length: Math.min(4, totalPages - nextPage + 1) },
+							(_, index) => loadPage(userId, nextPage + index),
+						),
+					);
+					items.push(...batch.flatMap((result) => result.items));
+					await afterPaint();
+				}
+				const next = { ...first, items };
 				if (current !== version.current) return;
 				setData(next);
 				writeFactorCache(userId, resource, next);

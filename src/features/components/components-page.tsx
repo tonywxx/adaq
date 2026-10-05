@@ -1,3 +1,4 @@
+import { PaginatedList } from "@/components/record-pagination";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -444,17 +445,23 @@ function ComponentDetail({
 				<DetailSection title="Parameters">
 					{component.parameters.length ? (
 						<ul className="space-y-2">
-							{component.parameters.map((parameter) => (
-								<li className="rounded-md border p-3 text-sm" key={parameter.name}>
-									<p className="font-medium">{parameter.name}</p>
-									<p className="text-muted-foreground">
-										{parameter.parameterType} · default {parameter.defaultValue}
-										{parameter.allowedValues.length
-											? ` · allowed ${parameter.allowedValues.join(", ")}`
-											: ""}
-									</p>
-								</li>
-							))}
+							<PaginatedList
+								items={component.parameters}
+								label="recordPagination.records"
+								list
+							>
+								{(parameter) => (
+									<li className="rounded-md border p-3 text-sm" key={parameter.name}>
+										<p className="font-medium">{parameter.name}</p>
+										<p className="text-muted-foreground">
+											{parameter.parameterType} · default {parameter.defaultValue}
+											{parameter.allowedValues.length
+												? ` · allowed ${parameter.allowedValues.join(", ")}`
+												: ""}
+										</p>
+									</li>
+								)}
+							</PaginatedList>
 						</ul>
 					) : (
 						<EmptyContract label="No parameters declared." />
@@ -464,14 +471,20 @@ function ComponentDetail({
 				<DetailSection title="Feature Slots">
 					{component.featureSlots.length ? (
 						<ol className="space-y-2">
-							{component.featureSlots.map((slot) => (
-								<li className="rounded-md border p-3" key={slot.name}>
-									<p className="text-sm font-medium">{slot.name}</p>
-									<pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">
-										{JSON.stringify(slot.source, null, 2)}
-									</pre>
-								</li>
-							))}
+							<PaginatedList
+								items={component.featureSlots}
+								label="recordPagination.records"
+								list
+							>
+								{(slot) => (
+									<li className="rounded-md border p-3" key={slot.name}>
+										<p className="text-sm font-medium">{slot.name}</p>
+										<pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">
+											{JSON.stringify(slot.source, null, 2)}
+										</pre>
+									</li>
+								)}
+							</PaginatedList>
 						</ol>
 					) : (
 						<EmptyContract label="No Feature Slots declared." />
@@ -481,18 +494,24 @@ function ComponentDetail({
 				<DetailSection title="Factor dependencies">
 					{component.dependencies.length ? (
 						<ul className="space-y-2">
-							{component.dependencies.map((dependency) => (
-								<li className="rounded-md border p-3 text-sm" key={dependency.alias}>
-									<p className="font-medium">{dependency.alias}</p>
-									<p className="break-all font-mono text-xs text-muted-foreground">
-										<IdentifierDisplay
-											id={dependency.componentId}
-											label={t("identifiers.component")}
-										/>{" "}
-										· {dependency.version}
-									</p>
-								</li>
-							))}
+							<PaginatedList
+								items={component.dependencies}
+								label="recordPagination.records"
+								list
+							>
+								{(dependency) => (
+									<li className="rounded-md border p-3 text-sm" key={dependency.alias}>
+										<p className="font-medium">{dependency.alias}</p>
+										<p className="break-all font-mono text-xs text-muted-foreground">
+											<IdentifierDisplay
+												id={dependency.componentId}
+												label={t("identifiers.component")}
+											/>{" "}
+											· {dependency.version}
+										</p>
+									</li>
+								)}
+							</PaginatedList>
 						</ul>
 					) : (
 						<EmptyContract label="No external Factor dependencies declared." />
@@ -502,37 +521,43 @@ function ComponentDetail({
 				<DetailSection title="Outputs">
 					{component.modelOutputs?.length ? (
 						<ul className="space-y-2">
-							{component.modelOutputs.map((output) => (
-								<li className="rounded-md border p-3 text-sm" key={output.name}>
-									<p className="font-medium">{output.name}</p>
-									<p className="text-muted-foreground">
-										{readableModelKind(output.predictionKind.kind)} · {output.horizonBars}{" "}
-										Bar horizon
-									</p>
-									<p className="text-muted-foreground">
-										Target:{" "}
-										{readableModelKind(
-											String(
-												output.forecastTarget.target ??
-													output.forecastTarget.id ??
-													output.forecastTarget.kind,
-											),
-										)}{" "}
-										· Scale: {readableModelKind(String(output.valueScale.kind))}
-									</p>
-									<pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">
-										{JSON.stringify(
-											{
-												predictionKind: output.predictionKind,
-												target: output.forecastTarget,
-												scale: output.valueScale,
-											},
-											null,
-											2,
-										)}
-									</pre>
-								</li>
-							))}
+							<PaginatedList
+								items={component.modelOutputs}
+								label="recordPagination.records"
+								list
+							>
+								{(output) => (
+									<li className="rounded-md border p-3 text-sm" key={output.name}>
+										<p className="font-medium">{output.name}</p>
+										<p className="text-muted-foreground">
+											{readableModelKind(output.predictionKind.kind)} ·{" "}
+											{output.horizonBars} Bar horizon
+										</p>
+										<p className="text-muted-foreground">
+											Target:{" "}
+											{readableModelKind(
+												String(
+													output.forecastTarget.target ??
+														output.forecastTarget.id ??
+														output.forecastTarget.kind,
+												),
+											)}{" "}
+											· Scale: {readableModelKind(String(output.valueScale.kind))}
+										</p>
+										<pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">
+											{JSON.stringify(
+												{
+													predictionKind: output.predictionKind,
+													target: output.forecastTarget,
+													scale: output.valueScale,
+												},
+												null,
+												2,
+											)}
+										</pre>
+									</li>
+								)}
+							</PaginatedList>
 						</ul>
 					) : (
 						<p className="text-sm text-muted-foreground">
@@ -562,11 +587,17 @@ function ComponentDetail({
 								Locked — historical evidence references this exact package.
 							</p>
 							<ul className="space-y-1 font-mono text-xs">
-								{component.lockedByRunIds.map((runId) => (
-									<li className="break-all" key={runId}>
-										Backtest Run {runId}
-									</li>
-								))}
+								<PaginatedList
+									items={component.lockedByRunIds}
+									label="recordPagination.records"
+									list
+								>
+									{(runId) => (
+										<li className="break-all" key={runId}>
+											Backtest Run {runId}
+										</li>
+									)}
+								</PaginatedList>
 							</ul>
 						</div>
 					) : (

@@ -1,3 +1,5 @@
+import { LazyDetails } from "@/components/lazy-details";
+import { PaginatedList } from "@/components/record-pagination";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -700,55 +702,77 @@ export function ValidationPage() {
 					{protocolsLoading ? (
 						<LoadingState labelKey="loading.protocols" />
 					) : (
-						protocols.map((protocol) => (
-							<div
-								key={protocol.protocolId}
-								className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm"
-							>
-								<div>
-									<p>{protocolSummary(protocol)}</p>
-									<code className="break-all text-xs">
-										<IdentifierDisplay id={protocol.protocolId} />
-									</code>
-									<details className="mt-2">
-										<summary>Review immutable Protocol</summary>
-										{protocolDetails(protocol).map((window) => (
-											<p key={`${window.snapshotId}:${window.boundary}`} className="mt-2">
-												Snapshot{" "}
-												<code className="break-all">
-													<IdentifierDisplay id={window.snapshotId} />
-												</code>
-												<br />
-												Sample-out boundary: {window.boundary}
-												<br />
-												Aggregation: <code>{window.aggregationRuleVersion}</code>
-											</p>
-										))}
-										{protocol.crossMarket?.contexts.map((context, index) => (
-											<p key={context.snapshotId} className="mt-2">
-												Market context {index + 1}:{" "}
-												<code className="break-all">
-													<IdentifierDisplay id={context.snapshotId} />
-												</code>
-												<br />
-												Configuration: {context.runOverride ? "exact override" : "shared"}
-											</p>
-										))}
-										<pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">
-											{JSON.stringify(protocol.run, null, 2)}
-										</pre>
-									</details>
-								</div>
-								<Button
-									loading={runningProtocolId === protocol.protocolId}
-									loadingText={t("loading.running")}
-									disabled={Boolean(runningProtocolId)}
-									onClick={() => void run(protocol.protocolId)}
+						<PaginatedList items={protocols} label="recordPagination.records">
+							{(protocol) => (
+								<div
+									key={protocol.protocolId}
+									className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm"
 								>
-									Run / resume
-								</Button>
-							</div>
-						))
+									<div>
+										<p>{protocolSummary(protocol)}</p>
+										<code className="break-all text-xs">
+											<IdentifierDisplay id={protocol.protocolId} />
+										</code>
+										<LazyDetails
+											className="mt-2"
+											summary={<summary>Review immutable Protocol</summary>}
+										>
+											{() => (
+												<>
+													<PaginatedList
+														items={protocolDetails(protocol)}
+														label="recordPagination.records"
+													>
+														{(window) => (
+															<p
+																key={`${window.snapshotId}:${window.boundary}`}
+																className="mt-2"
+															>
+																Snapshot{" "}
+																<code className="break-all">
+																	<IdentifierDisplay id={window.snapshotId} />
+																</code>
+																<br />
+																Sample-out boundary: {window.boundary}
+																<br />
+																Aggregation: <code>{window.aggregationRuleVersion}</code>
+															</p>
+														)}
+													</PaginatedList>
+													<PaginatedList
+														items={protocol.crossMarket?.contexts ?? []}
+														label="recordPagination.records"
+													>
+														{(context, index) => (
+															<p key={context.snapshotId} className="mt-2">
+																Market context {index + 1}:{" "}
+																<code className="break-all">
+																	<IdentifierDisplay id={context.snapshotId} />
+																</code>
+																<br />
+																Configuration:{" "}
+																{context.runOverride ? "exact override" : "shared"}
+															</p>
+														)}
+													</PaginatedList>
+													<pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs">
+														{JSON.stringify(protocol.run, null, 2)}
+													</pre>
+												</>
+											)}
+										</LazyDetails>
+									</div>
+									<Button
+										loading={runningProtocolId === protocol.protocolId}
+										loadingText={t("loading.running")}
+										disabled={Boolean(runningProtocolId)}
+										onClick={() => void run(protocol.protocolId)}
+									>
+										Run / resume
+									</Button>
+								</div>
+							)}
+						</PaginatedList>
 					)}
 					{!protocolsLoading && protocols.length === 0 && (
 						<p className="text-sm text-muted-foreground">
@@ -768,18 +792,20 @@ export function ValidationPage() {
 					) : selectedReport ? (
 						<>
 							<div className="mb-3 flex flex-wrap gap-2">
-								{reports.map((report) => (
-									<Button
-										key={report.reportId}
-										size="sm"
-										variant={
-											report.reportId === selectedReport.reportId ? "default" : "outline"
-										}
-										onClick={() => setSelectedReportId(report.reportId)}
-									>
-										Report {abbreviateIdentifier(report.reportId)}
-									</Button>
-								))}
+								<PaginatedList items={reports} label="recordPagination.records">
+									{(report) => (
+										<Button
+											key={report.reportId}
+											size="sm"
+											variant={
+												report.reportId === selectedReport.reportId ? "default" : "outline"
+											}
+											onClick={() => setSelectedReportId(report.reportId)}
+										>
+											Report {abbreviateIdentifier(report.reportId)}
+										</Button>
+									)}
+								</PaginatedList>
 							</div>
 							<Tabs
 								key={selectedReport.reportId}
@@ -870,25 +896,31 @@ function WalkForwardControls({
 						order.
 					</p>
 					<ol className="list-decimal pl-5 text-xs">
-						{preview.windows.map((window) => {
-							const gapCount = gapCountForWindow(window, gaps);
-							return (
-								<li
-									key={`${window.sampleOutStartTimeMs}:${window.sampleOutEndTimeMs ?? "final"}`}
-								>
-									{new Date(window.sampleOutStartTimeMs).toLocaleString()} –{" "}
-									{window.sampleOutEndTimeMs
-										? new Date(window.sampleOutEndTimeMs).toLocaleString()
-										: "final"}
-									{gapCount > 0 && (
-										<>
-											{" "}
-											· {gapCount} Bar Gap{gapCount === 1 ? "" : "s"} in frozen evidence
-										</>
-									)}
-								</li>
-							);
-						})}
+						<PaginatedList
+							items={preview.windows}
+							label="recordPagination.records"
+							list
+						>
+							{(window) => {
+								const gapCount = gapCountForWindow(window, gaps);
+								return (
+									<li
+										key={`${window.sampleOutStartTimeMs}:${window.sampleOutEndTimeMs ?? "final"}`}
+									>
+										{new Date(window.sampleOutStartTimeMs).toLocaleString()} –{" "}
+										{window.sampleOutEndTimeMs
+											? new Date(window.sampleOutEndTimeMs).toLocaleString()
+											: "final"}
+										{gapCount > 0 && (
+											<>
+												{" "}
+												· {gapCount} Bar Gap{gapCount === 1 ? "" : "s"} in frozen evidence
+											</>
+										)}
+									</li>
+								);
+							}}
+						</PaginatedList>
 					</ol>
 					{preview.partialFinalWindow && (
 						<p>The partial final window is excluded; only complete windows freeze.</p>
@@ -902,12 +934,14 @@ function WalkForwardControls({
 						evidence
 					</summary>
 					<ul className="mt-2 list-disc pl-5 text-xs">
-						{gaps.map((gap) => (
-							<li key={`${gap.startTimeMs}:${gap.endTimeMs}`}>
-								{new Date(gap.startTimeMs).toLocaleString()} –{" "}
-								{new Date(gap.endTimeMs).toLocaleString()}
-							</li>
-						))}
+						<PaginatedList items={gaps} label="recordPagination.records" list>
+							{(gap) => (
+								<li key={`${gap.startTimeMs}:${gap.endTimeMs}`}>
+									{new Date(gap.startTimeMs).toLocaleString()} –{" "}
+									{new Date(gap.endTimeMs).toLocaleString()}
+								</li>
+							)}
+						</PaginatedList>
 					</ul>
 				</details>
 			)}
@@ -971,95 +1005,97 @@ function CrossMarketControls({
 				</p>
 			)}
 			<ol className="space-y-2" aria-label="Selected cross-market contexts">
-				{contexts.map((context, index) => (
-					<li
-						key={context.snapshot.snapshotId}
-						className="rounded-md border p-3 text-sm"
-					>
-						<p>
-							{index + 1}. {context.snapshot.code} · {context.snapshot.interval} ·{" "}
-							{context.snapshot.barCount} Bars
-						</p>
-						<code className="block break-all text-xs">
-							<IdentifierDisplay
-								id={context.snapshot.snapshotId}
-								label={t("identifiers.snapshot")}
-							/>
-						</code>
-						<div className="mt-2 flex flex-wrap gap-2">
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								disabled={index === 0}
-								onClick={() =>
-									onChange({
-										type: "move-cross-market-context",
-										snapshotId: context.snapshot.snapshotId,
-										direction: "earlier",
-									})
-								}
-							>
-								Move earlier
-							</Button>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								disabled={index === contexts.length - 1}
-								onClick={() =>
-									onChange({
-										type: "move-cross-market-context",
-										snapshotId: context.snapshot.snapshotId,
-										direction: "later",
-									})
-								}
-							>
-								Move later
-							</Button>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								onClick={() =>
-									onChange({
-										type: "remove-cross-market-context",
-										snapshotId: context.snapshot.snapshotId,
-									})
-								}
-							>
-								Remove
-							</Button>
-							<label className="text-xs">
-								Override configuration
-								<select
-									className="ml-2 rounded border p-1"
-									value={context.override?.runId ?? ""}
-									onChange={(event) => {
-										if (!event.target.value) {
-											onChange({
-												type: "clear-cross-market-override",
-												snapshotId: context.snapshot.snapshotId,
-											});
-											return;
-										}
-										void onLoadOverride(context.snapshot.snapshotId, event.target.value);
-									}}
+				<PaginatedList items={contexts} label="recordPagination.records" list>
+					{(context, index) => (
+						<li
+							key={context.snapshot.snapshotId}
+							className="rounded-md border p-3 text-sm"
+						>
+							<p>
+								{index + 1}. {context.snapshot.code} · {context.snapshot.interval} ·{" "}
+								{context.snapshot.barCount} Bars
+							</p>
+							<code className="block break-all text-xs">
+								<IdentifierDisplay
+									id={context.snapshot.snapshotId}
+									label={t("identifiers.snapshot")}
+								/>
+							</code>
+							<div className="mt-2 flex flex-wrap gap-2">
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									disabled={index === 0}
+									onClick={() =>
+										onChange({
+											type: "move-cross-market-context",
+											snapshotId: context.snapshot.snapshotId,
+											direction: "earlier",
+										})
+									}
 								>
-									<option value="">Shared selected Run</option>
-									{runs
-										.filter((run) => run.snapshotId === context.snapshot.snapshotId)
-										.map((run) => (
-											<option key={run.runId} value={run.runId}>
-												{run.code} · {run.interval} ·{" "}
-												{identifierLabel(run.runId, t("identifiers.backtestRun"))}
-											</option>
-										))}
-								</select>
-							</label>
-						</div>
-					</li>
-				))}
+									Move earlier
+								</Button>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									disabled={index === contexts.length - 1}
+									onClick={() =>
+										onChange({
+											type: "move-cross-market-context",
+											snapshotId: context.snapshot.snapshotId,
+											direction: "later",
+										})
+									}
+								>
+									Move later
+								</Button>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={() =>
+										onChange({
+											type: "remove-cross-market-context",
+											snapshotId: context.snapshot.snapshotId,
+										})
+									}
+								>
+									Remove
+								</Button>
+								<label className="text-xs">
+									Override configuration
+									<select
+										className="ml-2 rounded border p-1"
+										value={context.override?.runId ?? ""}
+										onChange={(event) => {
+											if (!event.target.value) {
+												onChange({
+													type: "clear-cross-market-override",
+													snapshotId: context.snapshot.snapshotId,
+												});
+												return;
+											}
+											void onLoadOverride(context.snapshot.snapshotId, event.target.value);
+										}}
+									>
+										<option value="">Shared selected Run</option>
+										{runs
+											.filter((run) => run.snapshotId === context.snapshot.snapshotId)
+											.map((run) => (
+												<option key={run.runId} value={run.runId}>
+													{run.code} · {run.interval} ·{" "}
+													{identifierLabel(run.runId, t("identifiers.backtestRun"))}
+												</option>
+											))}
+									</select>
+								</label>
+							</div>
+						</li>
+					)}
+				</PaginatedList>
 			</ol>
 			{error && (
 				<pre className="overflow-x-auto whitespace-pre-wrap text-xs" role="alert">
@@ -1263,104 +1299,120 @@ function ReportViews({
 				</div>
 			</TabsContent>
 			<TabsContent value="evidence" className="space-y-2">
-				{report.crossMarket.map((context) => (
-					<div
-						key={context.snapshot.snapshotId}
-						className="rounded-md border p-3 text-sm"
-					>
-						<p>
-							{context.snapshot.code} · {context.snapshot.interval} ·{" "}
-							{context.snapshot.barCount} Bars
-						</p>
-						<code className="block break-all text-xs">
-							Snapshot {context.snapshot.snapshotId}
-						</code>
-						{context.failure ? (
-							<pre
-								className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs"
-								role="alert"
-							>
-								Failure: {context.failure}
-							</pre>
-						) : (
-							<StrategyEvidenceMetrics metrics={context.metrics} />
-						)}
-						<p className="mt-2">Run Pauses</p>
-						{context.pauses.length ? (
-							<ul className="list-disc pl-5 text-xs">
-								{context.pauses.map((pause) => (
-									<li key={`${pause.openTimeMs}:${pause.reason}`}>
-										{new Date(pause.openTimeMs).toLocaleString()} · {pause.reason}
-									</li>
-								))}
-							</ul>
-						) : (
-							<p className="text-muted-foreground">None</p>
-						)}
-						<p className="mt-2 text-xs">
-							<a
-								className="underline"
-								href={context.runId ? `/backtest?runId=${context.runId}` : "/backtest"}
-							>
-								Run {context.runId ?? "not completed"}
-							</a>
-						</p>
-					</div>
-				))}
-				{report.windows.map((window) => (
-					<div
-						key={`${window.sampleOutStartTimeMs}:${window.sampleOutEndTimeMs ?? "final"}`}
-						className="rounded-md border p-3 text-sm"
-					>
-						<p>
-							Sample-out: {new Date(window.sampleOutStartTimeMs).toLocaleString()} –{" "}
-							{window.sampleOutEndTimeMs
-								? new Date(window.sampleOutEndTimeMs).toLocaleString()
-								: "final"}
-						</p>
-						{window.failure ? (
-							<pre
-								className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs"
-								role="alert"
-							>
-								Failure: {window.failure}
-							</pre>
-						) : (
-							<StrategyEvidenceMetrics metrics={window.sampleOutMetrics} />
-						)}
-						<p className="mt-2">Run Pauses</p>
-						{[...window.sampleInPauses, ...window.sampleOutPauses].length ? (
-							<ul className="list-disc pl-5 text-xs">
-								{[...window.sampleInPauses, ...window.sampleOutPauses].map((pause) => (
-									<li key={`${pause.openTimeMs}:${pause.reason}`}>
-										{new Date(pause.openTimeMs).toLocaleString()} · {pause.reason}
-									</li>
-								))}
-							</ul>
-						) : (
-							<p className="text-muted-foreground">None</p>
-						)}
-						<p className="mt-2 text-xs">
-							Sample-in Snapshot{" "}
-							<code className="break-all">
-								<IdentifierDisplay id={window.sampleInSnapshotId} />
+				<PaginatedList items={report.crossMarket} label="recordPagination.records">
+					{(context) => (
+						<div
+							key={context.snapshot.snapshotId}
+							className="rounded-md border p-3 text-sm"
+						>
+							<p>
+								{context.snapshot.code} · {context.snapshot.interval} ·{" "}
+								{context.snapshot.barCount} Bars
+							</p>
+							<code className="block break-all text-xs">
+								Snapshot {context.snapshot.snapshotId}
 							</code>
-							<br />
-							Sample-out Snapshot{" "}
-							<code className="break-all">
-								<IdentifierDisplay id={window.sampleOutSnapshotId} />
-							</code>
-							<br />
-							<a className="underline" href="/backtest">
-								Sample-in Run {window.sampleInRunId ?? "not completed"}
-							</a>
-							<br />
-							<a className="underline" href="/backtest">
-								Sample-out Run {window.sampleOutRunId ?? "not completed"}
-							</a>
-						</p>
-					</div>
-				))}
+							{context.failure ? (
+								<pre
+									className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs"
+									role="alert"
+								>
+									Failure: {context.failure}
+								</pre>
+							) : (
+								<StrategyEvidenceMetrics metrics={context.metrics} />
+							)}
+							<p className="mt-2">Run Pauses</p>
+							{context.pauses.length ? (
+								<ul className="list-disc pl-5 text-xs">
+									<PaginatedList
+										items={context.pauses}
+										label="recordPagination.records"
+										list
+									>
+										{(pause) => (
+											<li key={`${pause.openTimeMs}:${pause.reason}`}>
+												{new Date(pause.openTimeMs).toLocaleString()} · {pause.reason}
+											</li>
+										)}
+									</PaginatedList>
+								</ul>
+							) : (
+								<p className="text-muted-foreground">None</p>
+							)}
+							<p className="mt-2 text-xs">
+								<a
+									className="underline"
+									href={context.runId ? `/backtest?runId=${context.runId}` : "/backtest"}
+								>
+									Run {context.runId ?? "not completed"}
+								</a>
+							</p>
+						</div>
+					)}
+				</PaginatedList>
+				<PaginatedList items={report.windows} label="recordPagination.records">
+					{(window) => (
+						<div
+							key={`${window.sampleOutStartTimeMs}:${window.sampleOutEndTimeMs ?? "final"}`}
+							className="rounded-md border p-3 text-sm"
+						>
+							<p>
+								Sample-out: {new Date(window.sampleOutStartTimeMs).toLocaleString()} –{" "}
+								{window.sampleOutEndTimeMs
+									? new Date(window.sampleOutEndTimeMs).toLocaleString()
+									: "final"}
+							</p>
+							{window.failure ? (
+								<pre
+									className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs"
+									role="alert"
+								>
+									Failure: {window.failure}
+								</pre>
+							) : (
+								<StrategyEvidenceMetrics metrics={window.sampleOutMetrics} />
+							)}
+							<p className="mt-2">Run Pauses</p>
+							{[...window.sampleInPauses, ...window.sampleOutPauses].length ? (
+								<ul className="list-disc pl-5 text-xs">
+									<PaginatedList
+										items={[...window.sampleInPauses, ...window.sampleOutPauses]}
+										label="recordPagination.records"
+										list
+									>
+										{(pause) => (
+											<li key={`${pause.openTimeMs}:${pause.reason}`}>
+												{new Date(pause.openTimeMs).toLocaleString()} · {pause.reason}
+											</li>
+										)}
+									</PaginatedList>
+								</ul>
+							) : (
+								<p className="text-muted-foreground">None</p>
+							)}
+							<p className="mt-2 text-xs">
+								Sample-in Snapshot{" "}
+								<code className="break-all">
+									<IdentifierDisplay id={window.sampleInSnapshotId} />
+								</code>
+								<br />
+								Sample-out Snapshot{" "}
+								<code className="break-all">
+									<IdentifierDisplay id={window.sampleOutSnapshotId} />
+								</code>
+								<br />
+								<a className="underline" href="/backtest">
+									Sample-in Run {window.sampleInRunId ?? "not completed"}
+								</a>
+								<br />
+								<a className="underline" href="/backtest">
+									Sample-out Run {window.sampleOutRunId ?? "not completed"}
+								</a>
+							</p>
+						</div>
+					)}
+				</PaginatedList>
 			</TabsContent>
 			<TabsContent value="provenance">
 				<div className="space-y-2 rounded-md border p-3 text-sm">
@@ -1392,17 +1444,22 @@ function ReportViews({
 								Historical evidence references, not best-market or future-profitability
 								claims.
 							</p>
-							{report.recommendedContexts.map((context) => (
-								<div key={context.snapshot.snapshotId} className="mt-2 text-xs">
-									{context.snapshot.code} · {context.snapshot.interval}
-									<code className="block break-all">
-										Report {context.supportingReportId}
-									</code>
-									<pre className="overflow-x-auto whitespace-pre-wrap">
-										{JSON.stringify(context.run, null, 2)}
-									</pre>
-								</div>
-							))}
+							<PaginatedList
+								items={report.recommendedContexts}
+								label="recordPagination.records"
+							>
+								{(context) => (
+									<div key={context.snapshot.snapshotId} className="mt-2 text-xs">
+										{context.snapshot.code} · {context.snapshot.interval}
+										<code className="block break-all">
+											Report {context.supportingReportId}
+										</code>
+										<pre className="overflow-x-auto whitespace-pre-wrap">
+											{JSON.stringify(context.run, null, 2)}
+										</pre>
+									</div>
+								)}
+							</PaginatedList>
 						</div>
 					)}
 				</div>

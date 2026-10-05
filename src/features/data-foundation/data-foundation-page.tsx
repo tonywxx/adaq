@@ -1,3 +1,5 @@
+import { LazyDetails } from "@/components/lazy-details";
+import { PaginatedList } from "@/components/record-pagination";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -354,7 +356,7 @@ function SourceProvenancePanel({
 			operation,
 		})),
 	];
-	const PROVENANCE_PAGE_SIZE = 6;
+	const PROVENANCE_PAGE_SIZE = 10;
 	const pageCount = Math.max(1, Math.ceil(items.length / PROVENANCE_PAGE_SIZE));
 	const safePage = Math.min(page, pageCount);
 	const slice = items.slice(
@@ -365,185 +367,207 @@ function SourceProvenancePanel({
 		<div className="grid gap-3">
 			{slice.map((item) =>
 				item.kind === "dataset" ? (
-					<details key={item.sourceId} className="rounded-md border p-3">
-						<summary className="cursor-pointer text-sm font-medium">
-							{item.publicationEvidenceName || t("identifiers.source")} ·{" "}
-							{item.source.provider} · {item.source.instrument?.code ?? "—"} ·{" "}
-							{item.source.interval ?? "—"}
-						</summary>
-						<div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
-							<ContextField
-								label={t("dataFoundation.sourceProvider")}
-								value={`${item.source.provider} · ${item.source.actualUpstream ?? "—"}`}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceCapability")}
-								value={JSON.stringify(item.source.capabilitySnapshot)}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceRequest")}
-								value={JSON.stringify(item.source.requestParameters)}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceInstrument")}
-								value={`${item.source.instrument?.venue.id ?? "—"} · ${item.source.instrument?.code ?? "—"} · ${item.source.interval ?? "—"}`}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceRequestedRange")}
-								value={`${formatTimestamp(item.source.requestedStartTimeMs)} — ${formatTimestamp(item.source.requestedEndTimeMs)}`}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceReceivedRange")}
-								value={`${formatTimestamp(item.source.receivedStartTimeMs)} — ${formatTimestamp(item.source.receivedEndTimeMs)}`}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceRevision")}
-								value={String(item.revision)}
-							/>
-							<ContextField
-								label={t("identifiers.source")}
-								value={
-									<IdentifierDisplay
-										id={item.sourceId}
+					<LazyDetails
+						key={item.sourceId}
+						className="rounded-md border p-3"
+						summary={
+							<summary className="cursor-pointer text-sm font-medium">
+								{item.publicationEvidenceName || t("identifiers.source")} ·{" "}
+								{item.source.provider} · {item.source.instrument?.code ?? "—"} ·{" "}
+								{item.source.interval ?? "—"}
+							</summary>
+						}
+					>
+						{() => (
+							<>
+								<div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
+									<ContextField
+										label={t("dataFoundation.sourceProvider")}
+										value={`${item.source.provider} · ${item.source.actualUpstream ?? "—"}`}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceCapability")}
+										value={JSON.stringify(item.source.capabilitySnapshot)}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceRequest")}
+										value={JSON.stringify(item.source.requestParameters)}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceInstrument")}
+										value={`${item.source.instrument?.venue.id ?? "—"} · ${item.source.instrument?.code ?? "—"} · ${item.source.interval ?? "—"}`}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceRequestedRange")}
+										value={`${formatTimestamp(item.source.requestedStartTimeMs)} — ${formatTimestamp(item.source.requestedEndTimeMs)}`}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceReceivedRange")}
+										value={`${formatTimestamp(item.source.receivedStartTimeMs)} — ${formatTimestamp(item.source.receivedEndTimeMs)}`}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceRevision")}
+										value={String(item.revision)}
+									/>
+									<ContextField
 										label={t("identifiers.source")}
-										name={item.publicationEvidenceName}
+										value={
+											<IdentifierDisplay
+												id={item.sourceId}
+												label={t("identifiers.source")}
+												name={item.publicationEvidenceName}
+											/>
+										}
 									/>
-								}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceLogicalKey")}
-								value={item.source.logicalKey}
-							/>
-							<div className="grid gap-2 rounded-md border p-3 sm:col-span-2">
-								<strong>{t("dataFoundation.sourceHashes")}</strong>
-								<p className="text-muted-foreground">
-									{t("dataFoundation.sourceHashDescription")}
-								</p>
-								<IdentifierDisplay
-									id={item.source.contentSha256}
-									label={t("dataFoundation.sourceContentHash")}
-								/>
-								<IdentifierDisplay
-									id={item.source.payloadSha256}
-									label={t("dataFoundation.sourcePayloadHash")}
-								/>
-								{item.source.acquisitionContentSha256 ? (
-									<IdentifierDisplay
-										id={item.source.acquisitionContentSha256}
-										label={t("dataFoundation.sourceAcquisitionHash")}
+									<ContextField
+										label={t("dataFoundation.sourceLogicalKey")}
+										value={item.source.logicalKey}
 									/>
-								) : null}
-								{item.source.responseSha256s.map((hash, index) => (
-									<IdentifierDisplay
-										key={hash}
-										id={hash}
-										label={t("dataFoundation.sourceResponseHash", { number: index + 1 })}
+									<div className="grid gap-2 rounded-md border p-3 sm:col-span-2">
+										<strong>{t("dataFoundation.sourceHashes")}</strong>
+										<p className="text-muted-foreground">
+											{t("dataFoundation.sourceHashDescription")}
+										</p>
+										<IdentifierDisplay
+											id={item.source.contentSha256}
+											label={t("dataFoundation.sourceContentHash")}
+										/>
+										<IdentifierDisplay
+											id={item.source.payloadSha256}
+											label={t("dataFoundation.sourcePayloadHash")}
+										/>
+										{item.source.acquisitionContentSha256 ? (
+											<IdentifierDisplay
+												id={item.source.acquisitionContentSha256}
+												label={t("dataFoundation.sourceAcquisitionHash")}
+											/>
+										) : null}
+										<PaginatedList
+											items={item.source.responseSha256s}
+											label="recordPagination.records"
+										>
+											{(hash, index) => (
+												<IdentifierDisplay
+													key={hash}
+													id={hash}
+													label={t("dataFoundation.sourceResponseHash", {
+														number: index + 1,
+													})}
+												/>
+											)}
+										</PaginatedList>
+									</div>
+									<ContextField
+										label={t("dataFoundation.sourceRetrieved")}
+										value={formatTimestamp(item.source.retrievedAtMs)}
 									/>
-								))}
-							</div>
-							<ContextField
-								label={t("dataFoundation.sourceRetrieved")}
-								value={formatTimestamp(item.source.retrievedAtMs)}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceContinuation")}
-								value={t("dataFoundation.sourceRequests", {
-									count: item.source.requestCount,
-									retries: item.operation?.retryCount ?? item.source.retryCount,
-									statuses: item.source.responseStatuses.join(", ") || "—",
-									pages: item.operation?.pages ?? 0,
-									cursor: formatTimestamp(item.operation?.nextCursorMs),
-								})}
-							/>
-							{item.source.notes.length ? (
-								<ContextField
-									label={t("dataFoundation.sourceNotes")}
-									value={item.source.notes.join("\n")}
-								/>
-							) : null}
-							{item.operation?.lastError ? (
-								<ContextField
-									label={t("dataFoundation.sourceNotes")}
-									value={`${item.operation.lastErrorCode ?? t("dataFoundation.unknownErrorCode")}: ${item.operation.lastError}`}
-								/>
-							) : null}
-						</div>
-					</details>
+									<ContextField
+										label={t("dataFoundation.sourceContinuation")}
+										value={t("dataFoundation.sourceRequests", {
+											count: item.source.requestCount,
+											retries: item.operation?.retryCount ?? item.source.retryCount,
+											statuses: item.source.responseStatuses.join(", ") || "—",
+											pages: item.operation?.pages ?? 0,
+											cursor: formatTimestamp(item.operation?.nextCursorMs),
+										})}
+									/>
+									{item.source.notes.length ? (
+										<ContextField
+											label={t("dataFoundation.sourceNotes")}
+											value={item.source.notes.join("\n")}
+										/>
+									) : null}
+									{item.operation?.lastError ? (
+										<ContextField
+											label={t("dataFoundation.sourceNotes")}
+											value={`${item.operation.lastErrorCode ?? t("dataFoundation.unknownErrorCode")}: ${item.operation.lastError}`}
+										/>
+									) : null}
+								</div>
+							</>
+						)}
+					</LazyDetails>
 				) : (
-					<details
+					<LazyDetails
 						key={
 							item.operation.operationId ??
 							`${item.operation.instrument.code}-${item.operation.state}`
 						}
 						className="rounded-md border p-3"
+						summary={
+							<summary className="cursor-pointer text-sm font-medium">
+								{item.operation.provider} · {item.operation.instrument.code} ·{" "}
+								{item.operation.interval}
+							</summary>
+						}
 					>
-						<summary className="cursor-pointer text-sm font-medium">
-							{item.operation.provider} · {item.operation.instrument.code} ·{" "}
-							{item.operation.interval}
-						</summary>
-						<div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
-							<ContextField
-								label={t("dataFoundation.sourceProvider")}
-								value={`${item.operation.provider} · ${item.operation.actualUpstream}`}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceCapability")}
-								value={JSON.stringify(item.operation.capabilitySnapshot)}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceRequest")}
-								value={JSON.stringify(item.operation.requestParameters)}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceInstrument")}
-								value={`${item.operation.instrument.venue.id} · ${item.operation.instrument.code} · ${item.operation.interval}`}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceRequestedRange")}
-								value={`${formatTimestamp(item.operation.startTimeMs)} — ${formatTimestamp(item.operation.endTimeMs)}`}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceReceivedRange")}
-								value={`${formatTimestamp(item.operation.coverageStartMs)} — ${formatTimestamp(item.operation.coverageEndMs)}`}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceRevision")}
-								value={String(item.operation.revision ?? "—")}
-							/>
-							{item.operation.operationId ? (
-								<ContextField
-									label={t("identifiers.operation")}
-									value={
-										<IdentifierDisplay
-											id={item.operation.operationId}
+						{() => (
+							<>
+								<div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
+									<ContextField
+										label={t("dataFoundation.sourceProvider")}
+										value={`${item.operation.provider} · ${item.operation.actualUpstream}`}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceCapability")}
+										value={JSON.stringify(item.operation.capabilitySnapshot)}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceRequest")}
+										value={JSON.stringify(item.operation.requestParameters)}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceInstrument")}
+										value={`${item.operation.instrument.venue.id} · ${item.operation.instrument.code} · ${item.operation.interval}`}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceRequestedRange")}
+										value={`${formatTimestamp(item.operation.startTimeMs)} — ${formatTimestamp(item.operation.endTimeMs)}`}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceReceivedRange")}
+										value={`${formatTimestamp(item.operation.coverageStartMs)} — ${formatTimestamp(item.operation.coverageEndMs)}`}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceRevision")}
+										value={String(item.operation.revision ?? "—")}
+									/>
+									{item.operation.operationId ? (
+										<ContextField
 											label={t("identifiers.operation")}
+											value={
+												<IdentifierDisplay
+													id={item.operation.operationId}
+													label={t("identifiers.operation")}
+												/>
+											}
 										/>
-									}
-								/>
-							) : null}
-							<ContextField label={t("dataFoundation.sourceHashes")} value="—" />
-							<ContextField
-								label={t("dataFoundation.sourceRetrieved")}
-								value={formatTimestamp(item.operation.updatedAtMs)}
-							/>
-							<ContextField
-								label={t("dataFoundation.sourceContinuation")}
-								value={t("dataFoundation.sourceRequests", {
-									count: "—",
-									retries: item.operation.retryCount,
-									statuses: "—",
-									pages: item.operation.pages,
-									cursor: formatTimestamp(item.operation.nextCursorMs),
-								})}
-							/>
-							{item.operation.lastError ? (
-								<ContextField
-									label={t("dataFoundation.sourceNotes")}
-									value={`${item.operation.lastErrorCode ?? t("dataFoundation.unknownErrorCode")}: ${item.operation.lastError}`}
-								/>
-							) : null}
-						</div>
-					</details>
+									) : null}
+									<ContextField label={t("dataFoundation.sourceHashes")} value="—" />
+									<ContextField
+										label={t("dataFoundation.sourceRetrieved")}
+										value={formatTimestamp(item.operation.updatedAtMs)}
+									/>
+									<ContextField
+										label={t("dataFoundation.sourceContinuation")}
+										value={t("dataFoundation.sourceRequests", {
+											count: "—",
+											retries: item.operation.retryCount,
+											statuses: "—",
+											pages: item.operation.pages,
+											cursor: formatTimestamp(item.operation.nextCursorMs),
+										})}
+									/>
+									{item.operation.lastError ? (
+										<ContextField
+											label={t("dataFoundation.sourceNotes")}
+											value={`${item.operation.lastErrorCode ?? t("dataFoundation.unknownErrorCode")}: ${item.operation.lastError}`}
+										/>
+									) : null}
+								</div>
+							</>
+						)}
+					</LazyDetails>
 				),
 			)}
 			<Pagination page={safePage} pageCount={pageCount} onPageChange={setPage} />
@@ -704,19 +728,25 @@ function InstrumentEvidencePanel({
 						</tr>
 					</thead>
 					<tbody>
-						{latest.instruments.map((instrument) => (
-							<tr key={instrument.code} className="border-t">
-								<td className="p-2 font-medium">{instrument.code}</td>
-								<td className="p-2">
-									{instrument.baseAsset}/{instrument.quoteAsset}
-								</td>
-								<td className="p-2">
-									{humanizeNumber(latest.quoteVolume24hUsdt?.[instrument.code])}
-								</td>
-								<td className="p-2">{instrument.status}</td>
-								<td className="p-2">{humanizeNumber(instrument.minimumQuantity)}</td>
-							</tr>
-						))}
+						<PaginatedList
+							items={latest.instruments}
+							label="recordPagination.records"
+							tableColumns={5}
+						>
+							{(instrument) => (
+								<tr key={instrument.code} className="border-t">
+									<td className="p-2 font-medium">{instrument.code}</td>
+									<td className="p-2">
+										{instrument.baseAsset}/{instrument.quoteAsset}
+									</td>
+									<td className="p-2">
+										{humanizeNumber(latest.quoteVolume24hUsdt?.[instrument.code])}
+									</td>
+									<td className="p-2">{instrument.status}</td>
+									<td className="p-2">{humanizeNumber(instrument.minimumQuantity)}</td>
+								</tr>
+							)}
+						</PaginatedList>
 					</tbody>
 				</table>
 			</div>
@@ -748,54 +778,60 @@ function InstrumentEvidencePanel({
 							</tr>
 						</thead>
 						<tbody>
-							{[...(snapshots ?? [])].reverse().map((snapshot) => (
-								<tr
-									key={snapshot.snapshotId}
-									className={`cursor-pointer border-t hover:bg-muted/50 ${snapshot.snapshotId === latest.snapshotId ? "bg-primary/10 font-medium ring-1 ring-inset ring-primary/30" : ""}`}
-									aria-current={snapshot.snapshotId === latest.snapshotId}
-									onClick={() => setSelectedSnapshotId(snapshot.snapshotId)}
-									onKeyDown={(event) => {
-										if (event.key === "Enter" || event.key === " ") {
-											event.preventDefault();
-											setSelectedSnapshotId(snapshot.snapshotId);
-										}
-									}}
-									tabIndex={0}
-								>
-									<td className="p-2 font-medium">
-										{catalogDisplayName(
-											snapshot,
-											t("dataFoundation.catalogFallbackName"),
-										)}
-									</td>
-									<td className="p-2">{humanizeNumber(snapshot.instruments.length)}</td>
-									<td className="p-2">
-										{humanizeNumber(snapshot.minimumQuoteVolume24h)}
-									</td>
-									<td className="p-2">
-										{snapshot.ignoreUntradable == null
-											? "—"
-											: t(
-													snapshot.ignoreUntradable
-														? "dataFoundation.okxYes"
-														: "dataFoundation.okxNo",
-												)}
-									</td>
-									<td className="p-2">
-										{formatCatalogDateTime(snapshot.retrievedAtMs)}
-									</td>
-									<td className="p-2">
-										<IdentifierDisplay
-											id={snapshot.snapshotId}
-											label={t("dataFoundation.catalogFallbackName")}
-											name={catalogDisplayName(
+							<PaginatedList
+								items={[...(snapshots ?? [])].reverse()}
+								label="recordPagination.records"
+								tableColumns={6}
+							>
+								{(snapshot) => (
+									<tr
+										key={snapshot.snapshotId}
+										className={`cursor-pointer border-t hover:bg-muted/50 ${snapshot.snapshotId === latest.snapshotId ? "bg-primary/10 font-medium ring-1 ring-inset ring-primary/30" : ""}`}
+										aria-current={snapshot.snapshotId === latest.snapshotId}
+										onClick={() => setSelectedSnapshotId(snapshot.snapshotId)}
+										onKeyDown={(event) => {
+											if (event.key === "Enter" || event.key === " ") {
+												event.preventDefault();
+												setSelectedSnapshotId(snapshot.snapshotId);
+											}
+										}}
+										tabIndex={0}
+									>
+										<td className="p-2 font-medium">
+											{catalogDisplayName(
 												snapshot,
 												t("dataFoundation.catalogFallbackName"),
 											)}
-										/>
-									</td>
-								</tr>
-							))}
+										</td>
+										<td className="p-2">{humanizeNumber(snapshot.instruments.length)}</td>
+										<td className="p-2">
+											{humanizeNumber(snapshot.minimumQuoteVolume24h)}
+										</td>
+										<td className="p-2">
+											{snapshot.ignoreUntradable == null
+												? "—"
+												: t(
+														snapshot.ignoreUntradable
+															? "dataFoundation.okxYes"
+															: "dataFoundation.okxNo",
+													)}
+										</td>
+										<td className="p-2">
+											{formatCatalogDateTime(snapshot.retrievedAtMs)}
+										</td>
+										<td className="p-2">
+											<IdentifierDisplay
+												id={snapshot.snapshotId}
+												label={t("dataFoundation.catalogFallbackName")}
+												name={catalogDisplayName(
+													snapshot,
+													t("dataFoundation.catalogFallbackName"),
+												)}
+											/>
+										</td>
+									</tr>
+								)}
+							</PaginatedList>
 						</tbody>
 					</table>
 				</div>
@@ -804,7 +840,7 @@ function InstrumentEvidencePanel({
 	);
 }
 
-const PAGE_SIZE = 5;
+const PAGE_SIZE = 10;
 
 export function DataFoundationPage() {
 	const { t } = useTranslation();

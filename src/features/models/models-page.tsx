@@ -1,3 +1,5 @@
+import { LazyDetails } from "@/components/lazy-details";
+import { PaginatedList } from "@/components/record-pagination";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -586,43 +588,45 @@ export function ModelsPage({
 								{attemptsLoading ? (
 									<LoadingState labelKey="loading.generationAttempts" />
 								) : attempts.length ? (
-									attempts.map((attempt) => (
-										<div
-											key={attempt.attemptId}
-											className="grid gap-2 rounded border p-2 text-xs"
-										>
-											<div className="flex items-center justify-between gap-3">
-												<span className="break-all select-text">
-													{attempt.status} · {attempt.progressCompleted}/
-													{attempt.progressTotal || "?"} ·{" "}
-													<IdentifierDisplay
-														id={attempt.attemptId}
-														label={t("identifiers.attempt")}
-													/>
-												</span>
-												{(attempt.status === "failed" ||
-													attempt.status === "cancelled") && (
-													<Button
-														size="sm"
-														variant="outline"
-														disabled={busy}
-														onClick={() => void retry(attempt.attemptId)}
-													>
-														Retry
-													</Button>
+									<PaginatedList items={attempts} label="recordPagination.records">
+										{(attempt) => (
+											<div
+												key={attempt.attemptId}
+												className="grid gap-2 rounded border p-2 text-xs"
+											>
+												<div className="flex items-center justify-between gap-3">
+													<span className="break-all select-text">
+														{attempt.status} · {attempt.progressCompleted}/
+														{attempt.progressTotal || "?"} ·{" "}
+														<IdentifierDisplay
+															id={attempt.attemptId}
+															label={t("identifiers.attempt")}
+														/>
+													</span>
+													{(attempt.status === "failed" ||
+														attempt.status === "cancelled") && (
+														<Button
+															size="sm"
+															variant="outline"
+															disabled={busy}
+															onClick={() => void retry(attempt.attemptId)}
+														>
+															Retry
+														</Button>
+													)}
+												</div>
+												<ResearchContextEvidence
+													userId={userId ?? ""}
+													attemptId={attempt.attemptId}
+												/>
+												{attempt.diagnosticEvidence && (
+													<pre className="max-h-32 overflow-auto whitespace-pre-wrap select-text">
+														{attempt.diagnosticEvidence}
+													</pre>
 												)}
 											</div>
-											<ResearchContextEvidence
-												userId={userId ?? ""}
-												attemptId={attempt.attemptId}
-											/>
-											{attempt.diagnosticEvidence && (
-												<pre className="max-h-32 overflow-auto whitespace-pre-wrap select-text">
-													{attempt.diagnosticEvidence}
-												</pre>
-											)}
-										</div>
-									))
+										)}
+									</PaginatedList>
 								) : (
 									<p className="text-sm text-muted-foreground">
 										No Generation Attempts yet.
@@ -651,187 +655,196 @@ export function ModelsPage({
 							{datasetsLoading ? (
 								<LoadingState labelKey="loading.signalDatasets" />
 							) : datasets.length ? (
-								datasets.map((item) => (
-									<article
-										key={item.datasetId}
-										className="grid gap-2 rounded border p-3"
-										aria-busy={rowsLoading === item.datasetId}
-									>
-										<p className="font-medium">
-											{item.code} {item.interval} · {item.rowCount} rows
-										</p>
-										<dl className="grid gap-1 break-all text-xs text-muted-foreground">
-											<div>
-												<dt className="inline font-medium text-foreground">Coverage: </dt>
-												<dd className="inline">
-													{item.rowCount - item.unavailableCount} present,{" "}
-													{item.unavailableCount} unavailable
-												</dd>
-											</div>
-											{item.archiveManifestJson && (
-												<Button
-													size="sm"
-													variant="outline"
-													disabled={busy}
-													onClick={() => void exportDataset(item.datasetId)}
+								<PaginatedList items={datasets} label="recordPagination.records">
+									{(item) => (
+										<article
+											key={item.datasetId}
+											className="grid gap-2 rounded border p-3"
+											aria-busy={rowsLoading === item.datasetId}
+										>
+											<p className="font-medium">
+												{item.code} {item.interval} · {item.rowCount} rows
+											</p>
+											<dl className="grid gap-1 break-all text-xs text-muted-foreground">
+												<div>
+													<dt className="inline font-medium text-foreground">Coverage: </dt>
+													<dd className="inline">
+														{item.rowCount - item.unavailableCount} present,{" "}
+														{item.unavailableCount} unavailable
+													</dd>
+												</div>
+												{item.archiveManifestJson && (
+													<Button
+														size="sm"
+														variant="outline"
+														disabled={busy}
+														onClick={() => void exportDataset(item.datasetId)}
+													>
+														Export .adaq-signals
+													</Button>
+												)}
+												<div>
+													<dt className="inline font-medium text-foreground">Statuses: </dt>
+													<dd className="inline select-text">
+														{datasetStatusSummary(item.statusCounts)}
+													</dd>
+												</div>
+												<div>
+													<dt className="inline font-medium text-foreground">
+														Model Artifact:{" "}
+													</dt>
+													<dd className="inline select-text">
+														{item.modelArtifact?.sha256 ?? "Unavailable"}
+													</dd>
+												</div>
+												<div>
+													<dt className="inline font-medium text-foreground">
+														Producer Segments:{" "}
+													</dt>
+													<dd className="inline">
+														{item.externalProducerSegments?.length ??
+															item.producerSegments.length}{" "}
+														· {item.continuousBarSegments} continuous · {item.barGapRule}
+													</dd>
+												</div>
+												<div>
+													<dt className="inline font-medium text-foreground">Snapshot: </dt>
+													<dd className="inline select-text">
+														<IdentifierDisplay id={item.snapshotId} />
+													</dd>
+												</div>
+												<div>
+													<dt className="inline font-medium text-foreground">
+														Feature Plan:{" "}
+													</dt>
+													<dd className="inline select-text">
+														<IdentifierDisplay id={item.featurePlanHash} />
+													</dd>
+												</div>
+												<div>
+													<dt className="inline font-medium text-foreground">
+														Seed / Trust:{" "}
+													</dt>
+													<dd className="inline">
+														{item.seed} · {item.trust}
+													</dd>
+												</div>
+												<div>
+													<dt className="inline font-medium text-foreground">
+														Dataset / Parquet:{" "}
+													</dt>
+													<dd className="inline select-text">
+														{item.datasetId} · {item.parquetSha256}
+													</dd>
+												</div>
+												<div>
+													<dt className="inline font-medium text-foreground">
+														Component Lock:{" "}
+													</dt>
+													<dd className="inline select-text">
+														{item.componentLock
+															.map((entry) => `${entry.alias}: ${entry.archiveSha256}`)
+															.join(", ")}
+													</dd>
+												</div>
+												<LazyDetails
+													summary={
+														<summary className="cursor-pointer font-medium text-foreground">
+															Provenance
+														</summary>
+													}
 												>
-													Export .adaq-signals
-												</Button>
-											)}
-											<div>
-												<dt className="inline font-medium text-foreground">Statuses: </dt>
-												<dd className="inline select-text">
-													{datasetStatusSummary(item.statusCounts)}
-												</dd>
-											</div>
-											<div>
-												<dt className="inline font-medium text-foreground">
-													Model Artifact:{" "}
-												</dt>
-												<dd className="inline select-text">
-													{item.modelArtifact?.sha256 ?? "Unavailable"}
-												</dd>
-											</div>
-											<div>
-												<dt className="inline font-medium text-foreground">
-													Producer Segments:{" "}
-												</dt>
-												<dd className="inline">
-													{item.externalProducerSegments?.length ??
-														item.producerSegments.length}{" "}
-													· {item.continuousBarSegments} continuous · {item.barGapRule}
-												</dd>
-											</div>
-											<div>
-												<dt className="inline font-medium text-foreground">Snapshot: </dt>
-												<dd className="inline select-text">
-													<IdentifierDisplay id={item.snapshotId} />
-												</dd>
-											</div>
-											<div>
-												<dt className="inline font-medium text-foreground">
-													Feature Plan:{" "}
-												</dt>
-												<dd className="inline select-text">
-													<IdentifierDisplay id={item.featurePlanHash} />
-												</dd>
-											</div>
-											<div>
-												<dt className="inline font-medium text-foreground">
-													Seed / Trust:{" "}
-												</dt>
-												<dd className="inline">
-													{item.seed} · {item.trust}
-												</dd>
-											</div>
-											<div>
-												<dt className="inline font-medium text-foreground">
-													Dataset / Parquet:{" "}
-												</dt>
-												<dd className="inline select-text">
-													{item.datasetId} · {item.parquetSha256}
-												</dd>
-											</div>
-											<div>
-												<dt className="inline font-medium text-foreground">
-													Component Lock:{" "}
-												</dt>
-												<dd className="inline select-text">
-													{item.componentLock
-														.map((entry) => `${entry.alias}: ${entry.archiveSha256}`)
-														.join(", ")}
-												</dd>
-											</div>
-											<details>
-												<summary className="cursor-pointer font-medium text-foreground">
-													Provenance
-												</summary>
-												<pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap select-text">
-													{JSON.stringify(
-														{
-															modelArtifact: item.modelArtifact?.provenance,
-															modelOutputs: item.modelOutputs,
-															modelParameters: item.modelParameters,
-															sourceWarmupBars: item.sourceWarmupBars,
-															modelWarmupBars: item.modelWarmupBars,
-															producerSegments: item.producerSegments,
-															externalProducerSegments: item.externalProducerSegments,
-															predictionSource: item.predictionSource,
-															engineIdentity: item.engineIdentity,
-															featurePlan: JSON.parse(item.featurePlanJson),
-															archiveManifest:
-																item.archiveManifestJson &&
-																JSON.parse(item.archiveManifestJson),
-														},
-														null,
-														2,
+													{() => (
+														<>
+															<pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap select-text">
+																{JSON.stringify(
+																	{
+																		modelArtifact: item.modelArtifact?.provenance,
+																		modelOutputs: item.modelOutputs,
+																		modelParameters: item.modelParameters,
+																		sourceWarmupBars: item.sourceWarmupBars,
+																		modelWarmupBars: item.modelWarmupBars,
+																		producerSegments: item.producerSegments,
+																		externalProducerSegments: item.externalProducerSegments,
+																		predictionSource: item.predictionSource,
+																		engineIdentity: item.engineIdentity,
+																		featurePlan: JSON.parse(item.featurePlanJson),
+																		archiveManifest:
+																			item.archiveManifestJson &&
+																			JSON.parse(item.archiveManifestJson),
+																	},
+																	null,
+																	2,
+																)}
+															</pre>
+														</>
 													)}
-												</pre>
-											</details>
-											<details
-												onToggle={(event) =>
-													event.currentTarget.open &&
-													!datasetRows[item.datasetId] &&
-													void inspectRows(item.datasetId)
-												}
-											>
-												<summary className="cursor-pointer font-medium text-foreground">
-													Rows
-												</summary>
-												{rowsLoading === item.datasetId && (
-													<p aria-live="polite">{t("loading.signalRows")}</p>
-												)}
-												{datasetRows[item.datasetId] && (
-													<div className="mt-2 grid gap-2">
-														{datasetRows[item.datasetId].items.map((row) => (
-															<code
-																key={`${row.predictionTimeMs}:${row.status}`}
-																className="select-text whitespace-pre-wrap"
-															>
-																{signalRowSummary(row)}
-															</code>
-														))}
-														<div className="flex gap-2">
-															<Button
-																size="sm"
-																variant="outline"
-																disabled={
-																	Boolean(rowsLoading) || datasetRows[item.datasetId].page === 1
-																}
-																onClick={() =>
-																	void inspectRows(
-																		item.datasetId,
-																		datasetRows[item.datasetId].page - 1,
-																	)
-																}
-															>
-																Previous
-															</Button>
-															<Button
-																size="sm"
-																variant="outline"
-																disabled={
-																	Boolean(rowsLoading) ||
-																	datasetRows[item.datasetId].page *
-																		datasetRows[item.datasetId].pageSize >=
-																		datasetRows[item.datasetId].total
-																}
-																onClick={() =>
-																	void inspectRows(
-																		item.datasetId,
-																		datasetRows[item.datasetId].page + 1,
-																	)
-																}
-															>
-																Next
-															</Button>
+												</LazyDetails>
+												<details
+													onToggle={(event) =>
+														event.currentTarget.open &&
+														!datasetRows[item.datasetId] &&
+														void inspectRows(item.datasetId)
+													}
+												>
+													<summary className="cursor-pointer font-medium text-foreground">
+														Rows
+													</summary>
+													{rowsLoading === item.datasetId && (
+														<p aria-live="polite">{t("loading.signalRows")}</p>
+													)}
+													{datasetRows[item.datasetId] && (
+														<div className="mt-2 grid gap-2">
+															{datasetRows[item.datasetId].items.map((row) => (
+																<code
+																	key={`${row.predictionTimeMs}:${row.status}`}
+																	className="select-text whitespace-pre-wrap"
+																>
+																	{signalRowSummary(row)}
+																</code>
+															))}
+															<div className="flex gap-2">
+																<Button
+																	size="sm"
+																	variant="outline"
+																	disabled={
+																		Boolean(rowsLoading) || datasetRows[item.datasetId].page === 1
+																	}
+																	onClick={() =>
+																		void inspectRows(
+																			item.datasetId,
+																			datasetRows[item.datasetId].page - 1,
+																		)
+																	}
+																>
+																	Previous
+																</Button>
+																<Button
+																	size="sm"
+																	variant="outline"
+																	disabled={
+																		Boolean(rowsLoading) ||
+																		datasetRows[item.datasetId].page *
+																			datasetRows[item.datasetId].pageSize >=
+																			datasetRows[item.datasetId].total
+																	}
+																	onClick={() =>
+																		void inspectRows(
+																			item.datasetId,
+																			datasetRows[item.datasetId].page + 1,
+																		)
+																	}
+																>
+																	Next
+																</Button>
+															</div>
 														</div>
-													</div>
-												)}
-											</details>
-										</dl>
-									</article>
-								))
+													)}
+												</details>
+											</dl>
+										</article>
+									)}
+								</PaginatedList>
 							) : (
 								<p className="text-sm text-muted-foreground">
 									No Forecast Signal Datasets yet.
@@ -962,194 +975,215 @@ export function ModelsPage({
 							{evaluationsLoading ? (
 								<LoadingState labelKey="loading.forecastEvaluationReports" />
 							) : evaluationReports.length ? (
-								evaluationReports.map((report) => (
-									<Card key={report.reportId}>
-										<CardHeader>
-											<CardTitle className="text-base">
-												<IdentifierDisplay
-													id={report.reportId}
-													label={t("identifiers.evaluationReport")}
-													name={report.evidenceState.summary}
-												/>
-											</CardTitle>
-										</CardHeader>
-										<CardContent className="grid gap-3 text-sm">
-											{report.evidenceState.summary !== "out-of-sample" && (
-												<p
-													className="rounded border border-amber-500/50 bg-amber-500/10 p-2"
-													role="alert"
-												>
-													{report.evidenceState.summary === "overlapping"
-														? "Known training, fitting, or normalization evidence overlaps this evaluation window."
-														: "Complete training, fitting, or normalization boundaries are unavailable; this report is not proven out-of-sample."}
-												</p>
-											)}
-											<div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-												<ResearchMetric
-													metricId="forecast.aligned-count"
-													value={String(report.metrics.alignedCount)}
-													className="rounded border p-3"
-												/>
-												<ResearchMetric
-													metricId="forecast.coverage"
-													value={`${(report.metrics.coverage * 100).toFixed(2)}%`}
-													className="rounded border p-3"
-												/>
-												<ResearchMetric
-													metricId="forecast.missingness"
-													value={`${(report.metrics.missingness * 100).toFixed(2)}%`}
-													className="rounded border p-3"
-												/>
-												{evaluationMetricKind(report.signalContract) === "probability" ? (
-													<>
-														<ResearchMetric
-															metricId="forecast.brier-score"
-															value={metricValue(report.metrics.brierScore)}
-															className="rounded border p-3"
-														/>
-														<ResearchMetric
-															metricId="forecast.log-loss"
-															value={metricValue(report.metrics.logLoss)}
-															className="rounded border p-3"
-														/>
-														<ResearchMetric
-															metricId="forecast.roc-auc"
-															value={metricValue(report.metrics.rocAuc)}
-															className="rounded border p-3"
-														/>
-														<ResearchMetric
-															metricId="forecast.calibration"
-															value={
-																report.metrics.calibration
-																	? `${report.metrics.calibration.filter((bucket) => bucket.count).length} populated buckets`
-																	: "Unavailable"
-															}
-															className="rounded border p-3"
-														/>
-													</>
-												) : evaluationMetricKind(report.signalContract) === "score" ? (
-													<>
-														<ResearchMetric
-															metricId="forecast.pearson-ic"
-															value={metricValue(report.metrics.pearsonIc)}
-															className="rounded border p-3"
-														/>
-														<ResearchMetric
-															metricId="forecast.spearman-rank-ic"
-															value={metricValue(report.metrics.spearmanRankIc)}
-															className="rounded border p-3"
-														/>
-														<ResearchMetric
-															metricId="forecast.window-icir"
-															value={metricValue(report.metrics.windowIcir)}
-															className="rounded border p-3"
-														/>
-														<ResearchMetric
-															metricId="forecast.five-quantiles"
-															value={
-																report.metrics.undefinedMetrics?.quantiles ??
-																"Five-quantile realized Target evidence"
-															}
-															className="rounded border p-3"
-														/>
-													</>
-												) : evaluationMetricKind(report.signalContract) === "custom" ? (
-													<p className="col-span-full rounded border p-3" role="status">
-														Custom Prediction Kind or Custom Target recorded. Common coverage,
-														distribution, stability, and provenance remain inspectable; no
-														specialized evaluator is invented. Evidence:{" "}
-														<code>
-															{report.metrics.undefinedMetrics?.probabilityMetrics ??
-																"requires-verifiable-realized-labels"}
-														</code>
+								<PaginatedList
+									items={evaluationReports}
+									label="recordPagination.records"
+								>
+									{(report) => (
+										<Card key={report.reportId}>
+											<CardHeader>
+												<CardTitle className="text-base">
+													<IdentifierDisplay
+														id={report.reportId}
+														label={t("identifiers.evaluationReport")}
+														name={report.evidenceState.summary}
+													/>
+												</CardTitle>
+											</CardHeader>
+											<CardContent className="grid gap-3 text-sm">
+												{report.evidenceState.summary !== "out-of-sample" && (
+													<p
+														className="rounded border border-amber-500/50 bg-amber-500/10 p-2"
+														role="alert"
+													>
+														{report.evidenceState.summary === "overlapping"
+															? "Known training, fitting, or normalization evidence overlaps this evaluation window."
+															: "Complete training, fitting, or normalization boundaries are unavailable; this report is not proven out-of-sample."}
 													</p>
-												) : (
-													<>
-														<ResearchMetric
-															metricId="forecast.mae"
-															value={metricValue(report.metrics.mae)}
-															className="rounded border p-3"
-														/>
-														<ResearchMetric
-															metricId="forecast.rmse"
-															value={metricValue(report.metrics.rmse)}
-															className="rounded border p-3"
-														/>
-														<ResearchMetric
-															metricId="forecast.mean-bias"
-															value={metricValue(report.metrics.meanBias)}
-															className="rounded border p-3"
-														/>
-														<ResearchMetric
-															metricId="forecast.pearson-correlation"
-															value={
-																report.metrics.pearsonCorrelation == null
-																	? "Unavailable"
-																	: metricValue(report.metrics.pearsonCorrelation)
-															}
-															className="rounded border p-3"
-														/>
-													</>
 												)}
-											</div>
-											<details>
-												<summary className="cursor-pointer font-medium">Evidence</summary>
-												<pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap select-text">
-													{JSON.stringify(
-														{
-															metrics: report.metrics,
-															stabilityWindows: report.stabilityWindows,
-															unavailableRows: report.unavailableRows,
-														},
-														null,
-														2,
+												<div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+													<ResearchMetric
+														metricId="forecast.aligned-count"
+														value={String(report.metrics.alignedCount)}
+														className="rounded border p-3"
+													/>
+													<ResearchMetric
+														metricId="forecast.coverage"
+														value={`${(report.metrics.coverage * 100).toFixed(2)}%`}
+														className="rounded border p-3"
+													/>
+													<ResearchMetric
+														metricId="forecast.missingness"
+														value={`${(report.metrics.missingness * 100).toFixed(2)}%`}
+														className="rounded border p-3"
+													/>
+													{evaluationMetricKind(report.signalContract) === "probability" ? (
+														<>
+															<ResearchMetric
+																metricId="forecast.brier-score"
+																value={metricValue(report.metrics.brierScore)}
+																className="rounded border p-3"
+															/>
+															<ResearchMetric
+																metricId="forecast.log-loss"
+																value={metricValue(report.metrics.logLoss)}
+																className="rounded border p-3"
+															/>
+															<ResearchMetric
+																metricId="forecast.roc-auc"
+																value={metricValue(report.metrics.rocAuc)}
+																className="rounded border p-3"
+															/>
+															<ResearchMetric
+																metricId="forecast.calibration"
+																value={
+																	report.metrics.calibration
+																		? `${report.metrics.calibration.filter((bucket) => bucket.count).length} populated buckets`
+																		: "Unavailable"
+																}
+																className="rounded border p-3"
+															/>
+														</>
+													) : evaluationMetricKind(report.signalContract) === "score" ? (
+														<>
+															<ResearchMetric
+																metricId="forecast.pearson-ic"
+																value={metricValue(report.metrics.pearsonIc)}
+																className="rounded border p-3"
+															/>
+															<ResearchMetric
+																metricId="forecast.spearman-rank-ic"
+																value={metricValue(report.metrics.spearmanRankIc)}
+																className="rounded border p-3"
+															/>
+															<ResearchMetric
+																metricId="forecast.window-icir"
+																value={metricValue(report.metrics.windowIcir)}
+																className="rounded border p-3"
+															/>
+															<ResearchMetric
+																metricId="forecast.five-quantiles"
+																value={
+																	report.metrics.undefinedMetrics?.quantiles ??
+																	"Five-quantile realized Target evidence"
+																}
+																className="rounded border p-3"
+															/>
+														</>
+													) : evaluationMetricKind(report.signalContract) === "custom" ? (
+														<p className="col-span-full rounded border p-3" role="status">
+															Custom Prediction Kind or Custom Target recorded. Common
+															coverage, distribution, stability, and provenance remain
+															inspectable; no specialized evaluator is invented. Evidence:{" "}
+															<code>
+																{report.metrics.undefinedMetrics?.probabilityMetrics ??
+																	"requires-verifiable-realized-labels"}
+															</code>
+														</p>
+													) : (
+														<>
+															<ResearchMetric
+																metricId="forecast.mae"
+																value={metricValue(report.metrics.mae)}
+																className="rounded border p-3"
+															/>
+															<ResearchMetric
+																metricId="forecast.rmse"
+																value={metricValue(report.metrics.rmse)}
+																className="rounded border p-3"
+															/>
+															<ResearchMetric
+																metricId="forecast.mean-bias"
+																value={metricValue(report.metrics.meanBias)}
+																className="rounded border p-3"
+															/>
+															<ResearchMetric
+																metricId="forecast.pearson-correlation"
+																value={
+																	report.metrics.pearsonCorrelation == null
+																		? "Unavailable"
+																		: metricValue(report.metrics.pearsonCorrelation)
+																}
+																className="rounded border p-3"
+															/>
+														</>
 													)}
-												</pre>
-											</details>
-											<details>
-												<summary className="cursor-pointer font-medium">Provenance</summary>
-												<pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap select-text">
-													{JSON.stringify(
-														{
-															reportId: report.reportId,
-															datasetId: report.datasetId,
-															snapshotId: report.snapshotId,
-															signalContract: report.signalContract,
-															producerSegments: report.producerSegments,
-															scaleProvenance: report.scaleProvenance,
-															evidenceState: report.evidenceState,
-															trustState: report.trustState,
-															metricVersions: report.metricVersions,
-															engineIdentity: report.engineIdentity,
-															schemaIdentity: report.schemaIdentity,
-															datasetParquetSha256: report.datasetParquetSha256,
-															componentLock: report.componentLock,
-															featurePlanHash: report.featurePlanHash,
-														},
-														null,
-														2,
+												</div>
+												<LazyDetails
+													summary={
+														<summary className="cursor-pointer font-medium">Evidence</summary>
+													}
+												>
+													{() => (
+														<>
+															<pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap select-text">
+																{JSON.stringify(
+																	{
+																		metrics: report.metrics,
+																		stabilityWindows: report.stabilityWindows,
+																		unavailableRows: report.unavailableRows,
+																	},
+																	null,
+																	2,
+																)}
+															</pre>
+														</>
 													)}
-												</pre>
-											</details>
-											<div className="flex flex-wrap gap-2">
-												<Button
-													variant="outline"
-													disabled={busy}
-													onClick={() => void exportEvaluation(report.reportId, "json")}
+												</LazyDetails>
+												<LazyDetails
+													summary={
+														<summary className="cursor-pointer font-medium">
+															Provenance
+														</summary>
+													}
 												>
-													Export JSON
-												</Button>
-												<Button
-													variant="outline"
-													disabled={busy}
-													onClick={() => void exportEvaluation(report.reportId, "markdown")}
-												>
-													Export Markdown
-												</Button>
-											</div>
-										</CardContent>
-									</Card>
-								))
+													{() => (
+														<>
+															<pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap select-text">
+																{JSON.stringify(
+																	{
+																		reportId: report.reportId,
+																		datasetId: report.datasetId,
+																		snapshotId: report.snapshotId,
+																		signalContract: report.signalContract,
+																		producerSegments: report.producerSegments,
+																		scaleProvenance: report.scaleProvenance,
+																		evidenceState: report.evidenceState,
+																		trustState: report.trustState,
+																		metricVersions: report.metricVersions,
+																		engineIdentity: report.engineIdentity,
+																		schemaIdentity: report.schemaIdentity,
+																		datasetParquetSha256: report.datasetParquetSha256,
+																		componentLock: report.componentLock,
+																		featurePlanHash: report.featurePlanHash,
+																	},
+																	null,
+																	2,
+																)}
+															</pre>
+														</>
+													)}
+												</LazyDetails>
+												<div className="flex flex-wrap gap-2">
+													<Button
+														variant="outline"
+														disabled={busy}
+														onClick={() => void exportEvaluation(report.reportId, "json")}
+													>
+														Export JSON
+													</Button>
+													<Button
+														variant="outline"
+														disabled={busy}
+														onClick={() => void exportEvaluation(report.reportId, "markdown")}
+													>
+														Export Markdown
+													</Button>
+												</div>
+											</CardContent>
+										</Card>
+									)}
+								</PaginatedList>
 							) : (
 								<p className="rounded border p-4 text-sm text-muted-foreground">
 									No Forecast Evaluation Reports yet. Choose compatible immutable Score,

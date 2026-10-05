@@ -1,3 +1,5 @@
+import { LazyDetails } from "@/components/lazy-details";
+import { PaginatedList } from "@/components/record-pagination";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -920,141 +922,169 @@ export function StrategyLabPage() {
 					</p>
 				) : (
 					<div className="grid gap-4">
-						{candidates.map((candidate) => (
-							<Card key={candidate.candidateId}>
-								<CardHeader className="pb-3">
-									<div className="flex flex-wrap items-center justify-between gap-2">
-										<CardTitle className="text-base">
-											{t("strategyLab.candidate", { id: candidate.candidateId })}
-										</CardTitle>
-										<Badge
-											variant={
-												candidate.state === "draft"
-													? "outline"
-													: candidate.eligible
-														? "default"
-														: "destructive"
-											}
-										>
-											{candidate.state === "draft"
-												? t("strategyLab.status.draft")
-												: candidate.eligible
-													? t("strategyLab.eligible")
-													: t("strategyLab.stale")}
-										</Badge>
-									</div>
-									<CardDescription>{candidate.scope}</CardDescription>
-								</CardHeader>
-								<CardContent className="space-y-3">
-									<div className="grid gap-2">
-										{candidate.revisions.map((item) => (
-											<div
-												className="rounded-md border p-3 text-sm"
-												key={item.revision.revision}
+						<PaginatedList items={candidates} label="recordPagination.records">
+							{(candidate) => (
+								<Card key={candidate.candidateId}>
+									<CardHeader className="pb-3">
+										<div className="flex flex-wrap items-center justify-between gap-2">
+											<CardTitle className="text-base">
+												{t("strategyLab.candidate", { id: candidate.candidateId })}
+											</CardTitle>
+											<Badge
+												variant={
+													candidate.state === "draft"
+														? "outline"
+														: candidate.eligible
+															? "default"
+															: "destructive"
+												}
 											>
-												<div className="flex flex-wrap justify-between gap-2">
-													<span>
-														{t("strategyLab.revision", { revision: item.revision.revision })}
-													</span>
-													<Badge variant={item.eligible ? "outline" : "destructive"}>
-														{item.eligible
-															? t("strategyLab.eligible")
-															: t("strategyLab.stale")}
-													</Badge>
-												</div>
-												<p className="mt-2 text-muted-foreground">
-													{t("strategyLab.revisionHash")}
-												</p>
-												<code className="break-all text-xs">
-													<IdentifierDisplay
-														id={item.revision.revisionHash}
-														label={t("identifiers.revision")}
-													/>
-												</code>
-												<details className="mt-3 rounded-md border p-2">
-													<summary className="cursor-pointer font-medium">
-														{t("strategyLab.inspectRevision")}
-													</summary>
-													<div className="mt-2 space-y-2 text-xs">
-														<p>
-															{t("strategyLab.catalogVersion")}:{" "}
-															{item.revision.definition.catalogVersion}
+												{candidate.state === "draft"
+													? t("strategyLab.status.draft")
+													: candidate.eligible
+														? t("strategyLab.eligible")
+														: t("strategyLab.stale")}
+											</Badge>
+										</div>
+										<CardDescription>{candidate.scope}</CardDescription>
+									</CardHeader>
+									<CardContent className="space-y-3">
+										<div className="grid gap-2">
+											<PaginatedList
+												items={candidate.revisions}
+												label="recordPagination.records"
+											>
+												{(item) => (
+													<div
+														className="rounded-md border p-3 text-sm"
+														key={item.revision.revision}
+													>
+														<div className="flex flex-wrap justify-between gap-2">
+															<span>
+																{t("strategyLab.revision", {
+																	revision: item.revision.revision,
+																})}
+															</span>
+															<Badge variant={item.eligible ? "outline" : "destructive"}>
+																{item.eligible
+																	? t("strategyLab.eligible")
+																	: t("strategyLab.stale")}
+															</Badge>
+														</div>
+														<p className="mt-2 text-muted-foreground">
+															{t("strategyLab.revisionHash")}
 														</p>
-														<p>
-															{t("strategyLab.inputSlots")}:{" "}
-															{item.revision.definition.inputSlots
-																.map((slot) => `${slot.alias} (${slot.inputType})`)
-																.join(", ")}
-														</p>
-														<p>
-															{t("strategyLab.semanticContext")}:{" "}
+														<code className="break-all text-xs">
 															<IdentifierDisplay
-																id={item.revision.semanticContext.featurePlanHash}
-																label={t("identifiers.featurePlan")}
-															/>{" "}
-															·{" "}
-															<IdentifierDisplay
-																id={item.revision.semanticContext.researchContextHash}
-																label={t("identifiers.researchContext")}
-															/>{" "}
-															·{" "}
-															<IdentifierDisplay
-																id={item.revision.semanticContext.snapshotId}
-																label={t("identifiers.snapshot")}
-															/>{" "}
-															·{" "}
-															<IdentifierDisplay
-																id={item.revision.semanticContext.universeId}
-																label={t("identifiers.universe")}
-															/>
-														</p>
-														<pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2">
-															{JSON.stringify(item.revision.definition, null, 2)}
-														</pre>
-													</div>
-												</details>
-												{item.staleReason ? (
-													<p className="mt-2 text-xs text-destructive">
-														{t("strategyLab.staleReason")} {item.staleReason}
-													</p>
-												) : null}
-											</div>
-										))}
-									</div>
-									{candidate.attempts.length > 0 ? (
-										<div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
-											<p className="font-medium">{t("strategyLab.attempts")}</p>
-											<ul aria-label={t("strategyLab.diagnostics")}>
-												{candidate.attempts.map((attempt) => (
-													<li className="mt-2" key={attempt.attemptId}>
-														<span>
-															{t(
-																`strategyLab.status.${attempt.status === "ready-to-create" ? "ready" : attempt.status === "published" ? "published" : "rejected"}`,
-															)}
-														</span>{" "}
-														<code className="text-xs">
-															<IdentifierDisplay
-																id={attempt.attemptId}
-																label={t("identifiers.attempt")}
+																id={item.revision.revisionHash}
+																label={t("identifiers.revision")}
 															/>
 														</code>
-														{attempt.diagnostics.map((diagnostic) => (
-															<p
-																className="mt-1 font-mono text-xs"
-																key={`${attempt.attemptId}-${diagnostic.code}-${diagnostic.path}`}
-															>
-																{t("strategyLab.hostRejected")} {diagnostic.code} ·{" "}
-																{diagnostic.path}
+														<LazyDetails
+															className="mt-3 rounded-md border p-2"
+															summary={
+																<summary className="cursor-pointer font-medium">
+																	{t("strategyLab.inspectRevision")}
+																</summary>
+															}
+														>
+															{() => (
+																<>
+																	<div className="mt-2 space-y-2 text-xs">
+																		<p>
+																			{t("strategyLab.catalogVersion")}:{" "}
+																			{item.revision.definition.catalogVersion}
+																		</p>
+																		<p>
+																			{t("strategyLab.inputSlots")}:{" "}
+																			{item.revision.definition.inputSlots
+																				.map((slot) => `${slot.alias} (${slot.inputType})`)
+																				.join(", ")}
+																		</p>
+																		<p>
+																			{t("strategyLab.semanticContext")}:{" "}
+																			<IdentifierDisplay
+																				id={item.revision.semanticContext.featurePlanHash}
+																				label={t("identifiers.featurePlan")}
+																			/>{" "}
+																			·{" "}
+																			<IdentifierDisplay
+																				id={item.revision.semanticContext.researchContextHash}
+																				label={t("identifiers.researchContext")}
+																			/>{" "}
+																			·{" "}
+																			<IdentifierDisplay
+																				id={item.revision.semanticContext.snapshotId}
+																				label={t("identifiers.snapshot")}
+																			/>{" "}
+																			·{" "}
+																			<IdentifierDisplay
+																				id={item.revision.semanticContext.universeId}
+																				label={t("identifiers.universe")}
+																			/>
+																		</p>
+																		<pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2">
+																			{JSON.stringify(item.revision.definition, null, 2)}
+																		</pre>
+																	</div>
+																</>
+															)}
+														</LazyDetails>
+														{item.staleReason ? (
+															<p className="mt-2 text-xs text-destructive">
+																{t("strategyLab.staleReason")} {item.staleReason}
 															</p>
-														))}
-													</li>
-												))}
-											</ul>
+														) : null}
+													</div>
+												)}
+											</PaginatedList>
 										</div>
-									) : null}
-								</CardContent>
-							</Card>
-						))}
+										{candidate.attempts.length > 0 ? (
+											<div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
+												<p className="font-medium">{t("strategyLab.attempts")}</p>
+												<ul aria-label={t("strategyLab.diagnostics")}>
+													<PaginatedList
+														items={candidate.attempts}
+														label="recordPagination.records"
+														list
+													>
+														{(attempt) => (
+															<li className="mt-2" key={attempt.attemptId}>
+																<span>
+																	{t(
+																		`strategyLab.status.${attempt.status === "ready-to-create" ? "ready" : attempt.status === "published" ? "published" : "rejected"}`,
+																	)}
+																</span>{" "}
+																<code className="text-xs">
+																	<IdentifierDisplay
+																		id={attempt.attemptId}
+																		label={t("identifiers.attempt")}
+																	/>
+																</code>
+																<PaginatedList
+																	items={attempt.diagnostics}
+																	label="recordPagination.records"
+																>
+																	{(diagnostic) => (
+																		<p
+																			className="mt-1 font-mono text-xs"
+																			key={`${attempt.attemptId}-${diagnostic.code}-${diagnostic.path}`}
+																		>
+																			{t("strategyLab.hostRejected")} {diagnostic.code} ·{" "}
+																			{diagnostic.path}
+																		</p>
+																	)}
+																</PaginatedList>
+															</li>
+														)}
+													</PaginatedList>
+												</ul>
+											</div>
+										) : null}
+									</CardContent>
+								</Card>
+							)}
+						</PaginatedList>
 					</div>
 				)}
 			</section>
@@ -1195,12 +1225,18 @@ function SourceIdentity({
 	input: FactorInput | ModelInput | undefined;
 }) {
 	return (
-		<details className="rounded-md border p-3 text-sm">
-			<summary className="cursor-pointer font-medium">{title}</summary>
-			<pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap break-all text-xs text-muted-foreground">
-				{input ? JSON.stringify(input, null, 2) : "—"}
-			</pre>
-		</details>
+		<LazyDetails
+			className="rounded-md border p-3 text-sm"
+			summary={<summary className="cursor-pointer font-medium">{title}</summary>}
+		>
+			{() => (
+				<>
+					<pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap break-all text-xs text-muted-foreground">
+						{input ? JSON.stringify(input, null, 2) : "—"}
+					</pre>
+				</>
+			)}
+		</LazyDetails>
 	);
 }
 
@@ -1527,23 +1563,37 @@ function QualificationPanel({
 								label={t("identifiers.attempt")}
 							/>
 						</code>
-						{attempt.diagnostics.map((diagnostic) => (
-							<p
-								className="mt-2 font-mono text-xs text-destructive"
-								key={`${diagnostic.stage}-${diagnostic.code}`}
-							>
-								{diagnostic.code}: {diagnostic.message}
-							</p>
-						))}
+						<PaginatedList
+							items={attempt.diagnostics}
+							label="recordPagination.records"
+						>
+							{(diagnostic) => (
+								<p
+									className="mt-2 font-mono text-xs text-destructive"
+									key={`${diagnostic.stage}-${diagnostic.code}`}
+								>
+									{diagnostic.code}: {diagnostic.message}
+								</p>
+							)}
+						</PaginatedList>
 						{attempt.status === "ready-for-review" ? (
-							<details open className="mt-3 rounded-md bg-muted/40 p-3">
-								<summary className="cursor-pointer font-medium">
-									{t("strategyLab.qualification.evidence")}
-								</summary>
-								<pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all text-xs">
-									{JSON.stringify(attempt, null, 2)}
-								</pre>
-							</details>
+							<LazyDetails
+								open
+								className="mt-3 rounded-md bg-muted/40 p-3"
+								summary={
+									<summary className="cursor-pointer font-medium">
+										{t("strategyLab.qualification.evidence")}
+									</summary>
+								}
+							>
+								{() => (
+									<>
+										<pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all text-xs">
+											{JSON.stringify(attempt, null, 2)}
+										</pre>
+									</>
+								)}
+							</LazyDetails>
 						) : null}
 					</div>
 				) : null}
@@ -1567,14 +1617,22 @@ function QualificationPanel({
 								label={t("identifiers.validationReport")}
 							/>
 						</p>
-						<details className="mt-3 rounded-md bg-muted/40 p-3">
-							<summary className="cursor-pointer font-medium">
-								{t("strategyLab.qualification.evidence")}
-							</summary>
-							<pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all text-xs">
-								{JSON.stringify(qualification, null, 2)}
-							</pre>
-						</details>
+						<LazyDetails
+							className="mt-3 rounded-md bg-muted/40 p-3"
+							summary={
+								<summary className="cursor-pointer font-medium">
+									{t("strategyLab.qualification.evidence")}
+								</summary>
+							}
+						>
+							{() => (
+								<>
+									<pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all text-xs">
+										{JSON.stringify(qualification, null, 2)}
+									</pre>
+								</>
+							)}
+						</LazyDetails>
 					</div>
 				) : null}
 			</CardContent>

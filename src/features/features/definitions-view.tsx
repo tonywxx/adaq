@@ -1,3 +1,4 @@
+import { PaginatedList } from "@/components/record-pagination";
 import {
 	abbreviateIdentifier,
 	identifierLabel,
@@ -250,37 +251,43 @@ export function DefinitionsView({
 									</tr>
 								</thead>
 								<tbody>
-									{definitions.map((definition) => (
-										<tr key={definition.definitionHash} className="border-b">
-											<td className="py-2 pr-4">
-												<IdentifierDisplay
-													id={definition.definitionId}
-													label={t("identifiers.definition")}
-													name={definition.name}
-												/>
-											</td>
-											<td className="py-2 pr-4">r{definition.revision}</td>
-											<td className="py-2 pr-4 font-mono text-xs">
-												<IdentifierDisplay
-													id={definition.definitionHash}
-													label={t("identifiers.definitionHash")}
-												/>
-											</td>
-											<td className="py-2 pr-4 whitespace-nowrap">
-												{formatUtc(definition.createdAtMs)} UTC
-											</td>
-											<td className="py-2 text-right">
-												<Button
-													type="button"
-													variant="outline"
-													size="sm"
-													onClick={() => openPublished(definition)}
-												>
-													{t("features.definitions.edit")}
-												</Button>
-											</td>
-										</tr>
-									))}
+									<PaginatedList
+										items={definitions}
+										label="recordPagination.records"
+										tableColumns={5}
+									>
+										{(definition) => (
+											<tr key={definition.definitionHash} className="border-b">
+												<td className="py-2 pr-4">
+													<IdentifierDisplay
+														id={definition.definitionId}
+														label={t("identifiers.definition")}
+														name={definition.name}
+													/>
+												</td>
+												<td className="py-2 pr-4">r{definition.revision}</td>
+												<td className="py-2 pr-4 font-mono text-xs">
+													<IdentifierDisplay
+														id={definition.definitionHash}
+														label={t("identifiers.definitionHash")}
+													/>
+												</td>
+												<td className="py-2 pr-4 whitespace-nowrap">
+													{formatUtc(definition.createdAtMs)} UTC
+												</td>
+												<td className="py-2 text-right">
+													<Button
+														type="button"
+														variant="outline"
+														size="sm"
+														onClick={() => openPublished(definition)}
+													>
+														{t("features.definitions.edit")}
+													</Button>
+												</td>
+											</tr>
+										)}
+									</PaginatedList>
 								</tbody>
 							</table>
 						</div>
@@ -405,12 +412,18 @@ export function DefinitionsView({
 											{t("features.definitions.validationFailed")}
 										</p>
 										<ul className="mt-1 list-inside list-disc font-mono text-xs">
-											{validation.issues.map((issue) => (
-												<li key={`${issue.code}-${issue.path ?? "root"}`}>
-													{issue.code}
-													{issue.path ? ` → ${issue.path}` : ""}
-												</li>
-											))}
+											<PaginatedList
+												items={validation.issues}
+												label="recordPagination.records"
+												list
+											>
+												{(issue) => (
+													<li key={`${issue.code}-${issue.path ?? "root"}`}>
+														{issue.code}
+														{issue.path ? ` → ${issue.path}` : ""}
+													</li>
+												)}
+											</PaginatedList>
 										</ul>
 									</>
 								)}
@@ -550,33 +563,37 @@ export function DefinitionsView({
 									{t("features.preview.artifacts")}
 								</legend>
 								<div className="flex flex-wrap gap-3">
-									{artifacts.map((artifact) => (
-										<label
-											key={artifact.artifactId}
-											className="flex items-center gap-1.5 text-xs"
-										>
-											<input
-												type="checkbox"
-												checked={previewSelection.artifactIds.includes(artifact.artifactId)}
-												onChange={(event) =>
-													setPreviewSelection({
-														...previewSelection,
-														artifactIds: event.target.checked
-															? [...previewSelection.artifactIds, artifact.artifactId]
-															: previewSelection.artifactIds.filter(
-																	(id) => id !== artifact.artifactId,
-																),
-													})
-												}
-											/>
-											<span className="font-mono">
-												<IdentifierDisplay
-													id={artifact.artifactId}
-													label={t("identifiers.artifact")}
+									<PaginatedList items={artifacts} label="recordPagination.records">
+										{(artifact) => (
+											<label
+												key={artifact.artifactId}
+												className="flex items-center gap-1.5 text-xs"
+											>
+												<input
+													type="checkbox"
+													checked={previewSelection.artifactIds.includes(
+														artifact.artifactId,
+													)}
+													onChange={(event) =>
+														setPreviewSelection({
+															...previewSelection,
+															artifactIds: event.target.checked
+																? [...previewSelection.artifactIds, artifact.artifactId]
+																: previewSelection.artifactIds.filter(
+																		(id) => id !== artifact.artifactId,
+																	),
+														})
+													}
 												/>
-											</span>
-										</label>
-									))}
+												<span className="font-mono">
+													<IdentifierDisplay
+														id={artifact.artifactId}
+														label={t("identifiers.artifact")}
+													/>
+												</span>
+											</label>
+										)}
+									</PaginatedList>
 								</div>
 							</fieldset>
 						)}
@@ -625,44 +642,50 @@ export function DefinitionsView({
 												</tr>
 											</thead>
 											<tbody>
-												{preview.observations.map((observation) => (
-													<tr
-														key={`${observation.outputName}-${observation.instrumentId}-${observation.observationTimeMs}`}
-														className="border-b"
-													>
-														<td className="py-1.5 pr-3 font-mono">
-															{observation.outputName}
-														</td>
-														<td className="py-1.5 pr-3">
-															<IdentifierDisplay id={observation.instrumentId} />
-														</td>
-														<td className="py-1.5 pr-3 whitespace-nowrap">
-															{formatUtc(observation.observationTimeMs)}
-														</td>
-														{observation.value.state === "available" ? (
-															<>
-																<td className="py-1.5 pr-3">
-																	{t("features.datasets.table.stateAvailable")}
-																</td>
-																<td className="py-1.5 pr-3 font-mono">
-																	{observation.value.value}
-																</td>
-															</>
-														) : (
-															<>
-																<td className="py-1.5 pr-3">
-																	{t("features.datasets.table.stateUnavailable")}
-																</td>
-																<td className="py-1.5 pr-3 font-mono">
-																	{t(
-																		`features.unavailability.${camelReason(observation.value.reason)}`,
-																		{ defaultValue: observation.value.reason },
-																	)}
-																</td>
-															</>
-														)}
-													</tr>
-												))}
+												<PaginatedList
+													items={preview.observations}
+													label="recordPagination.records"
+													tableColumns={7}
+												>
+													{(observation) => (
+														<tr
+															key={`${observation.outputName}-${observation.instrumentId}-${observation.observationTimeMs}`}
+															className="border-b"
+														>
+															<td className="py-1.5 pr-3 font-mono">
+																{observation.outputName}
+															</td>
+															<td className="py-1.5 pr-3">
+																<IdentifierDisplay id={observation.instrumentId} />
+															</td>
+															<td className="py-1.5 pr-3 whitespace-nowrap">
+																{formatUtc(observation.observationTimeMs)}
+															</td>
+															{observation.value.state === "available" ? (
+																<>
+																	<td className="py-1.5 pr-3">
+																		{t("features.datasets.table.stateAvailable")}
+																	</td>
+																	<td className="py-1.5 pr-3 font-mono">
+																		{observation.value.value}
+																	</td>
+																</>
+															) : (
+																<>
+																	<td className="py-1.5 pr-3">
+																		{t("features.datasets.table.stateUnavailable")}
+																	</td>
+																	<td className="py-1.5 pr-3 font-mono">
+																		{t(
+																			`features.unavailability.${camelReason(observation.value.reason)}`,
+																			{ defaultValue: observation.value.reason },
+																		)}
+																	</td>
+																</>
+															)}
+														</tr>
+													)}
+												</PaginatedList>
 											</tbody>
 										</table>
 									</div>

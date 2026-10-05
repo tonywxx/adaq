@@ -87,7 +87,7 @@ export const UNAVAILABILITY_REASONS: string[] = [
 	"corporate-action-unavailable",
 ];
 
-export const DATASET_PAGE_SIZE = 50;
+export const DATASET_PAGE_SIZE = 10;
 
 export function operatorLabel(kind: string, id?: string): string {
 	return kind === "indicator" && id ? `indicator:${id}` : kind;

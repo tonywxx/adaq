@@ -1,3 +1,4 @@
+import { PaginatedList } from "@/components/record-pagination";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { identifierLabel } from "@/lib/identifier-display";
 import { Button } from "@/components/ui/button";
@@ -260,111 +261,114 @@ export function FittingView({
 						<FeaturesEmpty message={t("features.fitting.empty")} />
 					) : (
 						<ul className="space-y-3">
-							{attempts.map((attempt) => (
-								<li key={attempt.attemptId} className="rounded-md border p-3 text-sm">
-									<div className="flex flex-wrap items-center gap-2">
-										<span className="font-mono text-xs">
-											<IdentifierDisplay
-												id={attempt.attemptId}
-												label={t("identifiers.attempt")}
-											/>
-										</span>
-										<AttemptStatusBadge status={attempt.status} />
-										<span className="text-xs text-muted-foreground">
-											{formatNumber(attempt.progressCompleted)} /{" "}
-											{formatNumber(attempt.progressTotal)}
-										</span>
-										<span className="text-xs text-muted-foreground">
-											{formatUtc(attempt.createdAtMs)} UTC
-										</span>
-										<div className="ml-auto flex gap-1">
-											{(attempt.status === "pending" || attempt.status === "running") && (
-												<Button
-													type="button"
-													variant="outline"
-													size="sm"
-													onClick={() => cancel(attempt.attemptId)}
-												>
-													{t("features.fitting.cancel")}
-												</Button>
-											)}
-											{(attempt.status === "failed" || attempt.status === "cancelled") && (
-												<Button
-													type="button"
-													variant="outline"
-													size="sm"
-													onClick={() => retry(attempt.attemptId)}
-												>
-													{t("features.fitting.retry")}
-												</Button>
-											)}
+							<PaginatedList items={attempts} label="recordPagination.records" list>
+								{(attempt) => (
+									<li key={attempt.attemptId} className="rounded-md border p-3 text-sm">
+										<div className="flex flex-wrap items-center gap-2">
+											<span className="font-mono text-xs">
+												<IdentifierDisplay
+													id={attempt.attemptId}
+													label={t("identifiers.attempt")}
+												/>
+											</span>
+											<AttemptStatusBadge status={attempt.status} />
+											<span className="text-xs text-muted-foreground">
+												{formatNumber(attempt.progressCompleted)} /{" "}
+												{formatNumber(attempt.progressTotal)}
+											</span>
+											<span className="text-xs text-muted-foreground">
+												{formatUtc(attempt.createdAtMs)} UTC
+											</span>
+											<div className="ml-auto flex gap-1">
+												{(attempt.status === "pending" || attempt.status === "running") && (
+													<Button
+														type="button"
+														variant="outline"
+														size="sm"
+														onClick={() => cancel(attempt.attemptId)}
+													>
+														{t("features.fitting.cancel")}
+													</Button>
+												)}
+												{(attempt.status === "failed" ||
+													attempt.status === "cancelled") && (
+													<Button
+														type="button"
+														variant="outline"
+														size="sm"
+														onClick={() => retry(attempt.attemptId)}
+													>
+														{t("features.fitting.retry")}
+													</Button>
+												)}
+											</div>
 										</div>
-									</div>
-									<div
-										role="progressbar"
-										aria-valuemin={0}
-										aria-valuemax={100}
-										aria-valuenow={Math.round(
-											attemptProgressFraction(
-												attempt.progressCompleted,
-												attempt.progressTotal,
-											) * 100,
-										)}
-										className="mt-2 h-1.5 w-full overflow-hidden rounded bg-muted"
-									>
 										<div
-											className="h-full bg-foreground/60"
-											style={{
-												width: `${attemptProgressFraction(attempt.progressCompleted, attempt.progressTotal) * 100}%`,
-											}}
-										/>
-									</div>
-									<dl className="mt-2 grid gap-x-6 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
-										<div>
-											<dt className="inline font-medium">
-												{t("features.fitting.protocolHash")}:{" "}
-											</dt>
-											<dd className="inline font-mono">
-												<IdentifierDisplay id={attempt.protocolHash} />
-											</dd>
+											role="progressbar"
+											aria-valuemin={0}
+											aria-valuemax={100}
+											aria-valuenow={Math.round(
+												attemptProgressFraction(
+													attempt.progressCompleted,
+													attempt.progressTotal,
+												) * 100,
+											)}
+											className="mt-2 h-1.5 w-full overflow-hidden rounded bg-muted"
+										>
+											<div
+												className="h-full bg-foreground/60"
+												style={{
+													width: `${attemptProgressFraction(attempt.progressCompleted, attempt.progressTotal) * 100}%`,
+												}}
+											/>
 										</div>
-										<div>
-											<dt className="inline font-medium">
-												{t("features.fitting.planHash")}:{" "}
-											</dt>
-											<dd className="inline font-mono">
-												<IdentifierDisplay id={attempt.planHash} />
-											</dd>
-										</div>
-										{attempt.sourceAttemptId && (
+										<dl className="mt-2 grid gap-x-6 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
 											<div>
 												<dt className="inline font-medium">
-													{t("features.fitting.sourceAttempt")}:{" "}
+													{t("features.fitting.protocolHash")}:{" "}
 												</dt>
 												<dd className="inline font-mono">
-													<IdentifierDisplay id={attempt.sourceAttemptId} />
+													<IdentifierDisplay id={attempt.protocolHash} />
 												</dd>
 											</div>
-										)}
-										{attempt.artifactId && (
 											<div>
 												<dt className="inline font-medium">
-													{t("features.fitting.artifact")}:{" "}
+													{t("features.fitting.planHash")}:{" "}
 												</dt>
-												<dd className="inline break-all font-mono">
-													<IdentifierDisplay id={attempt.artifactId} />
+												<dd className="inline font-mono">
+													<IdentifierDisplay id={attempt.planHash} />
 												</dd>
 											</div>
+											{attempt.sourceAttemptId && (
+												<div>
+													<dt className="inline font-medium">
+														{t("features.fitting.sourceAttempt")}:{" "}
+													</dt>
+													<dd className="inline font-mono">
+														<IdentifierDisplay id={attempt.sourceAttemptId} />
+													</dd>
+												</div>
+											)}
+											{attempt.artifactId && (
+												<div>
+													<dt className="inline font-medium">
+														{t("features.fitting.artifact")}:{" "}
+													</dt>
+													<dd className="inline break-all font-mono">
+														<IdentifierDisplay id={attempt.artifactId} />
+													</dd>
+												</div>
+											)}
+										</dl>
+										{attempt.diagnostic && (
+											<pre className="mt-2 max-w-full overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2 text-xs">
+												{attempt.failureCode ? `${attempt.failureCode}: ` : ""}
+												{attempt.diagnostic}
+											</pre>
 										)}
-									</dl>
-									{attempt.diagnostic && (
-										<pre className="mt-2 max-w-full overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2 text-xs">
-											{attempt.failureCode ? `${attempt.failureCode}: ` : ""}
-											{attempt.diagnostic}
-										</pre>
-									)}
-								</li>
-							))}
+									</li>
+								)}
+							</PaginatedList>
 						</ul>
 					)}
 				</CardContent>
@@ -720,103 +724,106 @@ export function MaterializationView({
 						<FeaturesEmpty message={t("features.materialization.empty")} />
 					) : (
 						<ul className="space-y-3">
-							{attempts.map((attempt) => (
-								<li key={attempt.attemptId} className="rounded-md border p-3 text-sm">
-									<div className="flex flex-wrap items-center gap-2">
-										<span className="font-mono text-xs">
-											<IdentifierDisplay
-												id={attempt.attemptId}
-												label={t("identifiers.attempt")}
-											/>
-										</span>
-										<AttemptStatusBadge status={attempt.status} />
-										<span className="text-xs text-muted-foreground">
-											{formatNumber(attempt.progressCompleted)} /{" "}
-											{formatNumber(attempt.progressTotal)}
-										</span>
-										<span className="text-xs text-muted-foreground">
-											{formatUtc(attempt.createdAtMs)} UTC
-										</span>
-										<div className="ml-auto flex gap-1">
-											{(attempt.status === "pending" || attempt.status === "running") && (
-												<Button
-													type="button"
-													variant="outline"
-													size="sm"
-													onClick={() => cancel(attempt.attemptId)}
-												>
-													{t("features.materialization.cancel")}
-												</Button>
-											)}
-											{(attempt.status === "failed" || attempt.status === "cancelled") && (
-												<Button
-													type="button"
-													variant="outline"
-													size="sm"
-													onClick={() => retry(attempt.attemptId)}
-												>
-													{t("features.materialization.retry")}
-												</Button>
-											)}
+							<PaginatedList items={attempts} label="recordPagination.records" list>
+								{(attempt) => (
+									<li key={attempt.attemptId} className="rounded-md border p-3 text-sm">
+										<div className="flex flex-wrap items-center gap-2">
+											<span className="font-mono text-xs">
+												<IdentifierDisplay
+													id={attempt.attemptId}
+													label={t("identifiers.attempt")}
+												/>
+											</span>
+											<AttemptStatusBadge status={attempt.status} />
+											<span className="text-xs text-muted-foreground">
+												{formatNumber(attempt.progressCompleted)} /{" "}
+												{formatNumber(attempt.progressTotal)}
+											</span>
+											<span className="text-xs text-muted-foreground">
+												{formatUtc(attempt.createdAtMs)} UTC
+											</span>
+											<div className="ml-auto flex gap-1">
+												{(attempt.status === "pending" || attempt.status === "running") && (
+													<Button
+														type="button"
+														variant="outline"
+														size="sm"
+														onClick={() => cancel(attempt.attemptId)}
+													>
+														{t("features.materialization.cancel")}
+													</Button>
+												)}
+												{(attempt.status === "failed" ||
+													attempt.status === "cancelled") && (
+													<Button
+														type="button"
+														variant="outline"
+														size="sm"
+														onClick={() => retry(attempt.attemptId)}
+													>
+														{t("features.materialization.retry")}
+													</Button>
+												)}
+											</div>
 										</div>
-									</div>
-									<div
-										role="progressbar"
-										aria-valuemin={0}
-										aria-valuemax={100}
-										aria-valuenow={Math.round(
-											attemptProgressFraction(
-												attempt.progressCompleted,
-												attempt.progressTotal,
-											) * 100,
-										)}
-										className="mt-2 h-1.5 w-full overflow-hidden rounded bg-muted"
-									>
 										<div
-											className="h-full bg-foreground/60"
-											style={{
-												width: `${attemptProgressFraction(attempt.progressCompleted, attempt.progressTotal) * 100}%`,
-											}}
-										/>
-									</div>
-									<dl className="mt-2 grid gap-x-6 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
-										<div>
-											<dt className="inline font-medium">
-												{t("features.materialization.requestHash")}:{" "}
-											</dt>
-											<dd className="inline break-all font-mono">
-												<IdentifierDisplay id={attempt.requestHash} />
-											</dd>
+											role="progressbar"
+											aria-valuemin={0}
+											aria-valuemax={100}
+											aria-valuenow={Math.round(
+												attemptProgressFraction(
+													attempt.progressCompleted,
+													attempt.progressTotal,
+												) * 100,
+											)}
+											className="mt-2 h-1.5 w-full overflow-hidden rounded bg-muted"
+										>
+											<div
+												className="h-full bg-foreground/60"
+												style={{
+													width: `${attemptProgressFraction(attempt.progressCompleted, attempt.progressTotal) * 100}%`,
+												}}
+											/>
 										</div>
-										{attempt.sourceAttemptId && (
+										<dl className="mt-2 grid gap-x-6 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
 											<div>
 												<dt className="inline font-medium">
-													{t("features.materialization.sourceAttempt")}:{" "}
+													{t("features.materialization.requestHash")}:{" "}
 												</dt>
-												<dd className="inline font-mono">
-													<IdentifierDisplay id={attempt.sourceAttemptId} />
+												<dd className="inline break-all font-mono">
+													<IdentifierDisplay id={attempt.requestHash} />
 												</dd>
 											</div>
+											{attempt.sourceAttemptId && (
+												<div>
+													<dt className="inline font-medium">
+														{t("features.materialization.sourceAttempt")}:{" "}
+													</dt>
+													<dd className="inline font-mono">
+														<IdentifierDisplay id={attempt.sourceAttemptId} />
+													</dd>
+												</div>
+											)}
+											{attempt.datasetId && (
+												<div>
+													<dt className="inline font-medium">
+														{t("features.materialization.dataset")}:{" "}
+													</dt>
+													<dd className="inline font-mono">
+														<IdentifierDisplay id={attempt.datasetId} />
+													</dd>
+												</div>
+											)}
+										</dl>
+										{attempt.diagnostic && (
+											<pre className="mt-2 max-w-full overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2 text-xs">
+												{attempt.failureCode ? `${attempt.failureCode}: ` : ""}
+												{attempt.diagnostic}
+											</pre>
 										)}
-										{attempt.datasetId && (
-											<div>
-												<dt className="inline font-medium">
-													{t("features.materialization.dataset")}:{" "}
-												</dt>
-												<dd className="inline font-mono">
-													<IdentifierDisplay id={attempt.datasetId} />
-												</dd>
-											</div>
-										)}
-									</dl>
-									{attempt.diagnostic && (
-										<pre className="mt-2 max-w-full overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2 text-xs">
-											{attempt.failureCode ? `${attempt.failureCode}: ` : ""}
-											{attempt.diagnostic}
-										</pre>
-									)}
-								</li>
-							))}
+									</li>
+								)}
+							</PaginatedList>
 						</ul>
 					)}
 				</CardContent>

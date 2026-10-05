@@ -265,6 +265,12 @@ test("renders localized evidence and persisted operation history", async () => {
 	expect(container.textContent).toContain(
 		i18n.t("dataFoundation.validationTime"),
 	);
+	await act(async () => {
+		for (const panel of container.querySelectorAll("details")) {
+			panel.open = true;
+			panel.dispatchEvent(new Event("toggle"));
+		}
+	});
 	expect(container.textContent).toContain("OKX public history-candles REST");
 	expect(container.textContent).toContain(
 		"btc-usdt_okx-watchlist-1h-19700101-19700101",
@@ -487,6 +493,12 @@ test("renders source provenance in Chinese", async () => {
 	expect(container.textContent).toContain(
 		i18n.t("dataFoundation.sourceProvenanceTitle"),
 	);
+	await act(async () => {
+		for (const panel of container.querySelectorAll("details")) {
+			panel.open = true;
+			panel.dispatchEvent(new Event("toggle"));
+		}
+	});
 	expect(container.textContent).toContain("OKX public history-candles REST");
 	await act(async () => root.unmount());
 });

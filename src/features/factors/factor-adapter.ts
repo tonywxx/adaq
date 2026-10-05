@@ -28,7 +28,7 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 		extra: Record<string, unknown> = {},
 	) =>
 		invoke(command, {
-			request: { userId, page: pageNumber, pageSize: 50, ...extra },
+			request: { userId, page: pageNumber, pageSize: 10, ...extra },
 		}) as Promise<FactorPage<T>>;
 
 	return {
@@ -135,7 +135,7 @@ export function createFactorAdapter(invoke: FactorInvoke) {
 			userId: string,
 			datasetId: string,
 			offset: number,
-			limit = 50,
+			limit = 10,
 			instrumentId = "",
 		) =>
 			invoke("factor_dataset_rows", {

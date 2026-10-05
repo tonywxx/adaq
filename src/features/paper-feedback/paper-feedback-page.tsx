@@ -1,3 +1,9 @@
+import {
+	RecordPagination,
+	PaginatedList,
+} from "@/components/record-pagination";
+import { useRecordPage } from "@/hooks/use-record-page";
+import { afterPaint } from "@/features/factors/factor-workspace-data";
 import { useAuthenticatedUserId } from "@/authenticated-user";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +18,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { formatDateTime, formatDecimal, formatNumber } from "@/lib/i18n";
 import { identifierLabel } from "@/lib/identifier-display";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -52,6 +58,7 @@ type BotView = {
 };
 
 type Snapshot = {
+	existingLenses: Lens[];
 	snapshotId: string;
 	input: {
 		bundleId: string;
@@ -89,12 +96,6 @@ type ReviewDecision = {
 	};
 };
 
-type WorkspaceView = {
-	snapshots: Snapshot[];
-	reports: Report[];
-	decisions: ReviewDecision[];
-};
-
 export function PaperFeedbackPage() {
 	const { t } = useTranslation();
 	const userId = useAuthenticatedUserId();
@@ -110,27 +111,56 @@ export function PaperFeedbackPage() {
 	const [action, setAction] = useState<Action>("noChange");
 	const [rationale, setRationale] = useState("");
 
-	const bots = useQuery({
-		queryKey: ["paper-feedback-bots", userId],
-		queryFn: () => invoke<BotView[]>("bot_list"),
-		retry: false,
-	});
-	const workspace = useQuery({
-		queryKey: ["paper-feedback", userId],
-		queryFn: () => invoke<WorkspaceView>("paper_feedback_view"),
-		retry: false,
-	});
-
+	const bots = useRecordPage<BotView>("paper-feedback-bots", userId, "bot_page");
+	const snapshotPage = useRecordPage<Snapshot>(
+		"paper-feedback",
+		userId,
+		"paper_feedback_page",
+		{ section: "snapshots" },
+	);
+	const reportPage = useRecordPage<Report>(
+		"paper-feedback",
+		userId,
+		"paper_feedback_page",
+		{ section: "reports" },
+	);
+	const decisionPage = useRecordPage<ReviewDecision>(
+		"paper-feedback",
+		userId,
+		"paper_feedback_page",
+		{ section: "decisions" },
+	);
+	const workspace = {
+		isPending:
+			snapshotPage.isLoading || reportPage.isLoading || decisionPage.isLoading,
+		isError: snapshotPage.isError || reportPage.isError || decisionPage.isError,
+		error: snapshotPage.error || reportPage.error || decisionPage.error,
+	};
+	const [selection, setSelection] = useState<{
+		userId: string;
+		bot?: BotView;
+	}>();
+	const selectedBot =
+		bots.data?.items.find((bot) => bot.botId === botId) ??
+		(selection?.userId === userId ? selection.bot : undefined);
 	const eligibleBots = useMemo(
 		() =>
-			(bots.data ?? []).filter(
-				(bot) =>
-					Boolean(bot.currentAttemptId) &&
-					bot.attempts.some((attempt) => attempt.attemptId === bot.currentAttemptId),
-			),
-		[bots.data],
+			(bots.data?.items ?? [])
+				.concat(
+					selectedBot &&
+						!bots.data?.items.some((item) => item.botId === selectedBot.botId)
+						? [selectedBot]
+						: [],
+				)
+				.filter(
+					(bot) =>
+						Boolean(bot.currentAttemptId) &&
+						bot.attempts.some(
+							(attempt) => attempt.attemptId === bot.currentAttemptId,
+						),
+				),
+		[bots.data, selectedBot],
 	);
-	const selectedBot = eligibleBots.find((bot) => bot.botId === botId);
 	const selectedAttempt = selectedBot?.attempts.find(
 		(attempt) =>
 			attempt.attemptId === (attemptId || selectedBot.currentAttemptId),
@@ -143,7 +173,7 @@ export function PaperFeedbackPage() {
 		]);
 	};
 	const snapshot = useMutation({
-		mutationFn: () => {
+		mutationFn: async () => {
 			const start = parseDateInput(observationStart);
 			const end = parseDateInput(observationEnd);
 			const cutoff = parseDateInput(realizationCutoff);
@@ -161,6 +191,7 @@ export function PaperFeedbackPage() {
 					"Select an eligible Bot, bounded dates, and a positive sample requirement.",
 				);
 			}
+			await afterPaint();
 			return invoke<Snapshot>("paper_feedback_snapshot_create", {
 				request: {
 					botId: selectedBot.botId,
@@ -211,6 +242,7 @@ export function PaperFeedbackPage() {
 		const nextAttempt = nextBot?.attempts.find(
 			(attempt) => attempt.attemptId === nextBot.currentAttemptId,
 		);
+		setSelection({ userId, bot: nextBot });
 		setBotId(nextBotId);
 		setAttemptId(nextAttempt?.attemptId ?? "");
 		if (nextAttempt) {
@@ -222,7 +254,11 @@ export function PaperFeedbackPage() {
 		}
 	}
 
-	const data = workspace.data;
+	const data = {
+		snapshots: snapshotPage.data?.items ?? [],
+		reports: reportPage.data?.items ?? [],
+		decisions: decisionPage.data?.items ?? [],
+	};
 	const reports = data?.reports ?? [];
 	const snapshots = data?.snapshots ?? [];
 	const selectedReportSet = new Set(selectedReports);
@@ -283,6 +319,13 @@ export function PaperFeedbackPage() {
 								</option>
 							))}
 						</select>
+						<RecordPagination
+							label={t("paperFeedback.bot")}
+							page={bots.page}
+							total={bots.data?.total ?? 0}
+							busy={bots.isFetching}
+							onPage={bots.setPage}
+						/>
 						{!eligibleBots.length && !bots.isPending ? (
 							<p className="text-xs text-muted-foreground">
 								{t("paperFeedback.noBots")}{" "}
@@ -418,11 +461,7 @@ export function PaperFeedbackPage() {
 								</div>
 								<div className="flex flex-wrap gap-2">
 									{lenses.map((lens) => {
-										const existing = reports.some(
-											(reportItem) =>
-												reportItem.input.snapshotId === item.snapshotId &&
-												reportItem.input.lens === lens,
-										);
+										const existing = item.existingLenses.includes(lens);
 										return (
 											<Button
 												key={lens}
@@ -442,6 +481,13 @@ export function PaperFeedbackPage() {
 						</Card>
 					))
 				)}
+				<RecordPagination
+					label={t("paperFeedback.snapshots")}
+					page={snapshotPage.page}
+					total={snapshotPage.data?.total ?? 0}
+					busy={snapshotPage.isFetching}
+					onPage={snapshotPage.setPage}
+				/>
 			</section>
 
 			<Card>
@@ -497,6 +543,13 @@ export function PaperFeedbackPage() {
 							</label>
 						))
 					)}
+					<RecordPagination
+						label={t("paperFeedback.reports")}
+						page={reportPage.page}
+						total={reportPage.data?.total ?? 0}
+						busy={reportPage.isFetching}
+						onPage={reportPage.setPage}
+					/>
 				</CardContent>
 			</Card>
 
@@ -561,6 +614,13 @@ export function PaperFeedbackPage() {
 							{t("paperFeedback.noDecisions")}
 						</p>
 					)}
+					<RecordPagination
+						label={t("paperFeedback.review")}
+						page={decisionPage.page}
+						total={decisionPage.data?.total ?? 0}
+						busy={decisionPage.isFetching}
+						onPage={decisionPage.setPage}
+					/>
 				</CardContent>
 			</Card>
 		</div>
@@ -602,18 +662,23 @@ function MetricSummary({
 					{key}: {formatMetricValue(value, t)}
 				</span>
 			))}
-			{outputMetrics.map(([name, value]) => {
-				if (!value || typeof value !== "object") return null;
-				const values = Object.entries(value as Record<string, unknown>);
-				return (
-					<span key={`output-${name}`}>
-						{name}:{" "}
-						{values
-							.map(([key, metric]) => `${key}=${formatMetricValue(metric, t)}`)
-							.join(" · ")}
-					</span>
-				);
-			})}
+			<PaginatedList
+				items={outputMetrics}
+				label={t("paperFeedback.metricEvidence")}
+			>
+				{([name, value]) => {
+					if (!value || typeof value !== "object") return null;
+					const values = Object.entries(value as Record<string, unknown>);
+					return (
+						<span key={`output-${name}`}>
+							{name}:{" "}
+							{values
+								.map(([key, metric]) => `${key}=${formatMetricValue(metric, t)}`)
+								.join(" · ")}
+						</span>
+					);
+				}}
+			</PaginatedList>
 			{reasons.length ? (
 				<span>
 					{t("paperFeedback.evidenceReasons")}: {reasons.join(", ")}

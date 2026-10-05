@@ -1,3 +1,4 @@
+import { PaginatedList } from "@/components/record-pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -533,47 +534,51 @@ function UnifiedWatchlistCard({
 						{t("markets.emptyWatchlist")}
 					</div>
 				) : (
-					items.map((item) => {
-						const detail = details.get(sessionInstrumentKey(item));
-						const activeItem =
-							sessionInstrumentKey(item) === sessionInstrumentKey(active);
-						return (
-							<div
-								key={sessionInstrumentKey(item)}
-								className={`flex items-center gap-2 rounded-md border px-2 py-2 ${activeItem ? "border-primary/50 bg-primary/5" : ""}`}
-							>
-								<button
-									type="button"
-									className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-									onClick={() => {
-										setError(undefined);
-										void setActiveInstrument(item).catch((value) =>
-											setError(getErrorMessage(value)),
-										);
-									}}
+					<PaginatedList items={items} label="recordPagination.records">
+						{(item) => {
+							const detail = details.get(sessionInstrumentKey(item));
+							const activeItem =
+								sessionInstrumentKey(item) === sessionInstrumentKey(active);
+							return (
+								<div
+									key={sessionInstrumentKey(item)}
+									className={`flex items-center gap-2 rounded-md border px-2 py-2 ${activeItem ? "border-primary/50 bg-primary/5" : ""}`}
 								>
-									<span className="block truncate font-medium">{item.code}</span>
-									<span className="block truncate text-xs text-muted-foreground">
-										{detail?.name ?? item.venue?.id ?? item.src}
-									</span>
-								</button>
-								<Button
-									type="button"
-									size="icon-xs"
-									variant="ghost"
-									aria-label={t("market.removeFromWatchlist", { instrument: item.code })}
-									onClick={() => {
-										setError(undefined);
-										void removeWatchlistInstrument(item).catch((value) =>
-											setError(getErrorMessage(value)),
-										);
-									}}
-								>
-									<XIcon aria-hidden="true" />
-								</Button>
-							</div>
-						);
-					})
+									<button
+										type="button"
+										className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										onClick={() => {
+											setError(undefined);
+											void setActiveInstrument(item).catch((value) =>
+												setError(getErrorMessage(value)),
+											);
+										}}
+									>
+										<span className="block truncate font-medium">{item.code}</span>
+										<span className="block truncate text-xs text-muted-foreground">
+											{detail?.name ?? item.venue?.id ?? item.src}
+										</span>
+									</button>
+									<Button
+										type="button"
+										size="icon-xs"
+										variant="ghost"
+										aria-label={t("market.removeFromWatchlist", {
+											instrument: item.code,
+										})}
+										onClick={() => {
+											setError(undefined);
+											void removeWatchlistInstrument(item).catch((value) =>
+												setError(getErrorMessage(value)),
+											);
+										}}
+									>
+										<XIcon aria-hidden="true" />
+									</Button>
+								</div>
+							);
+						}}
+					</PaginatedList>
 				)}
 				{error ? (
 					<p className="text-xs text-destructive" role="status">
@@ -610,9 +615,7 @@ function InstrumentSearchCard({
 		() => new Set(watchlist.map(sessionInstrumentKey)),
 		[watchlist],
 	);
-	const results = instruments
-		.filter((value) => !existing.has(value.key))
-		.slice(0, 8);
+	const results = instruments.filter((value) => !existing.has(value.key));
 	const config = MARKET_CONFIG[market];
 	const [adding, setAdding] = useState<string>();
 	const [mutationError, setMutationError] = useState<string>();
@@ -665,54 +668,60 @@ function InstrumentSearchCard({
 					</p>
 				) : (
 					<div className="grid gap-1">
-						{results.map((instrument) => (
-							<div
-								key={instrument.key}
-								className="flex items-center gap-3 rounded-md border px-3 py-2"
-							>
-								<button
-									type="button"
-									className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-									onClick={() =>
-										void setActiveInstrument(instrument.ref).catch((value) =>
-											setMutationError(getErrorMessage(value)),
-										)
-									}
+						<PaginatedList
+							key={search}
+							items={results}
+							label="recordPagination.records"
+						>
+							{(instrument) => (
+								<div
+									key={instrument.key}
+									className="flex items-center gap-3 rounded-md border px-3 py-2"
 								>
-									<span className="block truncate font-medium">
-										{instrument.instrument.code}
-									</span>
-									<span className="block truncate text-xs text-muted-foreground">
-										{instrument.providerSymbol}
-										{instrument.name ? ` · ${instrument.name}` : ""} ·{" "}
-										{instrument.instrument.venue.id}
-									</span>
-								</button>
-								<Button
-									type="button"
-									size="sm"
-									variant="outline"
-									disabled={adding === instrument.key}
-									onClick={() => {
-										setMutationError(undefined);
-										setAdding(instrument.key);
-										void addWatchlistInstrument(instrument.ref)
-											.then(() => setAdding(undefined))
-											.catch((value) => {
-												setAdding(undefined);
-												setMutationError(getErrorMessage(value));
-											});
-									}}
-								>
-									{adding === instrument.key ? (
-										<LoaderCircleIcon className="animate-spin" aria-hidden="true" />
-									) : (
-										<PlusIcon aria-hidden="true" />
-									)}
-									{t("market.add")}
-								</Button>
-							</div>
-						))}
+									<button
+										type="button"
+										className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										onClick={() =>
+											void setActiveInstrument(instrument.ref).catch((value) =>
+												setMutationError(getErrorMessage(value)),
+											)
+										}
+									>
+										<span className="block truncate font-medium">
+											{instrument.instrument.code}
+										</span>
+										<span className="block truncate text-xs text-muted-foreground">
+											{instrument.providerSymbol}
+											{instrument.name ? ` · ${instrument.name}` : ""} ·{" "}
+											{instrument.instrument.venue.id}
+										</span>
+									</button>
+									<Button
+										type="button"
+										size="sm"
+										variant="outline"
+										disabled={adding === instrument.key}
+										onClick={() => {
+											setMutationError(undefined);
+											setAdding(instrument.key);
+											void addWatchlistInstrument(instrument.ref)
+												.then(() => setAdding(undefined))
+												.catch((value) => {
+													setAdding(undefined);
+													setMutationError(getErrorMessage(value));
+												});
+										}}
+									>
+										{adding === instrument.key ? (
+											<LoaderCircleIcon className="animate-spin" aria-hidden="true" />
+										) : (
+											<PlusIcon aria-hidden="true" />
+										)}
+										{t("market.add")}
+									</Button>
+								</div>
+							)}
+						</PaginatedList>
 					</div>
 				)}
 				{mutationError ? (

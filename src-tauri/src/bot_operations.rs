@@ -584,6 +584,44 @@ impl PersistedBot {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum BotAuditSection {
+    Events,
+    Decisions,
+    Orders,
+    Evidence,
+}
+
+#[tauri::command]
+pub(crate) fn bot_page(
+    page: usize,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
+    store: State<'_, Arc<BotStore>>,
+) -> Result<crate::ui_commands::RecordPage, String> {
+    store.page(&auth.user_id_for_window(window.label())?, page)
+}
+
+#[tauri::command]
+pub(crate) fn bot_audit_page(
+    bot_id: String,
+    attempt_id: String,
+    section: BotAuditSection,
+    page: usize,
+    window: WebviewWindow,
+    auth: State<'_, AuthState>,
+    store: State<'_, Arc<BotStore>>,
+) -> Result<crate::ui_commands::RecordPage, String> {
+    store.audit_page(
+        &auth.user_id_for_window(window.label())?,
+        &bot_id,
+        &attempt_id,
+        section,
+        page,
+    )
+}
+
 #[derive(Clone)]
 pub(crate) struct BotStore {
     database: Arc<Mutex<Connection>>,
@@ -598,6 +636,88 @@ struct DecisionCommandResult {
 }
 
 impl BotStore {
+    pub(crate) fn page(
+        &self,
+        user_id: &str,
+        page: usize,
+    ) -> Result<crate::ui_commands::RecordPage, String> {
+        let database = self.database.lock().map_err(|error| error.to_string())?;
+        let mut result = crate::ui_commands::RecordPage::read(
+            &database,
+            "bots b LEFT JOIN bot_runtime_attempts a
+             ON a.user_id=b.user_id AND a.bot_id=b.bot_id AND a.attempt_id=b.current_attempt_id
+             WHERE b.user_id=?1 AND ?2 IS NULL",
+            "json_object('botId', b.bot_id, 'state', json(b.state),
+                'currentAttemptId', b.current_attempt_id,
+                'bundle', json_object(
+                    'identity', json_extract(b.bundle_json, '$.identity'),
+                    'qualificationId', json_extract(b.bundle_json, '$.qualificationId'),
+                    'candidateId', json_extract(b.bundle_json, '$.candidateId'),
+                    'candidateRevision', json_extract(b.bundle_json, '$.candidateRevision'),
+                    'accountId', json_extract(b.bundle_json, '$.accountId'),
+                    'connectionProfileId', json_extract(b.bundle_json, '$.connectionProfileId'),
+                    'schedule', json_extract(b.bundle_json, '$.schedule')),
+                'attempts', json(CASE WHEN a.attempt_id IS NULL THEN '[]' ELSE
+                    json_array(json_set(a.attempt_json, '$.events', json('[]'),
+                        '$.decisions', json('[]'), '$.orders', json('[]'),
+                        '$.evidence', json((SELECT json_group_array(json(value)) FROM
+                            (SELECT value FROM json_each(a.attempt_json, '$.evidence')
+                             ORDER BY CAST(key AS INTEGER) DESC LIMIT 3))))) END))",
+            "b.updated_at_ms DESC, b.bot_id DESC",
+            user_id,
+            None,
+            page,
+        )?;
+        for item in &mut result.items {
+            let state =
+                serde_json::from_value(item["state"].clone()).map_err(|error| error.to_string())?;
+            item["control"] =
+                serde_json::to_value(controls_for(state)).map_err(|error| error.to_string())?;
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn audit_page(
+        &self,
+        user_id: &str,
+        bot_id: &str,
+        attempt_id: &str,
+        section: BotAuditSection,
+        page: usize,
+    ) -> Result<crate::ui_commands::RecordPage, String> {
+        let field = match section {
+            BotAuditSection::Events => "events",
+            BotAuditSection::Decisions => "decisions",
+            BotAuditSection::Orders => "orders",
+            BotAuditSection::Evidence => "evidence",
+        };
+        let database = self.database.lock().map_err(|error| error.to_string())?;
+        let current = database
+            .query_row(
+                "SELECT current_attempt_id FROM bots WHERE user_id=?1 AND bot_id=?2",
+                params![user_id, bot_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if current.as_deref() != Some(attempt_id) {
+            return Err("The current Bot Attempt changed; refresh its audit trail.".into());
+        }
+        crate::ui_commands::RecordPage::read(
+            &database,
+            &format!(
+                "bot_runtime_attempts a JOIN bots b
+                ON b.user_id=a.user_id AND b.bot_id=a.bot_id AND b.current_attempt_id=a.attempt_id,
+                json_each(a.attempt_json, '$.{field}') e
+                WHERE a.user_id=?1 AND a.bot_id=?2"
+            ),
+            "e.value",
+            "CAST(e.key AS INTEGER) DESC",
+            user_id,
+            Some(bot_id),
+            page,
+        )
+    }
+
     pub(crate) fn open(database: Arc<Mutex<Connection>>) -> Result<Self, String> {
         let store = Self {
             database,

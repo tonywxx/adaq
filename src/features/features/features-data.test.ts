@@ -94,7 +94,7 @@ test("builds Plan drafts with the empty engine identity for native replacement",
 	expect(plan.artifacts).toEqual([]);
 });
 
-test("dataset filters are bounded to 50 rows and ignore blank fields", () => {
+test("dataset filters are bounded to 10 rows and ignore blank fields", () => {
 	const filter = buildDatasetFilter({
 		instrumentId: "  okx:BTC-USDT  ",
 		outputName: "",
@@ -104,7 +104,7 @@ test("dataset filters are bounded to 50 rows and ignore blank fields", () => {
 		instrumentId: "okx:BTC-USDT",
 		limit: DATASET_PAGE_SIZE,
 	});
-	expect(DATASET_PAGE_SIZE).toBe(50);
+	expect(DATASET_PAGE_SIZE).toBe(10);
 	expect(
 		buildDatasetFilter({
 			instrumentId: "",
@@ -118,10 +118,10 @@ test("dataset filters are bounded to 50 rows and ignore blank fields", () => {
 		endTimeMs: 2,
 		outputName: "return",
 		state: "unavailable",
-		limit: 50,
+		limit: 10,
 	});
 	expect(datasetPageOffset(1)).toBe(0);
-	expect(datasetPageOffset(3)).toBe(100);
+	expect(datasetPageOffset(3)).toBe(20);
 	expect(datasetPageOffset(0)).toBe(0);
 });
 

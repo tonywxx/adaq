@@ -4,11 +4,17 @@ import "@/lib/i18n";
 import { AuthenticatedUserContext } from "@/authenticated-user";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { PaperFeedbackPage } from "./paper-feedback-page";
+import { i18n } from "@/lib/i18n";
 
 jest.mock("@tauri-apps/api/core", () => ({ invoke: jest.fn() }));
+jest.mock("@tanstack/react-router", () => ({
+	Link: ({ to, children }: { to: string; children: ReactNode }) => (
+		<a href={to}>{children}</a>
+	),
+}));
 const mockInvoke = invoke as jest.MockedFunction<typeof invoke>;
 
 (
@@ -31,6 +37,7 @@ const bot = {
 
 const snapshot = {
 	snapshotId: "snapshot-a",
+	existingLenses: [] as string[],
 	input: {
 		bundleId: "bundle-a",
 		botId: "bot-a",
@@ -70,7 +77,7 @@ async function settle() {
 	await act(async () => {
 		await Promise.resolve();
 		await Promise.resolve();
-		await new Promise((resolve) => window.setTimeout(resolve, 0));
+		await new Promise((resolve) => window.setTimeout(resolve, 120));
 	});
 }
 
@@ -103,14 +110,30 @@ beforeEach(() => {
 		decisions: unknown[];
 	};
 	mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
-		if (command === "bot_list") return [bot];
-		if (command === "paper_feedback_view") return view;
+		if (command === "bot_page")
+			return { items: [bot], page: 1, pageSize: 10, total: 1 };
+		if (command === "paper_feedback_page") {
+			const section = (args as { section: keyof typeof view }).section;
+			return {
+				items: view[section],
+				page: 1,
+				pageSize: 10,
+				total: view[section].length,
+			};
+		}
 		if (command === "paper_feedback_snapshot_create") {
 			view = { ...view, snapshots: [snapshot] };
 			return snapshot;
 		}
 		if (command === "paper_feedback_report_create") {
-			view = { ...view, reports: [report] };
+			view = {
+				...view,
+				reports: [report],
+				snapshots: view.snapshots.map((item) => ({
+					...item,
+					existingLenses: ["factor"],
+				})),
+			};
 			return report;
 		}
 		if (command === "paper_feedback_review_decide")
@@ -179,5 +202,96 @@ test("creates a Host-bound snapshot and exposes all four review lenses", async (
 		"score: samples=2 · coverage=1 · ic=0.5000 · rankIc=0.4000",
 	);
 	expect(container.textContent).toContain("target-horizon-not-matured");
+	await unmount(root, container);
+});
+
+test("report pages retain selections and use complete Snapshot lens availability", async () => {
+	const reports = Array.from({ length: 23 }, (_, index) => ({
+		...report,
+		reportId: `report-${index}`,
+	}));
+	mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
+		if (command === "bot_page")
+			return { items: [], total: 0, page: 1, pageSize: 10 };
+		if (command === "paper_feedback_page") {
+			const request = args as { page: number; section: string };
+			const page = request.page;
+			const items =
+				request.section === "reports"
+					? reports
+					: request.section === "snapshots"
+						? [{ ...snapshot, existingLenses: ["factor"] }]
+						: [];
+			return {
+				items: items.slice((page - 1) * 10, page * 10),
+				total: items.length,
+				page,
+				pageSize: 10,
+			};
+		}
+		if (command === "paper_feedback_review_decide")
+			return { decisionId: "decision-a" };
+		throw new Error(`unexpected command ${command}`);
+	});
+	const { container, root } = await mount();
+	expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(10);
+	const factor = Array.from(container.querySelectorAll("button")).find(
+		(button) => button.textContent === i18n.t("paperFeedback.lenses.factor"),
+	);
+	expect(factor?.disabled).toBe(true);
+	await act(async () =>
+		(
+			container.querySelector('input[type="checkbox"]') as HTMLInputElement
+		).click(),
+	);
+	const pagerLabel = i18n.t("paperTrading.paginationLabel", {
+		section: i18n.t("paperFeedback.reports"),
+	});
+	const pager = Array.from(container.querySelectorAll("nav")).find(
+		(nav) => nav.getAttribute("aria-label") === pagerLabel,
+	)!;
+	await act(async () =>
+		(pager.querySelectorAll("button")[1] as HTMLButtonElement).click(),
+	);
+	await settle();
+	expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(10);
+	await act(async () =>
+		(
+			container.querySelector('input[type="checkbox"]') as HTMLInputElement
+		).click(),
+	);
+	await act(async () =>
+		(pager.querySelectorAll("button")[0] as HTMLButtonElement).click(),
+	);
+	await settle();
+	expect(
+		(container.querySelector('input[type="checkbox"]') as HTMLInputElement)
+			.checked,
+	).toBe(true);
+	const rationale = container.querySelector(
+		"#feedback-rationale",
+	) as HTMLTextAreaElement;
+	await act(async () => {
+		Object.getOwnPropertyDescriptor(
+			HTMLTextAreaElement.prototype,
+			"value",
+		)!.set!.call(rationale, "Review both pages");
+		rationale.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+	await act(async () =>
+		Array.from(container.querySelectorAll("button"))
+			.find(
+				(button) => button.textContent === i18n.t("paperFeedback.submitDecision"),
+			)!
+			.click(),
+	);
+	await settle();
+	expect(mockInvoke).toHaveBeenCalledWith("paper_feedback_review_decide", {
+		request: {
+			reportIds: ["report-0", "report-10"],
+			action: "noChange",
+			rationale: "Review both pages",
+		},
+	});
 	await unmount(root, container);
 });

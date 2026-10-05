@@ -1,3 +1,4 @@
+import { PaginatedList } from "@/components/record-pagination";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -982,76 +983,78 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 				<div className="grid gap-2 rounded-md border p-3">
 					<p className="font-medium">{t("pythonResearch.modelLab.attempts")}</p>
 					{modelAttempts.length ? (
-						modelAttempts.map((attempt) => (
-							<div
-								key={attempt.attemptId}
-								className="flex flex-wrap items-center gap-2 border-t pt-2 first:border-0 first:pt-0"
-							>
-								<code className="break-all text-xs">
-									<IdentifierDisplay
-										id={attempt.attemptId}
-										label={t("identifiers.attempt")}
-									/>
-								</code>
-								<Badge
-									variant="outline"
-									data-status={attempt.status}
-									title={attempt.status}
+						<PaginatedList items={modelAttempts} label="recordPagination.records">
+							{(attempt) => (
+								<div
+									key={attempt.attemptId}
+									className="flex flex-wrap items-center gap-2 border-t pt-2 first:border-0 first:pt-0"
 								>
-									{t(`pythonResearch.modelLab.attemptStatus.${attempt.status}`, {
-										defaultValue: attempt.status,
-									})}
-								</Badge>
-								<span className="text-muted-foreground">#{attempt.queueSequence}</span>
-								{attempt.sourceAttemptId ? (
-									<span className="break-all text-muted-foreground">
-										{t("pythonResearch.modelLab.sourceAttempt", {
-											attempt: attempt.sourceAttemptId,
+									<code className="break-all text-xs">
+										<IdentifierDisplay
+											id={attempt.attemptId}
+											label={t("identifiers.attempt")}
+										/>
+									</code>
+									<Badge
+										variant="outline"
+										data-status={attempt.status}
+										title={attempt.status}
+									>
+										{t(`pythonResearch.modelLab.attemptStatus.${attempt.status}`, {
+											defaultValue: attempt.status,
 										})}
-									</span>
-								) : null}
-								{attempt.progressTotal ? (
-									<span className="text-muted-foreground">
-										{attempt.progressCompleted ?? 0}/{attempt.progressTotal}
-									</span>
-								) : null}
-								{attempt.diagnostic || attempt.failureCode ? (
-									<p className="basis-full text-destructive" role="alert">
-										{t("pythonResearch.modelLab.diagnostics", {
-											value: attempt.diagnostic ?? attempt.failureCode,
-										})}
-									</p>
-								) : null}
-								<div className="ml-auto flex gap-2">
-									{attempt.status === "pending" || attempt.status === "running" ? (
-										<Button
-											type="button"
-											size="sm"
-											variant="outline"
-											onClick={() => void updateAttempt(attempt, "cancel")}
-											loading={busy === `${attempt.attemptId}:cancel`}
-										>
-											{t("pythonResearch.projects.cancel")}
-										</Button>
+									</Badge>
+									<span className="text-muted-foreground">#{attempt.queueSequence}</span>
+									{attempt.sourceAttemptId ? (
+										<span className="break-all text-muted-foreground">
+											{t("pythonResearch.modelLab.sourceAttempt", {
+												attempt: attempt.sourceAttemptId,
+											})}
+										</span>
 									) : null}
-									{isRetryableAttempt(attempt) &&
-									!experiment?.trials.some(
-										(trial) =>
-											Number(attempt.execution?.parameters?.alpha) === trial.alpha,
-									) ? (
-										<Button
-											type="button"
-											size="sm"
-											variant="outline"
-											onClick={() => void updateAttempt(attempt, "retry")}
-											loading={busy === `${attempt.attemptId}:retry`}
-										>
-											{t("pythonResearch.projects.retry")}
-										</Button>
+									{attempt.progressTotal ? (
+										<span className="text-muted-foreground">
+											{attempt.progressCompleted ?? 0}/{attempt.progressTotal}
+										</span>
 									) : null}
+									{attempt.diagnostic || attempt.failureCode ? (
+										<p className="basis-full text-destructive" role="alert">
+											{t("pythonResearch.modelLab.diagnostics", {
+												value: attempt.diagnostic ?? attempt.failureCode,
+											})}
+										</p>
+									) : null}
+									<div className="ml-auto flex gap-2">
+										{attempt.status === "pending" || attempt.status === "running" ? (
+											<Button
+												type="button"
+												size="sm"
+												variant="outline"
+												onClick={() => void updateAttempt(attempt, "cancel")}
+												loading={busy === `${attempt.attemptId}:cancel`}
+											>
+												{t("pythonResearch.projects.cancel")}
+											</Button>
+										) : null}
+										{isRetryableAttempt(attempt) &&
+										!experiment?.trials.some(
+											(trial) =>
+												Number(attempt.execution?.parameters?.alpha) === trial.alpha,
+										) ? (
+											<Button
+												type="button"
+												size="sm"
+												variant="outline"
+												onClick={() => void updateAttempt(attempt, "retry")}
+												loading={busy === `${attempt.attemptId}:retry`}
+											>
+												{t("pythonResearch.projects.retry")}
+											</Button>
+										) : null}
+									</div>
 								</div>
-							</div>
-						))
+							)}
+						</PaginatedList>
 					) : (
 						<p className="text-xs text-muted-foreground">
 							{t("pythonResearch.modelLab.noAttempts")}
@@ -1123,11 +1126,13 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								state: run.repeatabilityState,
 							})}
 						</p>
-						{run.diagnostics.map((diagnostic) => (
-							<p key={diagnostic} className="text-destructive" role="alert">
-								{t("pythonResearch.modelLab.diagnostics", { value: diagnostic })}
-							</p>
-						))}
+						<PaginatedList items={run.diagnostics} label="recordPagination.records">
+							{(diagnostic) => (
+								<p key={diagnostic} className="text-destructive" role="alert">
+									{t("pythonResearch.modelLab.diagnostics", { value: diagnostic })}
+								</p>
+							)}
+						</PaginatedList>
 						<p className="break-all font-mono text-xs text-muted-foreground">
 							Factor <IdentifierDisplay id={run.factorDecisionHash} /> · Dataset{" "}
 							<IdentifierDisplay id={run.factorDatasetId} /> · Feature{" "}
@@ -1157,117 +1162,136 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								{t("pythonResearch.modelLab.selectionBlocked")}
 							</p>
 						) : null}
-						{experiment.trials.map((trial) => (
-							<div
-								key={trial.trialId}
-								className="flex flex-wrap items-center gap-2 border-t pt-2 first:border-0 first:pt-0"
-							>
-								<span className="min-w-12">α={trial.alpha}</span>
-								<Badge
-									variant="outline"
-									data-status={trial.status}
-									title={trial.status}
+						<PaginatedList items={experiment.trials} label="recordPagination.records">
+							{(trial) => (
+								<div
+									key={trial.trialId}
+									className="flex flex-wrap items-center gap-2 border-t pt-2 first:border-0 first:pt-0"
 								>
-									{t(`pythonResearch.modelLab.trialStatus.${trial.status}`, {
-										defaultValue: trial.status,
-									})}
-								</Badge>
-								<span className="text-muted-foreground">
-									{trial.attemptIds.length} attempt(s)
-								</span>
-								{trial.selectionMetric !== undefined ? (
-									<span className="text-muted-foreground">
-										{t("pythonResearch.modelLab.selectionMetric", {
-											metric: trial.selectionMetric,
+									<span className="min-w-12">α={trial.alpha}</span>
+									<Badge
+										variant="outline"
+										data-status={trial.status}
+										title={trial.status}
+									>
+										{t(`pythonResearch.modelLab.trialStatus.${trial.status}`, {
+											defaultValue: trial.status,
 										})}
+									</Badge>
+									<span className="text-muted-foreground">
+										{trial.attemptIds.length} attempt(s)
 									</span>
-								) : null}
-								<p className="basis-full break-all font-mono text-xs text-muted-foreground">
-									{t("pythonResearch.modelLab.trial", { trial: trial.trialId })} ·{" "}
-									{t("pythonResearch.modelLab.evidence", { state: trial.evidenceState })}{" "}
-									·{" "}
-									{t("pythonResearch.modelLab.repeatabilityState", {
-										state: trial.repeatabilityState,
-									})}
-								</p>
-								<p className="basis-full break-all font-mono text-xs text-muted-foreground">
-									{t("pythonResearch.modelLab.successfulAttempt", {
-										attempt: trial.successfulAttemptId ?? "—",
-									})}
-								</p>
-								<p className="basis-full break-all font-mono text-xs text-muted-foreground">
-									{t("pythonResearch.modelLab.candidateArtifact", {
-										artifact: trial.candidateArtifactSha256 ?? "—",
-									})}
-								</p>
-								<p className="basis-full text-muted-foreground" role="status">
-									{t("pythonResearch.modelLab.noDownstreamDataset")}
-								</p>
-								{trial.attemptIds.map((attemptId) => (
-									<code key={attemptId} className="basis-full break-all text-xs">
-										Attempt {attemptId}
-									</code>
-								))}
-								{trial.diagnostics.map((diagnostic) => (
-									<p
-										key={diagnostic}
-										className="basis-full text-destructive"
-										role="alert"
-									>
-										{t("pythonResearch.modelLab.diagnostics", { value: diagnostic })}
+									{trial.selectionMetric !== undefined ? (
+										<span className="text-muted-foreground">
+											{t("pythonResearch.modelLab.selectionMetric", {
+												metric: trial.selectionMetric,
+											})}
+										</span>
+									) : null}
+									<p className="basis-full break-all font-mono text-xs text-muted-foreground">
+										{t("pythonResearch.modelLab.trial", { trial: trial.trialId })} ·{" "}
+										{t("pythonResearch.modelLab.evidence", {
+											state: trial.evidenceState,
+										})}{" "}
+										·{" "}
+										{t("pythonResearch.modelLab.repeatabilityState", {
+											state: trial.repeatabilityState,
+										})}
 									</p>
-								))}
-								{failureAttemptsForTrial(trial).map((attempt) => (
-									<div
-										key={`failure:${attempt.attemptId}`}
-										className="flex flex-wrap gap-2"
+									<p className="basis-full break-all font-mono text-xs text-muted-foreground">
+										{t("pythonResearch.modelLab.successfulAttempt", {
+											attempt: trial.successfulAttemptId ?? "—",
+										})}
+									</p>
+									<p className="basis-full break-all font-mono text-xs text-muted-foreground">
+										{t("pythonResearch.modelLab.candidateArtifact", {
+											artifact: trial.candidateArtifactSha256 ?? "—",
+										})}
+									</p>
+									<p className="basis-full text-muted-foreground" role="status">
+										{t("pythonResearch.modelLab.noDownstreamDataset")}
+									</p>
+									<PaginatedList
+										items={trial.attemptIds}
+										label="recordPagination.records"
 									>
-										<Button
-											type="button"
-											size="sm"
-											variant="outline"
-											disabled={trial.status !== "registered"}
-											loading={busy === `fail:${attempt.attemptId}`}
-											onClick={() => void retainFailure(trial, attempt.attemptId)}
-										>
-											{t("pythonResearch.modelLab.retainFailure")}
-										</Button>
-										<Button
-											type="button"
-											size="sm"
-											variant="outline"
-											disabled={trial.status === "completed"}
-											loading={busy === `retry:${attempt.attemptId}`}
-											onClick={() => void retryTrial(trial, attempt.attemptId)}
-										>
-											{t("pythonResearch.modelLab.retryTrial")}
-										</Button>
-									</div>
-								))}
-								<Button
-									type="button"
-									size="sm"
-									variant="outline"
-									disabled={trial.status !== "registered"}
-									loading={busy === trial.trialId}
-									onClick={() => void completeTrial(trial)}
-								>
-									{t("pythonResearch.modelLab.completeTrial")}
-								</Button>
-								<Button
-									type="button"
-									size="sm"
-									variant="outline"
-									disabled={
-										!selectionReady || Boolean(decision) || trial.status !== "completed"
-									}
-									loading={busy === `select:${trial.trialId}`}
-									onClick={() => void selectTrial(trial)}
-								>
-									{t("pythonResearch.modelLab.select")}
-								</Button>
-							</div>
-						))}
+										{(attemptId) => (
+											<code key={attemptId} className="basis-full break-all text-xs">
+												Attempt {attemptId}
+											</code>
+										)}
+									</PaginatedList>
+									<PaginatedList
+										items={trial.diagnostics}
+										label="recordPagination.records"
+									>
+										{(diagnostic) => (
+											<p
+												key={diagnostic}
+												className="basis-full text-destructive"
+												role="alert"
+											>
+												{t("pythonResearch.modelLab.diagnostics", { value: diagnostic })}
+											</p>
+										)}
+									</PaginatedList>
+									<PaginatedList
+										items={failureAttemptsForTrial(trial)}
+										label="recordPagination.records"
+									>
+										{(attempt) => (
+											<div
+												key={`failure:${attempt.attemptId}`}
+												className="flex flex-wrap gap-2"
+											>
+												<Button
+													type="button"
+													size="sm"
+													variant="outline"
+													disabled={trial.status !== "registered"}
+													loading={busy === `fail:${attempt.attemptId}`}
+													onClick={() => void retainFailure(trial, attempt.attemptId)}
+												>
+													{t("pythonResearch.modelLab.retainFailure")}
+												</Button>
+												<Button
+													type="button"
+													size="sm"
+													variant="outline"
+													disabled={trial.status === "completed"}
+													loading={busy === `retry:${attempt.attemptId}`}
+													onClick={() => void retryTrial(trial, attempt.attemptId)}
+												>
+													{t("pythonResearch.modelLab.retryTrial")}
+												</Button>
+											</div>
+										)}
+									</PaginatedList>
+									<Button
+										type="button"
+										size="sm"
+										variant="outline"
+										disabled={trial.status !== "registered"}
+										loading={busy === trial.trialId}
+										onClick={() => void completeTrial(trial)}
+									>
+										{t("pythonResearch.modelLab.completeTrial")}
+									</Button>
+									<Button
+										type="button"
+										size="sm"
+										variant="outline"
+										disabled={
+											!selectionReady || Boolean(decision) || trial.status !== "completed"
+										}
+										loading={busy === `select:${trial.trialId}`}
+										onClick={() => void selectTrial(trial)}
+									>
+										{t("pythonResearch.modelLab.select")}
+									</Button>
+								</div>
+							)}
+						</PaginatedList>
 					</div>
 				) : null}
 				{decision ? (
@@ -1416,87 +1440,94 @@ export function PythonModelLabPanel({ userId }: { userId: string }) {
 								{t("pythonResearch.modelLab.completeFinalEvaluation")}
 							</p>
 						) : null}
-						{deploymentReports.map((deployment) => (
-							<div
-								key={deployment.reportId}
-								className="grid gap-1 border-t pt-2"
-								data-status={deployment.qualified ? "qualified" : "research-only"}
-							>
-								<div className="flex flex-wrap items-center gap-2">
-									<Badge variant={deployment.qualified ? "default" : "destructive"}>
-										{deployment.qualified
-											? t("pythonResearch.modelLab.qualified")
-											: t("pythonResearch.modelLab.researchOnly")}
-									</Badge>
-									<code className="break-all text-xs">
-										<IdentifierDisplay
-											id={deployment.reportId}
-											label={t("identifiers.evaluationReport")}
-										/>
-									</code>
-								</div>
-								<p className="break-all font-mono text-xs text-muted-foreground">
-									{t("pythonResearch.modelLab.deploymentAttemptArtifact", {
-										attempt: deployment.attemptId,
-										artifact: deployment.artifactSha256,
-									})}
-								</p>
-								<p className="break-all font-mono text-xs text-muted-foreground">
-									{t("pythonResearch.modelLab.deploymentRuntime", {
-										profile: deployment.wasiProfile,
-										exporter: deployment.exporterId,
-										runtime: deployment.runtimeIdentity,
-									})}
-								</p>
-								<p className="break-all font-mono text-xs text-muted-foreground">
-									{t("pythonResearch.modelLab.deploymentReplay", {
-										identity: deployment.replayIdentity,
-										rows: deployment.replayRows,
-										tolerance: deployment.numericTolerance,
-									})}
-								</p>
-								<p className="break-all text-xs text-muted-foreground">
-									{t("pythonResearch.modelLab.deploymentQualification", {
-										duration: deployment.qualificationDurationMs,
-										deadline: deployment.qualificationDeadlineMs,
-									})}
-								</p>
-								<p className="break-all text-xs text-muted-foreground">
-									{t("pythonResearch.modelLab.deploymentEvidence", {
-										package: String(deployment.evidence.package),
-										conformance: String(deployment.evidence.conformance),
-										equivalence: String(deployment.evidence.equivalence),
-										runtime: String(deployment.evidence.runtime),
-									})}
-								</p>
-								{deployment.packageArchiveSha256 ? (
+						<PaginatedList items={deploymentReports} label="recordPagination.records">
+							{(deployment) => (
+								<div
+									key={deployment.reportId}
+									className="grid gap-1 border-t pt-2"
+									data-status={deployment.qualified ? "qualified" : "research-only"}
+								>
+									<div className="flex flex-wrap items-center gap-2">
+										<Badge variant={deployment.qualified ? "default" : "destructive"}>
+											{deployment.qualified
+												? t("pythonResearch.modelLab.qualified")
+												: t("pythonResearch.modelLab.researchOnly")}
+										</Badge>
+										<code className="break-all text-xs">
+											<IdentifierDisplay
+												id={deployment.reportId}
+												label={t("identifiers.evaluationReport")}
+											/>
+										</code>
+									</div>
 									<p className="break-all font-mono text-xs text-muted-foreground">
-										{t("pythonResearch.modelLab.deploymentPackage", {
-											package: deployment.packageArchiveSha256,
-											component: deployment.componentId,
-											version: deployment.componentVersion,
-											wasm: deployment.wasmSha256,
+										{t("pythonResearch.modelLab.deploymentAttemptArtifact", {
+											attempt: deployment.attemptId,
+											artifact: deployment.artifactSha256,
 										})}
 									</p>
-								) : null}
-								{deployment.importedComponentArchiveSha256 ? (
-									<p className="break-all text-xs text-muted-foreground" role="status">
-										{t("pythonResearch.modelLab.deploymentLibraryImported", {
-											archive: deployment.importedComponentArchiveSha256,
+									<p className="break-all font-mono text-xs text-muted-foreground">
+										{t("pythonResearch.modelLab.deploymentRuntime", {
+											profile: deployment.wasiProfile,
+											exporter: deployment.exporterId,
+											runtime: deployment.runtimeIdentity,
 										})}
 									</p>
-								) : null}
-								{deployment.diagnostics.map((diagnostic) => (
-									<p
-										key={diagnostic}
-										className="break-all text-destructive"
-										role="alert"
+									<p className="break-all font-mono text-xs text-muted-foreground">
+										{t("pythonResearch.modelLab.deploymentReplay", {
+											identity: deployment.replayIdentity,
+											rows: deployment.replayRows,
+											tolerance: deployment.numericTolerance,
+										})}
+									</p>
+									<p className="break-all text-xs text-muted-foreground">
+										{t("pythonResearch.modelLab.deploymentQualification", {
+											duration: deployment.qualificationDurationMs,
+											deadline: deployment.qualificationDeadlineMs,
+										})}
+									</p>
+									<p className="break-all text-xs text-muted-foreground">
+										{t("pythonResearch.modelLab.deploymentEvidence", {
+											package: String(deployment.evidence.package),
+											conformance: String(deployment.evidence.conformance),
+											equivalence: String(deployment.evidence.equivalence),
+											runtime: String(deployment.evidence.runtime),
+										})}
+									</p>
+									{deployment.packageArchiveSha256 ? (
+										<p className="break-all font-mono text-xs text-muted-foreground">
+											{t("pythonResearch.modelLab.deploymentPackage", {
+												package: deployment.packageArchiveSha256,
+												component: deployment.componentId,
+												version: deployment.componentVersion,
+												wasm: deployment.wasmSha256,
+											})}
+										</p>
+									) : null}
+									{deployment.importedComponentArchiveSha256 ? (
+										<p className="break-all text-xs text-muted-foreground" role="status">
+											{t("pythonResearch.modelLab.deploymentLibraryImported", {
+												archive: deployment.importedComponentArchiveSha256,
+											})}
+										</p>
+									) : null}
+									<PaginatedList
+										items={deployment.diagnostics}
+										label="recordPagination.records"
 									>
-										{diagnostic}
-									</p>
-								))}
-							</div>
-						))}
+										{(diagnostic) => (
+											<p
+												key={diagnostic}
+												className="break-all text-destructive"
+												role="alert"
+											>
+												{diagnostic}
+											</p>
+										)}
+									</PaginatedList>
+								</div>
+							)}
+						</PaginatedList>
 						{libraryComponents.length ? (
 							<div
 								className="grid gap-1 border-t pt-2"

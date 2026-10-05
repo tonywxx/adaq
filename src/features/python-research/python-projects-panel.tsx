@@ -1,3 +1,4 @@
+import { PaginatedList } from "@/components/record-pagination";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -482,94 +483,60 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 							{t("pythonResearch.projects.empty")}
 						</p>
 					) : null}
-					{visible.map((project) => (
-						<div
-							key={project.projectId}
-							className="grid gap-2 rounded-md border p-3 text-sm"
-						>
-							<div className="flex flex-wrap items-center gap-2">
-								<code className="break-all">
-									<IdentifierDisplay
-										id={project.projectId}
-										label={t("identifiers.pythonProject")}
-									/>
-								</code>
-								<Badge variant={project.state === "clean" ? "secondary" : "outline"}>
-									{t(`pythonResearch.projects.state.${project.state}`)}
-								</Badge>
-								<div className="ml-auto flex flex-wrap gap-2">
-									<Button
-										type="button"
-										size="sm"
-										variant="outline"
-										onClick={() => openProject(project.path)}
-									>
-										{t("pythonResearch.projects.open")}
-									</Button>
-									<Button
-										type="button"
-										size="sm"
-										variant="outline"
-										onClick={() => void validate(project.projectId)}
-										loading={busy === `${project.projectId}:validate`}
-									>
-										{t("pythonResearch.projects.validate")}
-									</Button>
-									<Button
-										type="button"
-										size="sm"
-										variant="outline"
-										onClick={() => void freeze(project)}
-										disabled={project.state !== "clean"}
-										loading={busy === `${project.projectId}:freeze`}
-									>
-										{t("pythonResearch.projects.freeze")}
-									</Button>
-									<Button
-										type="button"
-										size="sm"
-										variant="outline"
-										onClick={() => void exportProject(project)}
-										disabled={project.state !== "clean"}
-										loading={busy === `${project.projectId}:export`}
-									>
-										{t("pythonResearch.projects.export")}
-									</Button>
-									<Button
-										type="button"
-										size="sm"
-										variant="outline"
-										onClick={() => void openPreview(project)}
-										disabled={!revisions[project.projectId] || project.state !== "clean"}
-										loading={busy === `${project.projectId}:preview`}
-									>
-										{t(
-											kind === "model"
-												? "pythonResearch.projects.reviewModelTrust"
-												: "pythonResearch.projects.reviewTrust",
-										)}
-									</Button>
-									<Button
-										type="button"
-										size="sm"
-										variant="outline"
-										onClick={() => void syncEnvironment(project)}
-										disabled={project.state === "invalid"}
-										loading={busy === `${project.projectId}:sync`}
-									>
-										{t("pythonResearch.projects.syncEnvironment")}
-									</Button>
-									<Button
-										type="button"
-										size="sm"
-										variant="outline"
-										onClick={() => void prepareEnvironment(project)}
-										disabled={project.state !== "clean"}
-										loading={busy === `${project.projectId}:environment`}
-									>
-										{t("pythonResearch.projects.prepareEnvironment")}
-									</Button>
-									{kind !== "model" && (
+					<PaginatedList items={visible} label="recordPagination.records">
+						{(project) => (
+							<div
+								key={project.projectId}
+								className="grid gap-2 rounded-md border p-3 text-sm"
+							>
+								<div className="flex flex-wrap items-center gap-2">
+									<code className="break-all">
+										<IdentifierDisplay
+											id={project.projectId}
+											label={t("identifiers.pythonProject")}
+										/>
+									</code>
+									<Badge variant={project.state === "clean" ? "secondary" : "outline"}>
+										{t(`pythonResearch.projects.state.${project.state}`)}
+									</Badge>
+									<div className="ml-auto flex flex-wrap gap-2">
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={() => openProject(project.path)}
+										>
+											{t("pythonResearch.projects.open")}
+										</Button>
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={() => void validate(project.projectId)}
+											loading={busy === `${project.projectId}:validate`}
+										>
+											{t("pythonResearch.projects.validate")}
+										</Button>
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={() => void freeze(project)}
+											disabled={project.state !== "clean"}
+											loading={busy === `${project.projectId}:freeze`}
+										>
+											{t("pythonResearch.projects.freeze")}
+										</Button>
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={() => void exportProject(project)}
+											disabled={project.state !== "clean"}
+											loading={busy === `${project.projectId}:export`}
+										>
+											{t("pythonResearch.projects.export")}
+										</Button>
 										<Button
 											type="button"
 											size="sm"
@@ -578,87 +545,132 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 											disabled={!revisions[project.projectId] || project.state !== "clean"}
 											loading={busy === `${project.projectId}:preview`}
 										>
-											{t("pythonResearch.projects.start")}
+											{t(
+												kind === "model"
+													? "pythonResearch.projects.reviewModelTrust"
+													: "pythonResearch.projects.reviewTrust",
+											)}
 										</Button>
-									)}
-								</div>
-							</div>
-							<p className="break-all text-xs text-muted-foreground">{project.path}</p>
-							{revisions[project.projectId] ? (
-								<p className="break-all font-mono text-xs text-muted-foreground">
-									{t("pythonResearch.projects.revision")}: {revisions[project.projectId]}
-								</p>
-							) : null}
-							{environmentSha256[project.projectId] ? (
-								<p className="break-all font-mono text-xs text-muted-foreground">
-									{t("pythonResearch.projects.environmentReady")}:{" "}
-									{environmentSha256[project.projectId]}
-								</p>
-							) : null}
-							{project.issues.length ? (
-								<p className="text-xs text-destructive">{project.issues[0]?.message}</p>
-							) : null}
-						</div>
-					))}
-					{visibleAttempts.map((attempt) => (
-						<div
-							key={attempt.attemptId}
-							className="grid gap-1 rounded-md border p-3 text-sm"
-						>
-							<div className="flex flex-wrap items-center gap-2">
-								<code className="break-all">
-									<IdentifierDisplay
-										id={attempt.attemptId}
-										label={t("identifiers.attempt")}
-									/>
-								</code>
-								<Badge variant="outline">{attempt.status}</Badge>
-								<span className="text-muted-foreground">#{attempt.queueSequence}</span>
-								<div className="ml-auto flex gap-2">
-									{(attempt.status === "pending" || attempt.status === "running") && (
 										<Button
 											type="button"
 											size="sm"
 											variant="outline"
-											onClick={() => void updateAttempt(attempt.attemptId, "cancel")}
-											loading={busy === `${attempt.attemptId}:cancel`}
+											onClick={() => void syncEnvironment(project)}
+											disabled={project.state === "invalid"}
+											loading={busy === `${project.projectId}:sync`}
 										>
-											{t("pythonResearch.projects.cancel")}
+											{t("pythonResearch.projects.syncEnvironment")}
 										</Button>
-									)}
-									{kind !== "model" &&
-										(attempt.status === "failed" || attempt.status === "cancelled") && (
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={() => void prepareEnvironment(project)}
+											disabled={project.state !== "clean"}
+											loading={busy === `${project.projectId}:environment`}
+										>
+											{t("pythonResearch.projects.prepareEnvironment")}
+										</Button>
+										{kind !== "model" && (
 											<Button
 												type="button"
 												size="sm"
 												variant="outline"
-												onClick={() => void updateAttempt(attempt.attemptId, "retry")}
-												loading={busy === `${attempt.attemptId}:retry`}
+												onClick={() => void openPreview(project)}
+												disabled={
+													!revisions[project.projectId] || project.state !== "clean"
+												}
+												loading={busy === `${project.projectId}:preview`}
 											>
-												{t("pythonResearch.projects.retry")}
+												{t("pythonResearch.projects.start")}
 											</Button>
 										)}
+									</div>
 								</div>
-							</div>
-							{attempt.progressTotal ? (
-								<p className="text-xs text-muted-foreground">
-									{t("pythonResearch.projects.progress")}:{" "}
-									{attempt.progressCompleted ?? 0}/{attempt.progressTotal}
-								</p>
-							) : null}
-							{attempt.failureCode || attempt.diagnostic || attempt.log ? (
 								<p className="break-all text-xs text-muted-foreground">
-									{attempt.failureCode ?? ""} {attempt.diagnostic ?? attempt.log ?? ""}
+									{project.path}
 								</p>
-							) : null}
-							{attempt.stagedResultSha256 ? (
-								<p className="break-all font-mono text-xs text-muted-foreground">
-									{t("pythonResearch.projects.result")}:{" "}
-									<IdentifierDisplay id={attempt.stagedResultSha256} />
-								</p>
-							) : null}
-						</div>
-					))}
+								{revisions[project.projectId] ? (
+									<p className="break-all font-mono text-xs text-muted-foreground">
+										{t("pythonResearch.projects.revision")}:{" "}
+										{revisions[project.projectId]}
+									</p>
+								) : null}
+								{environmentSha256[project.projectId] ? (
+									<p className="break-all font-mono text-xs text-muted-foreground">
+										{t("pythonResearch.projects.environmentReady")}:{" "}
+										{environmentSha256[project.projectId]}
+									</p>
+								) : null}
+								{project.issues.length ? (
+									<p className="text-xs text-destructive">
+										{project.issues[0]?.message}
+									</p>
+								) : null}
+							</div>
+						)}
+					</PaginatedList>
+					<PaginatedList items={visibleAttempts} label="recordPagination.records">
+						{(attempt) => (
+							<div
+								key={attempt.attemptId}
+								className="grid gap-1 rounded-md border p-3 text-sm"
+							>
+								<div className="flex flex-wrap items-center gap-2">
+									<code className="break-all">
+										<IdentifierDisplay
+											id={attempt.attemptId}
+											label={t("identifiers.attempt")}
+										/>
+									</code>
+									<Badge variant="outline">{attempt.status}</Badge>
+									<span className="text-muted-foreground">#{attempt.queueSequence}</span>
+									<div className="ml-auto flex gap-2">
+										{(attempt.status === "pending" || attempt.status === "running") && (
+											<Button
+												type="button"
+												size="sm"
+												variant="outline"
+												onClick={() => void updateAttempt(attempt.attemptId, "cancel")}
+												loading={busy === `${attempt.attemptId}:cancel`}
+											>
+												{t("pythonResearch.projects.cancel")}
+											</Button>
+										)}
+										{kind !== "model" &&
+											(attempt.status === "failed" || attempt.status === "cancelled") && (
+												<Button
+													type="button"
+													size="sm"
+													variant="outline"
+													onClick={() => void updateAttempt(attempt.attemptId, "retry")}
+													loading={busy === `${attempt.attemptId}:retry`}
+												>
+													{t("pythonResearch.projects.retry")}
+												</Button>
+											)}
+									</div>
+								</div>
+								{attempt.progressTotal ? (
+									<p className="text-xs text-muted-foreground">
+										{t("pythonResearch.projects.progress")}:{" "}
+										{attempt.progressCompleted ?? 0}/{attempt.progressTotal}
+									</p>
+								) : null}
+								{attempt.failureCode || attempt.diagnostic || attempt.log ? (
+									<p className="break-all text-xs text-muted-foreground">
+										{attempt.failureCode ?? ""} {attempt.diagnostic ?? attempt.log ?? ""}
+									</p>
+								) : null}
+								{attempt.stagedResultSha256 ? (
+									<p className="break-all font-mono text-xs text-muted-foreground">
+										{t("pythonResearch.projects.result")}:{" "}
+										<IdentifierDisplay id={attempt.stagedResultSha256} />
+									</p>
+								) : null}
+							</div>
+						)}
+					</PaginatedList>
 				</CardContent>
 			</Card>
 			{preview ? (
@@ -698,11 +710,16 @@ export function PythonProjectsPanel({ userId, kind }: Props) {
 							</div>
 							<div className="grid gap-1">
 								<strong>{t("pythonResearch.projects.review.sourceFiles")}</strong>
-								{Object.entries(preview.value.sourceFiles).map(([path, hash]) => (
-									<code className="break-all" key={path}>
-										{path}: {hash}
-									</code>
-								))}
+								<PaginatedList
+									items={Object.entries(preview.value.sourceFiles)}
+									label="recordPagination.records"
+								>
+									{([path, hash]) => (
+										<code className="break-all" key={path}>
+											{path}: {hash}
+										</code>
+									)}
+								</PaginatedList>
 							</div>
 							<div className="grid gap-1">
 								<strong>{t("pythonResearch.projects.review.runtime")}</strong>

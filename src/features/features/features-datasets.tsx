@@ -1,3 +1,4 @@
+import { PaginatedList } from "@/components/record-pagination";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -118,48 +119,54 @@ export function DatasetsView({
 									</tr>
 								</thead>
 								<tbody>
-									{datasets.map((dataset) => (
-										<tr key={dataset.datasetId} className="border-b">
-											<td className="py-2 pr-4 font-mono text-xs">
-												<IdentifierDisplay
-													id={dataset.datasetId}
-													label={t("identifiers.featureDataset")}
-													name={dataset.manifest.outputs
-														.map((output) => output.outputName)
-														.join(" · ")}
-												/>
-											</td>
-											<td className="py-2 pr-4">
-												{formatNumber(dataset.manifest.rowCount)}
-											</td>
-											<td className="py-2 pr-4">
-												{formatNumber(dataset.contentByteSize)} B
-											</td>
-											<td className="py-2 pr-4 whitespace-nowrap">
-												{formatUtc(dataset.createdAtMs)} UTC
-											</td>
-											<td className="py-2 text-right">
-												<div className="flex justify-end gap-1">
-													<Button
-														type="button"
-														variant="outline"
-														size="sm"
-														onClick={() => setSelectedId(dataset.datasetId)}
-													>
-														{t("features.datasets.open")}
-													</Button>
-													<Button
-														type="button"
-														variant="ghost"
-														size="sm"
-														onClick={() => remove(dataset.datasetId)}
-													>
-														{t("features.datasets.delete")}
-													</Button>
-												</div>
-											</td>
-										</tr>
-									))}
+									<PaginatedList
+										items={datasets}
+										label="recordPagination.records"
+										tableColumns={5}
+									>
+										{(dataset) => (
+											<tr key={dataset.datasetId} className="border-b">
+												<td className="py-2 pr-4 font-mono text-xs">
+													<IdentifierDisplay
+														id={dataset.datasetId}
+														label={t("identifiers.featureDataset")}
+														name={dataset.manifest.outputs
+															.map((output) => output.outputName)
+															.join(" · ")}
+													/>
+												</td>
+												<td className="py-2 pr-4">
+													{formatNumber(dataset.manifest.rowCount)}
+												</td>
+												<td className="py-2 pr-4">
+													{formatNumber(dataset.contentByteSize)} B
+												</td>
+												<td className="py-2 pr-4 whitespace-nowrap">
+													{formatUtc(dataset.createdAtMs)} UTC
+												</td>
+												<td className="py-2 text-right">
+													<div className="flex justify-end gap-1">
+														<Button
+															type="button"
+															variant="outline"
+															size="sm"
+															onClick={() => setSelectedId(dataset.datasetId)}
+														>
+															{t("features.datasets.open")}
+														</Button>
+														<Button
+															type="button"
+															variant="ghost"
+															size="sm"
+															onClick={() => remove(dataset.datasetId)}
+														>
+															{t("features.datasets.delete")}
+														</Button>
+													</div>
+												</td>
+											</tr>
+										)}
+									</PaginatedList>
 								</tbody>
 							</table>
 						</div>
@@ -389,39 +396,45 @@ function DatasetInspector({
 									</tr>
 								</thead>
 								<tbody>
-									{summary.map((output) => (
-										<tr key={output.outputName} className="border-b">
-											<td className="py-1.5 pr-3 font-mono">{output.outputName}</td>
-											<td className="py-1.5 pr-3">
-												{formatNumber(output.coverage * 100, {
-													maximumFractionDigits: 1,
-												})}
-												%
-											</td>
-											<td className="py-1.5 pr-3">
-												{formatNumber(output.availableCount)} /{" "}
-												{formatNumber(output.rowCount)}
-											</td>
-											<td className="py-1.5 pr-3 font-mono">{output.minimum ?? "—"}</td>
-											<td className="py-1.5 pr-3 font-mono">{output.maximum ?? "—"}</td>
-											<td className="py-1.5 pr-3 font-mono">
-												{output.mean !== null && output.mean !== undefined
-													? output.mean.toFixed(6)
-													: "—"}
-											</td>
-											<td className="py-1.5 pr-3 font-mono">
-												{output.populationStandardDeviation !== null &&
-												output.populationStandardDeviation !== undefined
-													? output.populationStandardDeviation.toFixed(6)
-													: "—"}
-											</td>
-											<td className="py-1.5 font-mono">
-												{Object.entries(output.unavailableCounts)
-													.map(([reason, count]) => `${reason}:${count}`)
-													.join(" ") || "—"}
-											</td>
-										</tr>
-									))}
+									<PaginatedList
+										items={summary}
+										label="recordPagination.records"
+										tableColumns={8}
+									>
+										{(output) => (
+											<tr key={output.outputName} className="border-b">
+												<td className="py-1.5 pr-3 font-mono">{output.outputName}</td>
+												<td className="py-1.5 pr-3">
+													{formatNumber(output.coverage * 100, {
+														maximumFractionDigits: 1,
+													})}
+													%
+												</td>
+												<td className="py-1.5 pr-3">
+													{formatNumber(output.availableCount)} /{" "}
+													{formatNumber(output.rowCount)}
+												</td>
+												<td className="py-1.5 pr-3 font-mono">{output.minimum ?? "—"}</td>
+												<td className="py-1.5 pr-3 font-mono">{output.maximum ?? "—"}</td>
+												<td className="py-1.5 pr-3 font-mono">
+													{output.mean !== null && output.mean !== undefined
+														? output.mean.toFixed(6)
+														: "—"}
+												</td>
+												<td className="py-1.5 pr-3 font-mono">
+													{output.populationStandardDeviation !== null &&
+													output.populationStandardDeviation !== undefined
+														? output.populationStandardDeviation.toFixed(6)
+														: "—"}
+												</td>
+												<td className="py-1.5 font-mono">
+													{Object.entries(output.unavailableCounts)
+														.map(([reason, count]) => `${reason}:${count}`)
+														.join(" ") || "—"}
+												</td>
+											</tr>
+										)}
+									</PaginatedList>
 								</tbody>
 							</table>
 						</div>

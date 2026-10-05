@@ -1,3 +1,6 @@
+import { RecordPagination } from "@/components/record-pagination";
+import { useRecordPage } from "@/hooks/use-record-page";
+import { afterPaint } from "@/features/factors/factor-workspace-data";
 import { useAuthenticatedUserId } from "@/authenticated-user";
 import { IdentifierDisplay } from "@/components/identifier-display";
 import { Badge } from "@/components/ui/badge";
@@ -150,12 +153,13 @@ export function BotsPage() {
 	const [pendingCommand, setPendingCommand] = useState("");
 	const [flattenBotId, setFlattenBotId] = useState("");
 
-	const bots = useQuery({
-		queryKey: ["bots", userId],
-		queryFn: () => invoke<BotView[]>("bot_list"),
-		retry: false,
-		refetchInterval: 15_000,
-	});
+	const bots = useRecordPage<BotView>(
+		"bots",
+		userId,
+		"bot_page",
+		{},
+		{ refetchInterval: 15_000 },
+	);
 	const qualifications = useQuery({
 		queryKey: ["bot-qualifications", userId],
 		queryFn: () =>
@@ -198,6 +202,7 @@ export function BotsPage() {
 		onSuccess: async () => {
 			setFeedback(t("bots.deployed"));
 			await queryClient.invalidateQueries({ queryKey: ["bots", userId] });
+			await queryClient.invalidateQueries({ queryKey: ["bot-audit", userId] });
 		},
 		onError: (error) => setFeedback(String(error)),
 	});
@@ -218,10 +223,12 @@ export function BotsPage() {
 		setPendingCommand(`${command}:${botId}`);
 		setFeedback("");
 		try {
+			await afterPaint();
 			await invoke<BotView>(command, {
 				request: { botId, commandId: commandId() },
 			});
 			await queryClient.invalidateQueries({ queryKey: ["bots", userId] });
+			await queryClient.invalidateQueries({ queryKey: ["bot-audit", userId] });
 		} catch (error) {
 			setFeedback(String(error));
 		} finally {
@@ -233,6 +240,7 @@ export function BotsPage() {
 		setPendingCommand(`stop:${botId}`);
 		setFeedback("");
 		try {
+			await afterPaint();
 			await invoke<BotView>("bot_stop", {
 				request: {
 					botId,
@@ -242,6 +250,7 @@ export function BotsPage() {
 				},
 			});
 			await queryClient.invalidateQueries({ queryKey: ["bots", userId] });
+			await queryClient.invalidateQueries({ queryKey: ["bot-audit", userId] });
 			flattenDialog.current?.close();
 		} catch (error) {
 			setFeedback(String(error));
@@ -433,14 +442,14 @@ export function BotsPage() {
 				</div>
 				{bots.isPending ? <p role="status">{t("bots.loading")}</p> : null}
 				{bots.isError ? <p role="alert">{t("bots.unavailable")}</p> : null}
-				{bots.data?.length === 0 ? (
+				{bots.data?.items.length === 0 ? (
 					<Card>
 						<CardContent className="p-6 text-sm text-muted-foreground">
 							{t("bots.empty")}
 						</CardContent>
 					</Card>
 				) : null}
-				{bots.data?.map((bot) => {
+				{bots.data?.items.map((bot) => {
 					const attempt = bot.attempts.find(
 						(item) => item.attemptId === bot.currentAttemptId,
 					);
@@ -527,95 +536,7 @@ export function BotsPage() {
 										{item.code}: {item.detail}
 									</p>
 								))}
-								<details className="rounded-md border p-3">
-									<summary className="cursor-pointer font-medium">
-										{t("bots.audit")}
-									</summary>
-									<div className="mt-3 grid gap-3 text-xs">
-										<div>
-											<p className="font-medium">{t("bots.lifecycleEvents")}</p>
-											{attempt?.events.slice(-8).map((event) => (
-												<p
-													key={`${event.from}-${event.to}-${event.actor}-${event.reason}`}
-													className="text-muted-foreground"
-												>
-													{event.from} → {event.to} · {event.actor} · {event.reason}
-												</p>
-											))}
-										</div>
-										<div>
-											<p className="font-medium">{t("bots.decisions")}</p>
-											{attempt?.decisions.slice(-8).map((decision) => (
-												<p key={decision.decisionId} className="text-muted-foreground">
-													{decision.outcome}
-													{decision.noTargetReason
-														? ` · ${decision.noTargetReason}${decision.noTargetDetail ? `: ${decision.noTargetDetail}` : ""}`
-														: ""}
-													{" · "}
-													<IdentifierDisplay
-														id={decision.decisionId}
-														label={t("identifiers.decision")}
-													/>
-													{decision.targetHash ? (
-														<>
-															{" · "}
-															<IdentifierDisplay
-																id={decision.targetHash}
-																label={t("identifiers.fingerprint")}
-															/>
-														</>
-													) : (
-														""
-													)}
-												</p>
-											))}
-										</div>
-										<div>
-											<p className="font-medium">{t("bots.orders")}</p>
-											{attempt?.orders.slice(-8).map((order) => (
-												<p
-													key={`${order.operationId}-${order.observedAtMs}`}
-													className="text-muted-foreground"
-												>
-													{order.status} ·{" "}
-													<IdentifierDisplay
-														id={order.operationId}
-														label={t("identifiers.operation")}
-													/>
-													{order.providerOrderId ? (
-														<>
-															{" · "}
-															<IdentifierDisplay
-																id={order.providerOrderId}
-																label={t("identifiers.providerOrder")}
-															/>
-														</>
-													) : null}
-												</p>
-											))}
-										</div>
-										<div>
-											<p className="font-medium">{t("bots.evidence")}</p>
-											{attempt?.evidence.slice(-8).map((item) => (
-												<p
-													key={`${item.code}-${item.observedAtMs}`}
-													className="text-muted-foreground"
-												>
-													{item.kind}/{item.code} · {item.detail}
-													{item.relatedId ? (
-														<>
-															{" · "}
-															<IdentifierDisplay
-																id={item.relatedId}
-																label={t("identifiers.related")}
-															/>
-														</>
-													) : null}
-												</p>
-											))}
-										</div>
-									</div>
-								</details>
+								<BotAudit bot={bot} />
 								<div className="flex flex-wrap gap-2">
 									{bot.control.canStart ? (
 										<Button
@@ -682,6 +603,13 @@ export function BotsPage() {
 						</Card>
 					);
 				})}
+				<RecordPagination
+					label={t("bots.title")}
+					page={bots.page}
+					total={bots.data?.total ?? 0}
+					busy={bots.isFetching}
+					onPage={bots.setPage}
+				/>
 			</section>
 
 			<dialog
@@ -715,5 +643,178 @@ export function BotsPage() {
 				</div>
 			</dialog>
 		</div>
+	);
+}
+
+function BotAudit({ bot }: { bot: BotView }) {
+	const { t } = useTranslation();
+	const userId = useAuthenticatedUserId();
+	const [open, setOpen] = useState(false);
+	const args = { botId: bot.botId, attemptId: bot.currentAttemptId };
+	const options = {
+		enabled: open && Boolean(bot.currentAttemptId),
+		refetchInterval: open ? 15_000 : undefined,
+	};
+	const events = useRecordPage<BotView["attempts"][number]["events"][number]>(
+		"bot-audit",
+		userId,
+		"bot_audit_page",
+		{ ...args, section: "events" },
+		options,
+	);
+	const decisions = useRecordPage<
+		BotView["attempts"][number]["decisions"][number]
+	>(
+		"bot-audit",
+		userId,
+		"bot_audit_page",
+		{ ...args, section: "decisions" },
+		options,
+	);
+	const orders = useRecordPage<BotView["attempts"][number]["orders"][number]>(
+		"bot-audit",
+		userId,
+		"bot_audit_page",
+		{ ...args, section: "orders" },
+		options,
+	);
+	const evidence = useRecordPage<
+		BotView["attempts"][number]["evidence"][number]
+	>(
+		"bot-audit",
+		userId,
+		"bot_audit_page",
+		{ ...args, section: "evidence" },
+		options,
+	);
+	return (
+		<details
+			className="rounded-md border p-3"
+			onToggle={(event) => setOpen(event.currentTarget.open)}
+		>
+			<summary className="cursor-pointer font-medium">{t("bots.audit")}</summary>
+			{open && (
+				<div className="mt-3 grid gap-3 text-xs">
+					<div>
+						<p className="font-medium">{t("bots.lifecycleEvents")}</p>
+						{events.isFetching && <p role="status">{t("bots.loading")}</p>}
+						{events.error && <p role="alert">{String(events.error)}</p>}
+						<RecordPagination
+							label={t("bots.lifecycleEvents")}
+							page={events.page}
+							total={events.data?.total ?? 0}
+							busy={events.isFetching}
+							onPage={events.setPage}
+						/>
+						{(events.data?.items ?? []).map((event, index) => (
+							<p
+								key={`${event.from}-${event.to}-${event.actor}-${event.reason}-${index}`}
+								className="text-muted-foreground"
+							>
+								{event.from} → {event.to} · {event.actor} · {event.reason}
+							</p>
+						))}
+					</div>
+					<div>
+						<p className="font-medium">{t("bots.decisions")}</p>
+						{decisions.isFetching && <p role="status">{t("bots.loading")}</p>}
+						{decisions.error && <p role="alert">{String(decisions.error)}</p>}
+						<RecordPagination
+							label={t("bots.decisions")}
+							page={decisions.page}
+							total={decisions.data?.total ?? 0}
+							busy={decisions.isFetching}
+							onPage={decisions.setPage}
+						/>
+						{(decisions.data?.items ?? []).map((decision) => (
+							<p key={decision.decisionId} className="text-muted-foreground">
+								{decision.outcome}
+								{decision.noTargetReason
+									? ` · ${decision.noTargetReason}${decision.noTargetDetail ? `: ${decision.noTargetDetail}` : ""}`
+									: ""}
+								{" · "}
+								<IdentifierDisplay
+									id={decision.decisionId}
+									label={t("identifiers.decision")}
+								/>
+								{decision.targetHash ? (
+									<>
+										{" · "}
+										<IdentifierDisplay
+											id={decision.targetHash}
+											label={t("identifiers.fingerprint")}
+										/>
+									</>
+								) : (
+									""
+								)}
+							</p>
+						))}
+					</div>
+					<div>
+						<p className="font-medium">{t("bots.orders")}</p>
+						{orders.isFetching && <p role="status">{t("bots.loading")}</p>}
+						{orders.error && <p role="alert">{String(orders.error)}</p>}
+						<RecordPagination
+							label={t("bots.orders")}
+							page={orders.page}
+							total={orders.data?.total ?? 0}
+							busy={orders.isFetching}
+							onPage={orders.setPage}
+						/>
+						{(orders.data?.items ?? []).map((order) => (
+							<p
+								key={`${order.operationId}-${order.observedAtMs}`}
+								className="text-muted-foreground"
+							>
+								{order.status} ·{" "}
+								<IdentifierDisplay
+									id={order.operationId}
+									label={t("identifiers.operation")}
+								/>
+								{order.providerOrderId ? (
+									<>
+										{" · "}
+										<IdentifierDisplay
+											id={order.providerOrderId}
+											label={t("identifiers.providerOrder")}
+										/>
+									</>
+								) : null}
+							</p>
+						))}
+					</div>
+					<div>
+						<p className="font-medium">{t("bots.evidence")}</p>
+						{evidence.isFetching && <p role="status">{t("bots.loading")}</p>}
+						{evidence.error && <p role="alert">{String(evidence.error)}</p>}
+						<RecordPagination
+							label={t("bots.evidence")}
+							page={evidence.page}
+							total={evidence.data?.total ?? 0}
+							busy={evidence.isFetching}
+							onPage={evidence.setPage}
+						/>
+						{(evidence.data?.items ?? []).map((item) => (
+							<p
+								key={`${item.code}-${item.observedAtMs}`}
+								className="text-muted-foreground"
+							>
+								{item.kind}/{item.code} · {item.detail}
+								{item.relatedId ? (
+									<>
+										{" · "}
+										<IdentifierDisplay
+											id={item.relatedId}
+											label={t("identifiers.related")}
+										/>
+									</>
+								) : null}
+							</p>
+						))}
+					</div>
+				</div>
+			)}
+		</details>
 	);
 }

@@ -140,12 +140,54 @@ pub(crate) struct PaperFeedbackView {
     pub decisions: Vec<ReviewDecision>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum FeedbackSection {
+    Snapshots,
+    Reports,
+    Decisions,
+}
+
 #[derive(Clone)]
 pub struct PaperFeedbackStore {
     database: Arc<Mutex<Connection>>,
 }
 
 impl PaperFeedbackStore {
+    pub(crate) fn page(
+        &self,
+        user_id: &str,
+        section: FeedbackSection,
+        page: usize,
+    ) -> Result<crate::ui_commands::RecordPage, String> {
+        let (source, projection, order) = match section {
+            FeedbackSection::Snapshots => (
+                "paper_feedback_snapshots s WHERE s.user_id=?1 AND ?2 IS NULL",
+                "json_object('snapshotId', s.snapshot_id,
+                    'input', json_remove(s.payload_json, '$.evidence'),
+                    'evidenceState', s.evidence_state, 'createdAtMs', s.created_at_ms,
+                    'existingLenses', json((SELECT json_group_array(json_extract(r.payload_json, '$.lens'))
+                        FROM paper_feedback_reports r WHERE r.user_id=s.user_id AND r.snapshot_id=s.snapshot_id)))",
+                "s.created_at_ms DESC, s.snapshot_id DESC",
+            ),
+            FeedbackSection::Reports => (
+                "paper_feedback_reports r WHERE r.user_id=?1 AND ?2 IS NULL",
+                "json_object('reportId', r.report_id, 'input', json(r.payload_json),
+                    'evidenceState', r.evidence_state, 'createdAtMs', r.created_at_ms)",
+                "r.created_at_ms DESC, r.report_id DESC",
+            ),
+            FeedbackSection::Decisions => (
+                "research_review_decisions d WHERE d.user_id=?1 AND ?2 IS NULL",
+                "json_object('decisionId', d.decision_id, 'input', json(d.payload_json))",
+                "d.decided_at_ms DESC, d.decision_id DESC",
+            ),
+        };
+        let database = self.database.lock().map_err(|error| error.to_string())?;
+        crate::ui_commands::RecordPage::read(
+            &database, source, projection, order, user_id, None, page,
+        )
+    }
+
     pub fn open(database: Arc<Mutex<Connection>>) -> Result<Self, String> {
         database.lock().map_err(|e| e.to_string())?.execute_batch(
             "CREATE TABLE IF NOT EXISTS paper_feedback_snapshots (
@@ -162,6 +204,10 @@ impl PaperFeedbackStore {
                 decided_at_ms INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS paper_feedback_reports_user ON paper_feedback_reports(user_id);
+            CREATE INDEX IF NOT EXISTS feedback_snapshots_page ON paper_feedback_snapshots(user_id, created_at_ms DESC, snapshot_id DESC);
+            CREATE INDEX IF NOT EXISTS feedback_reports_page ON paper_feedback_reports(user_id, created_at_ms DESC, report_id DESC);
+            CREATE INDEX IF NOT EXISTS feedback_reports_snapshot ON paper_feedback_reports(user_id, snapshot_id);
+            CREATE INDEX IF NOT EXISTS feedback_decisions_page ON research_review_decisions(user_id, decided_at_ms DESC, decision_id DESC);
         ").map_err(|e| e.to_string())?;
         Ok(Self { database })
     }

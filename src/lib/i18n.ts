@@ -8,6 +8,7 @@ export type InterfaceLocalePreference = "system" | ResourceLocale;
 export const INTERFACE_LOCALE_STORAGE_KEY = "adaq.interfaceLocale";
 
 const english = {
+	recordPagination: { records: "Records" },
 	identifiers: {
 		copyHint: "Click to copy the full identifier",
 		snapshot: "Market data snapshot",
@@ -3092,6 +3093,7 @@ const factorResearchSimplifiedChinese = {
 } as const;
 
 const simplifiedChinese = {
+	recordPagination: { records: "记录列表" },
 	identifiers: {
 		copyHint: "点击复制完整标识",
 		snapshot: "市场数据快照",

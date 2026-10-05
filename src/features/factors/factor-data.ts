@@ -2,7 +2,7 @@ import { abbreviateIdentifier } from "@/lib/identifier-display";
 import { readSessionCache, writeSessionCache } from "@/lib/session-cache";
 import type { FactorJson } from "./factor-types";
 
-export const FACTOR_PAGE_SIZE = 50;
+export const FACTOR_PAGE_SIZE = 10;
 export const MAX_GRID_TRIALS = 256;
 
 export function factorPageCount(total: number, pageSize = FACTOR_PAGE_SIZE) {

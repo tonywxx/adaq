@@ -24,6 +24,7 @@ mod run_engine;
 mod strategy_candidate;
 mod strategy_qualification;
 mod trade_bridge;
+mod ui_commands;
 mod user;
 mod validation;
 mod watchlist;
@@ -1582,6 +1583,19 @@ fn paper_feedback_view(
 ) -> Result<paper_feedback::PaperFeedbackView, String> {
     let user_id = auth.user_id_for_window(window.label())?;
     state.paper_feedback.view(&user_id)
+}
+
+#[tauri::command]
+fn paper_feedback_page(
+    section: paper_feedback::FeedbackSection,
+    page: usize,
+    window: WebviewWindow,
+    auth: State<'_, auth::AuthState>,
+    state: State<'_, Arc<LocalResearchState>>,
+) -> Result<ui_commands::RecordPage, String> {
+    state
+        .paper_feedback
+        .page(&auth.user_id_for_window(window.label())?, section, page)
 }
 
 #[tauri::command]
@@ -6786,7 +6800,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(ui_commands::background_handler(tauri::generate_handler![
             greet,
             auth_bind_session,
             auth_clear_session,
@@ -6803,6 +6817,7 @@ pub fn run() {
             operations_recover_host,
             paper_feedback_snapshot_create,
             paper_feedback_view,
+            paper_feedback_page,
             paper_feedback_report_create,
             paper_feedback_review_decide,
             paper_experiment::paper_experiment_view,
@@ -6819,6 +6834,8 @@ pub fn run() {
             paper_order_cancel,
             paper_order_sync,
             bot_operations::bot_list,
+            bot_operations::bot_page,
+            bot_operations::bot_audit_page,
             bot_operations::bot_get,
             bot_operations::bot_deploy,
             bot_operations::bot_start,
@@ -7086,7 +7103,7 @@ pub fn run() {
             connection_profile_save,
             connection_profile_test,
             connection_profile_delete
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

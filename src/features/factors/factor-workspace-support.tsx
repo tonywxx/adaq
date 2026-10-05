@@ -1,3 +1,4 @@
+import { LazyDetails } from "@/components/lazy-details";
 import { ChevronDownIcon, RefreshCwIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
@@ -314,18 +315,24 @@ export function EvidenceJson({
 	value: unknown;
 }) {
 	return (
-		<details className="rounded-md border bg-muted/20 p-3">
-			<summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium [&::-webkit-details-marker]:hidden">
-				<ChevronDownIcon
-					className="size-4 transition-transform details-open:rotate-180"
-					aria-hidden="true"
-				/>
-				{label}
-			</summary>
-			<pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">
-				{jsonText(value)}
-			</pre>
-		</details>
+		<LazyDetails
+			className="rounded-md border bg-muted/20 p-3"
+			summary={
+				<summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium [&::-webkit-details-marker]:hidden">
+					<ChevronDownIcon
+						className="size-4 transition-transform details-open:rotate-180"
+						aria-hidden="true"
+					/>
+					{label}
+				</summary>
+			}
+		>
+			{() => (
+				<pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">
+					{jsonText(value)}
+				</pre>
+			)}
+		</LazyDetails>
 	);
 }
 
