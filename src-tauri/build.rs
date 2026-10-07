@@ -12,5 +12,16 @@ fn main() {
         println!("cargo:rustc-env=ADAQ_SUPABASE_ANON_KEY={value}");
     }
 
-    tauri_build::build()
+    let mut attributes = tauri_build::Attributes::new();
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        // Tauri embeds its manifest only in binaries; mock-runtime tests also need Common Controls v6.
+        // https://github.com/tauri-apps/tauri/issues/13419
+        attributes = attributes
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!(
+            "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+        );
+    }
+    tauri_build::try_build(attributes).expect("failed to run tauri-build")
 }
