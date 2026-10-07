@@ -99,7 +99,7 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, mpsc};
     use std::time::Duration;
-    use tauri::State;
+    use tauri::{State, WebviewWindow, test::MockRuntime};
 
     struct BlockingCommand {
         started: mpsc::Sender<std::thread::ThreadId>,
@@ -123,12 +123,15 @@ mod tests {
         "responsive"
     }
 
-    fn request(command: &str) -> tauri::webview::InvokeRequest {
+    fn request(
+        command: &str,
+        window: &WebviewWindow<MockRuntime>,
+    ) -> tauri::webview::InvokeRequest {
         tauri::webview::InvokeRequest {
             cmd: command.into(),
             callback: tauri::ipc::CallbackFn(0),
             error: tauri::ipc::CallbackFn(1),
-            url: "tauri://localhost".parse().unwrap(),
+            url: window.url().unwrap(),
             body: tauri::ipc::InvokeBody::default(),
             headers: Default::default(),
             invoke_key: tauri::test::INVOKE_KEY.to_owned(),
@@ -154,14 +157,16 @@ mod tests {
             .unwrap();
         let slow_window = window.clone();
         let client = std::thread::spawn(move || {
-            tauri::test::get_ipc_response(&slow_window, request("slow_read"))
+            tauri::test::get_ipc_response(&slow_window, request("slow_read", &slow_window))
         });
         let worker = started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_ne!(worker, client.thread().id());
         assert!(!client.is_finished());
-        let quick = tauri::test::get_ipc_response(&window, request("quick_read")).unwrap();
+        let quick = tauri::test::get_ipc_response(&window, request("quick_read", &window)).unwrap();
         assert_eq!(quick.deserialize::<String>().unwrap(), "responsive");
-        assert!(tauri::test::get_ipc_response(&window, request("unknown_command")).is_err());
+        assert!(
+            tauri::test::get_ipc_response(&window, request("unknown_command", &window)).is_err()
+        );
         release_tx.send(()).unwrap();
         assert_eq!(
             client
