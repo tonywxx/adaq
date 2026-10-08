@@ -10,10 +10,10 @@ deferred-equity = ["adaq-data-core/deferred-equity"]
 
 [dependencies]
 adaq-data-core = { path = "../adaq-data-core", default-features = false }
-arrow-array = "59.2"
-arrow-schema = "59.2"
+arrow-array = "59.3"
+arrow-schema = "59.3"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-parquet = { version = "59.2", default-features = false, features = ["arrow", "snap"] }
+parquet = { version = "59.3", default-features = false, features = ["arrow", "snap"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }

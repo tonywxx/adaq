@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeSet, HashSet},
+    ops::RangeInclusive,
     sync::{Arc, Mutex},
 };
 
@@ -34,6 +35,70 @@ pub(crate) struct PaperAccountView {
     pub order_absence_recoveries: Vec<adaq_paper_trading_core::OrderAbsenceRecovery>,
     pub risk_decisions: Vec<RetainedRiskDecision>,
     pub restart_required: bool,
+}
+
+impl PaperAccountView {
+    pub(crate) fn bot_order_ids(&self, bot_id: &str) -> BTreeSet<String> {
+        let prefix = format!("bot-{bot_id}-");
+        self.provider_evidence
+            .iter()
+            .filter_map(|outcome| {
+                let evidence = match outcome {
+                    ExecutionOutcome::Accepted(evidence)
+                    | ExecutionOutcome::Rejected(evidence)
+                    | ExecutionOutcome::Uncertain(evidence) => evidence,
+                };
+                evidence
+                    .operation_id
+                    .starts_with(&prefix)
+                    .then(|| evidence.local_order_id.clone())
+                    .flatten()
+            })
+            .collect()
+    }
+
+    pub(crate) fn attributed_fills<'a>(
+        &'a self,
+        order_ids: &'a BTreeSet<String>,
+        window: RangeInclusive<i64>,
+    ) -> impl Iterator<Item = (&'a adaq_paper_trading_core::Order, &'a Fill)> {
+        // ponytail: scan Orders per Fill; index the join if retained ledgers make it costly.
+        self.fills
+            .iter()
+            .filter(move |fill| {
+                window.contains(&fill.occurred_at_ms) && order_ids.contains(&fill.order_id)
+            })
+            .filter_map(move |fill| {
+                self.orders
+                    .iter()
+                    .find(|order| order.order_id == fill.order_id)
+                    .map(|order| (order, fill))
+            })
+    }
+
+    pub(crate) fn attributed_position_quantity(
+        &self,
+        order_ids: &BTreeSet<String>,
+        instrument: &str,
+        window: RangeInclusive<i64>,
+    ) -> Decimal {
+        let instrument = instrument.strip_prefix("okx:").unwrap_or(instrument);
+        self.attributed_fills(order_ids, window)
+            .filter(|(order, _)| {
+                order
+                    .instrument
+                    .strip_prefix("okx:")
+                    .unwrap_or(&order.instrument)
+                    == instrument
+            })
+            .fold(Decimal::ZERO, |quantity, (order, fill)| {
+                let base_fee = fill.fee_in_base(instrument);
+                match order.side {
+                    Side::Buy => quantity + fill.quantity - base_fee,
+                    Side::Sell => quantity - fill.quantity - base_fee,
+                }
+            })
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]

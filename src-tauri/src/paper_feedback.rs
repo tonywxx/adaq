@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
@@ -297,7 +297,37 @@ impl PaperFeedbackStore {
         self.create_report_with_state(input, created_at_ms, snapshot_state)
     }
 
-    pub(crate) fn create_report_with_state(
+    pub(crate) fn generate_report(
+        &self,
+        user_id: &str,
+        request: FeedbackReportRequest,
+        metadata: serde_json::Map<String, Value>,
+        comparable_evidence_id: Option<String>,
+        created_at_ms: i64,
+    ) -> Result<FeedbackReport, String> {
+        let snapshot = self.snapshot_for_user(user_id, &request.snapshot_id)?;
+        let mut metrics = paper_feedback_metrics(&snapshot, request.lens);
+        let state = paper_feedback_report_state(&snapshot, request.lens, &metrics);
+        if metadata.keys().any(|key| metrics.get(key).is_some()) {
+            return Err("Paper Feedback Report metadata cannot replace generated metrics".into());
+        }
+        if let Some(object) = metrics.as_object_mut() {
+            object.extend(metadata);
+        }
+        self.create_report_with_state(
+            FeedbackReportInput {
+                user_id: user_id.to_owned(),
+                snapshot_id: request.snapshot_id,
+                lens: request.lens,
+                metrics,
+                comparable_evidence_id,
+            },
+            created_at_ms,
+            state,
+        )
+    }
+
+    fn create_report_with_state(
         &self,
         input: FeedbackReportInput,
         created_at_ms: i64,
@@ -835,14 +865,34 @@ mod tests {
     }
 
     #[test]
-    fn every_lens_inherits_the_snapshot_evidence_state() {
+    fn generated_reports_persist_insufficient_evidence_for_every_lens() {
         let s = store();
+        let mut input = snapshot_input();
+        input.realized_observations = input.required_observations;
+        input.evidence = serde_json::json!({
+            "runtime": {"decisionBatchCount": 1},
+            "market": {"candidateRowCount": 3, "rows": [{
+                "targetAvailable": true, "targetReturn": "1",
+                "factorOutputs": [{"name": "score", "value": "1"}],
+                "modelOutputs": [{"name": "forecast", "value": "1"}],
+                "targetOutcomeAvailable": true, "targetOutcomeReturn": "1"
+            }, {
+                "targetAvailable": true, "targetReturn": "2",
+                "factorOutputs": [], "modelOutputs": [], "targetOutcomeAvailable": false
+            }, {
+                "targetAvailable": true, "targetReturn": "3",
+                "factorOutputs": [], "modelOutputs": [], "targetOutcomeAvailable": false
+            }]},
+            "paper": {
+                "orderCount": 1, "fillCount": 0, "riskDecisionCount": 0,
+                "orders": [{"orderId": "local-1", "filledQuantity": "0", "limitPrice": "100"}],
+                "fills": [],
+                "providerEvidence": [{"outcome": "accepted", "providerOrderId": "remote-1", "localOrderId": "local-1"}],
+                "reconciliation": "reconciled", "restartRequired": false, "scopeCompatible": true
+            }
+        });
         let snapshot = s
-            .create_snapshot_with_state(
-                snapshot_input(),
-                1,
-                Some(EvidenceState::InsufficientEvidence),
-            )
+            .create_snapshot_with_state(input, 1, Some(EvidenceState::Ready))
             .unwrap();
         for lens in [
             FeedbackLens::Factor,
@@ -851,46 +901,573 @@ mod tests {
             FeedbackLens::Execution,
         ] {
             let report = s
-                .create_report(
-                    FeedbackReportInput {
-                        user_id: "user".into(),
+                .generate_report(
+                    "user",
+                    FeedbackReportRequest {
                         snapshot_id: snapshot.snapshot_id.clone(),
                         lens,
-                        metrics: serde_json::json!({"directionalConclusion": false}),
-                        comparable_evidence_id: None,
                     },
+                    serde_json::Map::new(),
+                    None,
                     2,
                 )
                 .unwrap();
             assert_eq!(report.evidence_state, EvidenceState::InsufficientEvidence);
+            let persisted = s
+                .view("user")
+                .unwrap()
+                .reports
+                .into_iter()
+                .find(|value| value.report_id == report.report_id)
+                .unwrap();
+            assert_eq!(persisted.input.lens, lens);
+            assert_eq!(persisted.input.metrics, report.input.metrics);
+            assert_eq!(
+                persisted.evidence_state,
+                EvidenceState::InsufficientEvidence
+            );
         }
-    }
-
-    #[test]
-    fn report_state_can_be_overridden_per_lens_without_mutating_snapshot() {
-        let s = store();
-        let snapshot = s
-            .create_snapshot_with_state(snapshot_input(), 1, Some(EvidenceState::Ready))
-            .unwrap();
-        let report = s
-            .create_report_with_state(
-                FeedbackReportInput {
-                    user_id: "user".into(),
-                    snapshot_id: snapshot.snapshot_id.clone(),
-                    lens: FeedbackLens::Factor,
-                    metrics: serde_json::json!({"lensMetrics": {"factorOutputsAvailable": false}}),
-                    comparable_evidence_id: None,
-                },
-                2,
-                EvidenceState::Missing,
-            )
-            .unwrap();
-        assert_eq!(report.evidence_state, EvidenceState::Missing);
+        assert_eq!(s.view("user").unwrap().reports.len(), 4);
+        assert!(s.view("other").unwrap().reports.is_empty());
         assert_eq!(
             s.snapshot_for_user("user", &snapshot.snapshot_id)
                 .unwrap()
                 .evidence_state,
             EvidenceState::Ready
+        );
+    }
+
+    #[test]
+    fn generated_reports_keep_snapshot_authority_and_metadata_separate() {
+        let s = store();
+        let snapshot = s
+            .create_snapshot_with_state(snapshot_input(), 1, Some(EvidenceState::Ready))
+            .unwrap();
+        let request = || FeedbackReportRequest {
+            snapshot_id: snapshot.snapshot_id.clone(),
+            lens: FeedbackLens::Factor,
+        };
+        let metadata =
+            serde_json::Map::from_iter([("experimentId".into(), serde_json::json!("experiment"))]);
+        let report = s
+            .generate_report(
+                "user",
+                request(),
+                metadata,
+                Some("experiment-report".into()),
+                2,
+            )
+            .unwrap();
+        assert_eq!(report.evidence_state, EvidenceState::Missing);
+        assert_eq!(report.input.metrics["experimentId"], "experiment");
+        assert_eq!(report.input.metrics["directionalConclusion"], false);
+        assert_eq!(
+            report.input.metrics["lensMetrics"]["factorOutputsAvailable"],
+            false
+        );
+        assert_eq!(
+            report.input.comparable_evidence_id.as_deref(),
+            Some("experiment-report")
+        );
+        assert_eq!(
+            s.view("user").unwrap().reports[0].input.metrics,
+            report.input.metrics
+        );
+        assert!(
+            s.generate_report("other", request(), serde_json::Map::new(), None, 2)
+                .is_err()
+        );
+        assert!(
+            s.generate_report(
+                "user",
+                request(),
+                serde_json::Map::from_iter([("lensMetrics".into(), serde_json::json!({}))]),
+                None,
+                2,
+            )
+            .is_err()
+        );
+        assert_eq!(s.view("user").unwrap().reports.len(), 1);
+        assert_eq!(
+            s.snapshot_for_user("user", &snapshot.snapshot_id)
+                .unwrap()
+                .evidence_state,
+            EvidenceState::Ready
+        );
+    }
+}
+
+fn metric_number(value: &serde_json::Value) -> Option<f64> {
+    let value = value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))?;
+    value.is_finite().then_some(value)
+}
+
+fn metric_pairs(rows: &[serde_json::Value], output_key: &str) -> BTreeMap<String, Vec<(f64, f64)>> {
+    let mut pairs = BTreeMap::new();
+    for row in rows {
+        if row["targetAvailable"] != serde_json::Value::Bool(true) {
+            continue;
+        }
+        let Some(target) = metric_number(&row["targetReturn"]) else {
+            continue;
+        };
+        for output in row[output_key].as_array().into_iter().flatten() {
+            let Some(name) = output["name"].as_str() else {
+                continue;
+            };
+            let Some(value) = metric_number(&output["value"]) else {
+                continue;
+            };
+            pairs
+                .entry(name.to_owned())
+                .or_insert_with(Vec::new)
+                .push((value, target));
+        }
+    }
+    pairs
+}
+
+fn metric_row_count(rows: &[serde_json::Value], output_key: &str) -> u64 {
+    rows.iter()
+        .filter(|row| row["targetAvailable"] == serde_json::Value::Bool(true))
+        .filter(|row| {
+            row[output_key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|output| metric_number(&output["value"]).is_some())
+        })
+        .count() as u64
+}
+
+fn metric_correlation(pairs: &[(f64, f64)]) -> Option<f64> {
+    if pairs.len() < 2 {
+        return None;
+    }
+    let left_mean = pairs.iter().map(|(left, _)| *left).sum::<f64>() / pairs.len() as f64;
+    let right_mean = pairs.iter().map(|(_, right)| *right).sum::<f64>() / pairs.len() as f64;
+    let mut numerator = 0.0;
+    let mut left_sum = 0.0;
+    let mut right_sum = 0.0;
+    for (left, right) in pairs {
+        let left_delta = *left - left_mean;
+        let right_delta = *right - right_mean;
+        numerator += left_delta * right_delta;
+        left_sum += left_delta * left_delta;
+        right_sum += right_delta * right_delta;
+    }
+    let denominator = (left_sum * right_sum).sqrt();
+    (denominator > 0.0)
+        .then_some(numerator / denominator)
+        .filter(|value| value.is_finite())
+}
+
+fn metric_rank(values: &[f64]) -> Vec<f64> {
+    let mut order = (0..values.len()).collect::<Vec<_>>();
+    order.sort_by(|left, right| {
+        values[*left]
+            .partial_cmp(&values[*right])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.cmp(right))
+    });
+    let mut ranks = vec![0.0; values.len()];
+    let mut index = 0;
+    while index < order.len() {
+        let mut end = index + 1;
+        while end < order.len() && values[order[index]] == values[order[end]] {
+            end += 1;
+        }
+        let rank = (index + end - 1) as f64 / 2.0 + 1.0;
+        for position in &order[index..end] {
+            ranks[*position] = rank;
+        }
+        index = end;
+    }
+    ranks
+}
+
+fn metric_rank_correlation(pairs: &[(f64, f64)]) -> Option<f64> {
+    let left = pairs.iter().map(|(left, _)| *left).collect::<Vec<_>>();
+    let right = pairs.iter().map(|(_, right)| *right).collect::<Vec<_>>();
+    let left_rank = metric_rank(&left);
+    let right_rank = metric_rank(&right);
+    metric_correlation(&left_rank.into_iter().zip(right_rank).collect::<Vec<_>>())
+}
+
+fn feedback_rows(snapshot: &FeedbackSnapshot) -> &[serde_json::Value] {
+    snapshot.input.evidence["market"]["rows"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn paper_feedback_report_state(
+    snapshot: &FeedbackSnapshot,
+    lens: FeedbackLens,
+    metrics: &serde_json::Value,
+) -> EvidenceState {
+    if matches!(
+        snapshot.evidence_state,
+        EvidenceState::Unknown
+            | EvidenceState::Missing
+            | EvidenceState::Incompatible
+            | EvidenceState::Failed
+    ) {
+        return snapshot.evidence_state;
+    }
+    let lens_metrics = &metrics["lensMetrics"];
+    let (available, samples) = match lens {
+        FeedbackLens::Factor => (
+            lens_metrics["factorOutputsAvailable"] == serde_json::Value::Bool(true),
+            lens_metrics["realizedFactorRows"].as_u64().unwrap_or(0),
+        ),
+        FeedbackLens::Model => (
+            lens_metrics["predictionQualityAvailable"] == serde_json::Value::Bool(true),
+            lens_metrics["realizedPredictionRows"].as_u64().unwrap_or(0),
+        ),
+        FeedbackLens::Strategy => (
+            lens_metrics["targetOutcomeAvailable"] == serde_json::Value::Bool(true),
+            lens_metrics["targetOutcomeSamples"].as_u64().unwrap_or(0),
+        ),
+        FeedbackLens::Execution => (
+            lens_metrics["acknowledgementAndFillEvidenceAvailable"]
+                == serde_json::Value::Bool(true),
+            lens_metrics["executionObservationCount"]
+                .as_u64()
+                .unwrap_or(0),
+        ),
+    };
+    if !available {
+        return if snapshot.input.realized_observations == 0 {
+            EvidenceState::NotYetRealized
+        } else {
+            EvidenceState::Missing
+        };
+    }
+    if samples == 0 {
+        EvidenceState::NotYetRealized
+    } else if samples < snapshot.input.required_observations {
+        EvidenceState::InsufficientEvidence
+    } else {
+        EvidenceState::Ready
+    }
+}
+
+fn paper_feedback_execution_metrics(paper: Option<&serde_json::Value>) -> serde_json::Value {
+    let Some(paper) = paper else {
+        return serde_json::json!({
+            "acknowledgementAndFillEvidenceAvailable": false,
+            "availabilityReason": "paper-account-evidence-missing",
+        });
+    };
+    let orders = paper["orders"].as_array().cloned().unwrap_or_default();
+    let fills = paper["fills"].as_array().cloned().unwrap_or_default();
+    let provider_evidence = paper["providerEvidence"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let execution_observation_count = orders.len().max(provider_evidence.len()).max(fills.len());
+    let acknowledged = provider_evidence
+        .iter()
+        .filter(|evidence| evidence["providerOrderId"].as_str().is_some())
+        .count();
+    let filled_orders = orders
+        .iter()
+        .filter(|order| metric_number(&order["filledQuantity"]).is_some_and(|value| value > 0.0))
+        .count();
+    let total_fees = fills
+        .iter()
+        .filter_map(|fill| metric_number(&fill["fee"]))
+        .sum::<f64>();
+    let order_by_id = orders
+        .iter()
+        .filter_map(|order| order["orderId"].as_str().map(|id| (id, order)))
+        .collect::<BTreeMap<_, _>>();
+    let slippages = fills
+        .iter()
+        .filter_map(|fill| {
+            let order = order_by_id.get(fill["orderId"].as_str()?)?;
+            let limit = metric_number(&order["limitPrice"])?;
+            let price = metric_number(&fill["price"])?;
+            (limit > 0.0).then_some(((price - limit).abs() / limit) * 10_000.0)
+        })
+        .collect::<Vec<_>>();
+    let evidence_available = paper.get("providerEvidence").is_some()
+        && paper["scopeCompatible"] != serde_json::Value::Bool(false)
+        && paper["restartRequired"] != serde_json::Value::Bool(true)
+        && paper["reconciliation"] == serde_json::json!("reconciled");
+    serde_json::json!({
+        "acknowledgementAndFillEvidenceAvailable": evidence_available,
+        "providerEvidenceCount": provider_evidence.len(),
+        "executionObservationCount": execution_observation_count,
+        "acknowledgedOrders": acknowledged,
+        "acknowledgementRate": if orders.is_empty() { serde_json::Value::Null } else { serde_json::json!(acknowledged as f64 / orders.len() as f64) },
+        "filledOrders": filled_orders,
+        "fillRate": if orders.is_empty() { serde_json::Value::Null } else { serde_json::json!(filled_orders as f64 / orders.len() as f64) },
+        "totalFees": total_fees,
+        "averageSlippageBps": if slippages.is_empty() { serde_json::Value::Null } else { serde_json::json!(slippages.iter().sum::<f64>() / slippages.len() as f64) },
+    })
+}
+
+fn paper_feedback_metrics(snapshot: &FeedbackSnapshot, lens: FeedbackLens) -> serde_json::Value {
+    let paper = snapshot
+        .input
+        .evidence
+        .get("paper")
+        .filter(|value| value.is_object());
+    let counts = serde_json::json!({
+        "decisionBatches": snapshot.input.evidence["runtime"]["decisionBatchCount"],
+        "orders": paper.and_then(|value| value["orderCount"].as_u64()).unwrap_or(0),
+        "fills": paper.and_then(|value| value["fillCount"].as_u64()).unwrap_or(0),
+        "riskDecisions": paper.and_then(|value| value["riskDecisionCount"].as_u64()).unwrap_or(0),
+    });
+    let rows = feedback_rows(snapshot);
+    let factor_pairs = metric_pairs(rows, "factorOutputs");
+    let model_pairs = metric_pairs(rows, "modelOutputs");
+    let factor_samples = factor_pairs.values().map(Vec::len).sum::<usize>() as u64;
+    let model_samples = model_pairs.values().map(Vec::len).sum::<usize>() as u64;
+    let factor_rows = metric_row_count(rows, "factorOutputs");
+    let model_rows = metric_row_count(rows, "modelOutputs");
+    let candidate_rows = snapshot.input.evidence["market"]["candidateRowCount"]
+        .as_u64()
+        .unwrap_or(0);
+    let factor_metrics = factor_pairs
+        .iter()
+        .map(|(name, pairs)| {
+            (
+                name.clone(),
+                serde_json::json!({
+                    "samples": pairs.len(),
+                    "coverage": if candidate_rows == 0 { serde_json::Value::Null } else { serde_json::json!(pairs.len() as f64 / candidate_rows as f64) },
+                    "ic": metric_correlation(pairs),
+                    "rankIc": metric_rank_correlation(pairs),
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let model_metrics = model_pairs
+        .iter()
+        .map(|(name, pairs)| {
+            let errors = pairs
+                .iter()
+                .map(|(prediction, target)| prediction - target)
+                .collect::<Vec<_>>();
+            let mae = (!errors.is_empty())
+                .then(|| errors.iter().map(|error| error.abs()).sum::<f64>() / errors.len() as f64);
+            let rmse = (!errors.is_empty()).then(|| {
+                (errors.iter().map(|error| error * error).sum::<f64>() / errors.len() as f64).sqrt()
+            });
+            (
+                name.clone(),
+                serde_json::json!({
+                    "samples": pairs.len(),
+                    "mae": mae,
+                    "rmse": rmse,
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let target_outcomes = rows
+        .iter()
+        .filter(|row| row["targetOutcomeAvailable"] == serde_json::Value::Bool(true))
+        .filter_map(|row| metric_number(&row["targetOutcomeReturn"]))
+        .collect::<Vec<_>>();
+    let target_mean = (!target_outcomes.is_empty())
+        .then(|| target_outcomes.iter().sum::<f64>() / target_outcomes.len() as f64);
+    let execution = paper_feedback_execution_metrics(paper);
+    let lens_metrics = match lens {
+        FeedbackLens::Factor => serde_json::json!({
+            "realizedFactorSamples": factor_samples,
+            "realizedFactorRows": factor_rows,
+            "factorOutputsAvailable": factor_rows > 0,
+            "outputMetrics": factor_metrics,
+            "availabilityReason": if factor_samples == 0 { Some("no-compatible-factor-output-pairs") } else { None },
+        }),
+        FeedbackLens::Model => serde_json::json!({
+            "realizedPredictionSamples": model_samples,
+            "realizedPredictionRows": model_rows,
+            "predictionQualityAvailable": model_rows > 0,
+            "outputMetrics": model_metrics,
+            "availabilityReason": if model_samples == 0 { Some("no-compatible-model-target-pairs") } else { None },
+        }),
+        FeedbackLens::Strategy => serde_json::json!({
+            "targetOutcomeSamples": target_outcomes.len(),
+            "targetOutcomeAvailable": !target_outcomes.is_empty(),
+            "targetOutcomeMean": target_mean,
+            "returnAndDrawdownAvailable": false,
+            "returnAndDrawdownReason": "historical-account-valuation-series-not-retained",
+            "riskAndExecutionCounts": counts,
+        }),
+        FeedbackLens::Execution => {
+            let mut metrics = execution;
+            if let Some(object) = metrics.as_object_mut() {
+                object.insert("executionCounts".into(), counts.clone());
+            }
+            metrics
+        }
+    };
+    let reasons = rows
+        .iter()
+        .filter_map(|row| row["reason"].as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "lens": lens,
+        "evidenceState": snapshot.evidence_state,
+        "realizedObservations": snapshot.input.realized_observations,
+        "requiredObservations": snapshot.input.required_observations,
+        "observationStartMs": snapshot.input.observation_start_ms,
+        "observationEndMs": snapshot.input.observation_end_ms,
+        "directionalConclusion": false,
+        "retainedCounts": counts,
+        "lensMetrics": lens_metrics,
+        "evidenceReasons": reasons,
+        "note": "Host-retained evidence is the only source for feedback metrics; unavailable rows remain non-directional.",
+    })
+}
+
+#[cfg(test)]
+mod metric_tests {
+    use super::*;
+
+    fn snapshot(evidence: serde_json::Value) -> FeedbackSnapshot {
+        FeedbackSnapshot {
+            snapshot_id: "snapshot".into(),
+            input: FeedbackSnapshotInput {
+                user_id: "user".into(),
+                bundle_id: "bundle".into(),
+                bot_id: "bot".into(),
+                attempt_id: "attempt".into(),
+                observation_start_ms: 1,
+                observation_end_ms: 10,
+                realization_cutoff_ms: 20,
+                realized_observations: 2,
+                required_observations: 2,
+                evidence,
+            },
+            evidence_state: EvidenceState::Ready,
+            created_at_ms: 30,
+        }
+    }
+
+    #[test]
+    fn factor_and_model_metrics_use_only_realized_pairs() {
+        let snapshot = snapshot(serde_json::json!({
+            "runtime": {"decisionBatchCount": 2},
+            "market": {
+                "candidateRowCount": 2,
+                "rows": [
+                    {"targetAvailable": true, "targetReturn": "1", "factorOutputs": [{"name": "score", "value": "1"}], "modelOutputs": [{"name": "forecast", "value": "1"}]},
+                    {"targetAvailable": true, "targetReturn": "2", "factorOutputs": [{"name": "score", "value": "2"}], "modelOutputs": [{"name": "forecast", "value": "2"}]},
+                    {"targetAvailable": false, "factorOutputs": [{"name": "score", "value": "100"}], "modelOutputs": [{"name": "forecast", "value": "100"}]}
+                ]
+            },
+            "paper": {"orderCount": 0, "fillCount": 0, "riskDecisionCount": 0}
+        }));
+        let factor = paper_feedback_metrics(&snapshot, FeedbackLens::Factor);
+        assert_eq!(factor["lensMetrics"]["realizedFactorSamples"], 2);
+        assert_eq!(factor["lensMetrics"]["outputMetrics"]["score"]["ic"], 1.0);
+        assert_eq!(
+            factor["lensMetrics"]["outputMetrics"]["score"]["rankIc"],
+            1.0
+        );
+        let model = paper_feedback_metrics(&snapshot, FeedbackLens::Model);
+        assert_eq!(model["lensMetrics"]["realizedPredictionSamples"], 2);
+        assert_eq!(
+            model["lensMetrics"]["outputMetrics"]["forecast"]["mae"],
+            0.0
+        );
+        assert_eq!(
+            model["lensMetrics"]["outputMetrics"]["forecast"]["rmse"],
+            0.0
+        );
+    }
+
+    #[test]
+    fn report_state_is_lens_specific_and_keeps_missing_outputs_explicit() {
+        let snapshot = snapshot(serde_json::json!({
+            "runtime": {"decisionBatchCount": 2},
+            "market": {"candidateRowCount": 2, "rows": [{"targetAvailable": true, "targetReturn": "1", "targetOutcomeAvailable": true, "targetOutcomeReturn": "1", "factorOutputs": [], "modelOutputs": []}]},
+            "paper": {"orderCount": 0, "fillCount": 0, "riskDecisionCount": 0, "orders": [], "fills": []}
+        }));
+        let factor = paper_feedback_metrics(&snapshot, FeedbackLens::Factor);
+        assert_eq!(
+            paper_feedback_report_state(&snapshot, FeedbackLens::Factor, &factor),
+            EvidenceState::Missing
+        );
+        let strategy = paper_feedback_metrics(&snapshot, FeedbackLens::Strategy);
+        assert_eq!(
+            paper_feedback_report_state(&snapshot, FeedbackLens::Strategy, &strategy),
+            EvidenceState::InsufficientEvidence
+        );
+    }
+
+    #[test]
+    fn execution_metrics_use_retained_provider_and_fill_evidence() {
+        let paper = serde_json::json!({
+            "orders": [
+                {"orderId": "local-1", "filledQuantity": "2", "limitPrice": "100"},
+                {"orderId": "local-2", "filledQuantity": "0", "limitPrice": "100"}
+            ],
+            "fills": [
+                {"orderId": "local-1", "quantity": "2", "price": "101", "fee": "0.5"}
+            ],
+            "providerEvidence": [
+                {"outcome": "accepted", "providerOrderId": "remote-1", "localOrderId": "local-1"}
+            ]
+        });
+        let metrics = paper_feedback_execution_metrics(Some(&paper));
+        assert_eq!(metrics["providerEvidenceCount"], 1);
+        assert_eq!(metrics["acknowledgedOrders"], 1);
+        assert_eq!(metrics["filledOrders"], 1);
+        assert_eq!(metrics["totalFees"], 0.5);
+        assert_eq!(metrics["averageSlippageBps"], 100.0);
+    }
+
+    #[test]
+    fn report_state_counts_unique_realized_rows_per_lens() {
+        let snapshot = snapshot(serde_json::json!({
+            "runtime": {"decisionBatchCount": 1},
+            "market": {
+                "candidateRowCount": 1,
+                "rows": [{
+                    "targetAvailable": true,
+                    "targetReturn": "1",
+                    "factorOutputs": [
+                        {"name": "score", "value": "1"},
+                        {"name": "confidence", "value": "2"}
+                    ],
+                    "modelOutputs": []
+                }]
+            },
+            "paper": {
+                "orderCount": 1,
+                "fillCount": 0,
+                "riskDecisionCount": 1,
+                "reconciliation": "reconciled",
+                "restartRequired": false,
+                "scopeCompatible": true,
+                "orders": [{"orderId": "local-1", "filledQuantity": "0", "limitPrice": "100"}],
+                "fills": [],
+                "providerEvidence": []
+            }
+        }));
+        let factor = paper_feedback_metrics(&snapshot, FeedbackLens::Factor);
+        assert_eq!(factor["lensMetrics"]["realizedFactorSamples"], 2);
+        assert_eq!(factor["lensMetrics"]["realizedFactorRows"], 1);
+        assert_eq!(
+            paper_feedback_report_state(&snapshot, FeedbackLens::Factor, &factor),
+            EvidenceState::InsufficientEvidence
+        );
+        let execution = paper_feedback_metrics(&snapshot, FeedbackLens::Execution);
+        assert_eq!(execution["lensMetrics"]["executionObservationCount"], 1);
+        assert_eq!(
+            paper_feedback_report_state(&snapshot, FeedbackLens::Execution, &execution),
+            EvidenceState::InsufficientEvidence
         );
     }
 }

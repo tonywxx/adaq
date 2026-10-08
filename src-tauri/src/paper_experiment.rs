@@ -1050,62 +1050,20 @@ fn attributed_cash(
     through_ms: i64,
     owned_order_ids: Option<&BTreeSet<String>>,
 ) -> Decimal {
-    account.fills.iter().fold(starting_capital, |cash, fill| {
-        if fill.occurred_at_ms < from_ms || fill.occurred_at_ms > through_ms {
-            return cash;
-        }
-        let Some(order) = account
-            .orders
-            .iter()
-            .find(|order| order.order_id == fill.order_id)
-        else {
-            return cash;
-        };
-        if order.instrument != instrument {
-            return cash;
-        }
-        if !owned_order_ids.is_some_and(|orders| orders.contains(&fill.order_id)) {
-            return cash;
-        }
-        cash + cash_delta(
-            order.side,
-            fill.quantity,
-            fill.price,
-            reported_fee_quote(fill),
-        )
-    })
-}
-
-fn attributed_position_quantity(
-    account: &crate::paper_trading::PaperAccountView,
-    instrument: &str,
-    from_ms: i64,
-    through_ms: i64,
-    owned_order_ids: Option<&BTreeSet<String>>,
-) -> Decimal {
     let Some(owned_order_ids) = owned_order_ids else {
-        return Decimal::ZERO;
+        return starting_capital;
     };
-    account.fills.iter().fold(Decimal::ZERO, |quantity, fill| {
-        if fill.occurred_at_ms < from_ms
-            || fill.occurred_at_ms > through_ms
-            || !owned_order_ids.contains(&fill.order_id)
-        {
-            return quantity;
-        }
-        let Some(order) = account
-            .orders
-            .iter()
-            .find(|order| order.order_id == fill.order_id && order.instrument == instrument)
-        else {
-            return quantity;
-        };
-        let base_fee = fill.fee_in_base(instrument);
-        match order.side {
-            Side::Buy => quantity + fill.quantity - base_fee,
-            Side::Sell => quantity - fill.quantity - base_fee,
-        }
-    })
+    account
+        .attributed_fills(owned_order_ids, from_ms..=through_ms)
+        .filter(|(order, _)| order.instrument == instrument)
+        .fold(starting_capital, |cash, (order, fill)| {
+            cash + cash_delta(
+                order.side,
+                fill.quantity,
+                fill.price,
+                reported_fee_quote(fill),
+            )
+        })
 }
 
 fn consume_lots(
@@ -1148,7 +1106,7 @@ fn experiment_valuations(
             let owned_orders = binding
                 .bot_id
                 .as_deref()
-                .map(|bot_id| owned_order_ids(account, bot_id));
+                .map(|bot_id| account.bot_order_ids(bot_id));
             let from_ms = experiment
                 .started_at_ms
                 .unwrap_or(experiment.observation_start_ms);
@@ -1159,13 +1117,13 @@ fn experiment_valuations(
                     price: None,
                     observed_at_ms: None,
                 });
-            let position_quantity = attributed_position_quantity(
-                account,
-                &binding.instrument,
-                from_ms,
-                observed_at_ms,
-                owned_orders.as_ref(),
-            );
+            let position_quantity = owned_orders.as_ref().map_or(Decimal::ZERO, |orders| {
+                account.attributed_position_quantity(
+                    orders,
+                    &binding.instrument,
+                    from_ms..=observed_at_ms,
+                )
+            });
             let attributed_cash = attributed_cash(
                 account,
                 &binding.instrument,
@@ -1192,26 +1150,6 @@ fn experiment_valuations(
         .collect()
 }
 
-fn owned_order_ids(
-    account: &crate::paper_trading::PaperAccountView,
-    bot_id: &str,
-) -> BTreeSet<String> {
-    let prefix = format!("bot-{bot_id}-");
-    account
-        .provider_evidence
-        .iter()
-        .filter_map(|outcome| match outcome {
-            ExecutionOutcome::Accepted(evidence)
-            | ExecutionOutcome::Rejected(evidence)
-            | ExecutionOutcome::Uncertain(evidence) => evidence
-                .operation_id
-                .starts_with(&prefix)
-                .then(|| evidence.local_order_id.clone())
-                .flatten(),
-        })
-        .collect()
-}
-
 fn instrument_report(
     experiment: &PaperExperiment,
     binding: &PaperExperimentInstrument,
@@ -1224,7 +1162,7 @@ fn instrument_report(
     let from_ms = experiment
         .started_at_ms
         .unwrap_or(experiment.observation_start_ms);
-    let owned_orders = owned_order_ids(account, &bot_id);
+    let owned_orders = account.bot_order_ids(&bot_id);
     let mut fills = account
         .fills
         .iter()
@@ -1491,7 +1429,7 @@ fn build_report(
         .instruments
         .iter()
         .filter_map(|binding| binding.bot_id.as_deref())
-        .flat_map(|bot_id| owned_order_ids(account, bot_id))
+        .flat_map(|bot_id| account.bot_order_ids(bot_id))
         .collect::<BTreeSet<_>>();
     let from_ms = experiment
         .started_at_ms
@@ -2252,38 +2190,35 @@ fn create_experiment_feedback(
             FeedbackLens::Strategy,
             FeedbackLens::Execution,
         ] {
-            let mut metrics = crate::paper_feedback_metrics(&snapshot, lens);
-            if let Some(object) = metrics.as_object_mut() {
-                object.insert("experimentId".into(), json!(experiment.experiment_id));
-                object.insert("experimentReportId".into(), json!(report.report_id));
-                object.insert("instrument".into(), json!(instrument.instrument));
-                object.insert("experimentReport".into(), json!(instrument));
-                object.insert(
+            let metadata = serde_json::Map::from_iter([
+                ("experimentId".into(), json!(experiment.experiment_id)),
+                ("experimentReportId".into(), json!(report.report_id)),
+                ("instrument".into(), json!(instrument.instrument)),
+                ("experimentReport".into(), json!(instrument)),
+                (
                     "horizon".into(),
                     json!({
                         "observationStartMs": report.observation_start_ms,
                         "observationEndMs": report.observation_end_ms,
                     }),
-                );
-                object.insert(
+                ),
+                (
                     "sampleRequirements".into(),
                     json!({
                         "requiredValuations": REQUIRED_VALUATIONS,
                         "realizedValuations": realized,
                     }),
-                );
-            }
-            let feedback_state = crate::paper_feedback_report_state(&snapshot, lens, &metrics);
-            let feedback_report = local.paper_feedback.create_report_with_state(
-                crate::paper_feedback::FeedbackReportInput {
-                    user_id: user_id.to_owned(),
+                ),
+            ]);
+            let feedback_report = local.paper_feedback.generate_report(
+                user_id,
+                crate::paper_feedback::FeedbackReportRequest {
                     snapshot_id: snapshot.snapshot_id.clone(),
                     lens,
-                    metrics,
-                    comparable_evidence_id: Some(report.report_id.clone()),
                 },
+                metadata,
+                Some(report.report_id.clone()),
                 report.generated_at_ms,
-                feedback_state,
             )?;
             report_ids.push(feedback_report.report_id);
         }
@@ -2475,8 +2410,36 @@ mod tests {
         let owned = BTreeSet::from(["order-buy".to_owned()]);
 
         assert_eq!(
-            attributed_position_quantity(&account, "BTC-USDT", 100, 300, Some(&owned),),
+            account.attributed_position_quantity(&owned, "BTC-USDT", 100..=300),
             Decimal::new(9, 1)
+        );
+    }
+
+    #[test]
+    fn bot_fill_attribution_preserves_windows_and_signed_base_fees() {
+        let mut account = account();
+        for fill in &mut account.fills {
+            fill.fee_asset = Some("BTC".into());
+            fill.fee_amount = Some(Decimal::new(1, 1));
+        }
+        let owned = account.bot_order_ids("bot-1");
+        assert_eq!(
+            account.attributed_position_quantity(&owned, "okx:BTC-USDT", 110..=110),
+            Decimal::new(9, 1)
+        );
+        assert_eq!(
+            account.attributed_position_quantity(&owned, "BTC-USDT", 200..=300),
+            Decimal::new(-11, 1)
+        );
+        assert_eq!(
+            account.attributed_position_quantity(&owned, "BTC-USDT", i64::MIN..=i64::MAX),
+            Decimal::new(-2, 1)
+        );
+        assert_eq!(
+            account
+                .attributed_fills(&account.bot_order_ids("other-bot"), i64::MIN..=i64::MAX)
+                .count(),
+            0
         );
     }
 

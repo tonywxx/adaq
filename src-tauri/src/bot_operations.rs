@@ -194,43 +194,9 @@ fn bot_owned_position(
     bot_id: &str,
     instrument_id: &str,
 ) -> adaq_paper_trading_core::Position {
-    let operation_prefix = format!("bot-{bot_id}-");
-    let owned_order_ids = account
-        .provider_evidence
-        .iter()
-        .filter_map(|outcome| {
-            let evidence = match outcome {
-                adaq_paper_trading_core::ExecutionOutcome::Accepted(evidence)
-                | adaq_paper_trading_core::ExecutionOutcome::Rejected(evidence)
-                | adaq_paper_trading_core::ExecutionOutcome::Uncertain(evidence) => evidence,
-            };
-            evidence
-                .operation_id
-                .starts_with(&operation_prefix)
-                .then(|| evidence.local_order_id.clone())
-                .flatten()
-        })
-        .collect::<BTreeSet<_>>();
+    let owned_order_ids = account.bot_order_ids(bot_id);
     let quantity = account
-        .fills
-        .iter()
-        .filter(|fill| owned_order_ids.contains(&fill.order_id))
-        .filter_map(|fill| {
-            let order = account
-                .orders
-                .iter()
-                .find(|order| order.order_id == fill.order_id)?;
-            (okx_instrument_code(&order.instrument) == okx_instrument_code(instrument_id))
-                .then_some(match order.side {
-                    adaq_paper_trading_core::Side::Buy => {
-                        fill.quantity - fill.fee_in_base(&order.instrument)
-                    }
-                    adaq_paper_trading_core::Side::Sell => {
-                        -(fill.quantity + fill.fee_in_base(&order.instrument))
-                    }
-                })
-        })
-        .sum::<Decimal>()
+        .attributed_position_quantity(&owned_order_ids, instrument_id, i64::MIN..=i64::MAX)
         .max(Decimal::ZERO);
     let sellable_quantity = account
         .account
@@ -3167,6 +3133,17 @@ fn run_bot_decision(
 }
 
 pub(crate) fn dispatch_closed_bar_tick(ctx: &BotContext, user_id: &str) -> Result<(), String> {
+    dispatch_closed_bar_tick_with(ctx, user_id, adaq_bot_runtime::unix_now_ms, |request| {
+        run_bot_decision(ctx, user_id, request).map(|_| ())
+    })
+}
+
+fn dispatch_closed_bar_tick_with(
+    ctx: &BotContext,
+    user_id: &str,
+    now_ms: impl Fn() -> i64,
+    mut dispatch: impl FnMut(BotDecisionRequest) -> Result<(), String>,
+) -> Result<(), String> {
     validate_user(user_id)?;
     let mut first_error = None;
     for view in ctx.bots.list(user_id)? {
@@ -3183,10 +3160,8 @@ pub(crate) fn dispatch_closed_bar_tick(ctx: &BotContext, user_id: &str) -> Resul
             }
             BotSchedule::EmaDoubleCross { .. } => continue,
         };
-        if let Some(request) =
-            closed_bar_tick_request(&view, interval, adaq_bot_runtime::unix_now_ms())?
-        {
-            if let Err(error) = run_bot_decision(ctx, user_id, request) {
+        if let Some(request) = closed_bar_tick_request(&view, interval, now_ms())? {
+            if let Err(error) = dispatch(request) {
                 first_error.get_or_insert(error);
             }
         }
@@ -3236,6 +3211,24 @@ pub(crate) fn dispatch_trade_event(
     instrument_code: &str,
     trade_id: &str,
 ) -> Result<(), String> {
+    dispatch_trade_event_with(
+        ctx,
+        user_id,
+        instrument_code,
+        trade_id,
+        adaq_bot_runtime::unix_now_ms,
+        |request| run_bot_decision(ctx, user_id, request).map(|_| ()),
+    )
+}
+
+fn dispatch_trade_event_with(
+    ctx: &BotContext,
+    user_id: &str,
+    instrument_code: &str,
+    trade_id: &str,
+    now_ms: impl Fn() -> i64,
+    mut dispatch: impl FnMut(BotDecisionRequest) -> Result<(), String>,
+) -> Result<(), String> {
     validate_user(user_id)?;
     if !bounded(instrument_code, 128) || !bounded(trade_id, 256) {
         return Err("Trade event identity exceeds the Host limit.".into());
@@ -3247,25 +3240,27 @@ pub(crate) fn dispatch_trade_event(
         if view.state != LifecycleState::Running {
             continue;
         }
-        let (dataset_id, event_id, retained_trade_id) = match &view.bundle.schedule {
+        let request = match &view.bundle.schedule {
             BotSchedule::EmaDoubleCross { instrument_id }
                 if okx_instrument_code(instrument_id) == instrument_code =>
             {
-                (
-                    instrument_code.to_owned(),
-                    trade_id.to_owned(),
-                    Some(trade_id.to_owned()),
-                )
+                let identity = hash_json(&(
+                    view.bot_id.as_str(),
+                    view.current_attempt_id.as_deref(),
+                    trade_id,
+                ))?;
+                Some(BotDecisionRequest {
+                    bot_id: view.bot_id.clone(),
+                    command_id: format!("stream-decision-{identity}"),
+                    request_id: format!("stream-request-{identity}"),
+                    dataset_id: instrument_code.to_owned(),
+                    trade_id: Some(trade_id.to_owned()),
+                })
             }
             BotSchedule::ClosedBar { instrument_id, .. }
                 if okx_instrument_code(instrument_id) == instrument_code =>
             {
-                let time = adaq_data_pipeline::okx::latest_closed_bar_boundary_ms(
-                    adaq_bot_runtime::unix_now_ms(),
-                    bundle_interval(&view.bundle)?,
-                )
-                .map_err(|error| error.to_string())?;
-                (format!("closed-bar:{time}"), time.to_string(), None)
+                closed_bar_tick_request(&view, bundle_interval(&view.bundle)?, now_ms())?
             }
             BotSchedule::ScheduledCrossSection { instruments, .. }
                 if instruments.first().is_some_and(|instrument| {
@@ -3276,41 +3271,14 @@ pub(crate) fn dispatch_trade_event(
                     .local
                     .snapshots
                     .universe_snapshot_for_user(user_id, &view.bundle.universe_snapshot_id)?;
-                let time = adaq_data_pipeline::okx::latest_closed_bar_boundary_ms(
-                    adaq_bot_runtime::unix_now_ms(),
-                    frozen.interval,
-                )
-                .map_err(|error| error.to_string())?;
-                (format!("closed-bar:{time}"), time.to_string(), None)
+                closed_bar_tick_request(&view, frozen.interval, now_ms())?
             }
-            _ => continue,
+            _ => None,
         };
-        if retained_trade_id.is_none() {
-            let time = event_id.parse::<i64>().map_err(|error| error.to_string())?;
-            if host_schedule_window(time, adaq_bot_runtime::unix_now_ms()).is_err()
-                || view
-                    .attempts
-                    .iter()
-                    .find(|attempt| Some(&attempt.attempt_id) == view.current_attempt_id.as_ref())
-                    .and_then(|attempt| attempt.last_decision_time_ms)
-                    .is_some_and(|last| last >= time)
-            {
-                continue;
-            }
-        }
-        let identity = hash_json(&(
-            view.bot_id.as_str(),
-            view.current_attempt_id.as_deref(),
-            event_id,
-        ))?;
-        let request = BotDecisionRequest {
-            bot_id: view.bot_id,
-            command_id: format!("stream-decision-{identity}"),
-            request_id: format!("stream-request-{identity}"),
-            dataset_id,
-            trade_id: retained_trade_id,
+        let Some(request) = request else {
+            continue;
         };
-        if let Err(error) = run_bot_decision(ctx, user_id, request) {
+        if let Err(error) = dispatch(request) {
             first_error.get_or_insert(error);
         }
     }
@@ -7882,14 +7850,18 @@ pub(crate) mod tests {
         assert_eq!(first.command_id, repeated.command_id);
         assert_eq!(first.request_id, repeated.request_id);
 
-        view.attempts.last_mut().unwrap().last_decision_time_ms = Some(60_000);
+        let at_deadline = closed_bar_tick_request(&view, interval, 90_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.request_id, at_deadline.request_id);
         assert!(
-            closed_bar_tick_request(&view, interval, 60_250)
+            closed_bar_tick_request(&view, interval, 90_001)
                 .unwrap()
                 .is_none()
         );
+        view.attempts.last_mut().unwrap().last_decision_time_ms = Some(60_000);
         assert!(
-            closed_bar_tick_request(&view, interval, 90_001)
+            closed_bar_tick_request(&view, interval, 60_250)
                 .unwrap()
                 .is_none()
         );
@@ -7921,8 +7893,104 @@ pub(crate) mod tests {
                 .unwrap();
         assert_eq!(request.dataset_id, "closed-bar:900000");
         assert!(request.trade_id.is_none());
+        view.bundle.schedule = BotSchedule::EmaDoubleCross {
+            instrument_id: "okx:ADA-USDT".into(),
+        };
+        assert!(
+            closed_bar_tick_request(&view, adaq_data_core::BarInterval::FifteenMinutes, 900_100)
+                .unwrap()
+                .is_none()
+        );
         drop(ctx);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn closed_bar_dispatch_adapters_agree_on_identity_and_eligibility() {
+        for (tag, deployment, boundary) in [
+            (
+                "closed-bar-dispatch",
+                (|_: &LocalResearchState| bundle("bot-a", "account-a"))
+                    as fn(&LocalResearchState) -> BotDeploymentBundle,
+                60_000,
+            ),
+            ("cross-section-dispatch", cross_section_bundle, 900_000),
+        ] {
+            let (ctx, dir) = running_bot_context_with_bundle(tag, deployment);
+            let collect = |now, instrument| {
+                let mut clock = Vec::new();
+                dispatch_closed_bar_tick_with(
+                    &ctx,
+                    "user-a",
+                    || now,
+                    |request| {
+                        clock.push(request);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                let mut trade = Vec::new();
+                dispatch_trade_event_with(
+                    &ctx,
+                    "user-a",
+                    instrument,
+                    "trade-a",
+                    || now,
+                    |request| {
+                        trade.push(request);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                (clock, trade)
+            };
+            for (now, cursor, expected) in [
+                (boundary - 1, Some(0), None),
+                (boundary, None, Some(boundary)),
+                (boundary + 250, None, Some(boundary)),
+                (boundary + 30_000, None, Some(boundary)),
+                (boundary + 30_001, None, None),
+                (boundary + 250, Some(boundary), None),
+                (
+                    boundary + 60_000,
+                    None,
+                    (boundary == 60_000).then_some(boundary + 60_000),
+                ),
+                (2 * boundary, None, Some(2 * boundary)),
+            ] {
+                ctx.bots
+                    .mutate("user-a", "bot-a", |bot| {
+                        current_attempt_mut(bot)?.last_decision_time_ms = cursor;
+                        Ok(())
+                    })
+                    .unwrap();
+                let (clock, trade) = collect(now, "BTC-USDT");
+                assert_eq!(clock.len(), usize::from(expected.is_some()), "{tag}: {now}");
+                assert_eq!(trade.len(), clock.len(), "{tag}: {now}");
+                if let Some(time) = expected {
+                    assert_eq!(clock[0].bot_id, trade[0].bot_id);
+                    assert_eq!(clock[0].command_id, trade[0].command_id);
+                    assert_eq!(clock[0].request_id, trade[0].request_id);
+                    assert_eq!(clock[0].dataset_id, format!("closed-bar:{time}"));
+                    assert_eq!(clock[0].dataset_id, trade[0].dataset_id);
+                    assert!(clock[0].trade_id.is_none());
+                    assert!(trade[0].trade_id.is_none());
+                }
+            }
+            for instrument in ["ETH-USDT", "SOL-USDT"] {
+                let (clock, trade) = collect(2 * boundary, instrument);
+                assert_eq!(clock.len(), 1);
+                assert!(trade.is_empty(), "{tag}: {instrument}");
+            }
+            ctx.bots
+                .transition("user-a", "bot-a", LifecycleState::Pausing, "host", "test")
+                .unwrap();
+            let (clock, trade) = collect(2 * boundary, "BTC-USDT");
+            assert!(clock.is_empty());
+            assert!(trade.is_empty());
+            drop(ctx);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
@@ -8210,9 +8278,18 @@ pub(crate) mod tests {
     }
 
     fn running_bot_context(tag: &str) -> (BotContext, std::path::PathBuf) {
+        running_bot_context_with_bundle(tag, |_| bundle("bot-a", "account-a"))
+    }
+
+    fn running_bot_context_with_bundle(
+        tag: &str,
+        deployment: impl FnOnce(&LocalResearchState) -> BotDeploymentBundle,
+    ) -> (BotContext, std::path::PathBuf) {
+        let dir = temp_workspace(tag);
+        let local = LocalResearchState::open(&dir).unwrap();
         let database = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
         let bots = BotStore::open(database.clone()).unwrap();
-        bots.deploy("user-a", bundle("bot-a", "account-a")).unwrap();
+        bots.deploy("user-a", deployment(&local)).unwrap();
         // The Supervisor is constructed while the Bot is still Stopped so its
         // host-restart recovery is a no-op; the active attempt starts after.
         let operations = crate::operations::OperationsStore::open(database).unwrap();
@@ -8240,8 +8317,6 @@ pub(crate) mod tests {
         .unwrap();
         bots.transition("user-a", "bot-a", LifecycleState::Running, "host", "test")
             .unwrap();
-        let dir = temp_workspace(tag);
-        let local = LocalResearchState::open(&dir).unwrap();
         (
             BotContext {
                 local,
@@ -8250,6 +8325,110 @@ pub(crate) mod tests {
             },
             dir,
         )
+    }
+
+    fn cross_section_bundle(local: &LocalResearchState) -> BotDeploymentBundle {
+        use adaq_backtest_core::{
+            MarketDataUniverseSnapshot, SnapshotDatasetBinding, SnapshotProvenance,
+            SnapshotUniverseBinding, UniverseSnapshotComponent,
+        };
+        use adaq_data_core::market::{InstrumentId, Venue};
+        use adaq_data_core::{BarInterval, BarSeries, OhlcvBar};
+
+        let venue = Venue::crypto_spot("okx").unwrap();
+        let components = ["BTC-USDT", "ETH-USDT"]
+            .map(|code| {
+                let dataset = SnapshotDatasetBinding {
+                    instrument: InstrumentId::new(venue.clone(), code).unwrap(),
+                    source_id: format!("source-{code}"),
+                    source_revision: 1,
+                    canonical_id: Some(format!("canonical-{code}")),
+                    derived_id: None,
+                    quality_report_id: format!("quality-{code}"),
+                    content_sha256: hash('d'),
+                };
+                let snapshot = local
+                    .snapshots
+                    .persist_for_user_with_provenance(
+                        "user-a",
+                        &BarSeries {
+                            src: "okx".into(),
+                            code: code.into(),
+                            interval: BarInterval::FifteenMinutes,
+                            bars: [0, 900_000]
+                                .map(|open_time_ms| OhlcvBar {
+                                    open_time_ms,
+                                    open: Decimal::ONE,
+                                    high: Decimal::ONE,
+                                    low: Decimal::ONE,
+                                    close: Decimal::ONE,
+                                    base_volume: Decimal::ONE,
+                                    quote_volume: Decimal::ONE,
+                                })
+                                .to_vec(),
+                            gaps: vec![],
+                        },
+                        Some(SnapshotProvenance {
+                            venue: venue.clone(),
+                            datasets: vec![dataset.clone()],
+                            quality_report_ids: vec![dataset.quality_report_id.clone()],
+                            calendar_snapshot_ids: vec!["calendar".into()],
+                            provider_capability_snapshots: vec![],
+                            universe: None,
+                            derivation_algorithm_version: None,
+                        }),
+                    )
+                    .unwrap();
+                UniverseSnapshotComponent {
+                    snapshot_id: snapshot.snapshot_id,
+                    dataset,
+                }
+            })
+            .to_vec();
+        let frozen = local
+            .snapshots
+            .persist_universe_for_user(
+                "user-a",
+                MarketDataUniverseSnapshot {
+                    snapshot_id: String::new(),
+                    venue,
+                    interval: BarInterval::FifteenMinutes,
+                    start_time_ms: 0,
+                    end_time_ms: 900_000,
+                    universe: SnapshotUniverseBinding {
+                        universe_id: "universe".into(),
+                        as_of_ms: 0,
+                        evidence_state: "observed".into(),
+                        evidence_reasons: vec!["instrument-master-observed-at-as-of".into()],
+                        coverage_start_ms: Some(0),
+                        coverage_end_ms: None,
+                        instruments: components
+                            .iter()
+                            .map(|component| component.dataset.instrument.clone())
+                            .collect(),
+                    },
+                    quality_report_ids: components
+                        .iter()
+                        .map(|component| component.dataset.quality_report_id.clone())
+                        .collect(),
+                    components,
+                    calendar_snapshot_ids: vec!["calendar".into()],
+                    provider_capability_snapshots: vec![],
+                    content_sha256: String::new(),
+                },
+            )
+            .unwrap();
+        let mut deployment = bundle("bot-a", "account-a");
+        deployment.runtime_bundle.input.strategy.world = StrategyWorld::PortfolioStrategy;
+        deployment.runtime_bundle =
+            DeploymentBundle::freeze(deployment.runtime_bundle.input).unwrap();
+        deployment.universe_snapshot_id = frozen.snapshot_id;
+        deployment.market_data_snapshot_id = frozen.components[0].snapshot_id.clone();
+        deployment.schedule = BotSchedule::ScheduledCrossSection {
+            universe_id: frozen.universe.universe_id,
+            instruments: vec!["okx:BTC-USDT".into(), "okx:ETH-USDT".into()],
+        };
+        deployment.freeze().unwrap()
     }
 
     fn closed_window_experiment(bot_id: &str) -> crate::paper_experiment::PaperExperiment {
