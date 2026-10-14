@@ -5,6 +5,16 @@ on:
   pull_request:
     paths:
       - '.github/workflows/v1-acceptance.yml'
+      - '.github/scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'biome.json'
+      - 'babel.config.*'
+      - 'jest.config.*'
+      - 'tsconfig*.json'
+      - 'vite.config.*'
+      - 'scripts/**'
       - 'docs/**'
       - 'examples/components/**'
       - 'examples/python/**'
@@ -15,6 +25,16 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/v1-acceptance.yml'
+      - '.github/scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'biome.json'
+      - 'babel.config.*'
+      - 'jest.config.*'
+      - 'tsconfig*.json'
+      - 'vite.config.*'
+      - 'scripts/**'
       - 'docs/**'
       - 'examples/components/**'
       - 'examples/python/**'
@@ -161,8 +181,8 @@ jobs:
         run: pnpm run build
       - name: Lint frontend
         run: pnpm run lint
-      - name: Run frontend tests (macOS main)
-        if: matrix.architecture == 'arm64' && github.event_name != 'pull_request'
+      - name: Run frontend tests (macOS)
+        if: matrix.architecture == 'arm64'
         run: pnpm exec jest --watchman=false --runInBand
       - name: Check formatting and paths
         shell: bash

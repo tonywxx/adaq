@@ -6,7 +6,7 @@ Prefer ChatGPT's built-in Computer Use (`mcp__cua_repl`) for desktop and browser
 
 ## Project Structure & Module Organization
 
-ADAQ is a Tauri 2 desktop app with a React 19 + Vite frontend. Frontend source lives in `src/`: entry points are `src/main.tsx` and `src/App.tsx`, reusable UI is in `src/components/`, shadcn primitives are in `src/components/ui/`, hooks are in `src/hooks/`, layout code is in `src/layout/`, shared helpers are in `src/lib/`, global CSS is in `src/styles/`, and static assets belong in `src/assets/`. Native code and desktop configuration live in `src-tauri/`: Rust sources in `src-tauri/src/`, capabilities in `src-tauri/capabilities/`, icons in `src-tauri/icons/`, app config in `src-tauri/tauri.conf.json`, and external component contracts in `src-tauri/wit/<project-name>.wit`. Never reference machine-local WIT paths. Manual release automation lives in `.github/workflows/release.yml`.
+ADAQ is a Tauri 2 desktop app with a React 19 + Vite frontend. Frontend source lives in `src/`: entry points are `src/main.tsx` and `src/App.tsx`, reusable UI is in `src/components/`, shadcn primitives are in `src/components/ui/`, hooks are in `src/hooks/`, layout code is in `src/layout/`, shared helpers are in `src/lib/`, global CSS is in `src/styles/`, and static assets belong in `src/assets/`. Native code and desktop configuration live in `src-tauri/`: Rust sources in `src-tauri/src/`, capabilities in `src-tauri/capabilities/`, icons in `src-tauri/icons/`, app config in `src-tauri/tauri.conf.json`, and external component contracts in `src-tauri/wit/<project-name>.wit`. Never reference machine-local WIT paths. Release automation lives in `.github/workflows/release.yml`.
 
 ## Build, Test, and Development Commands
 
@@ -14,9 +14,12 @@ ADAQ is a Tauri 2 desktop app with a React 19 + Vite frontend. Frontend source l
 - `pnpm dev`: start the Vite frontend dev server.
 - `pnpm tauri dev`: run the desktop app with the Tauri shell.
 - `pnpm run build`: run strict TypeScript checking, then build the frontend.
-- `pnpm exec vite build`: build only the frontend, matching the release workflow.
+- `pnpm exec vite build`: build only the frontend without TypeScript checking.
+- `pnpm exec jest --watchman=false --runInBand`: run frontend tests; append relevant test paths for a focused check.
+- `pnpm run lint`: run the configured Biome rules.
 - `cd src-tauri && cargo check`: verify Rust/Tauri code.
-- GitHub Actions `Release`: manually publish signed macOS ARM64, Windows x86_64, and Linux x86_64 updater assets from `main` after synchronizing the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+- `cd src-tauri && cargo test -p <crate>`: run the relevant Rust crate's tests; CI runs the workspace suite.
+- Release: pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which publishes macOS ARM64 and Windows x86_64 updater assets after validation and build checks. Synchronize the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` before tagging.
 
 ## Coding Style & Naming Conventions
 
@@ -24,7 +27,7 @@ Use TypeScript strict mode and the `@/*` alias for imports from `src/`. Follow e
 
 ## Testing Guidelines
 
-No dedicated frontend or Rust test suite is currently present. For behavior changes, run the narrowest meaningful checks: `pnpm run build` for frontend/type changes and `cargo check` from `src-tauri/` for native changes. If adding tests, colocate frontend tests as `*.test.ts` or `*.test.tsx`; keep Rust unit tests inside the relevant module.
+Frontend tests use Jest (`jest.config.js`); Rust tests live in crate modules and integration suites. For behavior changes, run the relevant existing tests and update coverage as needed. Use the commands above for frontend build/lint and native compilation checks. Colocate frontend tests as `*.test.ts` or `*.test.tsx`; keep Rust unit tests inside the relevant module. The CI check sequence and trigger paths are defined in `.github/workflows/v1-acceptance.yml`.
 
 ## Commit & Pull Request Guidelines
 
@@ -48,14 +51,12 @@ Use the five canonical triage labels without aliases. See `docs/agents/triage-la
 
 Use the single-context layout with root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
 
-## graphify
+## Code Navigation and Tool Discovery
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+Choose the entry point that matches the question; switch tools when the first result lacks the needed evidence.
 
-When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
-
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- Symbols, signatures, callers/callees, impact, and execution traces: use CodeGraph.
+- Broad architecture, domain concepts, and semantic relationships across files: use graphify when `graphify-out/graph.json` exists. Use `graphify query`, `graphify path`, or `graphify explain` for scoped results; use `graphify-out/wiki/index.md` for broad navigation when available. Read `GRAPH_REPORT.md` when these results are insufficient.
+- Literal text, known files, and configuration: use `rg` and direct reads.
+- For `/graphify` commands or selected graphify queries, read the installed graphify skill. Dirty graph outputs are expected after incremental updates and remain usable unless the task concerns incorrect graph output.
+- Discover tools by exact name or one narrow capability. Return at most 10 matching names with short descriptions; read full tool metadata only for the selected tool.
